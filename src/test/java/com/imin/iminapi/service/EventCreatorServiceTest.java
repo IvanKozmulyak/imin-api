@@ -4,6 +4,7 @@ import com.imin.iminapi.dto.*;
 import com.imin.iminapi.exception.EventCreationException;
 import com.imin.iminapi.model.Concept;
 import com.imin.iminapi.model.GeneratedEvent;
+import com.imin.iminapi.model.GeneratedEventStatus;
 import com.imin.iminapi.repository.GeneratedEventRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -39,13 +40,15 @@ class EventCreatorServiceTest {
         service = new EventCreatorService(chatClient, imageGenerationService, pricingService, repository);
     }
 
-    @Test
-    void create_successfulRun_persistsAndReturnsCompleteEvent() {
-        EventCreatorRequest request = new EventCreatorRequest(
-                "underground techno night", "edgy", "techno", "Berlin",
-                LocalDate.of(2026, 6, 14), List.of("INSTAGRAM", "TWITTER"));
+    private void stubChatClient(LlmGenerationResult result) {
+        when(chatClient.prompt()).thenReturn(requestSpec);
+        when(requestSpec.user(anyString())).thenReturn(requestSpec);
+        when(requestSpec.call()).thenReturn(callResponseSpec);
+        when(callResponseSpec.entity(LlmGenerationResult.class)).thenReturn(result);
+    }
 
-        LlmGenerationResult llmResult = new LlmGenerationResult(
+    private LlmGenerationResult threeConceptResult() {
+        return new LlmGenerationResult(
                 List.of(
                         new LlmEventConcept("Void", "Dark and deep.", "Lose yourself."),
                         new LlmEventConcept("Pulse", "Raw energy.", "Feel the beat."),
@@ -57,22 +60,26 @@ class EventCreatorServiceTest {
                 ),
                 List.of("#1A1A2E", "#E94560", "#0F3460", "#533483", "#2B2D42")
         );
+    }
 
-        PricingRecommendation pricing = new PricingRecommendation(
-                new BigDecimal("15"), new BigDecimal("25"), "SATURDAY", "Genre default.");
+    @Test
+    void create_successfulRun_persistsDraftThenComplete() {
+        EventCreatorRequest request = new EventCreatorRequest(
+                "underground techno night", "edgy", "techno", "Berlin",
+                LocalDate.of(2026, 6, 14), List.of("INSTAGRAM", "TWITTER"));
 
-        when(chatClient.prompt()).thenReturn(requestSpec);
-        when(requestSpec.user(anyString())).thenReturn(requestSpec);
-        when(requestSpec.call()).thenReturn(callResponseSpec);
-        when(callResponseSpec.entity(LlmGenerationResult.class)).thenReturn(llmResult);
+        stubChatClient(threeConceptResult());
 
         when(imageGenerationService.generatePoster(any(Concept.class), anyString()))
                 .thenReturn("https://dalle.example.com/img1.png")
                 .thenReturn("https://dalle.example.com/img2.png")
                 .thenReturn("https://dalle.example.com/img3.png");
 
+        PricingRecommendation pricing = new PricingRecommendation(
+                new BigDecimal("15"), new BigDecimal("25"), "SATURDAY", "Genre default.");
         when(pricingService.recommend(eq("techno"), eq("Berlin"), any())).thenReturn(pricing);
-        List<String> statusesAtSave = new ArrayList<>();
+
+        List<GeneratedEventStatus> statusesAtSave = new ArrayList<>();
         when(repository.save(any())).thenAnswer(inv -> {
             statusesAtSave.add(((GeneratedEvent) inv.getArgument(0)).getStatus());
             return inv.getArgument(0);
@@ -87,7 +94,9 @@ class EventCreatorServiceTest {
         assertThat(response.socialCopy()).hasSize(2);
         assertThat(response.pricing().suggestedMinPrice()).isEqualByComparingTo("15");
 
-        assertThat(statusesAtSave).containsExactly("DRAFT", "COMPLETE");
+        // DRAFT saved immediately, DRAFT again after LLM, COMPLETE at the end
+        assertThat(statusesAtSave).containsExactly(
+                GeneratedEventStatus.DRAFT, GeneratedEventStatus.DRAFT, GeneratedEventStatus.COMPLETE);
     }
 
     @Test
@@ -102,7 +111,7 @@ class EventCreatorServiceTest {
         when(callResponseSpec.entity(LlmGenerationResult.class))
                 .thenThrow(new RuntimeException("OpenRouter timeout"));
 
-        List<String> statusesAtSave = new ArrayList<>();
+        List<GeneratedEventStatus> statusesAtSave = new ArrayList<>();
         when(repository.save(any())).thenAnswer(inv -> {
             statusesAtSave.add(((GeneratedEvent) inv.getArgument(0)).getStatus());
             return inv.getArgument(0);
@@ -112,6 +121,31 @@ class EventCreatorServiceTest {
                 .isInstanceOf(EventCreationException.class)
                 .hasMessageContaining("OpenRouter timeout");
 
-        assertThat(statusesAtSave).anyMatch("FAILED"::equals);
+        // DRAFT saved first, then FAILED on error
+        assertThat(statusesAtSave).containsExactly(GeneratedEventStatus.DRAFT, GeneratedEventStatus.FAILED);
+    }
+
+    @Test
+    void create_imageGenerationFailure_setsStatusFailedAndThrows() {
+        EventCreatorRequest request = new EventCreatorRequest(
+                "underground techno night", "edgy", "techno", "Berlin",
+                LocalDate.of(2026, 6, 14), List.of("INSTAGRAM"));
+
+        stubChatClient(threeConceptResult());
+
+        when(imageGenerationService.generatePoster(any(Concept.class), anyString()))
+                .thenThrow(new RuntimeException("DALL-E rate limited"));
+
+        List<GeneratedEventStatus> statusesAtSave = new ArrayList<>();
+        when(repository.save(any())).thenAnswer(inv -> {
+            statusesAtSave.add(((GeneratedEvent) inv.getArgument(0)).getStatus());
+            return inv.getArgument(0);
+        });
+
+        assertThatThrownBy(() -> service.create(request))
+                .isInstanceOf(EventCreationException.class)
+                .hasMessageContaining("DALL-E rate limited");
+
+        assertThat(statusesAtSave).contains(GeneratedEventStatus.FAILED);
     }
 }

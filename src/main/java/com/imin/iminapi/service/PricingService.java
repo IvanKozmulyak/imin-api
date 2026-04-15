@@ -11,6 +11,7 @@ import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -45,15 +46,26 @@ public class PricingService {
     }
 
     private PricingRecommendation fromComparables(String genre, List<GeneratedEvent> comparables) {
-        BigDecimal avgMin = comparables.stream()
+        List<BigDecimal> minPrices = comparables.stream()
                 .map(GeneratedEvent::getSuggestedMinPrice)
-                .reduce(BigDecimal.ZERO, BigDecimal::add)
-                .divide(BigDecimal.valueOf(comparables.size()), 2, RoundingMode.HALF_UP);
-
-        BigDecimal avgMax = comparables.stream()
+                .filter(Objects::nonNull)
+                .toList();
+        List<BigDecimal> maxPrices = comparables.stream()
                 .map(GeneratedEvent::getSuggestedMaxPrice)
+                .filter(Objects::nonNull)
+                .toList();
+
+        if (minPrices.isEmpty() || maxPrices.isEmpty()) {
+            return genreDefault(genre);
+        }
+
+        BigDecimal avgMin = minPrices.stream()
                 .reduce(BigDecimal.ZERO, BigDecimal::add)
-                .divide(BigDecimal.valueOf(comparables.size()), 2, RoundingMode.HALF_UP);
+                .divide(BigDecimal.valueOf(minPrices.size()), 2, RoundingMode.HALF_UP);
+
+        BigDecimal avgMax = maxPrices.stream()
+                .reduce(BigDecimal.ZERO, BigDecimal::add)
+                .divide(BigDecimal.valueOf(maxPrices.size()), 2, RoundingMode.HALF_UP);
 
         String dow = mostCommonDow(comparables);
         String notes = "Based on %d comparable %s event(s).".formatted(comparables.size(), genre);

@@ -79,7 +79,9 @@ class EventCreatorControllerTest {
         mockMvc.perform(post("/api/events/ai-create")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(invalidBody))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("validation_failed"))
+                .andExpect(jsonPath("$.fields.vibe").exists());
     }
 
     @Test
@@ -94,6 +96,7 @@ class EventCreatorControllerTest {
         mockMvc.perform(post("/api/events/ai-create")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
-                .andExpect(status().isInternalServerError());
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.error").value("event_creation_failed"));
     }
 }

@@ -11,6 +11,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
+import static jakarta.persistence.EnumType.STRING;
+
 @Entity
 @Table(name = "generated_event")
 @Getter
@@ -43,8 +45,9 @@ public class GeneratedEvent {
     @Column(columnDefinition = "TEXT")
     private String pricingNotes;
 
+    @Enumerated(STRING)
     @Column(nullable = false, length = 20)
-    private String status;
+    private GeneratedEventStatus status;
 
     @Column(nullable = false)
     private LocalDateTime createdAt;

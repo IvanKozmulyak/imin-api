@@ -4,9 +4,12 @@ import com.imin.iminapi.dto.*;
 import com.imin.iminapi.exception.EventCreationException;
 import com.imin.iminapi.model.Concept;
 import com.imin.iminapi.model.GeneratedEvent;
+import com.imin.iminapi.model.GeneratedEventStatus;
 import com.imin.iminapi.model.SocialCopy;
 import com.imin.iminapi.repository.GeneratedEventRepository;
 import lombok.RequiredArgsConstructor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.stereotype.Service;
 
@@ -18,42 +21,63 @@ import java.util.concurrent.CompletableFuture;
 @RequiredArgsConstructor
 public class EventCreatorService {
 
+    private static final Logger log = LoggerFactory.getLogger(EventCreatorService.class);
+    private static final String LIST_SEP = "\n";
+
     private final ChatClient chatClient;
     private final ImageGenerationService imageGenerationService;
     private final PricingService pricingService;
     private final GeneratedEventRepository repository;
 
     public EventCreatorResponse create(EventCreatorRequest request) {
+        long startedAt = System.currentTimeMillis();
         GeneratedEvent event = initDraft(request);
+        repository.save(event); // persist DRAFT immediately so failure path always has a row
+        log.info("AI event creation started: genre={}, city={}, date={}, platforms={}",
+                request.genre(), request.city(), request.date(), request.platforms().size());
 
         try {
+            log.info("Step 1/3: calling LLM for concepts and social copy");
             LlmGenerationResult llmResult = callLlm(request);
+            log.info("Step 1/3 complete: concepts={}, socialCopies={}, accentColors={}",
+                    llmResult.concepts().size(), llmResult.socialCopy().size(), llmResult.accentColors().size());
 
-            event.setAccentColors(String.join(",", llmResult.accentColors()));
+            event.setAccentColors(String.join(LIST_SEP, llmResult.accentColors()));
             event.setConcepts(buildConcepts(llmResult.concepts(), event));
             event.setSocialCopies(buildSocialCopies(llmResult.socialCopy(), event));
             repository.save(event);
+            log.info("Draft event updated with LLM results");
 
             String primaryColor = llmResult.accentColors().get(0);
+            log.info("Step 2/3: generating posters in parallel for {} concepts", event.getConcepts().size());
             List<String> posterUrls = generatePosters(event.getConcepts(), primaryColor);
-            event.setPosterUrls(String.join(",", posterUrls));
+            event.setPosterUrls(String.join(LIST_SEP, posterUrls));
+            log.info("Step 2/3 complete: generated {} posters", posterUrls.size());
 
+            log.info("Step 3/3: calculating pricing recommendation");
             PricingRecommendation pricing = pricingService.recommend(
                     request.genre(), request.city(), request.date());
             applyPricing(event, pricing);
+            log.info("Step 3/3 complete: minPrice={}, maxPrice={}, recommendedDow={}",
+                    pricing.suggestedMinPrice(), pricing.suggestedMaxPrice(), pricing.recommendedDow());
 
-            event.setStatus("COMPLETE");
+            event.setStatus(GeneratedEventStatus.COMPLETE);
             repository.save(event);
+            long elapsedMs = System.currentTimeMillis() - startedAt;
+            log.info("AI event creation completed successfully in {} ms", elapsedMs);
 
             return toResponse(event, pricing);
 
         } catch (Exception e) {
-            event.setStatus("FAILED");
+            event.setStatus(GeneratedEventStatus.FAILED);
             try {
                 repository.save(event);
+                log.warn("AI event creation failed; failure status persisted");
             } catch (Exception ignored) {
-                // best-effort persist of failure state
+                log.warn("AI event creation failed; unable to persist failure status");
             }
+            long elapsedMs = System.currentTimeMillis() - startedAt;
+            log.error("AI event creation failed after {} ms: {}", elapsedMs, e.getMessage(), e);
             throw new EventCreationException("Event creation failed: " + e.getMessage(), e);
         }
     }
@@ -66,7 +90,7 @@ public class EventCreatorService {
         event.setCity(request.city());
         event.setEventDate(request.date());
         event.setPlatforms(String.join(",", request.platforms()));
-        event.setStatus("DRAFT");
+        event.setStatus(GeneratedEventStatus.DRAFT);
         return event;
     }
 
@@ -138,9 +162,9 @@ public class EventCreatorService {
     }
 
     private EventCreatorResponse toResponse(GeneratedEvent event, PricingRecommendation pricing) {
-        List<String> accentColors = List.of(event.getAccentColors().split(","));
+        List<String> accentColors = List.of(event.getAccentColors().split(LIST_SEP));
         List<String> posterUrls = event.getPosterUrls() != null
-                ? List.of(event.getPosterUrls().split(",")) : List.of();
+                ? List.of(event.getPosterUrls().split(LIST_SEP)) : List.of();
 
         List<EventCreatorResponse.ConceptDto> conceptDtos = event.getConcepts().stream()
                 .map(c -> new EventCreatorResponse.ConceptDto(
@@ -156,7 +180,7 @@ public class EventCreatorService {
                 pricing.recommendedDow(), pricing.pricingNotes());
 
         return new EventCreatorResponse(
-                event.getId(), event.getStatus(), accentColors, posterUrls,
+                event.getId(), event.getStatus().name(), accentColors, posterUrls,
                 conceptDtos, socialDtos, pricingDto, event.getCreatedAt());
     }
 }
