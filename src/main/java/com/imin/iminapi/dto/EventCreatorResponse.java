@@ -22,7 +22,6 @@ public record EventCreatorResponse(
     public record PricingDto(
             BigDecimal suggestedMinPrice,
             BigDecimal suggestedMaxPrice,
-            String recommendedDow,
             String pricingNotes
     ) {}
 }

@@ -40,8 +40,6 @@ public class GeneratedEvent {
     @Column(precision = 10, scale = 2)
     private BigDecimal suggestedMaxPrice;
 
-    private String recommendedDow;
-
     @Column(columnDefinition = "TEXT")
     private String pricingNotes;
 

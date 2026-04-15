@@ -148,9 +148,6 @@ databaseChangeLog:
                   name: suggested_max_price
                   type: NUMERIC(10,2)
               - column:
-                  name: recommended_dow
-                  type: VARCHAR(20)
-              - column:
                   name: pricing_notes
                   type: TEXT
               - column:
@@ -277,8 +274,6 @@ public class GeneratedEvent {
 
     @Column(precision = 10, scale = 2)
     private BigDecimal suggestedMaxPrice;
-
-    private String recommendedDow;
 
     @Column(columnDefinition = "TEXT")
     private String pricingNotes;
@@ -519,7 +514,6 @@ import java.math.BigDecimal;
 public record PricingRecommendation(
         BigDecimal suggestedMinPrice,
         BigDecimal suggestedMaxPrice,
-        String recommendedDow,
         String pricingNotes
 ) {}
 ```
@@ -553,7 +547,6 @@ public record EventCreatorResponse(
     public record PricingDto(
             BigDecimal suggestedMinPrice,
             BigDecimal suggestedMaxPrice,
-            String recommendedDow,
             String pricingNotes
     ) {}
 }
@@ -789,7 +782,6 @@ class PricingServiceTest {
 
         assertThat(result.suggestedMinPrice()).isEqualByComparingTo("15.00");
         assertThat(result.suggestedMaxPrice()).isEqualByComparingTo("30.00");
-        assertThat(result.recommendedDow()).isEqualTo("SATURDAY");
         assertThat(result.pricingNotes()).contains("2 comparable");
     }
 
@@ -802,7 +794,6 @@ class PricingServiceTest {
 
         assertThat(result.suggestedMinPrice()).isEqualByComparingTo("15.00");
         assertThat(result.suggestedMaxPrice()).isEqualByComparingTo("25.00");
-        assertThat(result.recommendedDow()).isEqualTo("SATURDAY");
         assertThat(result.pricingNotes()).contains("default");
     }
 
@@ -815,7 +806,6 @@ class PricingServiceTest {
 
         assertThat(result.suggestedMinPrice()).isEqualByComparingTo("15.00");
         assertThat(result.suggestedMaxPrice()).isEqualByComparingTo("30.00");
-        assertThat(result.recommendedDow()).isEqualTo("FRIDAY");
     }
 }
 ```
@@ -846,8 +836,7 @@ import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Function;
-import java.util.stream.Collectors;
+import java.util.Objects;
 
 @Service
 @RequiredArgsConstructor
@@ -864,9 +853,6 @@ public class PricingService {
     );
     private static final BigDecimal[] BASE_DEFAULT = {new BigDecimal("15"), new BigDecimal("30")};
 
-    private static final java.util.Set<String> NIGHTLIFE_GENRES =
-            java.util.Set.of("techno", "house", "electronic", "hip-hop", "drum-and-bass");
-
     private final GeneratedEventRepository repository;
 
     public PricingRecommendation recommend(String genre, String city, LocalDate date) {
@@ -880,37 +866,36 @@ public class PricingService {
     }
 
     private PricingRecommendation fromComparables(String genre, List<GeneratedEvent> comparables) {
-        BigDecimal avgMin = comparables.stream()
+        List<BigDecimal> minPrices = comparables.stream()
                 .map(GeneratedEvent::getSuggestedMinPrice)
-                .reduce(BigDecimal.ZERO, BigDecimal::add)
-                .divide(BigDecimal.valueOf(comparables.size()), 2, RoundingMode.HALF_UP);
-
-        BigDecimal avgMax = comparables.stream()
+                .filter(Objects::nonNull)
+                .toList();
+        List<BigDecimal> maxPrices = comparables.stream()
                 .map(GeneratedEvent::getSuggestedMaxPrice)
-                .reduce(BigDecimal.ZERO, BigDecimal::add)
-                .divide(BigDecimal.valueOf(comparables.size()), 2, RoundingMode.HALF_UP);
+                .filter(Objects::nonNull)
+                .toList();
 
-        String dow = mostCommonDow(comparables);
+        if (minPrices.isEmpty() || maxPrices.isEmpty()) {
+            return genreDefault(genre);
+        }
+
+        BigDecimal avgMin = minPrices.stream()
+                .reduce(BigDecimal.ZERO, BigDecimal::add)
+                .divide(BigDecimal.valueOf(minPrices.size()), 2, RoundingMode.HALF_UP);
+
+        BigDecimal avgMax = maxPrices.stream()
+                .reduce(BigDecimal.ZERO, BigDecimal::add)
+                .divide(BigDecimal.valueOf(maxPrices.size()), 2, RoundingMode.HALF_UP);
+
         String notes = "Based on %d comparable %s event(s).".formatted(comparables.size(), genre);
 
-        return new PricingRecommendation(avgMin, avgMax, dow, notes);
+        return new PricingRecommendation(avgMin, avgMax, notes);
     }
 
     private PricingRecommendation genreDefault(String genre) {
         BigDecimal[] range = GENRE_DEFAULTS.getOrDefault(genre.toLowerCase(), BASE_DEFAULT);
-        String dow = NIGHTLIFE_GENRES.contains(genre.toLowerCase()) ? "SATURDAY" : "FRIDAY";
         String notes = "Genre default pricing — no comparable events found.";
-        return new PricingRecommendation(range[0], range[1], dow, notes);
-    }
-
-    private String mostCommonDow(List<GeneratedEvent> events) {
-        return events.stream()
-                .map(e -> e.getEventDate().getDayOfWeek().name())
-                .collect(Collectors.groupingBy(Function.identity(), Collectors.counting()))
-                .entrySet().stream()
-                .max(Map.Entry.comparingByValue())
-                .map(Map.Entry::getKey)
-                .orElse("FRIDAY");
+        return new PricingRecommendation(range[0], range[1], notes);
     }
 }
 ```
@@ -923,7 +908,7 @@ public class PricingService {
 
 Expected output:
 ```
-Tests run: 3, Failures: 0, Errors: 0, Skipped: 0
+Tests run: 4, Failures: 0, Errors: 0, Skipped: 0
 ```
 
 - [ ] **Step 5: Commit**
@@ -1009,7 +994,7 @@ class EventCreatorServiceTest {
         );
 
         PricingRecommendation pricing = new PricingRecommendation(
-                new BigDecimal("15"), new BigDecimal("25"), "SATURDAY", "Genre default.");
+                new BigDecimal("15"), new BigDecimal("25"), "Genre default.");
 
         when(chatClient.prompt()).thenReturn(requestSpec);
         when(requestSpec.user(anyString())).thenReturn(requestSpec);
@@ -1215,7 +1200,6 @@ public class EventCreatorService {
     private void applyPricing(GeneratedEvent event, PricingRecommendation pricing) {
         event.setSuggestedMinPrice(pricing.suggestedMinPrice());
         event.setSuggestedMaxPrice(pricing.suggestedMaxPrice());
-        event.setRecommendedDow(pricing.recommendedDow());
         event.setPricingNotes(pricing.pricingNotes());
     }
 
@@ -1235,7 +1219,7 @@ public class EventCreatorService {
 
         EventCreatorResponse.PricingDto pricingDto = new EventCreatorResponse.PricingDto(
                 pricing.suggestedMinPrice(), pricing.suggestedMaxPrice(),
-                pricing.recommendedDow(), pricing.pricingNotes());
+                pricing.pricingNotes());
 
         return new EventCreatorResponse(
                 event.getId(), event.getStatus(), accentColors, posterUrls,
@@ -1328,7 +1312,7 @@ class EventCreatorControllerTest {
                 List.of(new EventCreatorResponse.ConceptDto("Void", "Dark vibes.", "Lose yourself.", 1)),
                 List.of(new EventCreatorResponse.SocialCopyDto("INSTAGRAM", "Join us #techno")),
                 new EventCreatorResponse.PricingDto(
-                        new BigDecimal("15"), new BigDecimal("25"), "SATURDAY", "Genre default."),
+                        new BigDecimal("15"), new BigDecimal("25"), "Genre default."),
                 LocalDateTime.now()
         );
 
@@ -1342,7 +1326,7 @@ class EventCreatorControllerTest {
                 .andExpect(jsonPath("$.concepts").isArray())
                 .andExpect(jsonPath("$.accentColors").isArray())
                 .andExpect(jsonPath("$.posterUrls").isArray())
-                .andExpect(jsonPath("$.pricing.recommendedDow").value("SATURDAY"));
+                .andExpect(jsonPath("$.pricing.suggestedMinPrice").value(15));
     }
 
     @Test

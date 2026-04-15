@@ -50,7 +50,6 @@ class PricingServiceTest {
 
         assertThat(result.suggestedMinPrice()).isEqualByComparingTo("15.00");
         assertThat(result.suggestedMaxPrice()).isEqualByComparingTo("30.00");
-        assertThat(result.recommendedDow()).isEqualTo("SATURDAY");
         assertThat(result.pricingNotes()).contains("2 comparable");
     }
 
@@ -79,7 +78,6 @@ class PricingServiceTest {
 
         assertThat(result.suggestedMinPrice()).isEqualByComparingTo("15.00");
         assertThat(result.suggestedMaxPrice()).isEqualByComparingTo("25.00");
-        assertThat(result.recommendedDow()).isEqualTo("SATURDAY");
         assertThat(result.pricingNotes()).contains("default");
     }
 
@@ -94,6 +92,5 @@ class PricingServiceTest {
 
         assertThat(result.suggestedMinPrice()).isEqualByComparingTo("15.00");
         assertThat(result.suggestedMaxPrice()).isEqualByComparingTo("30.00");
-        assertThat(result.recommendedDow()).isEqualTo("FRIDAY");
     }
 }

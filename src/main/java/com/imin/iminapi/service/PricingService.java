@@ -12,8 +12,6 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.function.Function;
-import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -29,9 +27,6 @@ public class PricingService {
             "pop",          new BigDecimal[]{new BigDecimal("25"), new BigDecimal("50")}
     );
     private static final BigDecimal[] BASE_DEFAULT = {new BigDecimal("15"), new BigDecimal("30")};
-
-    private static final java.util.Set<String> NIGHTLIFE_GENRES =
-            java.util.Set.of("techno", "house", "electronic", "hip-hop", "drum-and-bass");
 
     private final GeneratedEventRepository repository;
 
@@ -67,26 +62,14 @@ public class PricingService {
                 .reduce(BigDecimal.ZERO, BigDecimal::add)
                 .divide(BigDecimal.valueOf(maxPrices.size()), 2, RoundingMode.HALF_UP);
 
-        String dow = mostCommonDow(comparables);
         String notes = "Based on %d comparable %s event(s).".formatted(comparables.size(), genre);
 
-        return new PricingRecommendation(avgMin, avgMax, dow, notes);
+        return new PricingRecommendation(avgMin, avgMax, notes);
     }
 
     private PricingRecommendation genreDefault(String genre) {
         BigDecimal[] range = GENRE_DEFAULTS.getOrDefault(genre.toLowerCase(), BASE_DEFAULT);
-        String dow = NIGHTLIFE_GENRES.contains(genre.toLowerCase()) ? "SATURDAY" : "FRIDAY";
         String notes = "Genre default pricing — no comparable events found.";
-        return new PricingRecommendation(range[0], range[1], dow, notes);
-    }
-
-    private String mostCommonDow(List<GeneratedEvent> events) {
-        return events.stream()
-                .map(e -> e.getEventDate().getDayOfWeek().name())
-                .collect(Collectors.groupingBy(Function.identity(), Collectors.counting()))
-                .entrySet().stream()
-                .max(Map.Entry.comparingByValue())
-                .map(Map.Entry::getKey)
-                .orElse("FRIDAY");
+        return new PricingRecommendation(range[0], range[1], notes);
     }
 }

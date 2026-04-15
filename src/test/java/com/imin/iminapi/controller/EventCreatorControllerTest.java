@@ -53,7 +53,7 @@ class EventCreatorControllerTest {
                 List.of(new EventCreatorResponse.ConceptDto("Void", "Dark vibes.", "Lose yourself.", 1)),
                 List.of(new EventCreatorResponse.SocialCopyDto("INSTAGRAM", "Join us #techno")),
                 new EventCreatorResponse.PricingDto(
-                        new BigDecimal("15"), new BigDecimal("25"), "SATURDAY", "Genre default."),
+                        new BigDecimal("15"), new BigDecimal("25"), "Genre default."),
                 LocalDateTime.now()
         );
 
@@ -67,7 +67,7 @@ class EventCreatorControllerTest {
                 .andExpect(jsonPath("$.concepts").isArray())
                 .andExpect(jsonPath("$.accentColors").isArray())
                 .andExpect(jsonPath("$.posterUrls").isArray())
-                .andExpect(jsonPath("$.pricing.recommendedDow").value("SATURDAY"));
+                .andExpect(jsonPath("$.pricing.suggestedMinPrice").value(15));
     }
 
     @Test

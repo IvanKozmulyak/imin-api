@@ -26,7 +26,7 @@ com.imin.iminapi/
     EventCreatorResponse.java       # returned to client
     LlmGenerationResult.java        # 3 concepts + social copy + 5 hex colors
     LlmEventConcept.java            # single concept (title, description, tagline)
-    PricingRecommendation.java      # suggested price tiers + scheduling window
+    PricingRecommendation.java      # suggested price tiers + notes
   model/
     GeneratedEvent.java             # @Entity — persisted draft
     Concept.java                    # @Entity — one of 3 event concepts
@@ -55,7 +55,6 @@ com.imin.iminapi/
 | poster_urls | TEXT | comma-separated DALL-E URLs |
 | suggested_min_price | NUMERIC | |
 | suggested_max_price | NUMERIC | |
-| recommended_dow | VARCHAR | e.g. FRIDAY |
 | pricing_notes | TEXT | |
 | status | VARCHAR | DRAFT, COMPLETE, FAILED |
 | created_at | TIMESTAMP | |
@@ -150,7 +149,6 @@ com.imin.iminapi/
   "pricing": {
     "suggestedMinPrice": 15.00,
     "suggestedMaxPrice": 25.00,
-    "recommendedDow": "FRIDAY",
     "pricingNotes": "Based on 3 comparable techno events in Berlin"
   },
   "createdAt": "2026-04-15T10:00:00Z"

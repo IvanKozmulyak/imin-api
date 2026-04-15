@@ -5,6 +5,5 @@ import java.math.BigDecimal;
 public record PricingRecommendation(
         BigDecimal suggestedMinPrice,
         BigDecimal suggestedMaxPrice,
-        String recommendedDow,
         String pricingNotes
 ) {}

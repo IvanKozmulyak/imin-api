@@ -76,7 +76,7 @@ class EventCreatorServiceTest {
                 .thenReturn("https://dalle.example.com/img3.png");
 
         PricingRecommendation pricing = new PricingRecommendation(
-                new BigDecimal("15"), new BigDecimal("25"), "SATURDAY", "Genre default.");
+                new BigDecimal("15"), new BigDecimal("25"), "Genre default.");
         when(pricingService.recommend(eq("techno"), eq("Berlin"), any())).thenReturn(pricing);
 
         List<GeneratedEventStatus> statusesAtSave = new ArrayList<>();

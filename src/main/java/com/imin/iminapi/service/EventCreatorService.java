@@ -58,8 +58,8 @@ public class EventCreatorService {
             PricingRecommendation pricing = pricingService.recommend(
                     request.genre(), request.city(), request.date());
             applyPricing(event, pricing);
-            log.info("Step 3/3 complete: minPrice={}, maxPrice={}, recommendedDow={}",
-                    pricing.suggestedMinPrice(), pricing.suggestedMaxPrice(), pricing.recommendedDow());
+            log.info("Step 3/3 complete: minPrice={}, maxPrice={}",
+                    pricing.suggestedMinPrice(), pricing.suggestedMaxPrice());
 
             event.setStatus(GeneratedEventStatus.COMPLETE);
             repository.save(event);
@@ -157,7 +157,6 @@ public class EventCreatorService {
     private void applyPricing(GeneratedEvent event, PricingRecommendation pricing) {
         event.setSuggestedMinPrice(pricing.suggestedMinPrice());
         event.setSuggestedMaxPrice(pricing.suggestedMaxPrice());
-        event.setRecommendedDow(pricing.recommendedDow());
         event.setPricingNotes(pricing.pricingNotes());
     }
 
@@ -177,7 +176,7 @@ public class EventCreatorService {
 
         EventCreatorResponse.PricingDto pricingDto = new EventCreatorResponse.PricingDto(
                 pricing.suggestedMinPrice(), pricing.suggestedMaxPrice(),
-                pricing.recommendedDow(), pricing.pricingNotes());
+                pricing.pricingNotes());
 
         return new EventCreatorResponse(
                 event.getId(), event.getStatus().name(), accentColors, posterUrls,

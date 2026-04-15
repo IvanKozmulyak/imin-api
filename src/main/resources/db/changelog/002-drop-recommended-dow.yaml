@@ -1,0 +1,8 @@
+databaseChangeLog:
+  - changeSet:
+      id: 002-drop-recommended-dow
+      author: imin
+      changes:
+        - dropColumn:
+            tableName: generated_event
+            columnName: recommended_dow
