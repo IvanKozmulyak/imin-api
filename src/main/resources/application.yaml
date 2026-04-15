@@ -1,3 +1,18 @@
 spring:
   application:
     name: imin-api
+  liquibase:
+    change-log: classpath:db/changelog/db.changelog-master.yaml
+
+  ai:
+    openai:
+      api-key: ${OPENAI_API_KEY}
+      image:
+        options:
+          model: dall-e-3
+          size: 1024x1024
+
+openrouter:
+  api-key: ${OPENROUTER_API_KEY}
+  base-url: https://openrouter.ai/api/v1
+  model: openai/gpt-4o
