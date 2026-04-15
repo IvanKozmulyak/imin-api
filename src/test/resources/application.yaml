@@ -1,4 +1,6 @@
 spring:
+  profiles:
+    active: test
   docker:
     compose:
       enabled: false
@@ -8,6 +10,7 @@ spring:
     password: ""
     driver-class-name: org.h2.Driver
   jpa:
+    open-in-view: false
     hibernate:
       ddl-auto: none
     properties:

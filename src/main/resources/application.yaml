@@ -1,8 +1,16 @@
 spring:
   application:
     name: imin-api
+  profiles:
+    default: dev
   liquibase:
     change-log: classpath:db/changelog/db.changelog-master.yaml
+  jpa:
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
 
   ai:
     openai:
@@ -14,5 +22,5 @@ spring:
 
 openrouter:
   api-key: ${OPENROUTER_API_KEY}
-  base-url: https://openrouter.ai/api/v1
-  model: openai/gpt-4o
+  base-url: ${OPENROUTER_BASE_URL:https://openrouter.ai/api}
+  model: ${OPENROUTER_MODEL:openai/gpt-4o-mini}
