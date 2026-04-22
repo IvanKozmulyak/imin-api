@@ -21,11 +21,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadLocalRandom;
 
@@ -72,29 +67,13 @@ public class PosterOrchestrator {
         }
 
         List<PosterVariant> variants = concept.variants();
-        List<Future<GeneratedPoster>> futures = new ArrayList<>(variants.size());
-
-        ExecutorService executor = Executors.newFixedThreadPool(Math.max(1, variants.size()));
-        try {
-            final PosterGeneration gen = generation;
-            for (PosterVariant v : variants) {
-                Callable<GeneratedPoster> task = () -> generateOne(gen, v, refs, request);
-                futures.add(executor.submit(task));
-            }
-        } finally {
-            executor.shutdown();
-        }
-
-        List<GeneratedPoster> results = new ArrayList<>(futures.size());
-        for (Future<GeneratedPoster> f : futures) {
+        List<GeneratedPoster> results = new ArrayList<>(variants.size());
+        for (PosterVariant v : variants) {
             try {
-                results.add(f.get());
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new IllegalStateException("Interrupted while collecting variant results", e);
-            } catch (ExecutionException e) {
-                log.error("Variant task threw unexpectedly", e.getCause());
-                results.add(failedPoster(null, "unknown", e.getCause() != null ? e.getCause().getMessage() : "unknown error"));
+                results.add(generateOne(generation, v, refs, request));
+            } catch (RuntimeException e) {
+                log.error("Variant task threw unexpectedly", e);
+                results.add(failedPoster(null, v.variantStyle(), e.getMessage()));
             }
         }
 
