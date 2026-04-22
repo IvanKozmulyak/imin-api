@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Framework**: Spring Boot 4.0.5
 - **Build Tool**: Maven (via `./mvnw` wrapper)
 - **Database**: PostgreSQL (managed via Docker Compose)
-- **ORM**: Spring Data JPA with Liquibase migrations
+- **ORM**: Spring Data JPA with Flyway migrations
 - **REST**: Spring Data REST (auto-generated endpoints) + SpringDoc OpenAPI
 - **Security**: Spring Security with SAML2
 - **AI**: Spring AI with OpenAI integration
@@ -42,7 +42,7 @@ This is a green-field Spring Boot REST API. The entry point is `IminApiApplicati
 
 **Key conventions to follow as the codebase grows:**
 
-- **Database schema**: Managed exclusively via Liquibase changesets in `src/main/resources/db/changelog/`. Never modify the schema directly; always add a new changeset.
+- **Database schema**: Managed exclusively via Flyway SQL migrations in `src/main/resources/db/migration/`. Never modify the schema directly; always add a new versioned migration (e.g., `V3__description.sql`).
 - **REST endpoints**: Prefer Spring Data REST repositories for standard CRUD. Use `@RestController` only when custom logic is needed.
 - **Configuration**: Use `src/main/resources/application.yaml`. Sensitive values (DB credentials, API keys) should come from environment variables, not be hardcoded.
 - **Local dev database**: `compose.yaml` runs PostgreSQL with DB `mydatabase`, user `myuser`, password `secret`.

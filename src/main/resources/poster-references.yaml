@@ -1,0 +1,30 @@
+# Reference images passed to Ideogram V3 as `style_reference_images` to anchor
+# the poster aesthetic per sub_style_tag.
+#
+# Entry formats (mix freely):
+#   - classpath:reference-images/foo.png   → loaded from classpath, sent as data URI
+#   - reference-images/foo.png             → same (classpath: prefix inferred)
+#   - https://cdn.example.com/foo.png      → passed through as-is
+#
+# Ideogram V3 uses at most ~3 references effectively; adding more rarely helps.
+# File naming convention: {sub_style_tag}_NN_{topic}.png
+# See ReferenceImageLibrary.java for the loader.
+
+references:
+  neon_underground:
+    - reference-images/neon_underground_01_friday_night.png
+    - reference-images/neon_underground_02_party_night_green.png
+    - reference-images/neon_underground_03_karaoke_night.png
+  chrome_tropical:
+    - reference-images/chrome_tropical_01_spring_break.png
+    - reference-images/chrome_tropical_02_summer_edition.png
+  sunset_silhouette:
+    - reference-images/sunset_silhouette_01_chillout.png
+  flat_graphic:
+    - reference-images/flat_graphic_01_epic_sunday.png
+  aquatic_distressed:
+    - reference-images/aquatic_distressed_01_pool_party.png
+  industrial_minimal:
+    - reference-images/industrial_minimal_01_dj_kelci.png
+  golden_editorial:
+    - reference-images/golden_editorial_01_good_vibes.png
