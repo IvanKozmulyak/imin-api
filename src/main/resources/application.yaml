@@ -1,10 +1,12 @@
+logging:
+  level:
+    com.imin.iminapi.service.poster: DEBUG
+
 spring:
   application:
     name: imin-api
   profiles:
     default: dev
-  liquibase:
-    change-log: classpath:db/changelog/db.changelog-master.yaml
   jpa:
     open-in-view: false
     properties:
@@ -15,12 +17,32 @@ spring:
   ai:
     openai:
       api-key: ${OPENAI_API_KEY}
-      image:
-        options:
-          model: dall-e-3
-          size: 1024x1024
+
+replicate:
+  api-token: ${REPLICATE_API_TOKEN:}
+  image:
+    storage-dir: ${REPLICATE_IMAGE_STORAGE_DIR:./generated-images}
+  models:
+    ideogram-turbo: ${IDEOGRAM_TURBO_MODEL:ideogram-ai/ideogram-v3-turbo}
+    ideogram-quality: ${IDEOGRAM_QUALITY_MODEL:ideogram-ai/ideogram-v3-quality}
+  timeout-seconds: 65
+  max-concurrent: 6
+
+poster:
+  references:
+    config-file: classpath:poster-references.yaml
+  overlay:
+    qr-size-px: 120
+    address-max-chars: 80
+  generation:
+    variant-count: 3
+    retry-on-validation-failure: 1
 
 openrouter:
   api-key: ${OPENROUTER_API_KEY}
   base-url: ${OPENROUTER_BASE_URL:https://openrouter.ai/api}
   model: ${OPENROUTER_MODEL:openai/gpt-4o-mini}
+
+imin:
+  reference-analyzer:
+    model-id: ${IMIN_REFERENCE_ANALYZER_MODEL:openai/gpt-4o-mini}

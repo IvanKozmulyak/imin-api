@@ -1,6 +1,8 @@
 package com.imin.iminapi.service.poster;
 
 import com.imin.iminapi.dto.ReferenceImageSet;
+import com.imin.iminapi.model.StyleReferenceAnalysis;
+import com.imin.iminapi.repository.StyleReferenceAnalysisRepository;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -14,13 +16,16 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.LocalDateTime;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 @Component
 public class ReferenceImageLibrary {
@@ -29,12 +34,19 @@ public class ReferenceImageLibrary {
 
     private final ResourceLoader resourceLoader;
     private final String configFile;
+    private final StyleReferenceAnalysisRepository analysisRepo;
+    private final ReferenceImageAnalyzer analyzer;
+    private final Map<String, String> descriptors = new HashMap<>();
     private Map<String, List<LoadedReference>> byTag = Collections.emptyMap();
 
     public ReferenceImageLibrary(
             ResourceLoader resourceLoader,
+            StyleReferenceAnalysisRepository analysisRepo,
+            ReferenceImageAnalyzer analyzer,
             @Value("${poster.references.config-file:classpath:poster-references.yaml}") String configFile) {
         this.resourceLoader = resourceLoader;
+        this.analysisRepo = analysisRepo;
+        this.analyzer = analyzer;
         this.configFile = configFile;
     }
 
@@ -59,6 +71,7 @@ public class ReferenceImageLibrary {
         } catch (IOException e) {
             log.error("Failed to load reference image config {}", configFile, e);
         }
+        loadDescriptors();
     }
 
     private Map<String, List<LoadedReference>> resolveAll(Map<?, ?> src) {
@@ -161,6 +174,92 @@ public class ReferenceImageLibrary {
             return in.readAllBytes();
         } catch (IOException e) {
             throw new IllegalStateException("Failed to read reference: " + locator, e);
+        }
+    }
+
+    public String descriptor(String subStyleTag) {
+        return descriptors.getOrDefault(subStyleTag, "");
+    }
+
+    /** Test hook — re-runs the cache check pass without reloading the YAML. */
+    public void reloadDescriptors() {
+        loadDescriptors();
+    }
+
+    /** Test hook — exposes the signature this library computes for a tag right now. */
+    public String computeCurrentSignatureFor(String subStyleTag) {
+        return imageSignature(toSignatureInputs(subStyleTag));
+    }
+
+    private void loadDescriptors() {
+        descriptors.clear();
+        String currentModel = analyzer.modelId();
+
+        for (String tag : byTag.keySet()) {
+            try {
+                String value = resolveDescriptor(tag, currentModel);
+                if (!value.isEmpty()) {
+                    descriptors.put(tag, value);
+                }
+            } catch (Exception e) {
+                log.warn("Descriptor task failed for tag '{}': {}", tag, e.getMessage());
+            }
+        }
+        log.info("Style descriptors loaded for {} of {} tags", descriptors.size(), byTag.size());
+    }
+
+    private String resolveDescriptor(String tag, String currentModel) {
+        try {
+            String signature = imageSignature(toSignatureInputs(tag));
+            Optional<StyleReferenceAnalysis> existing = analysisRepo.findById(tag);
+            if (existing.isPresent()
+                    && signature.equals(existing.get().getImageSignature())
+                    && currentModel.equals(existing.get().getModelId())) {
+                return existing.get().getDescriptor();
+            }
+
+            ReferenceImageSet refs = forTag(tag);
+            String descriptor = analyzer.analyze(tag, refs.referenceUrls());
+            if (descriptor == null || descriptor.isBlank()) {
+                log.warn("Empty descriptor for tag '{}' — not persisting", tag);
+                return "";
+            }
+
+            StyleReferenceAnalysis row = existing.orElseGet(StyleReferenceAnalysis::new);
+            row.setSubStyleTag(tag);
+            row.setDescriptor(descriptor);
+            row.setImageSignature(signature);
+            row.setModelId(currentModel);
+            row.setAnalyzedAt(LocalDateTime.now());
+            analysisRepo.save(row);
+            return descriptor;
+        } catch (RuntimeException e) {
+            log.warn("Failed to analyze references for tag '{}': {}", tag, e.getMessage());
+            return "";
+        }
+    }
+
+    private List<SignatureInput> toSignatureInputs(String tag) {
+        List<LoadedReference> refs = byTag.getOrDefault(tag, List.of());
+        List<SignatureInput> inputs = new java.util.ArrayList<>(refs.size());
+        for (int i = 0; i < refs.size(); i++) {
+            try {
+                inputs.add(new SignatureInput(refs.get(i).id(), bytesFor(refs.get(i))));
+            } catch (Exception e) {
+                log.warn("Could not read bytes for {}/{}: {}", tag, i, e.getMessage());
+            }
+        }
+        return inputs;
+    }
+
+    private byte[] bytesFor(LoadedReference ref) throws IOException {
+        String locator = ref.sourceLocator();
+        if (locator.startsWith("http://") || locator.startsWith("https://") || locator.startsWith("data:")) {
+            return locator.getBytes();
+        }
+        Resource r = resourceLoader.getResource(locator);
+        try (InputStream in = r.getInputStream()) {
+            return in.readAllBytes();
         }
     }
 

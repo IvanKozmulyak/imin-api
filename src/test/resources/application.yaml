@@ -16,7 +16,7 @@ spring:
     properties:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
-  liquibase:
+  flyway:
     enabled: true
   ai:
     openai:
@@ -26,3 +26,13 @@ openrouter:
   api-key: test
   base-url: https://openrouter.ai/api/v1
   model: openai/gpt-4o
+
+replicate:
+  api-token: test-token
+  model: ideogram-ai/ideogram-v3-turbo
+  image:
+    storage-dir: /tmp/imin-test-images
+
+imin:
+  reference-analyzer:
+    model-id: openai/gpt-4o-mini
