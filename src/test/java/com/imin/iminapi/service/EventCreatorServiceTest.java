@@ -1,151 +1,105 @@
 package com.imin.iminapi.service;
 
-import com.imin.iminapi.dto.*;
+import com.imin.iminapi.dto.EventCreatorRequest;
+import com.imin.iminapi.dto.EventCreatorResponse;
+import com.imin.iminapi.dto.GeneratedPoster;
+import com.imin.iminapi.dto.PosterConcept;
+import com.imin.iminapi.dto.PosterVariant;
 import com.imin.iminapi.exception.EventCreationException;
-import com.imin.iminapi.model.Concept;
 import com.imin.iminapi.model.GeneratedEvent;
 import com.imin.iminapi.model.GeneratedEventStatus;
 import com.imin.iminapi.repository.GeneratedEventRepository;
+import com.imin.iminapi.service.poster.PosterOrchestrator;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.ai.chat.client.ChatClient;
 
-import java.math.BigDecimal;
 import java.time.LocalDate;
-import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
 class EventCreatorServiceTest {
 
-    @Mock private ChatClient chatClient;
-    @Mock private ChatClient.ChatClientRequestSpec requestSpec;
-    @Mock private ChatClient.CallResponseSpec callResponseSpec;
-    @Mock private ImageGenerationService imageGenerationService;
-    @Mock private PricingService pricingService;
+    @Mock private AiEventDescriptionService aiEventDescriptionService;
+    @Mock private PosterOrchestrator posterOrchestrator;
     @Mock private GeneratedEventRepository repository;
 
     private EventCreatorService service;
 
     @BeforeEach
     void setUp() {
-        service = new EventCreatorService(chatClient, imageGenerationService, pricingService, repository);
+        service = new EventCreatorService(aiEventDescriptionService, posterOrchestrator, repository);
     }
 
-    private void stubChatClient(LlmGenerationResult result) {
-        when(chatClient.prompt()).thenReturn(requestSpec);
-        when(requestSpec.user(anyString())).thenReturn(requestSpec);
-        when(requestSpec.call()).thenReturn(callResponseSpec);
-        when(callResponseSpec.entity(LlmGenerationResult.class)).thenReturn(result);
+    private EventCreatorRequest request() {
+        return new EventCreatorRequest(
+                "underground techno night", "edgy", "techno", "Berlin",
+                LocalDate.of(2026, 6, 14), List.of("INSTAGRAM"),
+                null, null, "Void Sessions IV", null,
+                "Kreuzberg 12, Berlin", "https://imin.wtf/e/abc", null);
     }
 
-    private LlmGenerationResult threeConceptResult() {
-        return new LlmGenerationResult(
-                List.of(
-                        new LlmEventConcept("Void", "Dark and deep.", "Lose yourself."),
-                        new LlmEventConcept("Pulse", "Raw energy.", "Feel the beat."),
-                        new LlmEventConcept("Flux", "Industrial vibes.", "Pure noise.")
-                ),
-                List.of(
-                        new LlmSocialCopy("INSTAGRAM", "Join us for Void #techno"),
-                        new LlmSocialCopy("TWITTER", "Void is happening. #rave")
-                ),
-                List.of("#1A1A2E", "#E94560", "#0F3460", "#533483", "#2B2D42")
-        );
+    private PosterConcept concept() {
+        PosterVariant v = new PosterVariant("atmospheric", "p".repeat(200), "3:4", "Design");
+        return new PosterConcept("neon_underground", "magenta + cyan", List.of(v, v, v));
+    }
+
+    private PosterOrchestrator.OrchestrationResult orchestrationResult() {
+        GeneratedPoster poster = new GeneratedPoster(
+                UUID.randomUUID(), "atmospheric",
+                "/images/raw.png", "/images/final.png",
+                42L, "prompt", List.of("ref1"), Map.of("qr_code", true), "COMPLETE", null);
+        return new PosterOrchestrator.OrchestrationResult(UUID.randomUUID(), "neon_underground", List.of(poster));
     }
 
     @Test
     void create_successfulRun_persistsDraftThenComplete() {
-        EventCreatorRequest request = new EventCreatorRequest(
-                "underground techno night", "edgy", "techno", "Berlin",
-                LocalDate.of(2026, 6, 14), List.of("INSTAGRAM", "TWITTER"));
+        when(aiEventDescriptionService.generateConcept(any())).thenReturn(concept());
+        when(posterOrchestrator.run(any(), any(), any())).thenReturn(orchestrationResult());
+        when(repository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
-        stubChatClient(threeConceptResult());
-
-        when(imageGenerationService.generatePoster(any(Concept.class), anyString()))
-                .thenReturn("https://dalle.example.com/img1.png")
-                .thenReturn("https://dalle.example.com/img2.png")
-                .thenReturn("https://dalle.example.com/img3.png");
-
-        PricingRecommendation pricing = new PricingRecommendation(
-                new BigDecimal("15"), new BigDecimal("25"), "Genre default.");
-        when(pricingService.recommend(eq("techno"), eq("Berlin"), any())).thenReturn(pricing);
-
-        List<GeneratedEventStatus> statusesAtSave = new ArrayList<>();
-        when(repository.save(any())).thenAnswer(inv -> {
-            statusesAtSave.add(((GeneratedEvent) inv.getArgument(0)).getStatus());
-            return inv.getArgument(0);
-        });
-
-        EventCreatorResponse response = service.create(request);
+        EventCreatorResponse response = service.create(request());
 
         assertThat(response.status()).isEqualTo("COMPLETE");
-        assertThat(response.concepts()).hasSize(3);
-        assertThat(response.accentColors()).hasSize(5);
-        assertThat(response.posterUrls()).hasSize(3);
-        assertThat(response.socialCopy()).hasSize(2);
-        assertThat(response.pricing().suggestedMinPrice()).isEqualByComparingTo("15");
-
-        // DRAFT saved immediately, DRAFT again after LLM, COMPLETE at the end
-        assertThat(statusesAtSave).containsExactly(
-                GeneratedEventStatus.DRAFT, GeneratedEventStatus.DRAFT, GeneratedEventStatus.COMPLETE);
+        assertThat(response.subStyleTag()).isEqualTo("neon_underground");
+        assertThat(response.posters()).hasSize(1);
+        assertThat(response.posters().get(0).finalUrl()).isEqualTo("/images/final.png");
     }
 
     @Test
-    void create_llmFailure_setsStatusFailedAndThrows() {
-        EventCreatorRequest request = new EventCreatorRequest(
-                "summer pop concert", "bright", "pop", "London",
-                LocalDate.of(2026, 7, 4), List.of("INSTAGRAM"));
+    void create_orchestratorFailure_setsStatusFailedAndThrows() {
+        when(aiEventDescriptionService.generateConcept(any())).thenReturn(concept());
+        when(posterOrchestrator.run(any(), any(), any()))
+                .thenThrow(new RuntimeException("Replicate error"));
+        when(repository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
-        when(chatClient.prompt()).thenReturn(requestSpec);
-        when(requestSpec.user(anyString())).thenReturn(requestSpec);
-        when(requestSpec.call()).thenReturn(callResponseSpec);
-        when(callResponseSpec.entity(LlmGenerationResult.class))
-                .thenThrow(new RuntimeException("OpenRouter timeout"));
-
-        List<GeneratedEventStatus> statusesAtSave = new ArrayList<>();
-        when(repository.save(any())).thenAnswer(inv -> {
-            statusesAtSave.add(((GeneratedEvent) inv.getArgument(0)).getStatus());
-            return inv.getArgument(0);
-        });
-
-        assertThatThrownBy(() -> service.create(request))
+        assertThatThrownBy(() -> service.create(request()))
                 .isInstanceOf(EventCreationException.class)
-                .hasMessageContaining("OpenRouter timeout");
-
-        // DRAFT saved first, then FAILED on error
-        assertThat(statusesAtSave).containsExactly(GeneratedEventStatus.DRAFT, GeneratedEventStatus.FAILED);
+                .hasMessageContaining("Replicate error");
     }
 
     @Test
-    void create_imageGenerationFailure_setsStatusFailedAndThrows() {
-        EventCreatorRequest request = new EventCreatorRequest(
-                "underground techno night", "edgy", "techno", "Berlin",
-                LocalDate.of(2026, 6, 14), List.of("INSTAGRAM"));
+    void create_persistsDraftImmediately() {
+        when(aiEventDescriptionService.generateConcept(any())).thenReturn(concept());
+        when(posterOrchestrator.run(any(), any(), any())).thenReturn(orchestrationResult());
 
-        stubChatClient(threeConceptResult());
-
-        when(imageGenerationService.generatePoster(any(Concept.class), anyString()))
-                .thenThrow(new RuntimeException("DALL-E rate limited"));
-
-        List<GeneratedEventStatus> statusesAtSave = new ArrayList<>();
+        List<GeneratedEventStatus> statuses = new java.util.ArrayList<>();
         when(repository.save(any())).thenAnswer(inv -> {
-            statusesAtSave.add(((GeneratedEvent) inv.getArgument(0)).getStatus());
+            statuses.add(((GeneratedEvent) inv.getArgument(0)).getStatus());
             return inv.getArgument(0);
         });
 
-        assertThatThrownBy(() -> service.create(request))
-                .isInstanceOf(EventCreationException.class)
-                .hasMessageContaining("DALL-E rate limited");
+        service.create(request());
 
-        assertThat(statusesAtSave).contains(GeneratedEventStatus.FAILED);
+        assertThat(statuses).containsExactly(GeneratedEventStatus.DRAFT, GeneratedEventStatus.COMPLETE);
     }
 }
