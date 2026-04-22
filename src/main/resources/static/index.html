@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>imin · Event Creator</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0d0d0d;
+      color: #e0e0e0;
+      min-height: 100vh;
+      padding: 32px 24px;
+    }
+
+    h1 { font-size: 1.4rem; font-weight: 700; letter-spacing: .05em; color: #fff; }
+    h2 { font-size: 1rem; font-weight: 600; color: #ccc; margin-bottom: 16px; }
+    p.sub { font-size: .8rem; color: #666; margin-top: 4px; }
+
+    header {
+      display: flex; align-items: center; gap: 12px;
+      border-bottom: 1px solid #222; padding-bottom: 20px; margin-bottom: 32px;
+    }
+    header span { font-size: .75rem; color: #555; }
+
+    .layout { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; max-width: 1100px; }
+    @media (max-width: 780px) { .layout { grid-template-columns: 1fr; } }
+
+    .panel { background: #141414; border: 1px solid #222; border-radius: 10px; padding: 24px; }
+
+    label { display: block; font-size: .75rem; color: #888; margin-bottom: 6px; text-transform: uppercase; letter-spacing: .05em; }
+
+    input[type="text"], input[type="date"], textarea {
+      width: 100%; background: #0d0d0d; border: 1px solid #2a2a2a; border-radius: 6px;
+      color: #e0e0e0; font-size: .875rem; padding: 9px 12px; outline: none; transition: border-color .15s;
+    }
+    input:focus, textarea:focus { border-color: #7c3aed; }
+    textarea { resize: vertical; min-height: 90px; font-family: inherit; }
+
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .field { margin-bottom: 14px; }
+
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    .chip {
+      padding: 5px 12px; border-radius: 20px; font-size: .75rem; cursor: pointer;
+      border: 1px solid #333; background: #1a1a1a; color: #ccc; transition: all .15s;
+    }
+    .chip:hover { border-color: #7c3aed; color: #fff; }
+    .chip.selected { background: #7c3aed; border-color: #7c3aed; color: #fff; }
+
+    .platforms { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+    .platform-btn {
+      padding: 5px 12px; border-radius: 6px; font-size: .75rem; cursor: pointer;
+      border: 1px solid #333; background: #1a1a1a; color: #888; transition: all .15s; user-select: none;
+    }
+    .platform-btn.on { background: #1e1040; border-color: #7c3aed; color: #a78bfa; }
+
+    button.primary {
+      width: 100%; padding: 11px; margin-top: 6px;
+      background: #7c3aed; color: #fff; border: none; border-radius: 8px;
+      font-size: .875rem; font-weight: 600; cursor: pointer; transition: background .15s;
+    }
+    button.primary:hover { background: #6d28d9; }
+    button.primary:disabled { background: #333; color: #666; cursor: not-allowed; }
+
+    .result-block { margin-top: 20px; border-top: 1px solid #1e1e1e; padding-top: 20px; display: none; }
+    .result-block.visible { display: block; }
+
+    .name-list, .tag-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+    .selectable {
+      padding: 8px 12px; border-radius: 6px; border: 1px solid #2a2a2a;
+      background: #0d0d0d; cursor: pointer; font-size: .875rem;
+      transition: all .15s; display: flex; justify-content: space-between; align-items: center;
+    }
+    .selectable:hover { border-color: #7c3aed; }
+    .selectable.picked { border-color: #7c3aed; background: #1e1040; color: #a78bfa; }
+    .selectable .use-btn { font-size: .7rem; color: #7c3aed; opacity: 0; transition: opacity .15s; white-space: nowrap; }
+    .selectable:hover .use-btn { opacity: 1; }
+
+    .copy-field { position: relative; margin-bottom: 10px; }
+    .copy-field textarea { min-height: 60px; font-size: .8rem; color: #bbb; padding-right: 60px; }
+    .copy-field .copy-btn {
+      position: absolute; top: 8px; right: 8px; font-size: .65rem;
+      background: #222; border: 1px solid #333; color: #888; padding: 3px 8px;
+      border-radius: 4px; cursor: pointer;
+    }
+    .copy-field .copy-btn:hover { color: #fff; border-color: #555; }
+
+    .kv { display: flex; gap: 10px; margin-bottom: 10px; font-size: .875rem; }
+    .kv span:first-child { color: #666; min-width: 120px; font-size: .75rem; }
+    .kv span:last-child { color: #e0e0e0; }
+
+    /* Palette — Step 1 display */
+    .palette { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+    .swatch-wrap { text-align: center; }
+    .swatch {
+      width: 36px; height: 36px; border-radius: 6px; cursor: pointer;
+      border: 2px solid transparent; transition: border-color .15s;
+    }
+    .swatch:hover { border-color: #fff; }
+    .swatch-label { font-size: .6rem; color: #888; margin-top: 2px; }
+
+    /* Palette — Step 2 selector */
+    .palette-selector { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+    .accent-swatch {
+      width: 40px; height: 40px; border-radius: 8px; cursor: pointer;
+      border: 3px solid transparent; transition: all .15s; position: relative;
+    }
+    .accent-swatch:hover { transform: scale(1.08); }
+    .accent-swatch.selected { border-color: #fff; }
+    .accent-swatch.selected::after {
+      content: '✓'; position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: .75rem; color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,.8);
+    }
+    .accent-empty { font-size: .75rem; color: #444; padding: 10px 0; }
+
+    /* Auto-filled badge */
+    .auto-badge {
+      display: inline-block; font-size: .6rem; background: #1e1040;
+      color: #a78bfa; border: 1px solid #7c3aed; border-radius: 4px;
+      padding: 1px 6px; margin-left: 6px; vertical-align: middle;
+    }
+
+    .poster-wrap { margin-top: 20px; display: none; }
+    .poster-wrap.visible { display: block; }
+    .poster-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px;
+    }
+    .poster-card {
+      border: 1px solid #222; border-radius: 8px; padding: 8px; background: #0a0a0a;
+    }
+    .poster-card img { width: 100%; border-radius: 6px; display: block; }
+    .poster-card .meta {
+      display: flex; justify-content: space-between; font-size: .65rem;
+      color: #888; padding: 6px 2px 2px; text-transform: uppercase; letter-spacing: .05em;
+    }
+    .poster-card.failed { border-color: #5a1a1a; background: #1a0a0a; }
+    .poster-card.failed .fail-body {
+      padding: 24px 8px; text-align: center; color: #f87171; font-size: .75rem;
+    }
+    .sub-style-tag {
+      display: inline-block; font-size: .65rem; color: #a78bfa;
+      background: #1e1040; border: 1px solid #7c3aed; border-radius: 4px;
+      padding: 2px 8px; margin-bottom: 10px; letter-spacing: .05em;
+    }
+
+    select {
+      width: 100%; background: #0d0d0d; border: 1px solid #2a2a2a; border-radius: 6px;
+      color: #e0e0e0; font-size: .875rem; padding: 9px 12px; outline: none;
+    }
+    select:focus { border-color: #7c3aed; }
+
+    .debug-panel { margin-top: 16px; border: 1px solid #222; border-radius: 8px; background: #0a0a0a; }
+    .debug-panel summary {
+      cursor: pointer; padding: 10px 14px; font-size: .75rem;
+      color: #888; text-transform: uppercase; letter-spacing: .05em; user-select: none;
+    }
+    .debug-panel summary:hover { color: #a78bfa; }
+    .debug-panel pre {
+      margin: 0; padding: 12px 14px; border-top: 1px solid #1e1e1e;
+      font-family: ui-monospace, Menlo, monospace; font-size: .72rem;
+      color: #9aa0a6; white-space: pre-wrap; word-break: break-word; max-height: 400px; overflow: auto;
+    }
+    .debug-section-label {
+      font-size: .6rem; text-transform: uppercase; letter-spacing: .08em;
+      color: #555; padding: 10px 14px 4px;
+    }
+
+    .spinner { display: none; text-align: center; padding: 20px; font-size: .8rem; color: #666; }
+    .spinner.visible { display: block; }
+
+    .error-msg { color: #f87171; font-size: .8rem; margin-top: 10px; display: none; }
+    .error-msg.visible { display: block; }
+
+    .section-label { font-size: .65rem; text-transform: uppercase; letter-spacing: .1em; color: #555; margin-bottom: 8px; }
+    hr.dim { border: none; border-top: 1px solid #1e1e1e; margin: 14px 0; }
+
+    .presets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+    .preset-chip {
+      padding: 5px 10px; border-radius: 16px; font-size: .7rem; cursor: pointer;
+      border: 1px solid #2a2a2a; background: #141414; color: #999;
+      transition: all .15s; user-select: none;
+    }
+    .preset-chip:hover { border-color: #7c3aed; color: #fff; background: #1e1040; }
+
+    /* Style picker */
+    .style-grid {
+      display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px;
+    }
+    .style-card {
+      width: 140px; padding: 8px; border-radius: 8px;
+      border: 2px solid #2a2a2a; background: #0d0d0d; cursor: pointer;
+      transition: all .15s; user-select: none; display: flex; flex-direction: column; gap: 6px;
+    }
+    .style-card:hover { border-color: #7c3aed; }
+    .style-card.selected { border-color: #7c3aed; background: #1e1040; }
+    .style-card .thumbs {
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    .style-card .thumbs img {
+      width: 100%; aspect-ratio: 1 / 1; object-fit: cover; border-radius: 4px; display: block;
+    }
+    .style-card.ai-card .thumbs {
+      align-items: center; justify-content: center;
+      min-height: 80px; color: #7c3aed; font-size: 1.4rem;
+    }
+    .style-card .label {
+      font-size: .7rem; color: #ccc; text-align: center; letter-spacing: .03em;
+    }
+    .style-card.selected .label { color: #a78bfa; font-weight: 600; }
+    .style-error { font-size: .75rem; color: #f87171; margin-top: 6px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>imin</h1>
+  <span>Event Creator · Dev UI</span>
+</header>
+
+<div class="layout">
+
+  <!-- ── PANEL 1: Content Generation ── -->
+  <div class="panel">
+    <h2>Step 1 · Generate Content</h2>
+    <p class="sub" style="margin-bottom:18px">Describe your event in plain text. The AI will generate names, copy, pricing, colors — and infer genre, tone, and vibe.</p>
+
+    <div class="field">
+      <label>Event Description</label>
+      <div class="presets" id="presets"></div>
+      <textarea id="prompt" placeholder="e.g. Techno night in Berlin, dark and hypnotic vibe, DJ Charlotte de Witte at Tresor, August 15 2026"></textarea>
+    </div>
+
+    <button class="primary" id="generateBtn" onclick="generateContent()">Generate Content</button>
+
+    <div class="spinner" id="spinner1">Generating…</div>
+    <div class="error-msg" id="error1"></div>
+
+    <div class="result-block" id="contentResult">
+
+      <div class="section-label">Names — click to use as title in Step 2</div>
+      <div class="name-list" id="nameList"></div>
+
+      <div class="section-label">Taglines</div>
+      <div class="tag-list" id="tagList"></div>
+
+      <hr class="dim">
+
+      <div class="kv"><span>Genre</span><span id="r-genre"></span></div>
+      <div class="kv"><span>Tone</span><span id="r-tone"></span></div>
+      <div class="kv"><span>Vibe</span><span id="r-vibe"></span></div>
+
+      <hr class="dim">
+
+      <div class="section-label">Color Palette — click to copy hex</div>
+      <div class="palette" id="palette"></div>
+
+      <div class="kv"><span>Optimal Timing</span><span id="timing"></span></div>
+      <div class="kv"><span>Pricing</span><span id="pricing"></span></div>
+
+      <hr class="dim">
+
+      <div class="section-label">Descriptions</div>
+      <div class="copy-field">
+        <label>Long</label>
+        <textarea id="descLong" readonly></textarea>
+        <button class="copy-btn" onclick="copy('descLong')">copy</button>
+      </div>
+      <div class="copy-field">
+        <label>Short</label>
+        <textarea id="descShort" readonly></textarea>
+        <button class="copy-btn" onclick="copy('descShort')">copy</button>
+      </div>
+
+      <hr class="dim">
+
+      <div class="section-label">Social Copy</div>
+      <div class="copy-field">
+        <label>Instagram Caption</label>
+        <textarea id="igCaption" readonly></textarea>
+        <button class="copy-btn" onclick="copy('igCaption')">copy</button>
+      </div>
+      <div class="copy-field">
+        <label>Story Text</label>
+        <textarea id="storyText" readonly></textarea>
+        <button class="copy-btn" onclick="copy('storyText')">copy</button>
+      </div>
+      <div class="copy-field">
+        <label>Facebook</label>
+        <textarea id="fbPost" readonly></textarea>
+        <button class="copy-btn" onclick="copy('fbPost')">copy</button>
+      </div>
+      <div class="copy-field">
+        <label>X / Twitter</label>
+        <textarea id="xPost" readonly></textarea>
+        <button class="copy-btn" onclick="copy('xPost')">copy</button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ── PANEL 2: Poster Generation ── -->
+  <div class="panel">
+    <h2>Step 2 · Generate Poster</h2>
+    <p class="sub" style="margin-bottom:18px">Genre, tone, vibe, and colors are pre-filled from Step 1. Pick a title and tweak anything.</p>
+
+    <div class="row">
+      <div class="field">
+        <label>Genre <span id="badge-genre" class="auto-badge" style="display:none">auto</span></label>
+        <input type="text" id="genre" placeholder="techno" />
+      </div>
+      <div class="field">
+        <label>Tone <span id="badge-tone" class="auto-badge" style="display:none">auto</span></label>
+        <input type="text" id="tone" placeholder="dark and hypnotic" />
+      </div>
+    </div>
+    <div class="field">
+      <label>Vibe <span id="badge-vibe" class="auto-badge" style="display:none">auto</span></label>
+      <input type="text" id="vibe" placeholder="underground warehouse rave" />
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>City</label>
+        <input type="text" id="city" placeholder="Berlin" />
+      </div>
+      <div class="field">
+        <label>Date</label>
+        <input type="date" id="date" />
+      </div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>DJ Name <span style="color:#444">(optional)</span></label>
+        <input type="text" id="djName" placeholder="Charlotte de Witte" />
+      </div>
+      <div class="field">
+        <label>Location / Venue <span style="color:#444">(optional)</span></label>
+        <input type="text" id="location" placeholder="Tresor Club" />
+      </div>
+    </div>
+    <div class="field">
+      <label>Title <span style="color:#444">(optional — pick from Step 1 or type)</span></label>
+      <input type="text" id="title" placeholder="Void Sessions IV" />
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label>Address <span style="color:#444">(overlaid on poster)</span></label>
+        <input type="text" id="address" placeholder="Köpenicker Str. 70, 10179 Berlin" />
+      </div>
+      <div class="field">
+        <label>RSVP URL <span style="color:#444">(encoded into QR)</span></label>
+        <input type="text" id="rsvpUrl" placeholder="https://imin.wtf/e/abc" />
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Accent Color <span id="badge-palette" class="auto-badge" style="display:none">from palette</span> <span style="color:#444;font-size:.7rem">(optional — click to select)</span></label>
+      <div class="palette-selector" id="paletteSelector">
+        <span class="accent-empty">Run Step 1 to populate palette</span>
+      </div>
+      <input type="hidden" id="accentColor" />
+    </div>
+
+    <div class="field">
+      <label>Style <span style="color:#444">(optional — pick one to lock the look, or let AI decide)</span></label>
+      <div class="style-grid" id="styleGrid">
+        <div class="style-card ai-card selected" data-tag="" onclick="selectStyle(this)">
+          <div class="thumbs">✨</div>
+          <div class="label">Let AI decide</div>
+        </div>
+      </div>
+      <div class="style-error" id="styleError" style="display:none"></div>
+      <input type="hidden" id="subStyleTag" value="" />
+    </div>
+
+    <div class="field">
+      <label>Platforms</label>
+      <div class="platforms" id="platforms">
+        <div class="platform-btn" onclick="togglePlatform(this)" data-value="INSTAGRAM">Instagram</div>
+        <div class="platform-btn on" onclick="togglePlatform(this)" data-value="INSTAGRAM_STORY">IG Story</div>
+        <div class="platform-btn" onclick="togglePlatform(this)" data-value="INSTAGRAM_REELS">IG Reels</div>
+        <div class="platform-btn" onclick="togglePlatform(this)" data-value="TIKTOK">TikTok</div>
+        <div class="platform-btn" onclick="togglePlatform(this)" data-value="FACEBOOK">Facebook</div>
+      </div>
+    </div>
+
+    <button class="primary" id="posterBtn" onclick="generatePoster()">Generate 3 Poster Variants</button>
+
+    <div class="spinner" id="spinner2">Generating 3 variants via Ideogram — this may take 30–60 seconds…</div>
+    <div class="error-msg" id="error2"></div>
+
+    <div class="poster-wrap" id="posterWrap">
+      <div id="tagBadge"></div>
+      <div class="poster-grid" id="posterGrid"></div>
+    </div>
+
+    <details class="debug-panel" id="debugPanel" style="display:none">
+      <summary>Debug · Concept + Variant prompts</summary>
+      <div class="debug-section-label">Generation metadata</div>
+      <pre id="debugMeta"></pre>
+      <div class="debug-section-label">Per-variant Ideogram prompts</div>
+      <pre id="debugVariants"></pre>
+    </details>
+  </div>
+
+</div>
+
+<script>
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
+  function show(id) { document.getElementById(id).classList.add('visible'); }
+  function hide(id) { document.getElementById(id).classList.remove('visible'); }
+  function setVal(id, val) { document.getElementById(id).value = val; }
+  function getVal(id) { return document.getElementById(id).value.trim(); }
+
+  function err(id, msg) {
+    const el = document.getElementById(id);
+    el.textContent = msg;
+    el.classList.add('visible');
+  }
+  function clearErr(id) { document.getElementById(id).classList.remove('visible'); }
+
+  function copy(id) { navigator.clipboard.writeText(document.getElementById(id).value); }
+
+  function togglePlatform(el) { el.classList.toggle('on'); }
+
+  function selectedPlatforms() {
+    return [...document.querySelectorAll('#platforms .platform-btn.on')].map(b => b.dataset.value);
+  }
+
+  function nullable(id) { const v = getVal(id); return v || null; }
+
+  function autoBadge(fieldId, badgeId, value) {
+    setVal(fieldId, value);
+    document.getElementById(badgeId).style.display = value ? 'inline-block' : 'none';
+  }
+
+  // ── Presets for quick testing ─────────────────────────────────────────────
+
+  const PRESETS = [
+    {
+      label: 'Berlin techno warehouse',
+      text: 'Moody Berlin techno in a brutalist warehouse, peak time 11pm–6am, 200 cap, dark and hypnotic, August 15 2026'
+    },
+    {
+      label: 'Ibiza sunset house',
+      text: 'Sunset beach house session in Ibiza, euphoric and uplifting, melodic deep house, open-air terrace, July 20 2026'
+    },
+    {
+      label: 'London DnB rave',
+      text: 'High-energy drum and bass rave in a London railway arch, jungle heritage night, 600 cap, October 3 2026'
+    },
+    {
+      label: 'Amsterdam afro house',
+      text: 'Afro house Sunday daytime session on an Amsterdam rooftop, tribal and percussive, 300 cap, September 7 2026'
+    },
+    {
+      label: 'NYC jazz basement',
+      text: 'Intimate late-night jazz session in a Manhattan basement, smoky smooth tone, trio format, 80 cap, June 28 2026'
+    },
+    {
+      label: 'Tokyo ambient bunker',
+      text: 'Ambient drone listening night in a Tokyo concrete bunker, minimal and meditative, low volume, 120 cap, November 14 2026'
+    }
+  ];
+
+  function renderPresets() {
+    const container = document.getElementById('presets');
+    PRESETS.forEach(p => {
+      const el = document.createElement('div');
+      el.className = 'preset-chip';
+      el.textContent = p.label;
+      el.title = p.text;
+      el.onclick = () => setVal('prompt', p.text);
+      container.appendChild(el);
+    });
+  }
+  renderPresets();
+
+  // ── Style picker ──────────────────────────────────────────────────────────
+
+  async function loadStyles() {
+    try {
+      const res = await fetch('/api/posters/style-references');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const styles = await res.json();
+      const grid = document.getElementById('styleGrid');
+      styles.forEach(s => {
+        const card = document.createElement('div');
+        card.className = 'style-card';
+        card.dataset.tag = s.tag;
+        card.onclick = () => selectStyle(card);
+        const thumbs = document.createElement('div');
+        thumbs.className = 'thumbs';
+        (s.imageUrls || []).forEach(url => {
+          const img = document.createElement('img');
+          img.src = url;
+          img.alt = s.label;
+          thumbs.appendChild(img);
+        });
+        const label = document.createElement('div');
+        label.className = 'label';
+        label.textContent = s.label;
+        card.appendChild(thumbs);
+        card.appendChild(label);
+        grid.appendChild(card);
+      });
+    } catch (e) {
+      const errEl = document.getElementById('styleError');
+      errEl.textContent = 'Failed to load style references: ' + e.message;
+      errEl.style.display = 'block';
+    }
+  }
+
+  function selectStyle(card) {
+    document.querySelectorAll('#styleGrid .style-card').forEach(c => c.classList.remove('selected'));
+    card.classList.add('selected');
+    setVal('subStyleTag', card.dataset.tag || '');
+  }
+
+  loadStyles();
+
+  // ── Step 1: Generate Content ──────────────────────────────────────────────
+
+  async function generateContent() {
+    const prompt = getVal('prompt');
+    if (!prompt) return;
+
+    clearErr('error1');
+    hide('contentResult');
+    show('spinner1');
+    document.getElementById('generateBtn').disabled = true;
+
+    try {
+      const res = await fetch('/api/events/ai-content', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt })
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      renderContent(data);
+      prefillStep2(data);
+      show('contentResult');
+    } catch (e) {
+      err('error1', 'Error: ' + e.message);
+    } finally {
+      hide('spinner1');
+      document.getElementById('generateBtn').disabled = false;
+    }
+  }
+
+  function renderContent(d) {
+    // Names
+    const nameList = document.getElementById('nameList');
+    nameList.innerHTML = '';
+    (d.names || []).forEach(name => {
+      const el = document.createElement('div');
+      el.className = 'selectable';
+      el.innerHTML = `<span>${name}</span><span class="use-btn">→ use as title</span>`;
+      el.onclick = () => {
+        document.querySelectorAll('#nameList .selectable').forEach(e => e.classList.remove('picked'));
+        el.classList.add('picked');
+        setVal('title', name);
+      };
+      nameList.appendChild(el);
+    });
+
+    // Taglines
+    const tagList = document.getElementById('tagList');
+    tagList.innerHTML = '';
+    (d.taglines || []).forEach(tag => {
+      const el = document.createElement('div');
+      el.className = 'selectable';
+      el.innerHTML = `<span>${tag}</span>`;
+      tagList.appendChild(el);
+    });
+
+    // Inferred fields
+    document.getElementById('r-genre').textContent = d.genre || '—';
+    document.getElementById('r-tone').textContent  = d.tone  || '—';
+    document.getElementById('r-vibe').textContent  = d.vibe  || '—';
+
+    // Palette (Step 1 display — click to copy)
+    const palette = document.getElementById('palette');
+    palette.innerHTML = '';
+    (d.color_palette || []).forEach(hex => {
+      const wrap = document.createElement('div');
+      wrap.className = 'swatch-wrap';
+      const sw = document.createElement('div');
+      sw.className = 'swatch';
+      sw.style.background = hex;
+      sw.title = 'Click to copy ' + hex;
+      sw.onclick = () => navigator.clipboard.writeText(hex);
+      const lbl = document.createElement('div');
+      lbl.className = 'swatch-label';
+      lbl.textContent = hex;
+      wrap.appendChild(sw);
+      wrap.appendChild(lbl);
+      palette.appendChild(wrap);
+    });
+
+    // Timing & pricing
+    document.getElementById('timing').textContent = d.optimal_timing || '—';
+    const p = d.pricing_suggestion;
+    document.getElementById('pricing').textContent = p
+      ? `€${p.floor}–€${p.ceiling} · ${p.reasoning}` : '—';
+
+    // Social copy
+    setVal('descLong',  d.description_long  || '');
+    setVal('descShort', d.description_short || '');
+    setVal('igCaption', d.instagram_caption || '');
+    setVal('storyText', d.story_text        || '');
+    setVal('fbPost',    d.facebook_post     || '');
+    setVal('xPost',     d.x_post            || '');
+  }
+
+  function prefillStep2(d) {
+    // Auto-fill genre, tone, vibe with badges
+    autoBadge('genre', 'badge-genre', d.genre || '');
+    autoBadge('tone',  'badge-tone',  d.tone  || '');
+    autoBadge('vibe',  'badge-vibe',  d.vibe  || '');
+
+    // Populate accent color selector from palette
+    const selector = document.getElementById('paletteSelector');
+    selector.innerHTML = '';
+    setVal('accentColor', '');
+
+    const colors = d.color_palette || [];
+    if (colors.length === 0) {
+      selector.innerHTML = '<span class="accent-empty">No palette returned</span>';
+      document.getElementById('badge-palette').style.display = 'none';
+      return;
+    }
+
+    document.getElementById('badge-palette').style.display = 'inline-block';
+
+    colors.forEach((hex, i) => {
+      const sw = document.createElement('div');
+      sw.className = 'accent-swatch' + (i === 0 ? ' selected' : '');
+      sw.style.background = hex;
+      sw.title = hex;
+      sw.dataset.hex = hex;
+      sw.onclick = () => {
+        document.querySelectorAll('.accent-swatch').forEach(s => s.classList.remove('selected'));
+        sw.classList.add('selected');
+        setVal('accentColor', hex);
+      };
+      selector.appendChild(sw);
+      // Pre-select first color
+      if (i === 0) setVal('accentColor', hex);
+    });
+  }
+
+  // ── Step 2: Generate Poster ───────────────────────────────────────────────
+
+  async function generatePoster() {
+    const platforms = selectedPlatforms();
+    if (!platforms.length) { err('error2', 'Select at least one platform.'); return; }
+
+    const body = {
+      vibe:        getVal('vibe')  || 'energetic',
+      tone:        getVal('tone')  || 'vibrant',
+      genre:       getVal('genre') || 'electronic',
+      city:        getVal('city')  || 'Unknown',
+      date:        getVal('date')  || new Date().toISOString().slice(0, 10),
+      platforms,
+      djName:      nullable('djName'),
+      location:    nullable('location'),
+      title:       nullable('title'),
+      accentColor: nullable('accentColor'),
+      address:     nullable('address'),
+      rsvpUrl:     nullable('rsvpUrl'),
+      subStyleTag: nullable('subStyleTag'),
+    };
+
+    clearErr('error2');
+    hide('posterWrap');
+    document.getElementById('debugPanel').style.display = 'none';
+    show('spinner2');
+    document.getElementById('posterBtn').disabled = true;
+
+    try {
+      const res = await fetch('/api/events/ai-create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      renderPosters(data);
+      renderDebug(data);
+    } catch (e) {
+      err('error2', 'Error: ' + e.message);
+    } finally {
+      hide('spinner2');
+      document.getElementById('posterBtn').disabled = false;
+    }
+  }
+
+  function renderPosters(data) {
+    const tagBadge = document.getElementById('tagBadge');
+    tagBadge.innerHTML = data.subStyleTag
+      ? `<span class="sub-style-tag">style · ${data.subStyleTag}</span>` : '';
+
+    const grid = document.getElementById('posterGrid');
+    grid.innerHTML = '';
+    const posters = data.posters || [];
+    if (!posters.length) {
+      err('error2', 'No posters returned.');
+      return;
+    }
+    posters.forEach(p => {
+      const card = document.createElement('div');
+      const isComplete = p.status === 'COMPLETE';
+      card.className = 'poster-card' + (isComplete ? '' : ' failed');
+      const url = p.finalUrl || p.rawUrl;
+      if (isComplete && url) {
+        card.innerHTML = `
+          <img src="${url}" alt="${p.variantStyle} variant" />
+          <div class="meta">
+            <span>${p.variantStyle}</span>
+            <span>seed ${p.seed}</span>
+          </div>`;
+      } else {
+        card.innerHTML = `
+          <div class="fail-body">
+            <div style="font-weight:600;margin-bottom:4px">${p.variantStyle} — ${p.status}</div>
+            <div style="color:#999">${p.failureReason || 'unknown error'}</div>
+          </div>`;
+      }
+      grid.appendChild(card);
+    });
+    show('posterWrap');
+  }
+
+  function renderDebug(data) {
+    const meta = {
+      posterGenerationId: data.posterGenerationId,
+      subStyleTag: data.subStyleTag,
+      status: data.status,
+      variantCount: (data.posters || []).length,
+      statuses: (data.posters || []).map(p => p.status),
+    };
+    document.getElementById('debugMeta').textContent = JSON.stringify(meta, null, 2);
+    const variants = (data.posters || []).map((p, i) => ({
+      index: i,
+      style: p.variantStyle,
+      seed: p.seed,
+      status: p.status,
+      ideogramPrompt: p.ideogramPromptUsed,
+      referenceImagesUsed: p.referenceImagesUsed,
+      failureReason: p.failureReason,
+    }));
+    document.getElementById('debugVariants').textContent = JSON.stringify(variants, null, 2);
+    const panel = document.getElementById('debugPanel');
+    panel.style.display = 'block';
+    panel.open = true;
+  }
+</script>
+</body>
+</html>
