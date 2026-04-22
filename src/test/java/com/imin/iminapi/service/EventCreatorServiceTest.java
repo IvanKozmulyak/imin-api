@@ -102,4 +102,27 @@ class EventCreatorServiceTest {
 
         assertThat(statuses).containsExactly(GeneratedEventStatus.DRAFT, GeneratedEventStatus.COMPLETE);
     }
+
+    @Test
+    void create_withSubStyleTagOverride_passesOverriddenTagToOrchestrator() {
+        EventCreatorRequest req = new EventCreatorRequest(
+                "underground techno night", "edgy", "techno", "Berlin",
+                LocalDate.of(2026, 6, 14), List.of("INSTAGRAM"),
+                null, null, "Void Sessions IV", null,
+                "Kreuzberg 12, Berlin", "https://imin.wtf/e/abc",
+                "chrome_tropical");
+
+        // AI returns its own pick — the service must override it.
+        when(aiEventDescriptionService.generateConcept(any())).thenReturn(concept());
+        when(repository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        org.mockito.ArgumentCaptor<PosterConcept> conceptCaptor =
+                org.mockito.ArgumentCaptor.forClass(PosterConcept.class);
+        when(posterOrchestrator.run(any(), any(), conceptCaptor.capture()))
+                .thenReturn(orchestrationResult());
+
+        service.create(req);
+
+        assertThat(conceptCaptor.getValue().subStyleTag()).isEqualTo("chrome_tropical");
+    }
 }
