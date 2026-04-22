@@ -12,8 +12,12 @@ import org.yaml.snakeyaml.Yaml;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Base64;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -157,6 +161,23 @@ public class ReferenceImageLibrary {
             return in.readAllBytes();
         } catch (IOException e) {
             throw new IllegalStateException("Failed to read reference: " + locator, e);
+        }
+    }
+
+    public record SignatureInput(String referenceId, byte[] bytes) {}
+
+    static String imageSignature(List<SignatureInput> inputs) {
+        try {
+            MessageDigest sha = MessageDigest.getInstance("SHA-256");
+            HexFormat hex = HexFormat.of();
+            List<String> entries = inputs.stream()
+                    .map(in -> in.referenceId() + ":" + hex.formatHex(sha.digest(in.bytes())))
+                    .sorted(Comparator.naturalOrder())
+                    .toList();
+            String joined = String.join("\n", entries);
+            return hex.formatHex(sha.digest(joined.getBytes()));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 unavailable", e);
         }
     }
 
