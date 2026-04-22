@@ -3,6 +3,7 @@ package com.imin.iminapi.service;
 import com.imin.iminapi.dto.EventCreatorRequest;
 import com.imin.iminapi.dto.PosterConcept;
 import com.imin.iminapi.dto.PosterVariant;
+import com.imin.iminapi.service.poster.ReferenceImageLibrary;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -20,6 +21,7 @@ public class AiEventDescriptionService {
     private static final Logger log = LoggerFactory.getLogger(AiEventDescriptionService.class);
 
     private final ChatClient chatClient;
+    private final ReferenceImageLibrary referenceLibrary;
 
     public static final Set<String> VALID_SUB_STYLE_TAGS = Set.of(
             "neon_underground",
@@ -90,14 +92,25 @@ public class AiEventDescriptionService {
         return WORDS.split(trimmed).length;
     }
 
-    private String buildPrompt(EventCreatorRequest request, String reinforcement) {
+    String buildPrompt(EventCreatorRequest request, String reinforcement) {
         StringBuilder sb = new StringBuilder();
         sb.append("You are an art director for a nightlife event poster. Your output drives ")
           .append("Ideogram V3, a text-in-image model (~90-95% accuracy on quoted strings).\n\n")
-          .append("Return a JSON object with exactly these fields:\n")
-          .append("- sub_style_tag: one of ")
-          .append(String.join(", ", VALID_SUB_STYLE_TAGS))
-          .append("\n- color_palette_description: a brief human-readable description of the dominant colors\n")
+          .append("Return a JSON object with exactly these fields:\n");
+        String pinned = request.subStyleTag();
+        if (pinned != null && !pinned.isBlank()) {
+            String descriptor = nonBlankOrPlaceholder(referenceLibrary.descriptor(pinned));
+            sb.append("- sub_style_tag is pre-selected as ").append(pinned)
+              .append(". Use the following style notes in every variant:\n    ")
+              .append(descriptor).append("\n");
+        } else {
+            sb.append("- sub_style_tag: pick one and weave its style notes into every variant\n");
+            for (String tag : referenceLibrary.tags()) {
+                String descriptor = nonBlankOrPlaceholder(referenceLibrary.descriptor(tag));
+                sb.append("    ").append(tag).append(" — ").append(descriptor).append("\n");
+            }
+        }
+        sb.append("- color_palette_description: a brief human-readable description of the dominant colors\n")
           .append("- variants: exactly 3 objects, each with:\n")
           .append("    - variant_style: one of atmospheric, graphic, minimal\n")
           .append("    - ideogram_prompt: a COMPLETE self-contained prompt, 30-150 words, describing the scene and explicitly including every text element in DOUBLE QUOTES for literal rendering (Ideogram renders quoted strings as typography)\n")
@@ -123,5 +136,9 @@ public class AiEventDescriptionService {
             sb.append("\n").append(reinforcement).append("\nFix the issue above and return valid JSON only.\n");
         }
         return sb.toString();
+    }
+
+    private static String nonBlankOrPlaceholder(String s) {
+        return (s == null || s.isBlank()) ? "(no descriptor available)" : s;
     }
 }
