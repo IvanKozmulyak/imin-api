@@ -35,9 +35,8 @@ public class RateLimitConfig {
     private int aiWindow;
 
     @Bean
-    public RedisClient redisClient(@Value("${spring.data.redis.host}") String host,
-                                   @Value("${spring.data.redis.port}") int port) {
-        return RedisClient.create("redis://" + host + ":" + port);
+    public RedisClient redisClient(@Value("${spring.data.redis.url}") String url) {
+        return RedisClient.create(url);
     }
 
     @Bean

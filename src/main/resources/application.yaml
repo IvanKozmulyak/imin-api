@@ -19,8 +19,7 @@ spring:
       api-key: ${OPENAI_API_KEY}
   data:
     redis:
-      host: ${REDIS_HOST:localhost}
-      port: ${REDIS_PORT:6380}
+      url: ${REDIS_URL:redis://localhost:6380}
   servlet:
     multipart:
       max-file-size: 60MB
@@ -74,9 +73,9 @@ imin:
   media:
     enabled: ${MEDIA_ENABLED:true}
     bucket: ${R2_BUCKET:imin-media-dev}
-    endpoint: ${R2_ENDPOINT:https://example.r2.cloudflarestorage.com}
+    endpoint: ${R2_ENDPOINT:https://3adabc08fab6b4073a51ba2e160eab07.eu.r2.cloudflarestorage.com/}
     region: ${R2_REGION:auto}
-    access-key-id: ${R2_ACCESS_KEY_ID:}
-    secret-access-key: ${R2_SECRET_ACCESS_KEY:}
-    public-url-prefix: ${R2_PUBLIC_URL_PREFIX:https://media-dev.imin.example/}
+    access-key-id: ${R2_ACCESS_KEY_ID:41ffe2d32205f45a206df795721d9988}
+    secret-access-key: ${R2_SECRET_ACCESS_KEY:ebc4c0c7ea2c27f0d8c497311741470452cfac061b3db265a28a2af3ca771c12}
+    public-url-prefix: ${R2_PUBLIC_URL_PREFIX:https://pub-ac507794175c4217933eeaa66387c4d3.r2.dev}
 
