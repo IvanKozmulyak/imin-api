@@ -18,7 +18,7 @@ import java.util.List;
 import java.util.stream.IntStream;
 
 @RestController
-@RequestMapping("/api/posters/style-references")
+@RequestMapping("/api/v1/posters/style-references")
 @RequiredArgsConstructor
 public class StyleReferenceController {
 
@@ -31,7 +31,7 @@ public class StyleReferenceController {
                         tag,
                         humanize(tag),
                         IntStream.range(0, library.referenceCount(tag))
-                                .mapToObj(i -> "/api/posters/style-references/" + tag + "/" + i)
+                                .mapToObj(i -> "/api/v1/posters/style-references/" + tag + "/" + i)
                                 .toList()))
                 .toList();
     }

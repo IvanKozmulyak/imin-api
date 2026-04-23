@@ -38,7 +38,7 @@ class StyleReferenceControllerTest {
         when(library.referenceCount("neon_underground")).thenReturn(3);
         when(library.referenceCount("chrome_tropical")).thenReturn(2);
 
-        mockMvc.perform(get("/api/posters/style-references"))
+        mockMvc.perform(get("/api/v1/posters/style-references"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$").isArray())
                 .andExpect(jsonPath("$[0].tag").value("neon_underground"))
@@ -46,7 +46,7 @@ class StyleReferenceControllerTest {
                 .andExpect(jsonPath("$[0].imageUrls").isArray())
                 .andExpect(jsonPath("$[0].imageUrls.length()").value(3))
                 .andExpect(jsonPath("$[0].imageUrls[0]")
-                        .value("/api/posters/style-references/neon_underground/0"))
+                        .value("/api/v1/posters/style-references/neon_underground/0"))
                 .andExpect(jsonPath("$[1].imageUrls.length()").value(2));
     }
 
@@ -55,7 +55,7 @@ class StyleReferenceControllerTest {
         byte[] png = new byte[]{(byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
         when(library.loadBytes("neon_underground", 0)).thenReturn(png);
 
-        mockMvc.perform(get("/api/posters/style-references/neon_underground/0"))
+        mockMvc.perform(get("/api/v1/posters/style-references/neon_underground/0"))
                 .andExpect(status().isOk())
                 .andExpect(header().string("Content-Type", "image/png"))
                 .andExpect(content().bytes(png));
@@ -66,7 +66,7 @@ class StyleReferenceControllerTest {
         when(library.loadBytes("nope", 0))
                 .thenThrow(new IllegalArgumentException("Unknown sub-style tag: nope"));
 
-        mockMvc.perform(get("/api/posters/style-references/nope/0"))
+        mockMvc.perform(get("/api/v1/posters/style-references/nope/0"))
                 .andExpect(status().isNotFound());
     }
 
@@ -75,7 +75,7 @@ class StyleReferenceControllerTest {
         when(library.loadBytes("neon_underground", 99))
                 .thenThrow(new IllegalArgumentException("Index 99 out of range"));
 
-        mockMvc.perform(get("/api/posters/style-references/neon_underground/99"))
+        mockMvc.perform(get("/api/v1/posters/style-references/neon_underground/99"))
                 .andExpect(status().isNotFound());
     }
 }

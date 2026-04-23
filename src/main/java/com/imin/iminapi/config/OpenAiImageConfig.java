@@ -22,7 +22,7 @@ public class OpenAiImageConfig {
     public RestClient openAiImageRestClient() {
         if (apiKey == null || apiKey.isBlank()) {
             log.warn("OPENAI_API_KEY is not set — OpenAI image generation will fail with 401. "
-                    + "Required only when imageProvider=OPENAI on /api/events/ai-create.");
+                    + "Required only when imageProvider=OPENAI on /api/v1/events/ai-create.");
         }
         return RestClient.builder()
                 .baseUrl(baseUrl)

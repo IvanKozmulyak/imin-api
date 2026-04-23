@@ -69,7 +69,7 @@ class EventCreatorControllerTest {
 
         when(eventCreatorService.create(any())).thenReturn(response);
 
-        mockMvc.perform(post("/api/events/ai-create")
+        mockMvc.perform(post("/api/v1/events/ai-create")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isCreated())
@@ -85,7 +85,7 @@ class EventCreatorControllerTest {
                 {"tone":"edgy","genre":"techno","city":"Berlin","date":"2026-06-14","platforms":["INSTAGRAM"]}
                 """;
 
-        mockMvc.perform(post("/api/events/ai-create")
+        mockMvc.perform(post("/api/v1/events/ai-create")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(invalidBody))
                 .andExpect(status().isBadRequest())
@@ -103,7 +103,7 @@ class EventCreatorControllerTest {
         when(eventCreatorService.create(any()))
                 .thenThrow(new EventCreationException("Image generation failed", new RuntimeException()));
 
-        mockMvc.perform(post("/api/events/ai-create")
+        mockMvc.perform(post("/api/v1/events/ai-create")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isInternalServerError())
@@ -117,7 +117,7 @@ class EventCreatorControllerTest {
                  "platforms":["INSTAGRAM"],"subStyleTag":"made_up_tag"}
                 """;
 
-        mockMvc.perform(post("/api/events/ai-create")
+        mockMvc.perform(post("/api/v1/events/ai-create")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isBadRequest())
@@ -142,7 +142,7 @@ class EventCreatorControllerTest {
                 List.of(poster), LocalDateTime.now());
         when(eventCreatorService.create(any())).thenReturn(response);
 
-        mockMvc.perform(post("/api/events/ai-create")
+        mockMvc.perform(post("/api/v1/events/ai-create")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isCreated());

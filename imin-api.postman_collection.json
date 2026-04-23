@@ -21,12 +21,13 @@
           "raw": "{\n  \"vibe\": \"underground techno night in a warehouse\",\n  \"tone\": \"edgy\",\n  \"genre\": \"techno\",\n  \"city\": \"Berlin\",\n  \"date\": \"2026-06-14\",\n  \"platforms\": [\"INSTAGRAM\", \"TWITTER\"]\n}"
         },
         "url": {
-          "raw": "{{baseUrl}}/api/events/ai-create",
+          "raw": "{{baseUrl}}/api/v1/events/ai-create",
           "host": [
             "{{baseUrl}}"
           ],
           "path": [
             "api",
+            "v1",
             "events",
             "ai-create"
           ]

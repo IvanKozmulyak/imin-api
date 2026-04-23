@@ -7,6 +7,7 @@ import com.imin.iminapi.security.ErrorCode;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -29,7 +30,7 @@ public class SecurityConfig {
     private static final ObjectMapper AUTH_MAPPER = new ObjectMapper()
             .registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule());
 
-    @Value("${imin.cors.allowed-origin-patterns}")
+    @Value("${imin.cors.allowed-origin-patterns:}")
     private String[] allowedOriginPatterns;
 
     @Bean
@@ -40,7 +41,10 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
-        config.setAllowedOriginPatterns(Arrays.asList(allowedOriginPatterns));
+        List<String> patterns = Arrays.stream(allowedOriginPatterns)
+                .filter(p -> p != null && !p.isBlank())
+                .toList();
+        config.setAllowedOriginPatterns(patterns);
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));
         config.setExposedHeaders(List.of("Location"));
@@ -60,11 +64,12 @@ public class SecurityConfig {
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .csrf(csrf -> csrf.disable())
                 .authorizeHttpRequests(auth -> auth
-                        // Public reads for legacy poster pipeline
                         .requestMatchers("/", "/index.html", "/images/**").permitAll()
-                        .requestMatchers("/api/events/**").permitAll()
-                        .requestMatchers("/api/posters/**").permitAll()
                         .requestMatchers("/swagger-ui/**", "/v3/api-docs/**").permitAll()
+                        // Legacy poster pipeline (moved under /api/v1, still public)
+                        .requestMatchers(HttpMethod.POST, "/api/v1/events/ai-create").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/events/ai-content").permitAll()
+                        .requestMatchers("/api/v1/posters/**").permitAll()
                         // V1 auth endpoints are public — login etc.
                         .requestMatchers("/api/v1/auth/signup",
                                          "/api/v1/auth/login",

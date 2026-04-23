@@ -500,7 +500,7 @@
 
   async function loadStyles() {
     try {
-      const res = await fetch('/api/posters/style-references');
+      const res = await fetch('/api/v1/posters/style-references');
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const styles = await res.json();
       const grid = document.getElementById('styleGrid');
@@ -551,7 +551,7 @@
     document.getElementById('generateBtn').disabled = true;
 
     try {
-      const res = await fetch('/api/events/ai-content', {
+      const res = await fetch('/api/v1/events/ai-content', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt })
@@ -701,7 +701,7 @@
     document.getElementById('posterBtn').disabled = true;
 
     try {
-      const res = await fetch('/api/events/ai-create', {
+      const res = await fetch('/api/v1/events/ai-create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
