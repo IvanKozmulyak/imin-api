@@ -9,6 +9,7 @@ import com.imin.iminapi.repository.*;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.web.IfMatchSupport;
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
@@ -111,6 +112,9 @@ class EventServiceTest {
         e.setUpdatedAt(updated);
         when(events.findActive(e.getId())).thenReturn(Optional.of(e));
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
+        when(promos.findByEventId(e.getId())).thenReturn(List.of());
+        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
 
         EventDto dto = sut.patch(p, e.getId(), "\"" + updated + "\"",
                 new EventPatchRequest("New name", null, null, "Techno", null, null, null, null, null,
@@ -119,6 +123,8 @@ class EventServiceTest {
         assertThat(dto.name()).isEqualTo("New name");
         assertThat(dto.genre()).isEqualTo("Techno");
         assertThat(dto.capacity()).isEqualTo(250);
+        assertThat(dto.tiers()).isNotNull();
+        assertThat(dto.promoCodes()).isNotNull();
     }
 
     @Test
@@ -135,6 +141,24 @@ class EventServiceTest {
                         new EventPatchRequest("X", null, null, null, null, null, null, null, null,
                                 null, null, null, null, null, null, null, null, null, null, null)))
                 .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.STALE_WRITE);
+    }
+
+    @Test
+    void patch_with_duplicate_slug_throws_DUPLICATE() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setName("X"); e.setSlug("existing-slug");
+        Instant updated = Instant.parse("2026-04-23T10:00:00Z");
+        e.setUpdatedAt(updated);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenThrow(new DataIntegrityViolationException("unique constraint"));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                sut.patch(p, e.getId(), "\"" + updated + "\"",
+                        new EventPatchRequest(null, "taken-slug", null, null, null, null, null, null, null,
+                                null, null, null, null, null, null, null, null, null, null, null)))
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.DUPLICATE);
     }
 
     @Test

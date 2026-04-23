@@ -8,6 +8,7 @@ import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.web.IfMatchSupport;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -47,8 +48,12 @@ public class EventService {
         e.setCreatedBy(p.userId());
         e.setSlug(generateSlug());
         applyPatch(e, body);
-        Event saved = events.save(e);
-        return EventDto.summary(saved);
+        try {
+            Event saved = events.save(e);
+            return EventDto.summary(saved);
+        } catch (DataIntegrityViolationException ex) {
+            throw ApiException.duplicate("slug", "Event slug already taken in this organization");
+        }
     }
 
     @Transactional(readOnly = true)
@@ -78,8 +83,12 @@ public class EventService {
         }
         applyPatch(e, body);
         e.setUpdatedAt(Instant.now()); // ensure ETag changes even when @PreUpdate doesn't fire
-        Event saved = events.save(e);
-        return EventDto.summary(saved);
+        try {
+            events.save(e);
+        } catch (DataIntegrityViolationException ex) {
+            throw ApiException.duplicate("slug", "Event slug already taken in this organization");
+        }
+        return detail(p, id);
     }
 
     @Transactional
