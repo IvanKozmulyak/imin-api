@@ -16,7 +16,8 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api/v1/ai/events")
 public class ConceptController {
 
-    private static final ObjectMapper OM = new ObjectMapper();
+    private static final ObjectMapper OM = new ObjectMapper()
+            .registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule());
 
     private final ConceptStudioService studio;
     private final IdempotencyKeySupport idempotency;

@@ -19,7 +19,8 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 public class SecurityConfig {
 
     /** Standalone mapper for auth-error responses — avoids circular dependency with Jackson auto-config. */
-    private static final ObjectMapper AUTH_MAPPER = new ObjectMapper();
+    private static final ObjectMapper AUTH_MAPPER = new ObjectMapper()
+            .registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule());
 
     @Bean
     public BCryptPasswordEncoder bCryptPasswordEncoder() {
