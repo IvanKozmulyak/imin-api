@@ -3,6 +3,8 @@ package com.imin.iminapi.web;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.imin.iminapi.model.IdempotencyKey;
 import com.imin.iminapi.repository.IdempotencyKeyRepository;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
@@ -17,11 +19,12 @@ public class IdempotencyKeySupport {
     private static final Duration TTL = Duration.ofHours(24);
 
     private final IdempotencyKeyRepository repo;
-    private final ObjectMapper om;
 
-    public IdempotencyKeySupport(IdempotencyKeyRepository repo, ObjectMapper om) {
+    @Autowired @Lazy
+    private ObjectMapper om;
+
+    public IdempotencyKeySupport(IdempotencyKeyRepository repo) {
         this.repo = repo;
-        this.om = om;
     }
 
     public Cached runOrReplay(UUID orgId, String route, String key, Supplier<Cached> supplier) {
