@@ -1,3 +1,54 @@
+logging:
+  level:
+    com.imin.iminapi.service.poster: DEBUG
+
 spring:
   application:
     name: imin-api
+  profiles:
+    default: dev
+  jpa:
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+
+  ai:
+    openai:
+      api-key: ${OPENAI_API_KEY}
+
+replicate:
+  api-token: ${REPLICATE_API_TOKEN:}
+  image:
+    storage-dir: ${REPLICATE_IMAGE_STORAGE_DIR:./generated-images}
+  models:
+    ideogram-turbo: ${IDEOGRAM_TURBO_MODEL:ideogram-ai/ideogram-v3-turbo}
+    ideogram-quality: ${IDEOGRAM_QUALITY_MODEL:ideogram-ai/ideogram-v3-quality}
+  timeout-seconds: 65
+  max-concurrent: 6
+
+poster:
+  references:
+    config-file: classpath:poster-references.yaml
+  overlay:
+    qr-size-px: 120
+    address-max-chars: 80
+  generation:
+    variant-count: 3
+    retry-on-validation-failure: 1
+
+openrouter:
+  api-key: ${OPENROUTER_API_KEY}
+  base-url: ${OPENROUTER_BASE_URL:https://openrouter.ai/api}
+  model: ${OPENROUTER_MODEL:openai/gpt-4o-mini}
+
+openai:
+  image:
+    api-key: ${OPENAI_API_KEY:}
+    base-url: ${OPENAI_BASE_URL:https://api.openai.com}
+    model: ${OPENAI_IMAGE_MODEL:gpt-image-1}
+
+imin:
+  reference-analyzer:
+    model-id: ${IMIN_REFERENCE_ANALYZER_MODEL:openai/gpt-4o-mini}
