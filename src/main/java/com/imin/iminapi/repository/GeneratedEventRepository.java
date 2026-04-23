@@ -11,6 +11,9 @@ import java.util.UUID;
 
 public interface GeneratedEventRepository extends JpaRepository<GeneratedEvent, UUID> {
 
+    java.util.Optional<com.imin.iminapi.model.GeneratedEvent> findByIdAndOrgId(java.util.UUID id, java.util.UUID orgId);
+
+
     @Query("""
             SELECT e FROM GeneratedEvent e
             WHERE e.genre = :genre

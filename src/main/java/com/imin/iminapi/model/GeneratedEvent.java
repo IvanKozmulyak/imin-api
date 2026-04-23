@@ -57,6 +57,21 @@ public class GeneratedEvent {
     @OneToMany(mappedBy = "generatedEvent", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<SocialCopy> socialCopies = new ArrayList<>();
 
+    @Column(name = "org_id")
+    private java.util.UUID orgId;
+
+    @Column(columnDefinition = "TEXT")
+    private String name;
+
+    @Column(columnDefinition = "TEXT")
+    private String description;
+
+    @Column(name = "palette_hexes", columnDefinition = "TEXT")
+    private String paletteHexes;   // comma-joined "#1a1a18,#2d5cff,..."
+
+    @Column(name = "confidence_pct")
+    private Integer confidencePct;
+
     @PrePersist
     void prePersist() {
         if (createdAt == null) {
