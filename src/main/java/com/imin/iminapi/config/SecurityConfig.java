@@ -1,13 +1,11 @@
 package com.imin.iminapi.config;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.imin.iminapi.security.ApiError;
 import com.imin.iminapi.security.BearerTokenAuthFilter;
 import com.imin.iminapi.security.ErrorCode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Lazy;
 import org.springframework.http.MediaType;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -20,8 +18,8 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 @EnableWebSecurity
 public class SecurityConfig {
 
-    @Autowired @Lazy
-    private ObjectMapper om;
+    /** Standalone mapper for auth-error responses — avoids circular dependency with Jackson auto-config. */
+    private static final ObjectMapper AUTH_MAPPER = new ObjectMapper();
 
     @Bean
     public BCryptPasswordEncoder bCryptPasswordEncoder() {
@@ -53,14 +51,18 @@ public class SecurityConfig {
                         .authenticationEntryPoint((req, resp, ex) -> {
                             resp.setStatus(401);
                             resp.setContentType(MediaType.APPLICATION_JSON_VALUE);
-                            om.writeValue(resp.getWriter(),
+                            resp.setCharacterEncoding("UTF-8");
+                            AUTH_MAPPER.writeValue(resp.getWriter(),
                                     ApiError.of(ErrorCode.AUTH_MISSING, "Authentication required"));
+                            resp.getWriter().flush();
                         })
                         .accessDeniedHandler((req, resp, ex) -> {
                             resp.setStatus(403);
                             resp.setContentType(MediaType.APPLICATION_JSON_VALUE);
-                            om.writeValue(resp.getWriter(),
+                            resp.setCharacterEncoding("UTF-8");
+                            AUTH_MAPPER.writeValue(resp.getWriter(),
                                     ApiError.of(ErrorCode.FORBIDDEN, "Access denied"));
+                            resp.getWriter().flush();
                         })
                 );
         return http.build();

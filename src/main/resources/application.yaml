@@ -17,6 +17,10 @@ spring:
   ai:
     openai:
       api-key: ${OPENAI_API_KEY}
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6380}
 
 replicate:
   api-token: ${REPLICATE_API_TOKEN:}
@@ -64,8 +68,3 @@ imin:
       capacity: 10
       window-minutes: 60
 
-spring:
-  data:
-    redis:
-      host: ${REDIS_HOST:localhost}
-      port: ${REDIS_PORT:6380}
