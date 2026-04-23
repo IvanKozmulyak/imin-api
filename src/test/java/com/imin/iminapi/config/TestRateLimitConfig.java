@@ -2,6 +2,8 @@ package com.imin.iminapi.config;
 
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.RateLimiter;
+import com.imin.iminapi.storage.InMemoryMediaStorage;
+import com.imin.iminapi.storage.MediaStorage;
 import io.github.bucket4j.Bandwidth;
 import io.github.bucket4j.Bucket;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -23,5 +25,10 @@ public class TestRateLimitConfig {
                     Bucket.builder().addLimit(Bandwidth.simple(1000, Duration.ofMinutes(1))).build());
             if (!b.tryConsume(1)) throw ApiException.rateLimited();
         };
+    }
+
+    @Bean @Primary
+    public MediaStorage testMediaStorage() {
+        return new InMemoryMediaStorage("https://test-media.invalid/");
     }
 }
