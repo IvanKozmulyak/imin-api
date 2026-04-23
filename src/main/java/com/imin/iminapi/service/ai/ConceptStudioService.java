@@ -15,6 +15,8 @@ import com.imin.iminapi.service.AiEventDescriptionService;
 import com.imin.iminapi.service.PricingService;
 import com.imin.iminapi.service.poster.PosterOrchestrator;
 import com.imin.iminapi.service.poster.PosterOrchestrator.OrchestrationResult;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -26,6 +28,7 @@ import java.util.UUID;
 @Service
 public class ConceptStudioService {
 
+    private static final Logger log = LoggerFactory.getLogger(ConceptStudioService.class);
     private static final List<String> DEFAULT_PLATFORMS = List.of("instagram");
     private static final String DEFAULT_TONE = "energetic";
 
@@ -70,18 +73,20 @@ public class ConceptStudioService {
         EventCreatorRequest legacy = toLegacyRequest(req);
         PosterConcept poster;
         OrchestrationResult render;
+        ConceptOverview overview;
         try {
             poster = descService.generateConcept(legacy);
             render = orchestrator.run(staging.getId(), legacy, poster);
+            overview = overviewLlm.generate(req, poster);
         } catch (Exception e) {
             staging.setStatus(GeneratedEventStatus.FAILED);
             try { repo.save(staging); } catch (Exception ignored) {}
+            log.error("Poster pipeline failed", e);
             throw new ApiException(org.springframework.http.HttpStatus.BAD_GATEWAY,
                     com.imin.iminapi.security.ErrorCode.UPSTREAM_UNAVAILABLE,
-                    "Concept generation failed: " + e.getMessage());
+                    "Poster generation service unavailable");
         }
 
-        ConceptOverview overview = overviewLlm.generate(req, poster);
         PricingRecommendation prices = pricing.recommend(
                 req.genre() == null ? "techno" : req.genre(),
                 req.city() == null ? "" : req.city(),
