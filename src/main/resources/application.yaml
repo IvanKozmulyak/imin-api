@@ -21,6 +21,10 @@ spring:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6380}
+  servlet:
+    multipart:
+      max-file-size: 60MB
+      max-request-size: 60MB
 
 replicate:
   api-token: ${REPLICATE_API_TOKEN:}
