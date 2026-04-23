@@ -5,9 +5,11 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.Map;
 
@@ -39,6 +41,9 @@ class GlobalExceptionHandlerTest {
         @GetMapping("/notfound")
         String notFound() { throw ApiException.notFound("Event"); }
 
+        @GetMapping("/forbidden")
+        String forbidden() { throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Not allowed"); }
+
         @PostMapping(value = "/validate", consumes = MediaType.APPLICATION_JSON_VALUE)
         String validate(@org.springframework.web.bind.annotation.RequestBody @jakarta.validation.Valid Body b) { return "ok"; }
 
@@ -52,6 +57,14 @@ class GlobalExceptionHandlerTest {
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.error.code").value("NOT_FOUND"))
                 .andExpect(jsonPath("$.error.message").value("Event not found"));
+    }
+
+    @Test
+    @WithMockUser
+    void response_status_403_maps_to_FORBIDDEN() throws Exception {
+        mvc.perform(get("/__test/forbidden").with(csrf()))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("FORBIDDEN"));
     }
 
     @Test

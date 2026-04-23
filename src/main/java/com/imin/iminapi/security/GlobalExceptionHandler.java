@@ -33,6 +33,11 @@ public class GlobalExceptionHandler {
         Map<String, String> fields = new HashMap<>();
         ex.getBindingResult().getFieldErrors().forEach(fe ->
                 fields.putIfAbsent(fe.getField(), fe.getDefaultMessage()));
+        ex.getBindingResult().getGlobalErrors().forEach(ge -> {
+            String name = ge.getCode() == null ? ge.getObjectName()
+                    : Character.toLowerCase(ge.getCode().charAt(0)) + ge.getCode().substring(1);
+            fields.putIfAbsent(name, ge.getDefaultMessage());
+        });
         return ResponseEntity.badRequest()
                 .body(ApiError.of(ErrorCode.FIELD_INVALID, "Validation failed", fields));
     }
@@ -57,9 +62,15 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(ResponseStatusException.class)
     ResponseEntity<ApiError> handleResponseStatus(ResponseStatusException ex) {
-        // Let ResponseStatusException pass through with its own status code
+        ErrorCode code = switch (ex.getStatusCode().value()) {
+            case 401 -> ErrorCode.AUTH_MISSING;
+            case 403 -> ErrorCode.FORBIDDEN;
+            case 404 -> ErrorCode.NOT_FOUND;
+            case 409 -> ErrorCode.INVALID_STATE;
+            default  -> ErrorCode.INTERNAL;
+        };
         return ResponseEntity.status(ex.getStatusCode())
-                .body(ApiError.of(ErrorCode.NOT_FOUND, ex.getReason() != null ? ex.getReason() : ex.getMessage()));
+                .body(ApiError.of(code, ex.getReason() != null ? ex.getReason() : ex.getMessage()));
     }
 
     @ExceptionHandler(Throwable.class)
