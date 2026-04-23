@@ -11,8 +11,6 @@ import com.imin.iminapi.security.RateLimiter;
 import com.imin.iminapi.service.auth.AuthService;
 import com.imin.iminapi.web.IdempotencyKeySupport;
 import jakarta.validation.Valid;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.annotation.Lazy;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 
@@ -20,12 +18,11 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api/v1/auth")
 public class AuthController {
 
+    private static final ObjectMapper OM = new ObjectMapper();
+
     private final AuthService authService;
     private final IdempotencyKeySupport idempotency;
     private final RateLimiter rateLimiter;
-
-    @Autowired @Lazy
-    private ObjectMapper om;
 
     public AuthController(AuthService authService,
                           IdempotencyKeySupport idempotency,
@@ -47,7 +44,7 @@ public class AuthController {
             return idempotency.toCached(200, r);
         });
         try {
-            return om.readValue(cached.bodyJson(), AuthResponse.class);
+            return OM.readValue(cached.bodyJson(), AuthResponse.class);
         } catch (Exception e) {
             throw new IllegalStateException("Could not deserialise cached signup response", e);
         }

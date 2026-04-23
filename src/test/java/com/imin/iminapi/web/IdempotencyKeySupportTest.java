@@ -1,10 +1,8 @@
 package com.imin.iminapi.web;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.imin.iminapi.model.IdempotencyKey;
 import com.imin.iminapi.repository.IdempotencyKeyRepository;
 import org.junit.jupiter.api.Test;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.Optional;
 import java.util.UUID;
@@ -17,14 +15,7 @@ import static org.mockito.Mockito.*;
 class IdempotencyKeySupportTest {
 
     IdempotencyKeyRepository repo = mock(IdempotencyKeyRepository.class);
-    ObjectMapper om = new ObjectMapper();
-    IdempotencyKeySupport sut = createSut();
-
-    private IdempotencyKeySupport createSut() {
-        IdempotencyKeySupport s = new IdempotencyKeySupport(repo);
-        ReflectionTestUtils.setField(s, "om", om);
-        return s;
-    }
+    IdempotencyKeySupport sut = new IdempotencyKeySupport(repo);
 
     @Test
     void first_call_runs_supplier_and_persists() {

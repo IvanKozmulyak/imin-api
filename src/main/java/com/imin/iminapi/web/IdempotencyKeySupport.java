@@ -3,8 +3,6 @@ package com.imin.iminapi.web;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.imin.iminapi.model.IdempotencyKey;
 import com.imin.iminapi.repository.IdempotencyKeyRepository;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
@@ -17,11 +15,9 @@ import java.util.function.Supplier;
 public class IdempotencyKeySupport {
 
     private static final Duration TTL = Duration.ofHours(24);
+    private static final ObjectMapper OM = new ObjectMapper();
 
     private final IdempotencyKeyRepository repo;
-
-    @Autowired @Lazy
-    private ObjectMapper om;
 
     public IdempotencyKeySupport(IdempotencyKeyRepository repo) {
         this.repo = repo;
@@ -51,7 +47,7 @@ public class IdempotencyKeySupport {
     /** Helper for callers that have an object — serialise to JSON for storage. */
     public Cached toCached(int status, Object body) {
         try {
-            return new Cached(status, om.writeValueAsString(body));
+            return new Cached(status, OM.writeValueAsString(body));
         } catch (Exception e) {
             throw new IllegalStateException("Failed to serialise idempotency body", e);
         }

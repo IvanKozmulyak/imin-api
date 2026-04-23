@@ -8,8 +8,6 @@ import com.imin.iminapi.security.CurrentUser;
 import com.imin.iminapi.service.event.EventOverviewService;
 import com.imin.iminapi.service.event.EventService;
 import com.imin.iminapi.web.IdempotencyKeySupport;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.annotation.Lazy;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 
@@ -19,12 +17,11 @@ import java.util.UUID;
 @RequestMapping("/api/v1/events")
 public class EventController {
 
+    private static final com.fasterxml.jackson.databind.ObjectMapper OM = new com.fasterxml.jackson.databind.ObjectMapper();
+
     private final EventService eventService;
     private final EventOverviewService overviewService;
     private final IdempotencyKeySupport idempotency;
-
-    @Autowired @Lazy
-    private com.fasterxml.jackson.databind.ObjectMapper om;
 
     public EventController(EventService eventService,
                            EventOverviewService overviewService,
@@ -71,7 +68,7 @@ public class EventController {
         var cached = idempotency.runOrReplay(p.orgId(), route, key,
                 () -> idempotency.toCached(200, eventService.publish(p, id)));
         try {
-            return om.readValue(cached.bodyJson(), EventDto.class);
+            return OM.readValue(cached.bodyJson(), EventDto.class);
         } catch (Exception e) {
             throw new IllegalStateException("Could not deserialise cached publish response", e);
         }
