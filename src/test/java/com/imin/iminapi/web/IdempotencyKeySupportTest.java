@@ -3,6 +3,7 @@ package com.imin.iminapi.web;
 import com.imin.iminapi.model.IdempotencyKey;
 import com.imin.iminapi.repository.IdempotencyKeyRepository;
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.DataIntegrityViolationException;
 
 import java.util.Optional;
 import java.util.UUID;
@@ -46,6 +47,29 @@ class IdempotencyKeySupportTest {
         assertThat(calls.get()).isZero();
         assertThat(result.status()).isEqualTo(201);
         assertThat(result.bodyJson()).isEqualTo("\"hello\"");
+    }
+
+    @Test
+    void concurrent_same_key_returns_winning_cached() {
+        UUID orgId = UUID.randomUUID();
+        // First findByOrgIdAndRouteAndKey returns empty (both threads pass the check)
+        when(repo.findByOrgIdAndRouteAndKey(orgId, "/x", "k2")).thenReturn(Optional.empty());
+        // save throws due to unique constraint race
+        when(repo.save(any(IdempotencyKey.class))).thenThrow(new DataIntegrityViolationException("duplicate"));
+        // After the race, the winning row is found
+        IdempotencyKey winner = new IdempotencyKey();
+        winner.setResponseStatus(201);
+        winner.setResponseBody("\"winner\"");
+        // Second call to findByOrgIdAndRouteAndKey (inside the catch) returns winner
+        when(repo.findByOrgIdAndRouteAndKey(orgId, "/x", "k2"))
+                .thenReturn(Optional.empty())   // first call in runOrReplay
+                .thenReturn(Optional.of(winner)); // second call inside catch
+
+        var result = sut.runOrReplay(orgId, "/x", "k2",
+                () -> new IdempotencyKeySupport.Cached(201, "\"mine\""));
+
+        assertThat(result.status()).isEqualTo(201);
+        assertThat(result.bodyJson()).isEqualTo("\"winner\"");
     }
 
     @Test

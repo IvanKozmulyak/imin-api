@@ -1,9 +1,12 @@
 package com.imin.iminapi.web;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.imin.iminapi.model.IdempotencyKey;
 import com.imin.iminapi.repository.IdempotencyKeyRepository;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -15,7 +18,7 @@ import java.util.function.Supplier;
 public class IdempotencyKeySupport {
 
     private static final Duration TTL = Duration.ofHours(24);
-    private static final ObjectMapper OM = new ObjectMapper();
+    private static final ObjectMapper OM = new ObjectMapper().registerModule(new JavaTimeModule());
 
     private final IdempotencyKeyRepository repo;
 
@@ -23,6 +26,7 @@ public class IdempotencyKeySupport {
         this.repo = repo;
     }
 
+    @Transactional
     public Cached runOrReplay(UUID orgId, String route, String key, Supplier<Cached> supplier) {
         if (key == null || key.isBlank()) {
             return supplier.get();
@@ -40,7 +44,14 @@ public class IdempotencyKeySupport {
         row.setResponseStatus(fresh.status());
         row.setResponseBody(fresh.bodyJson());
         row.setExpiresAt(Instant.now().plus(TTL));
-        repo.save(row);
+        try {
+            repo.save(row);
+        } catch (DataIntegrityViolationException ex) {
+            // Another concurrent request won the race — return the winning cached response.
+            IdempotencyKey winner = repo.findByOrgIdAndRouteAndKey(orgId, route, key)
+                    .orElseThrow(() -> ex);
+            return new Cached(winner.getResponseStatus(), winner.getResponseBody());
+        }
         return fresh;
     }
 
