@@ -41,20 +41,24 @@ public class MediaUploadService {
         Integer durationSec = null;
         if (kind == MediaKind.VIDEO) {
             durationSec = videoMetadata.probeMp4DurationSec(bytes);
-            if (durationSec != null && durationSec > 30) {
+            if (durationSec == null || durationSec > 30) {
                 throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID,
-                        "Video must be ≤ 30 seconds", Map.of("file", "duration > 30s"));
+                        "Video must be a parseable MP4 ≤ 30 seconds", Map.of("file", "duration > 30s"));
             }
         }
         String key = "events/" + e.getId() + "/" + kind.wireValue() + "." + extensionFor(contentType, originalFilename);
-        MediaStorage.Stored stored = storage.put(key, bytes, contentType);
-
+        // Compute the deterministic URL before any remote call, then persist the DB row first.
+        // If storage.put fails after the save, no orphan is created in remote storage.
+        String url = storage.urlFor(key);
         switch (kind) {
-            case POSTER -> e.setPosterUrl(stored.url());
-            case VIDEO -> e.setVideoUrl(stored.url());
-            case COVER -> e.setCoverUrl(stored.url());
+            case POSTER -> e.setPosterUrl(url);
+            case VIDEO -> e.setVideoUrl(url);
+            case COVER -> e.setCoverUrl(url);
         }
         events.save(e);
+        // Upload to remote storage — if this throws, the DB row already has the correct URL
+        // (the object simply won't exist yet; a retry will re-upload).
+        MediaStorage.Stored stored = storage.put(key, bytes, contentType);
         return new MediaUploadResponse(stored.url(), stored.sizeBytes(), stored.contentType(), durationSec);
     }
 
@@ -95,6 +99,34 @@ public class MediaUploadService {
                 if (size > 50 * MB) throw fieldErr("file", "must be ≤ 50 MB");
                 if (!VIDEO_TYPES.contains(contentType)) throw fieldErr("file", "must be MP4");
             }
+        }
+        verifyMagicBytes(kind, bytes, contentType);
+    }
+
+    private static void verifyMagicBytes(MediaKind kind, byte[] bytes, String contentType) {
+        if (bytes.length < 8) {
+            throw fieldErr("file", "content does not match declared type");
+        }
+        switch (contentType) {
+            case "image/png" -> {
+                if (!((bytes[0] & 0xFF) == 0x89 && (bytes[1] & 0xFF) == 0x50
+                        && (bytes[2] & 0xFF) == 0x4E && (bytes[3] & 0xFF) == 0x47)) {
+                    throw fieldErr("file", "content does not match declared type");
+                }
+            }
+            case "image/jpeg", "image/jpg" -> {
+                if (!((bytes[0] & 0xFF) == 0xFF && (bytes[1] & 0xFF) == 0xD8)) {
+                    throw fieldErr("file", "content does not match declared type");
+                }
+            }
+            case "video/mp4" -> {
+                // bytes 4..7 must equal ASCII "ftyp"
+                if (bytes.length < 8 || bytes[4] != 'f' || bytes[5] != 't'
+                        || bytes[6] != 'y' || bytes[7] != 'p') {
+                    throw fieldErr("file", "content does not match declared type");
+                }
+            }
+            default -> { /* no magic-byte check for unknown types */ }
         }
     }
 

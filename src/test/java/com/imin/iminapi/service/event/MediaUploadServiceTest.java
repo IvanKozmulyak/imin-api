@@ -23,7 +23,7 @@ class MediaUploadServiceTest {
 
     EventRepository events = mock(EventRepository.class);
     InMemoryMediaStorage storage = new InMemoryMediaStorage("https://media.test/");
-    VideoMetadata video = new VideoMetadata();
+    VideoMetadata video = mock(VideoMetadata.class);
     MediaUploadService sut = new MediaUploadService(events, storage, video);
 
     private AuthPrincipal owner(UUID orgId) {
@@ -86,6 +86,32 @@ class MediaUploadServiceTest {
     }
 
     @Test
+    void poster_with_mismatched_magic_bytes_rejected() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+
+        // PNG magic bytes but declared as JPEG
+        byte[] fakePngAsJpeg = pngBytes(100);
+        assertThatThrownBy(() -> sut.upload(owner(orgId), e.getId(), MediaKind.POSTER, fakePngAsJpeg, "image/jpeg", "poster.jpg"))
+                .isInstanceOf(ApiException.class)
+                .hasFieldOrPropertyWithValue("code", ErrorCode.FIELD_INVALID);
+    }
+
+    @Test
+    void video_with_unreadable_duration_rejected() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(video.probeMp4DurationSec(any())).thenReturn(null);
+
+        byte[] mp4Bytes = mp4Bytes(200);
+        assertThatThrownBy(() -> sut.upload(owner(orgId), e.getId(), MediaKind.VIDEO, mp4Bytes, "video/mp4", "v.mp4"))
+                .isInstanceOf(ApiException.class)
+                .hasFieldOrPropertyWithValue("code", ErrorCode.FIELD_INVALID);
+    }
+
+    @Test
     void delete_clears_url_field_and_blob() {
         UUID orgId = UUID.randomUUID();
         Event e = ev(orgId);
@@ -101,9 +127,16 @@ class MediaUploadServiceTest {
     }
 
     private static byte[] pngBytes(int size) {
-        byte[] b = new byte[size];
+        byte[] b = new byte[Math.max(size, 8)];
         b[0] = (byte) 0x89; b[1] = (byte) 0x50; b[2] = (byte) 0x4E; b[3] = (byte) 0x47;
         b[4] = (byte) 0x0D; b[5] = (byte) 0x0A; b[6] = (byte) 0x1A; b[7] = (byte) 0x0A;
+        return b;
+    }
+
+    private static byte[] mp4Bytes(int size) {
+        byte[] b = new byte[Math.max(size, 8)];
+        // bytes 4..7 = "ftyp"
+        b[4] = 'f'; b[5] = 't'; b[6] = 'y'; b[7] = 'p';
         return b;
     }
 }

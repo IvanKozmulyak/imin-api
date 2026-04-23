@@ -15,11 +15,14 @@ public class InMemoryMediaStorage implements MediaStorage {
     @Override
     public Stored put(String key, byte[] bytes, String contentType) {
         blobs.put(key, bytes);
-        return new Stored(publicPrefix + key, bytes.length, contentType);
+        return new Stored(urlFor(key), bytes.length, contentType);
     }
 
     @Override
     public void delete(String key) { blobs.remove(key); }
+
+    @Override
+    public String urlFor(String key) { return publicPrefix + key; }
 
     public Map<String, byte[]> blobs() { return blobs; }
 }

@@ -39,4 +39,7 @@ public class R2MediaStorage implements MediaStorage {
     public void delete(String key) {
         s3.deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(key).build());
     }
+
+    @Override
+    public String urlFor(String key) { return publicPrefix + key; }
 }
