@@ -8,4 +8,4 @@ CREATE TABLE notifications (
     created_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     read_at     TIMESTAMP
 );
-CREATE INDEX ix_notifications_user_unread ON notifications (user_id) WHERE read_at IS NULL;
+CREATE INDEX ix_notifications_user_unread ON notifications (user_id, read_at);
