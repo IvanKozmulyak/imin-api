@@ -67,4 +67,12 @@ imin:
     ai-concept:
       capacity: 10
       window-minutes: 60
+  media:
+    enabled: ${MEDIA_ENABLED:true}
+    bucket: ${R2_BUCKET:imin-media-dev}
+    endpoint: ${R2_ENDPOINT:https://example.r2.cloudflarestorage.com}
+    region: ${R2_REGION:auto}
+    access-key-id: ${R2_ACCESS_KEY_ID:}
+    secret-access-key: ${R2_SECRET_ACCESS_KEY:}
+    public-url-prefix: ${R2_PUBLIC_URL_PREFIX:https://media-dev.imin.example/}
 
