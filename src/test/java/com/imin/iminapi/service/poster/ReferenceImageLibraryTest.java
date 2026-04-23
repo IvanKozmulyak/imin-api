@@ -1,8 +1,12 @@
 package com.imin.iminapi.service.poster;
 
+import com.imin.iminapi.config.TestRateLimitConfig;
+import com.imin.iminapi.service.auth.AuthService;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Import;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.util.List;
 
@@ -10,7 +14,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @SpringBootTest
+@Import(TestRateLimitConfig.class)
 class ReferenceImageLibraryTest {
+
+    @MockitoBean AuthService authService;
 
     @Autowired
     private ReferenceImageLibrary library;
