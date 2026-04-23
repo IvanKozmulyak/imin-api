@@ -36,3 +36,14 @@ replicate:
 imin:
   reference-analyzer:
     model-id: openai/gpt-4o-mini
+  api:
+    base-path: /api/v1
+  auth:
+    session-ttl-days: 30
+  ratelimit:
+    login:
+      capacity: 5
+      window-minutes: 15
+    ai-concept:
+      capacity: 10
+      window-minutes: 60
