@@ -28,4 +28,41 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
     @Query("DELETE FROM Event e WHERE e.status = com.imin.iminapi.model.EventStatus.DRAFT " +
            "AND e.name = '' AND e.createdAt < :cutoff")
     int deleteEmptyDraftsOlderThan(@Param("cutoff") Instant cutoff);
+
+    @org.springframework.data.jpa.repository.Query(
+        "SELECT e FROM Event e WHERE e.orgId = :orgId AND e.deletedAt IS NULL " +
+        "AND e.status = com.imin.iminapi.model.EventStatus.LIVE " +
+        "AND e.startsAt > :now ORDER BY e.startsAt ASC")
+    java.util.List<com.imin.iminapi.model.Event> findUpcomingLive(
+            @org.springframework.data.repository.query.Param("orgId") java.util.UUID orgId,
+            @org.springframework.data.repository.query.Param("now") java.time.Instant now,
+            org.springframework.data.domain.Pageable pageable);
+
+    @org.springframework.data.jpa.repository.Query(
+        "SELECT e FROM Event e WHERE e.orgId = :orgId AND e.deletedAt IS NULL " +
+        "AND e.status = com.imin.iminapi.model.EventStatus.PAST " +
+        "ORDER BY e.endsAt DESC")
+    java.util.List<com.imin.iminapi.model.Event> findRecentPast(
+            @org.springframework.data.repository.query.Param("orgId") java.util.UUID orgId,
+            org.springframework.data.domain.Pageable pageable);
+
+    @org.springframework.data.jpa.repository.Query(
+        "SELECT COUNT(e) FROM Event e WHERE e.orgId = :orgId AND e.deletedAt IS NULL " +
+        "AND e.status = com.imin.iminapi.model.EventStatus.LIVE")
+    long countLive(@org.springframework.data.repository.query.Param("orgId") java.util.UUID orgId);
+
+    @org.springframework.data.jpa.repository.Query(
+        "SELECT COUNT(e) FROM Event e WHERE e.orgId = :orgId AND e.deletedAt IS NULL " +
+        "AND e.publishedAt IS NOT NULL")
+    long countPublished(@org.springframework.data.repository.query.Param("orgId") java.util.UUID orgId);
+
+    @org.springframework.data.jpa.repository.Query(
+        "SELECT COUNT(e) FROM Event e WHERE e.orgId = :orgId AND e.deletedAt IS NULL " +
+        "AND e.status = com.imin.iminapi.model.EventStatus.PAST")
+    long countPast(@org.springframework.data.repository.query.Param("orgId") java.util.UUID orgId);
+
+    @org.springframework.data.jpa.repository.Query(
+        "SELECT COALESCE(SUM(e.revenueMinor), 0), COALESCE(SUM(e.sold), 0) " +
+        "FROM Event e WHERE e.orgId = :orgId AND e.deletedAt IS NULL")
+    java.util.List<Object[]> sumRevenueAndSold(@org.springframework.data.repository.query.Param("orgId") java.util.UUID orgId);
 }
