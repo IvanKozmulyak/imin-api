@@ -1,9 +1,8 @@
-ALTER TABLE generated_event
-    ADD COLUMN org_id          UUID,
-    ADD COLUMN name            TEXT,
-    ADD COLUMN description     TEXT,
-    ADD COLUMN palette_hexes   TEXT,
-    ADD COLUMN confidence_pct  INTEGER;
+ALTER TABLE generated_event ADD COLUMN org_id UUID;
+ALTER TABLE generated_event ADD COLUMN name TEXT;
+ALTER TABLE generated_event ADD COLUMN description TEXT;
+ALTER TABLE generated_event ADD COLUMN palette_hexes TEXT;
+ALTER TABLE generated_event ADD COLUMN confidence_pct INTEGER;
 
 ALTER TABLE generated_event
     ADD CONSTRAINT fk_generated_event_org
