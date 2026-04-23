@@ -100,4 +100,85 @@ class EventServiceTest {
         assertThat(dto.promoCodes()).isEmpty();
         assertThat(dto.prediction()).isNull();
     }
+
+    @Test
+    void patch_with_matching_ifMatch_updates_fields() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setName(""); e.setSlug("draft-x");
+        Instant updated = Instant.parse("2026-04-23T10:00:00Z");
+        e.setUpdatedAt(updated);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        EventDto dto = sut.patch(p, e.getId(), "\"" + updated + "\"",
+                new EventPatchRequest("New name", null, null, "Techno", null, null, null, null, null,
+                        null, null, null, null, 250, null, null, null, null, null, null));
+
+        assertThat(dto.name()).isEqualTo("New name");
+        assertThat(dto.genre()).isEqualTo("Techno");
+        assertThat(dto.capacity()).isEqualTo(250);
+    }
+
+    @Test
+    void patch_with_mismatched_ifMatch_throws_STALE_WRITE() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setName(""); e.setSlug("draft-x");
+        e.setUpdatedAt(Instant.parse("2026-04-23T10:00:00Z"));
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                sut.patch(p, e.getId(), "\"2026-01-01T00:00:00Z\"",
+                        new EventPatchRequest("X", null, null, null, null, null, null, null, null,
+                                null, null, null, null, null, null, null, null, null, null, null)))
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.STALE_WRITE);
+    }
+
+    @Test
+    void publish_on_complete_event_transitions_to_live() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setName("Test"); e.setSlug("test");
+        e.setStartsAt(Instant.parse("2026-06-01T20:00:00Z"));
+        e.setEndsAt(Instant.parse("2026-06-02T04:00:00Z"));
+        e.setVenueStreet("12 Main"); e.setVenueCity("Berlin"); e.setVenuePostalCode("10115");
+        e.setDescription("d"); e.setCapacity(100);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
+        when(promos.findByEventId(e.getId())).thenReturn(List.of());
+        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
+
+        EventDto dto = sut.publish(p, e.getId());
+        assertThat(dto.status()).isEqualTo("live");
+        assertThat(dto.publishedAt()).isNotNull();
+    }
+
+    @Test
+    void publish_already_live_throws_INVALID_STATE() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setStatus(EventStatus.LIVE);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> sut.publish(p, e.getId()))
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.INVALID_STATE);
+    }
+
+    @Test
+    void publish_incomplete_event_throws_PUBLISH_VALIDATION_FAILED() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setName(""); // missing
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> sut.publish(p, e.getId()))
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.PUBLISH_VALIDATION_FAILED);
+    }
 }
