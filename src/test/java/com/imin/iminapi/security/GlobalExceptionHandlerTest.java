@@ -11,8 +11,12 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
 
+import com.imin.iminapi.repository.AuthSessionRepository;
+import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.security.TokenService;
 import org.springframework.boot.security.saml2.autoconfigure.Saml2RelyingPartyAutoConfiguration;
 import org.springframework.security.test.context.support.WithMockUser;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
@@ -25,6 +29,9 @@ class GlobalExceptionHandlerTest {
 
     @Autowired MockMvc mvc;
     final ObjectMapper om = new ObjectMapper();
+    @MockitoBean AuthSessionRepository authSessionRepository;
+    @MockitoBean UserRepository userRepository;
+    @MockitoBean TokenService tokenService;
 
     @RestController
     @RequestMapping("/__test")

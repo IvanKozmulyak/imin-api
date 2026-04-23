@@ -8,6 +8,9 @@ import com.imin.iminapi.dto.EventCreatorResponse;
 import com.imin.iminapi.dto.GeneratedPoster;
 import com.imin.iminapi.exception.EventCreationException;
 import com.imin.iminapi.exception.EventCreationExceptionHandler;
+import com.imin.iminapi.repository.AuthSessionRepository;
+import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.security.TokenService;
 import com.imin.iminapi.service.EventCreatorService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -40,6 +43,9 @@ class EventCreatorControllerTest {
 
     private final ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
     @MockitoBean private EventCreatorService eventCreatorService;
+    @MockitoBean private AuthSessionRepository authSessionRepository;
+    @MockitoBean private UserRepository userRepository;
+    @MockitoBean private TokenService tokenService;
 
     @Test
     void create_validRequest_returns201WithBody() throws Exception {
@@ -83,8 +89,8 @@ class EventCreatorControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(invalidBody))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error").value("validation_failed"))
-                .andExpect(jsonPath("$.fields.vibe").exists());
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
+                .andExpect(jsonPath("$.error.fields.vibe").exists());
     }
 
     @Test
@@ -101,7 +107,7 @@ class EventCreatorControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isInternalServerError())
-                .andExpect(jsonPath("$.error").value("event_creation_failed"));
+                .andExpect(jsonPath("$.error.code").value("INTERNAL"));
     }
 
     @Test
@@ -115,8 +121,8 @@ class EventCreatorControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error").value("validation_failed"))
-                .andExpect(jsonPath("$.fields.subStyleTagValid").exists());
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
+                .andExpect(jsonPath("$.error.fields.subStyleTagValid").exists());
     }
 
     @Test
