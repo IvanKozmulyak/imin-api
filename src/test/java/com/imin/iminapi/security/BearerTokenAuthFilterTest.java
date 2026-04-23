@@ -107,4 +107,25 @@ class BearerTokenAuthFilterTest {
         filter.doFilter(req, new MockHttpServletResponse(), mock(FilterChain.class));
         assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
     }
+
+    @Test
+    void expired_token_returns_AUTH_TOKEN_EXPIRED() throws Exception {
+        String raw = "expiredtokenforexpiredtest00000000";
+        String hash = tokens.hashOf(raw);
+        AuthSession s = new AuthSession();
+        s.setId(UUID.randomUUID());
+        s.setUserId(UUID.randomUUID());
+        s.setTokenHash(hash);
+        s.setExpiresAt(Instant.now().minus(1, java.time.temporal.ChronoUnit.HOURS));
+        when(sessions.findByTokenHashAndRevokedAtIsNull(hash)).thenReturn(Optional.of(s));
+
+        var req = new MockHttpServletRequest();
+        req.addHeader("Authorization", "Bearer " + raw);
+        var resp = new MockHttpServletResponse();
+        filter.doFilter(req, resp, mock(FilterChain.class));
+
+        assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+        assertThat(req.getAttribute("imin.authErrorCode"))
+                .isEqualTo(com.imin.iminapi.security.ErrorCode.AUTH_TOKEN_EXPIRED);
+    }
 }

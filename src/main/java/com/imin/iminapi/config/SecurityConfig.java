@@ -49,11 +49,14 @@ public class SecurityConfig {
                 .addFilterBefore(bearerFilter, UsernamePasswordAuthenticationFilter.class)
                 .exceptionHandling(eh -> eh
                         .authenticationEntryPoint((req, resp, ex) -> {
+                            ErrorCode errorCode = (ErrorCode) req.getAttribute("imin.authErrorCode");
+                            if (errorCode == null) errorCode = ErrorCode.AUTH_MISSING;
+                            String message = errorCode == ErrorCode.AUTH_TOKEN_EXPIRED
+                                    ? "Authentication token has expired" : "Authentication required";
                             resp.setStatus(401);
                             resp.setContentType(MediaType.APPLICATION_JSON_VALUE);
                             resp.setCharacterEncoding("UTF-8");
-                            AUTH_MAPPER.writeValue(resp.getWriter(),
-                                    ApiError.of(ErrorCode.AUTH_MISSING, "Authentication required"));
+                            AUTH_MAPPER.writeValue(resp.getWriter(), ApiError.of(errorCode, message));
                             resp.getWriter().flush();
                         })
                         .accessDeniedHandler((req, resp, ex) -> {

@@ -52,6 +52,7 @@ public class BearerTokenAuthFilter extends OncePerRequestFilter {
         }
         AuthSession s = maybe.get();
         if (s.getExpiresAt().isBefore(Instant.now())) {
+            request.setAttribute("imin.authErrorCode", ErrorCode.AUTH_TOKEN_EXPIRED);
             chain.doFilter(request, response);
             return;
         }
