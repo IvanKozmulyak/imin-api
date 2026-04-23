@@ -17,7 +17,9 @@ import java.util.UUID;
 @RequestMapping("/api/v1/events")
 public class EventController {
 
-    private static final com.fasterxml.jackson.databind.ObjectMapper OM = new com.fasterxml.jackson.databind.ObjectMapper();
+    private static final com.fasterxml.jackson.databind.ObjectMapper OM =
+            new com.fasterxml.jackson.databind.ObjectMapper()
+                    .registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule());
 
     private final EventService eventService;
     private final EventOverviewService overviewService;
@@ -63,7 +65,12 @@ public class EventController {
     public EventDto publish(@CurrentUser AuthPrincipal p,
                             @PathVariable UUID id,
                             @RequestHeader(value = "Idempotency-Key", required = false) String key) {
-        if (key == null || key.isBlank()) return eventService.publish(p, id);
+        if (key == null || key.isBlank()) {
+            throw new com.imin.iminapi.security.ApiException(
+                    org.springframework.http.HttpStatus.BAD_REQUEST,
+                    com.imin.iminapi.security.ErrorCode.INVALID_REQUEST,
+                    "Idempotency-Key header is required on publish");
+        }
         var route = "POST /api/v1/events/:id/publish";
         var cached = idempotency.runOrReplay(p.orgId(), route, key,
                 () -> idempotency.toCached(200, eventService.publish(p, id)));
