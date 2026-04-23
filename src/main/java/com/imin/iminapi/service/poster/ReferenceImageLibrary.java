@@ -152,6 +152,20 @@ public class ReferenceImageLibrary {
         return byTag.getOrDefault(subStyleTag, List.of()).size();
     }
 
+    public List<byte[]> loadAllBytes(String subStyleTag) {
+        List<LoadedReference> refs = byTag.getOrDefault(subStyleTag, List.of());
+        List<byte[]> out = new java.util.ArrayList<>(refs.size());
+        for (int i = 0; i < refs.size(); i++) {
+            try {
+                out.add(bytesFor(refs.get(i)));
+            } catch (Exception e) {
+                log.warn("Could not materialize bytes for reference {}[{}]: {}",
+                        subStyleTag, i, e.getMessage());
+            }
+        }
+        return out;
+    }
+
     public byte[] loadBytes(String subStyleTag, int index) {
         List<LoadedReference> refs = byTag.get(subStyleTag);
         if (refs == null) {

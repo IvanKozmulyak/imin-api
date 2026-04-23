@@ -45,7 +45,7 @@ class EventCreatorServiceTest {
                 "underground techno night", "edgy", "techno", "Berlin",
                 LocalDate.of(2026, 6, 14), List.of("INSTAGRAM"),
                 null, null, "Void Sessions IV", null,
-                "Kreuzberg 12, Berlin", "https://imin.wtf/e/abc", null);
+                "Kreuzberg 12, Berlin", "https://imin.wtf/e/abc", null, null);
     }
 
     private PosterConcept concept() {
@@ -110,7 +110,7 @@ class EventCreatorServiceTest {
                 LocalDate.of(2026, 6, 14), List.of("INSTAGRAM"),
                 null, null, "Void Sessions IV", null,
                 "Kreuzberg 12, Berlin", "https://imin.wtf/e/abc",
-                "chrome_tropical");
+                "chrome_tropical", null);
 
         // AI returns its own pick — the service must override it.
         when(aiEventDescriptionService.generateConcept(any())).thenReturn(concept());

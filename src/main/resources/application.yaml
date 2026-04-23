@@ -43,6 +43,12 @@ openrouter:
   base-url: ${OPENROUTER_BASE_URL:https://openrouter.ai/api}
   model: ${OPENROUTER_MODEL:openai/gpt-4o-mini}
 
+openai:
+  image:
+    api-key: ${OPENAI_API_KEY:}
+    base-url: ${OPENAI_BASE_URL:https://api.openai.com}
+    model: ${OPENAI_IMAGE_MODEL:gpt-image-1}
+
 imin:
   reference-analyzer:
     model-id: ${IMIN_REFERENCE_ANALYZER_MODEL:openai/gpt-4o-mini}

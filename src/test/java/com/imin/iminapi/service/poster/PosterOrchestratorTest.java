@@ -5,6 +5,7 @@ import com.imin.iminapi.dto.GeneratedPoster;
 import com.imin.iminapi.dto.PosterConcept;
 import com.imin.iminapi.dto.PosterVariant;
 import com.imin.iminapi.dto.ReferenceImageSet;
+import com.imin.iminapi.model.ImageProvider;
 import com.imin.iminapi.model.PosterGeneration;
 import com.imin.iminapi.model.PosterGenerationStatus;
 import com.imin.iminapi.repository.PosterGenerationRepository;
@@ -30,6 +31,7 @@ import static org.mockito.Mockito.when;
 class PosterOrchestratorTest {
 
     @Mock IdeogramClient ideogramClient;
+    @Mock OpenAiImageClient openAiImageClient;
     @Mock ReferenceImageLibrary referenceLibrary;
     @Mock OverlayCompositor overlayCompositor;
     @Mock PosterImageStorage storage;
@@ -37,15 +39,20 @@ class PosterOrchestratorTest {
 
     private PosterOrchestrator orchestrator() {
         return new PosterOrchestrator(
-                ideogramClient, referenceLibrary, overlayCompositor, storage, generationRepository, 6);
+                ideogramClient, openAiImageClient, referenceLibrary,
+                overlayCompositor, storage, generationRepository, 6);
     }
 
     private EventCreatorRequest req() {
+        return req(null);
+    }
+
+    private EventCreatorRequest req(ImageProvider provider) {
         return new EventCreatorRequest(
                 "vibe", "tone", "techno", "Berlin",
                 LocalDate.of(2026, 6, 14), List.of("INSTAGRAM"),
                 null, null, "Void", null,
-                "Kreuzberg", "https://imin.wtf/e/1", null);
+                "Kreuzberg", "https://imin.wtf/e/1", null, provider);
     }
 
     private PosterConcept concept() {
@@ -111,6 +118,28 @@ class PosterOrchestratorTest {
         long complete = result.posters().stream().filter(p -> "COMPLETE".equals(p.status())).count();
         assertThat(failed).isEqualTo(1);
         assertThat(complete).isEqualTo(2);
+    }
+
+    @Test
+    void run_withOpenAiProvider_routesToOpenAiClient() {
+        stubRepoAssignsId();
+        when(referenceLibrary.forTag("neon_underground"))
+                .thenReturn(new ReferenceImageSet("neon_underground", List.of("data:..."), List.of("1.png")));
+        when(referenceLibrary.loadAllBytes("neon_underground"))
+                .thenReturn(List.of(new byte[]{9, 9, 9}));
+        when(openAiImageClient.generate(any(), any(), any(), anyLong()))
+                .thenReturn(new OpenAiImageClient.OpenAiImageResult(
+                        new byte[]{7, 7, 7}, Duration.ofMillis(50), "gpt-image-1"));
+        when(storage.writePng(any())).thenReturn("/images/oai.png");
+        when(overlayCompositor.applyOverlays(any())).thenReturn(new byte[]{8, 8, 8});
+
+        PosterOrchestrator.OrchestrationResult result =
+                orchestrator().run(UUID.randomUUID(), req(ImageProvider.OPENAI), concept());
+
+        assertThat(result.posters()).hasSize(3);
+        assertThat(result.posters()).allMatch(p -> "COMPLETE".equals(p.status()));
+        verify(openAiImageClient, atLeastOnce()).generate(any(), any(), any(), anyLong());
+        verify(ideogramClient, org.mockito.Mockito.never()).generate(any(), any(), any(), anyLong(), any());
     }
 
     @Test

@@ -5,6 +5,7 @@ import com.imin.iminapi.dto.GeneratedPoster;
 import com.imin.iminapi.dto.PosterConcept;
 import com.imin.iminapi.dto.PosterVariant;
 import com.imin.iminapi.dto.ReferenceImageSet;
+import com.imin.iminapi.model.ImageProvider;
 import com.imin.iminapi.model.PosterGeneration;
 import com.imin.iminapi.model.PosterGenerationStatus;
 import com.imin.iminapi.model.PosterVariantEntity;
@@ -30,6 +31,7 @@ public class PosterOrchestrator {
     private static final Logger log = LoggerFactory.getLogger(PosterOrchestrator.class);
 
     private final IdeogramClient ideogramClient;
+    private final OpenAiImageClient openAiImageClient;
     private final ReferenceImageLibrary referenceLibrary;
     private final OverlayCompositor overlayCompositor;
     private final PosterImageStorage storage;
@@ -38,12 +40,14 @@ public class PosterOrchestrator {
 
     public PosterOrchestrator(
             IdeogramClient ideogramClient,
+            OpenAiImageClient openAiImageClient,
             ReferenceImageLibrary referenceLibrary,
             OverlayCompositor overlayCompositor,
             PosterImageStorage storage,
             PosterGenerationRepository generationRepository,
             @Value("${replicate.max-concurrent:6}") int maxConcurrent) {
         this.ideogramClient = ideogramClient;
+        this.openAiImageClient = openAiImageClient;
         this.referenceLibrary = referenceLibrary;
         this.overlayCompositor = overlayCompositor;
         this.storage = storage;
@@ -110,6 +114,7 @@ public class PosterOrchestrator {
         entity.setStatus(PosterVariantStatus.PENDING);
         generation.getVariants().add(entity);
 
+        ImageProvider provider = request.effectiveImageProvider();
         try {
             replicateCap.acquire();
         } catch (InterruptedException e) {
@@ -119,14 +124,7 @@ public class PosterOrchestrator {
             return toDto(entity);
         }
         try {
-            IdeogramClient.IdeogramResult ideogram = ideogramClient.generate(
-                    variant.ideogramPrompt(),
-                    variant.aspectRatio(),
-                    refs.referenceUrls(),
-                    seed,
-                    variant.styleType());
-
-            byte[] rawBytes = storage.download(ideogram.imageUrl());
+            byte[] rawBytes = renderVariant(provider, variant, refs, seed);
             String rawUrl = storage.writePng(rawBytes);
             entity.setRawUrl(rawUrl);
             entity.setStatus(PosterVariantStatus.RAW_READY);
@@ -145,13 +143,36 @@ public class PosterOrchestrator {
 
             return toDto(entity);
         } catch (RuntimeException e) {
-            log.error("Variant generation failed: style={}, seed={}", variant.variantStyle(), seed, e);
+            log.error("Variant generation failed: provider={}, style={}, seed={}",
+                    provider, variant.variantStyle(), seed, e);
             entity.setStatus(PosterVariantStatus.FAILED);
             entity.setFailureReason(e.getMessage());
             return toDto(entity);
         } finally {
             replicateCap.release();
         }
+    }
+
+    private byte[] renderVariant(
+            ImageProvider provider,
+            PosterVariant variant,
+            ReferenceImageSet refs,
+            long seed) {
+        if (provider == ImageProvider.OPENAI) {
+            List<byte[]> refBytes = referenceLibrary.loadAllBytes(refs.subStyleTag());
+            return openAiImageClient.generate(
+                    variant.ideogramPrompt(),
+                    variant.aspectRatio(),
+                    refBytes,
+                    seed).imageBytes();
+        }
+        IdeogramClient.IdeogramResult ideogram = ideogramClient.generate(
+                variant.ideogramPrompt(),
+                variant.aspectRatio(),
+                refs.referenceUrls(),
+                seed,
+                variant.styleType());
+        return storage.download(ideogram.imageUrl());
     }
 
     private GeneratedPoster toDto(PosterVariantEntity e) {

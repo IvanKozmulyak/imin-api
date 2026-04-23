@@ -47,7 +47,7 @@ class EventCreatorControllerTest {
                 "underground techno night", "edgy", "techno", "Berlin",
                 LocalDate.of(2026, 6, 14), List.of("INSTAGRAM"),
                 null, null, "Void Sessions IV", null,
-                "Kreuzberg 12, Berlin", "https://imin.wtf/e/abc", null);
+                "Kreuzberg 12, Berlin", "https://imin.wtf/e/abc", null, null);
 
         GeneratedPoster poster = new GeneratedPoster(
                 UUID.randomUUID(), "atmospheric",
@@ -92,7 +92,7 @@ class EventCreatorControllerTest {
         EventCreatorRequest request = new EventCreatorRequest(
                 "jazz night", "smooth", "jazz", "NYC",
                 LocalDate.of(2026, 8, 1), List.of("TWITTER"),
-                null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null);
 
         when(eventCreatorService.create(any()))
                 .thenThrow(new EventCreationException("Image generation failed", new RuntimeException()));

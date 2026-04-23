@@ -388,9 +388,18 @@
       </div>
     </div>
 
+    <div class="field">
+      <label>Image Provider <span style="color:#444;font-size:.7rem">(same prompt + references, different model)</span></label>
+      <div class="platforms" id="providers">
+        <div class="platform-btn on" onclick="selectProvider(this)" data-value="REPLICATE">Replicate · Ideogram V3</div>
+        <div class="platform-btn" onclick="selectProvider(this)" data-value="OPENAI">OpenAI · gpt-image</div>
+      </div>
+      <input type="hidden" id="imageProvider" value="REPLICATE" />
+    </div>
+
     <button class="primary" id="posterBtn" onclick="generatePoster()">Generate 3 Poster Variants</button>
 
-    <div class="spinner" id="spinner2">Generating 3 variants via Ideogram — this may take 30–60 seconds…</div>
+    <div class="spinner" id="spinner2">Generating 3 variants — this may take 30–90 seconds…</div>
     <div class="error-msg" id="error2"></div>
 
     <div class="poster-wrap" id="posterWrap">
@@ -427,6 +436,12 @@
   function copy(id) { navigator.clipboard.writeText(document.getElementById(id).value); }
 
   function togglePlatform(el) { el.classList.toggle('on'); }
+
+  function selectProvider(el) {
+    document.querySelectorAll('#providers .platform-btn').forEach(b => b.classList.remove('on'));
+    el.classList.add('on');
+    setVal('imageProvider', el.dataset.value);
+  }
 
   function selectedPlatforms() {
     return [...document.querySelectorAll('#platforms .platform-btn.on')].map(b => b.dataset.value);
@@ -669,13 +684,14 @@
       city:        getVal('city')  || 'Unknown',
       date:        getVal('date')  || new Date().toISOString().slice(0, 10),
       platforms,
-      djName:      nullable('djName'),
-      location:    nullable('location'),
-      title:       nullable('title'),
-      accentColor: nullable('accentColor'),
-      address:     nullable('address'),
-      rsvpUrl:     nullable('rsvpUrl'),
-      subStyleTag: nullable('subStyleTag'),
+      djName:        nullable('djName'),
+      location:      nullable('location'),
+      title:         nullable('title'),
+      accentColor:   nullable('accentColor'),
+      address:       nullable('address'),
+      rsvpUrl:       nullable('rsvpUrl'),
+      subStyleTag:   nullable('subStyleTag'),
+      imageProvider: getVal('imageProvider') || 'REPLICATE',
     };
 
     clearErr('error2');

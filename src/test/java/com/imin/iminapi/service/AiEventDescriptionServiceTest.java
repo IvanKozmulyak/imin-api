@@ -37,7 +37,7 @@ class AiEventDescriptionServiceTest {
                 "vibe", "tone", "genre", "city",
                 LocalDate.of(2026, 6, 14), List.of("INSTAGRAM"),
                 null, null, null, null, null, null,
-                pinnedTag);
+                pinnedTag, null);
     }
 
     @Test
