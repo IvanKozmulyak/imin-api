@@ -37,6 +37,7 @@ public class AuthService {
     private final TokenService tokens;
     private final Duration sessionTtl;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public AuthService(OrganizationRepository orgs,
                        UserRepository users,
                        AuthSessionRepository sessions,
