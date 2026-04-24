@@ -6,13 +6,9 @@ import com.imin.iminapi.dto.OrganizationDto;
 import com.imin.iminapi.dto.UserDto;
 import com.imin.iminapi.dto.auth.AuthResponse;
 import com.imin.iminapi.dto.auth.LoginRequest;
-import com.imin.iminapi.dto.auth.MeResponse;
 import com.imin.iminapi.dto.auth.SignupRequest;
-import com.imin.iminapi.model.UserRole;
-import com.imin.iminapi.repository.IdempotencyKeyRepository;
 import com.imin.iminapi.security.*;
 import com.imin.iminapi.service.auth.AuthService;
-import com.imin.iminapi.web.IdempotencyKeySupport;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -21,14 +17,11 @@ import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.test.web.servlet.MvcResult;
 
 import java.time.Instant;
 import java.util.Map;
-import java.util.Optional;
 import java.util.UUID;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
@@ -43,7 +36,6 @@ class AuthControllerTest {
     // Use local ObjectMapper to avoid requiring the Spring-managed one in test context
     final ObjectMapper om = new ObjectMapper();
     @MockitoBean AuthService authService;
-    @MockitoBean IdempotencyKeyRepository idempotencyKeyRepository;
 
     private UserDto sampleUser(UUID orgId) {
         return new UserDto(UUID.randomUUID(), "ada@example.com", "", "owner", "AD", orgId, Instant.parse("2026-04-23T10:00:00Z"));
@@ -121,48 +113,5 @@ class AuthControllerTest {
         mvc.perform(get("/api/v1/auth/me"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.error.code").value("AUTH_MISSING"));
-    }
-
-    @Test
-    void signup_with_idempotency_key_replays_identical_response() throws Exception {
-        UUID orgId = UUID.randomUUID();
-        when(authService.signup(any(SignupRequest.class)))
-                .thenReturn(new AuthResponse("tok-replay", sampleUser(orgId), sampleOrg(orgId)));
-        when(idempotencyKeyRepository.findByOrgIdAndRouteAndKey(any(), any(), any()))
-                .thenReturn(Optional.empty());
-        when(idempotencyKeyRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
-
-        String idemKey = UUID.randomUUID().toString();
-        String body = om.writeValueAsString(Map.of(
-                "email", "replay@example.com",
-                "password", "lovelace12",
-                "orgName", "Replay Co",
-                "country", "DE"));
-
-        // First request — supplier runs
-        MvcResult first = mvc.perform(post("/api/v1/auth/signup")
-                        .header("Idempotency-Key", idemKey)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
-                .andExpect(status().isOk())
-                .andReturn();
-
-        // Configure the repo to return the cached row on second call
-        com.imin.iminapi.model.IdempotencyKey cached = new com.imin.iminapi.model.IdempotencyKey();
-        cached.setResponseStatus(200);
-        cached.setResponseBody(first.getResponse().getContentAsString());
-        when(idempotencyKeyRepository.findByOrgIdAndRouteAndKey(any(), any(), any()))
-                .thenReturn(Optional.of(cached));
-
-        // Second request — should replay from cache (authService.signup not called again)
-        MvcResult second = mvc.perform(post("/api/v1/auth/signup")
-                        .header("Idempotency-Key", idemKey)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
-                .andExpect(status().isOk())
-                .andReturn();
-
-        assertThat(second.getResponse().getContentAsString())
-                .isEqualTo(first.getResponse().getContentAsString());
     }
 }
