@@ -74,9 +74,6 @@ public class Event {
     private String coverUrl;
 
     @Column(nullable = false)
-    private int capacity = 0;
-
-    @Column(nullable = false)
     private int sold = 0;
 
     @Column(name = "revenue_minor", nullable = false)

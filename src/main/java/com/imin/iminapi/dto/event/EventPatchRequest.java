@@ -13,7 +13,7 @@ public record EventPatchRequest(
         String name, String slug, String visibility, String genre, String type,
         Instant startsAt, Instant endsAt, String timezone, VenueDto venue,
         String description, String posterUrl, String videoUrl, String coverUrl,
-        Integer capacity, String currency,
+        String currency,
         Boolean squadsEnabled, Integer minSquadSize, Integer squadDiscountPct,
         Instant onSaleAt, Instant saleClosesAt
 ) {}

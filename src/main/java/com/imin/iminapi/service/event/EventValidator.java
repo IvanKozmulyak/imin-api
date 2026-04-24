@@ -26,7 +26,6 @@ public class EventValidator {
         if (isBlank(e.getVenueCity())) errors.put("venue.city", "required");
         if (isBlank(e.getVenuePostalCode())) errors.put("venue.postalCode", "required");
         if (isBlank(e.getDescription())) errors.put("description", "required");
-        if (e.getCapacity() <= 0) errors.put("capacity", "must be > 0");
         if (e.getDescription() != null && e.getDescription().length() > 2000) {
             errors.put("description", "≤ 2000 chars");
         }

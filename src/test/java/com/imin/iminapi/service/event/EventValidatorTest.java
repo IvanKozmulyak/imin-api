@@ -24,7 +24,6 @@ class EventValidatorTest {
         e.setVenueCity("Berlin");
         e.setVenuePostalCode("10115");
         e.setDescription("Stuff happens.");
-        e.setCapacity(100);
         return e;
     }
 

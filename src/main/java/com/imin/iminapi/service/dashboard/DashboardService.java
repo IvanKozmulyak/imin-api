@@ -6,6 +6,7 @@ import com.imin.iminapi.dto.event.EventDto;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
 import org.springframework.cache.annotation.Cacheable;
@@ -22,10 +23,12 @@ import java.util.Optional;
 public class DashboardService {
 
     private final EventRepository events;
+    private final TicketTierRepository tiers;
     private final UserRepository users;
 
-    public DashboardService(EventRepository events, UserRepository users) {
+    public DashboardService(EventRepository events, TicketTierRepository tiers, UserRepository users) {
         this.events = events;
+        this.tiers = tiers;
         this.users = users;
     }
 
@@ -39,7 +42,8 @@ public class DashboardService {
         Optional<Event> past = events.findRecentPast(p.orgId(), PageRequest.of(0, 1)).stream().findFirst();
 
         Now now = next.map(e -> {
-            int pct = e.getCapacity() == 0 ? 0 : (int) Math.round(100.0 * e.getSold() / e.getCapacity());
+            int totalQty = tiers.sumQuantityByEventId(e.getId());
+            int pct = totalQty == 0 ? 0 : (int) Math.round(100.0 * e.getSold() / totalQty);
             int daysOut = (int) Duration.between(Instant.now(), e.getStartsAt()).toDays();
             return new Now(EventDto.summary(e), pct, Math.max(0, daysOut));
         }).orElse(new Now(null, 0, 0));
@@ -57,8 +61,8 @@ public class DashboardService {
         LastEvent lastEvent = past.map(e -> {
             int avgTicket = e.getSold() == 0 ? 0 : (int) (e.getRevenueMinor() / e.getSold());
             return new LastEvent(EventDto.summary(e),
-                    new LastEventMetrics(e.getSold(), e.getCapacity(), avgTicket, /* nps */ null));
-        }).orElse(new LastEvent(null, new LastEventMetrics(0, 0, 0, null)));
+                    new LastEventMetrics(e.getSold(), avgTicket, /* nps */ null));
+        }).orElse(new LastEvent(null, new LastEventMetrics(0, 0, null)));
 
         Business business = new Business(totalRevenue,
                 events.countPublished(p.orgId()), events.countPast(p.orgId()),

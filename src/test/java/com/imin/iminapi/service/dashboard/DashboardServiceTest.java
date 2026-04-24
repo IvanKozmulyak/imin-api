@@ -7,6 +7,7 @@ import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
 import org.junit.jupiter.api.Test;
@@ -25,8 +26,9 @@ import static org.mockito.Mockito.*;
 class DashboardServiceTest {
 
     EventRepository events = mock(EventRepository.class);
+    TicketTierRepository tiers = mock(TicketTierRepository.class);
     UserRepository users = mock(UserRepository.class);
-    DashboardService sut = new DashboardService(events, users);
+    DashboardService sut = new DashboardService(events, tiers, users);
 
     private AuthPrincipal owner(UUID orgId) {
         return new AuthPrincipal(UUID.randomUUID(), orgId, UserRole.OWNER, UUID.randomUUID());
@@ -68,15 +70,16 @@ class DashboardServiceTest {
         next.setId(UUID.randomUUID()); next.setOrgId(orgId);
         next.setName("Next Night"); next.setSlug("next-night");
         next.setStartsAt(Instant.now().plusSeconds(28L * 24 * 3600));
-        next.setCapacity(100); next.setSold(57);
+        next.setSold(57);
         when(events.findUpcomingLive(eq(orgId), any(), any())).thenReturn(List.of(next));
+        when(tiers.sumQuantityByEventId(next.getId())).thenReturn(100);
 
         Event past = new Event();
         past.setId(UUID.randomUUID()); past.setOrgId(orgId);
         past.setName("Last Night"); past.setSlug("last-night");
         past.setStatus(EventStatus.PAST);
         past.setEndsAt(Instant.now().minusSeconds(7L * 24 * 3600));
-        past.setCapacity(200); past.setSold(198); past.setRevenueMinor(475_200);
+        past.setSold(198); past.setRevenueMinor(475_200);
         when(events.findRecentPast(eq(orgId), any())).thenReturn(List.of(past));
 
         when(events.countLive(orgId)).thenReturn(3L);

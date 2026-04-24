@@ -43,7 +43,7 @@ public class EventOverviewService {
         int daysOut = e.getStartsAt() == null ? 0
                 : (int) Duration.between(Instant.now(), e.getStartsAt()).toDays();
         Metrics m = new Metrics(
-                e.getSold(), e.getCapacity(), e.getRevenueMinor(), e.getCurrency(),
+                e.getSold(), e.getRevenueMinor(), e.getCurrency(),
                 /* squadRatePct V1 stub */ 0,
                 Math.max(0, daysOut));
         var prediction = predictions.findById(id).map(PredictionDto::from).orElse(null);

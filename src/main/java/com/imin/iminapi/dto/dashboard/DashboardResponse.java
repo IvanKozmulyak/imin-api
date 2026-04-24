@@ -27,7 +27,7 @@ public record DashboardResponse(
 
     public record LastEvent(EventDto event, LastEventMetrics metrics) {}
 
-    public record LastEventMetrics(int attended, int capacity, int avgTicketMinor, Integer nps) {}
+    public record LastEventMetrics(int attended, int avgTicketMinor, Integer nps) {}
 
     public record Business(long totalRevenueMinor, long eventsPublished, long eventsCompleted,
                            int audienceCount, int repeatRatePct) {}

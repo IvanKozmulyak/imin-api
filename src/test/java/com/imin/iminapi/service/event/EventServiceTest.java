@@ -50,7 +50,7 @@ class EventServiceTest {
 
         EventDto dto = sut.createDraft(p, new EventPatchRequest(
                 null, null, null, null, null, null, null, null, null,
-                null, null, null, null, null, null, null, null, null, null, null));
+                null, null, null, null, null, null, null, null, null, null));
 
         assertThat(dto.status()).isEqualTo("draft");
         assertThat(dto.orgId()).isEqualTo(p.orgId());
@@ -118,11 +118,10 @@ class EventServiceTest {
 
         EventDto dto = sut.patch(p, e.getId(), "\"" + updated + "\"",
                 new EventPatchRequest("New name", null, null, "Techno", null, null, null, null, null,
-                        null, null, null, null, 250, null, null, null, null, null, null));
+                        null, null, null, null, null, null, null, null, null, null));
 
         assertThat(dto.name()).isEqualTo("New name");
         assertThat(dto.genre()).isEqualTo("Techno");
-        assertThat(dto.capacity()).isEqualTo(250);
         assertThat(dto.tiers()).isNotNull();
         assertThat(dto.promoCodes()).isNotNull();
     }
@@ -139,7 +138,7 @@ class EventServiceTest {
         org.assertj.core.api.Assertions.assertThatThrownBy(() ->
                 sut.patch(p, e.getId(), "\"2026-01-01T00:00:00Z\"",
                         new EventPatchRequest("X", null, null, null, null, null, null, null, null,
-                                null, null, null, null, null, null, null, null, null, null, null)))
+                                null, null, null, null, null, null, null, null, null, null)))
                 .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.STALE_WRITE);
     }
 
@@ -157,7 +156,7 @@ class EventServiceTest {
         org.assertj.core.api.Assertions.assertThatThrownBy(() ->
                 sut.patch(p, e.getId(), "\"" + updated + "\"",
                         new EventPatchRequest(null, "taken-slug", null, null, null, null, null, null, null,
-                                null, null, null, null, null, null, null, null, null, null, null)))
+                                null, null, null, null, null, null, null, null, null, null)))
                 .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.DUPLICATE);
     }
 
@@ -170,7 +169,7 @@ class EventServiceTest {
         e.setStartsAt(Instant.parse("2026-06-01T20:00:00Z"));
         e.setEndsAt(Instant.parse("2026-06-02T04:00:00Z"));
         e.setVenueStreet("12 Main"); e.setVenueCity("Berlin"); e.setVenuePostalCode("10115");
-        e.setDescription("d"); e.setCapacity(100);
+        e.setDescription("d");
         when(events.findActive(e.getId())).thenReturn(Optional.of(e));
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
         when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
