@@ -7,7 +7,6 @@ import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.CurrentUser;
 import com.imin.iminapi.service.event.EventOverviewService;
 import com.imin.iminapi.service.event.EventService;
-import com.imin.iminapi.web.IdempotencyKeySupport;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 
@@ -17,20 +16,12 @@ import java.util.UUID;
 @RequestMapping("/api/v1/events")
 public class EventController {
 
-    private static final com.fasterxml.jackson.databind.ObjectMapper OM =
-            new com.fasterxml.jackson.databind.ObjectMapper()
-                    .registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule());
-
     private final EventService eventService;
     private final EventOverviewService overviewService;
-    private final IdempotencyKeySupport idempotency;
 
-    public EventController(EventService eventService,
-                           EventOverviewService overviewService,
-                           IdempotencyKeySupport idempotency) {
+    public EventController(EventService eventService, EventOverviewService overviewService) {
         this.eventService = eventService;
         this.overviewService = overviewService;
-        this.idempotency = idempotency;
     }
 
     @GetMapping
@@ -62,23 +53,8 @@ public class EventController {
     }
 
     @PostMapping("/{id}/publish")
-    public EventDto publish(@CurrentUser AuthPrincipal p,
-                            @PathVariable UUID id,
-                            @RequestHeader(value = "Idempotency-Key", required = false) String key) {
-        if (key == null || key.isBlank()) {
-            throw new com.imin.iminapi.security.ApiException(
-                    org.springframework.http.HttpStatus.BAD_REQUEST,
-                    com.imin.iminapi.security.ErrorCode.INVALID_REQUEST,
-                    "Idempotency-Key header is required on publish");
-        }
-        var route = "POST /api/v1/events/:id/publish";
-        var cached = idempotency.runOrReplay(p.orgId(), route, key,
-                () -> idempotency.toCached(200, eventService.publish(p, id)));
-        try {
-            return OM.readValue(cached.bodyJson(), EventDto.class);
-        } catch (Exception e) {
-            throw new IllegalStateException("Could not deserialise cached publish response", e);
-        }
+    public EventDto publish(@CurrentUser AuthPrincipal p, @PathVariable UUID id) {
+        return eventService.publish(p, id);
     }
 
     @GetMapping("/{id}/overview")

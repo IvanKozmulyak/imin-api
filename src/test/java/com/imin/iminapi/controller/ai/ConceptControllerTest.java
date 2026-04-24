@@ -42,7 +42,6 @@ class ConceptControllerTest {
     @Autowired MockMvc mvc;
     final ObjectMapper om = new ObjectMapper();
     @MockitoBean ConceptStudioService studio;
-    @MockitoBean com.imin.iminapi.web.IdempotencyKeySupport idempotency;
 
     static final UUID ORG = UUID.fromString("00000000-0000-0000-0000-000000000001");
     static final UUID USER = UUID.fromString("00000000-0000-0000-0000-000000000002");
@@ -79,15 +78,7 @@ class ConceptControllerTest {
     void post_concept_returns_full_payload() throws Exception {
         ConceptResponse s = sample();
         when(studio.create(any(), any(ConceptRequest.class))).thenReturn(s);
-        // Mock idempotency to avoid DB FK constraint in tests
-        when(idempotency.toCached(any(Integer.class), any())).thenAnswer(inv ->
-                new com.imin.iminapi.web.IdempotencyKeySupport.Cached(200, om.writeValueAsString(inv.getArgument(1))));
-        when(idempotency.runOrReplay(any(), any(), any(), any())).thenAnswer(inv -> {
-            java.util.function.Supplier<?> supplier = inv.getArgument(3);
-            return supplier.get();
-        });
         mvc.perform(post("/api/v1/ai/events/concept")
-                        .header("Idempotency-Key", "abc-1")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(om.writeValueAsString(Map.of(
                                 "vibe", "Moody Berlin techno warehouse vibe",

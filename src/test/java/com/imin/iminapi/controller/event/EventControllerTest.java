@@ -5,7 +5,6 @@ import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.dto.PageResponse;
 import com.imin.iminapi.dto.event.*;
 import com.imin.iminapi.model.UserRole;
-import com.imin.iminapi.repository.IdempotencyKeyRepository;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.service.event.EventOverviewService;
 import com.imin.iminapi.service.event.EventService;
@@ -26,7 +25,6 @@ import java.lang.annotation.RetentionPolicy;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
@@ -44,7 +42,6 @@ class EventControllerTest {
     final ObjectMapper om = new ObjectMapper();
     @MockitoBean EventService eventService;
     @MockitoBean EventOverviewService overviewService;
-    @MockitoBean IdempotencyKeyRepository idempotencyKeyRepository;
 
     static final UUID ORG = UUID.fromString("00000000-0000-0000-0000-000000000001");
     static final UUID USER = UUID.fromString("00000000-0000-0000-0000-000000000002");
@@ -122,24 +119,10 @@ class EventControllerTest {
 
     @Test
     @WithStubUser
-    void publish_without_idempotency_key_returns_400_INVALID_REQUEST() throws Exception {
-        UUID id = UUID.randomUUID();
-        mvc.perform(post("/api/v1/events/" + id + "/publish"))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code").value("INVALID_REQUEST"));
-    }
-
-    @Test
-    @WithStubUser
-    void publish_with_idempotency_key_returns_event() throws Exception {
+    void publish_returns_event() throws Exception {
         UUID id = UUID.randomUUID();
         when(eventService.publish(any(), eq(id))).thenReturn(sample());
-        // Mock idempotency repo so the real IdempotencyKeySupport doesn't hit H2 FK
-        when(idempotencyKeyRepository.findByOrgIdAndRouteAndKey(any(), any(), any()))
-                .thenReturn(Optional.empty());
-        when(idempotencyKeyRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
-        mvc.perform(post("/api/v1/events/" + id + "/publish")
-                        .header("Idempotency-Key", UUID.randomUUID().toString()))
+        mvc.perform(post("/api/v1/events/" + id + "/publish"))
                 .andExpect(status().isOk());
     }
 
