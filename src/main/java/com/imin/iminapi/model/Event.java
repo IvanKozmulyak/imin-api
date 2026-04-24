@@ -5,6 +5,7 @@ import lombok.Getter;
 import lombok.Setter;
 
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.UUID;
 
 @Entity
@@ -102,10 +103,10 @@ public class Event {
     private UUID createdBy;
 
     @Column(name = "created_at", nullable = false)
-    private Instant createdAt = Instant.now();
+    private Instant createdAt = nowMicros();
 
     @Column(name = "updated_at", nullable = false)
-    private Instant updatedAt = Instant.now();
+    private Instant updatedAt = nowMicros();
 
     @Column(name = "published_at")
     private Instant publishedAt;
@@ -113,6 +114,19 @@ public class Event {
     @Column(name = "deleted_at")
     private Instant deletedAt;
 
+    @PrePersist
+    void onPersist() {
+        if (createdAt == null) createdAt = nowMicros(); else createdAt = createdAt.truncatedTo(ChronoUnit.MICROS);
+        updatedAt = updatedAt == null ? nowMicros() : updatedAt.truncatedTo(ChronoUnit.MICROS);
+    }
+
     @PreUpdate
-    void onUpdate() { this.updatedAt = Instant.now(); }
+    void onUpdate() { this.updatedAt = nowMicros(); }
+
+    // Postgres TIMESTAMP stores microseconds; truncating here so the in-memory value
+    // matches what gets persisted — otherwise If-Match comparisons against a client
+    // echoing back nanos from a prior response always mis-match by 3 digits.
+    private static Instant nowMicros() {
+        return Instant.now().truncatedTo(ChronoUnit.MICROS);
+    }
 }
