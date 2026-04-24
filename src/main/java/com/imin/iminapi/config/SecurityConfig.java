@@ -74,6 +74,8 @@ public class SecurityConfig {
                         .requestMatchers("/api/v1/auth/signup",
                                          "/api/v1/auth/login",
                                          "/api/v1/auth/logout").permitAll()
+                        // Public reference data (country codes, etc.)
+                        .requestMatchers(HttpMethod.GET, "/api/v1/reference/**").permitAll()
                         // Everything else under /api/v1 requires a session
                         .requestMatchers("/api/v1/**").authenticated()
                         .anyRequest().permitAll()
