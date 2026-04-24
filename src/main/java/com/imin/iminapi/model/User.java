@@ -1,10 +1,12 @@
 package com.imin.iminapi.model;
 
+import com.imin.iminapi.util.Times;
 import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.Setter;
 
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.UUID;
 
 @Entity
@@ -39,7 +41,7 @@ public class User {
     private String avatarInitials = "";
 
     @Column(name = "created_at", nullable = false)
-    private Instant createdAt = Instant.now();
+    private Instant createdAt = Times.nowMicros();
 
     @Column(name = "last_active_at")
     private Instant lastActiveAt;
@@ -47,5 +49,12 @@ public class User {
     public void setEmail(String email) {
         this.email = email;
         this.emailLower = email == null ? null : email.toLowerCase();
+    }
+
+    @PrePersist
+    @PreUpdate
+    void truncateTimestamps() {
+        createdAt = createdAt == null ? Times.nowMicros() : createdAt.truncatedTo(ChronoUnit.MICROS);
+        if (lastActiveAt != null) lastActiveAt = lastActiveAt.truncatedTo(ChronoUnit.MICROS);
     }
 }

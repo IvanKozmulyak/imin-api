@@ -1,10 +1,12 @@
 package com.imin.iminapi.model;
 
+import com.imin.iminapi.util.Times;
 import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.Setter;
 
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.UUID;
 
 @Entity
@@ -32,8 +34,15 @@ public class Notification {
     private String link;
 
     @Column(name = "created_at", nullable = false)
-    private Instant createdAt = Instant.now();
+    private Instant createdAt = Times.nowMicros();
 
     @Column(name = "read_at")
     private Instant readAt;
+
+    @PrePersist
+    @PreUpdate
+    void truncateTimestamps() {
+        createdAt = createdAt == null ? Times.nowMicros() : createdAt.truncatedTo(ChronoUnit.MICROS);
+        if (readAt != null) readAt = readAt.truncatedTo(ChronoUnit.MICROS);
+    }
 }
