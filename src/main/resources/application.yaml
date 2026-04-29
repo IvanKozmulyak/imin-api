@@ -83,3 +83,8 @@ imin:
     secret-access-key: ${R2_SECRET_ACCESS_KEY:}
     public-url-prefix: ${R2_PUBLIC_URL_PREFIX:}
 
+sentry:
+  dsn: ${SENTRY_DSN:}
+  enabled: false
+  send-default-pii: false
+  traces-sample-rate: 0.0
