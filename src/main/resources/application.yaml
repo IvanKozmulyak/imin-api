@@ -62,7 +62,7 @@ imin:
   reference-analyzer:
     model-id: ${IMIN_REFERENCE_ANALYZER_MODEL:openai/gpt-4o-mini}
   cors:
-    allowed-origin-patterns: ${CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:3000,http://localhost:5173,https://imin-webapp.vercel.app,https://imin-webapp-*.vercel.app}
+    allowed-origin-patterns: ${CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:3000,http://localhost:5173,https://imin-webapp.vercel.app,https://imin-webapp-*.vercel.app,https://dashboard.imin.wtf}
   api:
     base-path: /api/v1
   auth:
