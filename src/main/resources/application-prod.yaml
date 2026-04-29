@@ -27,7 +27,7 @@ server:
 sentry:
   enabled: true
   environment: prod
-  release: ${SENTRY_RELEASE:imin-api@${project.version}}
+  release: ${SENTRY_RELEASE:imin-api-@project.version@}
   logging:
     minimum-event-level: error
     minimum-breadcrumb-level: info
