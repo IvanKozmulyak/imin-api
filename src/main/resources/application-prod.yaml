@@ -14,7 +14,6 @@ logging:
   level:
     root: WARN
     com.imin.iminapi: INFO
-    io.sentry: DEBUG
 
 springdoc:
   api-docs:
@@ -27,7 +26,6 @@ server:
 
 sentry:
   enabled: true
-  debug: true
   environment: prod
   release: ${SENTRY_RELEASE:imin-api-@project.version@}
   logging:
