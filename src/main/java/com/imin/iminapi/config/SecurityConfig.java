@@ -64,7 +64,7 @@ public class SecurityConfig {
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .csrf(csrf -> csrf.disable())
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/", "/index.html", "/images/**").permitAll()
+                        .requestMatchers("/images/**").permitAll()
                         .requestMatchers("/swagger-ui/**", "/v3/api-docs/**").permitAll()
                         // Legacy poster pipeline (moved under /api/v1, still public)
                         .requestMatchers(HttpMethod.POST, "/api/v1/events/ai-create").permitAll()
