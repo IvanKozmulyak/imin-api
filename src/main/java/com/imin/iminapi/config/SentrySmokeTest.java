@@ -23,6 +23,7 @@ public class SentrySmokeTest {
         Sentry.captureException(new RuntimeException("Sentry smoke test (direct SDK call)"));
         log.error("Sentry smoke test (logback path)", new RuntimeException("Sentry smoke test"));
 
-        log.info("Sentry smoke test fired both events.");
+        Sentry.flush(5000);
+        log.info("Sentry smoke test fired both events and flushed.");
     }
 }
