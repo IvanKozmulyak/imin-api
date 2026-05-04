@@ -21,7 +21,7 @@ Existing relevant pieces:
 
 - `src/main/java/com/imin/iminapi/service/auth/AuthService.java` — owns signup/login/logout/me.
 - `src/main/java/com/imin/iminapi/controller/auth/AuthController.java` — REST surface.
-- `src/main/java/com/imin/iminapi/security/SecurityConfig.java` — `/api/auth/**` is `permitAll`; new endpoints inherit this.
+- `src/main/java/com/imin/iminapi/security/SecurityConfig.java` — `/api/v1/auth/**` is `permitAll`; new endpoints inherit this.
 - `src/main/java/com/imin/iminapi/security/ErrorCode.java` — typed error codes returned in API responses.
 - `src/main/resources/db/migration/` — Flyway migrations.
 
@@ -57,22 +57,22 @@ Existing relevant pieces:
 
 ## API surface
 
-All endpoints live on `AuthController` and are `permitAll` (already covered by `/api/auth/**` in `SecurityConfig`).
+All endpoints live on `AuthController` and are `permitAll` (already covered by `/api/v1/auth/**` in `SecurityConfig`).
 
-### Changed: `POST /api/auth/signup`
+### Changed: `POST /api/v1/auth/signup`
 
 - Body: unchanged (`SignupRequest`).
 - Response: `VerificationPendingResponse { message: "Verification email sent", email: string }` (200 OK).
 - Errors: existing `409 DUPLICATE` for email-in-use; new `500 INTERNAL` propagated from Resend failures.
 
-### New: `POST /api/auth/verify-email`
+### New: `POST /api/v1/auth/verify-email`
 
 - Body: `{ email: string (valid email), code: string (exactly 4 digits) }`.
 - Response: `AuthResponse { token, user, organization }` (200 OK). User is now logged in.
 - Errors: `400 INVALID_CODE` for any failure mode (wrong digits / expired / consumed / max attempts exceeded — single code so we don't help an attacker distinguish).
 - Side effects: sets `users.verified_at = NOW()`, marks code consumed, issues a new session, sends welcome email (sync, swallow failure).
 
-### New: `POST /api/auth/resend-verification`
+### New: `POST /api/v1/auth/resend-verification`
 
 - Body: `{ email: string }`.
 - Response: `200 OK` with empty body. Always 200 if the email format is valid (anti-enumeration).
@@ -81,7 +81,7 @@ All endpoints live on `AuthController` and are `permitAll` (already covered by `
   - Email valid + user exists + already verified: do nothing, return 200.
   - Email valid + user does not exist: do nothing, return 200.
 
-### New: `POST /api/auth/forgot-password`
+### New: `POST /api/v1/auth/forgot-password`
 
 - Body: `{ email: string }`.
 - Response: `200 OK` with empty body. Always 200 (anti-enumeration).
@@ -90,14 +90,14 @@ All endpoints live on `AuthController` and are `permitAll` (already covered by `
   - Email valid + user does not exist: do nothing, return 200.
 - Issuing a new token does NOT invalidate prior unexpired tokens; the user can click the link from any unconsumed email.
 
-### New: `POST /api/auth/reset-password`
+### New: `POST /api/v1/auth/reset-password`
 
 - Body: `{ token: string, newPassword: string (min length per existing password policy) }`.
 - Response: `200 OK` with empty body.
 - Side effects: updates `users.password_hash`, marks token consumed, revokes all existing sessions for the user, sends "your password was changed" notification email (sync, swallow failure).
 - Errors: `400 INVALID_TOKEN` for unknown / expired / consumed tokens (single code).
 
-### Changed: `POST /api/auth/login`
+### Changed: `POST /api/v1/auth/login`
 
 - New failure mode: `403 EMAIL_NOT_VERIFIED` when the matched user has `verified_at IS NULL`. Frontend uses this to redirect to the verify screen.
 
@@ -107,19 +107,19 @@ One forward Flyway migration: `V<next>__email_verification_and_password_reset.sq
 
 ```sql
 -- 1. Track email verification on users
-ALTER TABLE users ADD COLUMN verified_at TIMESTAMPTZ NULL;
+ALTER TABLE users ADD COLUMN verified_at TIMESTAMP NULL;
 -- Backfill so existing users don't get locked out on deploy
-UPDATE users SET verified_at = NOW() WHERE verified_at IS NULL;
+UPDATE users SET verified_at = CURRENT_TIMESTAMP WHERE verified_at IS NULL;
 
 -- 2. Email verification codes
 CREATE TABLE email_verification_codes (
     id              UUID PRIMARY KEY,
     user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     code            CHAR(4) NOT NULL,
-    expires_at      TIMESTAMPTZ NOT NULL,
-    consumed_at     TIMESTAMPTZ NULL,
-    attempts        INT NOT NULL DEFAULT 0,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    expires_at      TIMESTAMP NOT NULL,
+    consumed_at     TIMESTAMP NULL,
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX idx_evc_user_active
     ON email_verification_codes(user_id)
@@ -130,9 +130,9 @@ CREATE TABLE password_reset_tokens (
     id              UUID PRIMARY KEY,
     user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     token_hash      CHAR(64) NOT NULL UNIQUE,  -- sha256 hex of the cleartext token
-    expires_at      TIMESTAMPTZ NOT NULL,
-    consumed_at     TIMESTAMPTZ NULL,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    expires_at      TIMESTAMP NOT NULL,
+    consumed_at     TIMESTAMP NULL,
+    created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX idx_prt_token_hash ON password_reset_tokens(token_hash);
 ```
