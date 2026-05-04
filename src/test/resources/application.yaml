@@ -36,6 +36,12 @@ replicate:
 imin:
   reference-analyzer:
     model-id: openai/gpt-4o-mini
+  email:
+    api-key: test-resend-key
+    from-address: noreply@imin.test
+    from-name: imin-test
+    reply-to: ""
+    app-base-url: http://localhost:3000
   api:
     base-path: /api/v1
   auth:
