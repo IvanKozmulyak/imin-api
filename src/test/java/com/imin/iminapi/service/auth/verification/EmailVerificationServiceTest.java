@@ -85,7 +85,7 @@ class EmailVerificationServiceTest {
         assertThatThrownBy(() -> sut.verify("ada@example.com", "0000"))
                 .isInstanceOf(ApiException.class)
                 .hasFieldOrPropertyWithValue("code", ErrorCode.INVALID_CODE);
-        assertThat(active.getAttempts()).isEqualTo(1);
+        verify(codes).incrementAttempts(active.getId());
         assertThat(active.getConsumedAt()).isNull();
     }
 

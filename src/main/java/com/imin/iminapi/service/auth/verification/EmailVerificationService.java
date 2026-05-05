@@ -66,12 +66,13 @@ public class EmailVerificationService {
     /**
      * Verifies a submitted code against the user's latest active verification code.
      * <p>
-     * NOTE: {@code noRollbackFor = ApiException.class} is required so the wrong-code
-     * attempts++ write commits even when we throw INVALID_CODE — without it, Spring's
-     * default rollback-on-RuntimeException semantics would unwind the increment and
-     * the brute-force counter would never persist.
+     * The wrong-code attempts++ uses {@link EmailVerificationCodeRepository#incrementAttempts}
+     * which runs in a {@code REQUIRES_NEW} transaction so it commits independently of
+     * this method's transaction (and any outer transaction the caller is in). When the
+     * INVALID_CODE throw rolls the outer transaction back, the brute-force counter
+     * has already been persisted.
      */
-    @Transactional(noRollbackFor = ApiException.class)
+    @Transactional
     public User verify(String email, String code) {
         Instant now = clock.instant();
         Optional<User> maybeUser = users.findByEmailLower(email.toLowerCase());
@@ -90,8 +91,7 @@ public class EmailVerificationService {
         if (active.getExpiresAt().isBefore(now)) throw invalidCode();
 
         if (!active.getCode().equals(code)) {
-            active.setAttempts(active.getAttempts() + 1);
-            codes.save(active);
+            codes.incrementAttempts(active.getId());
             throw invalidCode();
         }
 
