@@ -1,10 +1,119 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-<body style="font-family:Arial,Helvetica,sans-serif;background:#f5f6fa;padding:32px;color:#222;">
-  <div style="max-width:480px;margin:0 auto;background:#fff;border-radius:8px;padding:32px;">
-    <h2 style="margin:0 0 16px 0;">Welcome to imin{{name}}</h2>
-    <p>Your account is ready. You can sign in any time at <a href="{{appBaseUrl}}">{{appBaseUrl}}</a>.</p>
-    <p style="color:#666;font-size:14px;">Glad to have you on board.</p>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="x-apple-disable-message-reformatting" />
+  <title>Welcome to imin</title>
+</head>
+<body style="margin:0; padding:0; background:#f4f2fa; font-family:'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color:#11091f; -webkit-font-smoothing:antialiased;">
+
+  <!-- preheader -->
+  <div style="display:none; max-height:0; overflow:hidden; opacity:0; mso-hide:all;">
+    Welcome to imin, {{name}} — your account is verified and ready.
   </div>
+
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f2fa; padding:32px 16px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="max-width:600px; width:100%; background:#ffffff; border:1px solid #d4cee6; border-radius:10px; overflow:hidden; box-shadow:0 6px 18px rgba(20,12,45,0.08);">
+
+          <!-- gradient hero -->
+          <tr>
+            <td style="background:linear-gradient(135deg, #11091f 0%, #1f1438 50%, #2d1f5a 100%); padding:36px 32px;">
+              <div style="font-size:18px; font-weight:700; letter-spacing:-0.3px; color:#ffffff;">imin<span style="color:#6b7bff;">.wtf</span></div>
+              <div style="margin-top:24px; font-family:'Space Mono', ui-monospace, Menlo, Consolas, monospace; font-size:11px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:#aea7c8;">YOU&apos;RE IN</div>
+              <h1 style="margin:6px 0 0; font-size:32px; font-weight:700; letter-spacing:-0.6px; color:#ffffff; line-height:1.1;">
+                Welcome, {{name}}.
+              </h1>
+            </td>
+          </tr>
+
+          <!-- body -->
+          <tr>
+            <td style="padding:28px 32px 0;">
+              <p style="margin:0; font-size:15px; line-height:1.6; color:#11091f;">
+                Your account is verified. Time to throw your first event.
+              </p>
+              <p style="margin:14px 0 0; font-size:14px; line-height:1.6; color:#4d4666;">
+                imin is built for organizers who want to spin up a launch-ready event in 60 seconds — vibe in, AI Studio out, then iterate from there.
+              </p>
+            </td>
+          </tr>
+
+          <!-- primary CTA -->
+          <tr>
+            <td style="padding:28px 32px 0;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td style="background:#2d5cff; border-radius:6px;">
+                    <a href="{{appBaseUrl}}/dashboard" style="display:inline-block; padding:12px 22px; font-size:14px; font-weight:600; color:#ffffff; text-decoration:none; letter-spacing:-0.1px;">
+                      Open the dashboard →
+                    </a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- feature row -->
+          <tr>
+            <td style="padding:28px 32px 0;">
+              <div style="font-family:'Space Mono', ui-monospace, Menlo, Consolas, monospace; font-size:11px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:#7a738f;">FIRST 3 MOVES</div>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;">
+                <tr>
+                  <td style="padding:12px 14px; background:#ebe8f5; border:1px solid #d4cee6; border-radius:6px;">
+                    <div style="font-size:13px; font-weight:700; color:#11091f;">1 · Drop a vibe</div>
+                    <div style="margin-top:2px; font-size:12px; color:#4d4666; line-height:1.5;">Describe your night — AI Studio drafts a launch-ready concept.</div>
+                  </td>
+                </tr>
+                <tr><td style="height:8px; line-height:8px;">&nbsp;</td></tr>
+                <tr>
+                  <td style="padding:12px 14px; background:#ebe8f5; border:1px solid #d4cee6; border-radius:6px;">
+                    <div style="font-size:13px; font-weight:700; color:#11091f;">2 · Tier your tickets</div>
+                    <div style="margin-top:2px; font-size:12px; color:#4d4666; line-height:1.5;">Early Bird → Standard → Late, with auto-transitions on date or %-sold.</div>
+                  </td>
+                </tr>
+                <tr><td style="height:8px; line-height:8px;">&nbsp;</td></tr>
+                <tr>
+                  <td style="padding:12px 14px; background:#ebe8f5; border:1px solid #d4cee6; border-radius:6px;">
+                    <div style="font-size:13px; font-weight:700; color:#11091f;">3 · Publish</div>
+                    <div style="margin-top:2px; font-size:12px; color:#4d4666; line-height:1.5;">Squad ticketing, marketing automation, door scanner — all on by default.</div>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- divider -->
+          <tr>
+            <td style="padding:28px 32px 0;">
+              <hr style="border:0; height:1px; background:#d4cee6; margin:0;" />
+            </td>
+          </tr>
+
+          <!-- footer note -->
+          <tr>
+            <td style="padding:18px 32px 32px;">
+              <p style="margin:0; font-size:12px; line-height:1.6; color:#7a738f;">
+                Need a hand? Reply to this email — a real human reads everything.
+              </p>
+            </td>
+          </tr>
+
+        </table>
+
+        <!-- outside footer -->
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="max-width:600px; width:100%; margin-top:14px;">
+          <tr>
+            <td align="center" style="padding:0 16px;">
+              <p style="margin:0; font-family:'Space Mono', ui-monospace, Menlo, Consolas, monospace; font-size:11px; letter-spacing:1.5px; text-transform:uppercase; color:#7a738f;">imin.wtf · sent because you just verified your account</p>
+            </td>
+          </tr>
+        </table>
+
+      </td>
+    </tr>
+  </table>
 </body>
 </html>

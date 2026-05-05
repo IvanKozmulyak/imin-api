@@ -1,5 +1,28 @@
-Welcome to imin{{name}}
+imin.wtf · you're in
 
-Your account is ready. You can sign in any time at {{appBaseUrl}}.
+Welcome, {{name}}.
+─────────────────
 
-Glad to have you on board.
+Your account is verified. Time to throw your first event.
+
+imin is built for organizers who want to spin up a launch-ready event in 60 seconds — vibe in, AI Studio out, then iterate from there.
+
+→ Open the dashboard: {{appBaseUrl}}/dashboard
+
+
+FIRST 3 MOVES
+
+  1 · Drop a vibe
+      Describe your night — AI Studio drafts a launch-ready concept.
+
+  2 · Tier your tickets
+      Early Bird → Standard → Late, with auto-transitions on date or %-sold.
+
+  3 · Publish
+      Squad ticketing, marketing automation, door scanner — all on by default.
+
+
+Need a hand? Reply to this email — a real human reads everything.
+
+—
+imin.wtf · sent because you just verified your account

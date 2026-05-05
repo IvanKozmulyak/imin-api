@@ -1,7 +1,15 @@
+imin.wtf · verification code
+
 Verify your email
+─────────────────
 
-Use this code to finish creating your imin account:
+Enter this 4-digit code to finish creating your imin account:
 
-{{code}}
+    {{code}}
 
-This code expires in {{expiresInMinutes}} minutes. If you didn't request it, you can ignore this email.
+Expires in {{expiresInMinutes}} minutes.
+
+Didn't sign up for imin? You can safely ignore this email — the code expires on its own.
+
+—
+imin.wtf · sent because someone signed up with this email

@@ -32,13 +32,14 @@ public class AccountEmailService {
     }
 
     public void sendWelcome(User user) {
-        // Template reads "Welcome to imin{{name}}". Caller-controlled comma+space prefix
-        // gives "Welcome to imin, Ada" or "Welcome to imin" for blank names. Renderer
-        // HTML-escapes the value, so a malicious name cannot inject HTML.
+        // Template uses {{name}} raw (e.g. "Welcome, {{name}}."). Most users sign up
+        // without a name, so we fall back to "there" — gives "Welcome, there." which
+        // reads naturally. Renderer HTML-escapes the value, so a malicious name
+        // cannot inject HTML.
         String name = user.getName();
-        String namePart = (name == null || name.isBlank()) ? "" : ", " + name;
+        String displayName = (name == null || name.isBlank()) ? "there" : name;
         Map<String, String> vars = Map.of(
-                "name", namePart,
+                "name", displayName,
                 "appBaseUrl", props.getAppBaseUrl());
         EmailTemplateRenderer.Rendered r = renderer.render("welcome", vars);
         email.send(user.getEmail(), SUBJECT_WELCOME, r.html(), r.text());
