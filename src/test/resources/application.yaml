@@ -53,6 +53,12 @@ imin:
     ai-concept:
       capacity: 10
       window-minutes: 60
+    verification-resend:
+      capacity: 1000
+      window-minutes: 15
+    password-reset:
+      capacity: 1000
+      window-minutes: 15
   media:
     enabled: false
     bucket: test

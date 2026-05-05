@@ -38,6 +38,11 @@ Required env vars for running locally (app will log warnings / fail requests oth
 - `REPLICATE_API_TOKEN` — Ideogram image generation (must start with `r8_`); only needed when `imageProvider=REPLICATE` (the default)
 - `OPENAI_API_KEY` — required by Spring AI starter even when OpenRouter is `@Primary` (any non-empty value works); also used directly by `OpenAiImageClient` when `imageProvider=OPENAI`
 - Optional: `OPENAI_IMAGE_MODEL` (default `gpt-image-1`) — set to e.g. `gpt-image-2` to test a newer model without code changes
+- `RESEND_API_KEY` — Resend API key (required to send any auth email; signup/verify/resend/forgot-password fail without it)
+- `IMIN_EMAIL_FROM_ADDRESS` — sender email address (default `noreply@imin.local` — must be a verified Resend sender in prod)
+- `IMIN_EMAIL_FROM_NAME` — sender display name (default `imin`)
+- `IMIN_EMAIL_REPLY_TO` — optional reply-to header
+- `IMIN_APP_BASE_URL` — frontend base URL used to build password-reset links (default `http://localhost:3000`)
 
 Swagger UI: `http://localhost:8085/swagger-ui.html` (dev only; disabled in prod).
 
@@ -85,6 +90,7 @@ Served via `/images/**` → filesystem mapping in `WebConfig` (dir from `replica
 - **REST endpoints**: Spring Data REST for plain CRUD; `@RestController` (as under `controller/`) when the flow has custom logic.
 - **Tests**: `src/test/resources/application.yaml` pins `spring.profiles.active=test`, disables docker-compose integration, and uses H2 with PG dialect + Flyway. External services (OpenRouter, Replicate, Ideogram) must be mocked in tests.
 - **Security**: `/api/events/**`, `/api/posters/**`, `/images/**`, `/swagger-ui/**` are `permitAll`. If you add new API surface that should be public, update `SecurityConfig` explicitly.
+- **Auth flows email users via Resend.** Signup persists the user with `verified_at = NULL` and emails a 4-digit code; login is hard-blocked with `403 EMAIL_NOT_VERIFIED` until verification. Password reset uses a long random token link. See `docs/superpowers/specs/2026-05-04-resend-integration-design.md`.
 
 ### Planning docs
 

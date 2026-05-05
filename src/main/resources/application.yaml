@@ -80,6 +80,12 @@ imin:
     ai-concept:
       capacity: 10
       window-minutes: 60
+    verification-resend:
+      capacity: 3
+      window-minutes: 15
+    password-reset:
+      capacity: 3
+      window-minutes: 15
   media:
     enabled: ${MEDIA_ENABLED:true}
     bucket: ${R2_BUCKET:imin-media-dev}
