@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.dto.OrganizationDto;
 import com.imin.iminapi.dto.UserDto;
-import com.imin.iminapi.dto.auth.AuthResponse;
 import com.imin.iminapi.dto.auth.LoginRequest;
 import com.imin.iminapi.dto.auth.SignupRequest;
 import com.imin.iminapi.security.*;

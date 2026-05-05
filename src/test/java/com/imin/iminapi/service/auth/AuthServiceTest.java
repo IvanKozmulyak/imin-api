@@ -20,6 +20,7 @@ import java.time.Instant;
 
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
@@ -61,6 +62,26 @@ class AuthServiceTest {
         verify(accountEmail).sendVerificationCode(any(User.class), eq("1234"),
                 eq(com.imin.iminapi.service.auth.verification.EmailVerificationService.EXPIRES_IN_MINUTES));
         verify(sessions, never()).save(any(AuthSession.class));
+    }
+
+    @Test
+    void signup_propagates_when_verification_email_send_fails() {
+        when(users.existsByEmailLower("ada@example.com")).thenReturn(false);
+        when(orgs.save(any(Organization.class))).thenAnswer(inv -> {
+            Organization o = inv.getArgument(0); o.setId(java.util.UUID.randomUUID()); return o;
+        });
+        when(users.save(any(User.class))).thenAnswer(inv -> {
+            User u = inv.getArgument(0); u.setId(java.util.UUID.randomUUID()); return u;
+        });
+        when(verificationSvc.issueCode(any(User.class))).thenReturn("1234");
+        org.mockito.Mockito.doThrow(new ApiException(
+                org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,
+                com.imin.iminapi.security.ErrorCode.UPSTREAM_UNAVAILABLE, "down"))
+            .when(accountEmail).sendVerificationCode(any(User.class), any(), anyInt());
+
+        assertThatThrownBy(() -> sut.signup(new SignupRequest("ada@example.com", "lovelace12", "Ada Co", "GB")))
+                .isInstanceOf(ApiException.class)
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.UPSTREAM_UNAVAILABLE);
     }
 
     @Test
