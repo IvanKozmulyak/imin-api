@@ -1,0 +1,7 @@
+Verify your email
+
+Use this code to finish creating your imin account:
+
+{{code}}
+
+This code expires in {{expiresInMinutes}} minutes. If you didn't request it, you can ignore this email.

@@ -1,0 +1,5 @@
+Welcome to imin{{name}}
+
+Your account is ready. You can sign in any time at {{appBaseUrl}}.
+
+Glad to have you on board.
