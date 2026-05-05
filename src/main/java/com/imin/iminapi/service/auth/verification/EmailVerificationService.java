@@ -13,6 +13,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Locale;
 import java.util.Optional;
 
@@ -51,18 +52,28 @@ public class EmailVerificationService {
 
     @Transactional
     public String issueCode(User user) {
-        codes.invalidateActiveForUser(user.getId(), clock.instant());
+        Instant now = clock.instant();
+        codes.invalidateActiveForUser(user.getId(), now);
         String code = String.format(Locale.ROOT, "%04d", rnd.nextInt(10_000));
         EmailVerificationCode entity = new EmailVerificationCode();
         entity.setUserId(user.getId());
         entity.setCode(code);
-        entity.setExpiresAt(clock.instant().plus(ttl));
+        entity.setExpiresAt(now.plus(ttl));
         codes.save(entity);
         return code;
     }
 
-    @Transactional
+    /**
+     * Verifies a submitted code against the user's latest active verification code.
+     * <p>
+     * NOTE: {@code noRollbackFor = ApiException.class} is required so the wrong-code
+     * attempts++ write commits even when we throw INVALID_CODE — without it, Spring's
+     * default rollback-on-RuntimeException semantics would unwind the increment and
+     * the brute-force counter would never persist.
+     */
+    @Transactional(noRollbackFor = ApiException.class)
     public User verify(String email, String code) {
+        Instant now = clock.instant();
         Optional<User> maybeUser = users.findByEmailLower(email.toLowerCase());
         if (maybeUser.isEmpty()) {
             throw invalidCode();
@@ -76,7 +87,7 @@ public class EmailVerificationService {
         EmailVerificationCode active = maybeActive.get();
 
         if (active.getAttempts() >= maxAttempts) throw invalidCode();
-        if (active.getExpiresAt().isBefore(clock.instant())) throw invalidCode();
+        if (active.getExpiresAt().isBefore(now)) throw invalidCode();
 
         if (!active.getCode().equals(code)) {
             active.setAttempts(active.getAttempts() + 1);
@@ -84,9 +95,9 @@ public class EmailVerificationService {
             throw invalidCode();
         }
 
-        active.setConsumedAt(clock.instant());
+        active.setConsumedAt(now);
         codes.save(active);
-        user.setVerifiedAt(clock.instant());
+        user.setVerifiedAt(now);
         users.save(user);
         return user;
     }
