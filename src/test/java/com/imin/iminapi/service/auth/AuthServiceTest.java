@@ -201,4 +201,171 @@ class AuthServiceTest {
                 .isInstanceOf(ApiException.class)
                 .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.EMAIL_NOT_VERIFIED);
     }
+
+    // ----- verifyEmail -----
+
+    @Test
+    void verifyEmail_marks_user_verified_issues_session_sends_welcome() {
+        User u = new User();
+        u.setId(java.util.UUID.randomUUID());
+        u.setOrgId(java.util.UUID.randomUUID());
+        u.setEmail("ada@example.com");
+        u.setRole(UserRole.OWNER);
+        u.setVerifiedAt(java.time.Instant.now());
+
+        Organization org = new Organization();
+        org.setId(u.getOrgId());
+        org.setName("Ada Co");
+        org.setContactEmail("ada@example.com");
+        org.setCountry("GB");
+
+        when(verificationSvc.verify("ada@example.com", "1234")).thenReturn(u);
+        when(orgs.findById(u.getOrgId())).thenReturn(java.util.Optional.of(org));
+        when(sessions.save(any(AuthSession.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        com.imin.iminapi.dto.auth.AuthResponse r = sut.verifyEmail(
+                new com.imin.iminapi.dto.auth.VerifyEmailRequest("ada@example.com", "1234"));
+
+        assertThat(r.token()).isNotBlank();
+        assertThat(r.user().email()).isEqualTo("ada@example.com");
+        verify(accountEmail).sendWelcome(u);
+    }
+
+    @Test
+    void verifyEmail_swallows_welcome_email_failure() {
+        User u = new User();
+        u.setId(java.util.UUID.randomUUID());
+        u.setOrgId(java.util.UUID.randomUUID());
+        u.setEmail("ada@example.com");
+        u.setRole(UserRole.OWNER);
+        u.setVerifiedAt(java.time.Instant.now());
+
+        Organization org2 = new Organization();
+        org2.setId(u.getOrgId());
+        org2.setName("Ada Co");
+        org2.setContactEmail("ada@example.com");
+        org2.setCountry("GB");
+
+        when(verificationSvc.verify(any(), any())).thenReturn(u);
+        when(orgs.findById(u.getOrgId())).thenReturn(java.util.Optional.of(org2));
+        when(sessions.save(any(AuthSession.class))).thenAnswer(inv -> inv.getArgument(0));
+        doThrow(new ApiException(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,
+                com.imin.iminapi.security.ErrorCode.UPSTREAM_UNAVAILABLE, "down"))
+                .when(accountEmail).sendWelcome(any());
+
+        com.imin.iminapi.dto.auth.AuthResponse r = sut.verifyEmail(
+                new com.imin.iminapi.dto.auth.VerifyEmailRequest("ada@example.com", "1234"));
+        assertThat(r.token()).isNotBlank(); // not failed
+    }
+
+    // ----- resendVerification -----
+
+    @Test
+    void resendVerification_for_unverified_user_issues_new_code_and_sends() {
+        User u = new User();
+        u.setId(java.util.UUID.randomUUID());
+        u.setEmail("ada@example.com");
+        u.setVerifiedAt(null);
+        when(users.findByEmailLower("ada@example.com")).thenReturn(java.util.Optional.of(u));
+        when(verificationSvc.issueCode(u)).thenReturn("9999");
+
+        sut.resendVerification(new com.imin.iminapi.dto.auth.ResendVerificationRequest("ada@example.com"));
+
+        verify(verificationSvc).issueCode(u);
+        verify(accountEmail).sendVerificationCode(eq(u), eq("9999"), anyInt());
+    }
+
+    @Test
+    void resendVerification_for_verified_user_is_a_noop() {
+        User u = new User();
+        u.setId(java.util.UUID.randomUUID());
+        u.setEmail("ada@example.com");
+        u.setVerifiedAt(java.time.Instant.now());
+        when(users.findByEmailLower("ada@example.com")).thenReturn(java.util.Optional.of(u));
+
+        sut.resendVerification(new com.imin.iminapi.dto.auth.ResendVerificationRequest("ada@example.com"));
+
+        verify(verificationSvc, never()).issueCode(any());
+        verify(accountEmail, never()).sendVerificationCode(any(), any(), anyInt());
+    }
+
+    @Test
+    void resendVerification_for_unknown_email_is_a_noop() {
+        when(users.findByEmailLower(any())).thenReturn(java.util.Optional.empty());
+
+        sut.resendVerification(new com.imin.iminapi.dto.auth.ResendVerificationRequest("nobody@example.com"));
+
+        verify(verificationSvc, never()).issueCode(any());
+    }
+
+    // ----- forgotPassword -----
+
+    @Test
+    void forgotPassword_for_existing_user_issues_token_and_sends_email() {
+        User u = new User();
+        u.setId(java.util.UUID.randomUUID());
+        u.setEmail("ada@example.com");
+        when(users.findByEmailLower("ada@example.com")).thenReturn(java.util.Optional.of(u));
+        when(passwordResetSvc.issueToken(u)).thenReturn("reset-token-abc");
+
+        sut.forgotPassword(new com.imin.iminapi.dto.auth.ForgotPasswordRequest("ada@example.com"));
+
+        verify(accountEmail).sendPasswordReset(eq(u),
+                eq("http://localhost:3000/reset-password?token=reset-token-abc"),
+                anyInt());
+    }
+
+    @Test
+    void forgotPassword_for_unknown_email_is_silent_noop() {
+        when(users.findByEmailLower(any())).thenReturn(java.util.Optional.empty());
+
+        sut.forgotPassword(new com.imin.iminapi.dto.auth.ForgotPasswordRequest("nobody@example.com"));
+
+        verify(passwordResetSvc, never()).issueToken(any());
+        verify(accountEmail, never()).sendPasswordReset(any(), any(), anyInt());
+    }
+
+    @Test
+    void forgotPassword_swallows_resend_failure() {
+        User u = new User();
+        u.setId(java.util.UUID.randomUUID());
+        u.setEmail("ada@example.com");
+        when(users.findByEmailLower("ada@example.com")).thenReturn(java.util.Optional.of(u));
+        when(passwordResetSvc.issueToken(u)).thenReturn("tok");
+        doThrow(new ApiException(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,
+                com.imin.iminapi.security.ErrorCode.UPSTREAM_UNAVAILABLE, "down"))
+                .when(accountEmail).sendPasswordReset(any(), any(), anyInt());
+
+        // Should NOT throw — anti-enumeration
+        sut.forgotPassword(new com.imin.iminapi.dto.auth.ForgotPasswordRequest("ada@example.com"));
+    }
+
+    // ----- resetPassword -----
+
+    @Test
+    void resetPassword_consumes_token_revokes_sessions_sends_notification() {
+        User u = new User();
+        u.setId(java.util.UUID.randomUUID());
+        u.setEmail("ada@example.com");
+        when(passwordResetSvc.consume("token-abc", "newpassword12")).thenReturn(u);
+
+        sut.resetPassword(new com.imin.iminapi.dto.auth.ResetPasswordRequest("token-abc", "newpassword12"));
+
+        verify(passwordResetSvc).consume("token-abc", "newpassword12");
+        verify(sessions).revokeAllForUser(eq(u.getId()), any(java.time.Instant.class));
+        verify(accountEmail).sendPasswordChangedNotification(u);
+    }
+
+    @Test
+    void resetPassword_swallows_notification_email_failure() {
+        User u = new User();
+        u.setId(java.util.UUID.randomUUID());
+        u.setEmail("ada@example.com");
+        when(passwordResetSvc.consume(any(), any())).thenReturn(u);
+        doThrow(new RuntimeException("email down"))
+                .when(accountEmail).sendPasswordChangedNotification(any());
+
+        // Should NOT throw — notification is non-critical
+        sut.resetPassword(new com.imin.iminapi.dto.auth.ResetPasswordRequest("token-abc", "newpassword12"));
+    }
 }

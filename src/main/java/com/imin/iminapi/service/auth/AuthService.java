@@ -21,6 +21,8 @@ import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.security.PasswordHasher;
 import com.imin.iminapi.security.TokenService;
 import com.imin.iminapi.service.auth.verification.EmailVerificationService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -32,6 +34,8 @@ import java.util.Optional;
 
 @Service
 public class AuthService {
+
+    private static final Logger log = LoggerFactory.getLogger(AuthService.class);
 
     private final OrganizationRepository orgs;
     private final UserRepository users;
@@ -147,6 +151,60 @@ public class AuthService {
         Organization org = orgs.findById(user.getOrgId())
                 .orElseThrow(() -> ApiException.notFound("Organization"));
         return new MeResponse(UserDto.from(user), OrganizationDto.from(org));
+    }
+
+    @Transactional
+    public AuthResponse verifyEmail(com.imin.iminapi.dto.auth.VerifyEmailRequest req) {
+        User user = verificationSvc.verify(req.email(), req.code());
+        Organization org = orgs.findById(user.getOrgId())
+                .orElseThrow(() -> new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, ErrorCode.INTERNAL, "Org missing"));
+        user.setLastActiveAt(Instant.now());
+        users.save(user);
+        String token = issueSession(user);
+        // Welcome email is non-critical — swallow failures so a Resend outage doesn't block verification.
+        try {
+            accountEmail.sendWelcome(user);
+        } catch (RuntimeException e) {
+            log.warn("Welcome email send failed for {}: {}", user.getEmail(), e.getMessage());
+        }
+        return new AuthResponse(token, UserDto.from(user), OrganizationDto.from(org));
+    }
+
+    @Transactional
+    public void resendVerification(com.imin.iminapi.dto.auth.ResendVerificationRequest req) {
+        Optional<User> maybe = users.findByEmailLower(req.email().toLowerCase());
+        if (maybe.isEmpty()) return;                                  // anti-enumeration
+        User user = maybe.get();
+        if (user.getVerifiedAt() != null) return;                     // already verified
+        String code = verificationSvc.issueCode(user);
+        // Sync, propagate failure: user explicitly asked for a code.
+        accountEmail.sendVerificationCode(user, code, EmailVerificationService.EXPIRES_IN_MINUTES);
+    }
+
+    @Transactional
+    public void forgotPassword(com.imin.iminapi.dto.auth.ForgotPasswordRequest req) {
+        Optional<User> maybe = users.findByEmailLower(req.email().toLowerCase());
+        if (maybe.isEmpty()) return;                                  // anti-enumeration
+        User user = maybe.get();
+        String token = passwordResetSvc.issueToken(user);
+        String resetUrl = appBaseUrl + "/reset-password?token=" + token;
+        // Sync, swallow + log: anti-enumeration trumps loud-fail; we cannot signal failure to the caller.
+        try {
+            accountEmail.sendPasswordReset(user, resetUrl, PasswordResetService.EXPIRES_IN_MINUTES);
+        } catch (RuntimeException e) {
+            log.error("Password-reset email send failed for {}: {}", user.getEmail(), e.getMessage(), e);
+        }
+    }
+
+    @Transactional
+    public void resetPassword(com.imin.iminapi.dto.auth.ResetPasswordRequest req) {
+        User user = passwordResetSvc.consume(req.token(), req.newPassword());
+        sessions.revokeAllForUser(user.getId(), Instant.now());
+        try {
+            accountEmail.sendPasswordChangedNotification(user);
+        } catch (RuntimeException e) {
+            log.warn("Password-changed notification failed for {}: {}", user.getEmail(), e.getMessage());
+        }
     }
 
     private String issueSession(User user) {
