@@ -30,6 +30,7 @@ public class EmailVerificationService {
     private final int maxAttempts;
     private final SecureRandom rnd = new SecureRandom();
 
+    @org.springframework.beans.factory.annotation.Autowired
     public EmailVerificationService(EmailVerificationCodeRepository codes,
                                      UserRepository users) {
         this(codes, users, Clock.systemUTC(), CODE_TTL, MAX_ATTEMPTS);
