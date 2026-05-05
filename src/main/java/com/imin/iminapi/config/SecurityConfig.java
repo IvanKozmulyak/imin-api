@@ -71,9 +71,14 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/v1/events/ai-content").permitAll()
                         .requestMatchers("/api/v1/posters/**").permitAll()
                         // V1 auth endpoints are public — login etc.
-                        .requestMatchers("/api/v1/auth/signup",
+                        .requestMatchers(HttpMethod.POST,
+                                         "/api/v1/auth/signup",
                                          "/api/v1/auth/login",
-                                         "/api/v1/auth/logout").permitAll()
+                                         "/api/v1/auth/logout",
+                                         "/api/v1/auth/verify-email",
+                                         "/api/v1/auth/resend-verification",
+                                         "/api/v1/auth/forgot-password",
+                                         "/api/v1/auth/reset-password").permitAll()
                         // Public reference data (country codes, etc.)
                         .requestMatchers(HttpMethod.GET, "/api/v1/reference/**").permitAll()
                         // Everything else under /api/v1 requires a session
