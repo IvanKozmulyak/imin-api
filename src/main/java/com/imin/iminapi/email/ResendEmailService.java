@@ -48,7 +48,7 @@ public class ResendEmailService implements EmailService {
         } catch (ResendException e) {
             log.error("Resend API call failed for {}: {}", to, e.getMessage(), e);
             throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, ErrorCode.UPSTREAM_UNAVAILABLE,
-                    "Email service unavailable");
+                    "Email service unavailable", e);
         }
     }
 }
