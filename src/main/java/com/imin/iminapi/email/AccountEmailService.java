@@ -1,10 +1,8 @@
 package com.imin.iminapi.email;
 
 import com.imin.iminapi.model.User;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import java.util.HashMap;
 import java.util.Map;
 
 @Service
@@ -17,15 +15,13 @@ public class AccountEmailService {
 
     private final EmailService email;
     private final EmailTemplateRenderer renderer;
-    private String appBaseUrl = "http://localhost:3000";
+    private final EmailProperties props;
 
-    public AccountEmailService(EmailService email, EmailTemplateRenderer renderer) {
+    public AccountEmailService(EmailService email, EmailTemplateRenderer renderer, EmailProperties props) {
         this.email = email;
         this.renderer = renderer;
+        this.props = props;
     }
-
-    @Value("${imin.email.app-base-url:http://localhost:3000}")
-    public void setAppBaseUrl(String appBaseUrl) { this.appBaseUrl = appBaseUrl; }
 
     public void sendVerificationCode(User user, String code, int expiresInMinutes) {
         Map<String, String> vars = Map.of(
@@ -43,7 +39,7 @@ public class AccountEmailService {
         String namePart = (name == null || name.isBlank()) ? "" : ", " + name;
         Map<String, String> vars = Map.of(
                 "name", namePart,
-                "appBaseUrl", appBaseUrl);
+                "appBaseUrl", props.getAppBaseUrl());
         EmailTemplateRenderer.Rendered r = renderer.render("welcome", vars);
         email.send(user.getEmail(), SUBJECT_WELCOME, r.html(), r.text());
     }
@@ -57,8 +53,7 @@ public class AccountEmailService {
     }
 
     public void sendPasswordChangedNotification(User user) {
-        Map<String, String> vars = new HashMap<>();
-        vars.put("appBaseUrl", appBaseUrl);
+        Map<String, String> vars = Map.of("appBaseUrl", props.getAppBaseUrl());
         EmailTemplateRenderer.Rendered r = renderer.render("password-changed", vars);
         email.send(user.getEmail(), SUBJECT_PASSWORD_CHANGED, r.html(), r.text());
     }

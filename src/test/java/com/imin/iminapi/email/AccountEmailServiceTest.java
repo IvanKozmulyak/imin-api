@@ -11,7 +11,14 @@ class AccountEmailServiceTest {
 
     EmailTemplateRenderer renderer = new EmailTemplateRenderer();
     RecordingEmailService email = new RecordingEmailService();
-    AccountEmailService sut = new AccountEmailService(email, renderer);
+    EmailProperties props = makeProps();
+    AccountEmailService sut = new AccountEmailService(email, renderer, props);
+
+    private static EmailProperties makeProps() {
+        EmailProperties p = new EmailProperties();
+        p.setAppBaseUrl("http://localhost:3000");
+        return p;
+    }
 
     private User userWith(String addr, String name) {
         User u = new User();
@@ -62,8 +69,8 @@ class AccountEmailServiceTest {
         RecordingEmailService.SentEmail s = email.lastSent();
         assertThat(s.to()).isEqualTo("ada@example.com");
         assertThat(s.subject()).isEqualTo("Reset your password");
-        // HTML escapes the URL's `=` etc — easier to check the plain-text version for full URL
-        assertThat(s.text()).contains("https://app.imin/reset-password?token=abc123").contains("30");
+        assertThat(s.html()).contains("https://app.imin/reset-password?token=abc123").contains("30");
+        assertThat(s.text()).contains("https://app.imin/reset-password?token=abc123");
     }
 
     @Test
