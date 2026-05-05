@@ -46,10 +46,9 @@ class AuthControllerTest {
     }
 
     @Test
-    void signup_returns_token_user_org() throws Exception {
-        UUID orgId = UUID.randomUUID();
+    void signup_returns_verification_pending_response() throws Exception {
         when(authService.signup(any(SignupRequest.class)))
-                .thenReturn(new AuthResponse("tok-abc", sampleUser(orgId), sampleOrg(orgId)));
+                .thenReturn(com.imin.iminapi.dto.auth.VerificationPendingResponse.forEmail("ada@example.com"));
 
         mvc.perform(post("/api/v1/auth/signup")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -59,9 +58,8 @@ class AuthControllerTest {
                                 "orgName", "Ada Co",
                                 "country", "GB"))))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.token").value("tok-abc"))
-                .andExpect(jsonPath("$.user.email").value("ada@example.com"))
-                .andExpect(jsonPath("$.org.name").value("Ada Co"));
+                .andExpect(jsonPath("$.message").value("Verification email sent"))
+                .andExpect(jsonPath("$.email").value("ada@example.com"));
     }
 
     @Test

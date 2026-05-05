@@ -4,6 +4,7 @@ import com.imin.iminapi.dto.auth.AuthResponse;
 import com.imin.iminapi.dto.auth.LoginRequest;
 import com.imin.iminapi.dto.auth.MeResponse;
 import com.imin.iminapi.dto.auth.SignupRequest;
+import com.imin.iminapi.dto.auth.VerificationPendingResponse;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.CurrentUser;
 import com.imin.iminapi.security.RateLimiter;
@@ -25,7 +26,7 @@ public class AuthController {
     }
 
     @PostMapping("/signup")
-    public AuthResponse signup(@Valid @RequestBody SignupRequest req) {
+    public VerificationPendingResponse signup(@Valid @RequestBody SignupRequest req) {
         return authService.signup(req);
     }
 

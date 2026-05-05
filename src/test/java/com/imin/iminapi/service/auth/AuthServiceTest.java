@@ -20,6 +20,7 @@ import java.time.Instant;
 
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 class AuthServiceTest {
@@ -29,35 +30,37 @@ class AuthServiceTest {
     AuthSessionRepository sessions = mock(AuthSessionRepository.class);
     PasswordHasher hasher = new PasswordHasher(new BCryptPasswordEncoder(4));
     TokenService tokens = new TokenService();
+    com.imin.iminapi.service.auth.verification.EmailVerificationService verificationSvc =
+            mock(com.imin.iminapi.service.auth.verification.EmailVerificationService.class);
+    com.imin.iminapi.service.auth.PasswordResetService passwordResetSvc =
+            mock(com.imin.iminapi.service.auth.PasswordResetService.class);
+    com.imin.iminapi.email.AccountEmailService accountEmail =
+            mock(com.imin.iminapi.email.AccountEmailService.class);
 
-    AuthService sut = new AuthService(orgs, users, sessions, hasher, tokens, Duration.ofDays(30));
+    AuthService sut = new AuthService(orgs, users, sessions, hasher, tokens,
+            verificationSvc, passwordResetSvc, accountEmail,
+            "http://localhost:3000", Duration.ofDays(30));
 
     @Test
-    void signup_creates_org_and_owner_then_issues_session() {
+    void signup_creates_org_and_owner_issues_code_sends_email_returns_pending() {
         when(users.existsByEmailLower("ada@example.com")).thenReturn(false);
         when(orgs.save(any(Organization.class))).thenAnswer(inv -> {
-            Organization o = inv.getArgument(0);
-            o.setId(java.util.UUID.randomUUID());
-            return o;
+            Organization o = inv.getArgument(0); o.setId(java.util.UUID.randomUUID()); return o;
         });
         when(users.save(any(User.class))).thenAnswer(inv -> {
-            User u = inv.getArgument(0);
-            u.setId(java.util.UUID.randomUUID());
-            return u;
+            User u = inv.getArgument(0); u.setId(java.util.UUID.randomUUID()); return u;
         });
-        when(sessions.save(any(AuthSession.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(verificationSvc.issueCode(any(User.class))).thenReturn("1234");
 
-        AuthResponse r = sut.signup(new SignupRequest("ada@example.com", "lovelace12", "Ada Co", "GB"));
+        com.imin.iminapi.dto.auth.VerificationPendingResponse r =
+                sut.signup(new SignupRequest("ada@example.com", "lovelace12", "Ada Co", "GB"));
 
-        assertThat(r.token()).isNotBlank();
-        assertThat(r.user().email()).isEqualTo("ada@example.com");
-        assertThat(r.user().role()).isEqualTo("owner");
-        assertThat(r.org().name()).isEqualTo("Ada Co");
-        assertThat(r.org().country()).isEqualTo("GB");
-
-        verify(orgs).save(any(Organization.class));
-        verify(users).save(any(User.class));
-        verify(sessions).save(any(AuthSession.class));
+        assertThat(r.message()).isEqualTo("Verification email sent");
+        assertThat(r.email()).isEqualTo("ada@example.com");
+        verify(verificationSvc).issueCode(any(User.class));
+        verify(accountEmail).sendVerificationCode(any(User.class), eq("1234"),
+                eq(com.imin.iminapi.service.auth.verification.EmailVerificationService.EXPIRES_IN_MINUTES));
+        verify(sessions, never()).save(any(AuthSession.class));
     }
 
     @Test
@@ -74,13 +77,16 @@ class AuthServiceTest {
         when(orgs.save(any(Organization.class))).thenAnswer(inv -> {
             Organization o = inv.getArgument(0); o.setId(java.util.UUID.randomUUID()); return o;
         });
+        java.util.concurrent.atomic.AtomicReference<User> savedUser = new java.util.concurrent.atomic.AtomicReference<>();
         when(users.save(any(User.class))).thenAnswer(inv -> {
-            User u = inv.getArgument(0); u.setId(java.util.UUID.randomUUID()); return u;
+            User u = inv.getArgument(0); u.setId(java.util.UUID.randomUUID());
+            savedUser.set(u); return u;
         });
-        when(sessions.save(any(AuthSession.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(verificationSvc.issueCode(any(User.class))).thenReturn("0001");
 
-        AuthResponse r = sut.signup(new SignupRequest("ada@example.com", "lovelace12", "X", "GB"));
-        assertThat(r.user().avatarInitials()).isEqualTo("AD");
+        sut.signup(new SignupRequest("ada@example.com", "lovelace12", "X", "GB"));
+
+        assertThat(savedUser.get().getAvatarInitials()).isEqualTo("AD");
     }
 
     @Test

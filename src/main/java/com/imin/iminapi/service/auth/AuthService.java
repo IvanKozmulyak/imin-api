@@ -6,6 +6,8 @@ import com.imin.iminapi.dto.auth.AuthResponse;
 import com.imin.iminapi.dto.auth.LoginRequest;
 import com.imin.iminapi.dto.auth.MeResponse;
 import com.imin.iminapi.dto.auth.SignupRequest;
+import com.imin.iminapi.dto.auth.VerificationPendingResponse;
+import com.imin.iminapi.email.AccountEmailService;
 import com.imin.iminapi.model.AuthSession;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.User;
@@ -18,6 +20,7 @@ import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.security.PasswordHasher;
 import com.imin.iminapi.security.TokenService;
+import com.imin.iminapi.service.auth.verification.EmailVerificationService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -35,6 +38,10 @@ public class AuthService {
     private final AuthSessionRepository sessions;
     private final PasswordHasher hasher;
     private final TokenService tokens;
+    private final EmailVerificationService verificationSvc;
+    private final PasswordResetService passwordResetSvc;
+    private final AccountEmailService accountEmail;
+    private final String appBaseUrl;
     private final Duration sessionTtl;
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -43,8 +50,13 @@ public class AuthService {
                        AuthSessionRepository sessions,
                        PasswordHasher hasher,
                        TokenService tokens,
+                       EmailVerificationService verificationSvc,
+                       PasswordResetService passwordResetSvc,
+                       AccountEmailService accountEmail,
+                       @Value("${imin.email.app-base-url:http://localhost:3000}") String appBaseUrl,
                        @Value("${imin.auth.session-ttl-days}") long sessionTtlDays) {
-        this(orgs, users, sessions, hasher, tokens, Duration.ofDays(sessionTtlDays));
+        this(orgs, users, sessions, hasher, tokens, verificationSvc, passwordResetSvc, accountEmail,
+                appBaseUrl, Duration.ofDays(sessionTtlDays));
     }
 
     /** Constructor used by tests. */
@@ -53,17 +65,25 @@ public class AuthService {
                        AuthSessionRepository sessions,
                        PasswordHasher hasher,
                        TokenService tokens,
+                       EmailVerificationService verificationSvc,
+                       PasswordResetService passwordResetSvc,
+                       AccountEmailService accountEmail,
+                       String appBaseUrl,
                        Duration sessionTtl) {
         this.orgs = orgs;
         this.users = users;
         this.sessions = sessions;
         this.hasher = hasher;
         this.tokens = tokens;
+        this.verificationSvc = verificationSvc;
+        this.passwordResetSvc = passwordResetSvc;
+        this.accountEmail = accountEmail;
+        this.appBaseUrl = appBaseUrl;
         this.sessionTtl = sessionTtl;
     }
 
     @Transactional
-    public AuthResponse signup(SignupRequest req) {
+    public VerificationPendingResponse signup(SignupRequest req) {
         String emailLower = req.email().toLowerCase();
         if (users.existsByEmailLower(emailLower)) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.DUPLICATE,
@@ -83,10 +103,14 @@ public class AuthService {
         user.setPasswordHash(hasher.hash(req.password()));
         user.setRole(UserRole.OWNER);
         user.setAvatarInitials(deriveInitials(req.email()));
+        // verifiedAt left null until /verify-email succeeds
         User savedUser = users.save(user);
 
-        String token = issueSession(savedUser);
-        return new AuthResponse(token, UserDto.from(savedUser), OrganizationDto.from(savedOrg));
+        String code = verificationSvc.issueCode(savedUser);
+        // Sync, propagate failure: signup must fail loudly if the user can't receive the code.
+        accountEmail.sendVerificationCode(savedUser, code, EmailVerificationService.EXPIRES_IN_MINUTES);
+
+        return VerificationPendingResponse.forEmail(savedUser.getEmail());
     }
 
     @Transactional
