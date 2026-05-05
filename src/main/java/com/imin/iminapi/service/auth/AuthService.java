@@ -100,13 +100,16 @@ public class AuthService {
         org.setTimezone("UTC");
         Organization savedOrg = orgs.save(org);
 
+        String firstName = req.firstName().trim();
+        String lastName = req.lastName().trim();
         User user = new User();
         user.setOrgId(savedOrg.getId());
         user.setEmail(req.email());
-        user.setName("");
+        user.setFirstName(firstName);
+        user.setLastName(lastName);
         user.setPasswordHash(hasher.hash(req.password()));
         user.setRole(UserRole.OWNER);
-        user.setAvatarInitials(deriveInitials(req.email()));
+        user.setAvatarInitials(deriveInitials(firstName, lastName));
         // verifiedAt left null until /verify-email succeeds
         User savedUser = users.save(user);
 
@@ -217,12 +220,17 @@ public class AuthService {
         return issued.token();
     }
 
-    private static String deriveInitials(String emailOrName) {
-        String src = emailOrName == null ? "" : emailOrName;
-        int at = src.indexOf('@');
-        if (at >= 0) src = src.substring(0, at);
-        if (src.isBlank()) return "";
-        if (src.length() == 1) return src.substring(0, 1).toUpperCase();
-        return src.substring(0, 2).toUpperCase();
+    /** Two-letter initials from first + last name. Falls back gracefully if either is blank. */
+    private static String deriveInitials(String firstName, String lastName) {
+        StringBuilder sb = new StringBuilder(2);
+        appendInitial(sb, firstName);
+        appendInitial(sb, lastName);
+        return sb.toString().toUpperCase();
+    }
+
+    private static void appendInitial(StringBuilder sb, String s) {
+        if (sb.length() >= 2 || s == null) return;
+        String t = s.trim();
+        if (!t.isEmpty()) sb.append(t.charAt(0));
     }
 }

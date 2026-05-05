@@ -32,12 +32,12 @@ public class AccountEmailService {
     }
 
     public void sendWelcome(User user) {
-        // Template uses {{name}} raw (e.g. "Welcome, {{name}}."). Most users sign up
-        // without a name, so we fall back to "there" — gives "Welcome, there." which
-        // reads naturally. Renderer HTML-escapes the value, so a malicious name
-        // cannot inject HTML.
-        String name = user.getName();
-        String displayName = (name == null || name.isBlank()) ? "there" : name;
+        // Template uses {{name}} raw (e.g. "Welcome, {{name}}."). We use the first name
+        // for a friendly greeting; "there" fallback covers users without a first name
+        // (e.g. invited team members who haven't completed signup). Renderer HTML-escapes
+        // the value, so a malicious name cannot inject HTML.
+        String first = user.getFirstName();
+        String displayName = (first == null || first.isBlank()) ? "there" : first;
         Map<String, String> vars = Map.of(
                 "name", displayName,
                 "appBaseUrl", props.getAppBaseUrl());

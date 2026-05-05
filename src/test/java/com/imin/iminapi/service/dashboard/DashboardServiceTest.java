@@ -39,7 +39,7 @@ class DashboardServiceTest {
         UUID orgId = UUID.randomUUID();
         AuthPrincipal p = owner(orgId);
         User u = new User();
-        u.setId(p.userId()); u.setName("Jaune"); u.setEmail("j@x.com");
+        u.setId(p.userId()); u.setFirstName("Jaune"); u.setEmail("j@x.com");
         when(users.findById(p.userId())).thenReturn(Optional.of(u));
         when(events.findUpcomingLive(eq(orgId), any(), any())).thenReturn(List.of());
         when(events.findRecentPast(eq(orgId), any())).thenReturn(List.of());
@@ -63,7 +63,7 @@ class DashboardServiceTest {
     void populated_org_returns_next_and_last_with_pct_and_daysOut() {
         UUID orgId = UUID.randomUUID();
         AuthPrincipal p = owner(orgId);
-        User u = new User(); u.setId(p.userId()); u.setName("Jaune"); u.setEmail("j@x.com");
+        User u = new User(); u.setId(p.userId()); u.setFirstName("Jaune"); u.setEmail("j@x.com");
         when(users.findById(p.userId())).thenReturn(Optional.of(u));
 
         Event next = new Event();
