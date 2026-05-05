@@ -121,6 +121,9 @@ public class AuthService {
             throw new ApiException(HttpStatus.UNAUTHORIZED, ErrorCode.AUTH_INVALID_CREDENTIALS, "Invalid credentials");
         }
         User user = maybe.get();
+        if (user.getVerifiedAt() == null) {
+            throw new ApiException(HttpStatus.FORBIDDEN, ErrorCode.EMAIL_NOT_VERIFIED, "Email not verified");
+        }
         Organization org = orgs.findById(user.getOrgId())
                 .orElseThrow(() -> new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, ErrorCode.INTERNAL, "Org missing"));
         user.setLastActiveAt(Instant.now());

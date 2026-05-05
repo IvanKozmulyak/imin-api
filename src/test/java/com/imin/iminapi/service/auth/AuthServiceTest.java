@@ -118,6 +118,7 @@ class AuthServiceTest {
         stored.setEmail("ada@example.com");
         stored.setPasswordHash(hasher.hash("lovelace12"));
         stored.setRole(UserRole.OWNER);
+        stored.setVerifiedAt(java.time.Instant.now());
         when(users.findByEmailLower("ada@example.com")).thenReturn(java.util.Optional.of(stored));
 
         Organization org = new Organization();
@@ -183,5 +184,21 @@ class AuthServiceTest {
         var r = sut.me(new com.imin.iminapi.security.AuthPrincipal(userId, orgId, UserRole.OWNER, java.util.UUID.randomUUID()));
         assertThat(r.user().id()).isEqualTo(userId);
         assertThat(r.org().id()).isEqualTo(orgId);
+    }
+
+    @Test
+    void login_with_unverified_user_throws_EMAIL_NOT_VERIFIED() {
+        User stored = new User();
+        stored.setId(java.util.UUID.randomUUID());
+        stored.setOrgId(java.util.UUID.randomUUID());
+        stored.setEmail("ada@example.com");
+        stored.setPasswordHash(hasher.hash("lovelace12"));
+        stored.setRole(UserRole.OWNER);
+        stored.setVerifiedAt(null); // <-- unverified
+        when(users.findByEmailLower("ada@example.com")).thenReturn(java.util.Optional.of(stored));
+
+        assertThatThrownBy(() -> sut.login(new com.imin.iminapi.dto.auth.LoginRequest("ada@example.com", "lovelace12")))
+                .isInstanceOf(ApiException.class)
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.EMAIL_NOT_VERIFIED);
     }
 }
