@@ -38,9 +38,11 @@ class AuthServiceTest {
     com.imin.iminapi.email.AccountEmailService accountEmail =
             mock(com.imin.iminapi.email.AccountEmailService.class);
 
+    com.imin.iminapi.email.EmailProperties emailProps = makeEmailProps();
+
     AuthService sut = new AuthService(orgs, users, sessions, hasher, tokens,
             verificationSvc, passwordResetSvc, accountEmail,
-            "http://localhost:3000", Duration.ofDays(30));
+            emailProps, Duration.ofDays(30));
 
     @Test
     void signup_creates_org_and_owner_issues_code_sends_email_returns_pending() {
@@ -211,7 +213,7 @@ class AuthServiceTest {
         u.setOrgId(java.util.UUID.randomUUID());
         u.setEmail("ada@example.com");
         u.setRole(UserRole.OWNER);
-        u.setVerifiedAt(java.time.Instant.now());
+        u.setVerifiedAt(null); // <-- starts unverified
 
         Organization org = new Organization();
         org.setId(u.getOrgId());
@@ -219,7 +221,10 @@ class AuthServiceTest {
         org.setContactEmail("ada@example.com");
         org.setCountry("GB");
 
-        when(verificationSvc.verify("ada@example.com", "1234")).thenReturn(u);
+        when(verificationSvc.verify("ada@example.com", "1234")).thenAnswer(inv -> {
+            u.setVerifiedAt(java.time.Instant.now()); // mirror real contract
+            return u;
+        });
         when(orgs.findById(u.getOrgId())).thenReturn(java.util.Optional.of(org));
         when(sessions.save(any(AuthSession.class))).thenAnswer(inv -> inv.getArgument(0));
 
@@ -228,6 +233,7 @@ class AuthServiceTest {
 
         assertThat(r.token()).isNotBlank();
         assertThat(r.user().email()).isEqualTo("ada@example.com");
+        assertThat(u.getVerifiedAt()).isNotNull(); // mock did set it
         verify(accountEmail).sendWelcome(u);
     }
 
@@ -367,5 +373,11 @@ class AuthServiceTest {
 
         // Should NOT throw — notification is non-critical
         sut.resetPassword(new com.imin.iminapi.dto.auth.ResetPasswordRequest("token-abc", "newpassword12"));
+    }
+
+    private static com.imin.iminapi.email.EmailProperties makeEmailProps() {
+        com.imin.iminapi.email.EmailProperties p = new com.imin.iminapi.email.EmailProperties();
+        p.setAppBaseUrl("http://localhost:3000");
+        return p;
     }
 }

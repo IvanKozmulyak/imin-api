@@ -8,6 +8,7 @@ import com.imin.iminapi.dto.auth.MeResponse;
 import com.imin.iminapi.dto.auth.SignupRequest;
 import com.imin.iminapi.dto.auth.VerificationPendingResponse;
 import com.imin.iminapi.email.AccountEmailService;
+import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.model.AuthSession;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.User;
@@ -23,7 +24,6 @@ import com.imin.iminapi.security.TokenService;
 import com.imin.iminapi.service.auth.verification.EmailVerificationService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -45,7 +45,7 @@ public class AuthService {
     private final EmailVerificationService verificationSvc;
     private final PasswordResetService passwordResetSvc;
     private final AccountEmailService accountEmail;
-    private final String appBaseUrl;
+    private final EmailProperties props;
     private final Duration sessionTtl;
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -57,10 +57,10 @@ public class AuthService {
                        EmailVerificationService verificationSvc,
                        PasswordResetService passwordResetSvc,
                        AccountEmailService accountEmail,
-                       @Value("${imin.email.app-base-url:http://localhost:3000}") String appBaseUrl,
-                       @Value("${imin.auth.session-ttl-days}") long sessionTtlDays) {
+                       EmailProperties emailProperties,
+                       @org.springframework.beans.factory.annotation.Value("${imin.auth.session-ttl-days}") long sessionTtlDays) {
         this(orgs, users, sessions, hasher, tokens, verificationSvc, passwordResetSvc, accountEmail,
-                appBaseUrl, Duration.ofDays(sessionTtlDays));
+                emailProperties, Duration.ofDays(sessionTtlDays));
     }
 
     /** Constructor used by tests. */
@@ -72,7 +72,7 @@ public class AuthService {
                        EmailVerificationService verificationSvc,
                        PasswordResetService passwordResetSvc,
                        AccountEmailService accountEmail,
-                       String appBaseUrl,
+                       EmailProperties emailProperties,
                        Duration sessionTtl) {
         this.orgs = orgs;
         this.users = users;
@@ -82,7 +82,7 @@ public class AuthService {
         this.verificationSvc = verificationSvc;
         this.passwordResetSvc = passwordResetSvc;
         this.accountEmail = accountEmail;
-        this.appBaseUrl = appBaseUrl;
+        this.props = emailProperties;
         this.sessionTtl = sessionTtl;
     }
 
@@ -187,7 +187,7 @@ public class AuthService {
         if (maybe.isEmpty()) return;                                  // anti-enumeration
         User user = maybe.get();
         String token = passwordResetSvc.issueToken(user);
-        String resetUrl = appBaseUrl + "/reset-password?token=" + token;
+        String resetUrl = props.getAppBaseUrl() + "/reset-password?token=" + token;
         // Sync, swallow + log: anti-enumeration trumps loud-fail; we cannot signal failure to the caller.
         try {
             accountEmail.sendPasswordReset(user, resetUrl, PasswordResetService.EXPIRES_IN_MINUTES);
