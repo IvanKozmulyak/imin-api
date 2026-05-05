@@ -1,9 +1,14 @@
 package com.imin.iminapi.controller.auth;
 
 import com.imin.iminapi.dto.auth.AuthResponse;
+import com.imin.iminapi.dto.auth.ForgotPasswordRequest;
 import com.imin.iminapi.dto.auth.LoginRequest;
 import com.imin.iminapi.dto.auth.MeResponse;
+import com.imin.iminapi.dto.auth.ResendVerificationRequest;
+import com.imin.iminapi.dto.auth.ResetPasswordRequest;
 import com.imin.iminapi.dto.auth.SignupRequest;
+import com.imin.iminapi.dto.auth.VerificationPendingResponse;
+import com.imin.iminapi.dto.auth.VerifyEmailRequest;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.CurrentUser;
 import com.imin.iminapi.security.RateLimiter;
@@ -25,8 +30,33 @@ public class AuthController {
     }
 
     @PostMapping("/signup")
-    public AuthResponse signup(@Valid @RequestBody SignupRequest req) {
+    public VerificationPendingResponse signup(@Valid @RequestBody SignupRequest req) {
         return authService.signup(req);
+    }
+
+    @PostMapping("/verify-email")
+    public AuthResponse verifyEmail(@Valid @RequestBody VerifyEmailRequest req) {
+        return authService.verifyEmail(req);
+    }
+
+    @PostMapping("/resend-verification")
+    @ResponseStatus(HttpStatus.OK)
+    public void resendVerification(@Valid @RequestBody ResendVerificationRequest req) {
+        rateLimiter.consume("verification-resend", req.email().toLowerCase());
+        authService.resendVerification(req);
+    }
+
+    @PostMapping("/forgot-password")
+    @ResponseStatus(HttpStatus.OK)
+    public void forgotPassword(@Valid @RequestBody ForgotPasswordRequest req) {
+        rateLimiter.consume("password-reset", req.email().toLowerCase());
+        authService.forgotPassword(req);
+    }
+
+    @PostMapping("/reset-password")
+    @ResponseStatus(HttpStatus.OK)
+    public void resetPassword(@Valid @RequestBody ResetPasswordRequest req) {
+        authService.resetPassword(req);
     }
 
     @PostMapping("/login")

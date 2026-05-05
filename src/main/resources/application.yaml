@@ -61,6 +61,12 @@ openai:
 imin:
   reference-analyzer:
     model-id: ${IMIN_REFERENCE_ANALYZER_MODEL:openai/gpt-4o-mini}
+  email:
+    api-key: ${RESEND_API_KEY:}
+    from-address: ${IMIN_EMAIL_FROM_ADDRESS:noreply@imin.local}
+    from-name: ${IMIN_EMAIL_FROM_NAME:imin}
+    reply-to: ${IMIN_EMAIL_REPLY_TO:}
+    app-base-url: ${IMIN_APP_BASE_URL:http://localhost:3000}
   cors:
     allowed-origin-patterns: ${CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:3000,http://localhost:5173,https://imin-webapp.vercel.app,https://imin-webapp-*.vercel.app,https://dashboard.imin.wtf}
   api:
@@ -74,6 +80,12 @@ imin:
     ai-concept:
       capacity: 10
       window-minutes: 60
+    verification-resend:
+      capacity: 3
+      window-minutes: 15
+    password-reset:
+      capacity: 3
+      window-minutes: 15
   media:
     enabled: ${MEDIA_ENABLED:true}
     bucket: ${R2_BUCKET:imin-media-dev}

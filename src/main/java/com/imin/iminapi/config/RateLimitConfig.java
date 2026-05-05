@@ -33,6 +33,14 @@ public class RateLimitConfig {
     private int aiCapacity;
     @Value("${imin.ratelimit.ai-concept.window-minutes}")
     private int aiWindow;
+    @Value("${imin.ratelimit.verification-resend.capacity}")
+    private int verificationResendCapacity;
+    @Value("${imin.ratelimit.verification-resend.window-minutes}")
+    private int verificationResendWindow;
+    @Value("${imin.ratelimit.password-reset.capacity}")
+    private int passwordResetCapacity;
+    @Value("${imin.ratelimit.password-reset.window-minutes}")
+    private int passwordResetWindow;
 
     @Bean
     public RedisClient redisClient(@Value("${spring.data.redis.url}") String url) {
@@ -58,6 +66,12 @@ public class RateLimitConfig {
                 .build());
         configs.put("ai-concept", BucketConfiguration.builder()
                 .addLimit(Bandwidth.simple(aiCapacity, Duration.ofMinutes(aiWindow)))
+                .build());
+        configs.put("verification-resend", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(verificationResendCapacity, Duration.ofMinutes(verificationResendWindow)))
+                .build());
+        configs.put("password-reset", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(passwordResetCapacity, Duration.ofMinutes(passwordResetWindow)))
                 .build());
 
         return (bucketName, key) -> {

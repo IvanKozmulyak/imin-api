@@ -10,7 +10,7 @@ public class ApiException extends RuntimeException {
     private final Map<String, String> fields;
 
     public ApiException(HttpStatus status, ErrorCode code, String message) {
-        this(status, code, message, null);
+        this(status, code, message, (Map<String, String>) null);
     }
 
     public ApiException(HttpStatus status, ErrorCode code, String message, Map<String, String> fields) {
@@ -18,6 +18,13 @@ public class ApiException extends RuntimeException {
         this.status = status;
         this.code = code;
         this.fields = fields;
+    }
+
+    public ApiException(HttpStatus status, ErrorCode code, String message, Throwable cause) {
+        super(message, cause);
+        this.status = status;
+        this.code = code;
+        this.fields = null;
     }
 
     public HttpStatus status() { return status; }
