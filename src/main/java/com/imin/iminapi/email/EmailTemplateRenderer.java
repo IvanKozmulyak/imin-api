@@ -34,9 +34,26 @@ public class EmailTemplateRenderer {
                 throw new IllegalStateException(
                         "Missing value for placeholder '" + key + "' in template " + resource);
             }
-            m.appendReplacement(out, Matcher.quoteReplacement(value));
+            String substituted = "html".equals(ext) ? htmlEscape(value) : value;
+            m.appendReplacement(out, Matcher.quoteReplacement(substituted));
         }
         m.appendTail(out);
+        return out.toString();
+    }
+
+    private static String htmlEscape(String input) {
+        StringBuilder out = new StringBuilder(input.length() + 16);
+        for (int i = 0; i < input.length(); i++) {
+            char c = input.charAt(i);
+            switch (c) {
+                case '&' -> out.append("&amp;");
+                case '<' -> out.append("&lt;");
+                case '>' -> out.append("&gt;");
+                case '"' -> out.append("&quot;");
+                case '\'' -> out.append("&#39;");
+                default -> out.append(c);
+            }
+        }
         return out.toString();
     }
 

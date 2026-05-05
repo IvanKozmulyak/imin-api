@@ -44,4 +44,34 @@ class EmailTemplateRendererTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("nonexistent");
     }
+
+    @Test
+    void html_template_escapes_special_characters_in_values() {
+        EmailTemplateRenderer.Rendered r = renderer.render(
+                "verification-code",
+                Map.of("code", "<script>alert(1)</script>", "expiresInMinutes", "10"));
+        assertThat(r.html()).contains("&lt;script&gt;alert(1)&lt;/script&gt;");
+        assertThat(r.html()).doesNotContain("<script>");
+    }
+
+    @Test
+    void html_template_escapes_attribute_breaking_characters() {
+        EmailTemplateRenderer.Rendered r = renderer.render(
+                "welcome",
+                Map.of("name", "x", "appBaseUrl", "https://x.example/\" onmouseover=\"alert(1)"));
+        // Quote must be escaped so it cannot break out of href="..." attribute
+        assertThat(r.html()).contains("&quot;");
+        assertThat(r.html()).doesNotContain("\" onmouseover=\"");
+    }
+
+    @Test
+    void text_template_does_not_escape_html_special_characters() {
+        EmailTemplateRenderer.Rendered r = renderer.render(
+                "verification-code",
+                Map.of("code", "<x&y>", "expiresInMinutes", "10"));
+        // Plain text emails should render the value verbatim
+        assertThat(r.text()).contains("<x&y>");
+        assertThat(r.text()).doesNotContain("&amp;");
+        assertThat(r.text()).doesNotContain("&lt;");
+    }
 }
