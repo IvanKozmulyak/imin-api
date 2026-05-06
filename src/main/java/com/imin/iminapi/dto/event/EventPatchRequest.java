@@ -3,6 +3,7 @@ package com.imin.iminapi.dto.event;
 import com.fasterxml.jackson.annotation.JsonInclude;
 
 import java.time.Instant;
+import java.util.List;
 
 /**
  * Partial update body. All fields nullable; null = leave unchanged.
@@ -15,5 +16,6 @@ public record EventPatchRequest(
         String description, String posterUrl, String videoUrl, String coverUrl,
         String currency,
         Boolean squadsEnabled, Integer minSquadSize, Integer squadDiscountPct,
-        Instant onSaleAt, Instant saleClosesAt
+        Instant onSaleAt, Instant saleClosesAt,
+        List<TicketTierEmbeddedPatch> tiers
 ) {}

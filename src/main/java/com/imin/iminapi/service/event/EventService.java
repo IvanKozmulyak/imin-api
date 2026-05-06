@@ -29,16 +29,19 @@ public class EventService {
     private final PredictionRepository predictions;
     private final EventValidator validator;
     private final IfMatchSupport ifMatch;
+    private final TicketTierService tierService;
 
     public EventService(EventRepository events, TicketTierRepository tiers,
                         PromoCodeRepository promos, PredictionRepository predictions,
-                        EventValidator validator, IfMatchSupport ifMatch) {
+                        EventValidator validator, IfMatchSupport ifMatch,
+                        TicketTierService tierService) {
         this.events = events;
         this.tiers = tiers;
         this.promos = promos;
         this.predictions = predictions;
         this.validator = validator;
         this.ifMatch = ifMatch;
+        this.tierService = tierService;
     }
 
     @Transactional
@@ -87,6 +90,9 @@ public class EventService {
             events.save(e);
         } catch (DataIntegrityViolationException ex) {
             throw ApiException.duplicate("slug", "Event slug already taken in this organization");
+        }
+        if (body != null && body.tiers() != null) {
+            tierService.reconcileEmbedded(e, body.tiers());
         }
         return detail(p, id);
     }
