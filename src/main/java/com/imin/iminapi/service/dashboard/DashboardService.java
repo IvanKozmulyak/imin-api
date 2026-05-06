@@ -36,7 +36,7 @@ public class DashboardService {
     @Cacheable(value = "dashboard", key = "#p.orgId().toString()")
     public DashboardResponse build(AuthPrincipal p) {
         User u = users.findById(p.userId()).orElseThrow();
-        var firstName = firstWord(u.getName(), u.getEmail());
+        var firstName = displayFirstName(u.getFirstName(), u.getEmail());
 
         Optional<Event> next = events.findUpcomingLive(p.orgId(), Instant.now(), PageRequest.of(0, 1)).stream().findFirst();
         Optional<Event> past = events.findRecentPast(p.orgId(), PageRequest.of(0, 1)).stream().findFirst();
@@ -72,11 +72,8 @@ public class DashboardService {
                 /* prediction */ null, business, List.of());
     }
 
-    private static String firstWord(String name, String email) {
-        if (name != null && !name.isBlank()) {
-            int sp = name.indexOf(' ');
-            return sp > 0 ? name.substring(0, sp) : name;
-        }
+    private static String displayFirstName(String firstName, String email) {
+        if (firstName != null && !firstName.isBlank()) return firstName.trim();
         if (email == null) return "";
         int at = email.indexOf('@');
         return at > 0 ? email.substring(0, at) : email;

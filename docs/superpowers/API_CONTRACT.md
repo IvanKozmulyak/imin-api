@@ -121,20 +121,139 @@ a different origin, the backend MUST allow:
 
 ## 2. Auth
 
-### `POST /auth/signup` *(idempotent via Idempotency-Key)*
-Create an organization and its first user.
+> **Flow change (2026-05-04):** Signup no longer returns a session. Users
+> must verify their email with a 4-digit code before they can log in.
+> Login on an unverified account returns `403 EMAIL_NOT_VERIFIED` —
+> redirect the user to the verify-code screen. Password reset uses an
+> emailed link with a long random token.
+
+### Happy-path FE flow
+
 ```
-Request:  { "email": "x@y.com", "password": "≥10 chars 1 letter 1 digit", "orgName": "My Productions", "country": "FR" }
+Signup screen ──POST /auth/signup──▶ "Verification email sent"
+                                         │
+                                         ▼
+Verify-code screen ──POST /auth/verify-email──▶ AuthResponse (token + user + org)
+                                         │
+                                         ▼
+                                    Logged in (dashboard)
+
+
+Login screen ──POST /auth/login──┬──▶ 200 AuthResponse  ─▶ Dashboard
+                                  │
+                                  ├──▶ 403 EMAIL_NOT_VERIFIED
+                                  │      │
+                                  │      ▼
+                                  │   Verify-code screen
+                                  │   (call POST /auth/resend-verification
+                                  │    if user wants a fresh code)
+                                  │
+                                  ├──▶ 401 AUTH_INVALID_CREDENTIALS
+                                  └──▶ 429 RATE_LIMITED
+
+
+Forgot-password ─▶ POST /auth/forgot-password ─▶ 200 (always — anti-enumeration)
+                                                          │
+                                                          ▼
+        User clicks link in email: ${IMIN_APP_BASE_URL}/reset-password?token=<random>
+                                                          │
+                                                          ▼
+        Reset-password screen ──POST /auth/reset-password──▶ 200 (now log in via /auth/login)
+```
+
+### `POST /auth/signup` *(idempotent via Idempotency-Key)*
+Create an organization and its first user. **Does not return a session** — the
+user is persisted with `verifiedAt = null` and a verification email is sent
+synchronously. The FE should navigate to the verify-code screen carrying the
+email address (it's echoed in the response so you can rely on it).
+```
+Request:  { "email": "x@y.com", "password": "≥10 chars 1 letter 1 digit",
+            "firstName": "Ada", "lastName": "Lovelace",
+            "orgName": "My Productions", "country": "FR" }
+Response: { "message": "Verification email sent", "email": "x@y.com" }
+Errors:   400 FIELD_INVALID (fields: email / password / firstName / lastName / orgName)
+          409 DUPLICATE (email taken)
+          503 UPSTREAM_UNAVAILABLE (Resend down — surface a retry CTA)
+          500 INTERNAL (e.g. RESEND_API_KEY not configured)
+```
+**FE note:** the signup form now collects first name and last name as separate
+required fields (each ≥1 char, ≤255). Avatar initials are derived from these
+(e.g. "Ada Lovelace" → "AL") and the welcome email greeting uses the first name.
+The legacy single `name` field is gone — `User`/`UserDto` now expose
+`firstName` and `lastName` instead.
+
+### `POST /auth/verify-email`
+Submit the 4-digit code sent to the user's inbox. On success the user is
+verified, a session is issued, and the FE can land them straight on the
+dashboard. Welcome email is fired in the background — its failure does not
+fail this call.
+```
+Request:  { "email": "x@y.com", "code": "1234" }
 Response: { "token": "<bearer>", "user": User, "org": Organization }
-Errors:   400 FIELD_INVALID (fields: email / password / orgName) · 409 DUPLICATE (email taken)
+Errors:   400 FIELD_INVALID (code is not exactly 4 digits, or email malformed)
+          400 INVALID_CODE — covers wrong digits, expired code, already-used code,
+                             or "too many wrong attempts" (single error, no
+                             distinction by design — don't show different copy)
+```
+**FE note:** show a single "That code is wrong or expired — request a new one"
+message and offer the "Resend code" CTA. Code lifetime is 10 min, max 5 wrong
+attempts before the code is dead.
+
+### `POST /auth/resend-verification`
+Generate a fresh 4-digit code and email it. Always returns 200 even if the
+email doesn't match a real user (anti-enumeration). The previous code (if any)
+is invalidated. Rate-limited to 3 requests / 15 min per email.
+```
+Request:  { "email": "x@y.com" }
+Response: 200 (empty body)
+Errors:   400 FIELD_INVALID (email malformed)
+          429 RATE_LIMITED
+          503 UPSTREAM_UNAVAILABLE (Resend down — user explicitly asked for a code,
+                                    so we surface this rather than silent-noop)
 ```
 
 ### `POST /auth/login`
+Same shape as before, but with a new failure mode for unverified users.
 ```
 Request:  { "email": "x@y.com", "password": "..." }
 Response: { "token": "<bearer>", "user": User, "org": Organization }
-Errors:   401 AUTH_INVALID_CREDENTIALS · 429 RATE_LIMITED (after 5 failed attempts / 15 min / email)
+Errors:   401 AUTH_INVALID_CREDENTIALS (wrong password or unknown email)
+          403 EMAIL_NOT_VERIFIED (correct credentials, but verifiedAt IS NULL —
+                                  redirect to verify-code screen)
+          429 RATE_LIMITED (after 5 failed attempts / 15 min / email)
 ```
+**FE note:** on `403 EMAIL_NOT_VERIFIED` the credentials WERE accepted — keep the
+email in state and navigate to the verify-code screen. Optionally call
+`/auth/resend-verification` immediately to give the user a fresh code.
+
+### `POST /auth/forgot-password`
+Issue a password-reset token and email a link. Always returns 200 (anti-enumeration).
+Rate-limited to 3 requests / 15 min per email. The reset link points at
+`${IMIN_APP_BASE_URL}/reset-password?token=<random>` — make sure the FE has a
+`/reset-password` route that reads `?token=` from the URL.
+```
+Request:  { "email": "x@y.com" }
+Response: 200 (empty body)
+Errors:   400 FIELD_INVALID (email malformed)
+          429 RATE_LIMITED
+```
+The endpoint never tells the FE whether the email exists — by design. Resend
+failures are swallowed (logged via Sentry server-side). Show a generic "If an
+account exists for that email, we sent a reset link" message regardless of
+outcome.
+
+### `POST /auth/reset-password`
+Consume the reset token, set the new password, revoke ALL existing sessions
+for that user, and send a "your password was changed" notification. Token
+lifetime is 30 min, single-use.
+```
+Request:  { "token": "<from URL>", "newPassword": "≥10 chars 1 letter 1 digit" }
+Response: 200 (empty body)
+Errors:   400 FIELD_INVALID (newPassword fails policy)
+          400 INVALID_TOKEN (unknown / expired / already-used — single error)
+```
+**FE note:** after a successful reset, redirect to the login screen — there's
+no auto-login. Existing sessions on other devices are revoked.
 
 ### `POST /auth/logout`
 Fire-and-forget — invalidate the token server-side.
@@ -165,6 +284,25 @@ Request:  { "code": "<google auth code>" }
 Response: { "token": "<bearer>", "user": User, "org": Organization }
 Errors:   400 INVALID_REQUEST · 401 AUTH_INVALID_CREDENTIALS
 ```
+
+### Required FE screens (new)
+
+- **Verify-code screen** — input for 4-digit code, "Resend code" CTA, navigates from
+  signup-success and from login `403 EMAIL_NOT_VERIFIED`.
+- **Forgot-password screen** — email input, calls `/auth/forgot-password`, shows
+  generic "check your email" message regardless of outcome.
+- **Reset-password screen** — reads `?token=` from URL, asks for the new password
+  (twice, with the same `≥10 chars 1 letter 1 digit` policy as signup),
+  calls `/auth/reset-password`, redirects to login on success.
+
+### Error code reference (new)
+
+| Code | When | FE action |
+|------|------|-----------|
+| `EMAIL_NOT_VERIFIED` | login on unverified account | Redirect to verify-code screen |
+| `INVALID_CODE` | wrong/expired/used 4-digit code, or too many wrong attempts | Show "code wrong or expired", offer resend |
+| `INVALID_TOKEN` | unknown/expired/used reset token | Show "link expired", offer to request a new one |
+| `UPSTREAM_UNAVAILABLE` | Resend API failed on signup or resend-verification | Show "email service is having issues, try again" |
 
 ---
 

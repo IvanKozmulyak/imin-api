@@ -8,14 +8,16 @@ import java.util.UUID;
 public record UserDto(
         UUID id,
         String email,
-        String name,
+        String firstName,
+        String lastName,
         String role,
         String avatarInitials,
         UUID orgId,
         Instant createdAt
 ) {
     public static UserDto from(User u) {
-        return new UserDto(u.getId(), u.getEmail(), u.getName(),
+        return new UserDto(u.getId(), u.getEmail(),
+                u.getFirstName(), u.getLastName(),
                 u.getRole().wireValue(), u.getAvatarInitials(),
                 u.getOrgId(), u.getCreatedAt());
     }

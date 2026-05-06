@@ -39,7 +39,8 @@ public class TeamService {
         User u = new User();
         u.setOrgId(p.orgId());
         u.setEmail(req.email());
-        u.setName("");
+        u.setFirstName("");
+        u.setLastName("");
         u.setRole(UserRole.fromWire(req.role()));
         u.setAvatarInitials(initialsOf(req.email()));
         u.setPasswordHash(null); // pending until invite-accept (post-V1)

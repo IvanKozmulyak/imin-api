@@ -27,8 +27,11 @@ public class User {
     @Column(name = "email_lower", nullable = false, unique = true)
     private String emailLower;
 
-    @Column(nullable = false)
-    private String name = "";
+    @Column(name = "first_name", nullable = false)
+    private String firstName = "";
+
+    @Column(name = "last_name", nullable = false)
+    private String lastName = "";
 
     @Column(name = "password_hash")
     private String passwordHash;
@@ -46,6 +49,9 @@ public class User {
     @Column(name = "last_active_at")
     private Instant lastActiveAt;
 
+    @Column(name = "verified_at")
+    private Instant verifiedAt;
+
     public void setEmail(String email) {
         this.email = email;
         this.emailLower = email == null ? null : email.toLowerCase();
@@ -56,5 +62,6 @@ public class User {
     void truncateTimestamps() {
         createdAt = createdAt == null ? Times.nowMicros() : createdAt.truncatedTo(ChronoUnit.MICROS);
         if (lastActiveAt != null) lastActiveAt = lastActiveAt.truncatedTo(ChronoUnit.MICROS);
+        if (verifiedAt != null) verifiedAt = verifiedAt.truncatedTo(ChronoUnit.MICROS);
     }
 }
