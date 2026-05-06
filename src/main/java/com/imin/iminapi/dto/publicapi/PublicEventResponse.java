@@ -1,5 +1,8 @@
 package com.imin.iminapi.dto.publicapi;
 
+import com.imin.iminapi.model.Event;
+import com.imin.iminapi.model.Organization;
+
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -28,4 +31,36 @@ public record PublicEventResponse(
         int squadDiscountPct,
         PublicOrganizationDto organization,
         List<PublicTierDto> tiers
-) {}
+) {
+    public static PublicEventResponse from(Event e, Organization org, List<PublicTierDto> tiers) {
+        return new PublicEventResponse(
+                e.getId(),
+                e.getSlug(),
+                e.getName(),
+                e.getStatus().wireValue(),
+                e.getPublishedAt(),
+                e.getGenre(),
+                e.getType(),
+                e.getDescription(),
+                e.getStartsAt(),
+                e.getEndsAt(),
+                e.getTimezone(),
+                new PublicVenueDto(
+                        e.getVenueName(),
+                        e.getVenueStreet(),
+                        e.getVenueCity(),
+                        e.getVenuePostalCode(),
+                        e.getVenueCountry()),
+                e.getCoverUrl(),
+                e.getPosterUrl(),
+                e.getVideoUrl(),
+                e.getCurrency(),
+                e.getOnSaleAt(),
+                e.getSaleClosesAt(),
+                e.isSquadsEnabled(),
+                e.getMinSquadSize(),
+                e.getSquadDiscountPct(),
+                new PublicOrganizationDto(org.getName(), org.getSlug()),
+                tiers);
+    }
+}

@@ -1,11 +1,8 @@
 package com.imin.iminapi.service.event;
 
 import com.imin.iminapi.dto.publicapi.PublicEventResponse;
-import com.imin.iminapi.dto.publicapi.PublicOrganizationDto;
 import com.imin.iminapi.dto.publicapi.PublicTierDto;
-import com.imin.iminapi.dto.publicapi.PublicVenueDto;
 import com.imin.iminapi.model.Event;
-import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
@@ -48,56 +45,13 @@ public class PublicEventService {
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, ErrorCode.NOT_FOUND, "Event not found"));
 
         Instant now = clock.instant();
-        boolean eventOver = event.getStatus() == EventStatus.PAST
-                         || event.getStatus() == EventStatus.CANCELLED;
 
         List<PublicTierDto> tiers = tierRepository
                 .findByEventIdAndEnabledTrueOrderBySortOrderAsc(id)
                 .stream()
-                .map(t -> PublicTierDto.of(
-                        t.getId(),
-                        t.getName(),
-                        t.getKind().wireValue(),
-                        t.getPriceMinor(),
-                        event.getCurrency(),
-                        t.getSaleClosesAt(),
-                        t.getSortOrder(),
-                        t.getQuantity(),
-                        t.getSold(),
-                        event.getOnSaleAt(),
-                        event.getSaleClosesAt(),
-                        eventOver,
-                        now))
+                .map(t -> PublicTierDto.from(t, event, now))
                 .toList();
 
-        return new PublicEventResponse(
-                event.getId(),
-                event.getSlug(),
-                event.getName(),
-                event.getStatus().wireValue(),
-                event.getPublishedAt(),
-                event.getGenre(),
-                event.getType(),
-                event.getDescription(),
-                event.getStartsAt(),
-                event.getEndsAt(),
-                event.getTimezone(),
-                new PublicVenueDto(
-                        event.getVenueName(),
-                        event.getVenueStreet(),
-                        event.getVenueCity(),
-                        event.getVenuePostalCode(),
-                        event.getVenueCountry()),
-                event.getCoverUrl(),
-                event.getPosterUrl(),
-                event.getVideoUrl(),
-                event.getCurrency(),
-                event.getOnSaleAt(),
-                event.getSaleClosesAt(),
-                event.isSquadsEnabled(),
-                event.getMinSquadSize(),
-                event.getSquadDiscountPct(),
-                new PublicOrganizationDto(org.getName(), org.getSlug()),
-                tiers);
+        return PublicEventResponse.from(event, org, tiers);
     }
 }

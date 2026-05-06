@@ -1,6 +1,6 @@
 package com.imin.iminapi.service.event;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
+import com.imin.iminapi.config.TimeConfig;
 import com.imin.iminapi.dto.publicapi.PublicEventResponse;
 import com.imin.iminapi.model.*;
 import com.imin.iminapi.repository.EventRepository;
@@ -9,18 +9,16 @@ import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
-import com.imin.iminapi.service.auth.AuthService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
+import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.http.HttpStatus;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -29,9 +27,9 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.*;
 
-@SpringBootTest
-@Import({TestRateLimitConfig.class, PublicEventServiceTest.FixedClockConfig.class})
-@Transactional
+@DataJpaTest
+@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
+@Import({PublicEventService.class, TimeConfig.class, PublicEventServiceTest.FixedClockConfig.class})
 class PublicEventServiceTest {
 
     /** Fixed "now" for all flag-computation tests: 2026-06-01T12:00:00Z */
@@ -45,9 +43,6 @@ class PublicEventServiceTest {
             return Clock.fixed(NOW, ZoneOffset.UTC);
         }
     }
-
-    // Required mocks to satisfy the full application context
-    @MockitoBean AuthService authService;
 
     @Autowired PublicEventService publicEventService;
     @Autowired EventRepository eventRepository;
