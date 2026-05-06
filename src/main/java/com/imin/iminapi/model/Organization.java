@@ -21,6 +21,9 @@ public class Organization {
     @Column(nullable = false)
     private String name;
 
+    @Column(nullable = false, unique = true)
+    private String slug;
+
     @Column(name = "contact_email", nullable = false)
     private String contactEmail;
 

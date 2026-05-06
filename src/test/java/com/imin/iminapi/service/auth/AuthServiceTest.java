@@ -35,6 +35,7 @@ class AuthServiceTest {
     @Test
     void signup_creates_org_and_owner_then_issues_session() {
         when(users.existsByEmailLower("ada@example.com")).thenReturn(false);
+        when(orgs.existsBySlug(any())).thenReturn(false);
         when(orgs.save(any(Organization.class))).thenAnswer(inv -> {
             Organization o = inv.getArgument(0);
             o.setId(java.util.UUID.randomUUID());
@@ -71,6 +72,7 @@ class AuthServiceTest {
     @Test
     void avatar_initials_are_derived_from_email_local_part_when_no_name() {
         when(users.existsByEmailLower("ada@example.com")).thenReturn(false);
+        when(orgs.existsBySlug(any())).thenReturn(false);
         when(orgs.save(any(Organization.class))).thenAnswer(inv -> {
             Organization o = inv.getArgument(0); o.setId(java.util.UUID.randomUUID()); return o;
         });

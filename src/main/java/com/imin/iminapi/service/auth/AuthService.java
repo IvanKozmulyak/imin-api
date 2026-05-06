@@ -18,17 +18,22 @@ import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.security.PasswordHasher;
 import com.imin.iminapi.security.TokenService;
+import com.imin.iminapi.util.Slugger;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HexFormat;
 import java.util.Optional;
 
 @Service
 public class AuthService {
+
+    private static final SecureRandom RANDOM = new SecureRandom();
 
     private final OrganizationRepository orgs;
     private final UserRepository users;
@@ -71,6 +76,7 @@ public class AuthService {
         }
         Organization org = new Organization();
         org.setName(req.orgName());
+        org.setSlug(uniqueSlug(req.orgName()));
         org.setContactEmail(req.email());
         org.setCountry(req.country().toUpperCase());
         org.setTimezone("UTC");
@@ -130,6 +136,23 @@ public class AuthService {
         s.setExpiresAt(Instant.now().plus(sessionTtl));
         sessions.save(s);
         return issued.token();
+    }
+
+    private String uniqueSlug(String orgName) {
+        String base = Slugger.slugify(orgName);
+        if (!orgs.existsBySlug(base)) {
+            return base;
+        }
+        for (int n = 2; n <= 10; n++) {
+            String candidate = base + "-" + n;
+            if (!orgs.existsBySlug(candidate)) {
+                return candidate;
+            }
+        }
+        // Fallback: append random 6-hex chars
+        byte[] bytes = new byte[3];
+        RANDOM.nextBytes(bytes);
+        return base + "-" + HexFormat.of().formatHex(bytes);
     }
 
     private static String deriveInitials(String emailOrName) {

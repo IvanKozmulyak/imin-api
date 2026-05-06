@@ -64,7 +64,7 @@ class OrgControllerTest {
     }
 
     private OrganizationDto sampleOrg() {
-        return new OrganizationDto(ORG, "Test Org", "test@example.com", "DE",
+        return new OrganizationDto(ORG, "Test Org", "test-org", "test@example.com", "DE",
                 "Europe/Berlin", "growth", 89, "EUR", Instant.parse("2026-04-23T10:00:00Z"));
     }
 
@@ -88,7 +88,7 @@ class OrgControllerTest {
     @Test
     @WithStubUser
     void patch_returns_updated() throws Exception {
-        OrganizationDto updated = new OrganizationDto(ORG, "Updated Org", "test@example.com", "DE",
+        OrganizationDto updated = new OrganizationDto(ORG, "Updated Org", "updated-org", "test@example.com", "DE",
                 "Europe/Berlin", "growth", 89, "EUR", Instant.parse("2026-04-23T11:00:00Z"));
         when(orgService.patch(any(AuthPrincipal.class), any(), any())).thenReturn(updated);
         mvc.perform(patch("/api/v1/org")

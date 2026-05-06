@@ -8,6 +8,7 @@ import java.util.UUID;
 public record OrganizationDto(
         UUID id,
         String name,
+        String slug,
         String contactEmail,
         String country,
         String timezone,
@@ -17,7 +18,7 @@ public record OrganizationDto(
         Instant updatedAt
 ) {
     public static OrganizationDto from(Organization o) {
-        return new OrganizationDto(o.getId(), o.getName(), o.getContactEmail(),
+        return new OrganizationDto(o.getId(), o.getName(), o.getSlug(), o.getContactEmail(),
                 o.getCountry(), o.getTimezone(), o.getPlan(),
                 o.getPlanMonthlyEuros(), o.getCurrency(), o.getUpdatedAt());
     }
