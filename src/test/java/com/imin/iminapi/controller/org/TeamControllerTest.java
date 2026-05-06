@@ -67,8 +67,8 @@ class TeamControllerTest {
     @Test
     @WithStubUser
     void list_returns_members() throws Exception {
-        TeamMemberDto member = new TeamMemberDto(USER, "test@example.com", "Test",
-                "owner", "TE", ORG, Instant.parse("2026-04-23T10:00:00Z"), null);
+        TeamMemberDto member = new TeamMemberDto(USER, "test@example.com",
+                "Test", "", "owner", "TE", ORG, Instant.parse("2026-04-23T10:00:00Z"), null);
         when(teamService.list(any(AuthPrincipal.class))).thenReturn(List.of(member));
         mvc.perform(get("/api/v1/org/team"))
                 .andExpect(status().isOk())

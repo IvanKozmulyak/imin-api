@@ -38,7 +38,8 @@ class AuthControllerTest {
     @MockitoBean AuthService authService;
 
     private UserDto sampleUser(UUID orgId) {
-        return new UserDto(UUID.randomUUID(), "ada@example.com", "", "owner", "AD", orgId, Instant.parse("2026-04-23T10:00:00Z"));
+        return new UserDto(UUID.randomUUID(), "ada@example.com",
+                "Ada", "Lovelace", "owner", "AL", orgId, Instant.parse("2026-04-23T10:00:00Z"));
     }
     private OrganizationDto sampleOrg(UUID orgId) {
         return new OrganizationDto(orgId, "Ada Co", "ada-co", "ada@example.com", "GB", "UTC", "growth", 89, "EUR",
@@ -46,22 +47,22 @@ class AuthControllerTest {
     }
 
     @Test
-    void signup_returns_token_user_org() throws Exception {
-        UUID orgId = UUID.randomUUID();
+    void signup_returns_verification_pending_response() throws Exception {
         when(authService.signup(any(SignupRequest.class)))
-                .thenReturn(new AuthResponse("tok-abc", sampleUser(orgId), sampleOrg(orgId)));
+                .thenReturn(com.imin.iminapi.dto.auth.VerificationPendingResponse.forEmail("ada@example.com"));
 
         mvc.perform(post("/api/v1/auth/signup")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(om.writeValueAsString(Map.of(
                                 "email", "ada@example.com",
                                 "password", "lovelace12",
+                                "firstName", "Ada",
+                                "lastName", "Lovelace",
                                 "orgName", "Ada Co",
                                 "country", "GB"))))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.token").value("tok-abc"))
-                .andExpect(jsonPath("$.user.email").value("ada@example.com"))
-                .andExpect(jsonPath("$.org.name").value("Ada Co"));
+                .andExpect(jsonPath("$.message").value("Verification email sent"))
+                .andExpect(jsonPath("$.email").value("ada@example.com"));
     }
 
     @Test
@@ -71,6 +72,8 @@ class AuthControllerTest {
                         .content(om.writeValueAsString(Map.of(
                                 "email", "a@b.com",
                                 "password", "short",
+                                "firstName", "Ada",
+                                "lastName", "Lovelace",
                                 "orgName", "X",
                                 "country", "GB"))))
                 .andExpect(status().isBadRequest())
@@ -89,6 +92,8 @@ class AuthControllerTest {
                         .content(om.writeValueAsString(Map.of(
                                 "email", "dupe@example.com",
                                 "password", "valid12345",
+                                "firstName", "Dupe",
+                                "lastName", "User",
                                 "orgName", "X",
                                 "country", "FR"))))
                 .andExpect(status().isConflict())
@@ -113,5 +118,84 @@ class AuthControllerTest {
         mvc.perform(get("/api/v1/auth/me"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.error.code").value("AUTH_MISSING"));
+    }
+
+    @Test
+    void verify_email_returns_auth_response() throws Exception {
+        UUID orgId = UUID.randomUUID();
+        when(authService.verifyEmail(any(com.imin.iminapi.dto.auth.VerifyEmailRequest.class)))
+                .thenReturn(new AuthResponse("tok-xyz", sampleUser(orgId), sampleOrg(orgId)));
+
+        mvc.perform(post("/api/v1/auth/verify-email")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("email", "ada@example.com", "code", "1234"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.token").value("tok-xyz"));
+    }
+
+    @Test
+    void verify_email_with_bad_code_format_returns_FIELD_INVALID() throws Exception {
+        mvc.perform(post("/api/v1/auth/verify-email")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("email", "ada@example.com", "code", "abcd"))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"));
+    }
+
+    @Test
+    void verify_email_with_invalid_code_returns_INVALID_CODE() throws Exception {
+        when(authService.verifyEmail(any()))
+                .thenThrow(new ApiException(org.springframework.http.HttpStatus.BAD_REQUEST,
+                        ErrorCode.INVALID_CODE, "Invalid or expired verification code"));
+        mvc.perform(post("/api/v1/auth/verify-email")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("email", "ada@example.com", "code", "0000"))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_CODE"));
+    }
+
+    @Test
+    void resend_verification_returns_200() throws Exception {
+        mvc.perform(post("/api/v1/auth/resend-verification")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("email", "ada@example.com"))))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void forgot_password_returns_200_for_any_email() throws Exception {
+        mvc.perform(post("/api/v1/auth/forgot-password")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("email", "nobody@example.com"))))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void reset_password_returns_200_on_success() throws Exception {
+        mvc.perform(post("/api/v1/auth/reset-password")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("token", "abc", "newPassword", "newpassword12"))))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void reset_password_with_invalid_token_returns_INVALID_TOKEN() throws Exception {
+        org.mockito.Mockito.doThrow(new ApiException(org.springframework.http.HttpStatus.BAD_REQUEST,
+                        ErrorCode.INVALID_TOKEN, "Invalid or expired reset token"))
+                .when(authService).resetPassword(any());
+        mvc.perform(post("/api/v1/auth/reset-password")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("token", "garbage", "newPassword", "newpassword12"))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_TOKEN"));
+    }
+
+    @Test
+    void reset_password_with_short_password_returns_FIELD_INVALID() throws Exception {
+        mvc.perform(post("/api/v1/auth/reset-password")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("token", "abc", "newPassword", "short"))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"));
     }
 }
