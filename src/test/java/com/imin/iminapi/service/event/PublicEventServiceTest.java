@@ -1,6 +1,5 @@
 package com.imin.iminapi.service.event;
 
-import com.imin.iminapi.config.TimeConfig;
 import com.imin.iminapi.dto.publicapi.PublicEventResponse;
 import com.imin.iminapi.model.*;
 import com.imin.iminapi.repository.EventRepository;
@@ -29,7 +28,7 @@ import static org.assertj.core.api.Assertions.*;
 
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import({PublicEventService.class, TimeConfig.class, PublicEventServiceTest.FixedClockConfig.class})
+@Import({PublicEventService.class, PublicEventServiceTest.FixedClockConfig.class})
 class PublicEventServiceTest {
 
     /** Fixed "now" for all flag-computation tests: 2026-06-01T12:00:00Z */
@@ -92,17 +91,17 @@ class PublicEventServiceTest {
 
     private TicketTier tier(UUID eventId, String name, int priceMinor, int quantity, int sold,
                             boolean enabled, int sortOrder, Instant saleClosesAt) {
-        TicketTier t = new TicketTier();
-        t.setEventId(eventId);
-        t.setName(name);
-        t.setKind(TicketTierKind.STANDARD);
-        t.setPriceMinor(priceMinor);
-        t.setQuantity(quantity);
-        t.setSold(sold);
-        t.setEnabled(enabled);
-        t.setSortOrder(sortOrder);
-        t.setSaleClosesAt(saleClosesAt);
-        return ticketTierRepository.save(t);
+        TicketTier tier = new TicketTier();
+        tier.setEventId(eventId);
+        tier.setName(name);
+        tier.setKind(TicketTierKind.STANDARD);
+        tier.setPriceMinor(priceMinor);
+        tier.setQuantity(quantity);
+        tier.setSold(sold);
+        tier.setEnabled(enabled);
+        tier.setSortOrder(sortOrder);
+        tier.setSaleClosesAt(saleClosesAt);
+        return ticketTierRepository.save(tier);
     }
 
     // -----------------------------------------------------------------------
@@ -179,7 +178,11 @@ class PublicEventServiceTest {
 
         assertThatThrownBy(() -> publicEventService.get(e.getId()))
                 .isInstanceOf(ApiException.class)
-                .satisfies(ex -> assertThat(((ApiException) ex).status()).isEqualTo(HttpStatus.NOT_FOUND));
+                .satisfies(ex -> {
+                    ApiException apiEx = (ApiException) ex;
+                    assertThat(apiEx.status()).isEqualTo(HttpStatus.NOT_FOUND);
+                    assertThat(apiEx.code()).isEqualTo(ErrorCode.NOT_FOUND);
+                });
     }
 
     // -----------------------------------------------------------------------
@@ -193,7 +196,11 @@ class PublicEventServiceTest {
 
         assertThatThrownBy(() -> publicEventService.get(e.getId()))
                 .isInstanceOf(ApiException.class)
-                .satisfies(ex -> assertThat(((ApiException) ex).status()).isEqualTo(HttpStatus.NOT_FOUND));
+                .satisfies(ex -> {
+                    ApiException apiEx = (ApiException) ex;
+                    assertThat(apiEx.status()).isEqualTo(HttpStatus.NOT_FOUND);
+                    assertThat(apiEx.code()).isEqualTo(ErrorCode.NOT_FOUND);
+                });
     }
 
     // -----------------------------------------------------------------------
@@ -207,7 +214,11 @@ class PublicEventServiceTest {
 
         assertThatThrownBy(() -> publicEventService.get(e.getId()))
                 .isInstanceOf(ApiException.class)
-                .satisfies(ex -> assertThat(((ApiException) ex).status()).isEqualTo(HttpStatus.NOT_FOUND));
+                .satisfies(ex -> {
+                    ApiException apiEx = (ApiException) ex;
+                    assertThat(apiEx.status()).isEqualTo(HttpStatus.NOT_FOUND);
+                    assertThat(apiEx.code()).isEqualTo(ErrorCode.NOT_FOUND);
+                });
     }
 
     // -----------------------------------------------------------------------
@@ -217,7 +228,11 @@ class PublicEventServiceTest {
     void throws404_whenIdMissing() {
         assertThatThrownBy(() -> publicEventService.get(UUID.randomUUID()))
                 .isInstanceOf(ApiException.class)
-                .satisfies(ex -> assertThat(((ApiException) ex).status()).isEqualTo(HttpStatus.NOT_FOUND));
+                .satisfies(ex -> {
+                    ApiException apiEx = (ApiException) ex;
+                    assertThat(apiEx.status()).isEqualTo(HttpStatus.NOT_FOUND);
+                    assertThat(apiEx.code()).isEqualTo(ErrorCode.NOT_FOUND);
+                });
     }
 
     // -----------------------------------------------------------------------
@@ -251,10 +266,10 @@ class PublicEventServiceTest {
         PublicEventResponse r = publicEventService.get(e.getId());
 
         assertThat(r.tiers()).hasSize(1);
-        var t = r.tiers().get(0);
-        assertThat(t.soldOut()).isTrue();
-        assertThat(t.onSale()).isFalse();
-        assertThat(t.remaining()).isZero();
+        var tier = r.tiers().get(0);
+        assertThat(tier.soldOut()).isTrue();
+        assertThat(tier.onSale()).isFalse();
+        assertThat(tier.remaining()).isZero();
     }
 
     // -----------------------------------------------------------------------
@@ -272,9 +287,9 @@ class PublicEventServiceTest {
         PublicEventResponse r = publicEventService.get(e.getId());
 
         assertThat(r.tiers()).hasSize(1);
-        var t = r.tiers().get(0);
-        assertThat(t.closed()).isTrue();
-        assertThat(t.onSale()).isFalse();
+        var tier = r.tiers().get(0);
+        assertThat(tier.closed()).isTrue();
+        assertThat(tier.onSale()).isFalse();
     }
 
     // -----------------------------------------------------------------------

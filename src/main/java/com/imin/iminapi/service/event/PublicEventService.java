@@ -8,8 +8,6 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.security.ApiException;
-import com.imin.iminapi.security.ErrorCode;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -39,10 +37,11 @@ public class PublicEventService {
     @Transactional(readOnly = true)
     public PublicEventResponse get(UUID id) {
         Event event = eventRepository.findPublic(id)
-                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, ErrorCode.NOT_FOUND, "Event not found"));
+                .orElseThrow(() -> ApiException.notFound("Event"));
 
+        // Use "Event not found" so we don't leak the org's existence (FK guarantees this branch shouldn't fire).
         Organization org = organizationRepository.findById(event.getOrgId())
-                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, ErrorCode.NOT_FOUND, "Event not found"));
+                .orElseThrow(() -> ApiException.notFound("Event"));
 
         Instant now = clock.instant();
 
