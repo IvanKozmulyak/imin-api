@@ -17,7 +17,7 @@ import java.util.Map;
 public class TicketTierValidator {
 
     private static final int MAX_NAME_LENGTH = 128;
-    private static final String LOCKED_MSG = "locked: tier has sold tickets";
+    private static final String LOCKED_MSG = "locked: sold > 0";
 
     private final Clock clock;
 
@@ -32,13 +32,7 @@ public class TicketTierValidator {
         Map<String, String> errors = new LinkedHashMap<>();
 
         // name: required, non-blank, ≤128
-        if (req.name() == null) {
-            errors.put("name", "required");
-        } else if (req.name().isBlank()) {
-            errors.put("name", "must not be blank");
-        } else if (req.name().length() > MAX_NAME_LENGTH) {
-            errors.put("name", "≤128 chars");
-        }
+        validateName(req.name(), true, errors);
 
         // kind: required, valid enum
         if (req.kind() == null) {
@@ -67,9 +61,7 @@ public class TicketTierValidator {
         }
 
         // sortOrder: optional, ≥ 0
-        if (req.sortOrder() != null && req.sortOrder() < 0) {
-            errors.put("sortOrder", "must be ≥ 0");
-        }
+        validateSortOrder(req.sortOrder(), errors);
 
         return errors;
     }
@@ -80,7 +72,8 @@ public class TicketTierValidator {
      */
     public Map<String, String> validatePatch(TicketTierPatchRequest req, TicketTier existing, Event event) {
         Map<String, String> errors = new LinkedHashMap<>();
-        boolean hasSold = existing.getSold() > 0;
+        int soldCount = existing.getSold();
+        boolean hasSold = soldCount > 0;
 
         // contradiction check: clearSaleClosesAt + non-null saleClosesAt
         if (Boolean.TRUE.equals(req.clearSaleClosesAt()) && req.saleClosesAt() != null) {
@@ -88,13 +81,7 @@ public class TicketTierValidator {
         }
 
         // name: non-blank, ≤128 (only if provided)
-        if (req.name() != null) {
-            if (req.name().isBlank()) {
-                errors.put("name", "must not be blank");
-            } else if (req.name().length() > MAX_NAME_LENGTH) {
-                errors.put("name", "≤128 chars");
-            }
-        }
+        validateName(req.name(), false, errors);
 
         // kind: valid enum, sales-locked
         if (req.kind() != null) {
@@ -118,8 +105,8 @@ public class TicketTierValidator {
         if (req.quantity() != null) {
             if (req.quantity() <= 0) {
                 errors.put("quantity", "must be > 0");
-            } else if (hasSold && req.quantity() < existing.getSold()) {
-                errors.put("quantity", "must be ≥ sold (" + existing.getSold() + ")");
+            } else if (hasSold && req.quantity() < soldCount) {
+                errors.put("quantity", "must be ≥ sold (" + soldCount + ")");
             }
         }
 
@@ -129,9 +116,7 @@ public class TicketTierValidator {
         }
 
         // sortOrder: ≥ 0
-        if (req.sortOrder() != null && req.sortOrder() < 0) {
-            errors.put("sortOrder", "must be ≥ 0");
-        }
+        validateSortOrder(req.sortOrder(), errors);
 
         return errors;
     }
@@ -141,6 +126,15 @@ public class TicketTierValidator {
      * (id == null), so required-field rules apply. Otherwise treated as a patch.
      */
     public Map<String, String> validateEmbeddedPatch(TicketTierEmbeddedPatch p, TicketTier existingOrNull, Event event) {
+        if (p.id() == null && existingOrNull != null) {
+            throw new IllegalArgumentException(
+                    "validateEmbeddedPatch: existing tier provided but patch has no id");
+        }
+        if (p.id() != null && existingOrNull == null) {
+            throw new IllegalArgumentException(
+                    "validateEmbeddedPatch: patch has id but no existing tier provided");
+        }
+
         if (existingOrNull == null) {
             // treat as create — map the embedded fields onto a create request
             TicketTierCreateRequest createReq = new TicketTierCreateRequest(
@@ -171,6 +165,24 @@ public class TicketTierValidator {
 
     // ── private helpers ────────────────────────────────────────────────────────
 
+    private void validateName(String name, boolean required, Map<String, String> errors) {
+        if (name == null) {
+            if (required) errors.put("name", "required");
+            return;
+        }
+        if (name.isBlank()) {
+            errors.put("name", "must be non-blank");
+            return;
+        }
+        if (name.length() > MAX_NAME_LENGTH) {
+            errors.put("name", "≤ " + MAX_NAME_LENGTH + " chars");
+        }
+    }
+
+    private void validateSortOrder(Integer sortOrder, Map<String, String> errors) {
+        if (sortOrder != null && sortOrder < 0) errors.put("sortOrder", "must be ≥ 0");
+    }
+
     private void validateKindWire(String kindWire, Map<String, String> errors) {
         try {
             TicketTierKind.fromWire(kindWire);
@@ -183,6 +195,7 @@ public class TicketTierValidator {
         Instant now = Instant.now(clock);
         if (!saleClosesAt.isAfter(now)) {
             errors.put("saleClosesAt", "must be in the future");
+            // early-return: don't also report "after event.endsAt" on the same field
             return;
         }
         if (event.getEndsAt() != null && saleClosesAt.isAfter(event.getEndsAt())) {

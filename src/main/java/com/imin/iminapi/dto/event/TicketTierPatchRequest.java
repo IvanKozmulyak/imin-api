@@ -1,9 +1,7 @@
 package com.imin.iminapi.dto.event;
 
-import com.fasterxml.jackson.annotation.JsonInclude;
 import java.time.Instant;
 
-@JsonInclude(JsonInclude.Include.NON_NULL)
 public record TicketTierPatchRequest(
         String name,
         String kind,
