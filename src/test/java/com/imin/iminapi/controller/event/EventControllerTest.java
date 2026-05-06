@@ -121,7 +121,7 @@ class EventControllerTest {
 
     @Test
     @WithStubUser
-    void patch_with_tiers_list_reconciles_via_tier_service() throws Exception {
+    void patch_deserializes_embedded_tiers_into_request() throws Exception {
         UUID id = UUID.randomUUID();
         UUID existingTierId = UUID.randomUUID();
         when(eventService.patch(any(), eq(id), any(), any())).thenReturn(sample());

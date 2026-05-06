@@ -91,6 +91,9 @@ public class EventService {
         } catch (DataIntegrityViolationException ex) {
             throw ApiException.duplicate("slug", "Event slug already taken in this organization");
         }
+        // Tier reconcile runs after events.save so the slug-duplicate translation above doesn't
+        // wrap any tier-validation errors. Both still share the outer @Transactional boundary,
+        // so any tier failure rolls back the event update too.
         if (body != null && body.tiers() != null) {
             tierService.reconcileEmbedded(e, body.tiers());
         }

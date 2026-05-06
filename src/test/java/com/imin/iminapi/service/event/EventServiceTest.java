@@ -3,6 +3,7 @@ package com.imin.iminapi.service.event;
 import com.imin.iminapi.dto.PageResponse;
 import com.imin.iminapi.dto.event.EventDto;
 import com.imin.iminapi.dto.event.EventPatchRequest;
+import com.imin.iminapi.dto.event.TicketTierEmbeddedPatch;
 import com.imin.iminapi.dto.event.VenueDto;
 import com.imin.iminapi.model.*;
 import com.imin.iminapi.repository.*;
@@ -208,8 +209,8 @@ class EventServiceTest {
         when(promos.findByEventId(e.getId())).thenReturn(List.of());
         when(predictions.findById(e.getId())).thenReturn(Optional.empty());
 
-        com.imin.iminapi.dto.event.TicketTierEmbeddedPatch tp =
-                new com.imin.iminapi.dto.event.TicketTierEmbeddedPatch(
+        TicketTierEmbeddedPatch tp =
+                new TicketTierEmbeddedPatch(
                         null, "GA", "general", 1500, 100, null, null, null, null);
 
         sut.patch(p, e.getId(), "\"" + updated + "\"",
