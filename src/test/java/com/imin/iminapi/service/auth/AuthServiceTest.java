@@ -56,7 +56,7 @@ class AuthServiceTest {
         when(verificationSvc.issueCode(any(User.class))).thenReturn("1234");
 
         com.imin.iminapi.dto.auth.VerificationPendingResponse r =
-                sut.signup(new SignupRequest("ada@example.com", "lovelace12", "Ada Co", "GB"));
+                sut.signup(new SignupRequest("ada@example.com", "lovelace12", "Ada", "Lovelace", "Ada Co", "GB"));
 
         assertThat(r.message()).isEqualTo("Verification email sent");
         assertThat(r.email()).isEqualTo("ada@example.com");
@@ -81,7 +81,7 @@ class AuthServiceTest {
                 com.imin.iminapi.security.ErrorCode.UPSTREAM_UNAVAILABLE, "down"))
             .when(accountEmail).sendVerificationCode(any(User.class), any(), anyInt());
 
-        assertThatThrownBy(() -> sut.signup(new SignupRequest("ada@example.com", "lovelace12", "Ada Co", "GB")))
+        assertThatThrownBy(() -> sut.signup(new SignupRequest("ada@example.com", "lovelace12", "Ada", "Lovelace", "Ada Co", "GB")))
                 .isInstanceOf(ApiException.class)
                 .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.UPSTREAM_UNAVAILABLE);
     }
@@ -89,13 +89,13 @@ class AuthServiceTest {
     @Test
     void signup_with_existing_email_throws_DUPLICATE() {
         when(users.existsByEmailLower("dupe@example.com")).thenReturn(true);
-        assertThatThrownBy(() -> sut.signup(new SignupRequest("dupe@example.com", "valid12345", "X", "FR")))
+        assertThatThrownBy(() -> sut.signup(new SignupRequest("dupe@example.com", "valid12345", "Dupe", "User", "X", "FR")))
                 .isInstanceOf(ApiException.class)
                 .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.DUPLICATE);
     }
 
     @Test
-    void avatar_initials_are_derived_from_email_local_part_when_no_name() {
+    void avatar_initials_are_derived_from_first_and_last_name() {
         when(users.existsByEmailLower("ada@example.com")).thenReturn(false);
         when(orgs.save(any(Organization.class))).thenAnswer(inv -> {
             Organization o = inv.getArgument(0); o.setId(java.util.UUID.randomUUID()); return o;
@@ -107,9 +107,11 @@ class AuthServiceTest {
         });
         when(verificationSvc.issueCode(any(User.class))).thenReturn("0001");
 
-        sut.signup(new SignupRequest("ada@example.com", "lovelace12", "X", "GB"));
+        sut.signup(new SignupRequest("ada@example.com", "lovelace12", "Ada", "Lovelace", "X", "GB"));
 
-        assertThat(savedUser.get().getAvatarInitials()).isEqualTo("AD");
+        assertThat(savedUser.get().getAvatarInitials()).isEqualTo("AL");
+        assertThat(savedUser.get().getFirstName()).isEqualTo("Ada");
+        assertThat(savedUser.get().getLastName()).isEqualTo("Lovelace");
     }
 
     @Test

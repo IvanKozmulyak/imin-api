@@ -20,11 +20,12 @@ class AccountEmailServiceTest {
         return p;
     }
 
-    private User userWith(String addr, String name) {
+    private User userWith(String addr, String firstName) {
         User u = new User();
         u.setId(UUID.randomUUID());
         u.setEmail(addr);
-        u.setName(name == null ? "" : name);
+        u.setFirstName(firstName == null ? "" : firstName);
+        u.setLastName("");
         return u;
     }
 
@@ -50,13 +51,14 @@ class AccountEmailServiceTest {
     }
 
     @Test
-    void sends_welcome_email_without_name_when_blank() {
+    void sends_welcome_email_with_friendly_fallback_when_first_name_blank() {
         sut.sendWelcome(userWith("ada@example.com", ""));
 
         RecordingEmailService.SentEmail s = email.lastSent();
         assertThat(s.html()).doesNotContain("{{");
-        // Template is "Welcome to imin{{name}}"; name empty becomes "Welcome to imin"
-        assertThat(s.html()).contains("Welcome to imin");
+        // Template renders "Welcome, {{name}}." — falls back to "there" when first name is blank
+        assertThat(s.html()).contains("Welcome, there.");
+        assertThat(s.text()).contains("Welcome, there.");
     }
 
     @Test

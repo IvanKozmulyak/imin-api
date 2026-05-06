@@ -38,7 +38,8 @@ class AuthControllerTest {
     @MockitoBean AuthService authService;
 
     private UserDto sampleUser(UUID orgId) {
-        return new UserDto(UUID.randomUUID(), "ada@example.com", "", "owner", "AD", orgId, Instant.parse("2026-04-23T10:00:00Z"));
+        return new UserDto(UUID.randomUUID(), "ada@example.com",
+                "Ada", "Lovelace", "owner", "AL", orgId, Instant.parse("2026-04-23T10:00:00Z"));
     }
     private OrganizationDto sampleOrg(UUID orgId) {
         return new OrganizationDto(orgId, "Ada Co", "ada@example.com", "GB", "UTC", "growth", 89, "EUR",
@@ -55,6 +56,8 @@ class AuthControllerTest {
                         .content(om.writeValueAsString(Map.of(
                                 "email", "ada@example.com",
                                 "password", "lovelace12",
+                                "firstName", "Ada",
+                                "lastName", "Lovelace",
                                 "orgName", "Ada Co",
                                 "country", "GB"))))
                 .andExpect(status().isOk())
@@ -69,6 +72,8 @@ class AuthControllerTest {
                         .content(om.writeValueAsString(Map.of(
                                 "email", "a@b.com",
                                 "password", "short",
+                                "firstName", "Ada",
+                                "lastName", "Lovelace",
                                 "orgName", "X",
                                 "country", "GB"))))
                 .andExpect(status().isBadRequest())
@@ -87,6 +92,8 @@ class AuthControllerTest {
                         .content(om.writeValueAsString(Map.of(
                                 "email", "dupe@example.com",
                                 "password", "valid12345",
+                                "firstName", "Dupe",
+                                "lastName", "User",
                                 "orgName", "X",
                                 "country", "FR"))))
                 .andExpect(status().isConflict())

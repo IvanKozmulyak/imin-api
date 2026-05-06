@@ -167,13 +167,20 @@ user is persisted with `verifiedAt = null` and a verification email is sent
 synchronously. The FE should navigate to the verify-code screen carrying the
 email address (it's echoed in the response so you can rely on it).
 ```
-Request:  { "email": "x@y.com", "password": "≥10 chars 1 letter 1 digit", "orgName": "My Productions", "country": "FR" }
+Request:  { "email": "x@y.com", "password": "≥10 chars 1 letter 1 digit",
+            "firstName": "Ada", "lastName": "Lovelace",
+            "orgName": "My Productions", "country": "FR" }
 Response: { "message": "Verification email sent", "email": "x@y.com" }
-Errors:   400 FIELD_INVALID (fields: email / password / orgName)
+Errors:   400 FIELD_INVALID (fields: email / password / firstName / lastName / orgName)
           409 DUPLICATE (email taken)
           503 UPSTREAM_UNAVAILABLE (Resend down — surface a retry CTA)
           500 INTERNAL (e.g. RESEND_API_KEY not configured)
 ```
+**FE note:** the signup form now collects first name and last name as separate
+required fields (each ≥1 char, ≤255). Avatar initials are derived from these
+(e.g. "Ada Lovelace" → "AL") and the welcome email greeting uses the first name.
+The legacy single `name` field is gone — `User`/`UserDto` now expose
+`firstName` and `lastName` instead.
 
 ### `POST /auth/verify-email`
 Submit the 4-digit code sent to the user's inbox. On success the user is
