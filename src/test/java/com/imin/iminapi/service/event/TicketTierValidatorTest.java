@@ -297,6 +297,8 @@ class TicketTierValidatorTest {
         TicketTierPatchRequest req = new TicketTierPatchRequest(null, null, null, 5, null, null, null, null);
         Map<String, String> errors = sut.validatePatch(req, tier, eventNoEndsAt());
         assertThat(errors).containsKey("quantity");
+        // Message must be `locked:`-prefixed so the service routes this to 409 INVALID_STATE.
+        assertThat(errors.get("quantity")).startsWith("locked:");
     }
 
     @Test

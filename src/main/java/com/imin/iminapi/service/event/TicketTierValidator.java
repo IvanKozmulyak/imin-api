@@ -106,7 +106,7 @@ public class TicketTierValidator {
             if (req.quantity() <= 0) {
                 errors.put("quantity", "must be > 0");
             } else if (hasSold && req.quantity() < soldCount) {
-                errors.put("quantity", "must be ≥ sold (" + soldCount + ")");
+                errors.put("quantity", "locked: must be ≥ sold (" + soldCount + ")");
             }
         }
 

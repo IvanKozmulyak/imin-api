@@ -220,11 +220,11 @@ class TicketTierServiceTest {
 
         assertThatThrownBy(() -> sut.patch(principal, eventId, tierId, req))
                 .isInstanceOfSatisfying(ApiException.class, ex -> {
-                    // quantity-below-sold isn't tagged "locked:" — it's a plain validation message
-                    // → 400 INVALID_REQUEST. The 409 path is reserved for messages starting with "locked:".
-                    assertThat(ex.code()).isEqualTo(ErrorCode.INVALID_REQUEST);
-                    assertThat(ex.status().value()).isEqualTo(400);
+                    // Sales-protected violation per spec: 409 INVALID_STATE.
+                    assertThat(ex.code()).isEqualTo(ErrorCode.INVALID_STATE);
+                    assertThat(ex.status().value()).isEqualTo(409);
                     assertThat(ex.fields()).containsKey("quantity");
+                    assertThat(ex.fields().get("quantity")).startsWith("locked:");
                 });
     }
 
