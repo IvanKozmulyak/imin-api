@@ -58,4 +58,14 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
         "SELECT COALESCE(SUM(e.revenueMinor), 0), COALESCE(SUM(e.sold), 0) " +
         "FROM Event e WHERE e.orgId = :orgId AND e.deletedAt IS NULL")
     java.util.List<Object[]> sumRevenueAndSold(@org.springframework.data.repository.query.Param("orgId") java.util.UUID orgId);
+
+    @org.springframework.data.jpa.repository.Query("""
+        SELECT e FROM Event e
+         WHERE e.id = :id
+           AND e.deletedAt IS NULL
+           AND e.visibility = com.imin.iminapi.model.EventVisibility.PUBLIC
+           AND e.publishedAt IS NOT NULL
+           AND e.status <> com.imin.iminapi.model.EventStatus.DRAFT
+""")
+    java.util.Optional<com.imin.iminapi.model.Event> findPublic(@org.springframework.data.repository.query.Param("id") java.util.UUID id);
 }
