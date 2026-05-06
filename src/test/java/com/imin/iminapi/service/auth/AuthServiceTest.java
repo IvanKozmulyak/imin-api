@@ -36,7 +36,7 @@ class AuthServiceTest {
     void signup_creates_org_and_owner_then_issues_session() {
         when(users.existsByEmailLower("ada@example.com")).thenReturn(false);
         when(orgs.existsBySlug(any())).thenReturn(false);
-        when(orgs.save(any(Organization.class))).thenAnswer(inv -> {
+        when(orgs.saveAndFlush(any(Organization.class))).thenAnswer(inv -> {
             Organization o = inv.getArgument(0);
             o.setId(java.util.UUID.randomUUID());
             return o;
@@ -56,7 +56,7 @@ class AuthServiceTest {
         assertThat(r.org().name()).isEqualTo("Ada Co");
         assertThat(r.org().country()).isEqualTo("GB");
 
-        verify(orgs).save(any(Organization.class));
+        verify(orgs).saveAndFlush(any(Organization.class));
         verify(users).save(any(User.class));
         verify(sessions).save(any(AuthSession.class));
     }
@@ -73,7 +73,7 @@ class AuthServiceTest {
     void avatar_initials_are_derived_from_email_local_part_when_no_name() {
         when(users.existsByEmailLower("ada@example.com")).thenReturn(false);
         when(orgs.existsBySlug(any())).thenReturn(false);
-        when(orgs.save(any(Organization.class))).thenAnswer(inv -> {
+        when(orgs.saveAndFlush(any(Organization.class))).thenAnswer(inv -> {
             Organization o = inv.getArgument(0); o.setId(java.util.UUID.randomUUID()); return o;
         });
         when(users.save(any(User.class))).thenAnswer(inv -> {

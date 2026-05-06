@@ -162,6 +162,14 @@ class PublicEventControllerTest {
                     "Verify it is safe to expose, then update this test's allowlist.")
                 .isEqualTo(expectedOrgKeys);
 
+        Set<String> actualVenueKeys = fieldNames(root.get("venue"));
+        Set<String> expectedVenueKeys = Set.of("name", "street", "city", "postalCode", "country");
+        assertThat(actualVenueKeys)
+                .as("venue keys leaked or missing. " +
+                    "If this fails, you added a field to PublicVenueDto. " +
+                    "Verify it is safe to expose, then update this test's allowlist.")
+                .isEqualTo(expectedVenueKeys);
+
         JsonNode tier0 = root.get("tiers").get(0);
         Set<String> actualTierKeys = fieldNames(tier0);
         Set<String> expectedTierKeys = Set.of(

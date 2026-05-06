@@ -20,6 +20,7 @@ import com.imin.iminapi.security.PasswordHasher;
 import com.imin.iminapi.security.TokenService;
 import com.imin.iminapi.util.Slugger;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -80,7 +81,18 @@ public class AuthService {
         org.setContactEmail(req.email());
         org.setCountry(req.country().toUpperCase());
         org.setTimezone("UTC");
-        Organization savedOrg = orgs.save(org);
+        Organization savedOrg;
+        try {
+            // saveAndFlush so the unique-slug constraint fires here, not at txn commit.
+            savedOrg = orgs.saveAndFlush(org);
+        } catch (DataIntegrityViolationException e) {
+            // Rare race: another concurrent signup claimed our slug between
+            // existsBySlug() and save(). Surface as a 409 instead of a 500;
+            // the client may retry signup (a second uniqueSlug pass will pick
+            // a different suffix). See spec "Risks / open questions".
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.DUPLICATE,
+                    "Organization slug conflict, please retry signup");
+        }
 
         User user = new User();
         user.setOrgId(savedOrg.getId());
