@@ -81,6 +81,8 @@ public class SecurityConfig {
                                          "/api/v1/auth/reset-password").permitAll()
                         // Public reference data (country codes, etc.)
                         .requestMatchers(HttpMethod.GET, "/api/v1/reference/**").permitAll()
+                        // Public event endpoints (unauthenticated GET)
+                        .requestMatchers(HttpMethod.GET, "/api/v1/public/**").permitAll()
                         // Everything else under /api/v1 requires a session
                         .requestMatchers("/api/v1/**").authenticated()
                         .anyRequest().permitAll()

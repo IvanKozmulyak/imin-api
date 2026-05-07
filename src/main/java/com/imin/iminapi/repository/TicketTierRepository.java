@@ -13,6 +13,8 @@ import java.util.UUID;
 public interface TicketTierRepository extends JpaRepository<TicketTier, UUID> {
     List<TicketTier> findByEventIdOrderBySortOrderAsc(UUID eventId);
 
+    List<TicketTier> findByEventIdAndEnabledTrueOrderBySortOrderAsc(UUID eventId);
+
     @Query("SELECT COALESCE(SUM(t.quantity), 0) FROM TicketTier t WHERE t.eventId = :eventId")
     int sumQuantityByEventId(@Param("eventId") UUID eventId);
 }
