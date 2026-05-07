@@ -67,7 +67,7 @@ public class TicketTierService {
         TicketTier tier = loadOwnedTier(eventId, tierId);
 
         Map<String, String> errors = validator.validatePatch(req, tier, event);
-        if (!errors.isEmpty()) throw classifyError(errors);
+        if (!errors.isEmpty()) throw badRequest(errors);
 
         applyPatch(tier, req);
         tier = tiers.save(tier);
@@ -79,11 +79,6 @@ public class TicketTierService {
     public void delete(AuthPrincipal p, UUID eventId, UUID tierId) {
         Event event = loadOwnedEvent(p, eventId);
         TicketTier tier = loadOwnedTier(eventId, tierId);
-        if (tier.getSold() > 0) {
-            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
-                    "Cannot delete tier with sold tickets",
-                    Map.of("sold", "locked: sold > 0"));
-        }
         tiers.delete(tier);
         bumpEventUpdatedAt(event);
     }
@@ -99,7 +94,7 @@ public class TicketTierService {
             if (patch.id() == null) {
                 // create
                 Map<String, String> errors = validator.validateEmbeddedPatch(patch, null, event);
-                if (!errors.isEmpty()) throw classifyError(errors);
+                if (!errors.isEmpty()) throw badRequest(errors);
                 TicketTier tier = new TicketTier();
                 tier.setEventId(event.getId());
                 applyEmbeddedAsCreate(tier, patch);
@@ -111,7 +106,7 @@ public class TicketTierService {
                                 "Tier id " + patch.id() + " does not belong to event " + event.getId(),
                                 Map.of("tiers", "tier " + patch.id() + " not under event")));
                 Map<String, String> errors = validator.validateEmbeddedPatch(patch, tier, event);
-                if (!errors.isEmpty()) throw classifyError(errors);
+                if (!errors.isEmpty()) throw badRequest(errors);
                 applyEmbeddedAsPatch(tier, patch);
                 tiers.save(tier);
             }
@@ -180,16 +175,6 @@ public class TicketTierService {
         }
         if (p.sortOrder() != null) tier.setSortOrder(p.sortOrder());
         if (p.enabled() != null) tier.setEnabled(p.enabled());
-    }
-
-    private ApiException classifyError(Map<String, String> errors) {
-        boolean hasLocked = errors.values().stream().anyMatch(v -> v != null && v.startsWith("locked:"));
-        if (hasLocked) {
-            return new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
-                    "Tier change blocked by sales", errors);
-        }
-        return new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
-                "Invalid tier data", errors);
     }
 
     private ApiException badRequest(Map<String, String> errors) {

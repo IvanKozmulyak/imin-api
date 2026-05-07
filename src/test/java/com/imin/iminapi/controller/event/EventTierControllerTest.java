@@ -131,24 +131,6 @@ class EventTierControllerTest {
                 .andExpect(jsonPath("$.priceMinor").value(2000));
     }
 
-    @Test
-    @WithStubUser
-    void patch_returns_409_when_sales_locked() throws Exception {
-        UUID eventId = UUID.randomUUID();
-        UUID tierId = UUID.randomUUID();
-        when(tierService.patch(any(), eq(eventId), eq(tierId), any())).thenThrow(
-                new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
-                        "Tier change blocked by sales",
-                        Map.of("priceMinor", "locked: sold > 0")));
-
-        mvc.perform(patch("/api/v1/events/" + eventId + "/tiers/" + tierId)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(om.writeValueAsString(Map.of("priceMinor", 999))))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.error.code").value("INVALID_STATE"))
-                .andExpect(jsonPath("$.error.fields.priceMinor").value("locked: sold > 0"));
-    }
-
     // ── DELETE ─────────────────────────────────────────────────────────────────
 
     @Test
@@ -159,21 +141,6 @@ class EventTierControllerTest {
 
         mvc.perform(delete("/api/v1/events/" + eventId + "/tiers/" + tierId))
                 .andExpect(status().isNoContent());
-    }
-
-    @Test
-    @WithStubUser
-    void delete_returns_409_when_sold() throws Exception {
-        UUID eventId = UUID.randomUUID();
-        UUID tierId = UUID.randomUUID();
-        doThrow(new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
-                "Cannot delete tier with sold tickets",
-                Map.of("sold", "locked: sold > 0")))
-                .when(tierService).delete(any(), eq(eventId), eq(tierId));
-
-        mvc.perform(delete("/api/v1/events/" + eventId + "/tiers/" + tierId))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.error.code").value("INVALID_STATE"));
     }
 
     // ── auth ───────────────────────────────────────────────────────────────────

@@ -272,34 +272,7 @@ class TicketTierValidatorTest {
         assertThat(errors).containsKey("sortOrder");
     }
 
-    // ── validatePatch — sales-protection ────────────────────────────────────────
-
-    @Test
-    void validatePatch_priceMinor_change_blocked_when_sold() {
-        TicketTierPatchRequest req = new TicketTierPatchRequest(null, null, 500, null, null, null, null, null);
-        Map<String, String> errors = sut.validatePatch(req, existingTier(1), eventNoEndsAt());
-        assertThat(errors).containsKey("priceMinor");
-        assertThat(errors.get("priceMinor")).contains("locked");
-    }
-
-    @Test
-    void validatePatch_kind_change_blocked_when_sold() {
-        TicketTierPatchRequest req = new TicketTierPatchRequest(null, "earlyBird", null, null, null, null, null, null);
-        Map<String, String> errors = sut.validatePatch(req, existingTier(1), eventNoEndsAt());
-        assertThat(errors).containsKey("kind");
-        assertThat(errors.get("kind")).contains("locked");
-    }
-
-    @Test
-    void validatePatch_quantity_below_sold_blocked() {
-        TicketTier tier = existingTier(10);
-        tier.setQuantity(100);
-        TicketTierPatchRequest req = new TicketTierPatchRequest(null, null, null, 5, null, null, null, null);
-        Map<String, String> errors = sut.validatePatch(req, tier, eventNoEndsAt());
-        assertThat(errors).containsKey("quantity");
-        // Message must be `locked:`-prefixed so the service routes this to 409 INVALID_STATE.
-        assertThat(errors.get("quantity")).startsWith("locked:");
-    }
+    // ── validatePatch — sold > 0 no longer restricts edits ──────────────────────
 
     @Test
     void validatePatch_quantity_equal_sold_allowed() {

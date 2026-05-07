@@ -17,7 +17,6 @@ import java.util.Map;
 public class TicketTierValidator {
 
     private static final int MAX_NAME_LENGTH = 128;
-    private static final String LOCKED_MSG = "locked: sold > 0";
 
     private final Clock clock;
 
@@ -72,8 +71,6 @@ public class TicketTierValidator {
      */
     public Map<String, String> validatePatch(TicketTierPatchRequest req, TicketTier existing, Event event) {
         Map<String, String> errors = new LinkedHashMap<>();
-        int soldCount = existing.getSold();
-        boolean hasSold = soldCount > 0;
 
         // contradiction check: clearSaleClosesAt + non-null saleClosesAt
         if (Boolean.TRUE.equals(req.clearSaleClosesAt()) && req.saleClosesAt() != null) {
@@ -83,31 +80,19 @@ public class TicketTierValidator {
         // name: non-blank, ≤128 (only if provided)
         validateName(req.name(), false, errors);
 
-        // kind: valid enum, sales-locked
+        // kind: valid enum
         if (req.kind() != null) {
-            if (hasSold) {
-                errors.put("kind", LOCKED_MSG);
-            } else {
-                validateKindWire(req.kind(), errors);
-            }
+            validateKindWire(req.kind(), errors);
         }
 
-        // priceMinor: ≥ 0, sales-locked
-        if (req.priceMinor() != null) {
-            if (hasSold) {
-                errors.put("priceMinor", LOCKED_MSG);
-            } else if (req.priceMinor() < 0) {
-                errors.put("priceMinor", "must be ≥ 0");
-            }
+        // priceMinor: ≥ 0
+        if (req.priceMinor() != null && req.priceMinor() < 0) {
+            errors.put("priceMinor", "must be ≥ 0");
         }
 
-        // quantity: > 0; if sold > 0, must be ≥ sold
-        if (req.quantity() != null) {
-            if (req.quantity() <= 0) {
-                errors.put("quantity", "must be > 0");
-            } else if (hasSold && req.quantity() < soldCount) {
-                errors.put("quantity", "locked: must be ≥ sold (" + soldCount + ")");
-            }
+        // quantity: > 0
+        if (req.quantity() != null && req.quantity() <= 0) {
+            errors.put("quantity", "must be > 0");
         }
 
         // saleClosesAt: optional; if set (and not contradicted), > now AND ≤ event.endsAt

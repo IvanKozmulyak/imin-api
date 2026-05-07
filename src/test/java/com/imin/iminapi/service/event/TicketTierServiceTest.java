@@ -191,44 +191,6 @@ class TicketTierServiceTest {
     }
 
     @Test
-    void patch_rejects_priceMinor_change_when_sold_409_INVALID_STATE() {
-        UUID tierId = UUID.randomUUID();
-        TicketTier tier = existingTier(tierId, 5, 0);
-        when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(tier));
-
-        TicketTierPatchRequest req = new TicketTierPatchRequest(
-                null, null, 999, null, null, null, null, null);
-
-        assertThatThrownBy(() -> sut.patch(principal, eventId, tierId, req))
-                .isInstanceOfSatisfying(ApiException.class, ex -> {
-                    assertThat(ex.code()).isEqualTo(ErrorCode.INVALID_STATE);
-                    assertThat(ex.status().value()).isEqualTo(409);
-                    assertThat(ex.fields()).containsEntry("priceMinor", "locked: sold > 0");
-                });
-        // patch path must not save when validation fails
-        verify(tiers, never()).save(any(TicketTier.class));
-    }
-
-    @Test
-    void patch_rejects_quantity_below_sold_409() {
-        UUID tierId = UUID.randomUUID();
-        TicketTier tier = existingTier(tierId, 10, 0);
-        when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(tier));
-
-        TicketTierPatchRequest req = new TicketTierPatchRequest(
-                null, null, null, 5, null, null, null, null);
-
-        assertThatThrownBy(() -> sut.patch(principal, eventId, tierId, req))
-                .isInstanceOfSatisfying(ApiException.class, ex -> {
-                    // Sales-protected violation per spec: 409 INVALID_STATE.
-                    assertThat(ex.code()).isEqualTo(ErrorCode.INVALID_STATE);
-                    assertThat(ex.status().value()).isEqualTo(409);
-                    assertThat(ex.fields()).containsKey("quantity");
-                    assertThat(ex.fields().get("quantity")).startsWith("locked:");
-                });
-    }
-
-    @Test
     void patch_allows_name_change_when_sold() {
         UUID tierId = UUID.randomUUID();
         TicketTier tier = existingTier(tierId, 5, 0);
@@ -285,20 +247,6 @@ class TicketTierServiceTest {
         sut.delete(principal, eventId, tierId);
 
         verify(tiers).delete(tier);
-    }
-
-    @Test
-    void delete_rejects_when_sold_409() {
-        UUID tierId = UUID.randomUUID();
-        TicketTier tier = existingTier(tierId, 7, 0);
-        when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(tier));
-
-        assertThatThrownBy(() -> sut.delete(principal, eventId, tierId))
-                .isInstanceOfSatisfying(ApiException.class, ex -> {
-                    assertThat(ex.code()).isEqualTo(ErrorCode.INVALID_STATE);
-                    assertThat(ex.status().value()).isEqualTo(409);
-                });
-        verify(tiers, never()).delete(any(TicketTier.class));
     }
 
     @Test

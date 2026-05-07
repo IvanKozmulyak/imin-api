@@ -3,6 +3,8 @@
 **Status:** Draft
 **Date:** 2026-05-06
 
+> **Update 2026-05-07** — sales-protection rules dropped per organizer request. Tier mutations are no longer restricted by `sold > 0`: `priceMinor`, `kind`, `quantity` (any > 0), and delete are all permitted regardless of sold count. The 409 `INVALID_STATE` responses described below no longer apply; all validation failures return 400 `INVALID_REQUEST`. The "Sales-protected" column in the validation table is informational/historical only.
+
 ## Goal
 
 Add organizer-facing CRUD for `ticket_tiers`. Two consumer shapes ship together:
