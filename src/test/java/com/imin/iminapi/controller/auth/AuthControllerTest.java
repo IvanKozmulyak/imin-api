@@ -42,7 +42,7 @@ class AuthControllerTest {
                 "Ada", "Lovelace", "owner", "AL", orgId, Instant.parse("2026-04-23T10:00:00Z"));
     }
     private OrganizationDto sampleOrg(UUID orgId) {
-        return new OrganizationDto(orgId, "Ada Co", "ada@example.com", "GB", "UTC", "growth", 89, "EUR",
+        return new OrganizationDto(orgId, "Ada Co", "ada-co", "ada@example.com", "GB", "UTC", "growth", 89, "EUR",
                 Instant.parse("2026-04-23T10:00:00Z"));
     }
 

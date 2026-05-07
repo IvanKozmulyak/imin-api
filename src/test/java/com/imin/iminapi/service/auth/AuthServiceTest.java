@@ -47,7 +47,8 @@ class AuthServiceTest {
     @Test
     void signup_creates_org_and_owner_issues_code_sends_email_returns_pending() {
         when(users.existsByEmailLower("ada@example.com")).thenReturn(false);
-        when(orgs.save(any(Organization.class))).thenAnswer(inv -> {
+        when(orgs.existsBySlug(any())).thenReturn(false);
+        when(orgs.saveAndFlush(any(Organization.class))).thenAnswer(inv -> {
             Organization o = inv.getArgument(0); o.setId(java.util.UUID.randomUUID()); return o;
         });
         when(users.save(any(User.class))).thenAnswer(inv -> {
@@ -69,7 +70,7 @@ class AuthServiceTest {
     @Test
     void signup_propagates_when_verification_email_send_fails() {
         when(users.existsByEmailLower("ada@example.com")).thenReturn(false);
-        when(orgs.save(any(Organization.class))).thenAnswer(inv -> {
+        when(orgs.saveAndFlush(any(Organization.class))).thenAnswer(inv -> {
             Organization o = inv.getArgument(0); o.setId(java.util.UUID.randomUUID()); return o;
         });
         when(users.save(any(User.class))).thenAnswer(inv -> {
@@ -97,7 +98,7 @@ class AuthServiceTest {
     @Test
     void avatar_initials_are_derived_from_first_and_last_name() {
         when(users.existsByEmailLower("ada@example.com")).thenReturn(false);
-        when(orgs.save(any(Organization.class))).thenAnswer(inv -> {
+        when(orgs.saveAndFlush(any(Organization.class))).thenAnswer(inv -> {
             Organization o = inv.getArgument(0); o.setId(java.util.UUID.randomUUID()); return o;
         });
         java.util.concurrent.atomic.AtomicReference<User> savedUser = new java.util.concurrent.atomic.AtomicReference<>();
