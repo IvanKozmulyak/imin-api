@@ -28,7 +28,9 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
@@ -115,6 +117,30 @@ class EventControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(om.writeValueAsString(Map.of("name", "Renamed"))))
                 .andExpect(status().isOk());
+    }
+
+    @Test
+    @WithStubUser
+    void patch_deserializes_embedded_tiers_into_request() throws Exception {
+        UUID id = UUID.randomUUID();
+        UUID existingTierId = UUID.randomUUID();
+        when(eventService.patch(any(), eq(id), any(), any())).thenReturn(sample());
+
+        String body = "{\"tiers\":[" +
+                "{\"name\":\"GA\",\"kind\":\"general\",\"priceMinor\":1500,\"quantity\":100}," +
+                "{\"id\":\"" + existingTierId + "\",\"priceMinor\":2000}" +
+                "]}";
+
+        mvc.perform(patch("/api/v1/events/" + id)
+                        .header("If-Match", "\"2026-04-23T10:00:00Z\"")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk());
+
+        verify(eventService).patch(any(), any(), any(),
+                argThat(req -> req.tiers() != null && req.tiers().size() == 2
+                        && req.tiers().get(0).id() == null
+                        && existingTierId.equals(req.tiers().get(1).id())));
     }
 
     @Test

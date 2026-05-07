@@ -3,6 +3,7 @@ package com.imin.iminapi.service.event;
 import com.imin.iminapi.dto.PageResponse;
 import com.imin.iminapi.dto.event.EventDto;
 import com.imin.iminapi.dto.event.EventPatchRequest;
+import com.imin.iminapi.dto.event.TicketTierEmbeddedPatch;
 import com.imin.iminapi.dto.event.VenueDto;
 import com.imin.iminapi.model.*;
 import com.imin.iminapi.repository.*;
@@ -32,8 +33,9 @@ class EventServiceTest {
     PredictionRepository predictions = mock(PredictionRepository.class);
     IfMatchSupport ifMatch = new IfMatchSupport();
     EventValidator validator = new EventValidator();
+    TicketTierService tierService = mock(TicketTierService.class);
 
-    EventService sut = new EventService(events, tiers, promos, predictions, validator, ifMatch);
+    EventService sut = new EventService(events, tiers, promos, predictions, validator, ifMatch, tierService);
 
     private AuthPrincipal principal() {
         return new AuthPrincipal(UUID.randomUUID(), UUID.randomUUID(), UserRole.OWNER, UUID.randomUUID());
@@ -50,7 +52,7 @@ class EventServiceTest {
 
         EventDto dto = sut.createDraft(p, new EventPatchRequest(
                 null, null, null, null, null, null, null, null, null,
-                null, null, null, null, null, null, null, null, null, null));
+                null, null, null, null, null, null, null, null, null, null, null));
 
         assertThat(dto.status()).isEqualTo("draft");
         assertThat(dto.orgId()).isEqualTo(p.orgId());
@@ -118,7 +120,7 @@ class EventServiceTest {
 
         EventDto dto = sut.patch(p, e.getId(), "\"" + updated + "\"",
                 new EventPatchRequest("New name", null, null, "Techno", null, null, null, null, null,
-                        null, null, null, null, null, null, null, null, null, null));
+                        null, null, null, null, null, null, null, null, null, null, null));
 
         assertThat(dto.name()).isEqualTo("New name");
         assertThat(dto.genre()).isEqualTo("Techno");
@@ -138,7 +140,7 @@ class EventServiceTest {
         org.assertj.core.api.Assertions.assertThatThrownBy(() ->
                 sut.patch(p, e.getId(), "\"2026-01-01T00:00:00Z\"",
                         new EventPatchRequest("X", null, null, null, null, null, null, null, null,
-                                null, null, null, null, null, null, null, null, null, null)))
+                                null, null, null, null, null, null, null, null, null, null, null)))
                 .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.STALE_WRITE);
     }
 
@@ -156,7 +158,7 @@ class EventServiceTest {
         org.assertj.core.api.Assertions.assertThatThrownBy(() ->
                 sut.patch(p, e.getId(), "\"" + updated + "\"",
                         new EventPatchRequest(null, "taken-slug", null, null, null, null, null, null, null,
-                                null, null, null, null, null, null, null, null, null, null)))
+                                null, null, null, null, null, null, null, null, null, null, null)))
                 .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.DUPLICATE);
     }
 
@@ -191,6 +193,53 @@ class EventServiceTest {
 
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> sut.publish(p, e.getId()))
                 .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.INVALID_STATE);
+    }
+
+    @Test
+    void patch_invokes_reconcileEmbedded_when_tiers_provided() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setName(""); e.setSlug("draft-x");
+        Instant updated = Instant.parse("2026-04-23T10:00:00Z");
+        e.setUpdatedAt(updated);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
+        when(promos.findByEventId(e.getId())).thenReturn(List.of());
+        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
+
+        TicketTierEmbeddedPatch tp =
+                new TicketTierEmbeddedPatch(
+                        null, "GA", "general", 1500, 100, null, null, null, null);
+
+        sut.patch(p, e.getId(), "\"" + updated + "\"",
+                new EventPatchRequest(null, null, null, null, null, null, null, null, null,
+                        null, null, null, null, null, null, null, null, null, null,
+                        List.of(tp)));
+
+        verify(tierService).reconcileEmbedded(eq(e), eq(List.of(tp)));
+    }
+
+    @Test
+    void patch_skips_reconcileEmbedded_when_tiers_null() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setName(""); e.setSlug("draft-x");
+        Instant updated = Instant.parse("2026-04-23T10:00:00Z");
+        e.setUpdatedAt(updated);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
+        when(promos.findByEventId(e.getId())).thenReturn(List.of());
+        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
+
+        sut.patch(p, e.getId(), "\"" + updated + "\"",
+                new EventPatchRequest("Renamed", null, null, null, null, null, null, null, null,
+                        null, null, null, null, null, null, null, null, null, null, null));
+
+        verifyNoInteractions(tierService);
     }
 
     @Test
