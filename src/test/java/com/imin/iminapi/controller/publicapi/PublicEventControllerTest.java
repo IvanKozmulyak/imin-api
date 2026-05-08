@@ -3,11 +3,14 @@ package com.imin.iminapi.controller.publicapi;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.imin.iminapi.config.TestRateLimitConfig;
+import com.imin.iminapi.dto.PageResponse;
+import com.imin.iminapi.dto.publicapi.PublicEventListItem;
 import com.imin.iminapi.dto.publicapi.PublicEventResponse;
 import com.imin.iminapi.dto.publicapi.PublicOrganizationDto;
 import com.imin.iminapi.dto.publicapi.PublicTierDto;
 import com.imin.iminapi.dto.publicapi.PublicVenueDto;
 import com.imin.iminapi.security.ApiException;
+import com.imin.iminapi.service.event.PublicEventListQuery;
 import com.imin.iminapi.service.event.PublicEventService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -28,6 +31,7 @@ import java.util.stream.StreamSupport;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
+import org.mockito.ArgumentCaptor;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -198,6 +202,138 @@ class PublicEventControllerTest {
         mvc.perform(get("/api/v1/public/events/" + EVENT_ID))
                 // No Authorization header — must not be blocked by auth
                 .andExpect(status().isOk());
+    }
+
+    // -----------------------------------------------------------------------
+    // Listing endpoint tests
+    // -----------------------------------------------------------------------
+
+    private PublicEventListItem sampleListItem() {
+        return new PublicEventListItem(
+                EVENT_ID,
+                "summer-festival-2026",
+                "Summer Festival 2026",
+                "live",
+                Instant.parse("2026-01-15T10:00:00Z"),
+                "techno",
+                "concert",
+                Instant.parse("2026-07-01T16:00:00Z"),
+                Instant.parse("2026-07-02T04:00:00Z"),
+                "Europe/Berlin",
+                "Berlin",
+                "DE",
+                "https://cdn.example.com/cover.jpg",
+                "EUR",
+                2500,
+                new PublicOrganizationDto("Acme Events", "acme-events"));
+    }
+
+    @Test
+    void list_returns200WithCacheControlHeader() throws Exception {
+        when(publicEventService.list(any(PublicEventListQuery.class)))
+                .thenReturn(new PageResponse<>(List.of(sampleListItem()), 1, 1, 20));
+
+        mvc.perform(get("/api/v1/public/events"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", CACHE_CONTROL_VALUE))
+                .andExpect(jsonPath("$.items").isArray())
+                .andExpect(jsonPath("$.items[0].id").value(EVENT_ID.toString()))
+                .andExpect(jsonPath("$.total").value(1))
+                .andExpect(jsonPath("$.page").value(1))
+                .andExpect(jsonPath("$.pageSize").value(20));
+    }
+
+    @Test
+    void list_returns400OnBadTimestampFormat() throws Exception {
+        mvc.perform(get("/api/v1/public/events").param("from", "not-a-date"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_REQUEST"));
+
+        verifyNoInteractions(publicEventService);
+    }
+
+    @Test
+    void list_endpointReachableWithoutAuth() throws Exception {
+        when(publicEventService.list(any(PublicEventListQuery.class)))
+                .thenReturn(new PageResponse<>(List.of(), 0, 1, 20));
+
+        mvc.perform(get("/api/v1/public/events"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void list_bindsFullFilterSetIntoQueryObject() throws Exception {
+        when(publicEventService.list(any(PublicEventListQuery.class)))
+                .thenReturn(new PageResponse<>(List.of(), 0, 2, 50));
+
+        mvc.perform(get("/api/v1/public/events")
+                        .param("from", "2026-06-01T00:00:00Z")
+                        .param("to", "2026-09-01T00:00:00Z")
+                        .param("genre", "techno")
+                        .param("type", "festival")
+                        .param("city", "Berlin")
+                        .param("country", "DE")
+                        .param("orgSlug", "funkhaus")
+                        .param("q", "void")
+                        .param("onSaleOnly", "true")
+                        .param("page", "2")
+                        .param("pageSize", "50"))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<PublicEventListQuery> captor = ArgumentCaptor.forClass(PublicEventListQuery.class);
+        verify(publicEventService).list(captor.capture());
+        PublicEventListQuery captured = captor.getValue();
+
+        assertThat(captured.from()).isEqualTo(Instant.parse("2026-06-01T00:00:00Z"));
+        assertThat(captured.to()).isEqualTo(Instant.parse("2026-09-01T00:00:00Z"));
+        assertThat(captured.genre()).isEqualTo("techno");
+        assertThat(captured.type()).isEqualTo("festival");
+        assertThat(captured.city()).isEqualTo("Berlin");
+        assertThat(captured.country()).isEqualTo("DE");
+        assertThat(captured.orgSlug()).isEqualTo("funkhaus");
+        assertThat(captured.q()).isEqualTo("void");
+        assertThat(captured.onSaleOnly()).isTrue();
+        assertThat(captured.page()).isEqualTo(2);
+        assertThat(captured.pageSize()).isEqualTo(50);
+    }
+
+    /**
+     * THE LIST LEAK GUARDRAIL.
+     *
+     * Asserts that the JSON keys for items[0] and items[0].organization are EXACTLY the
+     * allow-listed sets. If this fails, you added a field to PublicEventListItem (or
+     * PublicOrganizationDto). Verify it is safe to expose, then update the allowlist.
+     */
+    @Test
+    void list_responseItemKeysAreAllowListed() throws Exception {
+        when(publicEventService.list(any(PublicEventListQuery.class)))
+                .thenReturn(new PageResponse<>(List.of(sampleListItem()), 1, 1, 20));
+
+        MvcResult result = mvc.perform(get("/api/v1/public/events"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode root = objectMapper.readTree(result.getResponse().getContentAsString());
+        JsonNode item0 = root.get("items").get(0);
+
+        Set<String> actualItemKeys = fieldNames(item0);
+        Set<String> expectedItemKeys = Set.of(
+                "id", "slug", "name", "status", "publishedAt",
+                "genre", "type", "startsAt", "endsAt", "timezone",
+                "venueCity", "venueCountry", "coverUrl", "currency",
+                "priceFromMinor", "organization"
+        );
+        assertThat(actualItemKeys)
+                .as("items[0] keys leaked or missing. " +
+                    "If this fails, you added a field to PublicEventListItem. " +
+                    "Verify it is safe to expose, then update this test's allowlist.")
+                .isEqualTo(expectedItemKeys);
+
+        Set<String> actualOrgKeys = fieldNames(item0.get("organization"));
+        Set<String> expectedOrgKeys = Set.of("name", "slug");
+        assertThat(actualOrgKeys)
+                .as("items[0].organization keys leaked or missing.")
+                .isEqualTo(expectedOrgKeys);
     }
 
     // --- helpers ---
