@@ -1,6 +1,9 @@
 package com.imin.iminapi.service.event;
 
+import com.imin.iminapi.dto.PageResponse;
+import com.imin.iminapi.dto.publicapi.PublicEventListItem;
 import com.imin.iminapi.dto.publicapi.PublicEventResponse;
+import com.imin.iminapi.dto.publicapi.PublicOrganizationDto;
 import com.imin.iminapi.dto.publicapi.PublicTierDto;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Organization;
@@ -8,13 +11,23 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.security.ApiException;
+import com.imin.iminapi.security.ErrorCode;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
 
 @Service
 public class PublicEventService {
@@ -53,4 +66,70 @@ public class PublicEventService {
 
         return PublicEventResponse.from(event, org, tiers);
     }
+
+    @Transactional(readOnly = true)
+    public PageResponse<PublicEventListItem> list(PublicEventListQuery q) {
+        // 1. Validate / normalize
+        Map<String, String> errors = new LinkedHashMap<>();
+        if (q.q() != null && !q.q().isBlank() && q.q().length() < 2) {
+            errors.put("q", "min 2 chars");
+        }
+        if (q.country() != null && !q.country().isBlank() && q.country().length() != 2) {
+            errors.put("country", "must be ISO-3166 alpha-2");
+        }
+        if (!errors.isEmpty()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST, "Invalid filter", errors);
+        }
+        int page = Math.max(1, q.page());
+        int pageSize = Math.min(100, Math.max(1, q.pageSize()));
+        String country = q.country() != null && !q.country().isBlank()
+                ? q.country().toUpperCase(Locale.ROOT) : null;
+
+        // 2. Resolve orgSlug -> orgId (empty result if slug not found)
+        UUID orgId = null;
+        if (q.orgSlug() != null && !q.orgSlug().isBlank()) {
+            var maybe = organizationRepository.findBySlug(q.orgSlug());
+            if (maybe.isEmpty()) {
+                return new PageResponse<>(List.of(), 0, page, pageSize);
+            }
+            orgId = maybe.get().getId();
+        }
+
+        // 3. Query
+        Page<Event> result = eventRepository.findPublicListing(
+                q.from(), q.to(),
+                nullIfBlank(q.genre()), nullIfBlank(q.type()),
+                nullIfBlank(q.city()), country, nullIfBlank(q.q()),
+                orgId, q.onSaleOnly(), clock.instant(),
+                PageRequest.of(page - 1, pageSize));
+
+        // 4. Batch-load priceFromMinor + orgs
+        List<UUID> eventIds = result.getContent().stream().map(Event::getId).toList();
+        Map<UUID, Integer> priceByEvent = eventIds.isEmpty()
+                ? Map.of()
+                : tierRepository.findMinEnabledPriceByEventIds(eventIds).stream()
+                        .collect(Collectors.toMap(
+                                row -> (UUID) row[0],
+                                row -> ((Number) row[1]).intValue()));
+
+        Set<UUID> orgIds = result.getContent().stream().map(Event::getOrgId).collect(Collectors.toSet());
+        Map<UUID, Organization> orgsById = orgIds.isEmpty()
+                ? Map.of()
+                : StreamSupport.stream(organizationRepository.findAllById(orgIds).spliterator(), false)
+                        .collect(Collectors.toMap(Organization::getId, o -> o));
+
+        return PageResponse.from(result, e -> toListItem(e, priceByEvent.get(e.getId()), orgsById.get(e.getOrgId())));
+    }
+
+    private static PublicEventListItem toListItem(Event e, Integer priceFromMinor, Organization org) {
+        return new PublicEventListItem(
+                e.getId(), e.getSlug(), e.getName(), e.getStatus().wireValue(), e.getPublishedAt(),
+                e.getGenre(), e.getType(),
+                e.getStartsAt(), e.getEndsAt(), e.getTimezone(),
+                e.getVenueCity(), e.getVenueCountry(), e.getCoverUrl(), e.getCurrency(),
+                priceFromMinor,
+                new PublicOrganizationDto(org.getName(), org.getSlug()));
+    }
+
+    private static String nullIfBlank(String s) { return s == null || s.isBlank() ? null : s; }
 }

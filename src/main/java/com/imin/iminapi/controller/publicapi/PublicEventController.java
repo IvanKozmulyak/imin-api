@@ -1,14 +1,19 @@
 package com.imin.iminapi.controller.publicapi;
 
+import com.imin.iminapi.dto.PageResponse;
+import com.imin.iminapi.dto.publicapi.PublicEventListItem;
 import com.imin.iminapi.dto.publicapi.PublicEventResponse;
+import com.imin.iminapi.service.event.PublicEventListQuery;
 import com.imin.iminapi.service.event.PublicEventService;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.Instant;
 import java.util.UUID;
 
 @RestController
@@ -28,5 +33,25 @@ public class PublicEventController {
                 .header(HttpHeaders.CACHE_CONTROL,
                         "public, s-maxage=60, stale-while-revalidate=30")
                 .body(body);
+    }
+
+    @GetMapping
+    public ResponseEntity<PageResponse<PublicEventListItem>> list(
+            @RequestParam(required = false) Instant from,
+            @RequestParam(required = false) Instant to,
+            @RequestParam(required = false) String genre,
+            @RequestParam(required = false) String type,
+            @RequestParam(required = false) String city,
+            @RequestParam(required = false) String country,
+            @RequestParam(required = false) String orgSlug,
+            @RequestParam(required = false) String q,
+            @RequestParam(defaultValue = "false") boolean onSaleOnly,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int pageSize) {
+        PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
+                from, to, genre, type, city, country, orgSlug, q, onSaleOnly, page, pageSize));
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CACHE_CONTROL, "public, s-maxage=60, stale-while-revalidate=30")
+                .body(result);
     }
 }
