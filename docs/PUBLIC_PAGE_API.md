@@ -1,14 +1,23 @@
 # Public event page — API contract
 
 **Audience:** Frontend / integration team
-**Status:** Authoritative for the public event detail page
-**Last updated:** 2026-05-07
+**Status:** Authoritative for the public event pages (detail + listing)
+**Last updated:** 2026-05-08
 
-This document covers the single backend endpoint that powers the public, unauthenticated event detail page (e.g. `imin.wtf/e/<event-id>`). For organizer-facing endpoints (auth, event management, ticket tier CRUD, etc.) see `superpowers/API_CONTRACT.md`.
+This document covers the public, unauthenticated endpoints that power the event detail page (e.g. `imin.wtf/e/<event-id>`) and the event listing/discovery page (e.g. `imin.wtf/events`). For organizer-facing endpoints (auth, event management, ticket tier CRUD, etc.) see `superpowers/API_CONTRACT.md`.
+
+Two endpoints:
+
+| Endpoint | Section |
+|---|---|
+| `GET /api/v1/public/events/{id}` — event detail | §1–§8 |
+| `GET /api/v1/public/events` — event listing with filters | §9 |
+
+Both share the same eligibility predicate (§2), error envelope (§5), and security stance (no auth required).
 
 ---
 
-## 1. Endpoint
+## 1. Endpoint — detail
 
 ```
 GET /api/v1/public/events/{id}
@@ -268,3 +277,121 @@ The leak-guardrail test asserts the exact key set on:
 - `organization`
 - `venue`
 - `tiers[*]`
+
+---
+
+## 9. Endpoint — listing
+
+```
+GET /api/v1/public/events
+```
+
+Returns a paginated list of events matching the same eligibility predicate as the detail endpoint (§2). Supports filtering by date window, genre/type, location, organizer, and free-text query.
+
+**No authentication required.** Same `Cache-Control: public, s-maxage=60, stale-while-revalidate=30` as the detail endpoint. CDN keys cache by the full query string.
+
+### 9.1 Query parameters
+
+All optional. Bad values → `400 INVALID_REQUEST` with `fields` map.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `from` | ISO-8601 timestamp | — | Restrict to events with `startsAt >= from`. |
+| `to` | ISO-8601 timestamp | — | Restrict to events with `startsAt < to` (exclusive upper bound). |
+| `genre` | string | — | Exact match. |
+| `type` | string | — | Exact match. |
+| `city` | string | — | Case-insensitive contains on venue city. |
+| `country` | string (ISO-3166 α-2) | — | Exact match (uppercased server-side). Must be exactly 2 chars. |
+| `orgSlug` | string | — | Filter to events from a specific organizer. Unknown slug → empty result (not 404). |
+| `q` | string | — | Case-insensitive contains on event name. **Min length 2** if provided. |
+| `onSaleOnly` | boolean | `false` | When `true`, restrict to events whose sale window is currently open: `(onSaleAt IS NULL OR onSaleAt <= now)` AND `(saleClosesAt IS NULL OR saleClosesAt > now)`. |
+| `page` | int, ≥ 1 | `1` | 1-based page number. |
+| `pageSize` | int, 1–100 | `20` | Clamped silently. |
+
+**Sort:** fixed `startsAt ASC NULLS LAST, id ASC`. No client-supplied sort.
+
+### 9.2 Response shape
+
+`200 OK` — body is `PageResponse<PublicEventListItem>`:
+
+```json
+{
+  "items": [ /* PublicEventListItem[] */ ],
+  "total": 137,
+  "page": 1,
+  "pageSize": 20
+}
+```
+
+Each item is a **leaner shape** than the detail endpoint — designed for cards/grids:
+
+```json
+{
+  "id": "8c3a91f0-2b54-4e4e-b1d2-9d3c5b7e4f01",
+  "slug": "summer-fest-2026",
+  "name": "Summer Fest 2026",
+  "status": "live",
+  "publishedAt": "2026-04-01T10:00:00Z",
+  "genre": "music",
+  "type": "festival",
+  "startsAt": "2026-07-15T18:00:00Z",
+  "endsAt": "2026-07-15T23:00:00Z",
+  "timezone": "Europe/Berlin",
+  "venueCity": "Berlin",
+  "venueCountry": "DE",
+  "coverUrl": "https://cdn.example/cover.jpg",
+  "currency": "EUR",
+  "priceFromMinor": 2500,
+  "organization": { "name": "Funkhaus Productions", "slug": "funkhaus" }
+}
+```
+
+**Excluded vs the detail shape** (operator-irrelevant for cards): `description`, `posterUrl`, `videoUrl`, `tiers[]`, full `venue` (street/postalCode/name), `onSaleAt`, `saleClosesAt`, `squadsEnabled`, `minSquadSize`, `squadDiscountPct`. Click through to detail for those.
+
+#### `priceFromMinor`
+
+Minimum `priceMinor` across the event's **enabled** tiers — drives "From €25" UI. Notes:
+
+- Computed via SQL aggregation; one round-trip per page (no N+1).
+- `null` when the event has no enabled tiers.
+- **Sold-out tiers are NOT excluded** — a sold-out €25 tier still counts for "From €25". Detail page reveals sold-out state.
+
+### 9.3 Errors
+
+| HTTP | `code` | When |
+|---|---|---|
+| `200` + empty `items` | — | No matching events. NOT 404. |
+| `400` | `INVALID_REQUEST` | Bad timestamp format on `from`/`to`, `q.length < 2`, `country.length != 2`, non-integer `page`/`pageSize`. The `fields` map names which params failed. |
+
+The endpoint never returns 401, 403, 404, or 5xx under normal operation. Unknown `orgSlug` returns `200` with empty items.
+
+### 9.4 Worked examples
+
+**All upcoming techno events in Berlin, currently on sale, page 1:**
+
+```http
+GET /api/v1/public/events?genre=techno&city=Berlin&onSaleOnly=true&from=2026-05-08T00:00:00Z HTTP/1.1
+Host: api.imin.wtf
+```
+
+**Events from a specific organizer:**
+
+```http
+GET /api/v1/public/events?orgSlug=funkhaus&pageSize=10 HTTP/1.1
+```
+
+**Search by name:**
+
+```http
+GET /api/v1/public/events?q=fest HTTP/1.1
+```
+
+### 9.5 Frontend integration notes
+
+- **Don't use this endpoint for real-time inventory.** `priceFromMinor` may be up to 60s stale. The detail page is one click away for live tier data.
+- **Pagination:** `total` is total matching events across all pages. UI typically renders pageinfo as `((page-1)*pageSize + 1)..min(page*pageSize, total) of total`.
+- **Empty result UX:** show "No events match these filters" with a clear-filters button. Do not 404.
+- **Filter combinations:** all filters AND together. Wide queries (no filters) return everything published, ordered by upcoming-first. To exclude past events, pass `from=now`.
+- **`q` is `LIKE`, not full-text.** `q=cafe` will not match `Café Müller` (no accent folding in v1).
+- **Empty `q` is invalid (min 2 chars).** Don't send `q=` or `q=a`.
+- The `items[]` shape is enforced by a **leak-guardrail snapshot test** (`PublicEventControllerTest.list_response_item_keys_are_allow_listed`); same field-stability guarantee as §8.
