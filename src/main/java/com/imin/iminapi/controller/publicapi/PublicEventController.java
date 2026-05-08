@@ -1,6 +1,7 @@
 package com.imin.iminapi.controller.publicapi;
 
 import com.imin.iminapi.dto.PageResponse;
+import com.imin.iminapi.dto.publicapi.PublicCityItem;
 import com.imin.iminapi.dto.publicapi.PublicEventListItem;
 import com.imin.iminapi.dto.publicapi.PublicEventResponse;
 import com.imin.iminapi.service.event.PublicEventListQuery;
@@ -14,6 +15,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 @RestController
@@ -24,6 +26,13 @@ public class PublicEventController {
 
     public PublicEventController(PublicEventService publicEventService) {
         this.publicEventService = publicEventService;
+    }
+
+    @GetMapping("/cities")
+    public ResponseEntity<List<PublicCityItem>> listCities() {
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CACHE_CONTROL, "public, s-maxage=60, stale-while-revalidate=30")
+                .body(publicEventService.listCities());
     }
 
     @GetMapping("/{id}")

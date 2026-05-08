@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.dto.PageResponse;
+import com.imin.iminapi.dto.publicapi.PublicCityItem;
 import com.imin.iminapi.dto.publicapi.PublicEventListItem;
 import com.imin.iminapi.dto.publicapi.PublicEventResponse;
 import com.imin.iminapi.dto.publicapi.PublicOrganizationDto;
@@ -334,6 +335,34 @@ class PublicEventControllerTest {
         assertThat(actualOrgKeys)
                 .as("items[0].organization keys leaked or missing.")
                 .isEqualTo(expectedOrgKeys);
+    }
+
+    // -- /cities --
+
+    @Test
+    void listCities_returns200WithBodyAndCacheControl() throws Exception {
+        when(publicEventService.listCities()).thenReturn(List.of(
+                new PublicCityItem("Berlin", "DE"),
+                new PublicCityItem("Paris", "FR")));
+
+        mvc.perform(get("/api/v1/public/events/cities"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", CACHE_CONTROL_VALUE))
+                .andExpect(jsonPath("$").isArray())
+                .andExpect(jsonPath("$.length()").value(2))
+                .andExpect(jsonPath("$[0].city").value("Berlin"))
+                .andExpect(jsonPath("$[0].country").value("DE"))
+                .andExpect(jsonPath("$[1].city").value("Paris"));
+    }
+
+    @Test
+    void listCities_returnsEmptyArrayWhenNoCities() throws Exception {
+        when(publicEventService.listCities()).thenReturn(List.of());
+
+        mvc.perform(get("/api/v1/public/events/cities"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$").isArray())
+                .andExpect(jsonPath("$.length()").value(0));
     }
 
     // --- helpers ---

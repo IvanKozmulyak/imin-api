@@ -394,4 +394,48 @@ GET /api/v1/public/events?q=fest HTTP/1.1
 - **Filter combinations:** all filters AND together. Wide queries (no filters) return everything published, ordered by upcoming-first. To exclude past events, pass `from=now`.
 - **`q` is `LIKE`, not full-text.** `q=cafe` will not match `Café Müller` (no accent folding in v1).
 - **Empty `q` is invalid (min 2 chars).** Don't send `q=` or `q=a`.
-- The `items[]` shape is enforced by a **leak-guardrail snapshot test** (`PublicEventControllerTest.list_response_item_keys_are_allow_listed`); same field-stability guarantee as §8.
+- The `items[]` shape is enforced by a **leak-guardrail snapshot test** (`PublicEventControllerTest.list_responseItemKeysAreAllowListed`); same field-stability guarantee as §8.
+
+---
+
+## 10. Endpoint — distinct cities
+
+```
+GET /api/v1/public/events/cities
+```
+
+Returns the distinct `(city, country)` pairs across all events that match the public-eligibility predicate (§2). Useful for populating the city filter dropdown on the listing page from data that's actually visible to users.
+
+**No authentication required.** Same `Cache-Control: public, s-maxage=60, stale-while-revalidate=30`.
+
+No query parameters in v1.
+
+### 10.1 Response
+
+`200 OK`:
+
+```json
+[
+  { "city": "Amsterdam", "country": "NL" },
+  { "city": "Berlin",    "country": "DE" },
+  { "city": "Paris",     "country": "FR" },
+  { "city": "Paris",     "country": "US" }
+]
+```
+
+- Sorted alphabetically by `city`, then by `country`.
+- Same `(city, country)` pair appears at most once.
+- Different countries with the same city name (Paris/FR vs Paris/US) appear as separate entries — disambiguates duplicates.
+- `country` is ISO-3166 α-2.
+- Events with empty `venueCity` are excluded. (`venue_city` is `NOT NULL DEFAULT ''` at the schema level.)
+- Empty database / no public events → `[]` (NOT 404).
+
+### 10.2 Frontend integration notes
+
+- **Render disambiguated.** When two entries share `city`, render as `"Paris, FR"` / `"Paris, US"` to disambiguate. Use the `country` value to drive the filter when the user picks one.
+- **Cache friendly.** Stable across the 60s window — don't poll faster than that.
+- **No event count in v1.** If you need "Berlin (12 events)" UX, file a follow-up.
+
+### 10.3 Errors
+
+This endpoint never returns 4xx or 5xx under normal operation. No request body, no params to validate.

@@ -101,4 +101,16 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
             @org.springframework.data.repository.query.Param("onSaleOnly") boolean onSaleOnly,
             @org.springframework.data.repository.query.Param("now") java.time.Instant now,
             org.springframework.data.domain.Pageable pageable);
+
+    @org.springframework.data.jpa.repository.Query("""
+        SELECT DISTINCT e.venueCity, e.venueCountry FROM Event e
+         WHERE e.deletedAt IS NULL
+           AND e.visibility = com.imin.iminapi.model.EventVisibility.PUBLIC
+           AND e.publishedAt IS NOT NULL
+           AND e.status <> com.imin.iminapi.model.EventStatus.DRAFT
+           AND e.venueCity IS NOT NULL
+           AND e.venueCity <> ''
+         ORDER BY e.venueCity ASC, e.venueCountry ASC
+""")
+    java.util.List<Object[]> findDistinctPublicCities();
 }
