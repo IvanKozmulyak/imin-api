@@ -140,6 +140,20 @@ class PublicEventServiceListTest {
     }
 
     @Test
+    void excludes_unpublished_events_with_null_publishedAt() {
+        // Defensive: status=LIVE but publishedAt=null shouldn't actually occur in practice
+        // (the persistence path always sets publishedAt before LIVE), but the predicate must
+        // still exclude it. Isolates the `publishedAt IS NOT NULL` branch from the draft test.
+        Event e = publishedLiveEvent();
+        e.setPublishedAt(null);
+        eventRepository.save(e);
+
+        PageResponse<PublicEventListItem> result = publicEventService.list(emptyQuery());
+        assertThat(result.items()).isEmpty();
+        assertThat(result.total()).isZero();
+    }
+
+    @Test
     void excludes_soft_deleted_events() {
         Event e = publishedLiveEvent();
         e.setDeletedAt(NOW.minusSeconds(60));

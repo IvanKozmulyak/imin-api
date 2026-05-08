@@ -31,6 +31,7 @@ import java.util.stream.StreamSupport;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
+import org.mockito.ArgumentCaptor;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -228,7 +229,7 @@ class PublicEventControllerTest {
     }
 
     @Test
-    void list_returns_200_with_cache_control_header() throws Exception {
+    void list_returns200WithCacheControlHeader() throws Exception {
         when(publicEventService.list(any(PublicEventListQuery.class)))
                 .thenReturn(new PageResponse<>(List.of(sampleListItem()), 1, 1, 20));
 
@@ -243,7 +244,7 @@ class PublicEventControllerTest {
     }
 
     @Test
-    void list_returns_400_on_bad_timestamp_format() throws Exception {
+    void list_returns400OnBadTimestampFormat() throws Exception {
         mvc.perform(get("/api/v1/public/events").param("from", "not-a-date"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("INVALID_REQUEST"));
@@ -252,12 +253,48 @@ class PublicEventControllerTest {
     }
 
     @Test
-    void list_endpoint_reachable_without_auth() throws Exception {
+    void list_endpointReachableWithoutAuth() throws Exception {
         when(publicEventService.list(any(PublicEventListQuery.class)))
                 .thenReturn(new PageResponse<>(List.of(), 0, 1, 20));
 
         mvc.perform(get("/api/v1/public/events"))
                 .andExpect(status().isOk());
+    }
+
+    @Test
+    void list_bindsFullFilterSetIntoQueryObject() throws Exception {
+        when(publicEventService.list(any(PublicEventListQuery.class)))
+                .thenReturn(new PageResponse<>(List.of(), 0, 2, 50));
+
+        mvc.perform(get("/api/v1/public/events")
+                        .param("from", "2026-06-01T00:00:00Z")
+                        .param("to", "2026-09-01T00:00:00Z")
+                        .param("genre", "techno")
+                        .param("type", "festival")
+                        .param("city", "Berlin")
+                        .param("country", "DE")
+                        .param("orgSlug", "funkhaus")
+                        .param("q", "void")
+                        .param("onSaleOnly", "true")
+                        .param("page", "2")
+                        .param("pageSize", "50"))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<PublicEventListQuery> captor = ArgumentCaptor.forClass(PublicEventListQuery.class);
+        verify(publicEventService).list(captor.capture());
+        PublicEventListQuery captured = captor.getValue();
+
+        assertThat(captured.from()).isEqualTo(Instant.parse("2026-06-01T00:00:00Z"));
+        assertThat(captured.to()).isEqualTo(Instant.parse("2026-09-01T00:00:00Z"));
+        assertThat(captured.genre()).isEqualTo("techno");
+        assertThat(captured.type()).isEqualTo("festival");
+        assertThat(captured.city()).isEqualTo("Berlin");
+        assertThat(captured.country()).isEqualTo("DE");
+        assertThat(captured.orgSlug()).isEqualTo("funkhaus");
+        assertThat(captured.q()).isEqualTo("void");
+        assertThat(captured.onSaleOnly()).isTrue();
+        assertThat(captured.page()).isEqualTo(2);
+        assertThat(captured.pageSize()).isEqualTo(50);
     }
 
     /**
@@ -268,7 +305,7 @@ class PublicEventControllerTest {
      * PublicOrganizationDto). Verify it is safe to expose, then update the allowlist.
      */
     @Test
-    void list_response_item_keys_are_allow_listed() throws Exception {
+    void list_responseItemKeysAreAllowListed() throws Exception {
         when(publicEventService.list(any(PublicEventListQuery.class)))
                 .thenReturn(new PageResponse<>(List.of(sampleListItem()), 1, 1, 20));
 

@@ -68,27 +68,27 @@ public class PublicEventService {
     }
 
     @Transactional(readOnly = true)
-    public PageResponse<PublicEventListItem> list(PublicEventListQuery q) {
+    public PageResponse<PublicEventListItem> list(PublicEventListQuery query) {
         // 1. Validate / normalize
         Map<String, String> errors = new LinkedHashMap<>();
-        if (q.q() != null && !q.q().isBlank() && q.q().length() < 2) {
+        if (query.q() != null && !query.q().isBlank() && query.q().length() < 2) {
             errors.put("q", "min 2 chars");
         }
-        if (q.country() != null && !q.country().isBlank() && q.country().length() != 2) {
+        if (query.country() != null && !query.country().isBlank() && query.country().length() != 2) {
             errors.put("country", "must be ISO-3166 alpha-2");
         }
         if (!errors.isEmpty()) {
             throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST, "Invalid filter", errors);
         }
-        int page = Math.max(1, q.page());
-        int pageSize = Math.min(100, Math.max(1, q.pageSize()));
-        String country = q.country() != null && !q.country().isBlank()
-                ? q.country().toUpperCase(Locale.ROOT) : null;
+        int page = Math.max(1, query.page());
+        int pageSize = Math.min(100, Math.max(1, query.pageSize()));
+        String country = query.country() != null && !query.country().isBlank()
+                ? query.country().toUpperCase(Locale.ROOT) : null;
 
         // 2. Resolve orgSlug -> orgId (empty result if slug not found)
         UUID orgId = null;
-        if (q.orgSlug() != null && !q.orgSlug().isBlank()) {
-            var maybe = organizationRepository.findBySlug(q.orgSlug());
+        if (query.orgSlug() != null && !query.orgSlug().isBlank()) {
+            var maybe = organizationRepository.findBySlug(query.orgSlug());
             if (maybe.isEmpty()) {
                 return new PageResponse<>(List.of(), 0, page, pageSize);
             }
@@ -97,10 +97,10 @@ public class PublicEventService {
 
         // 3. Query
         Page<Event> result = eventRepository.findPublicListing(
-                q.from(), q.to(),
-                nullIfBlank(q.genre()), nullIfBlank(q.type()),
-                nullIfBlank(q.city()), country, nullIfBlank(q.q()),
-                orgId, q.onSaleOnly(), clock.instant(),
+                query.from(), query.to(),
+                nullIfBlank(query.genre()), nullIfBlank(query.type()),
+                nullIfBlank(query.city()), country, nullIfBlank(query.q()),
+                orgId, query.onSaleOnly(), clock.instant(),
                 PageRequest.of(page - 1, pageSize));
 
         // 4. Batch-load priceFromMinor + orgs
