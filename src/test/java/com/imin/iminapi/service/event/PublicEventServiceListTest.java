@@ -23,6 +23,7 @@ import org.springframework.http.HttpStatus;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.*;
@@ -496,5 +497,117 @@ class PublicEventServiceListTest {
                     assertThat(apiEx.code()).isEqualTo(ErrorCode.INVALID_REQUEST);
                     assertThat(apiEx.fields()).containsKey("country");
                 });
+    }
+
+    // -----------------------------------------------------------------------
+    // listCities
+    // -----------------------------------------------------------------------
+    @Test
+    void listCities_returns_distinct_pairs_alphabetical() {
+        Event berlinDe1 = publishedLiveEvent();
+        berlinDe1.setVenueCity("Berlin");
+        berlinDe1.setVenueCountry("DE");
+        eventRepository.save(berlinDe1);
+
+        Event berlinDe2 = publishedLiveEvent();
+        berlinDe2.setVenueCity("Berlin");
+        berlinDe2.setVenueCountry("DE");
+        eventRepository.save(berlinDe2);
+
+        Event paris = publishedLiveEvent();
+        paris.setVenueCity("Paris");
+        paris.setVenueCountry("FR");
+        eventRepository.save(paris);
+
+        Event amsterdam = publishedLiveEvent();
+        amsterdam.setVenueCity("Amsterdam");
+        amsterdam.setVenueCountry("NL");
+        eventRepository.save(amsterdam);
+
+        List<com.imin.iminapi.dto.publicapi.PublicCityItem> cities = publicEventService.listCities();
+        assertThat(cities).extracting(com.imin.iminapi.dto.publicapi.PublicCityItem::city)
+                .containsExactly("Amsterdam", "Berlin", "Paris");
+        assertThat(cities).extracting(com.imin.iminapi.dto.publicapi.PublicCityItem::country)
+                .containsExactly("NL", "DE", "FR");
+    }
+
+    @Test
+    void listCities_disambiguates_same_city_in_different_countries() {
+        Event parisFr = publishedLiveEvent();
+        parisFr.setVenueCity("Paris");
+        parisFr.setVenueCountry("FR");
+        eventRepository.save(parisFr);
+
+        Event parisUs = publishedLiveEvent();
+        parisUs.setVenueCity("Paris");
+        parisUs.setVenueCountry("US");
+        eventRepository.save(parisUs);
+
+        List<com.imin.iminapi.dto.publicapi.PublicCityItem> cities = publicEventService.listCities();
+        assertThat(cities).hasSize(2);
+        assertThat(cities).extracting(com.imin.iminapi.dto.publicapi.PublicCityItem::city)
+                .containsExactly("Paris", "Paris");
+        assertThat(cities).extracting(com.imin.iminapi.dto.publicapi.PublicCityItem::country)
+                .containsExactlyInAnyOrder("FR", "US");
+    }
+
+    @Test
+    void listCities_excludes_empty_cities() {
+        // events.venue_city is NOT NULL DEFAULT '' at the schema level — only the
+        // empty-string case is reachable. The query also tolerates NULL defensively.
+        Event emptyCity = publishedLiveEvent();
+        emptyCity.setVenueCity("");
+        emptyCity.setVenueCountry("DE");
+        eventRepository.save(emptyCity);
+
+        Event berlin = publishedLiveEvent();
+        berlin.setVenueCity("Berlin");
+        berlin.setVenueCountry("DE");
+        eventRepository.save(berlin);
+
+        List<com.imin.iminapi.dto.publicapi.PublicCityItem> cities = publicEventService.listCities();
+        assertThat(cities).hasSize(1);
+        assertThat(cities.get(0).city()).isEqualTo("Berlin");
+    }
+
+    @Test
+    void listCities_excludes_non_eligible_events() {
+        // Draft event (excluded)
+        Event draft = publishedLiveEvent();
+        draft.setStatus(EventStatus.DRAFT);
+        draft.setPublishedAt(null);
+        draft.setVenueCity("Hidden City");
+        draft.setVenueCountry("ZZ");
+        eventRepository.save(draft);
+
+        // Private event (excluded)
+        Event priv = publishedLiveEvent();
+        priv.setVisibility(EventVisibility.PRIVATE);
+        priv.setVenueCity("Private City");
+        priv.setVenueCountry("ZZ");
+        eventRepository.save(priv);
+
+        // Soft-deleted (excluded)
+        Event deleted = publishedLiveEvent();
+        deleted.setDeletedAt(NOW.minusSeconds(60));
+        deleted.setVenueCity("Deleted City");
+        deleted.setVenueCountry("ZZ");
+        eventRepository.save(deleted);
+
+        // Public + live (included)
+        Event live = publishedLiveEvent();
+        live.setVenueCity("Visible");
+        live.setVenueCountry("DE");
+        eventRepository.save(live);
+
+        List<com.imin.iminapi.dto.publicapi.PublicCityItem> cities = publicEventService.listCities();
+        assertThat(cities).extracting(com.imin.iminapi.dto.publicapi.PublicCityItem::city)
+                .containsExactly("Visible");
+    }
+
+    @Test
+    void listCities_returns_empty_when_no_eligible_events() {
+        List<com.imin.iminapi.dto.publicapi.PublicCityItem> cities = publicEventService.listCities();
+        assertThat(cities).isEmpty();
     }
 }

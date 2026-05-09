@@ -121,6 +121,14 @@ public class PublicEventService {
         return PageResponse.from(result, e -> toListItem(e, priceByEvent.get(e.getId()), orgsById.get(e.getOrgId())));
     }
 
+    @Transactional(readOnly = true)
+    public List<com.imin.iminapi.dto.publicapi.PublicCityItem> listCities() {
+        return eventRepository.findDistinctPublicCities().stream()
+                .map(row -> new com.imin.iminapi.dto.publicapi.PublicCityItem(
+                        (String) row[0], (String) row[1]))
+                .toList();
+    }
+
     private static PublicEventListItem toListItem(Event e, Integer priceFromMinor, Organization org) {
         return new PublicEventListItem(
                 e.getId(), e.getSlug(), e.getName(), e.getStatus().wireValue(), e.getPublishedAt(),
