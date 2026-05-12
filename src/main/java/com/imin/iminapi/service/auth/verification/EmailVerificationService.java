@@ -6,6 +6,7 @@ import com.imin.iminapi.repository.EmailVerificationCodeRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -31,7 +32,7 @@ public class EmailVerificationService {
     private final int maxAttempts;
     private final SecureRandom rnd = new SecureRandom();
 
-    @org.springframework.beans.factory.annotation.Autowired
+    @Autowired
     public EmailVerificationService(EmailVerificationCodeRepository codes,
                                      UserRepository users) {
         this(codes, users, Clock.systemUTC(), CODE_TTL, MAX_ATTEMPTS);

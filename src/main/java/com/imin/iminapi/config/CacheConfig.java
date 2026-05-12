@@ -18,7 +18,8 @@ public class CacheConfig {
         CaffeineCacheManager mgr = new CaffeineCacheManager("dashboard");
         mgr.setCaffeine(Caffeine.newBuilder()
                 .expireAfterWrite(30, TimeUnit.SECONDS)
-                .maximumSize(10_000));
+                .maximumSize(10_000)
+                .recordStats());
         return mgr;
     }
 }

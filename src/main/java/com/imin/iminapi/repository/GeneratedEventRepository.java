@@ -8,12 +8,13 @@ import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 @RepositoryRestResource(exported = false)
 public interface GeneratedEventRepository extends JpaRepository<GeneratedEvent, UUID> {
 
-    java.util.Optional<com.imin.iminapi.model.GeneratedEvent> findByIdAndOrgId(java.util.UUID id, java.util.UUID orgId);
+    Optional<GeneratedEvent> findByIdAndOrgId(UUID id, UUID orgId);
 
 
     @Query("""

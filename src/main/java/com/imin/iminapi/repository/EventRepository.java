@@ -9,6 +9,8 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 
+import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -22,44 +24,44 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
     @Query("SELECT e FROM Event e WHERE e.id = :id AND e.deletedAt IS NULL")
     Optional<Event> findActive(@Param("id") UUID id);
 
-    @org.springframework.data.jpa.repository.Query(
+    @Query(
         "SELECT e FROM Event e WHERE e.orgId = :orgId AND e.deletedAt IS NULL " +
         "AND e.status = com.imin.iminapi.model.EventStatus.LIVE " +
         "AND e.startsAt > :now ORDER BY e.startsAt ASC")
-    java.util.List<com.imin.iminapi.model.Event> findUpcomingLive(
-            @org.springframework.data.repository.query.Param("orgId") java.util.UUID orgId,
-            @org.springframework.data.repository.query.Param("now") java.time.Instant now,
-            org.springframework.data.domain.Pageable pageable);
+    List<Event> findUpcomingLive(
+            @Param("orgId") UUID orgId,
+            @Param("now") Instant now,
+            Pageable pageable);
 
-    @org.springframework.data.jpa.repository.Query(
+    @Query(
         "SELECT e FROM Event e WHERE e.orgId = :orgId AND e.deletedAt IS NULL " +
         "AND e.status = com.imin.iminapi.model.EventStatus.PAST " +
         "ORDER BY e.endsAt DESC")
-    java.util.List<com.imin.iminapi.model.Event> findRecentPast(
-            @org.springframework.data.repository.query.Param("orgId") java.util.UUID orgId,
-            org.springframework.data.domain.Pageable pageable);
+    List<Event> findRecentPast(
+            @Param("orgId") UUID orgId,
+            Pageable pageable);
 
-    @org.springframework.data.jpa.repository.Query(
+    @Query(
         "SELECT COUNT(e) FROM Event e WHERE e.orgId = :orgId AND e.deletedAt IS NULL " +
         "AND e.status = com.imin.iminapi.model.EventStatus.LIVE")
-    long countLive(@org.springframework.data.repository.query.Param("orgId") java.util.UUID orgId);
+    long countLive(@Param("orgId") UUID orgId);
 
-    @org.springframework.data.jpa.repository.Query(
+    @Query(
         "SELECT COUNT(e) FROM Event e WHERE e.orgId = :orgId AND e.deletedAt IS NULL " +
         "AND e.publishedAt IS NOT NULL")
-    long countPublished(@org.springframework.data.repository.query.Param("orgId") java.util.UUID orgId);
+    long countPublished(@Param("orgId") UUID orgId);
 
-    @org.springframework.data.jpa.repository.Query(
+    @Query(
         "SELECT COUNT(e) FROM Event e WHERE e.orgId = :orgId AND e.deletedAt IS NULL " +
         "AND e.status = com.imin.iminapi.model.EventStatus.PAST")
-    long countPast(@org.springframework.data.repository.query.Param("orgId") java.util.UUID orgId);
+    long countPast(@Param("orgId") UUID orgId);
 
-    @org.springframework.data.jpa.repository.Query(
+    @Query(
         "SELECT COALESCE(SUM(e.revenueMinor), 0), COALESCE(SUM(e.sold), 0) " +
         "FROM Event e WHERE e.orgId = :orgId AND e.deletedAt IS NULL")
-    java.util.List<Object[]> sumRevenueAndSold(@org.springframework.data.repository.query.Param("orgId") java.util.UUID orgId);
+    List<Object[]> sumRevenueAndSold(@Param("orgId") UUID orgId);
 
-    @org.springframework.data.jpa.repository.Query("""
+    @Query("""
         SELECT e FROM Event e
          WHERE e.id = :id
            AND e.deletedAt IS NULL
@@ -67,42 +69,42 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
            AND e.publishedAt IS NOT NULL
            AND e.status <> com.imin.iminapi.model.EventStatus.DRAFT
 """)
-    java.util.Optional<com.imin.iminapi.model.Event> findPublic(@org.springframework.data.repository.query.Param("id") java.util.UUID id);
+    Optional<Event> findPublic(@Param("id") UUID id);
 
-    @org.springframework.data.jpa.repository.Query("""
+    @Query("""
         SELECT e FROM Event e
          WHERE e.deletedAt IS NULL
            AND e.visibility = com.imin.iminapi.model.EventVisibility.PUBLIC
            AND e.publishedAt IS NOT NULL
            AND e.status <> com.imin.iminapi.model.EventStatus.DRAFT
-           AND (:from IS NULL OR e.startsAt >= :from)
-           AND (:to IS NULL OR e.startsAt < :to)
-           AND (:genre IS NULL OR e.genre = :genre)
-           AND (:type IS NULL OR e.type = :type)
-           AND (:city IS NULL OR LOWER(e.venueCity) LIKE LOWER(CONCAT('%', :city, '%')))
-           AND (:country IS NULL OR e.venueCountry = :country)
-           AND (:q IS NULL OR LOWER(e.name) LIKE LOWER(CONCAT('%', :q, '%')))
-           AND (:orgId IS NULL OR e.orgId = :orgId)
+           AND (CAST(:from AS timestamp) IS NULL OR e.startsAt >= :from)
+           AND (CAST(:to AS timestamp) IS NULL OR e.startsAt < :to)
+           AND (CAST(:genre AS string) IS NULL OR e.genre = :genre)
+           AND (CAST(:type AS string) IS NULL OR e.type = :type)
+           AND (CAST(:city AS string) IS NULL OR LOWER(e.venueCity) LIKE LOWER(CONCAT('%', CAST(:city AS string), '%')))
+           AND (CAST(:country AS string) IS NULL OR e.venueCountry = :country)
+           AND (CAST(:q AS string) IS NULL OR LOWER(e.name) LIKE LOWER(CONCAT('%', CAST(:q AS string), '%')))
+           AND (CAST(:orgId AS java.util.UUID) IS NULL OR e.orgId = :orgId)
            AND (:onSaleOnly = false OR (
                   (e.onSaleAt IS NULL OR e.onSaleAt <= :now)
                   AND (e.saleClosesAt IS NULL OR e.saleClosesAt > :now)
                 ))
          ORDER BY e.startsAt ASC NULLS LAST, e.id ASC
 """)
-    org.springframework.data.domain.Page<com.imin.iminapi.model.Event> findPublicListing(
-            @org.springframework.data.repository.query.Param("from") java.time.Instant from,
-            @org.springframework.data.repository.query.Param("to") java.time.Instant to,
-            @org.springframework.data.repository.query.Param("genre") String genre,
-            @org.springframework.data.repository.query.Param("type") String type,
-            @org.springframework.data.repository.query.Param("city") String city,
-            @org.springframework.data.repository.query.Param("country") String country,
-            @org.springframework.data.repository.query.Param("q") String q,
-            @org.springframework.data.repository.query.Param("orgId") java.util.UUID orgId,
-            @org.springframework.data.repository.query.Param("onSaleOnly") boolean onSaleOnly,
-            @org.springframework.data.repository.query.Param("now") java.time.Instant now,
-            org.springframework.data.domain.Pageable pageable);
+    Page<Event> findPublicListing(
+            @Param("from") Instant from,
+            @Param("to") Instant to,
+            @Param("genre") String genre,
+            @Param("type") String type,
+            @Param("city") String city,
+            @Param("country") String country,
+            @Param("q") String q,
+            @Param("orgId") UUID orgId,
+            @Param("onSaleOnly") boolean onSaleOnly,
+            @Param("now") Instant now,
+            Pageable pageable);
 
-    @org.springframework.data.jpa.repository.Query("""
+    @Query("""
         SELECT DISTINCT e.venueCity, e.venueCountry FROM Event e
          WHERE e.deletedAt IS NULL
            AND e.visibility = com.imin.iminapi.model.EventVisibility.PUBLIC
@@ -112,5 +114,5 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
            AND e.venueCity <> ''
          ORDER BY e.venueCity ASC, e.venueCountry ASC
 """)
-    java.util.List<Object[]> findDistinctPublicCities();
+    List<Object[]> findDistinctPublicCities();
 }

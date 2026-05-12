@@ -25,6 +25,8 @@ import com.imin.iminapi.service.auth.verification.EmailVerificationService;
 import com.imin.iminapi.util.Slugger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -53,7 +55,7 @@ public class AuthService {
     private final EmailProperties props;
     private final Duration sessionTtl;
 
-    @org.springframework.beans.factory.annotation.Autowired
+    @Autowired
     public AuthService(OrganizationRepository orgs,
                        UserRepository users,
                        AuthSessionRepository sessions,
@@ -63,7 +65,7 @@ public class AuthService {
                        PasswordResetService passwordResetSvc,
                        AccountEmailService accountEmail,
                        EmailProperties emailProperties,
-                       @org.springframework.beans.factory.annotation.Value("${imin.auth.session-ttl-days}") long sessionTtlDays) {
+                       @Value("${imin.auth.session-ttl-days}") long sessionTtlDays) {
         this(orgs, users, sessions, hasher, tokens, verificationSvc, passwordResetSvc, accountEmail,
                 emailProperties, Duration.ofDays(sessionTtlDays));
     }

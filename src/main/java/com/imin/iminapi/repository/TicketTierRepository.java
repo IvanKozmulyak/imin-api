@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -27,6 +28,6 @@ public interface TicketTierRepository extends JpaRepository<TicketTier, UUID> {
          WHERE t.enabled = true AND t.eventId IN :eventIds
          GROUP BY t.eventId
     """)
-    java.util.List<Object[]> findMinEnabledPriceByEventIds(
-            @Param("eventIds") java.util.Collection<java.util.UUID> eventIds);
+    List<Object[]> findMinEnabledPriceByEventIds(
+            @Param("eventIds") Collection<UUID> eventIds);
 }
