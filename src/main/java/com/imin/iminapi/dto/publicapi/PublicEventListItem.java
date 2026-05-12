@@ -16,7 +16,7 @@ public record PublicEventListItem(
         String timezone,
         String venueCity,
         String venueCountry,
-        String coverUrl,
+        String posterUrl,
         String currency,
         Integer priceFromMinor,
         PublicOrganizationDto organization

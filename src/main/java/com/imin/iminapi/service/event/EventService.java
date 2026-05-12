@@ -141,7 +141,6 @@ public class EventService {
         if (b.description() != null) e.setDescription(b.description());
         if (b.posterUrl() != null) e.setPosterUrl(b.posterUrl());
         if (b.videoUrl() != null) e.setVideoUrl(b.videoUrl());
-        if (b.coverUrl() != null) e.setCoverUrl(b.coverUrl());
         if (b.currency() != null) e.setCurrency(b.currency());
         if (b.squadsEnabled() != null) e.setSquadsEnabled(b.squadsEnabled());
         if (b.minSquadSize() != null) e.setMinSquadSize(b.minSquadSize());

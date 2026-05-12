@@ -52,7 +52,7 @@ class EventServiceTest {
 
         EventDto dto = sut.createDraft(p, new EventPatchRequest(
                 null, null, null, null, null, null, null, null, null,
-                null, null, null, null, null, null, null, null, null, null, null));
+                null, null, null, null, null, null, null, null, null, null));
 
         assertThat(dto.status()).isEqualTo("draft");
         assertThat(dto.orgId()).isEqualTo(p.orgId());
@@ -120,7 +120,7 @@ class EventServiceTest {
 
         EventDto dto = sut.patch(p, e.getId(), "\"" + updated + "\"",
                 new EventPatchRequest("New name", null, null, "Techno", null, null, null, null, null,
-                        null, null, null, null, null, null, null, null, null, null, null));
+                        null, null, null, null, null, null, null, null, null, null));
 
         assertThat(dto.name()).isEqualTo("New name");
         assertThat(dto.genre()).isEqualTo("Techno");
@@ -140,7 +140,7 @@ class EventServiceTest {
         org.assertj.core.api.Assertions.assertThatThrownBy(() ->
                 sut.patch(p, e.getId(), "\"2026-01-01T00:00:00Z\"",
                         new EventPatchRequest("X", null, null, null, null, null, null, null, null,
-                                null, null, null, null, null, null, null, null, null, null, null)))
+                                null, null, null, null, null, null, null, null, null, null)))
                 .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.STALE_WRITE);
     }
 
@@ -158,7 +158,7 @@ class EventServiceTest {
         org.assertj.core.api.Assertions.assertThatThrownBy(() ->
                 sut.patch(p, e.getId(), "\"" + updated + "\"",
                         new EventPatchRequest(null, "taken-slug", null, null, null, null, null, null, null,
-                                null, null, null, null, null, null, null, null, null, null, null)))
+                                null, null, null, null, null, null, null, null, null, null)))
                 .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.DUPLICATE);
     }
 
@@ -215,7 +215,7 @@ class EventServiceTest {
 
         sut.patch(p, e.getId(), "\"" + updated + "\"",
                 new EventPatchRequest(null, null, null, null, null, null, null, null, null,
-                        null, null, null, null, null, null, null, null, null, null,
+                        null, null, null, null, null, null, null, null, null,
                         List.of(tp)));
 
         verify(tierService).reconcileEmbedded(eq(e), eq(List.of(tp)));
@@ -237,7 +237,7 @@ class EventServiceTest {
 
         sut.patch(p, e.getId(), "\"" + updated + "\"",
                 new EventPatchRequest("Renamed", null, null, null, null, null, null, null, null,
-                        null, null, null, null, null, null, null, null, null, null, null));
+                        null, null, null, null, null, null, null, null, null, null));
 
         verifyNoInteractions(tierService);
     }

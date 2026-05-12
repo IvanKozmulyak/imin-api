@@ -1,7 +1,7 @@
 package com.imin.iminapi.model;
 
 public enum MediaKind {
-    POSTER, VIDEO, COVER;
+    POSTER, VIDEO;
 
     public String wireValue() { return name().toLowerCase(); }
 
@@ -9,7 +9,6 @@ public enum MediaKind {
         return switch (s) {
             case "poster" -> POSTER;
             case "video" -> VIDEO;
-            case "cover" -> COVER;
             default -> throw new IllegalArgumentException("Unknown media kind: " + s);
         };
     }

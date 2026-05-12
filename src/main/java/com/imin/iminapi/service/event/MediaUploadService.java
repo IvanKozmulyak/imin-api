@@ -53,7 +53,6 @@ public class MediaUploadService {
         switch (kind) {
             case POSTER -> e.setPosterUrl(url);
             case VIDEO -> e.setVideoUrl(url);
-            case COVER -> e.setCoverUrl(url);
         }
         events.save(e);
         // Upload to remote storage — if this throws, the DB row already has the correct URL
@@ -68,7 +67,6 @@ public class MediaUploadService {
         String url = switch (kind) {
             case POSTER -> e.getPosterUrl();
             case VIDEO -> e.getVideoUrl();
-            case COVER -> e.getCoverUrl();
         };
         if (url == null) return;
         // Reverse-derive key from public URL (everything after the prefix).
@@ -77,7 +75,6 @@ public class MediaUploadService {
         switch (kind) {
             case POSTER -> e.setPosterUrl(null);
             case VIDEO -> e.setVideoUrl(null);
-            case COVER -> e.setCoverUrl(null);
         }
         events.save(e);
     }
@@ -91,7 +88,7 @@ public class MediaUploadService {
     private static void validate(MediaKind kind, byte[] bytes, String contentType) {
         long size = bytes.length;
         switch (kind) {
-            case POSTER, COVER -> {
+            case POSTER -> {
                 if (size > 5 * MB) throw fieldErr("file", "must be ≤ 5 MB");
                 if (!IMAGE_TYPES.contains(contentType)) throw fieldErr("file", "must be JPG or PNG");
             }

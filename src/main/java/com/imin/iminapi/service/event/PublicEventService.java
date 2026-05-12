@@ -134,7 +134,7 @@ public class PublicEventService {
                 e.getId(), e.getSlug(), e.getName(), e.getStatus().wireValue(), e.getPublishedAt(),
                 e.getGenre(), e.getType(),
                 e.getStartsAt(), e.getEndsAt(), e.getTimezone(),
-                e.getVenueCity(), e.getVenueCountry(), e.getCoverUrl(), e.getCurrency(),
+                e.getVenueCity(), e.getVenueCountry(), e.getPosterUrl(), e.getCurrency(),
                 priceFromMinor,
                 new PublicOrganizationDto(org.getName(), org.getSlug()));
     }
