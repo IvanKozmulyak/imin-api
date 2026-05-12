@@ -51,19 +51,18 @@ public class StripeConnectService {
      *
      * The v2 account create body contains:
      * display_name, contact_email, dashboard='express',
-     * defaults.responsibilities.{fees_collector,losses_collector}='application',
-     * configuration.merchant.capabilities.card_payments.requested=true,
-     * configuration.recipient.capabilities.stripe_balance.stripe_transfers.requested=true.
-     * Both capabilities are required: Stripe rejects stripe_transfers on its own with
-     * `capability_not_available_without_other_capability`, because Destination Charges need
-     * the merchant side to accept the card before transferring to the recipient side.
-     * NO top-level `type` field — v2 deprecates the 'express'/'standard'/'custom' selectors
-     * in favor of dashboard + configuration.
-     * NO `identity.country` either: FR-based Connect platforms (which we are, by Stripe
-     * account country) can only set identity fields on a merchant-configured v2 account via
-     * account tokens. Letting Stripe collect the country from the organizer during hosted
-     * Express onboarding sidesteps that restriction and is the right answer anyway — the
-     * organizer's actual country, not a platform default, is what belongs there.
+     * defaults.responsibilities.{fees_collector,losses_collector}='application'.
+     * NO `configuration` block, NO `identity.country`, NO top-level `type` (v2 deprecates type).
+     *
+     * Why no configuration block at create: FR-based Connect platforms (which we are, per the
+     * Stripe account country) are blocked by `account_token_required` whenever a v2 account
+     * carries a merchant configuration — Stripe treats the implicit identity that comes with
+     * `configuration.merchant` as PSD2-regulated information that must arrive via account +
+     * person tokens minted client-side with Stripe.js. We don't run Stripe.js on the organizer
+     * dashboard, so the only viable path is to create the account bare here and let the hosted
+     * Express onboarding link (see {@link #createOnboardingLink}) attach both MERCHANT and
+     * RECIPIENT configurations — Stripe's hosted page collects identity directly from the
+     * organizer and handles FR compliance internally without needing tokens from us.
      */
     @Transactional
     public ConnectResult getOrCreateAccount(AuthPrincipal principal, UUID orgId) {
@@ -77,16 +76,13 @@ public class StripeConnectService {
         AccountCreateParams params = AccountCreateParams.builder()
                 .setDisplayName(org.getName())
                 .setContactEmail(org.getContactEmail())
-                // No identity.country: per Stripe's hosted-onboarding docs, if you specify the country
-                // (or request capabilities), the account holder can't change it. Letting Express
-                // onboarding present the country picker means the organizer chooses from the list
-                // configured in our platform Connect dashboard. Also: a FR-based platform isn't
-                // allowed to set identity fields on a merchant-configured v2 account except via
-                // account tokens, so this is both the docs-recommended and the required path for us.
                 .setDashboard(AccountCreateParams.Dashboard.EXPRESS)
                 .setDefaults(AccountCreateParams.Defaults.builder()
                         // responsibilities — the platform (this app) collects fees + bears losses.
                         // Required when using destination charges with an application_fee.
+                        // These are configuration defaults, not identity, so they don't trigger
+                        // the FR account_token rule. They apply to whichever configurations
+                        // hosted onboarding ends up attaching.
                         .setResponsibilities(AccountCreateParams.Defaults.Responsibilities.builder()
                                 .setFeesCollector(
                                         AccountCreateParams.Defaults.Responsibilities.FeesCollector.APPLICATION)
@@ -94,37 +90,9 @@ public class StripeConnectService {
                                         AccountCreateParams.Defaults.Responsibilities.LossesCollector.APPLICATION)
                                 .build())
                         .build())
-                // configuration.recipient + configuration.merchant — both personas are required.
-                // Stripe rejects `recipient.stripe_balance.stripe_transfers` unless
-                // `merchant.card_payments` is also requested (the platform accepts the buyer's card,
-                // then transfers to the connected account via Destination Charges).
-                .setConfiguration(AccountCreateParams.Configuration.builder()
-                        .setMerchant(AccountCreateParams.Configuration.Merchant.builder()
-                                .setCapabilities(
-                                        AccountCreateParams.Configuration.Merchant.Capabilities.builder()
-                                                .setCardPayments(
-                                                        AccountCreateParams.Configuration.Merchant.Capabilities
-                                                                .CardPayments.builder()
-                                                                .setRequested(true)
-                                                                .build())
-                                                .build())
-                                .build())
-                        .setRecipient(AccountCreateParams.Configuration.Recipient.builder()
-                                .setCapabilities(
-                                        AccountCreateParams.Configuration.Recipient.Capabilities.builder()
-                                                .setStripeBalance(
-                                                        AccountCreateParams.Configuration.Recipient.Capabilities
-                                                                .StripeBalance.builder()
-                                                                .setStripeTransfers(
-                                                                        AccountCreateParams.Configuration.Recipient
-                                                                                .Capabilities.StripeBalance
-                                                                                .StripeTransfers.builder()
-                                                                                .setRequested(true)
-                                                                                .build())
-                                                                .build())
-                                                .build())
-                                .build())
-                        .build())
+                // No configuration block — see method-level comment. Both merchant and recipient
+                // are attached by Stripe during hosted Express onboarding (the AccountLink below
+                // requests both configurations).
                 .build();
 
         Account account;
