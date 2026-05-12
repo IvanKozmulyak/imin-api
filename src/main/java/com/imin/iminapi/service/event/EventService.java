@@ -15,9 +15,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import java.util.UUID;
 
 @Service
@@ -97,6 +101,9 @@ public class EventService {
         if (body != null && body.tiers() != null) {
             tierService.reconcileEmbedded(e, body.tiers());
         }
+        if (body != null && body.promoCodes() != null) {
+            reconcilePromoCodes(e.getId(), body.promoCodes());
+        }
         return detail(p, id);
     }
 
@@ -147,6 +154,60 @@ public class EventService {
         if (b.squadDiscountPct() != null) e.setSquadDiscountPct(b.squadDiscountPct());
         if (b.onSaleAt() != null) e.setOnSaleAt(b.onSaleAt());
         if (b.saleClosesAt() != null) e.setSaleClosesAt(b.saleClosesAt());
+    }
+
+    /**
+     * Full-list reconciliation: replace all promo codes for this event with the patch.
+     * Only reachable from PATCH /events/:id, which already rejects non-draft events with
+     * 409 INVALID_STATE — so we never destroy redemption history of a live event.
+     *
+     * Validates *before* mutating: a bad row anywhere in the list aborts the whole
+     * reconcile (and the surrounding @Transactional rolls back the event update too).
+     */
+    private void reconcilePromoCodes(UUID eventId, List<PromoCodeEmbeddedPatch> patches) {
+        Map<String, String> fieldErrors = new LinkedHashMap<>();
+        Set<String> seenCodes = new HashSet<>();
+        for (int i = 0; i < patches.size(); i++) {
+            PromoCodeEmbeddedPatch p = patches.get(i);
+            String prefix = "promoCodes[" + i + "].";
+            String code = p.code() == null ? null : p.code().trim();
+            if (code == null || code.isEmpty()) {
+                fieldErrors.put(prefix + "code", "required");
+            } else if (code.length() > 64) {
+                fieldErrors.put(prefix + "code", "≤ 64 chars");
+            } else if (!seenCodes.add(code.toUpperCase(Locale.ROOT))) {
+                fieldErrors.put(prefix + "code", "duplicate code in list");
+            }
+            if (p.discountPct() == null) {
+                fieldErrors.put(prefix + "discountPct", "required");
+            } else if (p.discountPct() < 1 || p.discountPct() > 100) {
+                fieldErrors.put(prefix + "discountPct", "must be 1..100");
+            }
+            if (p.maxUses() == null) {
+                fieldErrors.put(prefix + "maxUses", "required");
+            } else if (p.maxUses() < 1) {
+                fieldErrors.put(prefix + "maxUses", "must be ≥ 1");
+            }
+        }
+        if (!fieldErrors.isEmpty()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
+                    "Invalid promo code data", fieldErrors);
+        }
+
+        // Delete-and-reinsert. Cheaper to reason about than upsert-by-code, and the
+        // draft-only constraint means there are no redemptions to preserve.
+        List<PromoCode> existing = promos.findByEventId(eventId);
+        if (!existing.isEmpty()) promos.deleteAll(existing);
+        promos.flush();
+        for (PromoCodeEmbeddedPatch p : patches) {
+            PromoCode pc = new PromoCode();
+            pc.setEventId(eventId);
+            pc.setCode(p.code().trim().toUpperCase(Locale.ROOT));
+            pc.setDiscountPct(p.discountPct());
+            pc.setMaxUses(p.maxUses());
+            pc.setEnabled(true);
+            promos.save(pc);
+        }
     }
 
     private static final Random SLUG_RND = new Random();

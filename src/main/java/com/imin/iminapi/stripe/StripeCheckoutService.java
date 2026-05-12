@@ -2,14 +2,18 @@ package com.imin.iminapi.stripe;
 
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.model.PromoCode;
 import com.imin.iminapi.model.TicketTier;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.repository.PromoCodeRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.security.ApiException;
 import com.stripe.StripeClient;
 import com.stripe.exception.StripeException;
+import com.stripe.model.Coupon;
 import com.stripe.model.checkout.Session;
+import com.stripe.param.CouponCreateParams;
 import com.stripe.param.checkout.SessionCreateParams;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,8 +21,11 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 
 import com.imin.iminapi.security.ErrorCode;
@@ -47,6 +54,7 @@ public class StripeCheckoutService {
     private final EventRepository events;
     private final TicketTierRepository tiers;
     private final OrganizationRepository orgs;
+    private final PromoCodeRepository promos;
     private final StripeConnectService connectService;
     private final StripeProperties props;
     private final Clock clock;
@@ -55,6 +63,7 @@ public class StripeCheckoutService {
                                   EventRepository events,
                                   TicketTierRepository tiers,
                                   OrganizationRepository orgs,
+                                  PromoCodeRepository promos,
                                   StripeConnectService connectService,
                                   StripeProperties props,
                                   Clock clock) {
@@ -62,16 +71,22 @@ public class StripeCheckoutService {
         this.events = events;
         this.tiers = tiers;
         this.orgs = orgs;
+        this.promos = promos;
         this.connectService = connectService;
         this.props = props;
         this.clock = clock;
     }
 
     /**
+     * @param promoCode optional buyer-supplied code. Validated against the event's promo list;
+     *                  on success a one-shot Stripe Coupon is attached to the Session so the
+     *                  discount appears at checkout. Invalid code → 400 INVALID_PROMO_CODE (we
+     *                  deliberately do NOT collapse to 404, because here it's a buyer-fixable
+     *                  typo, not a "this event doesn't exist" question).
      * @return the Stripe-hosted Checkout URL. Buyer is sent here directly; we never see the card.
      */
     @Transactional(readOnly = true)
-    public String createCheckoutSession(UUID eventId, UUID tierId, int quantity) {
+    public String createCheckoutSession(UUID eventId, UUID tierId, int quantity, String promoCode) {
         if (quantity < 1 || quantity > 10) {
             // 400, not 404 — quantity is a client bug, not an event-discovery question.
             throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
@@ -115,12 +130,18 @@ public class StripeCheckoutService {
             throw ApiException.notFound("Event");
         }
 
-        // 4. Compute platform fee (basis points → minor units), bounded by total.
+        // 4. Resolve the promo code (if any). Validation errors are 400 — the buyer can fix them.
+        PromoCode promo = resolvePromoCode(eventId, promoCode);
+
+        // 5. Compute platform fee (basis points → minor units), bounded by total.
+        // The fee is computed on the *undiscounted* subtotal — Stripe applies the coupon to the
+        // total, but the platform fee follows the line items, so a buyer using a 20% off code
+        // sees the discount reflected only in the final amount charged, not in our cut.
         long totalMinor = (long) tier.getPriceMinor() * quantity;
         long applicationFee = Math.round(totalMinor * (double) props.getApplicationFeeBps() / 10000.0);
 
-        // 5. Build the session.
-        SessionCreateParams params = SessionCreateParams.builder()
+        // 6. Build the session.
+        SessionCreateParams.Builder builder = SessionCreateParams.builder()
                 .setMode(SessionCreateParams.Mode.PAYMENT)
                 .addLineItem(SessionCreateParams.LineItem.builder()
                         .setPrice(tier.getStripePriceId())
@@ -137,8 +158,25 @@ public class StripeCheckoutService {
                         .build())
                 .setSuccessUrl(props.getPublicReturnUrlBase()
                         + "/e/" + eventId + "/success?session_id={CHECKOUT_SESSION_ID}")
-                .setCancelUrl(props.getPublicReturnUrlBase() + "/e/" + eventId)
-                .build();
+                .setCancelUrl(props.getPublicReturnUrlBase() + "/e/" + eventId);
+
+        if (promo != null) {
+            // Create a one-shot Stripe Coupon on the platform account and attach it. We don't
+            // pre-create Stripe Coupons at promo-save time because (a) the promo can be edited
+            // up until publish, (b) we'd then have to keep two systems in sync, and (c) a fresh
+            // coupon per checkout lets us tag it with metadata for the webhook to read back.
+            String couponId = createOneShotCoupon(promo, eventId);
+            builder.addDiscount(SessionCreateParams.Discount.builder()
+                    .setCoupon(couponId)
+                    .build());
+            // Stamp the promo id on the session itself so the checkout.session.completed
+            // webhook can find the PromoCode row without having to round-trip back to Stripe
+            // to fetch the coupon. session.metadata is what the webhook will read.
+            builder.putMetadata("promo_id", promo.getId().toString());
+            builder.putMetadata("event_id", eventId.toString());
+        }
+
+        SessionCreateParams params = builder.build();
 
         Session session;
         try {
@@ -151,5 +189,63 @@ public class StripeCheckoutService {
                     "Checkout session could not be created", e);
         }
         return session.getUrl();
+    }
+
+    /**
+     * Look up + validate a buyer-supplied promo code. Returns null when none was supplied.
+     * Throws 400 INVALID_REQUEST when one was supplied but doesn't apply. Codes are matched
+     * case-insensitively against the event's stored set; stored codes are already uppercased
+     * by the wizard's reconcile path.
+     */
+    private PromoCode resolvePromoCode(UUID eventId, String rawCode) {
+        if (rawCode == null) return null;
+        String code = rawCode.trim();
+        if (code.isEmpty()) return null;
+        String normalized = code.toUpperCase(Locale.ROOT);
+
+        PromoCode promo = promos.findByEventId(eventId).stream()
+                .filter(p -> normalized.equals(p.getCode() == null
+                        ? null : p.getCode().toUpperCase(Locale.ROOT)))
+                .findFirst()
+                .orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST,
+                        ErrorCode.INVALID_REQUEST,
+                        "Invalid promo code",
+                        Map.of("promoCode", "not found")));
+
+        if (!promo.isEnabled()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
+                    "Promo code is no longer active",
+                    Map.of("promoCode", "disabled"));
+        }
+        if (promo.getUsedCount() >= promo.getMaxUses()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
+                    "Promo code has reached its usage limit",
+                    Map.of("promoCode", "exhausted"));
+        }
+        return promo;
+    }
+
+    /**
+     * Create a single-use Stripe Coupon that mirrors our promo. Duration=ONCE so the
+     * discount applies only to this checkout. Metadata.promo_id lets the webhook tie a
+     * paid session back to our PromoCode row for usage tracking.
+     */
+    private String createOneShotCoupon(PromoCode promo, UUID eventId) {
+        CouponCreateParams params = CouponCreateParams.builder()
+                .setPercentOff(BigDecimal.valueOf(promo.getDiscountPct()))
+                .setDuration(CouponCreateParams.Duration.ONCE)
+                .setName(promo.getCode())
+                .putMetadata("promo_id", promo.getId().toString())
+                .putMetadata("event_id", eventId.toString())
+                .build();
+        try {
+            Coupon coupon = stripeClient.coupons().create(params);
+            return coupon.getId();
+        } catch (StripeException e) {
+            log.error("Stripe coupon create failed for promo {} on event {}: {}",
+                    promo.getId(), eventId, e.getMessage(), e);
+            throw new ApiException(HttpStatus.BAD_GATEWAY, ErrorCode.UPSTREAM_UNAVAILABLE,
+                    "Promo code could not be applied — please try again", e);
+        }
     }
 }

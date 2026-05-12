@@ -1,28 +1,43 @@
 package com.imin.iminapi.stripe;
 
+import com.imin.iminapi.repository.PromoCodeRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
 import com.stripe.StripeClient;
 import com.stripe.exception.SignatureVerificationException;
 import com.stripe.exception.StripeException;
+import com.stripe.model.EventDataObjectDeserializer;
+import com.stripe.model.StripeObject;
+import com.stripe.model.checkout.Session;
 import com.stripe.model.v2.core.Event;
 import com.stripe.model.v2.core.EventNotification;
+import com.stripe.net.Webhook;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+
 /**
  * Handles Stripe webhook deliveries on {@code POST /api/v1/stripe/webhook}.
  *
- * <p>We use the v2 "thin event" / EventNotification flow (the {@code stripe listen --thin-events}
- * variety described in the spec). In stripe-java the relevant entry point is
- * {@link StripeClient#parseEventNotification(String, String, String)}, which signature-verifies
- * the payload and returns a lightweight notification. We then fetch the full event via the v2
- * Events service so we get the typed payload.
+ * <p>This single endpoint handles both Stripe webhook formats:
+ * <ul>
+ *   <li><b>V1 events</b> ({@code checkout.session.completed}, {@code payment_intent.succeeded}, …)
+ *       — parsed by {@link Webhook#constructEvent}.</li>
+ *   <li><b>V2 thin events</b> ({@code v2.core.account.requirements.updated},
+ *       {@code v2.core.account.recipient.capability_status_updated}) — parsed by
+ *       {@link StripeClient#parseEventNotification}.</li>
+ * </ul>
  *
- * <p>No DB state is updated — the org's connect status is fetched live on every read by the
- * organizer dashboard, so the only thing we need to do here is log the new state.
+ * <p>Both schemes use the same HMAC-SHA256 signature algorithm, so one shared
+ * {@code STRIPE_WEBHOOK_SECRET} works for either. Routing happens by JSON-peeking
+ * the body's {@code object} field — {@code "v2.core.event"} → v2 path, else v1.
+ * The peek is on unverified data, but the only consequence of a wrong peek is the
+ * wrong parser failing signature verification, which we reject.
  */
 @Service
 public class StripeWebhookService {
@@ -31,10 +46,14 @@ public class StripeWebhookService {
 
     private final StripeClient stripeClient;
     private final StripeProperties props;
+    private final PromoCodeRepository promos;
 
-    public StripeWebhookService(StripeClient stripeClient, StripeProperties props) {
+    public StripeWebhookService(StripeClient stripeClient,
+                                StripeProperties props,
+                                PromoCodeRepository promos) {
         this.stripeClient = stripeClient;
         this.props = props;
+        this.promos = promos;
     }
 
     /**
@@ -54,37 +73,119 @@ public class StripeWebhookService {
                     "Missing Stripe-Signature header");
         }
 
+        if (looksLikeV2ThinEvent(rawBody)) {
+            handleV2(rawBody, sigHeader, secret);
+        } else {
+            handleV1(rawBody, sigHeader, secret);
+        }
+    }
+
+    private static boolean looksLikeV2ThinEvent(String body) {
+        // V2 thin events carry {"object":"v2.core.event", ...} at top level. Plain
+        // substring check is enough — the matching parser will reject mismatches via
+        // signature verification, so a false positive can't smuggle in bad data.
+        return body != null && body.contains("\"v2.core.event\"");
+    }
+
+    private void handleV2(String rawBody, String sigHeader, String secret) {
         EventNotification notification;
         try {
-            // Verifies HMAC signature against raw body + secret, then deserializes to a typed
-            // EventNotification subclass. This is the "thin event" entry — payload contains only
-            // id + type + metadata, not the full resource — so we fetch the full Event below.
             notification = stripeClient.parseEventNotification(rawBody, sigHeader, secret);
         } catch (SignatureVerificationException e) {
-            log.warn("Stripe webhook signature verification failed: {}", e.getMessage());
+            log.warn("Stripe v2 webhook signature verification failed: {}", e.getMessage());
             throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
                     "Invalid Stripe signature");
         }
 
         String type = notification.getType();
         String id = notification.getId();
-        log.info("Stripe webhook received: type={} id={}", type, id);
+        log.info("Stripe v2 webhook received: type={} id={}", type, id);
 
-        // Only the two account-state types we care about get the full-event fetch. Other types
-        // are logged and ack'd silently so Stripe stops retrying.
         if ("v2.core.account.requirements.updated".equals(type)
                 || "v2.core.account.recipient.capability_status_updated".equals(type)) {
             try {
-                // Fetch the full Event from v2 — gives us typed access to event.data without
-                // re-parsing the thin notification's metadata.
                 Event full = stripeClient.v2().core().events().retrieve(id);
                 log.info("Stripe account state event: type={} eventId={} created={}",
                         full.getType(), full.getId(), full.getCreated());
-                // No DB state to update — status is fetched live per the user's instruction.
+                // No DB state to update — connect status is fetched live per the user's instruction.
             } catch (StripeException e) {
-                // Don't 500 — Stripe will retry. Log and ack.
-                log.warn("Failed to fetch full Stripe event {} (type {}): {}", id, type, e.getMessage());
+                log.warn("Failed to fetch full Stripe event {} (type {}): {}",
+                        id, type, e.getMessage());
             }
+        }
+    }
+
+    private void handleV1(String rawBody, String sigHeader, String secret) {
+        com.stripe.model.Event event;
+        try {
+            event = Webhook.constructEvent(rawBody, sigHeader, secret);
+        } catch (SignatureVerificationException e) {
+            log.warn("Stripe v1 webhook signature verification failed: {}", e.getMessage());
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
+                    "Invalid Stripe signature");
+        }
+
+        String type = event.getType();
+        log.info("Stripe v1 webhook received: type={} id={}", type, event.getId());
+
+        switch (type) {
+            case "checkout.session.completed" -> onCheckoutSessionCompleted(event);
+            // payment_intent.succeeded is a secondary signal — checkout.session.completed
+            // is what we key off for promo redemption. PI events still get ack'd silently.
+            default -> { /* ignored, ack with 200 so Stripe stops retrying */ }
+        }
+    }
+
+    private void onCheckoutSessionCompleted(com.stripe.model.Event event) {
+        EventDataObjectDeserializer dod = event.getDataObjectDeserializer();
+        Optional<StripeObject> obj = dod.getObject();
+        if (obj.isEmpty()) {
+            log.warn("checkout.session.completed had no deserialized object — apiVersion={}",
+                    event.getApiVersion());
+            return;
+        }
+        if (!(obj.get() instanceof Session session)) {
+            log.warn("checkout.session.completed deserialized to unexpected type: {}",
+                    obj.get().getClass().getName());
+            return;
+        }
+
+        // Only paid sessions count as a promo redemption. Sessions with async payment
+        // methods can complete with payment_status="unpaid" and finalize later via
+        // checkout.session.async_payment_succeeded — we'd need to handle that event
+        // separately if/when we accept those payment methods.
+        if (!"paid".equals(session.getPaymentStatus())) {
+            log.info("checkout.session.completed but paymentStatus={} — skipping promo increment",
+                    session.getPaymentStatus());
+            return;
+        }
+
+        Map<String, String> meta = session.getMetadata();
+        if (meta == null) return;
+        String promoIdRaw = meta.get("promo_id");
+        if (promoIdRaw == null || promoIdRaw.isBlank()) {
+            // No promo was applied to this session — nothing to do.
+            return;
+        }
+        UUID promoId;
+        try {
+            promoId = UUID.fromString(promoIdRaw);
+        } catch (IllegalArgumentException e) {
+            log.warn("Session {} has malformed promo_id metadata: {}", session.getId(), promoIdRaw);
+            return;
+        }
+
+        // Stripe delivers webhooks at-least-once, so this can double-count if Stripe retries
+        // after a successful processing. The proper fix is a `processed_webhook_events` table
+        // keyed on event id; for now the impact is bounded (a redelivery would push usedCount
+        // ahead, possibly tripping maxUses slightly early, but never under-count).
+        int rows = promos.incrementUsedCount(promoId);
+        if (rows == 0) {
+            log.warn("Promo code {} not found when handling session {} — skipped",
+                    promoId, session.getId());
+        } else {
+            log.info("Incremented usedCount on promo {} after session {}",
+                    promoId, session.getId());
         }
     }
 }

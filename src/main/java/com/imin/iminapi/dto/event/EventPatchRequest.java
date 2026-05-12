@@ -17,5 +17,10 @@ public record EventPatchRequest(
         String currency,
         Boolean squadsEnabled, Integer minSquadSize, Integer squadDiscountPct,
         Instant onSaleAt, Instant saleClosesAt,
-        List<TicketTierEmbeddedPatch> tiers
+        List<TicketTierEmbeddedPatch> tiers,
+        // Whole-list semantics: when present, the server replaces all of the event's
+        // promo codes with this set (safe because PATCH only operates on drafts).
+        // When null, existing codes are left alone — that's what the autosave loop
+        // does, since it omits this field entirely.
+        List<PromoCodeEmbeddedPatch> promoCodes
 ) {}

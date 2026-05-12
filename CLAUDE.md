@@ -96,9 +96,15 @@ Endpoints:
 - `POST /api/v1/stripe/webhook` — signature-verified webhook receiver.
 
 Webhook dev setup:
-```
-stripe listen --thin-events 'v2.core.account[requirements].updated,v2.core.account[.recipient].capability_status_updated' --forward-thin-to http://localhost:8085/api/v1/stripe/webhook
-```
+
+The single endpoint at `/api/v1/stripe/webhook` handles both webhook formats — V2 thin events for Connect account state, and V1 events for payment lifecycle. Routing is by JSON peek (see `StripeWebhookService.looksLikeV2ThinEvent`). One signing secret covers both because Stripe signs both with the same HMAC scheme — so configure ONE endpoint in your Stripe dashboard (or one `stripe listen --load-from-webhooks-api`) with the union of these event types:
+
+- V2 (Connect account): `v2.core.account.requirements.updated`, `v2.core.account.recipient.capability_status_updated`
+- V1 (payments): `checkout.session.completed`
+
+For ad-hoc local listening without dashboard config, two separate `stripe listen` commands work but each produces a different signing secret — easier to do `stripe listen --load-from-webhooks-api --forward-to http://localhost:8085/api/v1/stripe/webhook` against a dashboard endpoint set up once.
+
+Promo code redemption tracking: when a buyer uses a promo code at checkout, the session is created with `metadata.promo_id`. On `checkout.session.completed` (paid), the webhook atomically increments `promo_codes.used_count`. At-least-once delivery means a Stripe redelivery can over-count slightly — bounded, but the proper fix is a `processed_webhook_events` dedup table (not yet wired).
 
 State model: account ids are persisted (`organizations.stripe_account_id`, `ticket_tiers.stripe_product_id`, `ticket_tiers.stripe_price_id`); onboarding/capability state is fetched live from Stripe on every status read.
 

@@ -50,7 +50,7 @@ public class StripeConnectService {
      * Otherwise create one via the v2 Accounts API and persist the id.
      *
      * The v2 account create body contains:
-     * display_name, contact_email, identity.country='us', dashboard='express',
+     * display_name, contact_email, dashboard='express',
      * defaults.responsibilities.{fees_collector,losses_collector}='application',
      * configuration.merchant.capabilities.card_payments.requested=true,
      * configuration.recipient.capabilities.stripe_balance.stripe_transfers.requested=true.
@@ -59,6 +59,11 @@ public class StripeConnectService {
      * the merchant side to accept the card before transferring to the recipient side.
      * NO top-level `type` field — v2 deprecates the 'express'/'standard'/'custom' selectors
      * in favor of dashboard + configuration.
+     * NO `identity.country` either: FR-based Connect platforms (which we are, by Stripe
+     * account country) can only set identity fields on a merchant-configured v2 account via
+     * account tokens. Letting Stripe collect the country from the organizer during hosted
+     * Express onboarding sidesteps that restriction and is the right answer anyway — the
+     * organizer's actual country, not a platform default, is what belongs there.
      */
     @Transactional
     public ConnectResult getOrCreateAccount(AuthPrincipal principal, UUID orgId) {
@@ -72,13 +77,12 @@ public class StripeConnectService {
         AccountCreateParams params = AccountCreateParams.builder()
                 .setDisplayName(org.getName())
                 .setContactEmail(org.getContactEmail())
-                // identity.country — country of the connected account holder. Hard-coded to 'us' per the
-                // platform spec; the org's own .country field is metadata about the org, not the legal entity.
-                .setIdentity(AccountCreateParams.Identity.builder()
-                        .setCountry("us")
-                        .build())
-                // dashboard='express' — platform-managed dashboard surface for the connected account.
-                // Drop-in replacement for the legacy `type=express`.
+                // No identity.country: per Stripe's hosted-onboarding docs, if you specify the country
+                // (or request capabilities), the account holder can't change it. Letting Express
+                // onboarding present the country picker means the organizer chooses from the list
+                // configured in our platform Connect dashboard. Also: a FR-based platform isn't
+                // allowed to set identity fields on a merchant-configured v2 account except via
+                // account tokens, so this is both the docs-recommended and the required path for us.
                 .setDashboard(AccountCreateParams.Dashboard.EXPRESS)
                 .setDefaults(AccountCreateParams.Defaults.builder()
                         // responsibilities — the platform (this app) collects fees + bears losses.
@@ -173,6 +177,15 @@ public class StripeConnectService {
                                         .Configuration.MERCHANT)
                                 .addConfiguration(AccountLinkCreateParams.UseCase.AccountOnboarding
                                         .Configuration.RECIPIENT)
+                                // Up-front onboarding: collect every requirement we'll eventually need,
+                                // not just the currently_due ones. Matches Stripe's hosted-onboarding
+                                // sample and avoids the organizer being yanked back through onboarding
+                                // each time a new deadline becomes currently_due.
+                                .setCollectionOptions(AccountLinkCreateParams.UseCase.AccountOnboarding
+                                        .CollectionOptions.builder()
+                                        .setFields(AccountLinkCreateParams.UseCase.AccountOnboarding
+                                                .CollectionOptions.Fields.EVENTUALLY_DUE)
+                                        .build())
                                 .setRefreshUrl(effectiveRefresh)
                                 .setReturnUrl(effectiveReturn)
                                 .build())
