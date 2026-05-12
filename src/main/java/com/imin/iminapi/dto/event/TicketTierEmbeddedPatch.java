@@ -9,6 +9,8 @@ public record TicketTierEmbeddedPatch(
         String kind,
         Integer priceMinor,
         Integer quantity,
+        Instant saleStartsAt,
+        Boolean clearSaleStartsAt,
         Instant saleClosesAt,
         Boolean clearSaleClosesAt,
         Integer sortOrder,

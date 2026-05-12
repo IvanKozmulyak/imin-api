@@ -69,7 +69,7 @@ class EventTierControllerTest {
     private TicketTierDto sampleDto(UUID eventId, UUID tierId) {
         return new TicketTierDto(
                 tierId, eventId, "GA", "standard",
-                1000, 100, 0, null, true, 0);
+                1000, 100, 0, null, null, true, 0);
     }
 
     // ── POST ───────────────────────────────────────────────────────────────────
@@ -120,7 +120,7 @@ class EventTierControllerTest {
         UUID tierId = UUID.randomUUID();
         TicketTierDto updated = new TicketTierDto(
                 tierId, eventId, "VIP", "standard",
-                2000, 50, 0, null, true, 0);
+                2000, 50, 0, null, null, true, 0);
         when(tierService.patch(any(), eq(eventId), eq(tierId), any())).thenReturn(updated);
 
         mvc.perform(patch("/api/v1/events/" + eventId + "/tiers/" + tierId)

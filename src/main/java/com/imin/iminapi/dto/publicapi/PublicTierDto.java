@@ -13,6 +13,7 @@ public record PublicTierDto(
         String kind,           // wireValue() like "earlyBird"
         int priceMinor,
         String currency,
+        Instant saleStartsAt,
         Instant saleClosesAt,
         int sortOrder,
         int remaining,
@@ -29,15 +30,18 @@ public record PublicTierDto(
         int remaining = Math.max(0, tier.getQuantity() - tier.getSold());
         boolean soldOut = remaining == 0;
 
+        Instant tierSaleStartsAt = tier.getSaleStartsAt();
         Instant tierSaleClosesAt = tier.getSaleClosesAt();
         boolean tierClosed  = tierSaleClosesAt != null && !now.isBefore(tierSaleClosesAt);
         boolean eventClosed = e.getSaleClosesAt() != null && !now.isBefore(e.getSaleClosesAt());
         boolean closed = tierClosed || eventClosed;
 
-        boolean tierOpened = e.getOnSaleAt() == null || !now.isBefore(e.getOnSaleAt());
+        boolean tierEventOpened = e.getOnSaleAt() == null || !now.isBefore(e.getOnSaleAt());
+        boolean tierStarted = tierSaleStartsAt == null || !now.isBefore(tierSaleStartsAt);
+        boolean tierOpened = tierEventOpened && tierStarted;
         boolean onSale = !eventOver && tierOpened && !closed && !soldOut;
 
         return new PublicTierDto(tier.getId(), tier.getName(), kindWire, tier.getPriceMinor(), currency,
-                tierSaleClosesAt, tier.getSortOrder(), remaining, onSale, soldOut, closed);
+                tierSaleStartsAt, tierSaleClosesAt, tier.getSortOrder(), remaining, onSale, soldOut, closed);
     }
 }

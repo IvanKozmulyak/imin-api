@@ -54,9 +54,16 @@ public class TicketTierValidator {
             errors.put("quantity", "must be > 0");
         }
 
-        // saleClosesAt: optional; if set, > now AND ≤ event.endsAt (if set)
+        // saleClosesAt: optional; if set, > now AND ≤ event.startsAt (if set) AND ≤ event.endsAt (if set)
         if (req.saleClosesAt() != null) {
             validateSaleClosesAt(req.saleClosesAt(), event, errors);
+        }
+
+        // Cross-field: if both saleStartsAt and saleClosesAt are set, require closes > starts
+        if (req.saleStartsAt() != null && req.saleClosesAt() != null
+                && !errors.containsKey("saleClosesAt")
+                && !req.saleClosesAt().isAfter(req.saleStartsAt())) {
+            errors.put("saleClosesAt", "must be after saleStartsAt");
         }
 
         // sortOrder: optional, ≥ 0
@@ -77,6 +84,11 @@ public class TicketTierValidator {
             errors.put("saleClosesAt", "contradictory: clearSaleClosesAt=true but saleClosesAt also provided");
         }
 
+        // contradiction check: clearSaleStartsAt + non-null saleStartsAt
+        if (Boolean.TRUE.equals(req.clearSaleStartsAt()) && req.saleStartsAt() != null) {
+            errors.put("saleStartsAt", "contradictory: clearSaleStartsAt=true but saleStartsAt also provided");
+        }
+
         // name: non-blank, ≤128 (only if provided)
         validateName(req.name(), false, errors);
 
@@ -95,15 +107,37 @@ public class TicketTierValidator {
             errors.put("quantity", "must be > 0");
         }
 
-        // saleClosesAt: optional; if set (and not contradicted), > now AND ≤ event.endsAt
+        // saleClosesAt: optional; if set (and not contradicted), > now AND ≤ event.startsAt AND ≤ event.endsAt
         if (req.saleClosesAt() != null && !errors.containsKey("saleClosesAt")) {
             validateSaleClosesAt(req.saleClosesAt(), event, errors);
+        }
+
+        // Cross-field: if both effective saleStartsAt and saleClosesAt are present after this patch,
+        // require closes > starts. We compute "effective" by overlaying the patch onto the existing tier.
+        Instant effectiveStarts = effectiveSaleStartsAt(req, existing);
+        Instant effectiveCloses = effectiveSaleClosesAt(req, existing);
+        if (effectiveStarts != null && effectiveCloses != null
+                && !errors.containsKey("saleClosesAt")
+                && !effectiveCloses.isAfter(effectiveStarts)) {
+            errors.put("saleClosesAt", "must be after saleStartsAt");
         }
 
         // sortOrder: ≥ 0
         validateSortOrder(req.sortOrder(), errors);
 
         return errors;
+    }
+
+    private static Instant effectiveSaleStartsAt(TicketTierPatchRequest req, TicketTier existing) {
+        if (Boolean.TRUE.equals(req.clearSaleStartsAt())) return null;
+        if (req.saleStartsAt() != null) return req.saleStartsAt();
+        return existing.getSaleStartsAt();
+    }
+
+    private static Instant effectiveSaleClosesAt(TicketTierPatchRequest req, TicketTier existing) {
+        if (Boolean.TRUE.equals(req.clearSaleClosesAt())) return null;
+        if (req.saleClosesAt() != null) return req.saleClosesAt();
+        return existing.getSaleClosesAt();
     }
 
     /**
@@ -127,6 +161,7 @@ public class TicketTierValidator {
                     p.kind(),
                     p.priceMinor(),
                     p.quantity(),
+                    p.saleStartsAt(),
                     p.saleClosesAt(),
                     p.sortOrder(),
                     p.enabled()
@@ -139,6 +174,8 @@ public class TicketTierValidator {
                     p.kind(),
                     p.priceMinor(),
                     p.quantity(),
+                    p.saleStartsAt(),
+                    p.clearSaleStartsAt(),
                     p.saleClosesAt(),
                     p.clearSaleClosesAt(),
                     p.sortOrder(),
@@ -180,7 +217,11 @@ public class TicketTierValidator {
         Instant now = Instant.now(clock);
         if (!saleClosesAt.isAfter(now)) {
             errors.put("saleClosesAt", "must be in the future");
-            // early-return: don't also report "after event.endsAt" on the same field
+            // early-return: don't also report other bounds on the same field
+            return;
+        }
+        if (event.getStartsAt() != null && saleClosesAt.isAfter(event.getStartsAt())) {
+            errors.put("saleClosesAt", "must be ≤ event startsAt");
             return;
         }
         if (event.getEndsAt() != null && saleClosesAt.isAfter(event.getEndsAt())) {

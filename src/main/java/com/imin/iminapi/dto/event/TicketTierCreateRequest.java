@@ -7,6 +7,7 @@ public record TicketTierCreateRequest(
         String kind,           // TicketTierKind wire value: "earlyBird" | "standard" | "lateBird" | "custom"
         Integer priceMinor,
         Integer quantity,
+        Instant saleStartsAt,
         Instant saleClosesAt,
         Integer sortOrder,     // optional — null defaults to max(existing)+1 in service
         Boolean enabled        // optional — null defaults to true

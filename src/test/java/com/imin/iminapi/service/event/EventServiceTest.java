@@ -211,7 +211,7 @@ class EventServiceTest {
 
         TicketTierEmbeddedPatch tp =
                 new TicketTierEmbeddedPatch(
-                        null, "GA", "general", 1500, 100, null, null, null, null);
+                        null, "GA", "general", 1500, 100, null, null, null, null, null, null);
 
         sut.patch(p, e.getId(), "\"" + updated + "\"",
                 new EventPatchRequest(null, null, null, null, null, null, null, null, null,

@@ -51,6 +51,7 @@ public class TicketTierService {
         tier.setKind(TicketTierKind.fromWire(req.kind()));
         tier.setPriceMinor(req.priceMinor());
         tier.setQuantity(req.quantity());
+        tier.setSaleStartsAt(req.saleStartsAt());
         tier.setSaleClosesAt(req.saleClosesAt());
         tier.setSortOrder(req.sortOrder() != null ? req.sortOrder() : nextSortOrder(eventId));
         tier.setEnabled(req.enabled() != null ? req.enabled() : true);
@@ -143,6 +144,11 @@ public class TicketTierService {
         if (r.kind() != null) tier.setKind(TicketTierKind.fromWire(r.kind()));
         if (r.priceMinor() != null) tier.setPriceMinor(r.priceMinor());
         if (r.quantity() != null) tier.setQuantity(r.quantity());
+        if (Boolean.TRUE.equals(r.clearSaleStartsAt())) {
+            tier.setSaleStartsAt(null);
+        } else if (r.saleStartsAt() != null) {
+            tier.setSaleStartsAt(r.saleStartsAt());
+        }
         if (Boolean.TRUE.equals(r.clearSaleClosesAt())) {
             tier.setSaleClosesAt(null);
         } else if (r.saleClosesAt() != null) {
@@ -158,6 +164,7 @@ public class TicketTierService {
         tier.setKind(TicketTierKind.fromWire(p.kind()));
         tier.setPriceMinor(p.priceMinor());
         tier.setQuantity(p.quantity());
+        tier.setSaleStartsAt(p.saleStartsAt());
         tier.setSaleClosesAt(p.saleClosesAt());
         tier.setSortOrder(p.sortOrder() != null ? p.sortOrder() : nextSortOrder(tier.getEventId()));
         tier.setEnabled(p.enabled() != null ? p.enabled() : true);
@@ -168,6 +175,11 @@ public class TicketTierService {
         if (p.kind() != null) tier.setKind(TicketTierKind.fromWire(p.kind()));
         if (p.priceMinor() != null) tier.setPriceMinor(p.priceMinor());
         if (p.quantity() != null) tier.setQuantity(p.quantity());
+        if (Boolean.TRUE.equals(p.clearSaleStartsAt())) {
+            tier.setSaleStartsAt(null);
+        } else if (p.saleStartsAt() != null) {
+            tier.setSaleStartsAt(p.saleStartsAt());
+        }
         if (Boolean.TRUE.equals(p.clearSaleClosesAt())) {
             tier.setSaleClosesAt(null);
         } else if (p.saleClosesAt() != null) {

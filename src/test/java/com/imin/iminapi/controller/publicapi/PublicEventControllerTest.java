@@ -55,7 +55,7 @@ class PublicEventControllerTest {
         PublicOrganizationDto org = new PublicOrganizationDto("Acme Events", "acme-events");
         PublicTierDto tier = new PublicTierDto(
                 TIER_ID, "General Admission", "standard", 2500, "EUR",
-                Instant.parse("2026-06-01T00:00:00Z"), 1, 100, true, false, false);
+                null, Instant.parse("2026-06-01T00:00:00Z"), 1, 100, true, false, false);
 
         return new PublicEventResponse(
                 EVENT_ID,
