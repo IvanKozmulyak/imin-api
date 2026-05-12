@@ -68,7 +68,7 @@ imin:
     reply-to: ${IMIN_EMAIL_REPLY_TO:}
     app-base-url: ${IMIN_APP_BASE_URL:http://localhost:3000}
   cors:
-    allowed-origin-patterns: ${CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:3000,http://localhost:5173,https://imin-webapp.vercel.app,https://imin-webapp-*.vercel.app,https://dashboard.imin.wtf}
+    allowed-origin-patterns: ${CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:3000,http://localhost:5173,https://imin-webapp.vercel.app,https://imin-webapp-*.vercel.app,https://dashboard.imin.wtf,https://imin.wtf,https://www.imin.wtf,https://imin-public.vercel.app,https://imin-public-*.vercel.app}
   api:
     base-path: /api/v1
   auth:
