@@ -178,7 +178,7 @@ class PublicEventControllerTest {
         Set<String> actualTierKeys = fieldNames(tier0);
         Set<String> expectedTierKeys = Set.of(
                 "id", "name", "kind", "priceMinor", "currency",
-                "saleClosesAt", "sortOrder", "remaining",
+                "saleStartsAt", "saleClosesAt", "sortOrder", "remaining",
                 "onSale", "soldOut", "closed"
         );
         assertThat(actualTierKeys)

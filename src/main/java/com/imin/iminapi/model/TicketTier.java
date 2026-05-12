@@ -46,4 +46,20 @@ public class TicketTier {
 
     @Column(name = "sort_order", nullable = false)
     private int sortOrder = 0;
+
+    /**
+     * Stripe Product id (prod_...) on the platform account. Synced (best-effort) when
+     * the tier is created or its price/name changes. Used by Checkout to reference
+     * a stable line item.
+     */
+    @Column(name = "stripe_product_id", length = 64)
+    private String stripeProductId;
+
+    /**
+     * Stripe Price id (price_...) on the platform account. Tied to the current
+     * `priceMinor`. When `priceMinor` changes we re-create the product (and thus
+     * the price) — Stripe Prices are immutable.
+     */
+    @Column(name = "stripe_price_id", length = 64)
+    private String stripePriceId;
 }

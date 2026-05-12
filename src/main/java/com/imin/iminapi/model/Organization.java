@@ -42,6 +42,15 @@ public class Organization {
     @Column(nullable = false, length = 3)
     private String currency = "EUR";
 
+    /**
+     * Stripe v2 connected account id (acct_...) — null until the org has called
+     * `POST /api/v1/orgs/{orgId}/stripe/connect`. Populated once and never changed;
+     * onboarding completion / payout readiness is fetched live from Stripe and is
+     * deliberately NOT cached here.
+     */
+    @Column(name = "stripe_account_id", length = 64)
+    private String stripeAccountId;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Times.nowMicros();
 

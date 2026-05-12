@@ -34,6 +34,13 @@ replicate:
     storage-dir: /tmp/imin-test-images
 
 imin:
+  stripe:
+    # Dummy values — tests must mock all Stripe calls (no live network traffic in tests).
+    secret-key: sk_test_dummy
+    webhook-secret: whsec_dummy
+    application-fee-bps: 500
+    public-return-url-base: http://localhost:3000
+    return-url-base: http://localhost:5173
   reference-analyzer:
     model-id: openai/gpt-4o-mini
   email:

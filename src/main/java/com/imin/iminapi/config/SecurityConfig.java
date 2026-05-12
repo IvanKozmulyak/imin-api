@@ -83,6 +83,10 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/v1/reference/**").permitAll()
                         // Public event endpoints (unauthenticated GET)
                         .requestMatchers(HttpMethod.GET, "/api/v1/public/**").permitAll()
+                        // Public buyer checkout — unauthenticated POST (validated server-side).
+                        .requestMatchers(HttpMethod.POST, "/api/v1/public/events/*/checkout").permitAll()
+                        // Stripe webhook — unauthenticated; signature-verified inside the handler.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/stripe/webhook").permitAll()
                         // Everything else under /api/v1 requires a session
                         .requestMatchers("/api/v1/**").authenticated()
                         .anyRequest().permitAll()

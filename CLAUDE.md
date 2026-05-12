@@ -79,6 +79,29 @@ Served via `/images/**` → filesystem mapping in `WebConfig` (dir from `replica
 - `ReferenceImageLibrary` loads classpath images at startup as data URIs and passes them to Ideogram via `style_reference_images`. It also caches a natural-language **style descriptor** per tag in the `style_reference_analysis` table. Cache key = SHA-256 signature over the tag's reference bytes + the analyzer `model_id`; descriptors regenerate automatically when either changes. The descriptor is injected into the concept prompt so the LLM matches the visual aesthetic of the references.
 - `ReferenceImageAnalyzer` uses the same `ChatClient` multimodally (image input) — the model must be vision-capable.
 
+### Stripe Connect
+
+Per-org Stripe v2 connected accounts (one acct_... per `Organization`). Tickets sync to platform-level Stripe Products+Prices. Buyers go through hosted Checkout via destination charges that transfer to the org's connected account minus a platform application fee (default 5%, configurable). See `com.imin.iminapi.stripe.*`.
+
+Required env vars:
+- `STRIPE_SECRET_KEY` — sk_test_... locally, sk_live_... in prod. App fails to start if missing.
+- `STRIPE_WEBHOOK_SECRET` — whsec_... from `stripe listen` output. Only needed for the webhook endpoint.
+- Optional: `STRIPE_APPLICATION_FEE_BPS` (default 500 = 5%), `STRIPE_PUBLIC_RETURN_URL_BASE` (default `http://localhost:3000`), `STRIPE_RETURN_URL_BASE` (default `http://localhost:5173`).
+
+Endpoints:
+- `POST /api/v1/orgs/{orgId}/stripe/connect` — idempotent create.
+- `POST /api/v1/orgs/{orgId}/stripe/onboarding-link` — one-shot URL for the organizer's browser.
+- `GET  /api/v1/orgs/{orgId}/stripe/status` — live (never cached). Returns `readyToReceivePayments`, `onboardingComplete`, `requirementsStatus`.
+- `POST /api/v1/public/events/{eventId}/checkout` — public; returns a hosted Checkout URL.
+- `POST /api/v1/stripe/webhook` — signature-verified webhook receiver.
+
+Webhook dev setup:
+```
+stripe listen --thin-events 'v2.core.account[requirements].updated,v2.core.account[.recipient].capability_status_updated' --forward-thin-to http://localhost:8085/api/v1/stripe/webhook
+```
+
+State model: account ids are persisted (`organizations.stripe_account_id`, `ticket_tiers.stripe_product_id`, `ticket_tiers.stripe_price_id`); onboarding/capability state is fetched live from Stripe on every status read.
+
 ### LLM configuration
 
 `OpenRouterConfig` declares the `@Primary ChatClient`. It normalizes `openrouter.base-url` by stripping a trailing `/v1` because Spring AI's OpenAI client appends `/v1` itself — if you change the base URL, keep that normalization in mind. Model id comes from `openrouter.model` (default `openai/gpt-4o-mini`).

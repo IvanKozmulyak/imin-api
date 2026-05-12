@@ -12,6 +12,8 @@ import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.stripe.StripeProductService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -28,15 +30,32 @@ public class TicketTierService {
     private final EventRepository events;
     private final TicketTierValidator validator;
     private final Clock clock;
+    /**
+     * Best-effort Stripe sync. Optional so existing tests that don't wire Stripe can still
+     * instantiate the service.
+     */
+    private final StripeProductService stripeProductService;
 
+    /** Legacy 4-arg constructor used by existing unit tests that don't need Stripe sync. */
     public TicketTierService(TicketTierRepository tiers,
                              EventRepository events,
                              TicketTierValidator validator,
                              Clock clock) {
+        this(tiers, events, validator, clock, null);
+    }
+
+    /** Primary constructor — Spring uses this one in the running app. */
+    @Autowired
+    public TicketTierService(TicketTierRepository tiers,
+                             EventRepository events,
+                             TicketTierValidator validator,
+                             Clock clock,
+                             StripeProductService stripeProductService) {
         this.tiers = tiers;
         this.events = events;
         this.validator = validator;
         this.clock = clock;
+        this.stripeProductService = stripeProductService;
     }
 
     @Transactional
@@ -59,6 +78,8 @@ public class TicketTierService {
 
         tier = tiers.save(tier);
         bumpEventUpdatedAt(event);
+        // Best-effort Stripe product sync — logs and continues on failure.
+        syncStripeProduct(tier, event);
         return TicketTierDto.from(tier);
     }
 
@@ -73,6 +94,8 @@ public class TicketTierService {
         applyPatch(tier, req);
         tier = tiers.save(tier);
         bumpEventUpdatedAt(event);
+        // Best-effort sync — picks up name/price changes.
+        syncStripeProduct(tier, event);
         return TicketTierDto.from(tier);
     }
 
@@ -99,7 +122,8 @@ public class TicketTierService {
                 TicketTier tier = new TicketTier();
                 tier.setEventId(event.getId());
                 applyEmbeddedAsCreate(tier, patch);
-                tiers.save(tier);
+                tier = tiers.save(tier);
+                syncStripeProduct(tier, event);
             } else {
                 // update — referencing an unrelated tier id is a client bug → 400, not 404
                 TicketTier tier = tiers.findByIdAndEventId(patch.id(), event.getId())
@@ -109,9 +133,15 @@ public class TicketTierService {
                 Map<String, String> errors = validator.validateEmbeddedPatch(patch, tier, event);
                 if (!errors.isEmpty()) throw badRequest(errors);
                 applyEmbeddedAsPatch(tier, patch);
-                tiers.save(tier);
+                tier = tiers.save(tier);
+                syncStripeProduct(tier, event);
             }
         }
+    }
+
+    /** Null-safe Stripe product sync. No-op when Stripe is not wired (e.g. some unit tests). */
+    private void syncStripeProduct(TicketTier tier, Event event) {
+        if (stripeProductService != null) stripeProductService.syncTier(tier, event);
     }
 
     // ── private helpers ────────────────────────────────────────────────────────
