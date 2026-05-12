@@ -49,10 +49,14 @@ public class StripeConnectService {
      * Idempotent: if the org already has a connected account, return that id and {@code created=false}.
      * Otherwise create one via the v2 Accounts API and persist the id.
      *
-     * Per the platform spec, the v2 account create body MUST contain ONLY these fields:
+     * The v2 account create body contains:
      * display_name, contact_email, identity.country='us', dashboard='express',
      * defaults.responsibilities.{fees_collector,losses_collector}='application',
+     * configuration.merchant.capabilities.card_payments.requested=true,
      * configuration.recipient.capabilities.stripe_balance.stripe_transfers.requested=true.
+     * Both capabilities are required: Stripe rejects stripe_transfers on its own with
+     * `capability_not_available_without_other_capability`, because Destination Charges need
+     * the merchant side to accept the card before transferring to the recipient side.
      * NO top-level `type` field — v2 deprecates the 'express'/'standard'/'custom' selectors
      * in favor of dashboard + configuration.
      */
@@ -86,9 +90,21 @@ public class StripeConnectService {
                                         AccountCreateParams.Defaults.Responsibilities.LossesCollector.APPLICATION)
                                 .build())
                         .build())
-                // configuration.recipient — enable the recipient persona with the stripe_transfers capability.
-                // This is what lets us push funds to the account via Destination Charges.
+                // configuration.recipient + configuration.merchant — both personas are required.
+                // Stripe rejects `recipient.stripe_balance.stripe_transfers` unless
+                // `merchant.card_payments` is also requested (the platform accepts the buyer's card,
+                // then transfers to the connected account via Destination Charges).
                 .setConfiguration(AccountCreateParams.Configuration.builder()
+                        .setMerchant(AccountCreateParams.Configuration.Merchant.builder()
+                                .setCapabilities(
+                                        AccountCreateParams.Configuration.Merchant.Capabilities.builder()
+                                                .setCardPayments(
+                                                        AccountCreateParams.Configuration.Merchant.Capabilities
+                                                                .CardPayments.builder()
+                                                                .setRequested(true)
+                                                                .build())
+                                                .build())
+                                .build())
                         .setRecipient(AccountCreateParams.Configuration.Recipient.builder()
                                 .setCapabilities(
                                         AccountCreateParams.Configuration.Recipient.Capabilities.builder()
@@ -150,6 +166,11 @@ public class StripeConnectService {
                 .setUseCase(AccountLinkCreateParams.UseCase.builder()
                         .setType(AccountLinkCreateParams.UseCase.Type.ACCOUNT_ONBOARDING)
                         .setAccountOnboarding(AccountLinkCreateParams.UseCase.AccountOnboarding.builder()
+                                // Both configurations are requested on the account, so onboarding
+                                // must collect requirements for both — otherwise card_payments
+                                // stays inactive and Checkout can't accept the buyer's card.
+                                .addConfiguration(AccountLinkCreateParams.UseCase.AccountOnboarding
+                                        .Configuration.MERCHANT)
                                 .addConfiguration(AccountLinkCreateParams.UseCase.AccountOnboarding
                                         .Configuration.RECIPIENT)
                                 .setRefreshUrl(effectiveRefresh)
