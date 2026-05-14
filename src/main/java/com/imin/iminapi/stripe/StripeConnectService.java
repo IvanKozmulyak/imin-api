@@ -233,11 +233,14 @@ public class StripeConnectService {
                 .setUseCase(AccountLinkCreateParams.UseCase.builder()
                         .setType(AccountLinkCreateParams.UseCase.Type.ACCOUNT_ONBOARDING)
                         .setAccountOnboarding(AccountLinkCreateParams.UseCase.AccountOnboarding.builder()
-                                // Both configurations are requested on the account, so onboarding
-                                // must collect requirements for both — otherwise card_payments
-                                // stays inactive and Checkout can't accept the buyer's card.
-                                .addConfiguration(AccountLinkCreateParams.UseCase.AccountOnboarding
-                                        .Configuration.MERCHANT)
+                                // RECIPIENT only — that's the single configuration applied to the
+                                // account on create. Stripe rejects the AccountLink with
+                                // `configs_must_match_to_use_account_links` if we ask for a
+                                // configuration the account doesn't have. MERCHANT is intentionally
+                                // not on the connected account: Checkout is created on the *platform*
+                                // account using destination charges (transfer_data.destination +
+                                // application_fee_amount, see StripeCheckoutService), so the
+                                // connected account only needs the stripe_transfers capability.
                                 .addConfiguration(AccountLinkCreateParams.UseCase.AccountOnboarding
                                         .Configuration.RECIPIENT)
                                 // Up-front onboarding: collect every requirement we'll eventually need,
