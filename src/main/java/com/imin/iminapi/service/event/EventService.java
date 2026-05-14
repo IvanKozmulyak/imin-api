@@ -7,6 +7,7 @@ import com.imin.iminapi.repository.*;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.stripe.StripeConnectService;
 import com.imin.iminapi.web.IfMatchSupport;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.PageRequest;
@@ -34,15 +35,18 @@ public class EventService {
     private final EventValidator validator;
     private final IfMatchSupport ifMatch;
     private final TicketTierService tierService;
+    private final StripeConnectService stripeConnect;
 
     public EventService(EventRepository events, TicketTierRepository tiers,
                         PromoCodeRepository promos, PredictionRepository predictions,
                         EventValidator validator, IfMatchSupport ifMatch,
-                        TicketTierService tierService) {
+                        TicketTierService tierService,
+                        StripeConnectService stripeConnect) {
         this.events = events;
         this.tiers = tiers;
         this.promos = promos;
         this.predictions = predictions;
+        this.stripeConnect = stripeConnect;
         this.validator = validator;
         this.ifMatch = ifMatch;
         this.tierService = tierService;
@@ -114,11 +118,33 @@ public class EventService {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE, "Already published");
         }
         validator.validateForPublish(e);
+        requireStripeIfPaid(p, e);
         e.setStatus(EventStatus.LIVE);
         e.setPublishedAt(Instant.now());
         e.setUpdatedAt(Instant.now());
         events.save(e);
         return detail(p, id);
+    }
+
+    /**
+     * If the event has any paid tier (priceMinor &gt; 0), the org must have a Stripe
+     * connected account that's active (transfer capability = active). Otherwise the
+     * Checkout flow would fail at purchase time. Free events bypass this check.
+     *
+     * Hits Stripe live via {@link StripeConnectService#getStatus} — no cached column
+     * exists by design (see imin-api/CLAUDE.md Stripe Connect section).
+     */
+    private void requireStripeIfPaid(AuthPrincipal p, Event e) {
+        boolean hasPaidTier = tiers.findByEventIdOrderBySortOrderAsc(e.getId()).stream()
+                .anyMatch(t -> t.getPriceMinor() > 0);
+        if (!hasPaidTier) return;
+
+        var status = stripeConnect.getStatus(p, p.orgId());
+        if (!status.readyToReceivePayments()) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY,
+                    ErrorCode.STRIPE_NOT_READY,
+                    "Connect and finish Stripe onboarding before publishing a paid event.");
+        }
     }
 
     private Event loadOwned(AuthPrincipal p, UUID id) {

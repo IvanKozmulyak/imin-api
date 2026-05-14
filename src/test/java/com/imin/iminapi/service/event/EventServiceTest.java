@@ -8,6 +8,7 @@ import com.imin.iminapi.dto.event.VenueDto;
 import com.imin.iminapi.model.*;
 import com.imin.iminapi.repository.*;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.stripe.StripeConnectService;
 import com.imin.iminapi.web.IfMatchSupport;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -34,8 +35,9 @@ class EventServiceTest {
     IfMatchSupport ifMatch = new IfMatchSupport();
     EventValidator validator = new EventValidator();
     TicketTierService tierService = mock(TicketTierService.class);
+    StripeConnectService stripeConnect = mock(StripeConnectService.class);
 
-    EventService sut = new EventService(events, tiers, promos, predictions, validator, ifMatch, tierService);
+    EventService sut = new EventService(events, tiers, promos, predictions, validator, ifMatch, tierService, stripeConnect);
 
     private AuthPrincipal principal() {
         return new AuthPrincipal(UUID.randomUUID(), UUID.randomUUID(), UserRole.OWNER, UUID.randomUUID());
@@ -240,6 +242,89 @@ class EventServiceTest {
                         null, null, null, null, null, null, null, null, null, null, null));
 
         verifyNoInteractions(tierService);
+    }
+
+    @Test
+    void publish_paid_event_blocked_when_stripe_not_ready() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setName("Paid"); e.setSlug("paid");
+        e.setStartsAt(Instant.parse("2026-06-01T20:00:00Z"));
+        e.setEndsAt(Instant.parse("2026-06-02T04:00:00Z"));
+        e.setVenueStreet("12 Main"); e.setVenueCity("Berlin"); e.setVenuePostalCode("10115");
+        e.setDescription("d");
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+
+        TicketTier paid = new TicketTier();
+        paid.setEventId(e.getId());
+        paid.setName("GA");
+        paid.setKind(TicketTierKind.STANDARD);
+        paid.setPriceMinor(1500);
+        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of(paid));
+
+        when(stripeConnect.getStatus(eq(p), eq(p.orgId())))
+                .thenReturn(new StripeConnectService.StatusResult(null, false, false, null));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> sut.publish(p, e.getId()))
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.STRIPE_NOT_READY);
+        verify(events, never()).save(any(Event.class));
+    }
+
+    @Test
+    void publish_paid_event_allowed_when_stripe_ready() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setName("Paid"); e.setSlug("paid");
+        e.setStartsAt(Instant.parse("2026-06-01T20:00:00Z"));
+        e.setEndsAt(Instant.parse("2026-06-02T04:00:00Z"));
+        e.setVenueStreet("12 Main"); e.setVenueCity("Berlin"); e.setVenuePostalCode("10115");
+        e.setDescription("d");
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(promos.findByEventId(e.getId())).thenReturn(List.of());
+        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
+
+        TicketTier paid = new TicketTier();
+        paid.setEventId(e.getId());
+        paid.setName("GA");
+        paid.setKind(TicketTierKind.STANDARD);
+        paid.setPriceMinor(1500);
+        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of(paid));
+
+        when(stripeConnect.getStatus(eq(p), eq(p.orgId())))
+                .thenReturn(new StripeConnectService.StatusResult("acct_123", true, true, "verified"));
+
+        EventDto dto = sut.publish(p, e.getId());
+        assertThat(dto.status()).isEqualTo("live");
+    }
+
+    @Test
+    void publish_free_event_skips_stripe_check() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setName("Free"); e.setSlug("free");
+        e.setStartsAt(Instant.parse("2026-06-01T20:00:00Z"));
+        e.setEndsAt(Instant.parse("2026-06-02T04:00:00Z"));
+        e.setVenueStreet("12 Main"); e.setVenueCity("Berlin"); e.setVenuePostalCode("10115");
+        e.setDescription("d");
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(promos.findByEventId(e.getId())).thenReturn(List.of());
+        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
+
+        TicketTier free = new TicketTier();
+        free.setEventId(e.getId());
+        free.setName("Free");
+        free.setKind(TicketTierKind.STANDARD);
+        free.setPriceMinor(0);
+        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of(free));
+
+        EventDto dto = sut.publish(p, e.getId());
+        assertThat(dto.status()).isEqualTo("live");
+        verifyNoInteractions(stripeConnect);
     }
 
     @Test
