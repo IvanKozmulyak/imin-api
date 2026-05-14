@@ -12,6 +12,7 @@ import com.stripe.model.v2.core.AccountLink;
 import com.stripe.param.v2.core.AccountCreateParams;
 import com.stripe.param.v2.core.AccountLinkCreateParams;
 import com.stripe.param.v2.core.AccountRetrieveParams;
+import com.stripe.param.v2.core.accounts.PersonCreateParams;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -58,64 +59,19 @@ public class StripeConnectService {
      * collects the legal-entity / person fields.
      */
     @Transactional
-    public ConnectResult getOrCreateAccount(AuthPrincipal principal, UUID orgId) {
+    public ConnectResult getOrCreateAccount(AuthPrincipal principal, UUID orgId, ConnectTokens tokens) {
         Organization org = loadOwnedOrg(principal, orgId);
 
-        // Idempotency guard — the spec calls for a simple DB check, not a Stripe-side idempotency key.
         if (org.getStripeAccountId() != null && !org.getStripeAccountId().isBlank()) {
             return new ConnectResult(org.getStripeAccountId(), false);
         }
 
-        AccountCreateParams params =
-                AccountCreateParams.builder()
-                        .setContactEmail(org.getContactEmail())
-                        .setDisplayName(org.getName())
-                        .setDashboard(AccountCreateParams.Dashboard.EXPRESS)
-                        .setIdentity(
-                                AccountCreateParams.Identity.builder()
-                                        .setCountry(org.getCountry())
-                                        .build()
-                        )
-                        .setConfiguration(
-                                AccountCreateParams.Configuration.builder()
-                                        .setRecipient(
-                                                AccountCreateParams.Configuration.Recipient.builder()
-                                                        .setCapabilities(
-                                                                AccountCreateParams.Configuration.Recipient.Capabilities.builder()
-                                                                        .setStripeBalance(
-                                                                                AccountCreateParams.Configuration.Recipient.Capabilities.StripeBalance.builder()
-                                                                                        .setStripeTransfers(
-                                                                                                AccountCreateParams.Configuration.Recipient.Capabilities.StripeBalance.StripeTransfers.builder()
-                                                                                                        .setRequested(true)
-                                                                                                        .build()
-                                                                                        )
-                                                                                        .build()
-                                                                        )
-                                                                        .build()
-                                                        )
-                                                        .build()
-                                        )
-                                        .build()
-                        )
-                        .setDefaults(
-                                AccountCreateParams.Defaults.builder()
-                                        .setCurrency("eur")
-                                        .setResponsibilities(
-                                                AccountCreateParams.Defaults.Responsibilities.builder()
-                                                        .setFeesCollector(
-                                                                AccountCreateParams.Defaults.Responsibilities.FeesCollector.STRIPE
-                                                        )
-                                                        .setLossesCollector(
-                                                                AccountCreateParams.Defaults.Responsibilities.LossesCollector.STRIPE
-                                                        )
-                                                        .build()
-                                        )
-                                        .addLocale(AccountCreateParams.Defaults.Locale.EN_US)
-                                        .build()
-                        )
-                        .addInclude(AccountCreateParams.Include.IDENTITY)
-                        .addInclude(AccountCreateParams.Include.REQUIREMENTS)
-                        .build();
+        boolean isFr = "FR".equalsIgnoreCase(org.getCountry());
+        validateTokens(tokens, isFr);
+
+        AccountCreateParams params = isFr
+                ? buildFrCreateParams(org, tokens)
+                : buildDefaultCreateParams(org);
 
         Account account;
         try {
@@ -125,9 +81,120 @@ public class StripeConnectService {
             throw upstream("Failed to create Stripe connected account: " + e.getMessage(), e);
         }
 
+        if (isFr && tokens.personToken() != null) {
+            try {
+                stripeClient.v2().core().accounts().persons().create(
+                        account.getId(),
+                        PersonCreateParams.builder()
+                                .setPersonToken(tokens.personToken())
+                                .build()
+                );
+            } catch (StripeException e) {
+                log.error("Stripe v2 person create failed for FR org {} (account {}): {}",
+                        orgId, account.getId(), e.getMessage(), e);
+                throw upstream("Failed to attach Stripe person from token: " + e.getMessage(), e);
+            }
+        }
+
         org.setStripeAccountId(account.getId());
         orgs.save(org);
         return new ConnectResult(account.getId(), true);
+    }
+
+    private static void validateTokens(ConnectTokens tokens, boolean isFr) {
+        if (isFr) {
+            if (tokens == null
+                    || tokens.accountToken() == null || tokens.accountToken().isBlank()
+                    || tokens.personToken() == null || tokens.personToken().isBlank()) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
+                        "FR organisations must provide both accountToken and personToken");
+            }
+        } else if (tokens != null && tokens.isPresent()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
+                    "accountToken / personToken are only accepted for FR organisations");
+        }
+    }
+
+    private static AccountCreateParams buildFrCreateParams(Organization org, ConnectTokens tokens) {
+        // FR/PSD2: legal-entity and person details must arrive via the Stripe.js-minted account token.
+        // We deliberately do NOT set identity.* or configuration.* server-side — Stripe rejects that
+        // combination with account_token_required when the platform country is FR.
+        return AccountCreateParams.builder()
+                .setContactEmail(org.getContactEmail())
+                .setDisplayName(org.getName())
+                .setDashboard(AccountCreateParams.Dashboard.EXPRESS)
+                .setAccountToken(tokens.accountToken())
+                .setDefaults(
+                        AccountCreateParams.Defaults.builder()
+                                .setCurrency("eur")
+                                .setResponsibilities(
+                                        AccountCreateParams.Defaults.Responsibilities.builder()
+                                                .setFeesCollector(
+                                                        AccountCreateParams.Defaults.Responsibilities.FeesCollector.STRIPE
+                                                )
+                                                .setLossesCollector(
+                                                        AccountCreateParams.Defaults.Responsibilities.LossesCollector.STRIPE
+                                                )
+                                                .build()
+                                )
+                                .addLocale(AccountCreateParams.Defaults.Locale.EN_US)
+                                .build()
+                )
+                .addInclude(AccountCreateParams.Include.IDENTITY)
+                .addInclude(AccountCreateParams.Include.REQUIREMENTS)
+                .build();
+    }
+
+    private static AccountCreateParams buildDefaultCreateParams(Organization org) {
+        return AccountCreateParams.builder()
+                .setContactEmail(org.getContactEmail())
+                .setDisplayName(org.getName())
+                .setDashboard(AccountCreateParams.Dashboard.EXPRESS)
+                .setIdentity(
+                        AccountCreateParams.Identity.builder()
+                                .setCountry(org.getCountry())
+                                .build()
+                )
+                .setConfiguration(
+                        AccountCreateParams.Configuration.builder()
+                                .setRecipient(
+                                        AccountCreateParams.Configuration.Recipient.builder()
+                                                .setCapabilities(
+                                                        AccountCreateParams.Configuration.Recipient.Capabilities.builder()
+                                                                .setStripeBalance(
+                                                                        AccountCreateParams.Configuration.Recipient.Capabilities.StripeBalance.builder()
+                                                                                .setStripeTransfers(
+                                                                                        AccountCreateParams.Configuration.Recipient.Capabilities.StripeBalance.StripeTransfers.builder()
+                                                                                                .setRequested(true)
+                                                                                                .build()
+                                                                                )
+                                                                                .build()
+                                                                )
+                                                                .build()
+                                                )
+                                                .build()
+                                )
+                                .build()
+                )
+                .setDefaults(
+                        AccountCreateParams.Defaults.builder()
+                                .setCurrency("eur")
+                                .setResponsibilities(
+                                        AccountCreateParams.Defaults.Responsibilities.builder()
+                                                .setFeesCollector(
+                                                        AccountCreateParams.Defaults.Responsibilities.FeesCollector.STRIPE
+                                                )
+                                                .setLossesCollector(
+                                                        AccountCreateParams.Defaults.Responsibilities.LossesCollector.STRIPE
+                                                )
+                                                .build()
+                                )
+                                .addLocale(AccountCreateParams.Defaults.Locale.EN_US)
+                                .build()
+                )
+                .addInclude(AccountCreateParams.Include.IDENTITY)
+                .addInclude(AccountCreateParams.Include.REQUIREMENTS)
+                .build();
     }
 
     /**
@@ -285,4 +352,16 @@ public class StripeConnectService {
                                boolean readyToReceivePayments,
                                boolean onboardingComplete,
                                String requirementsStatus) {}
+
+    /**
+     * Request body for {@link #getOrCreateAccount(AuthPrincipal, UUID, ConnectTokens)}.
+     *
+     * For FR orgs both tokens are required (rejected with INVALID_REQUEST otherwise).
+     * For non-FR orgs both must be null (token bodies are strictly rejected so we never
+     * accidentally route PII through a non-PSD2 path).
+     */
+    public record ConnectTokens(String accountToken, String personToken) {
+        public static ConnectTokens empty() { return new ConnectTokens(null, null); }
+        public boolean isPresent() { return accountToken != null || personToken != null; }
+    }
 }

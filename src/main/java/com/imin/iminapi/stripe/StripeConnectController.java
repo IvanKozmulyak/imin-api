@@ -22,11 +22,19 @@ public class StripeConnectController {
 
     /**
      * Idempotent — if an account already exists for the org, returns the same id and
-     * {@code created=false}. Empty request body.
+     * {@code created=false}. Body is optional for non-FR orgs (empty / absent is fine).
+     * FR orgs MUST include both {@code accountToken} and {@code personToken} (see
+     * {@link StripeConnectService.ConnectTokens}); the service strictly rejects token
+     * bodies posted for non-FR orgs.
      */
     @PostMapping("/connect")
-    public ConnectResponse connect(@CurrentUser AuthPrincipal p, @PathVariable UUID orgId) {
-        var r = connect.getOrCreateAccount(p, orgId);
+    public ConnectResponse connect(@CurrentUser AuthPrincipal p,
+                                   @PathVariable UUID orgId,
+                                   @RequestBody(required = false) ConnectRequest body) {
+        var tokens = body == null
+                ? StripeConnectService.ConnectTokens.empty()
+                : new StripeConnectService.ConnectTokens(body.accountToken(), body.personToken());
+        var r = connect.getOrCreateAccount(p, orgId, tokens);
         return new ConnectResponse(r.accountId(), r.created());
     }
 
@@ -50,6 +58,8 @@ public class StripeConnectController {
     }
 
     // Wire-shape DTOs — kept inline because they only exist on this surface.
+
+    public record ConnectRequest(String accountToken, String personToken) {}
 
     public record ConnectResponse(String accountId, boolean created) {}
 
