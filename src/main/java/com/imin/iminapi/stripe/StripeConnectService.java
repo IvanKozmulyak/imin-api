@@ -46,23 +46,27 @@ public class StripeConnectService {
     }
 
     /**
+     * Step 1 — Create the v2 connected account with NO identity payload.
+     *
      * Idempotent: if the org already has a connected account, return that id and {@code created=false}.
      * Otherwise create one via the v2 Accounts API and persist the id.
      *
-     * The v2 account create body contains:
-     * display_name, contact_email, dashboard='express',
-     * defaults.responsibilities.{fees_collector,losses_collector}='application'.
-     * NO `configuration` block, NO `identity.country`, NO top-level `type` (v2 deprecates type).
+     * Critical FR/PSD2 rule: omit every legal-entity / person field on this call. Country and
+     * capabilities are fine; anything PII-shaped is not. Sending {@code identity.business_details},
+     * {@code identity.individual.*}, {@code identity.entity_type}, … triggers Stripe's
+     * {@code account_token_required} error because that data must arrive via Stripe.js-minted
+     * account/person tokens. We don't run Stripe.js on the organizer dashboard, so all such fields
+     * are collected by the hosted onboarding flow (see {@link #createOnboardingLink}) instead.
      *
-     * Why no configuration block at create: FR-based Connect platforms (which we are, per the
-     * Stripe account country) are blocked by `account_token_required` whenever a v2 account
-     * carries a merchant configuration — Stripe treats the implicit identity that comes with
-     * `configuration.merchant` as PSD2-regulated information that must arrive via account +
-     * person tokens minted client-side with Stripe.js. We don't run Stripe.js on the organizer
-     * dashboard, so the only viable path is to create the account bare here and let the hosted
-     * Express onboarding link (see {@link #createOnboardingLink}) attach both MERCHANT and
-     * RECIPIENT configurations — Stripe's hosted page collects identity directly from the
-     * organizer and handles FR compliance internally without needing tokens from us.
+     * The v2 create body we send:
+     * <ul>
+     *   <li>display_name, contact_email (account-level, not identity)</li>
+     *   <li>dashboard=express</li>
+     *   <li>identity.country only (no entity_type, no business_details, no individual)</li>
+     *   <li>configuration.customer = {} (enabled) — for charging the org via subscriptions later</li>
+     *   <li>configuration.merchant.capabilities.card_payments.requested = true (Checkout needs it)</li>
+     *   <li>defaults.currency=eur, defaults.locale=en, defaults.responsibilities=stripe/stripe</li>
+     * </ul>
      */
     @Transactional
     public ConnectResult getOrCreateAccount(AuthPrincipal principal, UUID orgId) {
@@ -75,13 +79,18 @@ public class StripeConnectService {
 
         AccountCreateParams params =
                 AccountCreateParams.builder()
-                        .setContactEmail(org.getName())
-                        .setDisplayName(org.getContactEmail())
+                        .setContactEmail(org.getContactEmail())
+                        .setDisplayName(org.getName())
                         .setDashboard(AccountCreateParams.Dashboard.EXPRESS)
+                        // Identity block carries ONLY country here. Per FR/PSD2, any
+                        // legal-entity or person field on the create call (entity_type,
+                        // business_details.*, individual.*, …) triggers
+                        // `account_token_required` because that data must arrive via
+                        // Stripe.js-minted account/person tokens. Country is exempt;
+                        // everything else is collected by hosted onboarding.
                         .setIdentity(
                                 AccountCreateParams.Identity.builder()
                                         .setCountry(org.getCountry())
-                                        .setEntityType(AccountCreateParams.Identity.EntityType.COMPANY)
                                         .build()
                         )
                         .setConfiguration(
