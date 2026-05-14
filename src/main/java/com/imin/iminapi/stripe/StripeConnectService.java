@@ -46,31 +46,16 @@ public class StripeConnectService {
     }
 
     /**
-     * Step 1 — Create the v2 connected account with NO identity payload.
+     * Step 1 — Create the v2 connected account.
      *
      * Idempotent: if the org already has a connected account, return that id and {@code created=false}.
      * Otherwise create one via the v2 Accounts API and persist the id.
      *
-     * Critical FR/PSD2 rule: omit every legal-entity / person field on this call. Country and
-     * capabilities are fine; anything PII-shaped is not. Sending {@code identity.business_details},
-     * {@code identity.individual.*}, {@code identity.entity_type}, … triggers Stripe's
-     * {@code account_token_required} error because that data must arrive via Stripe.js-minted
-     * account/person tokens. We don't run Stripe.js on the organizer dashboard, so all such fields
-     * are collected by the hosted onboarding flow (see {@link #createOnboardingLink}) instead.
-     *
-     * The v2 create body we send:
-     * <ul>
-     *   <li>display_name, contact_email (account-level, not identity)</li>
-     *   <li>dashboard=express</li>
-     *   <li>identity.country only (no entity_type, no business_details, no individual)</li>
-     *   <li>defaults.currency=eur, defaults.locale=en, defaults.responsibilities=stripe/stripe</li>
-     * </ul>
-     *
-     * No {@code configuration} block on this call — sending {@code configuration.merchant}
-     * server-side from an FR platform triggers {@code account_token_required}. Both
-     * MERCHANT and RECIPIENT configurations (and the card_payments capability) are
-     * attached by Stripe during hosted onboarding via the AccountLink in
-     * {@link #createOnboardingLink}.
+     * Sends server-side: display_name, contact_email, dashboard=express, identity.country (from org),
+     * EUR defaults with locale=en_us and fees/losses-collector=STRIPE, and
+     * configuration.recipient with the stripe_transfers capability requested. The hosted onboarding
+     * link (see {@link #createOnboardingLink}) attaches MERCHANT + RECIPIENT requirements and
+     * collects the legal-entity / person fields.
      */
     @Transactional
     public ConnectResult getOrCreateAccount(AuthPrincipal principal, UUID orgId) {
@@ -86,19 +71,32 @@ public class StripeConnectService {
                         .setContactEmail(org.getContactEmail())
                         .setDisplayName(org.getName())
                         .setDashboard(AccountCreateParams.Dashboard.EXPRESS)
-
                         .setIdentity(
                                 AccountCreateParams.Identity.builder()
                                         .setCountry(org.getCountry())
                                         .build()
                         )
-                        // No `configuration` block here. FR/PSD2 platforms hit
-                        // `account_token_required` when merchant configuration is sent
-                        // server-side — tokens have to be minted client-side via Stripe.js
-                        // (see https://docs.stripe.com/connect/account-tokens), which we
-                        // don't run on the organizer dashboard. Instead, the AccountLink
-                        // in createOnboardingLink() requests MERCHANT + RECIPIENT and
-                        // Stripe attaches them during hosted onboarding.
+                        .setConfiguration(
+                                AccountCreateParams.Configuration.builder()
+                                        .setRecipient(
+                                                AccountCreateParams.Configuration.Recipient.builder()
+                                                        .setCapabilities(
+                                                                AccountCreateParams.Configuration.Recipient.Capabilities.builder()
+                                                                        .setStripeBalance(
+                                                                                AccountCreateParams.Configuration.Recipient.Capabilities.StripeBalance.builder()
+                                                                                        .setStripeTransfers(
+                                                                                                AccountCreateParams.Configuration.Recipient.Capabilities.StripeBalance.StripeTransfers.builder()
+                                                                                                        .setRequested(true)
+                                                                                                        .build()
+                                                                                        )
+                                                                                        .build()
+                                                                        )
+                                                                        .build()
+                                                        )
+                                                        .build()
+                                        )
+                                        .build()
+                        )
                         .setDefaults(
                                 AccountCreateParams.Defaults.builder()
                                         .setCurrency("eur")
@@ -121,9 +119,6 @@ public class StripeConnectService {
 
         Account account;
         try {
-            // V2 endpoint — `stripeClient.v2().core().accounts().create(...)` hits POST /v2/core/accounts.
-            // V1 has a separate `/accounts` endpoint with the legacy type-based shape; we deliberately
-            // use V2 because v2 is the only path that supports the new dashboard/configuration model.
             account = stripeClient.v2().core().accounts().create(params);
         } catch (StripeException e) {
             log.error("Stripe v2 account create failed for org {}: {}", orgId, e.getMessage(), e);
