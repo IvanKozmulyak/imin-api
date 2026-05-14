@@ -73,29 +73,56 @@ public class StripeConnectService {
             return new ConnectResult(org.getStripeAccountId(), false);
         }
 
-        AccountCreateParams params = AccountCreateParams.builder()
-                .setDisplayName(org.getName())
-                .setContactEmail(org.getContactEmail())
-                .setDashboard(AccountCreateParams.Dashboard.EXPRESS)
-                .setDefaults(AccountCreateParams.Defaults.builder()
-                        // EUR — platform is FR-based, all payouts settle in euros.
-                        .setCurrency("eur")
-                        // responsibilities — the platform (this app) collects fees + bears losses.
-                        // Required when using destination charges with an application_fee.
-                        // These are configuration defaults, not identity, so they don't trigger
-                        // the FR account_token rule. They apply to whichever configurations
-                        // hosted onboarding ends up attaching.
-                        .setResponsibilities(AccountCreateParams.Defaults.Responsibilities.builder()
-                                .setFeesCollector(
-                                        AccountCreateParams.Defaults.Responsibilities.FeesCollector.APPLICATION)
-                                .setLossesCollector(
-                                        AccountCreateParams.Defaults.Responsibilities.LossesCollector.APPLICATION)
-                                .build())
-                        .build())
-                // No configuration block — see method-level comment. Both merchant and recipient
-                // are attached by Stripe during hosted Express onboarding (the AccountLink below
-                // requests both configurations).
-                .build();
+        AccountCreateParams params =
+                AccountCreateParams.builder()
+                        .setContactEmail(org.getName())
+                        .setDisplayName(org.getContactEmail())
+                        .setDashboard(AccountCreateParams.Dashboard.EXPRESS)
+                        .setIdentity(
+                                AccountCreateParams.Identity.builder()
+                                        .setCountry(org.getCountry())
+                                        .setEntityType(AccountCreateParams.Identity.EntityType.COMPANY)
+                                        .build()
+                        )
+                        .setConfiguration(
+                                AccountCreateParams.Configuration.builder()
+                                        .setCustomer(AccountCreateParams.Configuration.Customer.builder().build())
+                                        .setMerchant(
+                                                AccountCreateParams.Configuration.Merchant.builder()
+                                                        .setCapabilities(
+                                                                AccountCreateParams.Configuration.Merchant.Capabilities.builder()
+                                                                        .setCardPayments(
+                                                                                AccountCreateParams.Configuration.Merchant.Capabilities.CardPayments.builder()
+                                                                                        .setRequested(true)
+                                                                                        .build()
+                                                                        )
+                                                                        .build()
+                                                        )
+                                                        .build()
+                                        )
+                                        .build()
+                        )
+                        .setDefaults(
+                                AccountCreateParams.Defaults.builder()
+                                        .setCurrency("eur")
+                                        .setResponsibilities(
+                                                AccountCreateParams.Defaults.Responsibilities.builder()
+                                                        .setFeesCollector(
+                                                                AccountCreateParams.Defaults.Responsibilities.FeesCollector.STRIPE
+                                                        )
+                                                        .setLossesCollector(
+                                                                AccountCreateParams.Defaults.Responsibilities.LossesCollector.STRIPE
+                                                        )
+                                                        .build()
+                                        )
+                                        .addLocale(AccountCreateParams.Defaults.Locale.EN_US)
+                                        .build()
+                        )
+                        .addInclude(AccountCreateParams.Include.CONFIGURATION__CUSTOMER)
+                        .addInclude(AccountCreateParams.Include.CONFIGURATION__MERCHANT)
+                        .addInclude(AccountCreateParams.Include.IDENTITY)
+                        .addInclude(AccountCreateParams.Include.REQUIREMENTS)
+                        .build();
 
         Account account;
         try {
