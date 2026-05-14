@@ -78,6 +78,8 @@ public class StripeConnectService {
                 .setContactEmail(org.getContactEmail())
                 .setDashboard(AccountCreateParams.Dashboard.EXPRESS)
                 .setDefaults(AccountCreateParams.Defaults.builder()
+                        // EUR — platform is FR-based, all payouts settle in euros.
+                        .setCurrency("eur")
                         // responsibilities — the platform (this app) collects fees + bears losses.
                         // Required when using destination charges with an application_fee.
                         // These are configuration defaults, not identity, so they don't trigger
