@@ -63,10 +63,14 @@ public class StripeConnectService {
      *   <li>display_name, contact_email (account-level, not identity)</li>
      *   <li>dashboard=express</li>
      *   <li>identity.country only (no entity_type, no business_details, no individual)</li>
-     *   <li>configuration.customer = {} (enabled) — for charging the org via subscriptions later</li>
-     *   <li>configuration.merchant.capabilities.card_payments.requested = true (Checkout needs it)</li>
      *   <li>defaults.currency=eur, defaults.locale=en, defaults.responsibilities=stripe/stripe</li>
      * </ul>
+     *
+     * No {@code configuration} block on this call — sending {@code configuration.merchant}
+     * server-side from an FR platform triggers {@code account_token_required}. Both
+     * MERCHANT and RECIPIENT configurations (and the card_payments capability) are
+     * attached by Stripe during hosted onboarding via the AccountLink in
+     * {@link #createOnboardingLink}.
      */
     @Transactional
     public ConnectResult getOrCreateAccount(AuthPrincipal principal, UUID orgId) {
@@ -82,35 +86,19 @@ public class StripeConnectService {
                         .setContactEmail(org.getContactEmail())
                         .setDisplayName(org.getName())
                         .setDashboard(AccountCreateParams.Dashboard.EXPRESS)
-                        // Identity block carries ONLY country here. Per FR/PSD2, any
-                        // legal-entity or person field on the create call (entity_type,
-                        // business_details.*, individual.*, …) triggers
-                        // `account_token_required` because that data must arrive via
-                        // Stripe.js-minted account/person tokens. Country is exempt;
-                        // everything else is collected by hosted onboarding.
+
                         .setIdentity(
                                 AccountCreateParams.Identity.builder()
                                         .setCountry(org.getCountry())
                                         .build()
                         )
-                        .setConfiguration(
-                                AccountCreateParams.Configuration.builder()
-                                        .setCustomer(AccountCreateParams.Configuration.Customer.builder().build())
-                                        .setMerchant(
-                                                AccountCreateParams.Configuration.Merchant.builder()
-                                                        .setCapabilities(
-                                                                AccountCreateParams.Configuration.Merchant.Capabilities.builder()
-                                                                        .setCardPayments(
-                                                                                AccountCreateParams.Configuration.Merchant.Capabilities.CardPayments.builder()
-                                                                                        .setRequested(true)
-                                                                                        .build()
-                                                                        )
-                                                                        .build()
-                                                        )
-                                                        .build()
-                                        )
-                                        .build()
-                        )
+                        // No `configuration` block here. FR/PSD2 platforms hit
+                        // `account_token_required` when merchant configuration is sent
+                        // server-side — tokens have to be minted client-side via Stripe.js
+                        // (see https://docs.stripe.com/connect/account-tokens), which we
+                        // don't run on the organizer dashboard. Instead, the AccountLink
+                        // in createOnboardingLink() requests MERCHANT + RECIPIENT and
+                        // Stripe attaches them during hosted onboarding.
                         .setDefaults(
                                 AccountCreateParams.Defaults.builder()
                                         .setCurrency("eur")
@@ -127,8 +115,6 @@ public class StripeConnectService {
                                         .addLocale(AccountCreateParams.Defaults.Locale.EN_US)
                                         .build()
                         )
-                        .addInclude(AccountCreateParams.Include.CONFIGURATION__CUSTOMER)
-                        .addInclude(AccountCreateParams.Include.CONFIGURATION__MERCHANT)
                         .addInclude(AccountCreateParams.Include.IDENTITY)
                         .addInclude(AccountCreateParams.Include.REQUIREMENTS)
                         .build();
