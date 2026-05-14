@@ -53,9 +53,10 @@ public class StripeConnectService {
      * Otherwise create one via the v2 Accounts API and persist the id.
      *
      * Sends server-side: display_name, contact_email, dashboard=express, identity.country (from org),
-     * EUR defaults with locale=en_us and fees/losses-collector=APPLICATION
-     * (the platform — required because only the RECIPIENT configuration is attached,
-     * STRIPE responsibilities would error with invalid_fields), and
+     * defaults: locale=en_us and fees/losses-collector=APPLICATION (the platform —
+     * required because only the RECIPIENT configuration is attached; STRIPE
+     * responsibilities would error with invalid_fields). No explicit default currency —
+     * Stripe picks it from the country, and
      * configuration.recipient with the stripe_transfers capability requested. The hosted onboarding
      * link (see {@link #createOnboardingLink}) attaches MERCHANT + RECIPIENT requirements and
      * collects the legal-entity / person fields.
@@ -128,7 +129,10 @@ public class StripeConnectService {
                 .setAccountToken(tokens.accountToken())
                 .setDefaults(
                         AccountCreateParams.Defaults.builder()
-                                .setCurrency("eur")
+                                // No setCurrency — Stripe defaults to the local currency of the
+                                // account's country (FR→EUR, US→USD, GB→GBP, …), which is what
+                                // we want. Ticket prices carry their own currency on the event,
+                                // so the account-level default only affects payout settlement.
                                 .setResponsibilities(
                                         AccountCreateParams.Defaults.Responsibilities.builder()
                                                 .setFeesCollector(
@@ -180,7 +184,10 @@ public class StripeConnectService {
                 )
                 .setDefaults(
                         AccountCreateParams.Defaults.builder()
-                                .setCurrency("eur")
+                                // No setCurrency — Stripe defaults to the local currency of the
+                                // account's country (FR→EUR, US→USD, GB→GBP, …), which is what
+                                // we want. Ticket prices carry their own currency on the event,
+                                // so the account-level default only affects payout settlement.
                                 .setResponsibilities(
                                         AccountCreateParams.Defaults.Responsibilities.builder()
                                                 .setFeesCollector(
