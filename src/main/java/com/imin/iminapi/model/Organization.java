@@ -61,8 +61,19 @@ public class Organization {
     void onPersist() {
         createdAt = createdAt == null ? Times.nowMicros() : createdAt.truncatedTo(ChronoUnit.MICROS);
         updatedAt = updatedAt == null ? Times.nowMicros() : updatedAt.truncatedTo(ChronoUnit.MICROS);
+        normalize();
     }
 
     @PreUpdate
-    void onUpdate() { this.updatedAt = Times.nowMicros(); }
+    void onUpdate() {
+        this.updatedAt = Times.nowMicros();
+        normalize();
+    }
+
+    /** ISO 3166-1 alpha-2 is uppercase by spec — enforce it on every persist to keep
+     *  case-sensitive comparisons (e.g. country-aware Stripe Connect flows) safe. */
+    private void normalize() {
+        if (country != null) country = country.toUpperCase();
+        if (currency != null) currency = currency.toUpperCase();
+    }
 }

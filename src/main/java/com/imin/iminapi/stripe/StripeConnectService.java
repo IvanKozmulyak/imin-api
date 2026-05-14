@@ -70,6 +70,10 @@ public class StripeConnectService {
         }
 
         boolean isFr = "FR".equalsIgnoreCase(org.getCountry());
+        log.info("Stripe connect: org={} country={} isFr={} hasAccountToken={} hasPersonToken={}",
+                orgId, org.getCountry(), isFr,
+                tokens != null && tokens.accountToken() != null && !tokens.accountToken().isBlank(),
+                tokens != null && tokens.personToken() != null && !tokens.personToken().isBlank());
         validateTokens(tokens, isFr);
 
         AccountCreateParams params = isFr
