@@ -53,7 +53,9 @@ public class StripeConnectService {
      * Otherwise create one via the v2 Accounts API and persist the id.
      *
      * Sends server-side: display_name, contact_email, dashboard=express, identity.country (from org),
-     * EUR defaults with locale=en_us and fees/losses-collector=STRIPE, and
+     * EUR defaults with locale=en_us and fees/losses-collector=APPLICATION
+     * (the platform — required because only the RECIPIENT configuration is attached,
+     * STRIPE responsibilities would error with invalid_fields), and
      * configuration.recipient with the stripe_transfers capability requested. The hosted onboarding
      * link (see {@link #createOnboardingLink}) attaches MERCHANT + RECIPIENT requirements and
      * collects the legal-entity / person fields.
@@ -130,10 +132,10 @@ public class StripeConnectService {
                                 .setResponsibilities(
                                         AccountCreateParams.Defaults.Responsibilities.builder()
                                                 .setFeesCollector(
-                                                        AccountCreateParams.Defaults.Responsibilities.FeesCollector.STRIPE
+                                                        AccountCreateParams.Defaults.Responsibilities.FeesCollector.APPLICATION
                                                 )
                                                 .setLossesCollector(
-                                                        AccountCreateParams.Defaults.Responsibilities.LossesCollector.STRIPE
+                                                        AccountCreateParams.Defaults.Responsibilities.LossesCollector.APPLICATION
                                                 )
                                                 .build()
                                 )
@@ -182,10 +184,10 @@ public class StripeConnectService {
                                 .setResponsibilities(
                                         AccountCreateParams.Defaults.Responsibilities.builder()
                                                 .setFeesCollector(
-                                                        AccountCreateParams.Defaults.Responsibilities.FeesCollector.STRIPE
+                                                        AccountCreateParams.Defaults.Responsibilities.FeesCollector.APPLICATION
                                                 )
                                                 .setLossesCollector(
-                                                        AccountCreateParams.Defaults.Responsibilities.LossesCollector.STRIPE
+                                                        AccountCreateParams.Defaults.Responsibilities.LossesCollector.APPLICATION
                                                 )
                                                 .build()
                                 )
