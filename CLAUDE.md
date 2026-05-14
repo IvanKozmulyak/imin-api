@@ -95,6 +95,12 @@ Endpoints:
 - `POST /api/v1/public/events/{eventId}/checkout` — public; returns a hosted Checkout URL.
 - `POST /api/v1/stripe/webhook` — signature-verified webhook receiver.
 
+**FR vs non-FR onboarding (added 2026-05-14).** `StripeConnectService.getOrCreateAccount` branches on `organization.country`:
+- **FR orgs (PSD2):** the `POST /stripe/connect` body must include `accountToken` + `personToken` minted by Stripe.js in the organizer dashboard (`@stripe/stripe-js` → `stripe.createToken('account', ...)` + `stripe.createToken('person', ...)`). The v2 create call sends only `accountToken`, dashboard, and EUR defaults — no `identity` or `configuration` server-side. The person token is consumed via `v2().core().accounts().persons().create(...)` immediately after the account is created. v0 supports `business_type=company` only.
+- **Non-FR orgs:** `POST /stripe/connect` body must be empty (token bodies are strictly rejected with `400 INVALID_REQUEST`). The v2 create includes `identity.country = org.country`, `configuration.recipient.capabilities.stripe_balance.stripe_transfers.requested=true`, and EUR defaults.
+
+Both paths still finish through the hosted `/stripe/onboarding-link` redirect — that picks up ID-document uploads, bank account, and any leftover requirements the tokens didn't cover.
+
 Webhook dev setup:
 
 The single endpoint at `/api/v1/stripe/webhook` handles both webhook formats — V2 thin events for Connect account state, and V1 events for payment lifecycle. Routing is by JSON peek (see `StripeWebhookService.looksLikeV2ThinEvent`). One signing secret covers both because Stripe signs both with the same HMAC scheme — so configure ONE endpoint in your Stripe dashboard (or one `stripe listen --load-from-webhooks-api`) with the union of these event types:
