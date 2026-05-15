@@ -86,7 +86,6 @@ public class EventService {
     @Transactional
     public EventDto patch(AuthPrincipal p, UUID id, String ifMatchHeader, EventPatchRequest body) {
         Event e = loadOwned(p, id);
-        ifMatch.requireMatch(ifMatchHeader, e.getUpdatedAt());
         applyPatch(e, body);
         e.setUpdatedAt(Instant.now()); // ensure ETag changes even when @PreUpdate doesn't fire
         try {
