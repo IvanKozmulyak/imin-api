@@ -7,6 +7,7 @@ import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.util.SanctionedCountries;
 import com.imin.iminapi.web.IfMatchSupport;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -36,7 +37,10 @@ public class OrgService {
         ifMatch.requireMatch(ifMatchHeader, o.getUpdatedAt());
         if (body.name() != null) o.setName(body.name());
         if (body.contactEmail() != null) o.setContactEmail(body.contactEmail());
-        if (body.country() != null) o.setCountry(body.country().toUpperCase());
+        if (body.country() != null) {
+            SanctionedCountries.requireAllowed(body.country());
+            o.setCountry(body.country().toUpperCase());
+        }
         if (body.timezone() != null) o.setTimezone(body.timezone());
         o.setUpdatedAt(Instant.now());
         return OrganizationDto.from(orgs.save(o));

@@ -95,6 +95,7 @@ public class AuthService {
 
     @Transactional
     public VerificationPendingResponse signup(SignupRequest req) {
+        com.imin.iminapi.util.SanctionedCountries.requireAllowed(req.country());
         String emailLower = req.email().toLowerCase();
         if (users.existsByEmailLower(emailLower)) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.DUPLICATE,
@@ -152,6 +153,9 @@ public class AuthService {
         }
         Organization org = orgs.findById(user.getOrgId())
                 .orElseThrow(() -> new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, ErrorCode.INTERNAL, "Org missing"));
+        // Defensive: an account created before sanctions were enforced (or via direct DB write)
+        // shouldn't be able to log back in if the country has since landed on the list.
+        com.imin.iminapi.util.SanctionedCountries.requireAllowed(org.getCountry());
         user.setLastActiveAt(Instant.now());
         users.save(user);
         String token = issueSession(user);

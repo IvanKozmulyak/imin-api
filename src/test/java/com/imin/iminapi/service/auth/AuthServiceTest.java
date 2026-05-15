@@ -88,6 +88,16 @@ class AuthServiceTest {
     }
 
     @Test
+    void signup_blocked_for_sanctioned_country() {
+        assertThatThrownBy(() -> sut.signup(new SignupRequest("ada@example.com", "lovelace12",
+                "Ada", "Lovelace", "X", "IR")))
+                .isInstanceOf(ApiException.class)
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.COUNTRY_NOT_ALLOWED);
+        verifyNoInteractions(orgs);
+        verify(users, never()).save(any(User.class));
+    }
+
+    @Test
     void signup_with_existing_email_throws_DUPLICATE() {
         when(users.existsByEmailLower("dupe@example.com")).thenReturn(true);
         assertThatThrownBy(() -> sut.signup(new SignupRequest("dupe@example.com", "valid12345", "Dupe", "User", "X", "FR")))
@@ -138,6 +148,28 @@ class AuthServiceTest {
         AuthResponse r = sut.login(new com.imin.iminapi.dto.auth.LoginRequest("ada@example.com", "lovelace12"));
         assertThat(r.token()).isNotBlank();
         assertThat(r.user().id()).isEqualTo(stored.getId());
+    }
+
+    @Test
+    void login_blocked_when_org_country_now_sanctioned() {
+        User stored = new User();
+        stored.setId(java.util.UUID.randomUUID());
+        stored.setOrgId(java.util.UUID.randomUUID());
+        stored.setEmail("ada@example.com");
+        stored.setPasswordHash(hasher.hash("lovelace12"));
+        stored.setRole(UserRole.OWNER);
+        stored.setVerifiedAt(java.time.Instant.now());
+        when(users.findByEmailLower("ada@example.com")).thenReturn(java.util.Optional.of(stored));
+
+        Organization org = new Organization();
+        org.setId(stored.getOrgId());
+        org.setCountry("IR"); // sanctioned
+        when(orgs.findById(stored.getOrgId())).thenReturn(java.util.Optional.of(org));
+
+        assertThatThrownBy(() -> sut.login(new com.imin.iminapi.dto.auth.LoginRequest("ada@example.com", "lovelace12")))
+                .isInstanceOf(ApiException.class)
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.COUNTRY_NOT_ALLOWED);
+        verify(sessions, never()).save(any(AuthSession.class));
     }
 
     @Test

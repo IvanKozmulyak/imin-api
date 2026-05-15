@@ -1,6 +1,7 @@
 package com.imin.iminapi.controller.reference;
 
 import com.imin.iminapi.dto.reference.CountryDto;
+import com.imin.iminapi.util.SanctionedCountries;
 import org.springframework.http.CacheControl;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -29,6 +30,10 @@ public class ReferenceController {
         return java.util.Arrays.stream(Locale.getISOCountries())
                 .map(code -> new CountryDto(code, new Locale("", code).getDisplayCountry(Locale.ENGLISH)))
                 .filter(c -> !c.name().isBlank() && !c.name().equals(c.code()))
+                // Strip sanctioned / Stripe-unsupported jurisdictions so they never appear in
+                // signup / settings dropdowns. The server-side checks in AuthService/OrgService
+                // still enforce the rule defensively in case a client hand-rolls the code.
+                .filter(c -> !SanctionedCountries.isSanctioned(c.code()))
                 .sorted(Comparator.comparing(CountryDto::name))
                 .toList();
     }

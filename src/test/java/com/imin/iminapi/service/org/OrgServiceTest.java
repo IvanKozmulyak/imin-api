@@ -68,6 +68,21 @@ class OrgServiceTest {
     }
 
     @Test
+    void patch_to_sanctioned_country_throws_COUNTRY_NOT_ALLOWED() {
+        UUID orgId = UUID.randomUUID();
+        Organization o = new Organization();
+        o.setId(orgId); o.setName("Old"); o.setContactEmail("a@b.com"); o.setCountry("GB");
+        Instant updated = Instant.parse("2026-04-23T10:00:00Z");
+        o.setUpdatedAt(updated);
+        when(orgs.findById(orgId)).thenReturn(Optional.of(o));
+
+        assertThatThrownBy(() -> sut.patch(owner(orgId), "\"" + updated + "\"",
+                new OrgPatchRequest(null, null, "IR", null)))
+                .hasFieldOrPropertyWithValue("code", ErrorCode.COUNTRY_NOT_ALLOWED);
+        verify(orgs, never()).save(any(Organization.class));
+    }
+
+    @Test
     void delete_only_allowed_for_owner() {
         UUID orgId = UUID.randomUUID();
         AuthPrincipal admin = new AuthPrincipal(UUID.randomUUID(), orgId, UserRole.ADMIN, UUID.randomUUID());
