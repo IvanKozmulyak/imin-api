@@ -87,11 +87,6 @@ public class EventService {
     public EventDto patch(AuthPrincipal p, UUID id, String ifMatchHeader, EventPatchRequest body) {
         Event e = loadOwned(p, id);
         ifMatch.requireMatch(ifMatchHeader, e.getUpdatedAt());
-        if (e.getStatus() != EventStatus.DRAFT) {
-            // Only drafts are autosavable. Live events use targeted endpoints (out of V1 scope).
-            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
-                    "Cannot edit a non-draft event via PATCH /events/:id");
-        }
         applyPatch(e, body);
         e.setUpdatedAt(Instant.now()); // ensure ETag changes even when @PreUpdate doesn't fire
         try {
@@ -183,9 +178,10 @@ public class EventService {
     }
 
     /**
-     * Full-list reconciliation: replace all promo codes for this event with the patch.
-     * Only reachable from PATCH /events/:id, which already rejects non-draft events with
-     * 409 INVALID_STATE — so we never destroy redemption history of a live event.
+     * Reconcile the event's promo code list against the patch. The natural key is
+     * (event_id, code), so we upsert by code: existing codes have their fields
+     * updated (preserving {@code usedCount}), new codes are inserted, and codes
+     * absent from the patch are deleted.
      *
      * Validates *before* mutating: a bad row anywhere in the list aborts the whole
      * reconcile (and the surrounding @Transactional rolls back the event update too).
@@ -220,19 +216,31 @@ public class EventService {
                     "Invalid promo code data", fieldErrors);
         }
 
-        // Delete-and-reinsert. Cheaper to reason about than upsert-by-code, and the
-        // draft-only constraint means there are no redemptions to preserve.
+        // Upsert by uppercase code. Existing rows keep their id and usedCount.
         List<PromoCode> existing = promos.findByEventId(eventId);
-        if (!existing.isEmpty()) promos.deleteAll(existing);
-        promos.flush();
+        Map<String, PromoCode> existingByCode = new LinkedHashMap<>();
+        for (PromoCode pc : existing) {
+            existingByCode.put(pc.getCode().toUpperCase(Locale.ROOT), pc);
+        }
+        Set<String> patchedCodes = new HashSet<>();
         for (PromoCodeEmbeddedPatch p : patches) {
-            PromoCode pc = new PromoCode();
-            pc.setEventId(eventId);
-            pc.setCode(p.code().trim().toUpperCase(Locale.ROOT));
+            String upper = p.code().trim().toUpperCase(Locale.ROOT);
+            patchedCodes.add(upper);
+            PromoCode pc = existingByCode.get(upper);
+            if (pc == null) {
+                pc = new PromoCode();
+                pc.setEventId(eventId);
+                pc.setCode(upper);
+                pc.setEnabled(true);
+            }
             pc.setDiscountPct(p.discountPct());
             pc.setMaxUses(p.maxUses());
-            pc.setEnabled(true);
             promos.save(pc);
+        }
+        for (PromoCode pc : existing) {
+            if (!patchedCodes.contains(pc.getCode().toUpperCase(Locale.ROOT))) {
+                promos.delete(pc);
+            }
         }
     }
 
