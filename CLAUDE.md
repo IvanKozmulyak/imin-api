@@ -89,17 +89,18 @@ Required env vars:
 - Optional: `STRIPE_APPLICATION_FEE_BPS` (default 500 = 5%), `STRIPE_PUBLIC_RETURN_URL_BASE` (default `http://localhost:3000`), `STRIPE_RETURN_URL_BASE` (default `http://localhost:5173`).
 
 Endpoints:
-- `POST /api/v1/orgs/{orgId}/stripe/connect` — idempotent create.
-- `POST /api/v1/orgs/{orgId}/stripe/onboarding-link` — one-shot URL for the organizer's browser.
+- `POST /api/v1/orgs/{orgId}/stripe/connect` — idempotent create. Empty body.
+- `POST /api/v1/orgs/{orgId}/stripe/account-session` — short-lived `clientSecret` for the FR embedded onboarding (`@stripe/connect-js`).
+- `POST /api/v1/orgs/{orgId}/stripe/onboarding-link` — one-shot URL for the organizer's browser (non-FR redirect flow).
 - `GET  /api/v1/orgs/{orgId}/stripe/status` — live (never cached). Returns `readyToReceivePayments`, `onboardingComplete`, `requirementsStatus`.
 - `POST /api/v1/public/events/{eventId}/checkout` — public; returns a hosted Checkout URL.
 - `POST /api/v1/stripe/webhook` — signature-verified webhook receiver.
 
-**FR vs non-FR onboarding (added 2026-05-14).** `StripeConnectService.getOrCreateAccount` branches on `organization.country`:
-- **FR orgs (PSD2):** the `POST /stripe/connect` body must include `accountToken` + `personToken` minted by Stripe.js in the organizer dashboard (`@stripe/stripe-js` → `stripe.createToken('account', ...)` + `stripe.createToken('person', ...)`). The v2 create call sends only `accountToken`, dashboard, and defaults (responsibilities + locale) — no `identity` or `configuration` server-side, and no explicit currency (Stripe picks it from the account's country). The person token is consumed via `v2().core().accounts().persons().create(...)` immediately after the account is created. v0 supports `business_type=company` only.
-- **Non-FR orgs:** `POST /stripe/connect` body must be empty (token bodies are strictly rejected with `400 INVALID_REQUEST`). The v2 create includes `identity.country = org.country`, `configuration.recipient.capabilities.stripe_balance.stripe_transfers.requested=true`, and defaults (responsibilities + locale, currency inferred from country).
+**FR vs non-FR onboarding (revised 2026-05-15).** `StripeConnectService.getOrCreateAccount` no longer branches on country — all orgs use the same v2 create payload (`identity.country`, `configuration.recipient.capabilities.stripe_balance.stripe_transfers.requested=true`, EUR defaults inferred from country, fees/losses-collector=APPLICATION). The earlier FR-specific account-token path was scrapped because Stripe.js v9 only mints v1 tokens which the v2 Accounts API rejects (`v1_token_invalid_in_v2`).
 
-Both paths still finish through the hosted `/stripe/onboarding-link` redirect — that picks up ID-document uploads, bank account, and any leftover requirements the tokens didn't cover.
+PSD2 compliance for FR orgs is now delivered via **embedded onboarding** with `@stripe/connect-js` instead. After the account is created, the FE calls `POST /api/v1/orgs/{orgId}/stripe/account-session` to get a short-lived `client_secret` from `/v1/account_sessions` with `components.account_onboarding.enabled=true`, then renders Stripe's `<ConnectAccountOnboarding>` web component which iframes the onboarding flow — the user's PII goes straight from browser to Stripe, never through our server.
+
+Non-FR orgs continue to use the hosted AccountLink redirect (`POST /stripe/onboarding-link`) — the same flow as before.
 
 Webhook dev setup:
 

@@ -22,20 +22,22 @@ public class StripeConnectController {
 
     /**
      * Idempotent — if an account already exists for the org, returns the same id and
-     * {@code created=false}. Body is optional for non-FR orgs (empty / absent is fine).
-     * FR orgs MUST include both {@code accountToken} and {@code personToken} (see
-     * {@link StripeConnectService.ConnectTokens}); the service strictly rejects token
-     * bodies posted for non-FR orgs.
+     * {@code created=false}. Empty request body.
      */
     @PostMapping("/connect")
-    public ConnectResponse connect(@CurrentUser AuthPrincipal p,
-                                   @PathVariable UUID orgId,
-                                   @RequestBody(required = false) ConnectRequest body) {
-        var tokens = body == null
-                ? StripeConnectService.ConnectTokens.empty()
-                : new StripeConnectService.ConnectTokens(body.accountToken(), body.personToken());
-        var r = connect.getOrCreateAccount(p, orgId, tokens);
+    public ConnectResponse connect(@CurrentUser AuthPrincipal p, @PathVariable UUID orgId) {
+        var r = connect.getOrCreateAccount(p, orgId);
         return new ConnectResponse(r.accountId(), r.created());
+    }
+
+    /**
+     * Creates a short-lived AccountSession bound to the org's connected account.
+     * Returns the {@code clientSecret} the FE feeds to {@code @stripe/connect-js}
+     * to render the embedded onboarding component (FR PSD2 path).
+     */
+    @PostMapping("/account-session")
+    public AccountSessionResponse accountSession(@CurrentUser AuthPrincipal p, @PathVariable UUID orgId) {
+        return new AccountSessionResponse(connect.createAccountSession(p, orgId));
     }
 
     @PostMapping("/onboarding-link")
@@ -59,9 +61,9 @@ public class StripeConnectController {
 
     // Wire-shape DTOs — kept inline because they only exist on this surface.
 
-    public record ConnectRequest(String accountToken, String personToken) {}
-
     public record ConnectResponse(String accountId, boolean created) {}
+
+    public record AccountSessionResponse(String clientSecret) {}
 
     public record OnboardingLinkRequest(String returnUrl, String refreshUrl) {}
 

@@ -7,12 +7,13 @@ import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
 import com.stripe.StripeClient;
 import com.stripe.exception.StripeException;
+import com.stripe.model.AccountSession;
 import com.stripe.model.v2.core.Account;
 import com.stripe.model.v2.core.AccountLink;
+import com.stripe.param.AccountSessionCreateParams;
 import com.stripe.param.v2.core.AccountCreateParams;
 import com.stripe.param.v2.core.AccountLinkCreateParams;
 import com.stripe.param.v2.core.AccountRetrieveParams;
-import com.stripe.param.v2.core.accounts.PersonCreateParams;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -62,45 +63,22 @@ public class StripeConnectService {
      * collects the legal-entity / person fields.
      */
     @Transactional
-    public ConnectResult getOrCreateAccount(AuthPrincipal principal, UUID orgId, ConnectTokens tokens) {
+    public ConnectResult getOrCreateAccount(AuthPrincipal principal, UUID orgId) {
         Organization org = loadOwnedOrg(principal, orgId);
 
         if (org.getStripeAccountId() != null && !org.getStripeAccountId().isBlank()) {
             return new ConnectResult(org.getStripeAccountId(), false);
         }
 
-        boolean isFr = "FR".equalsIgnoreCase(org.getCountry());
-        log.info("Stripe connect: org={} country={} isFr={} hasAccountToken={} hasPersonToken={}",
-                orgId, org.getCountry(), isFr,
-                tokens != null && tokens.accountToken() != null && !tokens.accountToken().isBlank(),
-                tokens != null && tokens.personToken() != null && !tokens.personToken().isBlank());
-        validateTokens(tokens, isFr);
-
-        AccountCreateParams params = isFr
-                ? buildFrCreateParams(org, tokens)
-                : buildDefaultCreateParams(org);
+        log.info("Stripe connect: creating account for org={} country={}",
+                orgId, org.getCountry());
 
         Account account;
         try {
-            account = stripeClient.v2().core().accounts().create(params);
+            account = stripeClient.v2().core().accounts().create(buildCreateParams(org));
         } catch (StripeException e) {
             log.error("Stripe v2 account create failed for org {}: {}", orgId, e.getMessage(), e);
             throw upstream("Failed to create Stripe connected account: " + e.getMessage(), e);
-        }
-
-        if (isFr && tokens.personToken() != null) {
-            try {
-                stripeClient.v2().core().accounts().persons().create(
-                        account.getId(),
-                        PersonCreateParams.builder()
-                                .setPersonToken(tokens.personToken())
-                                .build()
-                );
-            } catch (StripeException e) {
-                log.error("Stripe v2 person create failed for FR org {} (account {}): {}",
-                        orgId, account.getId(), e.getMessage(), e);
-                throw upstream("Failed to attach Stripe person from token: " + e.getMessage(), e);
-            }
         }
 
         org.setStripeAccountId(account.getId());
@@ -108,54 +86,50 @@ public class StripeConnectService {
         return new ConnectResult(account.getId(), true);
     }
 
-    private static void validateTokens(ConnectTokens tokens, boolean isFr) {
-        if (isFr) {
-            if (tokens == null
-                    || tokens.accountToken() == null || tokens.accountToken().isBlank()
-                    || tokens.personToken() == null || tokens.personToken().isBlank()) {
-                throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
-                        "FR organisations must provide both accountToken and personToken");
-            }
-        } else if (tokens != null && tokens.isPresent()) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
-                    "accountToken / personToken are only accepted for FR organisations");
+    /**
+     * Creates a v1 AccountSession bound to the org's connected account, enabling the
+     * {@code account_onboarding} embedded component. The returned {@code clientSecret}
+     * is short-lived and feeds Stripe's {@code @stripe/connect-js} loader on the FE,
+     * which then renders the in-dashboard onboarding iframe — PSD2-compliant because
+     * the user's PII goes straight to Stripe inside that iframe, never through our server.
+     *
+     * <p>Endpoint is on the v1 path ({@code /v1/account_sessions}) even though the
+     * connected account itself was minted via {@code /v2/core/accounts} — Stripe's
+     * AccountSessions API is the same surface for v1 and v2 accounts.
+     */
+    @Transactional(readOnly = true)
+    public String createAccountSession(AuthPrincipal principal, UUID orgId) {
+        Organization org = loadOwnedOrg(principal, orgId);
+        if (org.getStripeAccountId() == null || org.getStripeAccountId().isBlank()) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                    "Stripe connected account not yet created — call /stripe/connect first");
         }
-    }
 
-    private static AccountCreateParams buildFrCreateParams(Organization org, ConnectTokens tokens) {
-        // FR/PSD2: legal-entity and person details must arrive via the Stripe.js-minted account token.
-        // We deliberately do NOT set identity.* or configuration.* server-side — Stripe rejects that
-        // combination with account_token_required when the platform country is FR.
-        return AccountCreateParams.builder()
-                .setContactEmail(org.getContactEmail())
-                .setDisplayName(org.getName())
-                .setDashboard(AccountCreateParams.Dashboard.EXPRESS)
-                .setAccountToken(tokens.accountToken())
-                .setDefaults(
-                        AccountCreateParams.Defaults.builder()
-                                // No setCurrency — Stripe defaults to the local currency of the
-                                // account's country (FR→EUR, US→USD, GB→GBP, …), which is what
-                                // we want. Ticket prices carry their own currency on the event,
-                                // so the account-level default only affects payout settlement.
-                                .setResponsibilities(
-                                        AccountCreateParams.Defaults.Responsibilities.builder()
-                                                .setFeesCollector(
-                                                        AccountCreateParams.Defaults.Responsibilities.FeesCollector.APPLICATION
-                                                )
-                                                .setLossesCollector(
-                                                        AccountCreateParams.Defaults.Responsibilities.LossesCollector.APPLICATION
-                                                )
+        AccountSessionCreateParams params = AccountSessionCreateParams.builder()
+                .setAccount(org.getStripeAccountId())
+                .setComponents(
+                        AccountSessionCreateParams.Components.builder()
+                                .setAccountOnboarding(
+                                        AccountSessionCreateParams.Components.AccountOnboarding.builder()
+                                                .setEnabled(true)
                                                 .build()
                                 )
-                                .addLocale(AccountCreateParams.Defaults.Locale.EN_US)
                                 .build()
                 )
-                .addInclude(AccountCreateParams.Include.IDENTITY)
-                .addInclude(AccountCreateParams.Include.REQUIREMENTS)
                 .build();
+
+        AccountSession session;
+        try {
+            session = stripeClient.accountSessions().create(params);
+        } catch (StripeException e) {
+            log.error("Stripe v1 account session create failed for org {} (account {}): {}",
+                    orgId, org.getStripeAccountId(), e.getMessage(), e);
+            throw upstream("Failed to create Stripe account session: " + e.getMessage(), e);
+        }
+        return session.getClientSecret();
     }
 
-    private static AccountCreateParams buildDefaultCreateParams(Organization org) {
+    private static AccountCreateParams buildCreateParams(Organization org) {
         return AccountCreateParams.builder()
                 .setContactEmail(org.getContactEmail())
                 .setDisplayName(org.getName())
@@ -368,16 +342,4 @@ public class StripeConnectService {
                                boolean readyToReceivePayments,
                                boolean onboardingComplete,
                                String requirementsStatus) {}
-
-    /**
-     * Request body for {@link #getOrCreateAccount(AuthPrincipal, UUID, ConnectTokens)}.
-     *
-     * For FR orgs both tokens are required (rejected with INVALID_REQUEST otherwise).
-     * For non-FR orgs both must be null (token bodies are strictly rejected so we never
-     * accidentally route PII through a non-PSD2 path).
-     */
-    public record ConnectTokens(String accountToken, String personToken) {
-        public static ConnectTokens empty() { return new ConnectTokens(null, null); }
-        public boolean isPresent() { return accountToken != null || personToken != null; }
-    }
 }
