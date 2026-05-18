@@ -6,9 +6,12 @@ import com.imin.iminapi.dto.publicapi.NotifySubscriptionResponse;
 import com.imin.iminapi.dto.publicapi.PublicCityItem;
 import com.imin.iminapi.dto.publicapi.PublicEventListItem;
 import com.imin.iminapi.dto.publicapi.PublicEventResponse;
+import com.imin.iminapi.dto.publicapi.QuoteRequest;
+import com.imin.iminapi.dto.publicapi.QuoteResponse;
 import com.imin.iminapi.service.event.NotifySubscriptionService;
 import com.imin.iminapi.service.event.PublicEventListQuery;
 import com.imin.iminapi.service.event.PublicEventService;
+import com.imin.iminapi.service.event.QuoteService;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -29,11 +32,14 @@ public class PublicEventController {
 
     private final PublicEventService publicEventService;
     private final NotifySubscriptionService notifySubscriptionService;
+    private final QuoteService quoteService;
 
     public PublicEventController(PublicEventService publicEventService,
-                                 NotifySubscriptionService notifySubscriptionService) {
+                                 NotifySubscriptionService notifySubscriptionService,
+                                 QuoteService quoteService) {
         this.publicEventService = publicEventService;
         this.notifySubscriptionService = notifySubscriptionService;
+        this.quoteService = quoteService;
     }
 
     @GetMapping("/cities")
@@ -59,6 +65,14 @@ public class PublicEventController {
             @PathVariable UUID id,
             @RequestBody(required = false) NotifySubscriptionRequest body) {
         NotifySubscriptionResponse response = notifySubscriptionService.subscribe(id, body);
+        return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("/{id}/quote")
+    public ResponseEntity<QuoteResponse> quote(
+            @PathVariable UUID id,
+            @RequestBody(required = false) QuoteRequest body) {
+        QuoteResponse response = quoteService.quote(id, body);
         return ResponseEntity.ok(response);
     }
 

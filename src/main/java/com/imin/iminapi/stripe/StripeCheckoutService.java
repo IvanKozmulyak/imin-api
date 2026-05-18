@@ -10,6 +10,7 @@ import com.imin.iminapi.repository.PromoCodeRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.service.event.InventoryService;
+import com.imin.iminapi.service.event.PublicTierEligibility;
 import com.stripe.StripeClient;
 import com.stripe.exception.StripeException;
 import com.stripe.model.Coupon;
@@ -101,17 +102,9 @@ public class StripeCheckoutService {
         Event event = events.findPublic(eventId).orElseThrow(() -> ApiException.notFound("Event"));
 
         // 2. Load + validate tier (belongs to event, enabled, in sale window, has price+quantity).
-        TicketTier tier = tiers.findByIdAndEventId(tierId, eventId)
-                .orElseThrow(() -> ApiException.notFound("Event")); // leak-safe — see class doc
-
+        // Shared eligibility predicate so quote and checkout never disagree on buyability — see PublicTierEligibility.
         Instant now = clock.instant();
-        if (!tier.isEnabled()) throw ApiException.notFound("Event");
-        if (tier.getSaleStartsAt() != null && tier.getSaleStartsAt().isAfter(now)) {
-            throw ApiException.notFound("Event");
-        }
-        if (tier.getSaleClosesAt() != null && !tier.getSaleClosesAt().isAfter(now)) {
-            throw ApiException.notFound("Event");
-        }
+        TicketTier tier = PublicTierEligibility.loadBuyableTier(tiers, eventId, tierId, now);
         if (tier.getStripePriceId() == null || tier.getStripePriceId().isBlank()) {
             // Product sync failed earlier (best-effort). Surface as 404 to the buyer — they have nothing
             // they can do about it — and let the organizer see the dashboard error.
