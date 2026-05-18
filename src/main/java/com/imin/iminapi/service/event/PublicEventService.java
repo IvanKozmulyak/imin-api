@@ -49,6 +49,11 @@ public class PublicEventService {
 
     @Transactional(readOnly = true)
     public PublicEventResponse get(UUID id) {
+        return get(id, false);
+    }
+
+    @Transactional(readOnly = true)
+    public PublicEventResponse get(UUID id, boolean includeUnavailable) {
         Event event = eventRepository.findPublic(id)
                 .orElseThrow(() -> ApiException.notFound("Event"));
 
@@ -58,15 +63,21 @@ public class PublicEventService {
 
         Instant now = clock.instant();
 
-        // Public page only shows currently-on-sale tiers. Disabled, not-yet-opened,
-        // closed, sold-out, and tiers under non-LIVE events are all hidden — buyers
-        // shouldn't see (or attempt to buy) anything they can't actually purchase.
-        List<PublicTierDto> tiers = tierRepository
+        // Default behavior (includeUnavailable=false): only currently-on-sale tiers appear.
+        // Disabled, not-yet-opened, closed, sold-out, and tiers under non-LIVE events are
+        // hidden — buyers shouldn't see anything they can't purchase.
+        //
+        // includeUnavailable=true: keep enabled tiers regardless of onSale so the FE can
+        // render "Sold Out" / "Sale Ended" / "Coming soon" greyed-out rows. Event-level
+        // filtering (draft/private/deleted) is still enforced by findPublic above.
+        var stream = tierRepository
                 .findByEventIdAndEnabledTrueOrderBySortOrderAsc(id)
                 .stream()
-                .map(t -> PublicTierDto.from(t, event, now))
-                .filter(PublicTierDto::onSale)
-                .toList();
+                .map(t -> PublicTierDto.from(t, event, now));
+        if (!includeUnavailable) {
+            stream = stream.filter(PublicTierDto::onSale);
+        }
+        List<PublicTierDto> tiers = stream.toList();
 
         return PublicEventResponse.from(event, org, tiers);
     }

@@ -374,4 +374,124 @@ class PublicEventServiceTest {
         assertThat(r.tiers().get(0).name()).isEqualTo("Open Tier");
         assertThat(r.tiers().get(0).onSale()).isTrue();
     }
+
+    // -----------------------------------------------------------------------
+    // includeUnavailable tests
+    // -----------------------------------------------------------------------
+
+    @Test
+    void includeUnavailable_true_returnsSoldOutTierWithSoldOutFlag() {
+        Event e = publishedLiveEvent();
+        e.setOnSaleAt(NOW.minusSeconds(3600));
+        e = eventRepository.save(e);
+
+        tier(e.getId(), "Sold Out", 500, 50, 50, true, 0, null);
+
+        PublicEventResponse r = publicEventService.get(e.getId(), true);
+
+        assertThat(r.tiers()).hasSize(1);
+        assertThat(r.tiers().get(0).name()).isEqualTo("Sold Out");
+        assertThat(r.tiers().get(0).soldOut()).isTrue();
+        assertThat(r.tiers().get(0).onSale()).isFalse();
+        assertThat(r.tiers().get(0).remaining()).isZero();
+    }
+
+    @Test
+    void includeUnavailable_true_returnsClosedTierWithClosedFlag() {
+        Event e = publishedLiveEvent();
+        e.setOnSaleAt(NOW.minusSeconds(3600));
+        e = eventRepository.save(e);
+
+        tier(e.getId(), "Closed Tier", 500, 50, 0, true, 0, NOW.minusSeconds(60));
+
+        PublicEventResponse r = publicEventService.get(e.getId(), true);
+
+        assertThat(r.tiers()).hasSize(1);
+        assertThat(r.tiers().get(0).name()).isEqualTo("Closed Tier");
+        assertThat(r.tiers().get(0).closed()).isTrue();
+        assertThat(r.tiers().get(0).onSale()).isFalse();
+    }
+
+    @Test
+    void includeUnavailable_true_returnsNotYetOpenTier() {
+        Event e = publishedLiveEvent();
+        e.setOnSaleAt(NOW.plusSeconds(3600)); // not yet open
+        e = eventRepository.save(e);
+
+        tier(e.getId(), "Future Tier", 1000, 50, 0, true, 0, null);
+
+        PublicEventResponse r = publicEventService.get(e.getId(), true);
+
+        assertThat(r.tiers()).hasSize(1);
+        assertThat(r.tiers().get(0).name()).isEqualTo("Future Tier");
+        assertThat(r.tiers().get(0).onSale()).isFalse();
+        assertThat(r.tiers().get(0).soldOut()).isFalse();
+        assertThat(r.tiers().get(0).closed()).isFalse();
+    }
+
+    @Test
+    void includeUnavailable_true_stillExcludesDisabledTiers() {
+        Event e = publishedLiveEvent();
+        e.setOnSaleAt(NOW.minusSeconds(3600));
+        e = eventRepository.save(e);
+
+        tier(e.getId(), "Open Tier",     500, 50, 0,  true,  0, null);
+        tier(e.getId(), "Disabled Tier", 500, 50, 0,  false, 1, null); // disabled — still hidden
+
+        PublicEventResponse r = publicEventService.get(e.getId(), true);
+
+        assertThat(r.tiers()).hasSize(1);
+        assertThat(r.tiers().get(0).name()).isEqualTo("Open Tier");
+    }
+
+    @Test
+    void includeUnavailable_true_returnsAllUnavailableTiersOnPastEvent() {
+        // Past event is still publicly reachable (share-links / SEO). With includeUnavailable=true
+        // the FE wants to render its tier roster as greyed-out rows.
+        Event e = publishedLiveEvent();
+        e.setStatus(EventStatus.PAST);
+        e.setOnSaleAt(NOW.minusSeconds(7200));
+        e = eventRepository.save(e);
+
+        tier(e.getId(), "GA",  500, 50, 10, true, 0, null);
+        tier(e.getId(), "VIP", 1500, 20, 5,  true, 1, null);
+
+        PublicEventResponse r = publicEventService.get(e.getId(), true);
+
+        assertThat(r.status()).isEqualTo("past");
+        assertThat(r.tiers()).hasSize(2);
+        assertThat(r.tiers()).allSatisfy(t -> assertThat(t.onSale()).isFalse());
+    }
+
+    @Test
+    void includeUnavailable_true_throws404_whenEventNotPublic() {
+        // Event-level filter (draft/private/deleted) must still 404 — includeUnavailable
+        // only controls tier visibility, not event visibility.
+        Event e = publishedLiveEvent();
+        e.setVisibility(EventVisibility.PRIVATE);
+        e = eventRepository.save(e);
+
+        UUID eventId = e.getId();
+        assertThatThrownBy(() -> publicEventService.get(eventId, true))
+                .isInstanceOf(ApiException.class)
+                .satisfies(ex -> {
+                    ApiException apiEx = (ApiException) ex;
+                    assertThat(apiEx.status()).isEqualTo(HttpStatus.NOT_FOUND);
+                    assertThat(apiEx.code()).isEqualTo(ErrorCode.NOT_FOUND);
+                });
+    }
+
+    @Test
+    void includeUnavailable_false_preservesLegacyBehavior() {
+        // Sanity: explicit false matches the no-arg overload (sold-out hidden).
+        Event e = publishedLiveEvent();
+        e.setOnSaleAt(NOW.minusSeconds(3600));
+        e = eventRepository.save(e);
+
+        tier(e.getId(), "Sold Out", 500, 50, 50, true, 0, null);
+
+        PublicEventResponse r = publicEventService.get(e.getId(), false);
+
+        assertThat(r.tiers()).isEmpty();
+    }
 }

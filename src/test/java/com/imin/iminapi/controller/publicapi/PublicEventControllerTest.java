@@ -31,6 +31,7 @@ import java.util.stream.StreamSupport;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 import org.mockito.ArgumentCaptor;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -82,7 +83,7 @@ class PublicEventControllerTest {
 
     @Test
     void get_returns200WithBodyAndCacheControl() throws Exception {
-        when(publicEventService.get(EVENT_ID)).thenReturn(sampleResponse());
+        when(publicEventService.get(EVENT_ID, false)).thenReturn(sampleResponse());
 
         mvc.perform(get("/api/v1/public/events/" + EVENT_ID))
                 .andExpect(status().isOk())
@@ -99,7 +100,7 @@ class PublicEventControllerTest {
 
     @Test
     void get_returns404_whenServiceThrowsNotFound() throws Exception {
-        when(publicEventService.get(EVENT_ID)).thenThrow(ApiException.notFound("Event"));
+        when(publicEventService.get(EVENT_ID, false)).thenThrow(ApiException.notFound("Event"));
 
         mvc.perform(get("/api/v1/public/events/" + EVENT_ID))
                 .andExpect(status().isNotFound())
@@ -132,7 +133,7 @@ class PublicEventControllerTest {
      */
     @Test
     void get_responseHasOnlyAllowListedKeys() throws Exception {
-        when(publicEventService.get(EVENT_ID)).thenReturn(sampleResponse());
+        when(publicEventService.get(EVENT_ID, false)).thenReturn(sampleResponse());
 
         MvcResult result = mvc.perform(get("/api/v1/public/events/" + EVENT_ID))
                 .andExpect(status().isOk())
@@ -193,11 +194,33 @@ class PublicEventControllerTest {
      */
     @Test
     void get_endpointReachableWithoutAuth() throws Exception {
-        when(publicEventService.get(any())).thenReturn(sampleResponse());
+        when(publicEventService.get(any(), eq(false))).thenReturn(sampleResponse());
 
         mvc.perform(get("/api/v1/public/events/" + EVENT_ID))
                 // No Authorization header — must not be blocked by auth
                 .andExpect(status().isOk());
+    }
+
+    @Test
+    void get_passesIncludeUnavailableThrough_whenTrue() throws Exception {
+        when(publicEventService.get(EVENT_ID, true)).thenReturn(sampleResponse());
+
+        mvc.perform(get("/api/v1/public/events/" + EVENT_ID).param("includeUnavailable", "true"))
+                .andExpect(status().isOk());
+
+        verify(publicEventService).get(EVENT_ID, true);
+        verify(publicEventService, never()).get(EVENT_ID, false);
+    }
+
+    @Test
+    void get_defaultsIncludeUnavailableToFalse_whenParamAbsent() throws Exception {
+        when(publicEventService.get(EVENT_ID, false)).thenReturn(sampleResponse());
+
+        mvc.perform(get("/api/v1/public/events/" + EVENT_ID))
+                .andExpect(status().isOk());
+
+        verify(publicEventService).get(EVENT_ID, false);
+        verify(publicEventService, never()).get(EVENT_ID, true);
     }
 
     // -----------------------------------------------------------------------

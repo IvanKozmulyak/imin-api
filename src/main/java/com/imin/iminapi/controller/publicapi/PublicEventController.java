@@ -36,8 +36,10 @@ public class PublicEventController {
     }
 
     @GetMapping("/{id}")
-    public ResponseEntity<PublicEventResponse> get(@PathVariable UUID id) {
-        PublicEventResponse body = publicEventService.get(id);
+    public ResponseEntity<PublicEventResponse> get(
+            @PathVariable UUID id,
+            @RequestParam(defaultValue = "false") boolean includeUnavailable) {
+        PublicEventResponse body = publicEventService.get(id, includeUnavailable);
         return ResponseEntity.ok()
                 .header(HttpHeaders.CACHE_CONTROL,
                         "public, s-maxage=60, stale-while-revalidate=30")
