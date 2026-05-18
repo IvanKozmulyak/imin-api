@@ -1,7 +1,6 @@
 package com.imin.iminapi.service.event;
 
 import com.imin.iminapi.model.TicketTier;
-import com.imin.iminapi.model.TicketTierKind;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
@@ -37,7 +36,6 @@ class InventoryServiceTest {
         t.setId(UUID.randomUUID());
         t.setEventId(UUID.randomUUID());
         t.setName("GA");
-        t.setKind(TicketTierKind.STANDARD);
         t.setPriceMinor(1000);
         t.setQuantity(quantity);
         t.setReserved(reserved);

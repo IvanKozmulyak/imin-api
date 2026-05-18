@@ -211,7 +211,7 @@ class EventServiceTest {
 
         TicketTier sold = new TicketTier();
         sold.setEventId(e.getId());
-        sold.setName("GA"); sold.setKind(TicketTierKind.STANDARD);
+        sold.setName("GA");
         sold.setPriceMinor(1000); sold.setQuantity(100); sold.setSold(3);
         when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of(sold));
 
@@ -262,7 +262,7 @@ class EventServiceTest {
 
         TicketTierEmbeddedPatch tp =
                 new TicketTierEmbeddedPatch(
-                        null, "GA", "general", 1500, 100, null, null, null, null, null, null);
+                        null, "GA", 1500, 100, null, null, null, null, null, null);
 
         sut.patch(p, e.getId(), "\"" + updated + "\"",
                 new EventPatchRequest(null, null, null, null, null, null, null, null, null,
@@ -308,7 +308,6 @@ class EventServiceTest {
         TicketTier paid = new TicketTier();
         paid.setEventId(e.getId());
         paid.setName("GA");
-        paid.setKind(TicketTierKind.STANDARD);
         paid.setPriceMinor(1500);
         when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of(paid));
 
@@ -338,7 +337,6 @@ class EventServiceTest {
         TicketTier paid = new TicketTier();
         paid.setEventId(e.getId());
         paid.setName("GA");
-        paid.setKind(TicketTierKind.STANDARD);
         paid.setPriceMinor(1500);
         when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of(paid));
 
@@ -367,7 +365,6 @@ class EventServiceTest {
         TicketTier free = new TicketTier();
         free.setEventId(e.getId());
         free.setName("Free");
-        free.setKind(TicketTierKind.STANDARD);
         free.setPriceMinor(0);
         when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of(free));
 

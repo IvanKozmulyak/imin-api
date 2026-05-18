@@ -5,7 +5,6 @@ import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.EventVisibility;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.TicketTier;
-import com.imin.iminapi.model.TicketTierKind;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.EventRepository;
@@ -74,7 +73,6 @@ class TicketTierRepositoryPersistenceTest {
         TicketTier t = new TicketTier();
         t.setEventId(eventId);
         t.setName("GA");
-        t.setKind(TicketTierKind.STANDARD);
         t.setPriceMinor(1000);
         t.setQuantity(100);
         // reserved deliberately not set — should default to 0
@@ -90,7 +88,6 @@ class TicketTierRepositoryPersistenceTest {
         TicketTier t = new TicketTier();
         t.setEventId(eventId);
         t.setName("VIP");
-        t.setKind(TicketTierKind.STANDARD);
         t.setPriceMinor(5000);
         t.setQuantity(50);
         t.setReserved(7);
@@ -109,7 +106,6 @@ class TicketTierRepositoryPersistenceTest {
         TicketTier t = new TicketTier();
         t.setEventId(eventId);
         t.setName("Locked");
-        t.setKind(TicketTierKind.STANDARD);
         t.setPriceMinor(2000);
         t.setQuantity(10);
         t.setReserved(2);

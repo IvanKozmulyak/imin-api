@@ -5,7 +5,6 @@ import com.imin.iminapi.dto.event.TicketTierEmbeddedPatch;
 import com.imin.iminapi.dto.event.TicketTierPatchRequest;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.TicketTier;
-import com.imin.iminapi.model.TicketTierKind;
 import org.junit.jupiter.api.Test;
 
 import java.time.Clock;
@@ -41,14 +40,13 @@ class TicketTierValidatorTest {
     }
 
     private TicketTierCreateRequest validCreate() {
-        return new TicketTierCreateRequest("GA", "standard", 1000, 100, null, null, null, null);
+        return new TicketTierCreateRequest("GA", 1000, 100, null, null, null, null);
     }
 
     private TicketTier existingTier(int sold) {
         TicketTier t = new TicketTier();
         t.setId(UUID.randomUUID());
         t.setName("GA");
-        t.setKind(TicketTierKind.STANDARD);
         t.setPriceMinor(1000);
         t.setQuantity(100);
         t.setSold(sold);
@@ -59,14 +57,14 @@ class TicketTierValidatorTest {
 
     @Test
     void validateCreate_rejects_null_name() {
-        TicketTierCreateRequest req = new TicketTierCreateRequest(null, "standard", 1000, 100, null, null, null, null);
+        TicketTierCreateRequest req = new TicketTierCreateRequest(null, 1000, 100, null, null, null, null);
         Map<String, String> errors = sut.validateCreate(req, eventNoEndsAt());
         assertThat(errors).containsKey("name");
     }
 
     @Test
     void validateCreate_rejects_blank_name() {
-        TicketTierCreateRequest req = new TicketTierCreateRequest("   ", "standard", 1000, 100, null, null, null, null);
+        TicketTierCreateRequest req = new TicketTierCreateRequest("   ", 1000, 100, null, null, null, null);
         Map<String, String> errors = sut.validateCreate(req, eventNoEndsAt());
         assertThat(errors).containsKey("name");
     }
@@ -74,71 +72,30 @@ class TicketTierValidatorTest {
     @Test
     void validateCreate_rejects_name_too_long() {
         String longName = "a".repeat(129);
-        TicketTierCreateRequest req = new TicketTierCreateRequest(longName, "standard", 1000, 100, null, null, null, null);
+        TicketTierCreateRequest req = new TicketTierCreateRequest(longName, 1000, 100, null, null, null, null);
         Map<String, String> errors = sut.validateCreate(req, eventNoEndsAt());
         assertThat(errors).containsKey("name");
-    }
-
-    // ── validateCreate — kind ────────────────────────────────────────────────────
-
-    @Test
-    void validateCreate_rejects_null_kind() {
-        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", null, 1000, 100, null, null, null, null);
-        Map<String, String> errors = sut.validateCreate(req, eventNoEndsAt());
-        assertThat(errors).containsKey("kind");
-    }
-
-    @Test
-    void validateCreate_rejects_invalid_kind_wire() {
-        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", "EARLY_BIRD", 1000, 100, null, null, null, null);
-        Map<String, String> errors = sut.validateCreate(req, eventNoEndsAt());
-        assertThat(errors).containsKey("kind");
-        assertThat(errors.get("kind")).contains("EARLY_BIRD");
-    }
-
-    @Test
-    void validateCreate_accepts_valid_kind_wire_earlyBird() {
-        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", "earlyBird", 1000, 100, null, null, null, null);
-        assertThat(sut.validateCreate(req, eventNoEndsAt())).doesNotContainKey("kind");
-    }
-
-    @Test
-    void validateCreate_accepts_valid_kind_wire_standard() {
-        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", "standard", 1000, 100, null, null, null, null);
-        assertThat(sut.validateCreate(req, eventNoEndsAt())).doesNotContainKey("kind");
-    }
-
-    @Test
-    void validateCreate_accepts_valid_kind_wire_lateBird() {
-        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", "lateBird", 1000, 100, null, null, null, null);
-        assertThat(sut.validateCreate(req, eventNoEndsAt())).doesNotContainKey("kind");
-    }
-
-    @Test
-    void validateCreate_accepts_valid_kind_wire_custom() {
-        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", "custom", 1000, 100, null, null, null, null);
-        assertThat(sut.validateCreate(req, eventNoEndsAt())).doesNotContainKey("kind");
     }
 
     // ── validateCreate — priceMinor ──────────────────────────────────────────────
 
     @Test
     void validateCreate_rejects_null_priceMinor() {
-        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", "standard", null, 100, null, null, null, null);
+        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", null, 100, null, null, null, null);
         Map<String, String> errors = sut.validateCreate(req, eventNoEndsAt());
         assertThat(errors).containsKey("priceMinor");
     }
 
     @Test
     void validateCreate_rejects_negative_priceMinor() {
-        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", "standard", -1, 100, null, null, null, null);
+        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", -1, 100, null, null, null, null);
         Map<String, String> errors = sut.validateCreate(req, eventNoEndsAt());
         assertThat(errors).containsKey("priceMinor");
     }
 
     @Test
     void validateCreate_accepts_zero_priceMinor() {
-        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", "standard", 0, 100, null, null, null, null);
+        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", 0, 100, null, null, null, null);
         assertThat(sut.validateCreate(req, eventNoEndsAt())).doesNotContainKey("priceMinor");
     }
 
@@ -146,21 +103,21 @@ class TicketTierValidatorTest {
 
     @Test
     void validateCreate_rejects_null_quantity() {
-        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", "standard", 1000, null, null, null, null, null);
+        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", 1000, null, null, null, null, null);
         Map<String, String> errors = sut.validateCreate(req, eventNoEndsAt());
         assertThat(errors).containsKey("quantity");
     }
 
     @Test
     void validateCreate_rejects_zero_quantity() {
-        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", "standard", 1000, 0, null, null, null, null);
+        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", 1000, 0, null, null, null, null);
         Map<String, String> errors = sut.validateCreate(req, eventNoEndsAt());
         assertThat(errors).containsKey("quantity");
     }
 
     @Test
     void validateCreate_rejects_negative_quantity() {
-        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", "standard", 1000, -5, null, null, null, null);
+        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", 1000, -5, null, null, null, null);
         Map<String, String> errors = sut.validateCreate(req, eventNoEndsAt());
         assertThat(errors).containsKey("quantity");
     }
@@ -169,13 +126,13 @@ class TicketTierValidatorTest {
 
     @Test
     void validateCreate_accepts_null_saleClosesAt() {
-        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", "standard", 1000, 100, null, null, null, null);
+        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", 1000, 100, null, null, null, null);
         assertThat(sut.validateCreate(req, eventNoEndsAt())).doesNotContainKey("saleClosesAt");
     }
 
     @Test
     void validateCreate_rejects_past_saleClosesAt() {
-        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", "standard", 1000, 100, null, PAST, null, null);
+        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", 1000, 100, null, PAST, null, null);
         Map<String, String> errors = sut.validateCreate(req, eventNoEndsAt());
         assertThat(errors).containsKey("saleClosesAt");
     }
@@ -184,7 +141,7 @@ class TicketTierValidatorTest {
     void validateCreate_rejects_saleClosesAt_after_event_endsAt() {
         Event event = eventWithEndsAt(FUTURE);
         Instant afterEndsAt = FUTURE.plusSeconds(1);
-        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", "standard", 1000, 100, null, afterEndsAt, null, null);
+        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", 1000, 100, null, afterEndsAt, null, null);
         Map<String, String> errors = sut.validateCreate(req, event);
         assertThat(errors).containsKey("saleClosesAt");
     }
@@ -192,13 +149,13 @@ class TicketTierValidatorTest {
     @Test
     void validateCreate_accepts_saleClosesAt_before_event_endsAt() {
         Event event = eventWithEndsAt(FAR_FUTURE);
-        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", "standard", 1000, 100, null, FUTURE, null, null);
+        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", 1000, 100, null, FUTURE, null, null);
         assertThat(sut.validateCreate(req, event)).doesNotContainKey("saleClosesAt");
     }
 
     @Test
     void validateCreate_accepts_saleClosesAt_when_event_endsAt_null() {
-        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", "standard", 1000, 100, null, FUTURE, null, null);
+        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", 1000, 100, null, FUTURE, null, null);
         assertThat(sut.validateCreate(req, eventNoEndsAt())).doesNotContainKey("saleClosesAt");
     }
 
@@ -212,54 +169,47 @@ class TicketTierValidatorTest {
 
     @Test
     void validatePatch_null_fields_left_unchanged_empty_map() {
-        TicketTierPatchRequest req = new TicketTierPatchRequest(null, null, null, null, null, null, null, null, null, null);
+        TicketTierPatchRequest req = new TicketTierPatchRequest(null, null, null, null, null, null, null, null, null);
         Map<String, String> errors = sut.validatePatch(req, existingTier(0), eventNoEndsAt());
         assertThat(errors).isEmpty();
     }
 
     @Test
     void validatePatch_blank_name_rejected() {
-        TicketTierPatchRequest blankName = new TicketTierPatchRequest("  ", null, null, null, null, null, null, null, null, null);
+        TicketTierPatchRequest blankName = new TicketTierPatchRequest("  ", null, null, null, null, null, null, null, null);
         assertThat(sut.validatePatch(blankName, existingTier(0), eventNoEndsAt())).containsKey("name");
     }
 
     @Test
     void validatePatch_null_name_accepted() {
-        TicketTierPatchRequest nullName = new TicketTierPatchRequest(null, null, null, null, null, null, null, null, null, null);
+        TicketTierPatchRequest nullName = new TicketTierPatchRequest(null, null, null, null, null, null, null, null, null);
         assertThat(sut.validatePatch(nullName, existingTier(0), eventNoEndsAt())).doesNotContainKey("name");
     }
 
     @Test
-    void validatePatch_invalid_kind_rejected() {
-        TicketTierPatchRequest req = new TicketTierPatchRequest(null, "STANDARD", null, null, null, null, null, null, null, null);
-        Map<String, String> errors = sut.validatePatch(req, existingTier(0), eventNoEndsAt());
-        assertThat(errors).containsKey("kind");
-    }
-
-    @Test
     void validatePatch_negative_price_rejected() {
-        TicketTierPatchRequest req = new TicketTierPatchRequest(null, null, -1, null, null, null, null, null, null, null);
+        TicketTierPatchRequest req = new TicketTierPatchRequest(null, -1, null, null, null, null, null, null, null);
         Map<String, String> errors = sut.validatePatch(req, existingTier(0), eventNoEndsAt());
         assertThat(errors).containsKey("priceMinor");
     }
 
     @Test
     void validatePatch_zero_quantity_rejected() {
-        TicketTierPatchRequest req = new TicketTierPatchRequest(null, null, null, 0, null, null, null, null, null, null);
+        TicketTierPatchRequest req = new TicketTierPatchRequest(null, null, 0, null, null, null, null, null, null);
         Map<String, String> errors = sut.validatePatch(req, existingTier(0), eventNoEndsAt());
         assertThat(errors).containsKey("quantity");
     }
 
     @Test
     void validatePatch_clearSaleClosesAt_accepted_alone() {
-        TicketTierPatchRequest req = new TicketTierPatchRequest(null, null, null, null, null, null, null, true, null, null);
+        TicketTierPatchRequest req = new TicketTierPatchRequest(null, null, null, null, null, null, true, null, null);
         Map<String, String> errors = sut.validatePatch(req, existingTier(0), eventNoEndsAt());
         assertThat(errors).doesNotContainKey("saleClosesAt");
     }
 
     @Test
     void validatePatch_clearSaleClosesAt_true_with_non_null_saleClosesAt_rejected() {
-        TicketTierPatchRequest req = new TicketTierPatchRequest(null, null, null, null, null, null, FUTURE, true, null, null);
+        TicketTierPatchRequest req = new TicketTierPatchRequest(null, null, null, null, null, FUTURE, true, null, null);
         Map<String, String> errors = sut.validatePatch(req, existingTier(0), eventNoEndsAt());
         assertThat(errors).containsKey("saleClosesAt");
         assertThat(errors.get("saleClosesAt")).contains("contradictory");
@@ -267,7 +217,7 @@ class TicketTierValidatorTest {
 
     @Test
     void validatePatch_negative_sortOrder_rejected() {
-        TicketTierPatchRequest req = new TicketTierPatchRequest(null, null, null, null, null, null, null, null, -1, null);
+        TicketTierPatchRequest req = new TicketTierPatchRequest(null, null, null, null, null, null, null, -1, null);
         Map<String, String> errors = sut.validatePatch(req, existingTier(0), eventNoEndsAt());
         assertThat(errors).containsKey("sortOrder");
     }
@@ -278,7 +228,7 @@ class TicketTierValidatorTest {
     void validatePatch_quantity_equal_sold_allowed() {
         TicketTier tier = existingTier(10);
         tier.setQuantity(100);
-        TicketTierPatchRequest req = new TicketTierPatchRequest(null, null, null, 10, null, null, null, null, null, null);
+        TicketTierPatchRequest req = new TicketTierPatchRequest(null, null, 10, null, null, null, null, null, null);
         Map<String, String> errors = sut.validatePatch(req, tier, eventNoEndsAt());
         assertThat(errors).doesNotContainKey("quantity");
     }
@@ -287,7 +237,7 @@ class TicketTierValidatorTest {
     void validatePatch_quantity_above_sold_allowed() {
         TicketTier tier = existingTier(10);
         tier.setQuantity(100);
-        TicketTierPatchRequest req = new TicketTierPatchRequest(null, null, null, 50, null, null, null, null, null, null);
+        TicketTierPatchRequest req = new TicketTierPatchRequest(null, null, 50, null, null, null, null, null, null);
         Map<String, String> errors = sut.validatePatch(req, tier, eventNoEndsAt());
         assertThat(errors).doesNotContainKey("quantity");
     }
@@ -296,7 +246,7 @@ class TicketTierValidatorTest {
     void validatePatch_quantity_below_sold_rejected() {
         TicketTier tier = existingTier(10);
         tier.setQuantity(100);
-        TicketTierPatchRequest req = new TicketTierPatchRequest(null, null, null, 5, null, null, null, null, null, null);
+        TicketTierPatchRequest req = new TicketTierPatchRequest(null, null, 5, null, null, null, null, null, null);
         Map<String, String> errors = sut.validatePatch(req, tier, eventNoEndsAt());
         assertThat(errors).containsKey("quantity");
         assertThat(errors.get("quantity")).isEqualTo("must be ≥ sold (10)");
@@ -307,7 +257,7 @@ class TicketTierValidatorTest {
         TicketTier tier = existingTier(8);
         tier.setQuantity(100);
         TicketTierEmbeddedPatch p = new TicketTierEmbeddedPatch(
-                tier.getId(), null, null, null, 3, null, null, null, null, null, null);
+                tier.getId(), null, null, 3, null, null, null, null, null, null);
         Map<String, String> errors = sut.validateEmbeddedPatch(p, tier, eventNoEndsAt());
         assertThat(errors).containsKey("quantity");
         assertThat(errors.get("quantity")).isEqualTo("must be ≥ sold (8)");
@@ -315,28 +265,28 @@ class TicketTierValidatorTest {
 
     @Test
     void validatePatch_name_edit_allowed_when_sold() {
-        TicketTierPatchRequest req = new TicketTierPatchRequest("VIP", null, null, null, null, null, null, null, null, null);
+        TicketTierPatchRequest req = new TicketTierPatchRequest("VIP", null, null, null, null, null, null, null, null);
         Map<String, String> errors = sut.validatePatch(req, existingTier(5), eventNoEndsAt());
         assertThat(errors).doesNotContainKey("name");
     }
 
     @Test
     void validatePatch_enabled_toggle_allowed_when_sold() {
-        TicketTierPatchRequest req = new TicketTierPatchRequest(null, null, null, null, null, null, null, null, null, false);
+        TicketTierPatchRequest req = new TicketTierPatchRequest(null, null, null, null, null, null, null, null, false);
         Map<String, String> errors = sut.validatePatch(req, existingTier(5), eventNoEndsAt());
         assertThat(errors).doesNotContainKey("enabled");
     }
 
     @Test
     void validatePatch_saleClosesAt_change_allowed_when_sold() {
-        TicketTierPatchRequest req = new TicketTierPatchRequest(null, null, null, null, null, null, FUTURE, null, null, null);
+        TicketTierPatchRequest req = new TicketTierPatchRequest(null, null, null, null, null, FUTURE, null, null, null);
         Map<String, String> errors = sut.validatePatch(req, existingTier(5), eventNoEndsAt());
         assertThat(errors).doesNotContainKey("saleClosesAt");
     }
 
     @Test
     void validatePatch_sortOrder_change_allowed_when_sold() {
-        TicketTierPatchRequest req = new TicketTierPatchRequest(null, null, null, null, null, null, null, null, 2, null);
+        TicketTierPatchRequest req = new TicketTierPatchRequest(null, null, null, null, null, null, null, 2, null);
         Map<String, String> errors = sut.validatePatch(req, existingTier(5), eventNoEndsAt());
         assertThat(errors).doesNotContainKey("sortOrder");
     }
@@ -346,7 +296,7 @@ class TicketTierValidatorTest {
     @Test
     void validateEmbeddedPatch_idNull_delegates_to_create() {
         // id == null → create semantics: required fields apply
-        TicketTierEmbeddedPatch p = new TicketTierEmbeddedPatch(null, null, "standard", 1000, 100, null, null, null, null, null, null);
+        TicketTierEmbeddedPatch p = new TicketTierEmbeddedPatch(null, null, 1000, 100, null, null, null, null, null, null);
         Map<String, String> errors = sut.validateEmbeddedPatch(p, null, eventNoEndsAt());
         // name is required on create path
         assertThat(errors).containsKey("name");
@@ -356,7 +306,7 @@ class TicketTierValidatorTest {
     void validateEmbeddedPatch_idNonNull_delegates_to_patch() {
         // id != null → patch semantics: null name is ok (leave unchanged)
         TicketTierEmbeddedPatch p = new TicketTierEmbeddedPatch(
-                UUID.randomUUID(), null, null, null, null, null, null, null, null, null, null);
+                UUID.randomUUID(), null, null, null, null, null, null, null, null, null);
         TicketTier existing = existingTier(0);
         Map<String, String> errors = sut.validateEmbeddedPatch(p, existing, eventNoEndsAt());
         assertThat(errors).isEmpty();
@@ -365,7 +315,7 @@ class TicketTierValidatorTest {
     @Test
     void validateEmbeddedPatch_idNullWithNonNullExisting_throws() {
         TicketTierEmbeddedPatch p = new TicketTierEmbeddedPatch(
-                null, "GA", "standard", 1000, 100, null, null, null, null, null, null);
+                null, "GA", 1000, 100, null, null, null, null, null, null);
         TicketTier existing = existingTier(0);
         assertThatThrownBy(() -> sut.validateEmbeddedPatch(p, existing, eventNoEndsAt()))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -375,7 +325,7 @@ class TicketTierValidatorTest {
     @Test
     void validateEmbeddedPatch_idNonNullWithNullExisting_throws() {
         TicketTierEmbeddedPatch p = new TicketTierEmbeddedPatch(
-                UUID.randomUUID(), null, null, null, null, null, null, null, null, null, null);
+                UUID.randomUUID(), null, null, null, null, null, null, null, null, null);
         assertThatThrownBy(() -> sut.validateEmbeddedPatch(p, null, eventNoEndsAt()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("no existing tier");

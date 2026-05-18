@@ -94,7 +94,6 @@ class PublicEventServiceTest {
         TicketTier tier = new TicketTier();
         tier.setEventId(eventId);
         tier.setName(name);
-        tier.setKind(TicketTierKind.STANDARD);
         tier.setPriceMinor(priceMinor);
         tier.setQuantity(quantity);
         tier.setSold(sold);

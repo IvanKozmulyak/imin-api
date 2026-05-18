@@ -22,10 +22,6 @@ public class TicketTier {
     @Column(nullable = false, length = 128)
     private String name;
 
-    @Enumerated(EnumType.STRING)
-    @Column(nullable = false, length = 32)
-    private TicketTierKind kind;
-
     @Column(name = "price_minor", nullable = false)
     private int priceMinor;
 

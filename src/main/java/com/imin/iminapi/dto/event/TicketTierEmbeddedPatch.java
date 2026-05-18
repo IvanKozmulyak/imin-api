@@ -6,7 +6,6 @@ import java.util.UUID;
 public record TicketTierEmbeddedPatch(
         UUID id,                     // null = create new tier
         String name,
-        String kind,
         Integer priceMinor,
         Integer quantity,
         Instant saleStartsAt,

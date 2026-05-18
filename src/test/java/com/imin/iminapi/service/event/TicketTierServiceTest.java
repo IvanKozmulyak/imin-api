@@ -6,7 +6,6 @@ import com.imin.iminapi.dto.event.TicketTierEmbeddedPatch;
 import com.imin.iminapi.dto.event.TicketTierPatchRequest;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.TicketTier;
-import com.imin.iminapi.model.TicketTierKind;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
@@ -79,7 +78,6 @@ class TicketTierServiceTest {
         t.setId(id);
         t.setEventId(eventId);
         t.setName("GA");
-        t.setKind(TicketTierKind.STANDARD);
         t.setPriceMinor(1000);
         t.setQuantity(100);
         t.setSold(sold);
@@ -89,7 +87,7 @@ class TicketTierServiceTest {
     }
 
     private TicketTierCreateRequest validCreate() {
-        return new TicketTierCreateRequest("GA", "standard", 1000, 100, null, null, null, null);
+        return new TicketTierCreateRequest("GA", 1000, 100, null, null, null, null);
     }
 
     // ── create ─────────────────────────────────────────────────────────────────
@@ -103,13 +101,11 @@ class TicketTierServiceTest {
         TicketTier saved = captor.getValue();
         assertThat(saved.getEventId()).isEqualTo(eventId);
         assertThat(saved.getName()).isEqualTo("GA");
-        assertThat(saved.getKind()).isEqualTo(TicketTierKind.STANDARD);
         assertThat(saved.getPriceMinor()).isEqualTo(1000);
         assertThat(saved.getQuantity()).isEqualTo(100);
         assertThat(saved.isEnabled()).isTrue();
 
         assertThat(dto.eventId()).isEqualTo(eventId);
-        assertThat(dto.kind()).isEqualTo("standard");
         assertThat(dto.sold()).isZero();
     }
 
@@ -144,7 +140,7 @@ class TicketTierServiceTest {
     @Test
     void create_rejects_invalid_request_with_400() {
         TicketTierCreateRequest bad = new TicketTierCreateRequest(
-                null, "standard", 1000, 100, null, null, null, null);
+                null, 1000, 100, null, null, null, null);
 
         assertThatThrownBy(() -> sut.create(principal, eventId, bad))
                 .isInstanceOfSatisfying(ApiException.class, ex -> {
@@ -164,12 +160,11 @@ class TicketTierServiceTest {
         when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(tier));
 
         TicketTierPatchRequest req = new TicketTierPatchRequest(
-                "VIP", "earlyBird", 500, 50, null, null, null, null, 3, false);
+                "VIP", 500, 50, null, null, null, null, 3, false);
 
         TicketTierDto dto = sut.patch(principal, eventId, tierId, req);
 
         assertThat(dto.name()).isEqualTo("VIP");
-        assertThat(dto.kind()).isEqualTo("earlyBird");
         assertThat(dto.priceMinor()).isEqualTo(500);
         assertThat(dto.quantity()).isEqualTo(50);
         assertThat(dto.sortOrder()).isEqualTo(3);
@@ -184,7 +179,7 @@ class TicketTierServiceTest {
         when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(tier));
 
         TicketTierPatchRequest req = new TicketTierPatchRequest(
-                null, null, null, null, null, null, null, true, null, null);
+                null, null, null, null, null, null, true, null, null);
 
         TicketTierDto dto = sut.patch(principal, eventId, tierId, req);
         assertThat(dto.saleClosesAt()).isNull();
@@ -197,7 +192,7 @@ class TicketTierServiceTest {
         when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(tier));
 
         TicketTierPatchRequest req = new TicketTierPatchRequest(
-                "Renamed", null, null, null, null, null, null, null, null, null);
+                "Renamed", null, null, null, null, null, null, null, null);
 
         TicketTierDto dto = sut.patch(principal, eventId, tierId, req);
         assertThat(dto.name()).isEqualTo("Renamed");
@@ -209,7 +204,7 @@ class TicketTierServiceTest {
         when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.empty());
 
         TicketTierPatchRequest req = new TicketTierPatchRequest(
-                "Renamed", null, null, null, null, null, null, null, null, null);
+                "Renamed", null, null, null, null, null, null, null, null);
 
         assertThatThrownBy(() -> sut.patch(principal, eventId, tierId, req))
                 .isInstanceOfSatisfying(ApiException.class, ex -> {
@@ -228,7 +223,7 @@ class TicketTierServiceTest {
         UUID tierId = UUID.randomUUID();
 
         TicketTierPatchRequest req = new TicketTierPatchRequest(
-                "Renamed", null, null, null, null, null, null, null, null, null);
+                "Renamed", null, null, null, null, null, null, null, null);
 
         assertThatThrownBy(() -> sut.patch(principal, eventId, tierId, req))
                 .isInstanceOfSatisfying(ApiException.class, ex -> {
@@ -295,7 +290,7 @@ class TicketTierServiceTest {
     @Test
     void reconcileEmbedded_creates_when_id_null() {
         TicketTierEmbeddedPatch p = new TicketTierEmbeddedPatch(
-                null, "VIP", "standard", 2000, 50, null, null, null, null, null, null);
+                null, "VIP", 2000, 50, null, null, null, null, null, null);
 
         sut.reconcileEmbedded(event, List.of(p));
 
@@ -303,7 +298,6 @@ class TicketTierServiceTest {
         verify(tiers).save(captor.capture());
         TicketTier saved = captor.getValue();
         assertThat(saved.getName()).isEqualTo("VIP");
-        assertThat(saved.getKind()).isEqualTo(TicketTierKind.STANDARD);
         assertThat(saved.getPriceMinor()).isEqualTo(2000);
         assertThat(saved.getQuantity()).isEqualTo(50);
         assertThat(saved.getEventId()).isEqualTo(eventId);
@@ -317,7 +311,7 @@ class TicketTierServiceTest {
         when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(existing));
 
         TicketTierEmbeddedPatch p = new TicketTierEmbeddedPatch(
-                tierId, "Updated", null, null, null, null, null, null, null, null, null);
+                tierId, "Updated", null, null, null, null, null, null, null, null);
 
         sut.reconcileEmbedded(event, List.of(p));
 
@@ -335,7 +329,7 @@ class TicketTierServiceTest {
         when(tiers.findByIdAndEventId(mentioned, eventId)).thenReturn(Optional.of(existing));
 
         TicketTierEmbeddedPatch p = new TicketTierEmbeddedPatch(
-                mentioned, "Updated", null, null, null, null, null, null, null, null, null);
+                mentioned, "Updated", null, null, null, null, null, null, null, null);
 
         sut.reconcileEmbedded(event, List.of(p));
 
@@ -350,7 +344,7 @@ class TicketTierServiceTest {
         when(tiers.findByIdAndEventId(strayTierId, eventId)).thenReturn(Optional.empty());
 
         TicketTierEmbeddedPatch p = new TicketTierEmbeddedPatch(
-                strayTierId, "Updated", null, null, null, null, null, null, null, null, null);
+                strayTierId, "Updated", null, null, null, null, null, null, null, null);
 
         assertThatThrownBy(() -> sut.reconcileEmbedded(event, List.of(p)))
                 .isInstanceOfSatisfying(ApiException.class, ex -> {

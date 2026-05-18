@@ -68,7 +68,7 @@ class EventTierControllerTest {
 
     private TicketTierDto sampleDto(UUID eventId, UUID tierId) {
         return new TicketTierDto(
-                tierId, eventId, "GA", "standard",
+                tierId, eventId, "GA",
                 1000, 100, 0, 0, null, null, true, 0);
     }
 
@@ -85,14 +85,12 @@ class EventTierControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(om.writeValueAsString(Map.of(
                                 "name", "GA",
-                                "kind", "standard",
                                 "priceMinor", 1000,
                                 "quantity", 100))))
                 .andExpect(status().isCreated())
                 .andExpect(header().string("Location",
                         "/api/v1/events/" + eventId + "/tiers/" + tierId))
-                .andExpect(jsonPath("$.id").value(tierId.toString()))
-                .andExpect(jsonPath("$.kind").value("standard"));
+                .andExpect(jsonPath("$.id").value(tierId.toString()));
     }
 
     @Test
@@ -119,7 +117,7 @@ class EventTierControllerTest {
         UUID eventId = UUID.randomUUID();
         UUID tierId = UUID.randomUUID();
         TicketTierDto updated = new TicketTierDto(
-                tierId, eventId, "VIP", "standard",
+                tierId, eventId, "VIP",
                 2000, 50, 0, 0, null, null, true, 0);
         when(tierService.patch(any(), eq(eventId), eq(tierId), any())).thenReturn(updated);
 

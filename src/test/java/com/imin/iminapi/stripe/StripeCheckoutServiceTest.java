@@ -5,7 +5,6 @@ import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.EventVisibility;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.TicketTier;
-import com.imin.iminapi.model.TicketTierKind;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.PromoCodeRepository;
@@ -124,7 +123,6 @@ class StripeCheckoutServiceTest {
         t.setId(tierId);
         t.setEventId(eventId);
         t.setName("GA");
-        t.setKind(TicketTierKind.STANDARD);
         t.setPriceMinor(1000);
         t.setQuantity(100);
         t.setSold(0);

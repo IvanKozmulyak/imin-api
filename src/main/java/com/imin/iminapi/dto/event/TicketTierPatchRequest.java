@@ -4,7 +4,6 @@ import java.time.Instant;
 
 public record TicketTierPatchRequest(
         String name,
-        String kind,
         Integer priceMinor,
         Integer quantity,
         Instant saleStartsAt,

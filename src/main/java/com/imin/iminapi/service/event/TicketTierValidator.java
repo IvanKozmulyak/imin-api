@@ -5,7 +5,6 @@ import com.imin.iminapi.dto.event.TicketTierEmbeddedPatch;
 import com.imin.iminapi.dto.event.TicketTierPatchRequest;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.TicketTier;
-import com.imin.iminapi.model.TicketTierKind;
 import org.springframework.stereotype.Component;
 
 import java.time.Clock;
@@ -32,13 +31,6 @@ public class TicketTierValidator {
 
         // name: required, non-blank, ≤128
         validateName(req.name(), true, errors);
-
-        // kind: required, valid enum
-        if (req.kind() == null) {
-            errors.put("kind", "required");
-        } else {
-            validateKindWire(req.kind(), errors);
-        }
 
         // priceMinor: required, ≥ 0
         if (req.priceMinor() == null) {
@@ -91,11 +83,6 @@ public class TicketTierValidator {
 
         // name: non-blank, ≤128 (only if provided)
         validateName(req.name(), false, errors);
-
-        // kind: valid enum
-        if (req.kind() != null) {
-            validateKindWire(req.kind(), errors);
-        }
 
         // priceMinor: ≥ 0
         if (req.priceMinor() != null && req.priceMinor() < 0) {
@@ -162,7 +149,6 @@ public class TicketTierValidator {
             // treat as create — map the embedded fields onto a create request
             TicketTierCreateRequest createReq = new TicketTierCreateRequest(
                     p.name(),
-                    p.kind(),
                     p.priceMinor(),
                     p.quantity(),
                     p.saleStartsAt(),
@@ -175,7 +161,6 @@ public class TicketTierValidator {
             // treat as patch
             TicketTierPatchRequest patchReq = new TicketTierPatchRequest(
                     p.name(),
-                    p.kind(),
                     p.priceMinor(),
                     p.quantity(),
                     p.saleStartsAt(),
@@ -207,14 +192,6 @@ public class TicketTierValidator {
 
     private void validateSortOrder(Integer sortOrder, Map<String, String> errors) {
         if (sortOrder != null && sortOrder < 0) errors.put("sortOrder", "must be ≥ 0");
-    }
-
-    private void validateKindWire(String kindWire, Map<String, String> errors) {
-        try {
-            TicketTierKind.fromWire(kindWire);
-        } catch (IllegalArgumentException e) {
-            errors.put("kind", "invalid kind: " + kindWire);
-        }
     }
 
     private void validateSaleClosesAt(Instant saleClosesAt, Event event, Map<String, String> errors) {

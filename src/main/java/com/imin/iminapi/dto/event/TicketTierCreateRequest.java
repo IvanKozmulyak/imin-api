@@ -4,7 +4,6 @@ import java.time.Instant;
 
 public record TicketTierCreateRequest(
         String name,
-        String kind,           // TicketTierKind wire value: "earlyBird" | "standard" | "lateBird" | "custom"
         Integer priceMinor,
         Integer quantity,
         Instant saleStartsAt,

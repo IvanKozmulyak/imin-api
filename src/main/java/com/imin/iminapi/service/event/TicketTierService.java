@@ -6,7 +6,6 @@ import com.imin.iminapi.dto.event.TicketTierEmbeddedPatch;
 import com.imin.iminapi.dto.event.TicketTierPatchRequest;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.TicketTier;
-import com.imin.iminapi.model.TicketTierKind;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.security.ApiException;
@@ -67,7 +66,6 @@ public class TicketTierService {
         TicketTier tier = new TicketTier();
         tier.setEventId(eventId);
         tier.setName(req.name());
-        tier.setKind(TicketTierKind.fromWire(req.kind()));
         tier.setPriceMinor(req.priceMinor());
         tier.setQuantity(req.quantity());
         tier.setSaleStartsAt(req.saleStartsAt());
@@ -176,7 +174,6 @@ public class TicketTierService {
 
     private void applyPatch(TicketTier tier, TicketTierPatchRequest r) {
         if (r.name() != null) tier.setName(r.name());
-        if (r.kind() != null) tier.setKind(TicketTierKind.fromWire(r.kind()));
         if (r.priceMinor() != null) tier.setPriceMinor(r.priceMinor());
         if (r.quantity() != null) tier.setQuantity(r.quantity());
         if (Boolean.TRUE.equals(r.clearSaleStartsAt())) {
@@ -196,7 +193,6 @@ public class TicketTierService {
     private void applyEmbeddedAsCreate(TicketTier tier, TicketTierEmbeddedPatch p) {
         // Validation guarantees required fields are present.
         tier.setName(p.name());
-        tier.setKind(TicketTierKind.fromWire(p.kind()));
         tier.setPriceMinor(p.priceMinor());
         tier.setQuantity(p.quantity());
         tier.setSaleStartsAt(p.saleStartsAt());
@@ -207,7 +203,6 @@ public class TicketTierService {
 
     private void applyEmbeddedAsPatch(TicketTier tier, TicketTierEmbeddedPatch p) {
         if (p.name() != null) tier.setName(p.name());
-        if (p.kind() != null) tier.setKind(TicketTierKind.fromWire(p.kind()));
         if (p.priceMinor() != null) tier.setPriceMinor(p.priceMinor());
         if (p.quantity() != null) tier.setQuantity(p.quantity());
         if (Boolean.TRUE.equals(p.clearSaleStartsAt())) {

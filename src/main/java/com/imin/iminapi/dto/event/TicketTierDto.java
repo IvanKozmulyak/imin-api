@@ -6,11 +6,11 @@ import java.time.Instant;
 import java.util.UUID;
 
 public record TicketTierDto(
-        UUID id, UUID eventId, String name, String kind,
+        UUID id, UUID eventId, String name,
         int priceMinor, int quantity, int sold, int reserved,
         Instant saleStartsAt, Instant saleClosesAt, boolean enabled, int sortOrder) {
     public static TicketTierDto from(TicketTier t) {
-        return new TicketTierDto(t.getId(), t.getEventId(), t.getName(), t.getKind().wireValue(),
+        return new TicketTierDto(t.getId(), t.getEventId(), t.getName(),
                 t.getPriceMinor(), t.getQuantity(), t.getSold(), t.getReserved(),
                 t.getSaleStartsAt(), t.getSaleClosesAt(), t.isEnabled(), t.getSortOrder());
     }

@@ -10,7 +10,6 @@ import java.util.UUID;
 public record PublicTierDto(
         UUID id,
         String name,
-        String kind,           // wireValue() like "earlyBird"
         int priceMinor,
         String currency,
         Instant saleStartsAt,
@@ -23,7 +22,6 @@ public record PublicTierDto(
 ) {
     /** Factory deriving all flags from the tier entity, its event, and the current instant. */
     public static PublicTierDto from(TicketTier tier, Event e, Instant now) {
-        String kindWire = tier.getKind().wireValue();
         String currency = e.getCurrency();
         boolean eventOver = e.getStatus() == EventStatus.PAST || e.getStatus() == EventStatus.CANCELLED;
 
@@ -41,7 +39,7 @@ public record PublicTierDto(
         boolean tierOpened = tierEventOpened && tierStarted;
         boolean onSale = !eventOver && tierOpened && !closed && !soldOut;
 
-        return new PublicTierDto(tier.getId(), tier.getName(), kindWire, tier.getPriceMinor(), currency,
+        return new PublicTierDto(tier.getId(), tier.getName(), tier.getPriceMinor(), currency,
                 tierSaleStartsAt, tierSaleClosesAt, tier.getSortOrder(), remaining, onSale, soldOut, closed);
     }
 }

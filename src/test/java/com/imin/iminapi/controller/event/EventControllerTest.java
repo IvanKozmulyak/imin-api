@@ -127,7 +127,7 @@ class EventControllerTest {
         when(eventService.patch(any(), eq(id), any(), any())).thenReturn(sample());
 
         String body = "{\"tiers\":[" +
-                "{\"name\":\"GA\",\"kind\":\"general\",\"priceMinor\":1500,\"quantity\":100}," +
+                "{\"name\":\"GA\",\"priceMinor\":1500,\"quantity\":100}," +
                 "{\"id\":\"" + existingTierId + "\",\"priceMinor\":2000}" +
                 "]}";
 
