@@ -17,5 +17,13 @@ public interface MediaStorage {
      */
     String urlFor(String key);
 
+    /**
+     * Inverse of {@link #urlFor(String)}: return the storage key for a public
+     * URL produced by this storage, or {@code null} if {@code url} was not
+     * produced here (different prefix). Used by callers that hold only the
+     * stored URL and need to issue a {@link #delete(String)}.
+     */
+    String keyFor(String url);
+
     record Stored(String url, long sizeBytes, String contentType) {}
 }

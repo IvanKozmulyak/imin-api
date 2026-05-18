@@ -12,6 +12,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -46,18 +49,35 @@ public class MediaUploadService {
                         "Video must be a parseable MP4 ≤ 30 seconds", Map.of("file", "duration > 30s"));
             }
         }
-        String key = "events/" + e.getId() + "/" + kind.wireValue() + "." + extensionFor(contentType, originalFilename);
-        // Compute the deterministic URL before any remote call, then persist the DB row first.
-        // If storage.put fails after the save, no orphan is created in remote storage.
+        // Hash the bytes into the key so each unique upload gets a unique URL.
+        // Two reasons this matters: (1) R2 serves objects with Cache-Control: immutable,
+        // so a re-upload at the same URL would be invisible to browsers indefinitely;
+        // (2) identical content collapses to the same key (idempotent retries, dedup).
+        String hash = contentHash(bytes);
+        String key = "events/" + e.getId() + "/" + kind.wireValue() + "-" + hash
+                + "." + extensionFor(contentType, originalFilename);
         String url = storage.urlFor(key);
+        String oldUrl = switch (kind) {
+            case POSTER -> e.getPosterUrl();
+            case VIDEO -> e.getVideoUrl();
+        };
         switch (kind) {
             case POSTER -> e.setPosterUrl(url);
             case VIDEO -> e.setVideoUrl(url);
         }
         events.save(e);
         // Upload to remote storage — if this throws, the DB row already has the correct URL
-        // (the object simply won't exist yet; a retry will re-upload).
+        // (the object simply won't exist yet; a retry of the same file will re-upload to the
+        // same key because the hash is deterministic).
         MediaStorage.Stored stored = storage.put(key, bytes, contentType);
+        // Best-effort cleanup of the previously stored object. Only after the new put
+        // succeeded — never delete the old object before the new one is durable.
+        if (oldUrl != null && !oldUrl.equals(url)) {
+            String oldKey = storage.keyFor(oldUrl);
+            if (oldKey != null && !oldKey.equals(key)) {
+                try { storage.delete(oldKey); } catch (Exception ignored) {}
+            }
+        }
         return new MediaUploadResponse(stored.url(), stored.sizeBytes(), stored.contentType(), durationSec);
     }
 
@@ -69,9 +89,10 @@ public class MediaUploadService {
             case VIDEO -> e.getVideoUrl();
         };
         if (url == null) return;
-        // Reverse-derive key from public URL (everything after the prefix).
-        String key = "events/" + e.getId() + "/" + kind.wireValue() + "." + url.substring(url.lastIndexOf('.') + 1);
-        try { storage.delete(key); } catch (Exception ignored) {}
+        String key = storage.keyFor(url);
+        if (key != null) {
+            try { storage.delete(key); } catch (Exception ignored) {}
+        }
         switch (kind) {
             case POSTER -> e.setPosterUrl(null);
             case VIDEO -> e.setVideoUrl(null);
@@ -130,6 +151,20 @@ public class MediaUploadService {
     private static ApiException fieldErr(String field, String msg) {
         return new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID,
                 "Invalid file", Map.of(field, msg));
+    }
+
+    private static String contentHash(byte[] bytes) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] digest = md.digest(bytes);
+            // 8 bytes = 16 hex chars = 64 bits of entropy. Ample for collision-free per-event keys.
+            byte[] prefix = new byte[8];
+            System.arraycopy(digest, 0, prefix, 0, 8);
+            return HexFormat.of().formatHex(prefix);
+        } catch (NoSuchAlgorithmException ex) {
+            // SHA-256 is required to be present on every JRE.
+            throw new IllegalStateException(ex);
+        }
     }
 
     private static String extensionFor(String contentType, String originalFilename) {

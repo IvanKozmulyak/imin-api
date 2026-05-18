@@ -24,5 +24,11 @@ public class InMemoryMediaStorage implements MediaStorage {
     @Override
     public String urlFor(String key) { return publicPrefix + key; }
 
+    @Override
+    public String keyFor(String url) {
+        if (url == null || !url.startsWith(publicPrefix)) return null;
+        return url.substring(publicPrefix.length());
+    }
+
     public Map<String, byte[]> blobs() { return blobs; }
 }

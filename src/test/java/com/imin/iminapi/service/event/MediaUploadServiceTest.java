@@ -47,10 +47,71 @@ class MediaUploadServiceTest {
         byte[] png = pngBytes(1024);
         MediaUploadResponse r = sut.upload(owner(orgId), e.getId(), MediaKind.POSTER, png, "image/png", "poster.png");
 
-        assertThat(r.url()).startsWith("https://media.test/events/").endsWith("/poster.png");
+        assertThat(r.url())
+                .startsWith("https://media.test/events/" + e.getId() + "/poster-")
+                .endsWith(".png")
+                .matches("https://media\\.test/events/" + e.getId() + "/poster-[0-9a-f]{16}\\.png");
         assertThat(r.contentType()).isEqualTo("image/png");
         assertThat(r.durationSec()).isNull();
         assertThat(e.getPosterUrl()).isEqualTo(r.url());
+    }
+
+    @Test
+    void reupload_with_different_bytes_produces_different_url_and_deletes_old_object() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        byte[] first = pngBytes(1024);
+        byte[] second = pngBytes(2048);
+        // Make the two PNGs distinct beyond magic bytes — sha256 must diverge.
+        second[100] = 0x42;
+
+        MediaUploadResponse r1 = sut.upload(owner(orgId), e.getId(), MediaKind.POSTER, first, "image/png", "a.png");
+        MediaUploadResponse r2 = sut.upload(owner(orgId), e.getId(), MediaKind.POSTER, second, "image/png", "b.png");
+
+        assertThat(r1.url()).isNotEqualTo(r2.url());
+        assertThat(e.getPosterUrl()).isEqualTo(r2.url());
+        // The old object must be gone from storage; only the latest remains.
+        assertThat(storage.blobs()).hasSize(1);
+        assertThat(storage.blobs().keySet()).containsExactly(storage.keyFor(r2.url()));
+    }
+
+    @Test
+    void reupload_with_identical_bytes_is_idempotent() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        byte[] bytes = pngBytes(1024);
+        MediaUploadResponse r1 = sut.upload(owner(orgId), e.getId(), MediaKind.POSTER, bytes, "image/png", "x.png");
+        MediaUploadResponse r2 = sut.upload(owner(orgId), e.getId(), MediaKind.POSTER, bytes, "image/png", "x.png");
+
+        // Identical content hashes to the same key, so the URL is stable
+        // (no orphans, no cache busting needed because nothing actually changed).
+        assertThat(r1.url()).isEqualTo(r2.url());
+        assertThat(storage.blobs()).hasSize(1);
+    }
+
+    @Test
+    void delete_works_for_legacy_url_format_without_hash() {
+        // Events that uploaded under the old key scheme (events/{id}/poster.png) must still
+        // be deletable after the migration — keyFor strips the public prefix, which works
+        // for both old and new URL shapes.
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        String legacyKey = "events/" + e.getId() + "/poster.png";
+        e.setPosterUrl("https://media.test/" + legacyKey);
+        storage.put(legacyKey, new byte[1], "image/png");
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        sut.delete(owner(orgId), e.getId(), MediaKind.POSTER);
+
+        assertThat(e.getPosterUrl()).isNull();
+        assertThat(storage.blobs()).isEmpty();
     }
 
     @Test
