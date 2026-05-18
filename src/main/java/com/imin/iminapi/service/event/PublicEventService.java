@@ -58,10 +58,14 @@ public class PublicEventService {
 
         Instant now = clock.instant();
 
+        // Public page only shows currently-on-sale tiers. Disabled, not-yet-opened,
+        // closed, sold-out, and tiers under non-LIVE events are all hidden — buyers
+        // shouldn't see (or attempt to buy) anything they can't actually purchase.
         List<PublicTierDto> tiers = tierRepository
                 .findByEventIdAndEnabledTrueOrderBySortOrderAsc(id)
                 .stream()
                 .map(t -> PublicTierDto.from(t, event, now))
+                .filter(PublicTierDto::onSale)
                 .toList();
 
         return PublicEventResponse.from(event, org, tiers);

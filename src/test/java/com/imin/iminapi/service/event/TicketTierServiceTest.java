@@ -260,6 +260,36 @@ class TicketTierServiceTest {
                 });
     }
 
+    @Test
+    void delete_returns_404_when_event_in_other_org() {
+        Event other = new Event();
+        other.setId(eventId);
+        other.setOrgId(otherOrgId);
+        when(events.findActive(eventId)).thenReturn(Optional.of(other));
+        UUID tierId = UUID.randomUUID();
+
+        assertThatThrownBy(() -> sut.delete(principal, eventId, tierId))
+                .isInstanceOfSatisfying(ApiException.class, ex -> {
+                    assertThat(ex.code()).isEqualTo(ErrorCode.NOT_FOUND);
+                });
+        verify(tiers, never()).delete(any(TicketTier.class));
+    }
+
+    @Test
+    void delete_returns_409_INVALID_STATE_when_tier_has_sold_tickets() {
+        UUID tierId = UUID.randomUUID();
+        TicketTier tier = existingTier(tierId, 3, 0);
+        when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(tier));
+
+        assertThatThrownBy(() -> sut.delete(principal, eventId, tierId))
+                .isInstanceOfSatisfying(ApiException.class, ex -> {
+                    assertThat(ex.code()).isEqualTo(ErrorCode.INVALID_STATE);
+                    assertThat(ex.status().value()).isEqualTo(409);
+                    assertThat(ex.getMessage()).contains("enabled=false");
+                });
+        verify(tiers, never()).delete(any(TicketTier.class));
+    }
+
     // ── reconcileEmbedded ──────────────────────────────────────────────────────
 
     @Test

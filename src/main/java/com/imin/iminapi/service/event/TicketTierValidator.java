@@ -102,9 +102,13 @@ public class TicketTierValidator {
             errors.put("priceMinor", "must be ≥ 0");
         }
 
-        // quantity: > 0
-        if (req.quantity() != null && req.quantity() <= 0) {
-            errors.put("quantity", "must be > 0");
+        // quantity: > 0 and (when reducing) ≥ existing.sold
+        if (req.quantity() != null) {
+            if (req.quantity() <= 0) {
+                errors.put("quantity", "must be > 0");
+            } else if (req.quantity() < existing.getSold()) {
+                errors.put("quantity", "must be ≥ sold (" + existing.getSold() + ")");
+            }
         }
 
         // saleClosesAt: optional; if set (and not contradicted), > now AND ≤ event.startsAt AND ≤ event.endsAt

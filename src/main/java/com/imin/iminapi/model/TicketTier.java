@@ -35,6 +35,9 @@ public class TicketTier {
     @Column(nullable = false)
     private int sold = 0;
 
+    @Column(nullable = false)
+    private int reserved = 0;
+
     @Column(name = "sale_starts_at")
     private Instant saleStartsAt;
 

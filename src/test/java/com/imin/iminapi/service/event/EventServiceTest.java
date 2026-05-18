@@ -198,6 +198,71 @@ class EventServiceTest {
     }
 
     @Test
+    void unpublish_live_with_no_sold_tickets_transitions_to_draft() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setName("Test"); e.setSlug("test");
+        e.setStatus(EventStatus.LIVE);
+        e.setPublishedAt(Instant.parse("2026-05-01T00:00:00Z"));
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
+        when(promos.findByEventId(e.getId())).thenReturn(List.of());
+        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
+
+        EventDto dto = sut.unpublish(p, e.getId());
+
+        assertThat(dto.status()).isEqualTo("draft");
+        assertThat(e.getStatus()).isEqualTo(EventStatus.DRAFT);
+    }
+
+    @Test
+    void unpublish_blocked_when_any_tier_has_sold_tickets() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setStatus(EventStatus.LIVE);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+
+        TicketTier sold = new TicketTier();
+        sold.setEventId(e.getId());
+        sold.setName("GA"); sold.setKind(TicketTierKind.STANDARD);
+        sold.setPriceMinor(1000); sold.setQuantity(100); sold.setSold(3);
+        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of(sold));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> sut.unpublish(p, e.getId()))
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.INVALID_STATE);
+        // The event status must not have changed.
+        assertThat(e.getStatus()).isEqualTo(EventStatus.LIVE);
+        verify(events, never()).save(any(Event.class));
+    }
+
+    @Test
+    void unpublish_already_draft_throws_INVALID_STATE() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setStatus(EventStatus.DRAFT);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> sut.unpublish(p, e.getId()))
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.INVALID_STATE);
+    }
+
+    @Test
+    void unpublish_404_when_event_in_other_org() {
+        AuthPrincipal p = principal();
+        Event other = new Event();
+        other.setId(UUID.randomUUID()); other.setOrgId(UUID.randomUUID());
+        other.setStatus(EventStatus.LIVE);
+        when(events.findActive(other.getId())).thenReturn(Optional.of(other));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> sut.unpublish(p, other.getId()))
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.NOT_FOUND);
+    }
+
+    @Test
     void patch_invokes_reconcileEmbedded_when_tiers_provided() {
         AuthPrincipal p = principal();
         Event e = new Event();

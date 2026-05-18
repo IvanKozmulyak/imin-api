@@ -103,6 +103,11 @@ public class TicketTierService {
     public void delete(AuthPrincipal p, UUID eventId, UUID tierId) {
         Event event = loadOwnedEvent(p, eventId);
         TicketTier tier = loadOwnedTier(eventId, tierId);
+        if (tier.getSold() > 0) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                    "Cannot delete a tier with sold tickets — disable it instead (set enabled=false)",
+                    Map.of());
+        }
         tiers.delete(tier);
         bumpEventUpdatedAt(event);
     }

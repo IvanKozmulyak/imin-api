@@ -3,6 +3,7 @@ package com.imin.iminapi.stripe;
 import com.imin.iminapi.repository.PromoCodeRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.service.event.InventoryService;
 import com.stripe.StripeClient;
 import com.stripe.exception.SignatureVerificationException;
 import com.stripe.exception.StripeException;
@@ -47,13 +48,16 @@ public class StripeWebhookService {
     private final StripeClient stripeClient;
     private final StripeProperties props;
     private final PromoCodeRepository promos;
+    private final InventoryService inventoryService;
 
     public StripeWebhookService(StripeClient stripeClient,
                                 StripeProperties props,
-                                PromoCodeRepository promos) {
+                                PromoCodeRepository promos,
+                                InventoryService inventoryService) {
         this.stripeClient = stripeClient;
         this.props = props;
         this.promos = promos;
+        this.inventoryService = inventoryService;
     }
 
     /**
@@ -130,6 +134,7 @@ public class StripeWebhookService {
 
         switch (type) {
             case "checkout.session.completed" -> onCheckoutSessionCompleted(event);
+            case "checkout.session.expired" -> onCheckoutSessionExpired(event);
             // payment_intent.succeeded is a secondary signal — checkout.session.completed
             // is what we key off for promo redemption. PI events still get ack'd silently.
             default -> { /* ignored, ack with 200 so Stripe stops retrying */ }
@@ -161,6 +166,17 @@ public class StripeWebhookService {
         }
 
         Map<String, String> meta = session.getMetadata();
+
+        // Inventory: promote the reservation to a confirmed sale. Legacy sessions
+        // created before the inventory metadata existed will simply skip this step.
+        // TODO: dedupe via processed_webhook_events
+        TierMeta tierMeta = parseTierMeta(meta, session.getId());
+        if (tierMeta != null) {
+            inventoryService.confirmSold(tierMeta.tierId, tierMeta.qty);
+            log.info("Confirmed sold qty={} on tier {} after session {}",
+                    tierMeta.qty, tierMeta.tierId, session.getId());
+        }
+
         if (meta == null) return;
         String promoIdRaw = meta.get("promo_id");
         if (promoIdRaw == null || promoIdRaw.isBlank()) {
@@ -186,6 +202,57 @@ public class StripeWebhookService {
         } else {
             log.info("Incremented usedCount on promo {} after session {}",
                     promoId, session.getId());
+        }
+    }
+
+    /**
+     * Handle {@code checkout.session.expired}: the buyer never paid, so the seat hold
+     * must be released back to the pool. Legacy sessions without inventory metadata are
+     * skipped (nothing to release).
+     */
+    private void onCheckoutSessionExpired(com.stripe.model.Event event) {
+        EventDataObjectDeserializer dod = event.getDataObjectDeserializer();
+        Optional<StripeObject> obj = dod.getObject();
+        if (obj.isEmpty()) {
+            log.warn("checkout.session.expired had no deserialized object — apiVersion={}",
+                    event.getApiVersion());
+            return;
+        }
+        if (!(obj.get() instanceof Session session)) {
+            log.warn("checkout.session.expired deserialized to unexpected type: {}",
+                    obj.get().getClass().getName());
+            return;
+        }
+
+        // TODO: dedupe via processed_webhook_events
+        TierMeta tierMeta = parseTierMeta(session.getMetadata(), session.getId());
+        if (tierMeta == null) return;
+        inventoryService.releaseReservation(tierMeta.tierId, tierMeta.qty);
+        log.info("Released reservation qty={} on tier {} after session {} expired",
+                tierMeta.qty, tierMeta.tierId, session.getId());
+    }
+
+    private record TierMeta(UUID tierId, int qty) {}
+
+    /**
+     * Extract the {@code tier_id} + {@code qty} pair from session metadata. Returns null
+     * (and logs a warning) when either is missing or unparseable — the caller treats this
+     * as "legacy session, skip the inventory step."
+     */
+    private TierMeta parseTierMeta(Map<String, String> meta, String sessionId) {
+        if (meta == null) return null;
+        String tierIdRaw = meta.get("tier_id");
+        String qtyRaw = meta.get("qty");
+        if (tierIdRaw == null || tierIdRaw.isBlank() || qtyRaw == null || qtyRaw.isBlank()) {
+            log.warn("Session {} missing inventory metadata (tier_id/qty) — skipping inventory step", sessionId);
+            return null;
+        }
+        try {
+            return new TierMeta(UUID.fromString(tierIdRaw), Integer.parseInt(qtyRaw));
+        } catch (IllegalArgumentException e) {
+            log.warn("Session {} has malformed inventory metadata (tier_id={}, qty={}): {}",
+                    sessionId, tierIdRaw, qtyRaw, e.getMessage());
+            return null;
         }
     }
 }

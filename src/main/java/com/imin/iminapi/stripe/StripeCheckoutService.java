@@ -9,6 +9,7 @@ import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.PromoCodeRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.security.ApiException;
+import com.imin.iminapi.service.event.InventoryService;
 import com.stripe.StripeClient;
 import com.stripe.exception.StripeException;
 import com.stripe.model.Coupon;
@@ -56,6 +57,7 @@ public class StripeCheckoutService {
     private final OrganizationRepository orgs;
     private final PromoCodeRepository promos;
     private final StripeConnectService connectService;
+    private final InventoryService inventoryService;
     private final StripeProperties props;
     private final Clock clock;
 
@@ -65,6 +67,7 @@ public class StripeCheckoutService {
                                   OrganizationRepository orgs,
                                   PromoCodeRepository promos,
                                   StripeConnectService connectService,
+                                  InventoryService inventoryService,
                                   StripeProperties props,
                                   Clock clock) {
         this.stripeClient = stripeClient;
@@ -73,6 +76,7 @@ public class StripeCheckoutService {
         this.orgs = orgs;
         this.promos = promos;
         this.connectService = connectService;
+        this.inventoryService = inventoryService;
         this.props = props;
         this.clock = clock;
     }
@@ -85,7 +89,7 @@ public class StripeCheckoutService {
      *                  typo, not a "this event doesn't exist" question).
      * @return the Stripe-hosted Checkout URL. Buyer is sent here directly; we never see the card.
      */
-    @Transactional(readOnly = true)
+    @Transactional
     public String createCheckoutSession(UUID eventId, UUID tierId, int quantity, String promoCode) {
         if (quantity < 1 || quantity > 10) {
             // 400, not 404 — quantity is a client bug, not an event-discovery question.
@@ -108,9 +112,6 @@ public class StripeCheckoutService {
         if (tier.getSaleClosesAt() != null && !tier.getSaleClosesAt().isAfter(now)) {
             throw ApiException.notFound("Event");
         }
-        if (tier.getQuantity() - tier.getSold() < quantity) {
-            throw ApiException.notFound("Event"); // also leak-safe: hides the live remaining count.
-        }
         if (tier.getStripePriceId() == null || tier.getStripePriceId().isBlank()) {
             // Product sync failed earlier (best-effort). Surface as 404 to the buyer — they have nothing
             // they can do about it — and let the organizer see the dashboard error.
@@ -132,6 +133,21 @@ public class StripeCheckoutService {
 
         // 4. Resolve the promo code (if any). Validation errors are 400 — the buyer can fix them.
         PromoCode promo = resolvePromoCode(eventId, promoCode);
+
+        // 4a. Reserve inventory BEFORE creating the Stripe Session. This locks the tier row
+        // and atomically claims `quantity` seats. If we can't reserve, we collapse to 404 to
+        // preserve the leak-safe behavior (don't reveal "sold out vs not found vs wrong tier"
+        // to the buyer-facing public API). If reserve succeeds but Stripe later fails, we
+        // release the hold below before rethrowing so the buyer doesn't get a phantom hold.
+        try {
+            inventoryService.reserve(tierId, quantity);
+        } catch (ApiException e) {
+            if (e.status() == HttpStatus.CONFLICT) {
+                // "Not enough tickets" — remap so the buyer can't enumerate inventory state.
+                throw ApiException.notFound("Event");
+            }
+            throw e;
+        }
 
         // 5. Compute platform fee (basis points → minor units), bounded by total.
         // The fee is computed on the *undiscounted* subtotal — Stripe applies the coupon to the
@@ -158,7 +174,13 @@ public class StripeCheckoutService {
                         .build())
                 .setSuccessUrl(props.getPublicReturnUrlBase()
                         + "/e/" + eventId + "/success?session_id={CHECKOUT_SESSION_ID}")
-                .setCancelUrl(props.getPublicReturnUrlBase() + "/e/" + eventId);
+                .setCancelUrl(props.getPublicReturnUrlBase() + "/e/" + eventId)
+                // Stamp inventory-relevant metadata so the webhook can find the right tier
+                // and amount on checkout.session.completed (confirmSold) and on
+                // checkout.session.expired (releaseReservation).
+                .putMetadata("tier_id", tierId.toString())
+                .putMetadata("qty", String.valueOf(quantity))
+                .putMetadata("event_id", eventId.toString());
 
         if (promo != null) {
             // Create a one-shot Stripe Coupon on the platform account and attach it. We don't
@@ -173,7 +195,6 @@ public class StripeCheckoutService {
             // webhook can find the PromoCode row without having to round-trip back to Stripe
             // to fetch the coupon. session.metadata is what the webhook will read.
             builder.putMetadata("promo_id", promo.getId().toString());
-            builder.putMetadata("event_id", eventId.toString());
         }
 
         SessionCreateParams params = builder.build();
@@ -183,6 +204,16 @@ public class StripeCheckoutService {
             // V1 endpoint — Checkout Sessions only exist in V1. (V2 has no /checkout namespace yet.)
             session = stripeClient.checkout().sessions().create(params);
         } catch (StripeException e) {
+            // Roll back the inventory hold — we promised the buyer nothing, so the seats
+            // must go back to the pool. Best-effort: if release itself throws (e.g. the
+            // tier was deleted in between), log it but keep the original Stripe error as
+            // the user-facing cause.
+            try {
+                inventoryService.releaseReservation(tierId, quantity);
+            } catch (Exception releaseFailure) {
+                log.error("Failed to release reservation for tier {} after Stripe session create failure: {}",
+                        tierId, releaseFailure.getMessage(), releaseFailure);
+            }
             log.error("Stripe checkout session create failed (event {}, tier {}): {}",
                     eventId, tierId, e.getMessage(), e);
             throw new ApiException(HttpStatus.BAD_GATEWAY, ErrorCode.UPSTREAM_UNAVAILABLE,

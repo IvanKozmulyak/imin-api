@@ -57,6 +57,11 @@ public class EventController {
         return eventService.publish(p, id);
     }
 
+    @PostMapping("/{id}/unpublish")
+    public EventDto unpublish(@CurrentUser AuthPrincipal p, @PathVariable UUID id) {
+        return eventService.unpublish(p, id);
+    }
+
     @GetMapping("/{id}/overview")
     public EventOverviewResponse overview(@CurrentUser AuthPrincipal p, @PathVariable UUID id) {
         return overviewService.overview(p, id);

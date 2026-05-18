@@ -253,10 +253,10 @@ class PublicEventServiceTest {
     }
 
     // -----------------------------------------------------------------------
-    // 10. Sold-out tier
+    // 10. Sold-out tier — hidden from public listing
     // -----------------------------------------------------------------------
     @Test
-    void tierFlags_soldOut() {
+    void tiersFiltered_soldOutExcluded() {
         Event e = eventRepository.save(publishedLiveEvent());
         e.setOnSaleAt(NOW.minusSeconds(3600));
         eventRepository.save(e);
@@ -265,18 +265,14 @@ class PublicEventServiceTest {
 
         PublicEventResponse r = publicEventService.get(e.getId());
 
-        assertThat(r.tiers()).hasSize(1);
-        var tier = r.tiers().get(0);
-        assertThat(tier.soldOut()).isTrue();
-        assertThat(tier.onSale()).isFalse();
-        assertThat(tier.remaining()).isZero();
+        assertThat(r.tiers()).isEmpty();
     }
 
     // -----------------------------------------------------------------------
-    // 11. Tier with saleClosesAt < now → closed
+    // 11. Tier with saleClosesAt < now → closed, hidden from public listing
     // -----------------------------------------------------------------------
     @Test
-    void tierFlags_closedByTier() {
+    void tiersFiltered_closedByTierExcluded() {
         Event e = eventRepository.save(publishedLiveEvent());
         e.setOnSaleAt(NOW.minusSeconds(3600));
         eventRepository.save(e);
@@ -286,17 +282,14 @@ class PublicEventServiceTest {
 
         PublicEventResponse r = publicEventService.get(e.getId());
 
-        assertThat(r.tiers()).hasSize(1);
-        var tier = r.tiers().get(0);
-        assertThat(tier.closed()).isTrue();
-        assertThat(tier.onSale()).isFalse();
+        assertThat(r.tiers()).isEmpty();
     }
 
     // -----------------------------------------------------------------------
-    // 12. Event saleClosesAt < now → all tiers closed
+    // 12. Event saleClosesAt < now → all tiers closed, hidden
     // -----------------------------------------------------------------------
     @Test
-    void tierFlags_closedByEvent() {
+    void tiersFiltered_closedByEventExcluded() {
         Event e = publishedLiveEvent();
         e.setOnSaleAt(NOW.minusSeconds(7200));
         e.setSaleClosesAt(NOW.minusSeconds(60)); // event sale window closed
@@ -307,18 +300,14 @@ class PublicEventServiceTest {
 
         PublicEventResponse r = publicEventService.get(e.getId());
 
-        assertThat(r.tiers()).hasSize(2);
-        assertThat(r.tiers()).allSatisfy(t -> {
-            assertThat(t.closed()).isTrue();
-            assertThat(t.onSale()).isFalse();
-        });
+        assertThat(r.tiers()).isEmpty();
     }
 
     // -----------------------------------------------------------------------
-    // 13. Event onSaleAt > now → tiers not yet open
+    // 13. Event onSaleAt > now → tiers not yet open, hidden
     // -----------------------------------------------------------------------
     @Test
-    void tierFlags_notYetOpen() {
+    void tiersFiltered_notYetOpenExcluded() {
         Event e = publishedLiveEvent();
         e.setOnSaleAt(NOW.plusSeconds(3600)); // opens in the future
         e = eventRepository.save(e);
@@ -327,15 +316,14 @@ class PublicEventServiceTest {
 
         PublicEventResponse r = publicEventService.get(e.getId());
 
-        assertThat(r.tiers()).hasSize(1);
-        assertThat(r.tiers().get(0).onSale()).isFalse();
+        assertThat(r.tiers()).isEmpty();
     }
 
     // -----------------------------------------------------------------------
-    // 14. Cancelled event → all tiers onSale=false (tiers still returned)
+    // 14. Cancelled event → all tiers hidden
     // -----------------------------------------------------------------------
     @Test
-    void tierFlags_eventCancelled_forcesOnSaleFalse() {
+    void tiersFiltered_eventCancelledExcluded() {
         Event e = publishedLiveEvent();
         e.setStatus(EventStatus.CANCELLED);
         e.setOnSaleAt(NOW.minusSeconds(3600)); // window open
@@ -346,15 +334,14 @@ class PublicEventServiceTest {
         PublicEventResponse r = publicEventService.get(e.getId());
 
         assertThat(r.status()).isEqualTo("cancelled");
-        assertThat(r.tiers()).hasSize(1); // tier IS returned
-        assertThat(r.tiers().get(0).onSale()).isFalse(); // but not on sale
+        assertThat(r.tiers()).isEmpty();
     }
 
     // -----------------------------------------------------------------------
-    // 15. Past event → all tiers onSale=false (tiers still returned)
+    // 15. Past event → all tiers hidden
     // -----------------------------------------------------------------------
     @Test
-    void tierFlags_eventPast_forcesOnSaleFalse() {
+    void tiersFiltered_eventPastExcluded() {
         Event e = publishedLiveEvent();
         e.setStatus(EventStatus.PAST);
         e.setOnSaleAt(NOW.minusSeconds(3600));
@@ -365,7 +352,27 @@ class PublicEventServiceTest {
         PublicEventResponse r = publicEventService.get(e.getId());
 
         assertThat(r.status()).isEqualTo("past");
+        assertThat(r.tiers()).isEmpty();
+    }
+
+    // -----------------------------------------------------------------------
+    // 16. Mixed tiers under a live event → only the on-sale tier is returned
+    // -----------------------------------------------------------------------
+    @Test
+    void tiersFiltered_mixedSet_onlyOnSaleReturned() {
+        Event e = publishedLiveEvent();
+        e.setOnSaleAt(NOW.minusSeconds(3600));
+        e = eventRepository.save(e);
+
+        tier(e.getId(), "Open Tier",       500, 50, 0,  true, 0, null);            // on sale
+        tier(e.getId(), "Sold-Out Tier",   500, 50, 50, true, 1, null);            // hidden
+        tier(e.getId(), "Closed Tier",     500, 50, 0,  true, 2, NOW.minusSeconds(60)); // hidden
+        tier(e.getId(), "Disabled Tier",   500, 50, 0,  false, 3, null);           // hidden
+
+        PublicEventResponse r = publicEventService.get(e.getId());
+
         assertThat(r.tiers()).hasSize(1);
-        assertThat(r.tiers().get(0).onSale()).isFalse();
+        assertThat(r.tiers().get(0).name()).isEqualTo("Open Tier");
+        assertThat(r.tiers().get(0).onSale()).isTrue();
     }
 }

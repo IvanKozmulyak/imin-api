@@ -30,4 +30,18 @@ public interface TicketTierRepository extends JpaRepository<TicketTier, UUID> {
     """)
     List<Object[]> findMinEnabledPriceByEventIds(
             @Param("eventIds") Collection<UUID> eventIds);
+
+    /**
+     * Pessimistic row lock for inventory updates. Used by {@code InventoryService} to
+     * serialize concurrent reserve / release / confirm flows so two buyers can't both
+     * see the same {@code available} count and both succeed past the capacity check.
+     *
+     * <p>Uses a native {@code SELECT ... FOR UPDATE} (instead of a JPA
+     * {@code PESSIMISTIC_WRITE} lock hint) because the modern PostgreSQL Hibernate
+     * dialect translates {@code PESSIMISTIC_WRITE} to {@code FOR NO KEY UPDATE},
+     * which H2's PG-compat mode does not understand. The plain {@code FOR UPDATE}
+     * clause works on both Postgres and H2.
+     */
+    @Query(value = "SELECT * FROM ticket_tiers WHERE id = :id FOR UPDATE", nativeQuery = true)
+    Optional<TicketTier> findByIdForUpdate(@Param("id") UUID id);
 }

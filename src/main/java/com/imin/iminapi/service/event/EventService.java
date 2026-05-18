@@ -121,6 +121,30 @@ public class EventService {
     }
 
     /**
+     * Take a LIVE event back to DRAFT, hiding the public page. Blocked once any ticket
+     * has been sold: at that point the organizer owes buyers a refund flow (separate
+     * cancel/refund endpoint, TBD) — silently unpublishing would let an operator pocket
+     * the money and disappear the event page.
+     */
+    @Transactional
+    public EventDto unpublish(AuthPrincipal p, UUID id) {
+        Event e = loadOwned(p, id);
+        if (e.getStatus() != EventStatus.LIVE) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE, "Event is not published");
+        }
+        boolean anySold = tiers.findByEventIdOrderBySortOrderAsc(e.getId()).stream()
+                .anyMatch(t -> t.getSold() > 0);
+        if (anySold) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                    "Cannot unpublish: tickets have been sold. Cancel the event and refund buyers first.");
+        }
+        e.setStatus(EventStatus.DRAFT);
+        e.setUpdatedAt(Instant.now());
+        events.save(e);
+        return detail(p, id);
+    }
+
+    /**
      * If the event has any paid tier (priceMinor &gt; 0), the org must have a Stripe
      * connected account that's active (transfer capability = active). Otherwise the
      * Checkout flow would fail at purchase time. Free events bypass this check.

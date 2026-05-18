@@ -293,6 +293,27 @@ class TicketTierValidatorTest {
     }
 
     @Test
+    void validatePatch_quantity_below_sold_rejected() {
+        TicketTier tier = existingTier(10);
+        tier.setQuantity(100);
+        TicketTierPatchRequest req = new TicketTierPatchRequest(null, null, null, 5, null, null, null, null, null, null);
+        Map<String, String> errors = sut.validatePatch(req, tier, eventNoEndsAt());
+        assertThat(errors).containsKey("quantity");
+        assertThat(errors.get("quantity")).isEqualTo("must be ≥ sold (10)");
+    }
+
+    @Test
+    void validateEmbeddedPatch_quantity_below_sold_rejected_on_update_branch() {
+        TicketTier tier = existingTier(8);
+        tier.setQuantity(100);
+        TicketTierEmbeddedPatch p = new TicketTierEmbeddedPatch(
+                tier.getId(), null, null, null, 3, null, null, null, null, null, null);
+        Map<String, String> errors = sut.validateEmbeddedPatch(p, tier, eventNoEndsAt());
+        assertThat(errors).containsKey("quantity");
+        assertThat(errors.get("quantity")).isEqualTo("must be ≥ sold (8)");
+    }
+
+    @Test
     void validatePatch_name_edit_allowed_when_sold() {
         TicketTierPatchRequest req = new TicketTierPatchRequest("VIP", null, null, null, null, null, null, null, null, null);
         Map<String, String> errors = sut.validatePatch(req, existingTier(5), eventNoEndsAt());
