@@ -58,7 +58,7 @@ class DashboardControllerTest {
     void get_dashboard_returns_aggregate() throws Exception {
         when(service.build(any())).thenReturn(new DashboardResponse(
                 new Greeting("Jaune"),
-                new Now(null, 0, 0),
+                new Now(null, 0, 0, 0),
                 new Cycle("30d", 0L, 0, 0, new Deltas(0, 0)),
                 new LastEvent(null, new LastEventMetrics(0, 0, null)),
                 null,

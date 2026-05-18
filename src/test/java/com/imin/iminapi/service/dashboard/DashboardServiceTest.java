@@ -52,6 +52,7 @@ class DashboardServiceTest {
         DashboardResponse r = sut.build(p);
         assertThat(r.greeting().name()).isEqualTo("Jaune");
         assertThat(r.now().nextEvent()).isNull();
+        assertThat(r.now().ticketsTotal()).isZero();
         assertThat(r.cycle().activeEvents()).isZero();
         assertThat(r.lastEvent().event()).isNull();
         assertThat(r.business().totalRevenueMinor()).isZero();
@@ -92,6 +93,7 @@ class DashboardServiceTest {
         assertThat(r.now().nextEvent().id()).isEqualTo(next.getId());
         assertThat(r.now().pct()).isEqualTo(57);
         assertThat(r.now().daysOut()).isBetween(27, 28);
+        assertThat(r.now().ticketsTotal()).isEqualTo(100);
         assertThat(r.cycle().activeEvents()).isEqualTo(3);
         assertThat(r.lastEvent().event().id()).isEqualTo(past.getId());
         assertThat(r.lastEvent().metrics().attended()).isEqualTo(198);

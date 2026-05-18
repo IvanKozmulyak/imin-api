@@ -45,8 +45,8 @@ public class DashboardService {
             int totalQty = tiers.sumQuantityByEventId(e.getId());
             int pct = totalQty == 0 ? 0 : (int) Math.round(100.0 * e.getSold() / totalQty);
             int daysOut = (int) Duration.between(Instant.now(), e.getStartsAt()).toDays();
-            return new Now(EventDto.summary(e), pct, Math.max(0, daysOut));
-        }).orElse(new Now(null, 0, 0));
+            return new Now(EventDto.summary(e), pct, Math.max(0, daysOut), totalQty);
+        }).orElse(new Now(null, 0, 0, 0));
 
         long activeCount = events.countLive(p.orgId());
 

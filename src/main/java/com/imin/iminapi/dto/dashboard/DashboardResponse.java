@@ -18,7 +18,7 @@ public record DashboardResponse(
 
     public record Greeting(String name) {}
 
-    public record Now(EventDto nextEvent, int pct, int daysOut) {}
+    public record Now(EventDto nextEvent, int pct, int daysOut, int ticketsTotal) {}
 
     public record Cycle(String period, long revenueMinor, int ticketsSold,
                         int activeEvents, Deltas deltas) {}
