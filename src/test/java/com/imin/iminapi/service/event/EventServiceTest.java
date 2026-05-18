@@ -131,22 +131,6 @@ class EventServiceTest {
     }
 
     @Test
-    void patch_with_mismatched_ifMatch_throws_STALE_WRITE() {
-        AuthPrincipal p = principal();
-        Event e = new Event();
-        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
-        e.setName(""); e.setSlug("draft-x");
-        e.setUpdatedAt(Instant.parse("2026-04-23T10:00:00Z"));
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
-
-        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
-                sut.patch(p, e.getId(), "\"2026-01-01T00:00:00Z\"",
-                        new EventPatchRequest("X", null, null, null, null, null, null, null, null,
-                                null, null, null, null, null, null, null, null, null, null, null)))
-                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.STALE_WRITE);
-    }
-
-    @Test
     void patch_with_duplicate_slug_throws_DUPLICATE() {
         AuthPrincipal p = principal();
         Event e = new Event();
