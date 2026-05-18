@@ -41,14 +41,14 @@ class NotificationPrefsServiceTest {
         NotificationPreferences existing = new NotificationPreferences();
         existing.setUserId(userId);
         existing.setTicketSold(true);
-        existing.setSquadFormed(true);
+        existing.setPredictorShift(true);
         when(repo.findById(userId)).thenReturn(Optional.of(existing));
         when(repo.save(any(NotificationPreferences.class))).thenAnswer(inv -> inv.getArgument(0));
 
         NotificationPreferencesDto dto = sut.patch(user(userId),
-                new NotificationPrefsPatchRequest(false, null, null, null, null, null, null));
+                new NotificationPrefsPatchRequest(false, null, null, null, null, null));
 
         assertThat(dto.ticketSold()).isFalse();
-        assertThat(dto.squadFormed()).isTrue(); // unchanged
+        assertThat(dto.predictorShift()).isTrue(); // unchanged
     }
 }

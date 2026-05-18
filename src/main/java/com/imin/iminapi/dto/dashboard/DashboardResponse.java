@@ -20,7 +20,7 @@ public record DashboardResponse(
 
     public record Now(EventDto nextEvent, int pct, int daysOut) {}
 
-    public record Cycle(String period, long revenueMinor, int ticketsSold, int squadRatePct,
+    public record Cycle(String period, long revenueMinor, int ticketsSold,
                         int activeEvents, Deltas deltas) {}
 
     public record Deltas(int revenuePct, int ticketsPct) {}

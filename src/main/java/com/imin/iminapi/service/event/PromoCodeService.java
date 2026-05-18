@@ -10,6 +10,8 @@ import com.imin.iminapi.repository.PromoCodeRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.service.audit.AuditActions;
+import com.imin.iminapi.service.audit.AuditLogger;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -32,11 +34,26 @@ public class PromoCodeService {
     private final PromoCodeRepository promos;
     private final EventRepository events;
     private final Clock clock;
+    /** Optional audit logger — null in older test constructors. */
+    private final AuditLogger auditLogger;
 
+    /** Legacy 3-arg constructor used by existing tests that don't wire audit. */
     public PromoCodeService(PromoCodeRepository promos, EventRepository events, Clock clock) {
+        this(promos, events, clock, null);
+    }
+
+    /** Primary constructor — Spring uses this one in the running app. */
+    @org.springframework.beans.factory.annotation.Autowired
+    public PromoCodeService(PromoCodeRepository promos, EventRepository events, Clock clock,
+                            AuditLogger auditLogger) {
         this.promos = promos;
         this.events = events;
         this.clock = clock;
+        this.auditLogger = auditLogger;
+    }
+
+    private void audit(AuthPrincipal p, String action, String targetType, UUID targetId, String summary) {
+        if (auditLogger != null) auditLogger.record(p, action, targetType, targetId, summary);
     }
 
     @Transactional
@@ -57,6 +74,8 @@ public class PromoCodeService {
         pc.setEnabled(req.enabled() != null ? req.enabled() : true);
         pc = promos.save(pc);
         bumpEventUpdatedAt(event);
+        audit(p, AuditActions.PROMO_CREATED, "promo", pc.getId(),
+                "Added promo code \"" + pc.getCode() + "\" (" + pc.getDiscountPct() + "% off)");
         return PromoCodeDto.from(pc);
     }
 
@@ -85,6 +104,8 @@ public class PromoCodeService {
         if (!errors.isEmpty()) throw badRequest(errors);
         pc = promos.save(pc);
         bumpEventUpdatedAt(event);
+        audit(p, AuditActions.PROMO_UPDATED, "promo", pc.getId(),
+                "Updated promo code \"" + pc.getCode() + "\" (" + pc.getDiscountPct() + "% off)");
         return PromoCodeDto.from(pc);
     }
 
@@ -92,8 +113,13 @@ public class PromoCodeService {
     public void delete(AuthPrincipal p, UUID eventId, UUID promoId) {
         Event event = loadOwnedEvent(p, eventId);
         PromoCode pc = loadOwnedPromo(eventId, promoId);
+        String code = pc.getCode();
+        int discount = pc.getDiscountPct();
+        UUID promoIdSaved = pc.getId();
         promos.delete(pc);
         bumpEventUpdatedAt(event);
+        audit(p, AuditActions.PROMO_DELETED, "promo", promoIdSaved,
+                "Deleted promo code \"" + code + "\" (" + discount + "% off)");
     }
 
     // ── helpers ────────────────────────────────────────────────────────

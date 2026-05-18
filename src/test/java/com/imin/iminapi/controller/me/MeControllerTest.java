@@ -61,7 +61,7 @@ class MeControllerTest {
     }
 
     private NotificationPreferencesDto samplePrefs() {
-        return new NotificationPreferencesDto(USER, true, false, true, false, true, false, true);
+        return new NotificationPreferencesDto(USER, true, true, false, true, false, true);
     }
 
     @Test
@@ -77,7 +77,7 @@ class MeControllerTest {
     @Test
     @WithStubUser
     void patch_returns_updated_prefs() throws Exception {
-        NotificationPreferencesDto updated = new NotificationPreferencesDto(USER, false, false, false, false, false, false, false);
+        NotificationPreferencesDto updated = new NotificationPreferencesDto(USER, false, false, false, false, false, false);
         when(notificationPrefsService.patch(any(AuthPrincipal.class), any())).thenReturn(updated);
         mvc.perform(patch("/api/v1/me/notifications")
                         .contentType(MediaType.APPLICATION_JSON)

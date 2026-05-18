@@ -44,7 +44,6 @@ public class EventOverviewService {
                 : (int) Duration.between(Instant.now(), e.getStartsAt()).toDays();
         Metrics m = new Metrics(
                 e.getSold(), e.getRevenueMinor(), e.getCurrency(),
-                /* squadRatePct V1 stub */ 0,
                 Math.max(0, daysOut));
         var prediction = predictions.findById(id).map(PredictionDto::from).orElse(null);
         // recentPurchases is sourced from a yet-to-exist purchases table. V1: empty list.

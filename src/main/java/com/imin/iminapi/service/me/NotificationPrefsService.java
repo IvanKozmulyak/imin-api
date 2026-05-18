@@ -33,7 +33,6 @@ public class NotificationPrefsService {
             return fresh;
         });
         if (body.ticketSold() != null) row.setTicketSold(body.ticketSold());
-        if (body.squadFormed() != null) row.setSquadFormed(body.squadFormed());
         if (body.predictorShift() != null) row.setPredictorShift(body.predictorShift());
         if (body.fillMilestone() != null) row.setFillMilestone(body.fillMilestone());
         if (body.postEventReport() != null) row.setPostEventReport(body.postEventReport());

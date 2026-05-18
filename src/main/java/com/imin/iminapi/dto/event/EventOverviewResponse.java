@@ -11,8 +11,7 @@ public record EventOverviewResponse(
         PredictionDto prediction,
         List<QuickAction> quickActions) {
 
-    public record Metrics(int sold, long revenueMinor, String currency,
-                          int squadRatePct, int daysOut) {}
+    public record Metrics(int sold, long revenueMinor, String currency, int daysOut) {}
 
     public record RecentPurchase(String time, String name, String sub) {}
 

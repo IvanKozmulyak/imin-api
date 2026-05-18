@@ -75,9 +75,6 @@ class PublicEventControllerTest {
                 "EUR",
                 Instant.parse("2026-02-01T00:00:00Z"),
                 Instant.parse("2026-06-30T00:00:00Z"),
-                false,
-                2,
-                10,
                 org,
                 List.of(tier)
         );
@@ -149,7 +146,6 @@ class PublicEventControllerTest {
                 "genre", "type", "description", "startsAt", "endsAt",
                 "timezone", "venue", "posterUrl", "videoUrl",
                 "currency", "onSaleAt", "saleClosesAt",
-                "squadsEnabled", "minSquadSize", "squadDiscountPct",
                 "organization", "tiers"
         );
         assertThat(actualRootKeys)

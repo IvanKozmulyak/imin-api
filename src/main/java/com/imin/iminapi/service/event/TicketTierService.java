@@ -11,6 +11,8 @@ import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.service.audit.AuditActions;
+import com.imin.iminapi.service.audit.AuditLogger;
 import com.imin.iminapi.stripe.StripeProductService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -34,13 +36,24 @@ public class TicketTierService {
      * instantiate the service.
      */
     private final StripeProductService stripeProductService;
+    /** Optional audit logger — null in older test constructors. */
+    private final AuditLogger auditLogger;
 
     /** Legacy 4-arg constructor used by existing unit tests that don't need Stripe sync. */
     public TicketTierService(TicketTierRepository tiers,
                              EventRepository events,
                              TicketTierValidator validator,
                              Clock clock) {
-        this(tiers, events, validator, clock, null);
+        this(tiers, events, validator, clock, null, null);
+    }
+
+    /** Legacy 5-arg constructor (Stripe but no audit). */
+    public TicketTierService(TicketTierRepository tiers,
+                             EventRepository events,
+                             TicketTierValidator validator,
+                             Clock clock,
+                             StripeProductService stripeProductService) {
+        this(tiers, events, validator, clock, stripeProductService, null);
     }
 
     /** Primary constructor — Spring uses this one in the running app. */
@@ -49,12 +62,41 @@ public class TicketTierService {
                              EventRepository events,
                              TicketTierValidator validator,
                              Clock clock,
-                             StripeProductService stripeProductService) {
+                             StripeProductService stripeProductService,
+                             AuditLogger auditLogger) {
         this.tiers = tiers;
         this.events = events;
         this.validator = validator;
         this.clock = clock;
         this.stripeProductService = stripeProductService;
+        this.auditLogger = auditLogger;
+    }
+
+    private void audit(AuthPrincipal p, String action, String targetType, java.util.UUID targetId, String summary) {
+        if (auditLogger != null && p != null) auditLogger.record(p, action, targetType, targetId, summary);
+    }
+
+    private static String currencySymbol(String code) {
+        if (code == null) return "";
+        return switch (code.toUpperCase(java.util.Locale.ROOT)) {
+            case "EUR" -> "€";
+            case "GBP" -> "£";
+            case "USD" -> "$";
+            default -> code.toUpperCase(java.util.Locale.ROOT);
+        };
+    }
+
+    private static String formatPrice(int priceMinor, String currency) {
+        // priceMinor is in minor units (cents). Render as "<major>.<minor> <symbol>".
+        long major = priceMinor / 100L;
+        long minor = Math.abs(priceMinor % 100L);
+        String sym = currencySymbol(currency);
+        return String.format(java.util.Locale.ROOT, "%d.%02d %s", major, minor, sym);
+    }
+
+    private static String eventLabel(com.imin.iminapi.model.Event e) {
+        String n = e.getName();
+        return (n == null || n.isBlank()) ? "Untitled" : n;
     }
 
     @Transactional
@@ -78,6 +120,10 @@ public class TicketTierService {
         bumpEventUpdatedAt(event);
         // Best-effort Stripe product sync — logs and continues on failure.
         syncStripeProduct(tier, event);
+        audit(p, AuditActions.TIER_CREATED, "tier", tier.getId(),
+                "Added ticket tier \"" + tier.getName() + "\" ("
+                        + formatPrice(tier.getPriceMinor(), event.getCurrency())
+                        + ", qty " + tier.getQuantity() + ") to event \"" + eventLabel(event) + "\"");
         return TicketTierDto.from(tier);
     }
 
@@ -94,6 +140,8 @@ public class TicketTierService {
         bumpEventUpdatedAt(event);
         // Best-effort sync — picks up name/price changes.
         syncStripeProduct(tier, event);
+        audit(p, AuditActions.TIER_UPDATED, "tier", tier.getId(),
+                "Updated tier \"" + tier.getName() + "\" on event \"" + eventLabel(event) + "\"");
         return TicketTierDto.from(tier);
     }
 
@@ -106,8 +154,13 @@ public class TicketTierService {
                     "Cannot delete a tier with sold tickets — disable it instead (set enabled=false)",
                     Map.of());
         }
+        // Capture name BEFORE delete — accessing tier.getName() after delete()/flush is risky.
+        String name = tier.getName();
+        java.util.UUID deletedId = tier.getId();
         tiers.delete(tier);
         bumpEventUpdatedAt(event);
+        audit(p, AuditActions.TIER_DELETED, "tier", deletedId,
+                "Deleted tier \"" + name + "\" from event \"" + eventLabel(event) + "\"");
     }
 
     /**

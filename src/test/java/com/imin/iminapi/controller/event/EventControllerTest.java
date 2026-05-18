@@ -158,7 +158,7 @@ class EventControllerTest {
         UUID id = UUID.randomUUID();
         when(overviewService.overview(any(), eq(id)))
                 .thenReturn(new EventOverviewResponse(
-                        new EventOverviewResponse.Metrics(0, 0, "EUR", 0, 30),
+                        new EventOverviewResponse.Metrics(0, 0, "EUR", 30),
                         List.of(), null,
                         List.of(new EventOverviewResponse.QuickAction("copy_link", "🔗", "Copy buyer link"))));
         mvc.perform(get("/api/v1/events/" + id + "/overview"))

@@ -25,9 +25,6 @@ public record PublicEventResponse(
         String currency,
         Instant onSaleAt,
         Instant saleClosesAt,
-        boolean squadsEnabled,
-        int minSquadSize,
-        int squadDiscountPct,
         PublicOrganizationDto organization,
         List<PublicTierDto> tiers
 ) {
@@ -55,9 +52,6 @@ public record PublicEventResponse(
                 e.getCurrency(),
                 e.getOnSaleAt(),
                 e.getSaleClosesAt(),
-                e.isSquadsEnabled(),
-                e.getMinSquadSize(),
-                e.getSquadDiscountPct(),
                 new PublicOrganizationDto(org.getName(), org.getSlug()),
                 tiers);
     }

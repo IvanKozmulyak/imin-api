@@ -79,15 +79,6 @@ public class Event {
     @Column(nullable = false, length = 3)
     private String currency = "EUR";
 
-    @Column(name = "squads_enabled", nullable = false)
-    private boolean squadsEnabled = false;
-
-    @Column(name = "min_squad_size", nullable = false)
-    private int minSquadSize = 3;
-
-    @Column(name = "squad_discount_pct", nullable = false)
-    private int squadDiscountPct = 0;
-
     @Column(name = "on_sale_at")
     private Instant onSaleAt;
 

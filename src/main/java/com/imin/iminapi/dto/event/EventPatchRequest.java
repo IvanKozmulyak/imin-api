@@ -15,7 +15,6 @@ public record EventPatchRequest(
         Instant startsAt, Instant endsAt, String timezone, VenueDto venue,
         String description, String posterUrl, String videoUrl,
         String currency,
-        Boolean squadsEnabled, Integer minSquadSize, Integer squadDiscountPct,
         Instant onSaleAt, Instant saleClosesAt,
         List<TicketTierEmbeddedPatch> tiers,
         // Whole-list semantics: when present, the server replaces all of the event's

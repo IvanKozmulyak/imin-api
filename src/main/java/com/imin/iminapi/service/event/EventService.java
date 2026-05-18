@@ -7,6 +7,8 @@ import com.imin.iminapi.repository.*;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.service.audit.AuditActions;
+import com.imin.iminapi.service.audit.AuditLogger;
 import com.imin.iminapi.stripe.StripeConnectService;
 import com.imin.iminapi.web.IfMatchSupport;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -36,12 +38,26 @@ public class EventService {
     private final IfMatchSupport ifMatch;
     private final TicketTierService tierService;
     private final StripeConnectService stripeConnect;
+    /** Audit logger is optional so older 8-arg test constructors still work. */
+    private final AuditLogger auditLogger;
 
+    /** Legacy 8-arg constructor used by existing unit tests that don't wire audit. */
     public EventService(EventRepository events, TicketTierRepository tiers,
                         PromoCodeRepository promos, PredictionRepository predictions,
                         EventValidator validator, IfMatchSupport ifMatch,
                         TicketTierService tierService,
                         StripeConnectService stripeConnect) {
+        this(events, tiers, promos, predictions, validator, ifMatch, tierService, stripeConnect, null);
+    }
+
+    /** Primary constructor — Spring picks this one in the running app. */
+    @org.springframework.beans.factory.annotation.Autowired
+    public EventService(EventRepository events, TicketTierRepository tiers,
+                        PromoCodeRepository promos, PredictionRepository predictions,
+                        EventValidator validator, IfMatchSupport ifMatch,
+                        TicketTierService tierService,
+                        StripeConnectService stripeConnect,
+                        AuditLogger auditLogger) {
         this.events = events;
         this.tiers = tiers;
         this.promos = promos;
@@ -50,6 +66,16 @@ public class EventService {
         this.validator = validator;
         this.ifMatch = ifMatch;
         this.tierService = tierService;
+        this.auditLogger = auditLogger;
+    }
+
+    private void audit(AuthPrincipal p, String action, String targetType, UUID targetId, String summary) {
+        if (auditLogger != null) auditLogger.record(p, action, targetType, targetId, summary);
+    }
+
+    private static String eventLabel(Event e) {
+        String n = e.getName();
+        return (n == null || n.isBlank()) ? "Untitled" : n;
     }
 
     @Transactional
@@ -61,6 +87,8 @@ public class EventService {
         applyPatch(e, body);
         try {
             Event saved = events.save(e);
+            audit(p, AuditActions.EVENT_CREATED, "event", saved.getId(),
+                    "Created event \"" + eventLabel(saved) + "\"");
             return EventDto.summary(saved);
         } catch (DataIntegrityViolationException ex) {
             throw ApiException.duplicate("slug", "Event slug already taken in this organization");
@@ -86,7 +114,7 @@ public class EventService {
     @Transactional
     public EventDto patch(AuthPrincipal p, UUID id, String ifMatchHeader, EventPatchRequest body) {
         Event e = loadOwned(p, id);
-        applyPatch(e, body);
+        boolean changed = applyPatch(e, body);
         e.setUpdatedAt(Instant.now()); // ensure ETag changes even when @PreUpdate doesn't fire
         try {
             events.save(e);
@@ -101,6 +129,12 @@ public class EventService {
         }
         if (body != null && body.promoCodes() != null) {
             reconcilePromoCodes(e.getId(), body.promoCodes());
+        }
+        // Skip noisy "updated" audit rows when the patch was a no-op on event fields
+        // (tier/promo reconciles get their own audit rows from TicketTierService / PromoCodeService).
+        if (changed) {
+            audit(p, AuditActions.EVENT_UPDATED, "event", e.getId(),
+                    "Updated event \"" + eventLabel(e) + "\"");
         }
         return detail(p, id);
     }
@@ -117,6 +151,8 @@ public class EventService {
         e.setPublishedAt(Instant.now());
         e.setUpdatedAt(Instant.now());
         events.save(e);
+        audit(p, AuditActions.EVENT_PUBLISHED, "event", e.getId(),
+                "Published event \"" + eventLabel(e) + "\"");
         return detail(p, id);
     }
 
@@ -141,6 +177,8 @@ public class EventService {
         e.setStatus(EventStatus.DRAFT);
         e.setUpdatedAt(Instant.now());
         events.save(e);
+        audit(p, AuditActions.EVENT_UNPUBLISHED, "event", e.getId(),
+                "Unpublished event \"" + eventLabel(e) + "\"");
         return detail(p, id);
     }
 
@@ -171,16 +209,23 @@ public class EventService {
         return e;
     }
 
-    private void applyPatch(Event e, EventPatchRequest b) {
-        if (b == null) return;
-        if (b.name() != null) e.setName(b.name());
-        if (b.slug() != null) e.setSlug(b.slug().toLowerCase(Locale.ROOT));
-        if (b.visibility() != null) e.setVisibility(EventVisibility.fromWire(b.visibility()));
-        if (b.genre() != null) e.setGenre(b.genre());
-        if (b.type() != null) e.setType(b.type());
-        if (b.startsAt() != null) e.setStartsAt(b.startsAt());
-        if (b.endsAt() != null) e.setEndsAt(b.endsAt());
-        if (b.timezone() != null) e.setTimezone(b.timezone());
+    /**
+     * Applies the patch and returns {@code true} when at least one direct
+     * event field was provided (so an "Updated event" audit row makes sense).
+     * The tier and promo-code reconcile paths are intentionally excluded —
+     * those have their own dedicated audit actions.
+     */
+    private boolean applyPatch(Event e, EventPatchRequest b) {
+        if (b == null) return false;
+        boolean changed = false;
+        if (b.name() != null) { e.setName(b.name()); changed = true; }
+        if (b.slug() != null) { e.setSlug(b.slug().toLowerCase(Locale.ROOT)); changed = true; }
+        if (b.visibility() != null) { e.setVisibility(EventVisibility.fromWire(b.visibility())); changed = true; }
+        if (b.genre() != null) { e.setGenre(b.genre()); changed = true; }
+        if (b.type() != null) { e.setType(b.type()); changed = true; }
+        if (b.startsAt() != null) { e.setStartsAt(b.startsAt()); changed = true; }
+        if (b.endsAt() != null) { e.setEndsAt(b.endsAt()); changed = true; }
+        if (b.timezone() != null) { e.setTimezone(b.timezone()); changed = true; }
         if (b.venue() != null) {
             VenueDto v = b.venue();
             e.setVenueName(v.name());
@@ -188,16 +233,15 @@ public class EventService {
             if (v.city() != null) e.setVenueCity(v.city());
             if (v.postalCode() != null) e.setVenuePostalCode(v.postalCode());
             e.setVenueCountry(v.country());
+            changed = true;
         }
-        if (b.description() != null) e.setDescription(b.description());
-        if (b.posterUrl() != null) e.setPosterUrl(b.posterUrl());
-        if (b.videoUrl() != null) e.setVideoUrl(b.videoUrl());
-        if (b.currency() != null) e.setCurrency(b.currency());
-        if (b.squadsEnabled() != null) e.setSquadsEnabled(b.squadsEnabled());
-        if (b.minSquadSize() != null) e.setMinSquadSize(b.minSquadSize());
-        if (b.squadDiscountPct() != null) e.setSquadDiscountPct(b.squadDiscountPct());
-        if (b.onSaleAt() != null) e.setOnSaleAt(b.onSaleAt());
-        if (b.saleClosesAt() != null) e.setSaleClosesAt(b.saleClosesAt());
+        if (b.description() != null) { e.setDescription(b.description()); changed = true; }
+        if (b.posterUrl() != null) { e.setPosterUrl(b.posterUrl()); changed = true; }
+        if (b.videoUrl() != null) { e.setVideoUrl(b.videoUrl()); changed = true; }
+        if (b.currency() != null) { e.setCurrency(b.currency()); changed = true; }
+        if (b.onSaleAt() != null) { e.setOnSaleAt(b.onSaleAt()); changed = true; }
+        if (b.saleClosesAt() != null) { e.setSaleClosesAt(b.saleClosesAt()); changed = true; }
+        return changed;
     }
 
     /**

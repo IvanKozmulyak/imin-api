@@ -5,6 +5,8 @@ import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.service.audit.AuditActions;
+import com.imin.iminapi.service.audit.AuditLogger;
 import com.stripe.StripeClient;
 import com.stripe.exception.StripeException;
 import com.stripe.model.AccountSession;
@@ -38,13 +40,26 @@ public class StripeConnectService {
     private final StripeClient stripeClient;
     private final OrganizationRepository orgs;
     private final StripeProperties props;
+    /** Optional audit logger — null in older test constructors. */
+    private final AuditLogger auditLogger;
 
+    /** Legacy 3-arg constructor for existing tests. */
     public StripeConnectService(StripeClient stripeClient,
                                 OrganizationRepository orgs,
                                 StripeProperties props) {
+        this(stripeClient, orgs, props, null);
+    }
+
+    /** Primary constructor — Spring uses this one. */
+    @org.springframework.beans.factory.annotation.Autowired
+    public StripeConnectService(StripeClient stripeClient,
+                                OrganizationRepository orgs,
+                                StripeProperties props,
+                                AuditLogger auditLogger) {
         this.stripeClient = stripeClient;
         this.orgs = orgs;
         this.props = props;
+        this.auditLogger = auditLogger;
     }
 
     /**
@@ -83,6 +98,12 @@ public class StripeConnectService {
 
         org.setStripeAccountId(account.getId());
         orgs.save(org);
+        if (auditLogger != null) {
+            // Only fires on a NEW account creation (the idempotent early-return above
+            // never reaches this line).
+            auditLogger.record(principal, AuditActions.STRIPE_ONBOARDED, null, null,
+                    "Connected Stripe account");
+        }
         return new ConnectResult(account.getId(), true);
     }
 

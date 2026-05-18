@@ -59,7 +59,7 @@ class DashboardControllerTest {
         when(service.build(any())).thenReturn(new DashboardResponse(
                 new Greeting("Jaune"),
                 new Now(null, 0, 0),
-                new Cycle("30d", 0L, 0, 0, 0, new Deltas(0, 0)),
+                new Cycle("30d", 0L, 0, 0, new Deltas(0, 0)),
                 new LastEvent(null, new LastEventMetrics(0, 0, null)),
                 null,
                 new Business(0L, 0L, 0L, 0, 0),

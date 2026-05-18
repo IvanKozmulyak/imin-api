@@ -55,7 +55,7 @@ public class DashboardService {
         Object[] sums = events.sumRevenueAndSold(p.orgId()).get(0);
         long totalRevenue = ((Number) sums[0]).longValue();
         long totalSold = ((Number) sums[1]).longValue();
-        Cycle cycle = new Cycle("30d", totalRevenue, (int) totalSold, /* squadRatePct */ 0,
+        Cycle cycle = new Cycle("30d", totalRevenue, (int) totalSold,
                 (int) activeCount, new Deltas(0, 0));
 
         LastEvent lastEvent = past.map(e -> {
