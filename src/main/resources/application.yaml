@@ -92,6 +92,18 @@ imin:
     # QR / pkpass links the buyer's email client can fetch. Distinct from
     # imin.email.app-base-url which is the buyer-facing site.
     api-public-base-url: ${IMIN_API_PUBLIC_BASE_URL:http://localhost:8080}
+  apple-wallet:
+    # Apple Pass Type ID, e.g. pass.com.imin.ticket. Required for /apple-wallet.pkpass
+    # to serve a pass; when blank the endpoint returns 503 and the email template
+    # suppresses the "Add to Apple Wallet" CTA.
+    pass-type-id: ${APPLE_WALLET_PASS_TYPE_ID:}
+    # Apple Developer team identifier.
+    team-id: ${APPLE_WALLET_TEAM_ID:}
+    # Base64-encoded PKCS#12 (.p12) that holds the Pass Type ID cert + private key.
+    cert-p12-base64: ${APPLE_WALLET_CERT_P12_BASE64:}
+    cert-password: ${APPLE_WALLET_CERT_PASSWORD:}
+    # Base64-encoded Apple WWDR intermediate certificate (PEM).
+    wwdr-pem-base64: ${APPLE_WALLET_WWDR_PEM_BASE64:}
   cors:
     allowed-origin-patterns: ${CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:3000,http://localhost:5173,https://imin-webapp.vercel.app,https://imin-webapp-*.vercel.app,https://dashboard.imin.wtf,https://imin.wtf,https://www.imin.wtf,https://imin-public.vercel.app,https://imin-public-*.vercel.app}
   api:
