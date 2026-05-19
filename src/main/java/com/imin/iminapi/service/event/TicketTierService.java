@@ -15,6 +15,7 @@ import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.service.audit.AuditLogger;
 import com.imin.iminapi.stripe.StripeProductService;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -100,6 +101,7 @@ public class TicketTierService {
     }
 
     @Transactional
+    @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
     public TicketTierDto create(AuthPrincipal p, UUID eventId, TicketTierCreateRequest req) {
         Event event = loadOwnedEvent(p, eventId);
         Map<String, String> errors = validator.validateCreate(req, event);
@@ -128,6 +130,7 @@ public class TicketTierService {
     }
 
     @Transactional
+    @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
     public TicketTierDto patch(AuthPrincipal p, UUID eventId, UUID tierId, TicketTierPatchRequest req) {
         Event event = loadOwnedEvent(p, eventId);
         TicketTier tier = loadOwnedTier(eventId, tierId);
@@ -146,6 +149,7 @@ public class TicketTierService {
     }
 
     @Transactional
+    @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
     public void delete(AuthPrincipal p, UUID eventId, UUID tierId) {
         Event event = loadOwnedEvent(p, eventId);
         TicketTier tier = loadOwnedTier(eventId, tierId);

@@ -12,6 +12,7 @@ import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.service.audit.AuditLogger;
+import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -57,6 +58,7 @@ public class PromoCodeService {
     }
 
     @Transactional
+    @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
     public PromoCodeDto create(AuthPrincipal p, UUID eventId, PromoCodeCreateRequest req) {
         Event event = loadOwnedEvent(p, eventId);
         Map<String, String> errors = new LinkedHashMap<>();
@@ -80,6 +82,7 @@ public class PromoCodeService {
     }
 
     @Transactional
+    @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
     public PromoCodeDto patch(AuthPrincipal p, UUID eventId, UUID promoId, PromoCodePatchRequest req) {
         Event event = loadOwnedEvent(p, eventId);
         PromoCode pc = loadOwnedPromo(eventId, promoId);
@@ -110,6 +113,7 @@ public class PromoCodeService {
     }
 
     @Transactional
+    @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
     public void delete(AuthPrincipal p, UUID eventId, UUID promoId) {
         Event event = loadOwnedEvent(p, eventId);
         PromoCode pc = loadOwnedPromo(eventId, promoId);

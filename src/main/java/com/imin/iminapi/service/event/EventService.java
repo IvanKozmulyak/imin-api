@@ -11,6 +11,7 @@ import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.service.audit.AuditLogger;
 import com.imin.iminapi.stripe.StripeConnectService;
 import com.imin.iminapi.web.IfMatchSupport;
+import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
@@ -79,6 +80,7 @@ public class EventService {
     }
 
     @Transactional
+    @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
     public EventDto createDraft(AuthPrincipal p, EventPatchRequest body) {
         Event e = new Event();
         e.setOrgId(p.orgId());
@@ -112,6 +114,7 @@ public class EventService {
     }
 
     @Transactional
+    @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
     public EventDto patch(AuthPrincipal p, UUID id, String ifMatchHeader, EventPatchRequest body) {
         Event e = loadOwned(p, id);
         boolean changed = applyPatch(e, body);
@@ -140,6 +143,7 @@ public class EventService {
     }
 
     @Transactional
+    @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
     public EventDto publish(AuthPrincipal p, UUID id) {
         Event e = loadOwned(p, id);
         if (e.getStatus() == EventStatus.LIVE) {
@@ -163,6 +167,7 @@ public class EventService {
      * the money and disappear the event page.
      */
     @Transactional
+    @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
     public EventDto unpublish(AuthPrincipal p, UUID id) {
         Event e = loadOwned(p, id);
         if (e.getStatus() != EventStatus.LIVE) {
