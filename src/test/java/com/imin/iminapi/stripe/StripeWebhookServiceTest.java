@@ -2,7 +2,9 @@ package com.imin.iminapi.stripe;
 
 import com.imin.iminapi.repository.PromoCodeRepository;
 import com.imin.iminapi.service.event.InventoryService;
+import com.imin.iminapi.service.ticket.PaidCheckoutService;
 import com.stripe.StripeClient;
+import com.stripe.model.PaymentIntent;
 import com.stripe.net.Webhook;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -38,6 +40,7 @@ class StripeWebhookServiceTest {
     private PromoCodeRepository promos;
     private InventoryService inventoryService;
     private WebhookEventDedupService dedup;
+    private PaidCheckoutService paidCheckoutService;
     private StripeWebhookService svc;
 
     /**
@@ -54,6 +57,7 @@ class StripeWebhookServiceTest {
         promos = mock(PromoCodeRepository.class);
         inventoryService = mock(InventoryService.class);
         dedup = mock(WebhookEventDedupService.class);
+        paidCheckoutService = mock(PaidCheckoutService.class);
 
         recorded = new HashSet<>();
         when(dedup.tryRecord(anyString(), anyString())).thenAnswer(inv -> {
@@ -63,7 +67,8 @@ class StripeWebhookServiceTest {
 
         props = new StripeProperties();
         props.setWebhookSecret(SECRET);
-        svc = new StripeWebhookService(stripeClient, props, promos, inventoryService, dedup);
+        svc = new StripeWebhookService(stripeClient, props, promos, inventoryService, dedup,
+                paidCheckoutService);
     }
 
     // ── helpers ────────────────────────────────────────────────────────────────
@@ -199,6 +204,43 @@ class StripeWebhookServiceTest {
 
         verify(inventoryService).confirmSold(tierId, 2);
         verify(inventoryService, never()).confirmSold(eq(tierId), ArgumentMatchers.intThat(q -> q != 2));
+    }
+
+    @Test
+    void paymentIntentSucceeded_invokesPaidCheckoutServiceWithPI() throws Exception {
+        // Fulfilment: after inventory + (optional) promo, PaidCheckoutService.issuePaidOrder
+        // is invoked with the deserialized PI so the Order + Ticket rows get persisted.
+        UUID tierId = UUID.randomUUID();
+        String metaJson = "{\"tier_id\":\"" + tierId + "\",\"qty\":\"1\"}";
+        String body = paymentIntentEvent("evt_pi_issuance_1", "payment_intent.succeeded", metaJson);
+
+        svc.handle(body, sign(body));
+
+        verify(paidCheckoutService).issuePaidOrder(any(PaymentIntent.class));
+    }
+
+    @Test
+    void paymentIntentSucceeded_withoutPromo_stillInvokesIssuance() throws Exception {
+        // The old early-return on missing promo_id would have skipped issuance.
+        // Lock the correct behavior: issuance fires regardless of promo.
+        UUID tierId = UUID.randomUUID();
+        String metaJson = "{\"tier_id\":\"" + tierId + "\",\"qty\":\"1\"}";
+        String body = paymentIntentEvent("evt_pi_no_promo_issuance", "payment_intent.succeeded", metaJson);
+
+        svc.handle(body, sign(body));
+
+        verify(paidCheckoutService).issuePaidOrder(any(PaymentIntent.class));
+    }
+
+    @Test
+    void paymentIntentFailed_doesNotInvokeIssuance() throws Exception {
+        UUID tierId = UUID.randomUUID();
+        String metaJson = "{\"tier_id\":\"" + tierId + "\",\"qty\":\"1\"}";
+        String body = paymentIntentEvent("evt_pi_fail_no_issue", "payment_intent.payment_failed", metaJson);
+
+        svc.handle(body, sign(body));
+
+        verify(paidCheckoutService, never()).issuePaidOrder(any(PaymentIntent.class));
     }
 
     // ── payment_intent.payment_failed → releaseReservation ─────────────────────

@@ -4,6 +4,7 @@ import com.imin.iminapi.repository.PromoCodeRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.service.event.InventoryService;
+import com.imin.iminapi.service.ticket.PaidCheckoutService;
 import com.stripe.StripeClient;
 import com.stripe.exception.SignatureVerificationException;
 import com.stripe.exception.StripeException;
@@ -69,6 +70,7 @@ public class StripeWebhookService {
     private final PromoCodeRepository promos;
     private final InventoryService inventoryService;
     private final WebhookEventDedupService dedup;
+    private final PaidCheckoutService paidCheckoutService;
 
     /**
      * Proxied self-reference used so {@link #handle} can invoke {@link #handleV1}
@@ -88,12 +90,14 @@ public class StripeWebhookService {
                                 StripeProperties props,
                                 PromoCodeRepository promos,
                                 InventoryService inventoryService,
-                                WebhookEventDedupService dedup) {
+                                WebhookEventDedupService dedup,
+                                PaidCheckoutService paidCheckoutService) {
         this.stripeClient = stripeClient;
         this.props = props;
         this.promos = promos;
         this.inventoryService = inventoryService;
         this.dedup = dedup;
+        this.paidCheckoutService = paidCheckoutService;
     }
 
     @Autowired
@@ -235,27 +239,30 @@ public class StripeWebhookService {
                     tierMeta.qty, tierMeta.tierId, pi.getId());
         }
 
-        if (meta == null) return;
-        String promoIdRaw = meta.get("promo_id");
-        if (promoIdRaw == null || promoIdRaw.isBlank()) {
-            return;
-        }
-        UUID promoId;
-        try {
-            promoId = UUID.fromString(promoIdRaw);
-        } catch (IllegalArgumentException e) {
-            log.warn("PaymentIntent {} has malformed promo_id metadata: {}", pi.getId(), promoIdRaw);
-            return;
+        if (meta != null) {
+            String promoIdRaw = meta.get("promo_id");
+            if (promoIdRaw != null && !promoIdRaw.isBlank()) {
+                try {
+                    UUID promoId = UUID.fromString(promoIdRaw);
+                    int rows = promos.incrementUsedCount(promoId);
+                    if (rows == 0) {
+                        log.warn("Promo code {} not found when handling payment_intent {} — skipped",
+                                promoId, pi.getId());
+                    } else {
+                        log.info("Incremented usedCount on promo {} after payment_intent {}",
+                                promoId, pi.getId());
+                    }
+                } catch (IllegalArgumentException e) {
+                    log.warn("PaymentIntent {} has malformed promo_id metadata: {}",
+                            pi.getId(), promoIdRaw);
+                }
+            }
         }
 
-        int rows = promos.incrementUsedCount(promoId);
-        if (rows == 0) {
-            log.warn("Promo code {} not found when handling payment_intent {} — skipped",
-                    promoId, pi.getId());
-        } else {
-            log.info("Incremented usedCount on promo {} after payment_intent {}",
-                    promoId, pi.getId());
-        }
+        // Persist Order + N Ticket rows for the buyer. Idempotent on PI id, so a
+        // Stripe retry is a noop. Publishes TicketsIssuedEvent on success; the
+        // @Async listener then emails the buyer with the tickets and QR.
+        paidCheckoutService.issuePaidOrder(pi);
     }
 
     /**
