@@ -10,6 +10,7 @@ import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.PromoCodeRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.security.ApiException;
+import com.imin.iminapi.service.event.FreeCheckoutService;
 import com.imin.iminapi.service.event.InventoryService;
 import com.stripe.StripeClient;
 import com.stripe.exception.ApiConnectionException;
@@ -53,6 +54,7 @@ class StripeCheckoutServiceTest {
     private PromoCodeRepository promos;
     private StripeConnectService connectService;
     private InventoryService inventoryService;
+    private FreeCheckoutService freeCheckoutService;
     private StripeProperties props;
     private Clock clock;
     private StripeCheckoutService svc;
@@ -75,11 +77,12 @@ class StripeCheckoutServiceTest {
         promos = mock(PromoCodeRepository.class);
         connectService = mock(StripeConnectService.class);
         inventoryService = mock(InventoryService.class);
+        freeCheckoutService = mock(FreeCheckoutService.class);
         props = new StripeProperties();
         clock = Clock.fixed(NOW, ZoneOffset.UTC);
 
         svc = new StripeCheckoutService(stripeClient, events, tiers, orgs, promos,
-                connectService, inventoryService, props, clock);
+                connectService, inventoryService, freeCheckoutService, props, clock);
 
         // Default happy-path wiring
         Event event = event();
@@ -224,5 +227,65 @@ class StripeCheckoutServiceTest {
     void createCheckoutSession_accepts_whenExpectedPriceMatches() throws Exception {
         String url = svc.createCheckoutSession(eventId, tierId, 1, null, 1000);
         assertThat(url).isNotBlank();
+    }
+
+    // ---- Free flow ----------------------------------------------------------
+
+    @Test
+    void createCheckoutSession_dispatchesToFreeFlow_whenTierIsFree() throws Exception {
+        // Reconfigure the tier mock to return a free tier.
+        TicketTier freeTier = tier();
+        freeTier.setPriceMinor(0);
+        when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(freeTier));
+
+        com.imin.iminapi.model.Order order = new com.imin.iminapi.model.Order();
+        order.setId(UUID.randomUUID());
+        order.setToken("ord_abc");
+        when(freeCheckoutService.issueFreeOrder(any(), any(), eq(1), eq("free@example.com")))
+                .thenReturn(order);
+        when(freeCheckoutService.findOrderTickets(order.getId())).thenReturn(java.util.List.of());
+        when(freeCheckoutService.orderUrl(order)).thenReturn("http://localhost:3000/order/ord_abc");
+
+        String url = svc.createCheckoutSession(eventId, tierId, 1, null, 0, "free@example.com");
+
+        assertThat(url).isEqualTo("http://localhost:3000/order/ord_abc");
+        verify(freeCheckoutService).issueFreeOrder(any(), any(), eq(1), eq("free@example.com"));
+        verify(freeCheckoutService).sendConfirmation(eq(order), any(), any());
+        // Stripe must NOT be called for free orders.
+        verify(sessionService, never()).create(any(SessionCreateParams.class));
+    }
+
+    @Test
+    void createCheckoutSession_returns400_whenFreeFlowMissingEmail() {
+        TicketTier freeTier = tier();
+        freeTier.setPriceMinor(0);
+        when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(freeTier));
+
+        assertThatThrownBy(() -> svc.createCheckoutSession(eventId, tierId, 1, null, 0, null))
+                .isInstanceOf(ApiException.class)
+                .satisfies(ex -> {
+                    ApiException ae = (ApiException) ex;
+                    assertThat(ae.status()).isEqualTo(HttpStatus.BAD_REQUEST);
+                    assertThat(ae.fields()).containsKey("email");
+                });
+
+        verify(freeCheckoutService, never()).issueFreeOrder(any(), any(), org.mockito.ArgumentMatchers.anyInt(), any());
+    }
+
+    @Test
+    void createCheckoutSession_collapsesInventoryShortageTo404_onFreeFlow() {
+        TicketTier freeTier = tier();
+        freeTier.setPriceMinor(0);
+        when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(freeTier));
+
+        when(freeCheckoutService.issueFreeOrder(any(), any(), org.mockito.ArgumentMatchers.anyInt(), any()))
+                .thenThrow(new ApiException(HttpStatus.CONFLICT,
+                        com.imin.iminapi.security.ErrorCode.INVALID_STATE,
+                        "Not enough tickets available"));
+
+        assertThatThrownBy(() ->
+                svc.createCheckoutSession(eventId, tierId, 1, null, 0, "free@example.com"))
+                .isInstanceOf(ApiException.class)
+                .satisfies(ex -> assertThat(((ApiException) ex).status()).isEqualTo(HttpStatus.NOT_FOUND));
     }
 }

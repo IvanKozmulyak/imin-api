@@ -8,9 +8,15 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.PromoCodeRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
+import com.imin.iminapi.model.Order;
+import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.security.ApiException;
+import com.imin.iminapi.service.event.FreeCheckoutService;
 import com.imin.iminapi.service.event.InventoryService;
 import com.imin.iminapi.service.event.PublicTierEligibility;
+
+import java.util.List;
+import java.util.Locale;
 import com.stripe.StripeClient;
 import com.stripe.exception.StripeException;
 import com.stripe.model.Coupon;
@@ -26,7 +32,6 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
-import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 
@@ -59,6 +64,7 @@ public class StripeCheckoutService {
     private final PromoCodeRepository promos;
     private final StripeConnectService connectService;
     private final InventoryService inventoryService;
+    private final FreeCheckoutService freeCheckoutService;
     private final StripeProperties props;
     private final Clock clock;
 
@@ -69,6 +75,7 @@ public class StripeCheckoutService {
                                   PromoCodeRepository promos,
                                   StripeConnectService connectService,
                                   InventoryService inventoryService,
+                                  FreeCheckoutService freeCheckoutService,
                                   StripeProperties props,
                                   Clock clock) {
         this.stripeClient = stripeClient;
@@ -78,6 +85,7 @@ public class StripeCheckoutService {
         this.promos = promos;
         this.connectService = connectService;
         this.inventoryService = inventoryService;
+        this.freeCheckoutService = freeCheckoutService;
         this.props = props;
         this.clock = clock;
     }
@@ -92,12 +100,18 @@ public class StripeCheckoutService {
      */
     @Transactional
     public String createCheckoutSession(UUID eventId, UUID tierId, int quantity, String promoCode) {
-        return createCheckoutSession(eventId, tierId, quantity, promoCode, null);
+        return createCheckoutSession(eventId, tierId, quantity, promoCode, null, null);
     }
 
     @Transactional
     public String createCheckoutSession(UUID eventId, UUID tierId, int quantity,
                                          String promoCode, Integer expectedPriceMinor) {
+        return createCheckoutSession(eventId, tierId, quantity, promoCode, expectedPriceMinor, null);
+    }
+
+    @Transactional
+    public String createCheckoutSession(UUID eventId, UUID tierId, int quantity,
+                                         String promoCode, Integer expectedPriceMinor, String buyerEmail) {
         if (quantity < 1 || quantity > 10) {
             // 400, not 404 — quantity is a client bug, not an event-discovery question.
             throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
@@ -115,6 +129,39 @@ public class StripeCheckoutService {
         // 2a. Price-drift guard. No-op when the client didn't send `expectedPriceMinor`.
         // When supplied and mismatched → 409 PRICE_CHANGED with `currentPriceMinor` in fields.
         PublicTierEligibility.assertExpectedPriceMatches(tier, expectedPriceMinor);
+
+        // 2b. Free flow. When the tier itself is free (priceMinor == 0) we bypass Stripe
+        // entirely — issue the tickets directly, email the buyer, return the order URL.
+        // Promo-driven 100%-off on paid tiers is not yet handled by this branch; that
+        // requires applying the promo discount here and only falling through to Stripe
+        // when the net total is positive. Out of scope for v1.
+        if (tier.getPriceMinor() == 0) {
+            String email = buyerEmail == null ? null : buyerEmail.trim();
+            if (email == null || email.isEmpty()) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
+                        "email is required for free tickets",
+                        Map.of("email", "required for free tickets"));
+            }
+            if (!email.contains("@")) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
+                        "email is invalid",
+                        Map.of("email", "must be a valid email address"));
+            }
+            Order order;
+            try {
+                order = freeCheckoutService.issueFreeOrder(event, tier, quantity, email);
+            } catch (ApiException e) {
+                // Inventory shortage → collapse to leak-safe 404 like the paid path.
+                if (e.status() == HttpStatus.CONFLICT) {
+                    throw ApiException.notFound("Event");
+                }
+                throw e;
+            }
+            // Best-effort confirmation email; failures are logged inside the service.
+            List<Ticket> issued = freeCheckoutService.findOrderTickets(order.getId());
+            freeCheckoutService.sendConfirmation(order, event, issued);
+            return freeCheckoutService.orderUrl(order);
+        }
 
         if (tier.getStripePriceId() == null || tier.getStripePriceId().isBlank()) {
             // Product sync failed earlier (best-effort). Surface as 404 to the buyer — they have nothing

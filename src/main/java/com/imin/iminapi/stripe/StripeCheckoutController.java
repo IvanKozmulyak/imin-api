@@ -34,7 +34,7 @@ public class StripeCheckoutController {
         int quantity = body.quantity() == null ? 1 : body.quantity();
         String promoCode = body.promoCode();
         String url = checkout.createCheckoutSession(eventId, body.tierId(), quantity,
-                promoCode, body.expectedPriceMinor());
+                promoCode, body.expectedPriceMinor(), body.email());
         return new CheckoutResponse(url);
     }
 
@@ -45,7 +45,11 @@ public class StripeCheckoutController {
                                    String promoCode,
                                    // Optional per-unit price the buyer was shown. Mismatch
                                    // with the current tier price → 409 PRICE_CHANGED.
-                                   Integer expectedPriceMinor) {}
+                                   Integer expectedPriceMinor,
+                                   // REQUIRED when the computed total is 0 (free flow);
+                                   // the BE has no other place to collect it because Stripe
+                                   // Checkout is skipped. Ignored on paid flow today.
+                                   String email) {}
 
     public record CheckoutResponse(String url) {}
 }
