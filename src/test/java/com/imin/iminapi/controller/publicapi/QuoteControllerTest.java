@@ -132,8 +132,9 @@ class QuoteControllerTest {
                 .andExpect(jsonPath("$.unitPriceMinor").value(2500))
                 .andExpect(jsonPath("$.subtotalMinor").value(5000))
                 .andExpect(jsonPath("$.discountMinor").value(0))
-                .andExpect(jsonPath("$.feeMinor").value(0))
-                .andExpect(jsonPath("$.totalMinor").value(5000))
+                // 2 tickets × (€0.99 + 5% × €25.00) = 2 × 224 = 448 minor.
+                .andExpect(jsonPath("$.feeMinor").value(448))
+                .andExpect(jsonPath("$.totalMinor").value(5448))
                 .andExpect(jsonPath("$.promo").doesNotExist());
     }
 
@@ -159,7 +160,9 @@ class QuoteControllerTest {
                         .content(om.writeValueAsString(body)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.discountMinor").value(2500))
-                .andExpect(jsonPath("$.totalMinor").value(2500))
+                // Fee is computed on the pre-discount subtotal: 2 × (€0.99 + 5% × €25.00) = 448.
+                .andExpect(jsonPath("$.feeMinor").value(448))
+                .andExpect(jsonPath("$.totalMinor").value(2948))
                 .andExpect(jsonPath("$.promo.applied").value(true))
                 .andExpect(jsonPath("$.promo.code").value("HALFOFF"))
                 .andExpect(jsonPath("$.promo.discountPct").value(50))
@@ -181,7 +184,9 @@ class QuoteControllerTest {
                         .content(om.writeValueAsString(body)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.discountMinor").value(0))
-                .andExpect(jsonPath("$.totalMinor").value(2500))
+                // 1 ticket × (€0.99 + 5% × €25.00) = 224 minor fee.
+                .andExpect(jsonPath("$.feeMinor").value(224))
+                .andExpect(jsonPath("$.totalMinor").value(2724))
                 .andExpect(jsonPath("$.promo.applied").value(false))
                 .andExpect(jsonPath("$.promo.reason").value("Invalid code"));
     }
