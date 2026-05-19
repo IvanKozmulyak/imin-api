@@ -1,0 +1,7 @@
+Your tickets · imin
+
+Open one of these to see your tickets and QR codes:
+
+{{links}}
+
+If you didn't ask for this, you can safely ignore it.

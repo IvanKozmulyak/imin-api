@@ -89,6 +89,8 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/v1/public/events/*/notify").permitAll()
                         // Public price-quote preview (promo validation, totals) — unauthenticated POST.
                         .requestMatchers(HttpMethod.POST, "/api/v1/public/events/*/quote").permitAll()
+                        // Lost-email recovery — unauthenticated POST, always 204, rate-limited.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/public/orders/recover").permitAll()
                         // Stripe webhook — unauthenticated; signature-verified inside the handler.
                         .requestMatchers(HttpMethod.POST, "/api/v1/stripe/webhook").permitAll()
                         // Everything else under /api/v1 requires a session

@@ -23,7 +23,13 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
      * 1 → fresh redemption; 0 → either already redeemed, revoked, or token unknown.
      * The caller selects the row again to disambiguate.
      */
-    @Modifying
+    /**
+     * {@code clearAutomatically = true} drops the cached Ticket entity from
+     * the EntityManager after the UPDATE so a subsequent {@code findByToken}
+     * re-reads the row with the freshly-redeemed columns rather than returning
+     * the stale pre-update view.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
     @Query("""
             update Ticket t
