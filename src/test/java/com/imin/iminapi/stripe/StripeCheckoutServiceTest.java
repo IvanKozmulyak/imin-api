@@ -162,6 +162,38 @@ class StripeCheckoutServiceTest {
     }
 
     @Test
+    void createCheckoutSession_mirrorsMetadataOntoPaymentIntent() throws Exception {
+        // The webhook handler keys off payment_intent.succeeded for fulfilment, so the PI
+        // must carry the same tier_id/qty/event_id (and promo_id when applicable) that the
+        // Session does. Build once, attach twice.
+        svc.createCheckoutSession(eventId, tierId, 3, null);
+
+        ArgumentCaptor<SessionCreateParams> captor = ArgumentCaptor.forClass(SessionCreateParams.class);
+        verify(sessionService).create(captor.capture());
+
+        SessionCreateParams.PaymentIntentData pid = captor.getValue().getPaymentIntentData();
+        assertThat(pid).isNotNull();
+        assertThat(pid.getMetadata()).containsEntry("tier_id", tierId.toString());
+        assertThat(pid.getMetadata()).containsEntry("qty", "3");
+        assertThat(pid.getMetadata()).containsEntry("event_id", eventId.toString());
+    }
+
+    @Test
+    void createCheckoutSession_setsExpiresAt30MinutesAhead() throws Exception {
+        // Stripe's documented minimum lifetime is 30 minutes — anything shorter rejects.
+        // We pin to exactly 30 minutes so abandoned holds rotate as fast as Stripe allows.
+        svc.createCheckoutSession(eventId, tierId, 1, null);
+
+        ArgumentCaptor<SessionCreateParams> captor = ArgumentCaptor.forClass(SessionCreateParams.class);
+        verify(sessionService).create(captor.capture());
+
+        Long expiresAt = captor.getValue().getExpiresAt();
+        assertThat(expiresAt).isNotNull();
+        long expected = NOW.plus(java.time.Duration.ofMinutes(30)).getEpochSecond();
+        assertThat(expiresAt).isEqualTo(expected);
+    }
+
+    @Test
     void createCheckoutSession_remapsConflictFromReserveTo404() throws Exception {
         // InventoryService throws CONFLICT when there aren't enough tickets — we collapse
         // that to 404 so the buyer-facing public API can't enumerate inventory state.

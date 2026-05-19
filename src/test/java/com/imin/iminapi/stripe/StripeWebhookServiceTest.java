@@ -6,14 +6,22 @@ import com.stripe.StripeClient;
 import com.stripe.net.Webhook;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentMatchers;
 
 import java.time.Instant;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.UUID;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /**
  * Unit-style tests for {@link StripeWebhookService}. Each test builds a real Stripe-shaped
@@ -29,23 +37,38 @@ class StripeWebhookServiceTest {
     private StripeProperties props;
     private PromoCodeRepository promos;
     private InventoryService inventoryService;
+    private WebhookEventDedupService dedup;
     private StripeWebhookService svc;
+
+    /**
+     * Set of event ids that have already been "recorded" by tryRecord — the
+     * mocked dedup mirrors the real semantics: first call returns true, any
+     * later call with the same id returns false. This lets us test the
+     * replay-once-only contract without spinning up a database.
+     */
+    private Set<String> recorded;
 
     @BeforeEach
     void setUp() {
         stripeClient = mock(StripeClient.class);
         promos = mock(PromoCodeRepository.class);
         inventoryService = mock(InventoryService.class);
+        dedup = mock(WebhookEventDedupService.class);
+
+        recorded = new HashSet<>();
+        when(dedup.tryRecord(anyString(), anyString())).thenAnswer(inv -> {
+            String eventId = inv.getArgument(0);
+            return recorded.add(eventId);
+        });
+
         props = new StripeProperties();
         props.setWebhookSecret(SECRET);
-        svc = new StripeWebhookService(stripeClient, props, promos, inventoryService);
+        svc = new StripeWebhookService(stripeClient, props, promos, inventoryService, dedup);
     }
 
     // ── helpers ────────────────────────────────────────────────────────────────
 
-    /**
-     * Sign a body with {@link #SECRET} the same way Stripe signs outbound webhooks.
-     */
+    /** Sign a body with {@link #SECRET} the same way Stripe signs outbound webhooks. */
     private String sign(String body) throws Exception {
         long ts = Instant.now().getEpochSecond();
         String signedPayload = ts + "." + body;
@@ -54,14 +77,13 @@ class StripeWebhookServiceTest {
     }
 
     /**
-     * Build a minimal {@code checkout.session.completed} (or .expired) JSON payload that
-     * deserializes into a {@code Session} object with the given metadata.
+     * Build a minimal {@code checkout.session.*} JSON payload that deserializes
+     * into a {@code Session} object with the given metadata.
      */
-    private String sessionEvent(String type, String paymentStatus, String metadataJson) {
-        // The webhook event envelope. data.object is the inlined Session.
+    private String sessionEvent(String eventId, String type, String paymentStatus, String metadataJson) {
         return """
             {
-              "id": "evt_test_%s",
+              "id": "%s",
               "object": "event",
               "type": "%s",
               "api_version": "2026-04-22.dahlia",
@@ -76,7 +98,7 @@ class StripeWebhookServiceTest {
               }
             }
             """.formatted(
-                UUID.randomUUID().toString().substring(0, 8),
+                eventId,
                 type,
                 Instant.now().getEpochSecond(),
                 UUID.randomUUID().toString().substring(0, 8),
@@ -84,13 +106,44 @@ class StripeWebhookServiceTest {
                 metadataJson);
     }
 
-    // ── checkout.session.completed → confirmSold ───────────────────────────────
+    /**
+     * Build a minimal {@code payment_intent.*} JSON payload that deserializes into
+     * a {@code PaymentIntent} object with the given metadata.
+     */
+    private String paymentIntentEvent(String eventId, String type, String metadataJson) {
+        return """
+            {
+              "id": "%s",
+              "object": "event",
+              "type": "%s",
+              "api_version": "2026-04-22.dahlia",
+              "created": %d,
+              "data": {
+                "object": {
+                  "id": "pi_test_%s",
+                  "object": "payment_intent",
+                  "amount": 1000,
+                  "currency": "eur",
+                  "status": "succeeded",
+                  "metadata": %s
+                }
+              }
+            }
+            """.formatted(
+                eventId,
+                type,
+                Instant.now().getEpochSecond(),
+                UUID.randomUUID().toString().substring(0, 8),
+                metadataJson);
+    }
+
+    // ── payment_intent.succeeded → confirmSold + promo increment ───────────────
 
     @Test
-    void completedPaid_withInventoryMetadata_callsConfirmSold() throws Exception {
+    void paymentIntentSucceeded_withInventoryMetadata_callsConfirmSold() throws Exception {
         UUID tierId = UUID.randomUUID();
         String metaJson = "{\"tier_id\":\"" + tierId + "\",\"qty\":\"2\"}";
-        String body = sessionEvent("checkout.session.completed", "paid", metaJson);
+        String body = paymentIntentEvent("evt_pi_success_1", "payment_intent.succeeded", metaJson);
 
         svc.handle(body, sign(body));
 
@@ -98,49 +151,63 @@ class StripeWebhookServiceTest {
     }
 
     @Test
-    void completedPaid_withoutMetadata_skipsInventory_but_doesNotThrow() throws Exception {
-        // Legacy session that pre-dates the inventory wiring — we still ack the webhook
-        // and continue with promo redemption (which is also a no-op here, no promo_id).
-        String body = sessionEvent("checkout.session.completed", "paid", "null");
+    void paymentIntentSucceeded_replayedTwice_runsExactlyOnce() throws Exception {
+        // Same event id delivered twice — the second delivery must be a no-op.
+        UUID tierId = UUID.randomUUID();
+        UUID promoId = UUID.randomUUID();
+        String metaJson = "{\"tier_id\":\"" + tierId + "\",\"qty\":\"2\",\"promo_id\":\"" + promoId + "\"}";
+        String eventId = "evt_pi_dedupe_1";
+        String body = paymentIntentEvent(eventId, "payment_intent.succeeded", metaJson);
+        when(promos.incrementUsedCount(promoId)).thenReturn(1);
 
         svc.handle(body, sign(body));
+        // Replay the same event id (Stripe at-least-once delivery).
+        svc.handle(body, sign(body));
 
-        verify(inventoryService, never()).confirmSold(org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.anyInt());
+        verify(inventoryService, times(1)).confirmSold(eq(tierId), eq(2));
+        verify(promos, times(1)).incrementUsedCount(eq(promoId));
     }
 
     @Test
-    void completedPaid_withMalformedTierId_skipsInventory() throws Exception {
+    void paymentIntentSucceeded_withoutMetadata_skipsInventory_butDoesNotThrow() throws Exception {
+        // Legacy PI that pre-dates the metadata mirroring — must not throw.
+        String body = paymentIntentEvent("evt_pi_legacy_1", "payment_intent.succeeded", "{}");
+
+        svc.handle(body, sign(body));
+
+        verify(inventoryService, never()).confirmSold(any(), anyInt());
+    }
+
+    @Test
+    void paymentIntentSucceeded_withMalformedTierId_skipsInventory() throws Exception {
         String metaJson = "{\"tier_id\":\"not-a-uuid\",\"qty\":\"2\"}";
-        String body = sessionEvent("checkout.session.completed", "paid", metaJson);
+        String body = paymentIntentEvent("evt_pi_malformed_1", "payment_intent.succeeded", metaJson);
 
         svc.handle(body, sign(body));
 
-        verify(inventoryService, never()).confirmSold(org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.anyInt());
+        verify(inventoryService, never()).confirmSold(any(), anyInt());
     }
 
     @Test
-    void completedUnpaid_skipsInventory() throws Exception {
+    void paymentIntentSucceeded_qty2_callsConfirmSoldWithQty2() throws Exception {
+        // Sanity check: the qty travels straight through to InventoryService.
         UUID tierId = UUID.randomUUID();
         String metaJson = "{\"tier_id\":\"" + tierId + "\",\"qty\":\"2\"}";
-        String body = sessionEvent("checkout.session.completed", "unpaid", metaJson);
+        String body = paymentIntentEvent("evt_pi_qty2", "payment_intent.succeeded", metaJson);
 
         svc.handle(body, sign(body));
 
-        // Only "paid" payment_status triggers confirmSold; async/unpaid sessions are
-        // observed but skipped (would be picked up by async_payment_succeeded later).
-        verify(inventoryService, never()).confirmSold(org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.anyInt());
+        verify(inventoryService).confirmSold(tierId, 2);
+        verify(inventoryService, never()).confirmSold(eq(tierId), ArgumentMatchers.intThat(q -> q != 2));
     }
 
-    // ── checkout.session.expired → releaseReservation ──────────────────────────
+    // ── payment_intent.payment_failed → releaseReservation ─────────────────────
 
     @Test
-    void expired_withInventoryMetadata_callsReleaseReservation() throws Exception {
+    void paymentIntentFailed_callsReleaseReservation() throws Exception {
         UUID tierId = UUID.randomUUID();
         String metaJson = "{\"tier_id\":\"" + tierId + "\",\"qty\":\"3\"}";
-        String body = sessionEvent("checkout.session.expired", null, metaJson);
+        String body = paymentIntentEvent("evt_pi_fail_1", "payment_intent.payment_failed", metaJson);
 
         svc.handle(body, sign(body));
 
@@ -148,12 +215,65 @@ class StripeWebhookServiceTest {
     }
 
     @Test
-    void expired_withoutMetadata_skipsRelease() throws Exception {
-        String body = sessionEvent("checkout.session.expired", null, "null");
+    void paymentIntentFailed_replayedTwice_releasesOnce() throws Exception {
+        UUID tierId = UUID.randomUUID();
+        String metaJson = "{\"tier_id\":\"" + tierId + "\",\"qty\":\"3\"}";
+        String body = paymentIntentEvent("evt_pi_fail_dedupe", "payment_intent.payment_failed", metaJson);
+
+        svc.handle(body, sign(body));
+        svc.handle(body, sign(body));
+
+        verify(inventoryService, times(1)).releaseReservation(eq(tierId), eq(3));
+    }
+
+    // ── checkout.session.expired → releaseReservation (still dedup'd) ─────────
+
+    @Test
+    void expired_withInventoryMetadata_callsReleaseReservation() throws Exception {
+        UUID tierId = UUID.randomUUID();
+        String metaJson = "{\"tier_id\":\"" + tierId + "\",\"qty\":\"3\"}";
+        String body = sessionEvent("evt_expired_1", "checkout.session.expired", null, metaJson);
 
         svc.handle(body, sign(body));
 
-        verify(inventoryService, never()).releaseReservation(org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.anyInt());
+        verify(inventoryService).releaseReservation(eq(tierId), eq(3));
+    }
+
+    @Test
+    void expired_replayedTwice_releasesOnce() throws Exception {
+        UUID tierId = UUID.randomUUID();
+        String metaJson = "{\"tier_id\":\"" + tierId + "\",\"qty\":\"3\"}";
+        String body = sessionEvent("evt_expired_dedupe", "checkout.session.expired", null, metaJson);
+
+        svc.handle(body, sign(body));
+        svc.handle(body, sign(body));
+
+        verify(inventoryService, times(1)).releaseReservation(eq(tierId), eq(3));
+    }
+
+    @Test
+    void expired_withoutMetadata_skipsRelease() throws Exception {
+        String body = sessionEvent("evt_expired_legacy", "checkout.session.expired", null, "null");
+
+        svc.handle(body, sign(body));
+
+        verify(inventoryService, never()).releaseReservation(any(), anyInt());
+    }
+
+    // ── checkout.session.completed is a no-op ──────────────────────────────────
+
+    @Test
+    void completedPaid_isNoOp_noConfirmSoldOrPromoIncrement() throws Exception {
+        // Fulfilment moved to payment_intent.succeeded; the completed event is
+        // received but no longer drives inventory or promo accounting.
+        UUID tierId = UUID.randomUUID();
+        UUID promoId = UUID.randomUUID();
+        String metaJson = "{\"tier_id\":\"" + tierId + "\",\"qty\":\"2\",\"promo_id\":\"" + promoId + "\"}";
+        String body = sessionEvent("evt_completed_1", "checkout.session.completed", "paid", metaJson);
+
+        svc.handle(body, sign(body));
+
+        verify(inventoryService, never()).confirmSold(any(), anyInt());
+        verify(promos, never()).incrementUsedCount(any());
     }
 }

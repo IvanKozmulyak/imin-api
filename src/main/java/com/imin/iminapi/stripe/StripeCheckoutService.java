@@ -32,7 +32,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
@@ -249,38 +251,56 @@ public class StripeCheckoutService {
                     .build());
         }
 
+        // Build the metadata map ONCE and mirror it onto both the Session and the
+        // underlying PaymentIntent. The webhook keys fulfilment off
+        // payment_intent.succeeded (the PI is what tells us the money moved), so
+        // it must see the same tier_id/qty/event_id/promo_id the Session would.
+        Map<String, String> metadata = new HashMap<>();
+        metadata.put("tier_id", tierId.toString());
+        metadata.put("qty", String.valueOf(quantity));
+        metadata.put("event_id", eventId.toString());
+
+        String couponId = null;
+        if (promo != null) {
+            // Create a one-shot Stripe Coupon on the platform account and attach it. The
+            // coupon is scoped to the ticket Product (applies_to.products) so it never
+            // discounts the service-fee line item — promos discount tickets only.
+            couponId = createOneShotCoupon(promo, eventId, tier.getStripeProductId());
+            metadata.put("promo_id", promo.getId().toString());
+        }
+
+        // Stripe Checkout's documented minimum lifetime is 30 minutes — anything shorter
+        // is rejected with `expires_at` "must be at least 30 minutes in the future"
+        // (https://docs.stripe.com/api/checkout/sessions/create#create_checkout_session-expires_at).
+        // We cap at exactly 30 min so abandoned holds rotate out of inventory as quickly as
+        // Stripe will allow; checkout.session.expired fires shortly after, releasing the hold.
+        long expiresAt = clock.instant().plus(Duration.ofMinutes(30)).getEpochSecond();
+
         builder
                 // payment_intent_data — destination charge with application fee.
                 // The PaymentIntent is created on the *platform* account; transfer_data.destination
-                // moves the net to the connected account asynchronously.
+                // moves the net to the connected account asynchronously. Metadata is mirrored
+                // onto the PI so the payment_intent.succeeded webhook handler can read the same
+                // tier_id/qty/promo_id that the Session carries.
                 .setPaymentIntentData(SessionCreateParams.PaymentIntentData.builder()
                         .setApplicationFeeAmount(applicationFee)
                         .setTransferData(SessionCreateParams.PaymentIntentData.TransferData.builder()
                                 .setDestination(org.getStripeAccountId())
                                 .build())
+                        .putAllMetadata(metadata)
                         .build())
+                .setExpiresAt(expiresAt)
                 .setSuccessUrl(props.getPublicReturnUrlBase()
                         + "/e/" + eventId + "/success?session_id={CHECKOUT_SESSION_ID}")
                 .setCancelUrl(props.getPublicReturnUrlBase() + "/e/" + eventId)
                 // Stamp inventory-relevant metadata so the webhook can find the right tier
-                // and amount on checkout.session.completed (confirmSold) and on
-                // checkout.session.expired (releaseReservation).
-                .putMetadata("tier_id", tierId.toString())
-                .putMetadata("qty", String.valueOf(quantity))
-                .putMetadata("event_id", eventId.toString());
+                // and amount on checkout.session.expired (releaseReservation).
+                .putAllMetadata(metadata);
 
-        if (promo != null) {
-            // Create a one-shot Stripe Coupon on the platform account and attach it. The
-            // coupon is scoped to the ticket Product (applies_to.products) so it never
-            // discounts the service-fee line item — promos discount tickets only.
-            String couponId = createOneShotCoupon(promo, eventId, tier.getStripeProductId());
+        if (couponId != null) {
             builder.addDiscount(SessionCreateParams.Discount.builder()
                     .setCoupon(couponId)
                     .build());
-            // Stamp the promo id on the session itself so the checkout.session.completed
-            // webhook can find the PromoCode row without having to round-trip back to Stripe
-            // to fetch the coupon. session.metadata is what the webhook will read.
-            builder.putMetadata("promo_id", promo.getId().toString());
         }
 
         SessionCreateParams params = builder.build();

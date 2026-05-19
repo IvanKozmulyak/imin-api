@@ -262,13 +262,13 @@ When any are missing, `AppleWalletPassService.isConfigured()` is false; the endp
 
 1. Load the Order, the Event, and all Tickets for the Order.
 2. For each Ticket: compute QR payload via `QrPayloadSigner`, render PNG via `QrImageRenderer` (zxing, 320×320, `ErrorCorrectionLevel.H`, transparent or white background, 16-px quiet zone).
-3. Render an HTML email using a Thymeleaf template (or hand-rolled — keep parity with the existing auth emails in `EmailTemplateRenderer`). Content:
+3. Render an HTML email using the existing `EmailTemplateRenderer` (mustache-style `{{key}}` substitution; parity with auth emails). Content:
    - Greeting + event name/date/venue.
-   - One section per ticket: tier name, attendee number, inline QR image (`<img src="cid:ticket-<token>">`), "Open this ticket" link → `/tickets/{token}`, "Add to Apple Wallet" button → `/api/v1/public/tickets/{token}/apple-wallet.pkpass` (omitted if wallet not configured).
-   - Footer: "View your order" → `/order/{token}`, recovery hint.
-4. Send via `EmailService.send` with `attachments` (CID-inline PNGs).
+   - One section per ticket: tier name, ticket ordinal ("Ticket 1 of 2"), QR image via `<img src="{{ticketQrUrl}}">` pointing to `/api/v1/public/tickets/{token}/qr.png`, "Open this ticket" link → `/tickets/{token}`, "Add to Apple Wallet" link → `/api/v1/public/tickets/{token}/apple-wallet.pkpass` (omitted if wallet not configured).
+   - Footer: "View your order" → `/order/{token}`, "Lost this email?" → `/recover`.
+4. Send via the existing `EmailService.send(to, subject, html, text)`. No attachments.
 
-**Why CID-inline, not data URLs.** Some clients (Gmail's email-render path) drop data-URL images. CID attachments render reliably across Gmail, Apple Mail, Outlook, Spark. Resend's Java SDK supports CID attachments.
+**Why hyperlinked images, not CID attachments.** Eventbrite, Ticketmaster, and Luma all use hyperlinked images in ticket emails — it's the standard. The QR endpoint already needs to exist for the ticket web page anyway, so reusing the same URL keeps the system simple (one renderer, one cache story). The downside (some clients block remote images by default) is mitigated by the prominent "Open this ticket" link directly underneath the image. Keeping the existing `EmailService` interface unchanged avoids touching the Resend SDK wiring and the auth-email path.
 
 **Email subject.** `"Your tickets for <Event name>"` (or `"Your ticket"` singular for qty=1).
 
@@ -327,6 +327,7 @@ If Resend fails, we record `email.failed` with the exception. The buyer recovery
 | `GET` | `/api/v1/public/tickets/{token}` | none | Existing. Response gains `qrPayload` (string) and `walletAvailable` (bool). |
 | `GET` | `/api/v1/public/tickets/{token}/qr.png` | none | NEW. Server-rendered QR PNG. `Cache-Control: private, no-store`. |
 | `GET` | `/api/v1/public/tickets/{token}/apple-wallet.pkpass` | none | NEW. Signed `.pkpass`. 503 if not configured. |
+| `GET` | `/api/v1/public/checkout/{sessionId}` | none | NEW. `{status, orderToken?}` for the Stripe-return success page. |
 | `POST` | `/api/v1/public/orders/recover` | none | NEW. Always 204. |
 | `POST` | `/api/v1/orgs/{orgId}/events/{eventId}/tickets/redeem` | organizer JWT | NEW. Single-use redemption. |
 
@@ -336,8 +337,25 @@ If Resend fails, we record `email.failed` with the exception. The buyer recovery
 
 - `/tickets/[token]/page.tsx`: replace the placeholder dashed block with `<img src="/api/v1/public/tickets/{token}/qr.png" />` and an "Add to Apple Wallet" anchor (shown only when `walletAvailable` is true).
 - `/order/[token]/page.tsx`: per-ticket "Open ticket" links already exist. Add a single "Resend by email" link → calls `/orders/recover` with the same email as the order (this is the "I'm logged in to my order page but I lost the email I forwarded to my colleague" case).
+- `/e/[id]/success/page.tsx`: today it shows a static "Payment received, we're emailing your ticket" placeholder. Rewrite as a server component that:
+  1. Reads the `session_id` query param Stripe appended to the redirect URL.
+  2. Calls `GET /api/v1/public/checkout/{sessionId}` server-side.
+  3. On `{status: "ready", orderToken}` → `redirect("/order/" + orderToken)` (Next 16 `redirect` from `next/navigation`). The buyer lands directly on their order page with all tickets, QR codes, and wallet links.
+  4. On `{status: "pending"}` → render a friendly "Finalizing your tickets…" panel with a `<meta http-equiv="refresh" content="2">` so the page reloads in 2 s. After ~15 s of pending we render a "Check your email shortly" terminal state — no client JS needed for the polling.
+  5. On `{status: "failed"}` → render an apologetic error state with a "Contact support" link.
 - New page `/recover/page.tsx`: small form that calls `/orders/recover`. Linked from "Lost your tickets?" copy on event detail and order pages.
-- `lib/api/public-events.ts`: add `recoverOrder` and `getTicketQrUrl` helpers.
+- `lib/api/public-events.ts`: add `recoverOrder`, `getTicketQrUrl`, and `getCheckoutStatus(sessionId)` helpers.
+
+### 15a. Checkout-status endpoint
+
+`GET /api/v1/public/checkout/{sessionId}`
+- Public (the Stripe session id is the auth — it lives in the redirect URL Stripe just sent the buyer).
+- 200 response:
+  - `{ "status": "ready", "orderToken": "abc…" }` — `orders.findByStripeSessionId(sessionId)` hit. The buyer can now load `/order/{orderToken}`.
+  - `{ "status": "pending" }` — webhook hasn't completed yet (or session-id wasn't recorded — see below). Returned with `Cache-Control: private, no-store`.
+  - `{ "status": "failed" }` — we can detect this by retrieving the session from Stripe and reading `payment_status != 'paid'` or PI status. Optional in v1; default to `pending` if uncertain. The webhook is the source of truth — if it never fires, the buyer gets the email from a different Stripe retry cycle.
+
+**Prerequisite for the lookup to work.** `PaidCheckoutService.issuePaidOrder` must populate `orders.stripe_session_id`. We get it by listing checkout sessions for the PI: `stripeClient.checkout().sessions().list(SessionListParams.builder().setPaymentIntent(pi.id).setLimit(1L).build())`. Same call we use to fall back for buyer email (§6, step 3). One Stripe round-trip total, done once at issuance.
 
 ## 16. Approaches considered
 
