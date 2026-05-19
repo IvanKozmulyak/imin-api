@@ -2,13 +2,17 @@ package com.imin.iminapi.controller.publicapi;
 
 import com.imin.iminapi.dto.publicapi.PublicOrderResponse;
 import com.imin.iminapi.dto.publicapi.PublicTicketResponse;
+import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Ticket;
+import com.imin.iminapi.model.TicketState;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.security.ApiException;
+import com.imin.iminapi.service.ticket.AppleWalletPassService;
+import com.imin.iminapi.service.ticket.QrPayloadSigner;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
@@ -35,13 +39,22 @@ public class PublicOrderController {
     private final OrderRepository orders;
     private final TicketRepository tickets;
     private final EventRepository events;
+    private final QrPayloadSigner qrSigner;
+    private final AppleWalletPassService wallet;
+    private final EmailProperties emailProps;
 
     public PublicOrderController(OrderRepository orders,
                                   TicketRepository tickets,
-                                  EventRepository events) {
+                                  EventRepository events,
+                                  QrPayloadSigner qrSigner,
+                                  AppleWalletPassService wallet,
+                                  EmailProperties emailProps) {
         this.orders = orders;
         this.tickets = tickets;
         this.events = events;
+        this.qrSigner = qrSigner;
+        this.wallet = wallet;
+        this.emailProps = emailProps;
     }
 
     @GetMapping("/api/v1/public/orders/{token}")
@@ -61,7 +74,8 @@ public class PublicOrderController {
                 order.getCreatedAt(),
                 eventBlock(event),
                 ticketRows.stream()
-                        .map(t -> new PublicOrderResponse.Ticket(t.getToken(), t.getTierName(), t.getState()))
+                        .map(t -> new PublicOrderResponse.Ticket(
+                                t.getToken(), t.getTierName(), normalizeState(t.getState())))
                         .toList());
 
         return ResponseEntity.ok()
@@ -78,10 +92,17 @@ public class PublicOrderController {
         Order order = orders.findById(ticket.getOrderId())
                 .orElseThrow(() -> ApiException.notFound("Ticket"));
 
+        String qrPayload = qrSigner.sign(ticket.getToken());
+        String base = baseUrl();
+        String qrUrl = base + "/api/v1/public/tickets/" + ticket.getToken() + "/qr.png";
+
         var body = new PublicTicketResponse(
                 ticket.getToken(),
-                ticket.getState(),
+                normalizeState(ticket.getState()),
                 ticket.getTierName(),
+                qrPayload,
+                qrUrl,
+                wallet.isConfigured(),
                 new PublicTicketResponse.Event(
                         event.getName(), event.getSlug(),
                         event.getStartsAt(), event.getTimezone(),
@@ -98,5 +119,21 @@ public class PublicOrderController {
                 event.getName(), event.getSlug(),
                 event.getStartsAt(), event.getTimezone(),
                 event.getVenueName(), event.getVenueCity());
+    }
+
+    /**
+     * Normalizes the raw {@code state} column to the canonical wire value.
+     * Legacy free-flow rows persisted before V26 carry {@code 'pre'}; we
+     * surface those as {@code 'issued'} so the FE only has to handle one
+     * vocabulary.
+     */
+    private static String normalizeState(String wire) {
+        return TicketState.fromWire(wire).wire();
+    }
+
+    private String baseUrl() {
+        String base = emailProps.getAppBaseUrl();
+        if (base != null && base.endsWith("/")) base = base.substring(0, base.length() - 1);
+        return base == null ? "" : base;
     }
 }
