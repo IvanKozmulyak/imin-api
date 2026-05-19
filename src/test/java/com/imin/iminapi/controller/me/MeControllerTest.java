@@ -3,9 +3,13 @@ package com.imin.iminapi.controller.me;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.dto.NotificationPreferencesDto;
+import com.imin.iminapi.dto.OrganizationDto;
+import com.imin.iminapi.dto.UserDto;
+import com.imin.iminapi.dto.auth.MeResponse;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.service.me.NotificationPrefsService;
+import com.imin.iminapi.service.me.ProfileService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -23,6 +27,7 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -40,6 +45,7 @@ class MeControllerTest {
     @Autowired MockMvc mvc;
     final ObjectMapper om = new ObjectMapper();
     @MockitoBean NotificationPrefsService notificationPrefsService;
+    @MockitoBean ProfileService profileService;
 
     static final UUID ORG = UUID.fromString("00000000-0000-0000-0000-000000000030");
     static final UUID USER = UUID.fromString("00000000-0000-0000-0000-000000000031");
@@ -84,5 +90,26 @@ class MeControllerTest {
                         .content(om.writeValueAsString(Map.of("ticketSold", false))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.ticketSold").value(false));
+    }
+
+    @Test
+    @WithStubUser
+    void patch_profile_returns_updated_me_response() throws Exception {
+        UserDto user = new UserDto(USER, "ada@example.com", "Grace", "Hopper", "owner", "GH", ORG,
+                Instant.parse("2026-04-23T10:00:00Z"));
+        OrganizationDto org = new OrganizationDto(ORG, "Ada Co", "ada-co", "ada@example.com",
+                "GB", "UTC", "growth", 89, "EUR", Instant.parse("2026-04-23T10:00:00Z"));
+        when(profileService.patch(any(AuthPrincipal.class), any())).thenReturn(new MeResponse(user, org));
+
+        mvc.perform(patch("/api/v1/me/profile")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of(
+                                "firstName", "Grace",
+                                "lastName", "Hopper"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.user.firstName").value("Grace"))
+                .andExpect(jsonPath("$.user.lastName").value("Hopper"))
+                .andExpect(jsonPath("$.user.avatarInitials").value("GH"))
+                .andExpect(jsonPath("$.org.id").value(ORG.toString()));
     }
 }
