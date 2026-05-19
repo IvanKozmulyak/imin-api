@@ -1,0 +1,7 @@
+You're in for {{eventName}}.
+{{eventWhen}}{{eventWhereSeparator}}{{eventWhere}}
+
+{{ticketBlocks}}
+
+View your order online: {{orderUrl}}
+Lost this email? Recover your tickets: {{recoverUrl}}
