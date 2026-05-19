@@ -3,8 +3,11 @@ package com.imin.iminapi.service.event;
 import com.imin.iminapi.model.TicketTier;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.security.ApiException;
+import com.imin.iminapi.security.ErrorCode;
+import org.springframework.http.HttpStatus;
 
 import java.time.Instant;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -46,5 +49,22 @@ public final class PublicTierEligibility {
             throw ApiException.notFound("Event");
         }
         return tier;
+    }
+
+    /**
+     * If the buyer told us the per-unit price they were shown ({@code expected}), assert
+     * it still matches {@code tier.priceMinor}. Mismatch → 409 PRICE_CHANGED with
+     * {@code fields.currentPriceMinor} so the buyer FE can refresh and re-present.
+     *
+     * <p>{@code expected == null} is the back-compat path — older clients that don't
+     * send the field get the current price applied silently, same as today. Only opt-in
+     * clients benefit from the drift guard.
+     */
+    public static void assertExpectedPriceMatches(TicketTier tier, Integer expected) {
+        if (expected == null) return;
+        if (expected.intValue() == tier.getPriceMinor()) return;
+        throw new ApiException(HttpStatus.CONFLICT, ErrorCode.PRICE_CHANGED,
+                "Tier price has changed",
+                Map.of("currentPriceMinor", Integer.toString(tier.getPriceMinor())));
     }
 }

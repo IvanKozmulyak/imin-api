@@ -92,6 +92,12 @@ public class StripeCheckoutService {
      */
     @Transactional
     public String createCheckoutSession(UUID eventId, UUID tierId, int quantity, String promoCode) {
+        return createCheckoutSession(eventId, tierId, quantity, promoCode, null);
+    }
+
+    @Transactional
+    public String createCheckoutSession(UUID eventId, UUID tierId, int quantity,
+                                         String promoCode, Integer expectedPriceMinor) {
         if (quantity < 1 || quantity > 10) {
             // 400, not 404 — quantity is a client bug, not an event-discovery question.
             throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
@@ -105,6 +111,11 @@ public class StripeCheckoutService {
         // Shared eligibility predicate so quote and checkout never disagree on buyability — see PublicTierEligibility.
         Instant now = clock.instant();
         TicketTier tier = PublicTierEligibility.loadBuyableTier(tiers, eventId, tierId, now);
+
+        // 2a. Price-drift guard. No-op when the client didn't send `expectedPriceMinor`.
+        // When supplied and mismatched → 409 PRICE_CHANGED with `currentPriceMinor` in fields.
+        PublicTierEligibility.assertExpectedPriceMatches(tier, expectedPriceMinor);
+
         if (tier.getStripePriceId() == null || tier.getStripePriceId().isBlank()) {
             // Product sync failed earlier (best-effort). Surface as 404 to the buyer — they have nothing
             // they can do about it — and let the organizer see the dashboard error.

@@ -202,4 +202,27 @@ class StripeCheckoutServiceTest {
 
         verify(inventoryService, never()).reserve(any(), org.mockito.ArgumentMatchers.anyInt());
     }
+
+    @Test
+    void createCheckoutSession_returns409_whenExpectedPriceMismatches() {
+        // The fixture tier price is 1000 (see setUp).
+        assertThatThrownBy(() ->
+                svc.createCheckoutSession(eventId, tierId, 1, null, 999))
+                .isInstanceOf(ApiException.class)
+                .satisfies(ex -> {
+                    ApiException ae = (ApiException) ex;
+                    assertThat(ae.status()).isEqualTo(HttpStatus.CONFLICT);
+                    assertThat(ae.code()).isEqualTo(com.imin.iminapi.security.ErrorCode.PRICE_CHANGED);
+                    assertThat(ae.fields()).containsEntry("currentPriceMinor", "1000");
+                });
+
+        // Inventory must NOT have been reserved when the price drifted.
+        verify(inventoryService, never()).reserve(any(), org.mockito.ArgumentMatchers.anyInt());
+    }
+
+    @Test
+    void createCheckoutSession_accepts_whenExpectedPriceMatches() throws Exception {
+        String url = svc.createCheckoutSession(eventId, tierId, 1, null, 1000);
+        assertThat(url).isNotBlank();
+    }
 }

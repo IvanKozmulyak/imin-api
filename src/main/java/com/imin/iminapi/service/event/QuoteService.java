@@ -111,6 +111,9 @@ public class QuoteService {
         Instant now = clock.instant();
         TicketTier tier = PublicTierEligibility.loadBuyableTier(tiers, eventId, tierId, now);
 
+        // 3a. Price-drift guard. No-op when the client didn't send `expectedPriceMinor`.
+        PublicTierEligibility.assertExpectedPriceMatches(tier, request.expectedPriceMinor());
+
         // 4. Subtotal. Promo discount applies to the subtotal; fee stays 0 (see class doc).
         int unitPrice = tier.getPriceMinor();
         long subtotal = (long) unitPrice * rawQty;

@@ -133,7 +133,7 @@ class QuoteServiceTest {
         TicketTier t = tier(e.getId(), 2500);
 
         QuoteResponse r = quoteService.quote(e.getId(),
-                new QuoteRequest(t.getId(), 2, null));
+                new QuoteRequest(t.getId(), 2, null, null));
 
         assertThat(r.currency()).isEqualTo("EUR");
         assertThat(r.unitPriceMinor()).isEqualTo(2500);
@@ -153,7 +153,7 @@ class QuoteServiceTest {
         promo(e.getId(), "FRIENDS10", 10, 50, 0, true);
 
         QuoteResponse r = quoteService.quote(e.getId(),
-                new QuoteRequest(t.getId(), 2, "friends10")); // case-insensitive
+                new QuoteRequest(t.getId(), 2, "friends10", null)); // case-insensitive
 
         assertThat(r.subtotalMinor()).isEqualTo(5000L);
         assertThat(r.discountMinor()).isEqualTo(500L);
@@ -178,7 +178,7 @@ class QuoteServiceTest {
         TicketTier t = tier(e.getId(), 2500);
 
         QuoteResponse r = quoteService.quote(e.getId(),
-                new QuoteRequest(t.getId(), 2, "NOPE"));
+                new QuoteRequest(t.getId(), 2, "NOPE", null));
 
         assertThat(r.discountMinor()).isZero();
         assertThat(r.totalMinor()).isEqualTo(5000L);
@@ -199,7 +199,7 @@ class QuoteServiceTest {
         promo(e.getId(), "SOLDOUT", 15, 50, 50, true);
 
         QuoteResponse r = quoteService.quote(e.getId(),
-                new QuoteRequest(t.getId(), 1, "SOLDOUT"));
+                new QuoteRequest(t.getId(), 1, "SOLDOUT", null));
 
         assertThat(r.discountMinor()).isZero();
         assertThat(r.promo().applied()).isFalse();
@@ -214,7 +214,7 @@ class QuoteServiceTest {
         promo(e.getId(), "OFF", 25, 50, 0, false);
 
         QuoteResponse r = quoteService.quote(e.getId(),
-                new QuoteRequest(t.getId(), 1, "OFF"));
+                new QuoteRequest(t.getId(), 1, "OFF", null));
 
         assertThat(r.promo().applied()).isFalse();
         assertThat(r.promo().reason()).contains("no longer active");
@@ -228,7 +228,7 @@ class QuoteServiceTest {
         TicketTier t = tier(e.getId(), 2500);
 
         assertThatThrownBy(() ->
-                quoteService.quote(e.getId(), new QuoteRequest(t.getId(), 1, null)))
+                quoteService.quote(e.getId(), new QuoteRequest(t.getId(), 1, null, null)))
                 .isInstanceOf(ApiException.class)
                 .satisfies(ex -> {
                     ApiException api = (ApiException) ex;
@@ -247,7 +247,7 @@ class QuoteServiceTest {
 
         // Request quote on event A with a tier owned by event B.
         assertThatThrownBy(() ->
-                quoteService.quote(a.getId(), new QuoteRequest(tOfB.getId(), 1, null)))
+                quoteService.quote(a.getId(), new QuoteRequest(tOfB.getId(), 1, null, null)))
                 .isInstanceOf(ApiException.class)
                 .satisfies(ex -> {
                     ApiException api = (ApiException) ex;
@@ -263,7 +263,7 @@ class QuoteServiceTest {
         TicketTier t = tier(e.getId(), 2500);
 
         assertThatThrownBy(() ->
-                quoteService.quote(e.getId(), new QuoteRequest(t.getId(), 0, null)))
+                quoteService.quote(e.getId(), new QuoteRequest(t.getId(), 0, null, null)))
                 .isInstanceOf(ApiException.class)
                 .satisfies(ex -> {
                     ApiException api = (ApiException) ex;
@@ -279,7 +279,7 @@ class QuoteServiceTest {
         TicketTier t = tier(e.getId(), 2500);
 
         assertThatThrownBy(() ->
-                quoteService.quote(e.getId(), new QuoteRequest(t.getId(), null, null)))
+                quoteService.quote(e.getId(), new QuoteRequest(t.getId(), null, null, null)))
                 .isInstanceOf(ApiException.class)
                 .satisfies(ex -> {
                     ApiException api = (ApiException) ex;
@@ -293,7 +293,7 @@ class QuoteServiceTest {
         Event e = publishedLiveEvent();
 
         assertThatThrownBy(() ->
-                quoteService.quote(e.getId(), new QuoteRequest(null, 1, null)))
+                quoteService.quote(e.getId(), new QuoteRequest(null, 1, null, null)))
                 .isInstanceOf(ApiException.class)
                 .satisfies(ex -> {
                     ApiException api = (ApiException) ex;
@@ -308,7 +308,7 @@ class QuoteServiceTest {
         TicketTier t = tier(e.getId(), 2500);
 
         assertThatThrownBy(() ->
-                quoteService.quote(e.getId(), new QuoteRequest(t.getId(), 1, "   ")))
+                quoteService.quote(e.getId(), new QuoteRequest(t.getId(), 1, "   ", null)))
                 .isInstanceOf(ApiException.class)
                 .satisfies(ex -> {
                     ApiException api = (ApiException) ex;
@@ -332,9 +332,56 @@ class QuoteServiceTest {
         ticketTierRepository.save(t);
 
         assertThatThrownBy(() ->
-                quoteService.quote(e.getId(), new QuoteRequest(t.getId(), 1, null)))
+                quoteService.quote(e.getId(), new QuoteRequest(t.getId(), 1, null, null)))
                 .isInstanceOf(ApiException.class)
                 .satisfies(ex -> assertThat(((ApiException) ex).status())
                         .isEqualTo(HttpStatus.NOT_FOUND));
+    }
+
+    // ---- price-drift detection ---------------------------------------------
+
+    @Test
+    void quote_returns200_whenExpectedPriceMatches() {
+        Event e = publishedLiveEvent();
+        TicketTier t = tier(e.getId(), 2500);
+
+        QuoteResponse r = quoteService.quote(e.getId(),
+                new QuoteRequest(t.getId(), 1, null, 2500));
+
+        assertThat(r.unitPriceMinor()).isEqualTo(2500);
+    }
+
+    @Test
+    void quote_returns409PriceChanged_whenExpectedPriceMismatches() {
+        Event e = publishedLiveEvent();
+        TicketTier t = tier(e.getId(), 2500);
+
+        assertThatThrownBy(() ->
+                quoteService.quote(e.getId(), new QuoteRequest(t.getId(), 1, null, 2000)))
+                .isInstanceOf(ApiException.class)
+                .satisfies(ex -> {
+                    ApiException ae = (ApiException) ex;
+                    assertThat(ae.status()).isEqualTo(HttpStatus.CONFLICT);
+                    assertThat(ae.code()).isEqualTo(com.imin.iminapi.security.ErrorCode.PRICE_CHANGED);
+                    assertThat(ae.fields()).containsEntry("currentPriceMinor", "2500");
+                });
+    }
+
+    // ---- free / zero-total quote (Feature 5) -------------------------------
+
+    @Test
+    void quote_returnsTotalZero_whenTierIsFree() {
+        Event e = publishedLiveEvent();
+        TicketTier t = tier(e.getId(), 0);
+
+        QuoteResponse r = quoteService.quote(e.getId(),
+                new QuoteRequest(t.getId(), 1, null, null));
+
+        assertThat(r.unitPriceMinor()).isEqualTo(0);
+        assertThat(r.subtotalMinor()).isEqualTo(0L);
+        assertThat(r.discountMinor()).isEqualTo(0L);
+        assertThat(r.feeMinor()).isEqualTo(0L);
+        assertThat(r.totalMinor()).isEqualTo(0L);
+        assertThat(r.promo()).isNull();
     }
 }

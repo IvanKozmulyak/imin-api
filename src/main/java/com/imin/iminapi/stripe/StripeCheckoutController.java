@@ -32,8 +32,9 @@ public class StripeCheckoutController {
                     "tierId is required");
         }
         int quantity = body.quantity() == null ? 1 : body.quantity();
-        String promoCode = body == null ? null : body.promoCode();
-        String url = checkout.createCheckoutSession(eventId, body.tierId(), quantity, promoCode);
+        String promoCode = body.promoCode();
+        String url = checkout.createCheckoutSession(eventId, body.tierId(), quantity,
+                promoCode, body.expectedPriceMinor());
         return new CheckoutResponse(url);
     }
 
@@ -41,7 +42,10 @@ public class StripeCheckoutController {
                                    @Min(1) @Max(10) Integer quantity,
                                    // Optional buyer-supplied promo code. Validated and applied
                                    // server-side; null/blank means "no discount".
-                                   String promoCode) {}
+                                   String promoCode,
+                                   // Optional per-unit price the buyer was shown. Mismatch
+                                   // with the current tier price → 409 PRICE_CHANGED.
+                                   Integer expectedPriceMinor) {}
 
     public record CheckoutResponse(String url) {}
 }

@@ -16,4 +16,11 @@ import java.util.UUID;
  * cause. The only way the {@code promoCode} field forces a 400 is when it's
  * present but blank after trim (a client bug).
  */
-public record QuoteRequest(UUID tierId, Integer quantity, String promoCode) {}
+public record QuoteRequest(
+        UUID tierId,
+        Integer quantity,
+        String promoCode,
+        // Optional per-unit price the buyer was shown. When supplied and it doesn't
+        // match the current `tier.priceMinor`, the endpoint responds 409 PRICE_CHANGED
+        // so the FE can refresh and re-present rather than silently quote on stale data.
+        Integer expectedPriceMinor) {}
