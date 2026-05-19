@@ -10,6 +10,7 @@ import com.imin.iminapi.repository.PromoCodeRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.stripe.StripeProperties;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -36,11 +37,15 @@ import java.util.UUID;
  * before being redirected to a Stripe hosted page (where a 400 from the BE would
  * otherwise be the first signal that a code was bad).
  *
- * <h2>Why fee is always 0</h2>
- * The platform's 5% cut is a Stripe {@code application_fee_amount} on the destination
- * charge — it comes out of the organizer's net, never as a buyer-visible surcharge.
- * The buyer pays exactly {@code subtotal - discount}. {@code feeMinor} stays in the
- * contract as a forward-compat seam.
+ * <h2>Service fee</h2>
+ * The platform fee is buyer-visible and structured as
+ * {@code fixedMinor × qty + round(subtotal × bps / 10000)} — default
+ * {@code €0.99 per ticket + 5% of subtotal}. It is added on top of the discounted
+ * subtotal, so {@code total = subtotal - discount + fee}. At checkout time this same
+ * formula drives both an extra "Service fee" line item on the Stripe Checkout Session
+ * (so the buyer is actually charged it) and the {@code application_fee_amount} on the
+ * destination charge (so the platform keeps the fee while the organizer is paid the
+ * net ticket revenue).
  *
  * <h2>Promo semantics</h2>
  * <ul>
@@ -59,16 +64,30 @@ public class QuoteService {
     private final EventRepository events;
     private final TicketTierRepository tiers;
     private final PromoCodeRepository promos;
+    private final StripeProperties stripeProps;
     private final Clock clock;
 
     public QuoteService(EventRepository events,
                         TicketTierRepository tiers,
                         PromoCodeRepository promos,
+                        StripeProperties stripeProps,
                         Clock clock) {
         this.events = events;
         this.tiers = tiers;
         this.promos = promos;
+        this.stripeProps = stripeProps;
         this.clock = clock;
+    }
+
+    /**
+     * Buyer-paid platform fee. Kept package-private + static so
+     * {@link com.imin.iminapi.stripe.StripeCheckoutService} can reuse the same math at
+     * Session creation time — the quote and the eventual charge must never disagree.
+     */
+    public static long computeFee(long subtotal, int quantity, int bps, int fixedMinor) {
+        long pct = Math.round(subtotal * (double) bps / 10000.0);
+        long fixed = (long) fixedMinor * quantity;
+        return Math.max(0L, pct + fixed);
     }
 
     @Transactional(readOnly = true)
@@ -114,7 +133,7 @@ public class QuoteService {
         // 3a. Price-drift guard. No-op when the client didn't send `expectedPriceMinor`.
         PublicTierEligibility.assertExpectedPriceMatches(tier, request.expectedPriceMinor());
 
-        // 4. Subtotal. Promo discount applies to the subtotal; fee stays 0 (see class doc).
+        // 4. Subtotal + buyer-visible service fee (see class doc).
         int unitPrice = tier.getPriceMinor();
         long subtotal = (long) unitPrice * rawQty;
 
@@ -126,7 +145,12 @@ public class QuoteService {
             discount = eval.discountMinor();
         }
 
-        long fee = 0L;
+        // Free tier (priceMinor == 0) stays truly free — no flat fee on €0 tickets.
+        long fee = unitPrice == 0
+                ? 0L
+                : computeFee(subtotal, rawQty,
+                        stripeProps.getApplicationFeeBps(),
+                        stripeProps.getApplicationFeeFixedMinor());
         long total = Math.max(0L, subtotal - discount + fee);
 
         return new QuoteResponse(

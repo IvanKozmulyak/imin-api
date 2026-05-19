@@ -39,6 +39,7 @@ imin:
     secret-key: sk_test_dummy
     webhook-secret: whsec_dummy
     application-fee-bps: 500
+    application-fee-fixed-minor: 99
     public-return-url-base: http://localhost:3000
     return-url-base: http://localhost:5173
   reference-analyzer:

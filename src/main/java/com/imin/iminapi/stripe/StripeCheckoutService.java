@@ -14,6 +14,7 @@ import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.service.event.FreeCheckoutService;
 import com.imin.iminapi.service.event.InventoryService;
 import com.imin.iminapi.service.event.PublicTierEligibility;
+import com.imin.iminapi.service.event.QuoteService;
 
 import java.util.List;
 import java.util.Locale;
@@ -45,7 +46,10 @@ import com.imin.iminapi.security.ErrorCode;
  *   <li>Payment runs on the <em>platform</em> account.</li>
  *   <li>{@code transfer_data.destination} points at the org's connected account so the net
  *       proceeds end up on the connected balance.</li>
- *   <li>{@code application_fee_amount} skims our platform cut (default 5%) off the top.</li>
+ *   <li>{@code application_fee_amount} skims our platform cut (default
+ *       {@code €0.99 per ticket + 5% of subtotal}) off the top — equal to the
+ *       buyer-visible "Service fee" line item, so the organizer receives the net
+ *       ticket revenue and we keep the entire fee.</li>
  * </ul>
  *
  * <p>All validation failures collapse to a leak-safe 404 ({@code Event not found}) — exactly
@@ -210,12 +214,16 @@ public class StripeCheckoutService {
             throw e;
         }
 
-        // 5. Compute platform fee (basis points → minor units), bounded by total.
-        // The fee is computed on the *undiscounted* subtotal — Stripe applies the coupon to the
-        // total, but the platform fee follows the line items, so a buyer using a 20% off code
-        // sees the discount reflected only in the final amount charged, not in our cut.
-        long totalMinor = (long) tier.getPriceMinor() * quantity;
-        long applicationFee = Math.round(totalMinor * (double) props.getApplicationFeeBps() / 10000.0);
+        // 5. Compute platform fee. Same formula QuoteService uses so the buyer's
+        // displayed total matches what Stripe charges. The fee is computed on the
+        // *undiscounted* subtotal so a promo doesn't shrink our cut. The application
+        // fee equals the buyer-visible service-fee line item — the organizer is paid
+        // the net ticket revenue (subtotal − discount), platform keeps the fee.
+        long subtotalMinor = (long) tier.getPriceMinor() * quantity;
+        long applicationFee = QuoteService.computeFee(subtotalMinor, quantity,
+                props.getApplicationFeeBps(), props.getApplicationFeeFixedMinor());
+        String currency = event.getCurrency() == null
+                ? "eur" : event.getCurrency().toLowerCase(Locale.ROOT);
 
         // 6. Build the session.
         SessionCreateParams.Builder builder = SessionCreateParams.builder()
@@ -223,7 +231,25 @@ public class StripeCheckoutService {
                 .addLineItem(SessionCreateParams.LineItem.builder()
                         .setPrice(tier.getStripePriceId())
                         .setQuantity((long) quantity)
-                        .build())
+                        .build());
+
+        // Buyer-visible "Service fee" line item — created inline with price_data so it
+        // doesn't need a stored Stripe Price. It's a separate line so a promo coupon
+        // (scoped via applies_to.products below) can't discount the fee.
+        if (applicationFee > 0L) {
+            builder.addLineItem(SessionCreateParams.LineItem.builder()
+                    .setQuantity(1L)
+                    .setPriceData(SessionCreateParams.LineItem.PriceData.builder()
+                            .setCurrency(currency)
+                            .setUnitAmount(applicationFee)
+                            .setProductData(SessionCreateParams.LineItem.PriceData.ProductData.builder()
+                                    .setName("Service fee")
+                                    .build())
+                            .build())
+                    .build());
+        }
+
+        builder
                 // payment_intent_data — destination charge with application fee.
                 // The PaymentIntent is created on the *platform* account; transfer_data.destination
                 // moves the net to the connected account asynchronously.
@@ -244,11 +270,10 @@ public class StripeCheckoutService {
                 .putMetadata("event_id", eventId.toString());
 
         if (promo != null) {
-            // Create a one-shot Stripe Coupon on the platform account and attach it. We don't
-            // pre-create Stripe Coupons at promo-save time because (a) the promo can be edited
-            // up until publish, (b) we'd then have to keep two systems in sync, and (c) a fresh
-            // coupon per checkout lets us tag it with metadata for the webhook to read back.
-            String couponId = createOneShotCoupon(promo, eventId);
+            // Create a one-shot Stripe Coupon on the platform account and attach it. The
+            // coupon is scoped to the ticket Product (applies_to.products) so it never
+            // discounts the service-fee line item — promos discount tickets only.
+            String couponId = createOneShotCoupon(promo, eventId, tier.getStripeProductId());
             builder.addDiscount(SessionCreateParams.Discount.builder()
                     .setCoupon(couponId)
                     .build());
@@ -331,19 +356,26 @@ public class StripeCheckoutService {
 
     /**
      * Create a single-use Stripe Coupon that mirrors our promo. Duration=ONCE so the
-     * discount applies only to this checkout. Metadata.promo_id lets the webhook tie a
-     * paid session back to our PromoCode row for usage tracking.
+     * discount applies only to this checkout. When {@code ticketProductId} is set, the
+     * coupon is scoped via {@code applies_to.products} so it discounts the ticket only,
+     * never the buyer-visible service-fee line item. Metadata.promo_id lets the webhook
+     * tie a paid session back to our PromoCode row for usage tracking.
      */
-    private String createOneShotCoupon(PromoCode promo, UUID eventId) {
-        CouponCreateParams params = CouponCreateParams.builder()
+    private String createOneShotCoupon(PromoCode promo, UUID eventId, String ticketProductId) {
+        CouponCreateParams.Builder params = CouponCreateParams.builder()
                 .setPercentOff(BigDecimal.valueOf(promo.getDiscountPct()))
                 .setDuration(CouponCreateParams.Duration.ONCE)
                 .setName(promo.getCode())
                 .putMetadata("promo_id", promo.getId().toString())
-                .putMetadata("event_id", eventId.toString())
-                .build();
+                .putMetadata("event_id", eventId.toString());
+        if (ticketProductId != null && !ticketProductId.isBlank()) {
+            params.setAppliesTo(CouponCreateParams.AppliesTo.builder()
+                    .addProduct(ticketProductId)
+                    .build());
+        }
+        CouponCreateParams built = params.build();
         try {
-            Coupon coupon = stripeClient.coupons().create(params);
+            Coupon coupon = stripeClient.coupons().create(built);
             return coupon.getId();
         } catch (StripeException e) {
             log.error("Stripe coupon create failed for promo {} on event {}: {}",

@@ -64,8 +64,10 @@ imin:
     secret-key: ${STRIPE_SECRET_KEY:}
     # STRIPE_WEBHOOK_SECRET (whsec_...). Printed by `stripe listen --thin-events ...`.
     webhook-secret: ${STRIPE_WEBHOOK_SECRET:}
-    # Platform's cut of every Destination Charge, in basis points. 500 = 5%.
+    # Platform's percentage cut, in basis points. 500 = 5%.
     application-fee-bps: ${STRIPE_APPLICATION_FEE_BPS:500}
+    # Flat per-ticket platform fee in minor units (cents). 99 = €0.99.
+    application-fee-fixed-minor: ${STRIPE_APPLICATION_FEE_FIXED_MINOR:99}
     # Base URL for the buyer's success/cancel pages (imin-public).
     public-return-url-base: ${STRIPE_PUBLIC_RETURN_URL_BASE:http://localhost:3000}
     # Fallback base URL for the organizer's Connect onboarding return/refresh (imin-webapp).

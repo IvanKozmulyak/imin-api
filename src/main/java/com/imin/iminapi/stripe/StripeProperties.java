@@ -10,8 +10,11 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *       Required at startup — {@link StripeConfig} throws if it's blank.</li>
  *   <li>{@code webhook-secret} — STRIPE_WEBHOOK_SECRET (whsec_...). Required when the
  *       webhook endpoint receives traffic; warned but not fatal at startup.</li>
- *   <li>{@code application-fee-bps} — platform's cut of every Destination Charge in
- *       basis points. Default 500 = 5%.</li>
+ *   <li>{@code application-fee-bps} — platform's percentage cut of every Destination
+ *       Charge in basis points. Default 500 = 5%.</li>
+ *   <li>{@code application-fee-fixed-minor} — flat per-ticket platform fee in minor
+ *       units (cents). Default 99 = €0.99. Total platform fee per checkout is
+ *       {@code fixed × qty + round(subtotal × bps / 10000)}.</li>
  *   <li>{@code public-return-url-base} — base URL for the buyer's success/cancel pages
  *       (the imin-public site). Default {@code http://localhost:3000}.</li>
  *   <li>{@code return-url-base} — fallback for the organizer's Stripe Connect
@@ -25,6 +28,7 @@ public class StripeProperties {
     private String secretKey;
     private String webhookSecret;
     private int applicationFeeBps = 500;
+    private int applicationFeeFixedMinor = 99;
     private String publicReturnUrlBase = "http://localhost:3000";
     private String returnUrlBase = "http://localhost:5173";
 
@@ -36,6 +40,11 @@ public class StripeProperties {
 
     public int getApplicationFeeBps() { return applicationFeeBps; }
     public void setApplicationFeeBps(int applicationFeeBps) { this.applicationFeeBps = applicationFeeBps; }
+
+    public int getApplicationFeeFixedMinor() { return applicationFeeFixedMinor; }
+    public void setApplicationFeeFixedMinor(int applicationFeeFixedMinor) {
+        this.applicationFeeFixedMinor = applicationFeeFixedMinor;
+    }
 
     public String getPublicReturnUrlBase() { return publicReturnUrlBase; }
     public void setPublicReturnUrlBase(String publicReturnUrlBase) { this.publicReturnUrlBase = publicReturnUrlBase; }

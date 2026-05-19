@@ -17,9 +17,11 @@ import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.stripe.StripeProperties;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -39,6 +41,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 @Import({QuoteService.class, QuoteServiceTest.FixedClockConfig.class})
+@EnableConfigurationProperties(StripeProperties.class)
 class QuoteServiceTest {
 
     static final Instant NOW = Instant.parse("2026-06-01T12:00:00Z");
@@ -135,12 +138,13 @@ class QuoteServiceTest {
         QuoteResponse r = quoteService.quote(e.getId(),
                 new QuoteRequest(t.getId(), 2, null, null));
 
+        // Fee = 99 × 2 + round(5000 × 5%) = 198 + 250 = 448.
         assertThat(r.currency()).isEqualTo("EUR");
         assertThat(r.unitPriceMinor()).isEqualTo(2500);
         assertThat(r.subtotalMinor()).isEqualTo(5000L);
         assertThat(r.discountMinor()).isZero();
-        assertThat(r.feeMinor()).isZero();
-        assertThat(r.totalMinor()).isEqualTo(5000L);
+        assertThat(r.feeMinor()).isEqualTo(448L);
+        assertThat(r.totalMinor()).isEqualTo(5448L);
         assertThat(r.promo()).isNull();
     }
 
@@ -155,9 +159,11 @@ class QuoteServiceTest {
         QuoteResponse r = quoteService.quote(e.getId(),
                 new QuoteRequest(t.getId(), 2, "friends10", null)); // case-insensitive
 
+        // Fee follows the undiscounted subtotal: 99 × 2 + round(5000 × 5%) = 448.
         assertThat(r.subtotalMinor()).isEqualTo(5000L);
         assertThat(r.discountMinor()).isEqualTo(500L);
-        assertThat(r.totalMinor()).isEqualTo(4500L);
+        assertThat(r.feeMinor()).isEqualTo(448L);
+        assertThat(r.totalMinor()).isEqualTo(4948L);
         assertThat(r.promo()).isNotNull();
         assertThat(r.promo().applied()).isTrue();
         assertThat(r.promo().code()).isEqualTo("FRIENDS10");
@@ -181,7 +187,9 @@ class QuoteServiceTest {
                 new QuoteRequest(t.getId(), 2, "NOPE", null));
 
         assertThat(r.discountMinor()).isZero();
-        assertThat(r.totalMinor()).isEqualTo(5000L);
+        // Invalid promo → no discount; fee still applies (99 × 2 + 5% × 5000 = 448).
+        assertThat(r.feeMinor()).isEqualTo(448L);
+        assertThat(r.totalMinor()).isEqualTo(5448L);
         assertThat(r.promo()).isNotNull();
         assertThat(r.promo().applied()).isFalse();
         assertThat(r.promo().code()).isEqualTo("NOPE");
