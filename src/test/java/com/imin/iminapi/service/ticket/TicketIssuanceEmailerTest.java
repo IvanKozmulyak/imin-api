@@ -66,8 +66,11 @@ class TicketIssuanceEmailerTest {
         when(events.findById(eventId)).thenReturn(Optional.of(event));
         when(tickets.findByOrderIdOrderByCreatedAtAsc(orderId)).thenReturn(List.of(t1, t2));
 
+        TicketProperties ticketProps = new TicketProperties();
+        ticketProps.setSigningSecret("x".repeat(32));
+        ticketProps.setApiPublicBaseUrl("https://api.imin.test");
         TicketIssuanceEmailer emailer = new TicketIssuanceEmailer(
-                orders, tickets, events, email, renderer, emailProps, wallet);
+                orders, tickets, events, email, renderer, emailProps, ticketProps, wallet);
         emailer.send(orderId);
 
         ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
@@ -77,17 +80,17 @@ class TicketIssuanceEmailerTest {
 
         assertThat(subject.getValue()).isEqualTo("Your tickets for Saturn Night");
         assertThat(html.getValue())
-                .contains("/api/v1/public/tickets/TKT_A/qr.png")
-                .contains("/api/v1/public/tickets/TKT_B/qr.png")
-                .contains("/api/v1/public/tickets/TKT_A/apple-wallet.pkpass")
-                .contains("/api/v1/public/tickets/TKT_B/apple-wallet.pkpass")
-                .contains("/order/ORDER_TOK")
-                .contains("/recover");
+                .contains("https://api.imin.test/api/v1/public/tickets/TKT_A/qr.png")
+                .contains("https://api.imin.test/api/v1/public/tickets/TKT_B/qr.png")
+                .contains("https://api.imin.test/api/v1/public/tickets/TKT_A/apple-wallet.pkpass")
+                .contains("https://imin.wtf/tickets/TKT_A")
+                .contains("https://imin.wtf/order/ORDER_TOK")
+                .contains("https://imin.wtf/recover");
         assertThat(text.getValue())
-                .contains("/tickets/TKT_A")
-                .contains("/tickets/TKT_B")
-                .contains("/order/ORDER_TOK")
-                .contains("/recover");
+                .contains("https://imin.wtf/tickets/TKT_A")
+                .contains("https://imin.wtf/tickets/TKT_B")
+                .contains("https://imin.wtf/order/ORDER_TOK")
+                .contains("https://imin.wtf/recover");
     }
 
     @Test
@@ -122,8 +125,11 @@ class TicketIssuanceEmailerTest {
         when(events.findById(eventId)).thenReturn(Optional.of(event));
         when(tickets.findByOrderIdOrderByCreatedAtAsc(orderId)).thenReturn(List.of(t));
 
+        TicketProperties ticketProps = new TicketProperties();
+        ticketProps.setSigningSecret("x".repeat(32));
+        ticketProps.setApiPublicBaseUrl("https://api.imin.test");
         TicketIssuanceEmailer emailer = new TicketIssuanceEmailer(
-                orders, tickets, events, email, renderer, emailProps, wallet);
+                orders, tickets, events, email, renderer, emailProps, ticketProps, wallet);
         emailer.send(orderId);
 
         ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);

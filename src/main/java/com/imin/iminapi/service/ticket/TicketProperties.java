@@ -14,6 +14,13 @@ public class TicketProperties {
     private String signingSecret = "";
     private int recoveryWindowDays = 90;
     private int recoveryMaxPerHour = 5;
+    /**
+     * The API's own public base URL. Used to build absolute QR / pkpass links
+     * for emails and the ticket detail response so the buyer's email client
+     * can reach them. Set via IMIN_API_PUBLIC_BASE_URL; defaults to localhost
+     * for dev. Distinct from imin.email.app-base-url (the buyer site).
+     */
+    private String apiPublicBaseUrl = "http://localhost:8080";
 
     public String getSigningSecret() { return signingSecret; }
     public void setSigningSecret(String signingSecret) { this.signingSecret = signingSecret; }
@@ -21,4 +28,6 @@ public class TicketProperties {
     public void setRecoveryWindowDays(int recoveryWindowDays) { this.recoveryWindowDays = recoveryWindowDays; }
     public int getRecoveryMaxPerHour() { return recoveryMaxPerHour; }
     public void setRecoveryMaxPerHour(int recoveryMaxPerHour) { this.recoveryMaxPerHour = recoveryMaxPerHour; }
+    public String getApiPublicBaseUrl() { return apiPublicBaseUrl; }
+    public void setApiPublicBaseUrl(String apiPublicBaseUrl) { this.apiPublicBaseUrl = apiPublicBaseUrl; }
 }

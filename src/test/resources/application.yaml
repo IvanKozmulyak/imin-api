@@ -55,6 +55,7 @@ imin:
     signing-secret: test-ticket-signing-secret-32-bytes-zzzz
     recovery-window-days: 90
     recovery-max-per-hour: 5
+    api-public-base-url: http://localhost:8080
   api:
     base-path: /api/v1
   auth:

@@ -46,6 +46,7 @@ public class TicketIssuanceEmailer {
     private final EmailService email;
     private final EmailTemplateRenderer renderer;
     private final EmailProperties emailProps;
+    private final TicketProperties ticketProps;
     private final AppleWalletPassService wallet;
 
     public TicketIssuanceEmailer(OrderRepository orders,
@@ -54,6 +55,7 @@ public class TicketIssuanceEmailer {
                                   EmailService email,
                                   EmailTemplateRenderer renderer,
                                   EmailProperties emailProps,
+                                  TicketProperties ticketProps,
                                   AppleWalletPassService wallet) {
         this.orders = orders;
         this.tickets = tickets;
@@ -61,6 +63,7 @@ public class TicketIssuanceEmailer {
         this.email = email;
         this.renderer = renderer;
         this.emailProps = emailProps;
+        this.ticketProps = ticketProps;
         this.wallet = wallet;
     }
 
@@ -86,16 +89,17 @@ public class TicketIssuanceEmailer {
             return;
         }
 
-        String base = baseUrl();
-        String orderUrl = base + "/order/" + order.getToken();
-        String recoverUrl = base + "/recover";
+        String siteBase = buyerSiteBase();
+        String apiBase = apiBase();
+        String orderUrl = siteBase + "/order/" + order.getToken();
+        String recoverUrl = siteBase + "/recover";
         String whenText = formatWhen(event);
         String whereText = formatWhere(event);
         String whereSep = (whenText.isEmpty() || whereText.isEmpty()) ? "" : " · ";
 
         boolean walletOn = wallet.isConfigured();
-        String htmlBlocks = renderHtmlBlocks(issued, base, walletOn);
-        String textBlocks = renderTextBlocks(issued, base, walletOn);
+        String htmlBlocks = renderHtmlBlocks(issued, siteBase, apiBase, walletOn);
+        String textBlocks = renderTextBlocks(issued, siteBase, apiBase, walletOn);
 
         // The renderer auto-escapes every value when emitting HTML. We need to
         // inject pre-built HTML for the per-ticket blocks, so render with a
@@ -122,13 +126,13 @@ public class TicketIssuanceEmailer {
                 order.getId(), issued.size(), order.getEmail());
     }
 
-    private String renderHtmlBlocks(List<Ticket> issued, String base, boolean walletOn) {
+    private String renderHtmlBlocks(List<Ticket> issued, String siteBase, String apiBase, boolean walletOn) {
         StringBuilder b = new StringBuilder();
         for (int i = 0; i < issued.size(); i++) {
             Ticket t = issued.get(i);
-            String qrUrl = base + "/api/v1/public/tickets/" + t.getToken() + "/qr.png";
-            String ticketUrl = base + "/tickets/" + t.getToken();
-            String walletUrl = base + "/api/v1/public/tickets/" + t.getToken() + "/apple-wallet.pkpass";
+            String qrUrl = apiBase + "/api/v1/public/tickets/" + t.getToken() + "/qr.png";
+            String ticketUrl = siteBase + "/tickets/" + t.getToken();
+            String walletUrl = apiBase + "/api/v1/public/tickets/" + t.getToken() + "/apple-wallet.pkpass";
             String label = "Ticket " + (i + 1) + " of " + issued.size() + " — " + htmlEscape(t.getTierName());
 
             b.append("<div style=\"margin: 0 0 28px;\">")
@@ -146,12 +150,12 @@ public class TicketIssuanceEmailer {
         return b.toString();
     }
 
-    private String renderTextBlocks(List<Ticket> issued, String base, boolean walletOn) {
+    private String renderTextBlocks(List<Ticket> issued, String siteBase, String apiBase, boolean walletOn) {
         StringBuilder b = new StringBuilder();
         for (int i = 0; i < issued.size(); i++) {
             Ticket t = issued.get(i);
-            String ticketUrl = base + "/tickets/" + t.getToken();
-            String walletUrl = base + "/api/v1/public/tickets/" + t.getToken() + "/apple-wallet.pkpass";
+            String ticketUrl = siteBase + "/tickets/" + t.getToken();
+            String walletUrl = apiBase + "/api/v1/public/tickets/" + t.getToken() + "/apple-wallet.pkpass";
             b.append("Ticket ").append(i + 1).append(" of ").append(issued.size())
                     .append(" — ").append(nullSafe(t.getTierName())).append('\n');
             b.append("  Open: ").append(ticketUrl).append('\n');
@@ -163,10 +167,17 @@ public class TicketIssuanceEmailer {
         return b.toString();
     }
 
-    private String baseUrl() {
-        String base = emailProps.getAppBaseUrl();
-        if (base != null && base.endsWith("/")) base = base.substring(0, base.length() - 1);
-        return base == null ? "" : base;
+    private String buyerSiteBase() {
+        return trimTrailingSlash(emailProps.getAppBaseUrl());
+    }
+
+    private String apiBase() {
+        return trimTrailingSlash(ticketProps.getApiPublicBaseUrl());
+    }
+
+    private static String trimTrailingSlash(String s) {
+        if (s == null) return "";
+        return s.endsWith("/") ? s.substring(0, s.length() - 1) : s;
     }
 
     private String formatWhen(Event event) {

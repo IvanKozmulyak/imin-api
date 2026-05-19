@@ -2,7 +2,6 @@ package com.imin.iminapi.controller.publicapi;
 
 import com.imin.iminapi.dto.publicapi.PublicOrderResponse;
 import com.imin.iminapi.dto.publicapi.PublicTicketResponse;
-import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Ticket;
@@ -13,6 +12,7 @@ import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.service.ticket.AppleWalletPassService;
 import com.imin.iminapi.service.ticket.QrPayloadSigner;
+import com.imin.iminapi.service.ticket.TicketProperties;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
@@ -41,20 +41,20 @@ public class PublicOrderController {
     private final EventRepository events;
     private final QrPayloadSigner qrSigner;
     private final AppleWalletPassService wallet;
-    private final EmailProperties emailProps;
+    private final TicketProperties ticketProps;
 
     public PublicOrderController(OrderRepository orders,
                                   TicketRepository tickets,
                                   EventRepository events,
                                   QrPayloadSigner qrSigner,
                                   AppleWalletPassService wallet,
-                                  EmailProperties emailProps) {
+                                  TicketProperties ticketProps) {
         this.orders = orders;
         this.tickets = tickets;
         this.events = events;
         this.qrSigner = qrSigner;
         this.wallet = wallet;
-        this.emailProps = emailProps;
+        this.ticketProps = ticketProps;
     }
 
     @GetMapping("/api/v1/public/orders/{token}")
@@ -132,7 +132,9 @@ public class PublicOrderController {
     }
 
     private String baseUrl() {
-        String base = emailProps.getAppBaseUrl();
+        // API's own public URL — the QR endpoint lives on this server, not on the
+        // buyer-facing site. So the absolute URL we hand the FE / email must point here.
+        String base = ticketProps.getApiPublicBaseUrl();
         if (base != null && base.endsWith("/")) base = base.substring(0, base.length() - 1);
         return base == null ? "" : base;
     }

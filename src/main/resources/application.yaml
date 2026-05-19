@@ -88,6 +88,10 @@ imin:
     recovery-window-days: ${IMIN_TICKET_RECOVERY_WINDOW_DAYS:90}
     # Self-recovery rate limit per (email, hour) and (ip, hour).
     recovery-max-per-hour: ${IMIN_TICKET_RECOVERY_MAX_PER_HOUR:5}
+    # The API's own public base URL (no trailing slash). Used to build absolute
+    # QR / pkpass links the buyer's email client can fetch. Distinct from
+    # imin.email.app-base-url which is the buyer-facing site.
+    api-public-base-url: ${IMIN_API_PUBLIC_BASE_URL:http://localhost:8080}
   cors:
     allowed-origin-patterns: ${CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:3000,http://localhost:5173,https://imin-webapp.vercel.app,https://imin-webapp-*.vercel.app,https://dashboard.imin.wtf,https://imin.wtf,https://www.imin.wtf,https://imin-public.vercel.app,https://imin-public-*.vercel.app}
   api:
