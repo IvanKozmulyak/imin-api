@@ -241,7 +241,8 @@ class StripeCheckoutServiceTest {
         com.imin.iminapi.model.Order order = new com.imin.iminapi.model.Order();
         order.setId(UUID.randomUUID());
         order.setToken("ord_abc");
-        when(freeCheckoutService.issueFreeOrder(any(), any(), eq(1), eq("free@example.com")))
+        when(freeCheckoutService.issueFreeOrder(any(), any(), eq(1), eq("free@example.com"),
+                org.mockito.ArgumentMatchers.isNull()))
                 .thenReturn(order);
         when(freeCheckoutService.findOrderTickets(order.getId())).thenReturn(java.util.List.of());
         when(freeCheckoutService.orderUrl(order)).thenReturn("http://localhost:3000/order/ord_abc");
@@ -249,7 +250,8 @@ class StripeCheckoutServiceTest {
         String url = svc.createCheckoutSession(eventId, tierId, 1, null, 0, "free@example.com");
 
         assertThat(url).isEqualTo("http://localhost:3000/order/ord_abc");
-        verify(freeCheckoutService).issueFreeOrder(any(), any(), eq(1), eq("free@example.com"));
+        verify(freeCheckoutService).issueFreeOrder(any(), any(), eq(1), eq("free@example.com"),
+                org.mockito.ArgumentMatchers.isNull());
         verify(freeCheckoutService).sendConfirmation(eq(order), any(), any());
         // Stripe must NOT be called for free orders.
         verify(sessionService, never()).create(any(SessionCreateParams.class));
@@ -269,7 +271,8 @@ class StripeCheckoutServiceTest {
                     assertThat(ae.fields()).containsKey("email");
                 });
 
-        verify(freeCheckoutService, never()).issueFreeOrder(any(), any(), org.mockito.ArgumentMatchers.anyInt(), any());
+        verify(freeCheckoutService, never()).issueFreeOrder(any(), any(),
+                org.mockito.ArgumentMatchers.anyInt(), any(), any());
     }
 
     @Test
@@ -278,7 +281,8 @@ class StripeCheckoutServiceTest {
         freeTier.setPriceMinor(0);
         when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(freeTier));
 
-        when(freeCheckoutService.issueFreeOrder(any(), any(), org.mockito.ArgumentMatchers.anyInt(), any()))
+        when(freeCheckoutService.issueFreeOrder(any(), any(),
+                org.mockito.ArgumentMatchers.anyInt(), any(), any()))
                 .thenThrow(new ApiException(HttpStatus.CONFLICT,
                         com.imin.iminapi.security.ErrorCode.INVALID_STATE,
                         "Not enough tickets available"));
@@ -287,5 +291,33 @@ class StripeCheckoutServiceTest {
                 svc.createCheckoutSession(eventId, tierId, 1, null, 0, "free@example.com"))
                 .isInstanceOf(ApiException.class)
                 .satisfies(ex -> assertThat(((ApiException) ex).status()).isEqualTo(HttpStatus.NOT_FOUND));
+    }
+
+    @Test
+    void createCheckoutSession_dispatchesToFreeFlow_whenPromoZeroesPaidTier() throws Exception {
+        // Paid tier (1000) with a 100%-off promo → net 0 → must bypass Stripe.
+        com.imin.iminapi.model.PromoCode promo = new com.imin.iminapi.model.PromoCode();
+        promo.setId(UUID.randomUUID());
+        promo.setEventId(eventId);
+        promo.setCode("ALLFREE");
+        promo.setDiscountPct(100);
+        promo.setMaxUses(50);
+        promo.setUsedCount(0);
+        promo.setEnabled(true);
+        when(promos.findByEventId(eventId)).thenReturn(java.util.List.of(promo));
+
+        com.imin.iminapi.model.Order order = new com.imin.iminapi.model.Order();
+        order.setId(UUID.randomUUID());
+        order.setToken("ord_zeroed");
+        when(freeCheckoutService.issueFreeOrder(any(), any(), eq(1), eq("buyer@example.com"), eq(promo)))
+                .thenReturn(order);
+        when(freeCheckoutService.findOrderTickets(order.getId())).thenReturn(java.util.List.of());
+        when(freeCheckoutService.orderUrl(order)).thenReturn("http://localhost:3000/order/ord_zeroed");
+
+        String url = svc.createCheckoutSession(eventId, tierId, 1, "ALLFREE", 1000, "buyer@example.com");
+
+        assertThat(url).isEqualTo("http://localhost:3000/order/ord_zeroed");
+        verify(freeCheckoutService).issueFreeOrder(any(), any(), eq(1), eq("buyer@example.com"), eq(promo));
+        verify(sessionService, never()).create(any(SessionCreateParams.class));
     }
 }

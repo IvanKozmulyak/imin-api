@@ -4,9 +4,11 @@ import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
+import com.imin.iminapi.model.PromoCode;
 import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.model.TicketTier;
 import com.imin.iminapi.repository.OrderRepository;
+import com.imin.iminapi.repository.PromoCodeRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,17 +40,20 @@ public class FreeCheckoutService {
 
     private final OrderRepository orders;
     private final TicketRepository tickets;
+    private final PromoCodeRepository promos;
     private final InventoryService inventory;
     private final EmailService email;
     private final EmailProperties emailProps;
 
     public FreeCheckoutService(OrderRepository orders,
                                 TicketRepository tickets,
+                                PromoCodeRepository promos,
                                 InventoryService inventory,
                                 EmailService email,
                                 EmailProperties emailProps) {
         this.orders = orders;
         this.tickets = tickets;
+        this.promos = promos;
         this.inventory = inventory;
         this.email = email;
         this.emailProps = emailProps;
@@ -59,9 +64,16 @@ public class FreeCheckoutService {
      * and returns the public order URL the buyer should be redirected to. Email
      * delivery is fired AFTER this method returns (caller-side); see
      * {@link #sendConfirmation(Order, Event, List)}.
+     *
+     * @param appliedPromo the promo whose discount zeroed the total. Pass {@code null}
+     *                     when the tier itself was already free. When non-null, the
+     *                     promo's {@code used_count} is incremented atomically in the
+     *                     same transaction so usage caps are enforced consistently
+     *                     between the paid (webhook-driven) and free (inline) paths.
      */
     @Transactional
-    public Order issueFreeOrder(Event event, TicketTier tier, int quantity, String buyerEmail) {
+    public Order issueFreeOrder(Event event, TicketTier tier, int quantity,
+                                 String buyerEmail, PromoCode appliedPromo) {
         inventory.reserve(tier.getId(), quantity);
         inventory.confirmSold(tier.getId(), quantity);
 
@@ -73,7 +85,17 @@ public class FreeCheckoutService {
         order.setTotalMinor(0L);
         order.setCurrency(event.getCurrency());
         order.setPaymentMethod("free");
+        if (appliedPromo != null) {
+            order.setPromoCodeId(appliedPromo.getId());
+        }
         orders.save(order);
+
+        // Increment promo usage inline. The paid path does this on the
+        // checkout.session.completed webhook; here we have to fold it into the
+        // same transaction so a free-checkout race can't over-redeem.
+        if (appliedPromo != null) {
+            promos.incrementUsedCount(appliedPromo.getId());
+        }
 
         for (int i = 0; i < quantity; i++) {
             Ticket t = new Ticket();

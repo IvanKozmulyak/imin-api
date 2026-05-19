@@ -130,12 +130,23 @@ public class StripeCheckoutService {
         // When supplied and mismatched → 409 PRICE_CHANGED with `currentPriceMinor` in fields.
         PublicTierEligibility.assertExpectedPriceMatches(tier, expectedPriceMinor);
 
-        // 2b. Free flow. When the tier itself is free (priceMinor == 0) we bypass Stripe
-        // entirely — issue the tickets directly, email the buyer, return the order URL.
-        // Promo-driven 100%-off on paid tiers is not yet handled by this branch; that
-        // requires applying the promo discount here and only falling through to Stripe
-        // when the net total is positive. Out of scope for v1.
-        if (tier.getPriceMinor() == 0) {
+        // 2b. Resolve promo (if any) BEFORE deciding free vs paid. An invalid promo
+        // throws 400 regardless of the eventual flow — that's a buyer-fixable typo.
+        PromoCode promo = resolvePromoCode(eventId, promoCode);
+
+        // 2c. Compute the net total after discount. Same math the quote endpoint
+        // uses (see QuoteService.evaluatePromo). If the net is 0 — whether because
+        // the tier itself is free OR a 100%-off promo zeroed out a paid tier — we
+        // bypass Stripe entirely. Stripe Checkout *can* handle $0 sessions, but
+        // routing them through Stripe is wasted latency and a redundant network
+        // hop for the buyer; keeping the free path local also avoids needing a
+        // Stripe-side org account, useful for free events from orgs that haven't
+        // finished onboarding.
+        long subtotal = (long) tier.getPriceMinor() * quantity;
+        long discount = computeDiscount(promo, subtotal);
+        long netTotal = Math.max(0L, subtotal - discount);
+
+        if (netTotal == 0L) {
             String email = buyerEmail == null ? null : buyerEmail.trim();
             if (email == null || email.isEmpty()) {
                 throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
@@ -149,7 +160,7 @@ public class StripeCheckoutService {
             }
             Order order;
             try {
-                order = freeCheckoutService.issueFreeOrder(event, tier, quantity, email);
+                order = freeCheckoutService.issueFreeOrder(event, tier, quantity, email, promo);
             } catch (ApiException e) {
                 // Inventory shortage → collapse to leak-safe 404 like the paid path.
                 if (e.status() == HttpStatus.CONFLICT) {
@@ -182,8 +193,7 @@ public class StripeCheckoutService {
             throw ApiException.notFound("Event");
         }
 
-        // 4. Resolve the promo code (if any). Validation errors are 400 — the buyer can fix them.
-        PromoCode promo = resolvePromoCode(eventId, promoCode);
+        // Promo was resolved earlier (before the free-vs-paid branch).
 
         // 4a. Reserve inventory BEFORE creating the Stripe Session. This locks the tier row
         // and atomically claims `quantity` seats. If we can't reserve, we collapse to 404 to
@@ -305,6 +315,18 @@ public class StripeCheckoutService {
                     Map.of("promoCode", "exhausted"));
         }
         return promo;
+    }
+
+    /**
+     * Same math as {@link com.imin.iminapi.service.event.QuoteService} so the
+     * preview and the eventual charge can never disagree on the discount. Rounded
+     * half-up to match Stripe Coupon behaviour, clamped at the subtotal so a
+     * 100%+ discount stays at the subtotal rather than going negative.
+     */
+    private static long computeDiscount(PromoCode promo, long subtotal) {
+        if (promo == null) return 0L;
+        long discount = Math.round(subtotal * (double) promo.getDiscountPct() / 100.0);
+        return Math.min(discount, subtotal);
     }
 
     /**
