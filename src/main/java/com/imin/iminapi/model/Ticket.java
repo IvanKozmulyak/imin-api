@@ -39,9 +39,15 @@ public class Ticket {
     @Column(name = "tier_name", nullable = false, length = 128)
     private String tierName;
 
-    /** "pre" | "checkedIn" | "revoked". State machine deferred — pre is the only value today. */
+    /** "issued" | "redeemed" | "revoked". Legacy rows may carry "pre" (synonym for "issued"). */
     @Column(nullable = false, length = 16)
-    private String state = "pre";
+    private String state = "issued";
+
+    @Column(name = "redeemed_at")
+    private Instant redeemedAt;
+
+    @Column(name = "redeemed_by_user_id")
+    private UUID redeemedByUserId;
 
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Times.nowMicros();

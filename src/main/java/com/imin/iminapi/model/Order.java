@@ -55,6 +55,9 @@ public class Order {
     @Column(name = "stripe_session_id", length = 128)
     private String stripeSessionId;
 
+    @Column(name = "stripe_payment_intent_id", length = 128)
+    private String stripePaymentIntentId;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Times.nowMicros();
 
