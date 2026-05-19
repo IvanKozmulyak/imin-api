@@ -99,6 +99,35 @@ class TicketTierValidatorTest {
         assertThat(sut.validateCreate(req, eventNoEndsAt())).doesNotContainKey("priceMinor");
     }
 
+    @Test
+    void validateCreate_rejects_priceMinor_below_floor() {
+        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", 49, 100, null, null, null, null);
+        Map<String, String> errors = sut.validateCreate(req, eventNoEndsAt());
+        assertThat(errors).containsEntry("priceMinor", "must be 0 (free) or at least 50");
+    }
+
+    @Test
+    void validateCreate_accepts_priceMinor_at_floor() {
+        TicketTierCreateRequest req = new TicketTierCreateRequest("GA", 50, 100, null, null, null, null);
+        assertThat(sut.validateCreate(req, eventNoEndsAt())).doesNotContainKey("priceMinor");
+    }
+
+    @Test
+    void validatePatch_rejects_priceMinor_below_floor() {
+        TicketTierPatchRequest req = new TicketTierPatchRequest(
+                null, 25, null, null, null, null, null, null, null);
+        Map<String, String> errors = sut.validatePatch(req, existingTier(0), eventNoEndsAt());
+        assertThat(errors).containsEntry("priceMinor", "must be 0 (free) or at least 50");
+    }
+
+    @Test
+    void validatePatch_accepts_priceMinor_zero() {
+        TicketTierPatchRequest req = new TicketTierPatchRequest(
+                null, 0, null, null, null, null, null, null, null);
+        assertThat(sut.validatePatch(req, existingTier(0), eventNoEndsAt()))
+                .doesNotContainKey("priceMinor");
+    }
+
     // ── validateCreate — quantity ────────────────────────────────────────────────
 
     @Test

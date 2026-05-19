@@ -16,6 +16,19 @@ import java.util.Map;
 public class TicketTierValidator {
 
     private static final int MAX_NAME_LENGTH = 128;
+    /**
+     * Minimum allowed non-zero price in minor units.
+     *
+     * <p>Stripe's minimum charge floor is currency-dependent in reality
+     * (~€0.50 / $0.50 / £0.30 — see Stripe's "minimum amount per currency" docs),
+     * but a non-zero price below 50 minor units is silently unbuyable in every
+     * currency we support today. 50 is therefore a universal v1 floor: any
+     * paid tier with {@code 0 < priceMinor < 50} is rejected at create/update.
+     * Zero is still allowed (free tickets); see Feature 4 (free checkout flow).
+     */
+    static final int MIN_NONZERO_PRICE_MINOR = 50;
+    private static final String PRICE_MINOR_RULE_MSG =
+            "must be 0 (free) or at least " + MIN_NONZERO_PRICE_MINOR;
 
     private final Clock clock;
 
@@ -32,11 +45,13 @@ public class TicketTierValidator {
         // name: required, non-blank, ≤128
         validateName(req.name(), true, errors);
 
-        // priceMinor: required, ≥ 0
+        // priceMinor: required, 0 (free) or ≥ MIN_NONZERO_PRICE_MINOR.
         if (req.priceMinor() == null) {
             errors.put("priceMinor", "required");
         } else if (req.priceMinor() < 0) {
             errors.put("priceMinor", "must be ≥ 0");
+        } else if (req.priceMinor() > 0 && req.priceMinor() < MIN_NONZERO_PRICE_MINOR) {
+            errors.put("priceMinor", PRICE_MINOR_RULE_MSG);
         }
 
         // quantity: required, > 0
@@ -84,9 +99,13 @@ public class TicketTierValidator {
         // name: non-blank, ≤128 (only if provided)
         validateName(req.name(), false, errors);
 
-        // priceMinor: ≥ 0
-        if (req.priceMinor() != null && req.priceMinor() < 0) {
-            errors.put("priceMinor", "must be ≥ 0");
+        // priceMinor: 0 (free) or ≥ MIN_NONZERO_PRICE_MINOR.
+        if (req.priceMinor() != null) {
+            if (req.priceMinor() < 0) {
+                errors.put("priceMinor", "must be ≥ 0");
+            } else if (req.priceMinor() > 0 && req.priceMinor() < MIN_NONZERO_PRICE_MINOR) {
+                errors.put("priceMinor", PRICE_MINOR_RULE_MSG);
+            }
         }
 
         // quantity: > 0 and (when reducing) ≥ existing.sold
