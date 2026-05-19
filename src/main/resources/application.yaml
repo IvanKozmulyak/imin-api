@@ -80,6 +80,14 @@ imin:
     from-name: ${IMIN_EMAIL_FROM_NAME:imin}
     reply-to: ${IMIN_EMAIL_REPLY_TO:}
     app-base-url: ${IMIN_APP_BASE_URL:http://localhost:3000}
+  ticket:
+    # HMAC-SHA256 secret used to tamper-evidence QR payloads. 32+ bytes of entropy.
+    # Required at boot — QrPayloadSigner throws if blank.
+    signing-secret: ${IMIN_TICKET_SIGNING_SECRET:}
+    # Self-recovery window — only orders newer than this are re-mailed.
+    recovery-window-days: ${IMIN_TICKET_RECOVERY_WINDOW_DAYS:90}
+    # Self-recovery rate limit per (email, hour) and (ip, hour).
+    recovery-max-per-hour: ${IMIN_TICKET_RECOVERY_MAX_PER_HOUR:5}
   cors:
     allowed-origin-patterns: ${CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:3000,http://localhost:5173,https://imin-webapp.vercel.app,https://imin-webapp-*.vercel.app,https://dashboard.imin.wtf,https://imin.wtf,https://www.imin.wtf,https://imin-public.vercel.app,https://imin-public-*.vercel.app}
   api:

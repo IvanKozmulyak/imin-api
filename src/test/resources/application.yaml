@@ -50,6 +50,11 @@ imin:
     from-name: imin-test
     reply-to: ""
     app-base-url: http://localhost:3000
+  ticket:
+    # Deterministic test secret. Any 32+ char value works.
+    signing-secret: test-ticket-signing-secret-32-bytes-zzzz
+    recovery-window-days: 90
+    recovery-max-per-hour: 5
   api:
     base-path: /api/v1
   auth:
