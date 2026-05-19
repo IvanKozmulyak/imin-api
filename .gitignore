@@ -39,5 +39,5 @@ build/
 .env.*.local
 .DS_Store
 
-### Claude Code agent worktrees (per-session, never tracked) ###
-.claude/worktrees/
+### Claude Code per-session state (settings, worktrees, etc.) ###
+.claude/
