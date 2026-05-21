@@ -13,9 +13,9 @@ import org.springframework.context.annotation.Configuration;
  *
  * STRIPE_SECRET_KEY is REQUIRED. If absent we fail fast at startup so the operator
  * can't accidentally deploy a build that would 500 the first time a buyer hits
- * checkout. STRIPE_WEBHOOK_SECRET is only required for the webhook endpoint;
- * we log a warning instead of failing so local dev without `stripe listen`
- * still boots.
+ * checkout. STRIPE_WEBHOOK_SECRET_V1 / _V2 are only required for the matching
+ * webhook endpoints; we log warnings instead of failing so local dev without
+ * `stripe listen` still boots.
  */
 @Configuration
 @EnableConfigurationProperties(StripeProperties.class)
@@ -30,9 +30,13 @@ public class StripeConfig {
             // Fail fast — see README for setup. The user must set STRIPE_SECRET_KEY before booting.
             throw new IllegalStateException("STRIPE_SECRET_KEY is not set — see README for setup");
         }
-        if (props.getWebhookSecret() == null || props.getWebhookSecret().isBlank()) {
-            log.warn("STRIPE_WEBHOOK_SECRET is not set — POST /api/v1/stripe/webhook will reject all requests. "
-                    + "Run `stripe listen --thin-events ...` and export the printed whsec_... value.");
+        if (props.getWebhookSecretV1() == null || props.getWebhookSecretV1().isBlank()) {
+            log.warn("STRIPE_WEBHOOK_SECRET_V1 is not set — POST /api/v1/stripe/webhook/v1 will reject all requests. "
+                    + "Set it to the whsec_... printed by `stripe listen` for the V1 endpoint.");
+        }
+        if (props.getWebhookSecretV2() == null || props.getWebhookSecretV2().isBlank()) {
+            log.warn("STRIPE_WEBHOOK_SECRET_V2 is not set — POST /api/v1/stripe/webhook/v2 will reject all requests. "
+                    + "Set it to the whsec_... printed by `stripe listen` for the V2 endpoint.");
         }
         // We construct StripeClient with the API key only. Stripe-Java pins the API version
         // it was built against; we deliberately do NOT pin a custom version because the v2

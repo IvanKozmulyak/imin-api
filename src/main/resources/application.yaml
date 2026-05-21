@@ -62,8 +62,14 @@ imin:
   stripe:
     # STRIPE_SECRET_KEY (sk_test_... locally, sk_live_... in prod). Required — see README.
     secret-key: ${STRIPE_SECRET_KEY:}
-    # STRIPE_WEBHOOK_SECRET (whsec_...). Printed by `stripe listen --thin-events ...`.
-    webhook-secret: ${STRIPE_WEBHOOK_SECRET:}
+    # Signing secret for /api/v1/stripe/webhook/v1 (V1 payments events:
+    # payment_intent.succeeded / .payment_failed, checkout.session.expired).
+    # Printed by `stripe listen` for the V1 endpoint.
+    webhook-secret-v1: ${STRIPE_WEBHOOK_SECRET_V1:}
+    # Signing secret for /api/v1/stripe/webhook/v2 (V2 thin events:
+    # v2.core.account.requirements.updated, v2.core.account.recipient.capability_status_updated).
+    # Printed by `stripe listen` for the V2 endpoint.
+    webhook-secret-v2: ${STRIPE_WEBHOOK_SECRET_V2:}
     # Platform's percentage cut, in basis points. 500 = 5%.
     application-fee-bps: ${STRIPE_APPLICATION_FEE_BPS:500}
     # Flat per-ticket platform fee in minor units (cents). 99 = €0.99.
@@ -72,6 +78,10 @@ imin:
     public-return-url-base: ${STRIPE_PUBLIC_RETURN_URL_BASE:http://localhost:3000}
     # Fallback base URL for the organizer's Connect onboarding return/refresh (imin-webapp).
     return-url-base: ${STRIPE_RETURN_URL_BASE:http://localhost:5173}
+    # Stripe Checkout session TTL in minutes. Stripe's documented minimum is 30
+    # (anything shorter is rejected). Mirrored into TicketReservation.expires_at
+    # so the ReservationSweeper releases stale holds even when webhooks miss.
+    checkout-session-ttl-minutes: ${STRIPE_CHECKOUT_SESSION_TTL_MINUTES:30}
   reference-analyzer:
     model-id: ${IMIN_REFERENCE_ANALYZER_MODEL:openai/gpt-4o-mini}
   email:

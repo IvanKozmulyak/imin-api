@@ -206,8 +206,16 @@ public class StripeCheckoutService {
         // preserve the leak-safe behavior (don't reveal "sold out vs not found vs wrong tier"
         // to the buyer-facing public API). If reserve succeeds but Stripe later fails, we
         // release the hold below before rethrowing so the buyer doesn't get a phantom hold.
+        //
+        // The reservation row is written with its expires_at mirroring the Stripe session's
+        // expires_at (Stripe minimum: 30 minutes), so the ReservationSweeper releases the
+        // hold even if checkout.session.expired never reaches us.
+        Instant expiresAt = clock.instant().plus(Duration.ofMinutes(props.getCheckoutSessionTtlMinutes()));
+        UUID reservationId;
         try {
-            inventoryService.reserve(tierId, quantity);
+            // sessionId is null at this point — we haven't called Stripe yet. The webhook
+            // resolves the hold via the reservation_id we stamp into metadata below.
+            reservationId = inventoryService.reserve(tierId, quantity, expiresAt, null);
         } catch (ApiException e) {
             if (e.status() == HttpStatus.CONFLICT) {
                 // "Not enough tickets" — remap so the buyer can't enumerate inventory state.
@@ -254,8 +262,13 @@ public class StripeCheckoutService {
         // Build the metadata map ONCE and mirror it onto both the Session and the
         // underlying PaymentIntent. The webhook keys fulfilment off
         // payment_intent.succeeded (the PI is what tells us the money moved), so
-        // it must see the same tier_id/qty/event_id/promo_id the Session would.
+        // it must see the same reservation_id/tier_id/qty/event_id/promo_id the
+        // Session would. reservation_id is the primary inventory key — the
+        // webhook calls InventoryService.{confirmSold,releaseReservation}(reservationId);
+        // tier_id and qty remain for issuance (PaidCheckoutService reads them
+        // when it materializes Order + Ticket rows).
         Map<String, String> metadata = new HashMap<>();
+        metadata.put("reservation_id", reservationId.toString());
         metadata.put("tier_id", tierId.toString());
         metadata.put("qty", String.valueOf(quantity));
         metadata.put("event_id", eventId.toString());
@@ -272,9 +285,9 @@ public class StripeCheckoutService {
         // Stripe Checkout's documented minimum lifetime is 30 minutes — anything shorter
         // is rejected with `expires_at` "must be at least 30 minutes in the future"
         // (https://docs.stripe.com/api/checkout/sessions/create#create_checkout_session-expires_at).
-        // We cap at exactly 30 min so abandoned holds rotate out of inventory as quickly as
-        // Stripe will allow; checkout.session.expired fires shortly after, releasing the hold.
-        long expiresAt = clock.instant().plus(Duration.ofMinutes(30)).getEpochSecond();
+        // The reservation row computed above uses the same instant so the ReservationSweeper
+        // releases the hold even if the checkout.session.expired webhook never lands.
+        long expiresAtEpoch = expiresAt.getEpochSecond();
 
         builder
                 // payment_intent_data — destination charge with application fee.
@@ -289,7 +302,7 @@ public class StripeCheckoutService {
                                 .build())
                         .putAllMetadata(metadata)
                         .build())
-                .setExpiresAt(expiresAt)
+                .setExpiresAt(expiresAtEpoch)
                 .setSuccessUrl(props.getPublicReturnUrlBase()
                         + "/e/" + eventId + "/success?session_id={CHECKOUT_SESSION_ID}")
                 .setCancelUrl(props.getPublicReturnUrlBase() + "/e/" + eventId)
@@ -315,15 +328,25 @@ public class StripeCheckoutService {
             // tier was deleted in between), log it but keep the original Stripe error as
             // the user-facing cause.
             try {
-                inventoryService.releaseReservation(tierId, quantity);
+                inventoryService.releaseReservation(reservationId, "STRIPE_CREATE_FAILED");
             } catch (Exception releaseFailure) {
-                log.error("Failed to release reservation for tier {} after Stripe session create failure: {}",
-                        tierId, releaseFailure.getMessage(), releaseFailure);
+                log.error("Failed to release reservation {} after Stripe session create failure: {}",
+                        reservationId, releaseFailure.getMessage(), releaseFailure);
             }
-            log.error("Stripe checkout session create failed (event {}, tier {}): {}",
-                    eventId, tierId, e.getMessage(), e);
+            log.error("Stripe checkout session create failed (event {}, tier {}, reservation {}): {}",
+                    eventId, tierId, reservationId, e.getMessage(), e);
             throw new ApiException(HttpStatus.BAD_GATEWAY, ErrorCode.UPSTREAM_UNAVAILABLE,
                     "Checkout session could not be created", e);
+        }
+
+        // Best-effort: stamp the Stripe session id onto the reservation row for
+        // forensics / fallback resolution. A failure here is harmless — the
+        // reservation_id metadata on the session already drives the webhook path.
+        try {
+            inventoryService.attachSessionId(reservationId, session.getId());
+        } catch (Exception e) {
+            log.warn("Failed to attach session id {} to reservation {}: {}",
+                    session.getId(), reservationId, e.getMessage());
         }
         return session.getUrl();
     }

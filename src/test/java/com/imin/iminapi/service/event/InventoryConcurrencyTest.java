@@ -11,6 +11,7 @@ import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
+import com.imin.iminapi.repository.TicketReservationRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
@@ -21,6 +22,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
@@ -51,6 +53,7 @@ class InventoryConcurrencyTest {
 
     @Autowired InventoryService inventory;
     @Autowired TicketTierRepository tiers;
+    @Autowired TicketReservationRepository reservations;
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
     @Autowired UserRepository users;
@@ -62,6 +65,7 @@ class InventoryConcurrencyTest {
 
     @BeforeEach
     void setUp() {
+        reservations.deleteAll();
         tiers.deleteAll();
         events.deleteAll();
         users.deleteAll();
@@ -83,6 +87,7 @@ class InventoryConcurrencyTest {
 
     @AfterEach
     void tearDown() {
+        reservations.deleteAll();
         tiers.deleteAll();
         events.deleteAll();
         users.deleteAll();
@@ -137,7 +142,8 @@ class InventoryConcurrencyTest {
                         // Wait for the green light so the buyers stampede the row
                         // at roughly the same wall-clock moment.
                         start.await();
-                        inventory.reserve(tier.getId(), 1);
+                        Instant expiresAt = Instant.now().plus(Duration.ofMinutes(30));
+                        inventory.reserve(tier.getId(), 1, expiresAt, null);
                         successes.incrementAndGet();
                     } catch (ApiException ex) {
                         if (ex.code() == ErrorCode.INVALID_STATE) soldOut.incrementAndGet();

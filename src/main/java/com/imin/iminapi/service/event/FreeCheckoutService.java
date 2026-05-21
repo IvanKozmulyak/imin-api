@@ -16,6 +16,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.security.SecureRandom;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
@@ -44,19 +47,22 @@ public class FreeCheckoutService {
     private final InventoryService inventory;
     private final EmailService email;
     private final EmailProperties emailProps;
+    private final Clock clock;
 
     public FreeCheckoutService(OrderRepository orders,
                                 TicketRepository tickets,
                                 PromoCodeRepository promos,
                                 InventoryService inventory,
                                 EmailService email,
-                                EmailProperties emailProps) {
+                                EmailProperties emailProps,
+                                Clock clock) {
         this.orders = orders;
         this.tickets = tickets;
         this.promos = promos;
         this.inventory = inventory;
         this.email = email;
         this.emailProps = emailProps;
+        this.clock = clock;
     }
 
     /**
@@ -74,8 +80,14 @@ public class FreeCheckoutService {
     @Transactional
     public Order issueFreeOrder(Event event, TicketTier tier, int quantity,
                                  String buyerEmail, PromoCode appliedPromo) {
-        inventory.reserve(tier.getId(), quantity);
-        inventory.confirmSold(tier.getId(), quantity);
+        // Reserve + confirm atomically in the same transaction. expires_at is a
+        // short fallback that the sweeper would only see if the surrounding
+        // transaction crashed between reserve() and confirmSold() — both calls
+        // run on the same connection so that can't happen, but we still set a
+        // sane value rather than null.
+        Instant expiresAt = clock.instant().plus(Duration.ofMinutes(5));
+        UUID reservationId = inventory.reserve(tier.getId(), quantity, expiresAt, null);
+        inventory.confirmSold(reservationId);
 
         Order order = new Order();
         order.setToken(randomToken());

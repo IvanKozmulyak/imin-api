@@ -25,7 +25,7 @@ public record PublicTierDto(
         String currency = e.getCurrency();
         boolean eventOver = e.getStatus() == EventStatus.PAST || e.getStatus() == EventStatus.CANCELLED;
 
-        int remaining = Math.max(0, tier.getQuantity() - tier.getSold());
+        int remaining = Math.max(0, tier.getQuantity() - tier.getReserved() - tier.getSold());
         boolean soldOut = remaining == 0;
 
         Instant tierSaleStartsAt = tier.getSaleStartsAt();

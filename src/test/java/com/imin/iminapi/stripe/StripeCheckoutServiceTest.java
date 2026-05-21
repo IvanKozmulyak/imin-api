@@ -25,6 +25,7 @@ import org.mockito.InOrder;
 import org.springframework.http.HttpStatus;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Optional;
@@ -33,7 +34,10 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
@@ -62,6 +66,7 @@ class StripeCheckoutServiceTest {
     private final UUID eventId = UUID.randomUUID();
     private final UUID tierId = UUID.randomUUID();
     private final UUID orgId = UUID.randomUUID();
+    private final UUID reservationId = UUID.randomUUID();
 
     @BeforeEach
     void setUp() throws Exception {
@@ -96,7 +101,13 @@ class StripeCheckoutServiceTest {
 
         Session session = mock(Session.class);
         when(session.getUrl()).thenReturn("https://checkout.stripe.com/c/pay/cs_test");
+        when(session.getId()).thenReturn("cs_test");
         when(sessionService.create(any(SessionCreateParams.class))).thenReturn(session);
+
+        // Reservation id is returned by reserve() and stamped into metadata.
+        when(inventoryService.reserve(eq(tierId), anyInt(),
+                any(Instant.class), nullable(String.class)))
+                .thenReturn(reservationId);
     }
 
     private Event event() {
@@ -137,25 +148,34 @@ class StripeCheckoutServiceTest {
 
     @Test
     void createCheckoutSession_reservesInventoryBeforeStripeSessionCreate() throws Exception {
+        // Default TTL is 30 minutes; reserve() must be called with the same expiresAt
+        // we'll later stamp onto the Stripe session.
+        props.setCheckoutSessionTtlMinutes(30);
+        Instant expectedExpires = NOW.plus(Duration.ofMinutes(30));
+
         String url = svc.createCheckoutSession(eventId, tierId, 2, null);
 
         assertThat(url).isEqualTo("https://checkout.stripe.com/c/pay/cs_test");
 
         // Order matters: inventory must be reserved BEFORE the Stripe session is created,
         // so we never hand a buyer a checkout URL we can't honor.
-        InOrder order = inOrder(inventoryService, sessionService);
-        order.verify(inventoryService).reserve(tierId, 2);
-        order.verify(sessionService).create(any(SessionCreateParams.class));
+        InOrder ord = inOrder(inventoryService, sessionService);
+        ord.verify(inventoryService).reserve(eq(tierId), eq(2), eq(expectedExpires),
+                isNull());
+        ord.verify(sessionService).create(any(SessionCreateParams.class));
     }
 
     @Test
-    void createCheckoutSession_stampsTierIdAndQtyMetadata() throws Exception {
+    void createCheckoutSession_stampsReservationAndInventoryMetadata() throws Exception {
         svc.createCheckoutSession(eventId, tierId, 3, null);
 
         ArgumentCaptor<SessionCreateParams> captor = ArgumentCaptor.forClass(SessionCreateParams.class);
         verify(sessionService).create(captor.capture());
 
         SessionCreateParams sent = captor.getValue();
+        // reservation_id is the primary inventory key for the webhook handler.
+        assertThat(sent.getMetadata()).containsEntry("reservation_id", reservationId.toString());
+        // tier_id/qty/event_id remain for issuance (PaidCheckoutService reads them).
         assertThat(sent.getMetadata()).containsEntry("tier_id", tierId.toString());
         assertThat(sent.getMetadata()).containsEntry("qty", "3");
         assertThat(sent.getMetadata()).containsEntry("event_id", eventId.toString());
@@ -164,8 +184,7 @@ class StripeCheckoutServiceTest {
     @Test
     void createCheckoutSession_mirrorsMetadataOntoPaymentIntent() throws Exception {
         // The webhook handler keys off payment_intent.succeeded for fulfilment, so the PI
-        // must carry the same tier_id/qty/event_id (and promo_id when applicable) that the
-        // Session does. Build once, attach twice.
+        // must carry the same reservation_id/tier_id/qty/event_id that the Session does.
         svc.createCheckoutSession(eventId, tierId, 3, null);
 
         ArgumentCaptor<SessionCreateParams> captor = ArgumentCaptor.forClass(SessionCreateParams.class);
@@ -173,15 +192,17 @@ class StripeCheckoutServiceTest {
 
         SessionCreateParams.PaymentIntentData pid = captor.getValue().getPaymentIntentData();
         assertThat(pid).isNotNull();
+        assertThat(pid.getMetadata()).containsEntry("reservation_id", reservationId.toString());
         assertThat(pid.getMetadata()).containsEntry("tier_id", tierId.toString());
         assertThat(pid.getMetadata()).containsEntry("qty", "3");
         assertThat(pid.getMetadata()).containsEntry("event_id", eventId.toString());
     }
 
     @Test
-    void createCheckoutSession_setsExpiresAt30MinutesAhead() throws Exception {
+    void createCheckoutSession_setsExpiresAtMatchingConfiguredTtl() throws Exception {
         // Stripe's documented minimum lifetime is 30 minutes — anything shorter rejects.
-        // We pin to exactly 30 minutes so abandoned holds rotate as fast as Stripe allows.
+        // Mirrored onto TicketReservation.expires_at so the sweeper can self-heal.
+        props.setCheckoutSessionTtlMinutes(30);
         svc.createCheckoutSession(eventId, tierId, 1, null);
 
         ArgumentCaptor<SessionCreateParams> captor = ArgumentCaptor.forClass(SessionCreateParams.class);
@@ -189,8 +210,15 @@ class StripeCheckoutServiceTest {
 
         Long expiresAt = captor.getValue().getExpiresAt();
         assertThat(expiresAt).isNotNull();
-        long expected = NOW.plus(java.time.Duration.ofMinutes(30)).getEpochSecond();
+        long expected = NOW.plus(Duration.ofMinutes(30)).getEpochSecond();
         assertThat(expiresAt).isEqualTo(expected);
+    }
+
+    @Test
+    void createCheckoutSession_attachesSessionIdToReservation_onSuccess() throws Exception {
+        svc.createCheckoutSession(eventId, tierId, 1, null);
+
+        verify(inventoryService).attachSessionId(eq(reservationId), eq("cs_test"));
     }
 
     @Test
@@ -200,7 +228,8 @@ class StripeCheckoutServiceTest {
         doThrow(new ApiException(HttpStatus.CONFLICT,
                 com.imin.iminapi.security.ErrorCode.INVALID_STATE,
                 "Not enough tickets available"))
-                .when(inventoryService).reserve(tierId, 2);
+                .when(inventoryService).reserve(eq(tierId), eq(2), any(Instant.class),
+                        nullable(String.class));
 
         assertThatThrownBy(() -> svc.createCheckoutSession(eventId, tierId, 2, null))
                 .isInstanceOf(ApiException.class)
@@ -220,10 +249,11 @@ class StripeCheckoutServiceTest {
                 .satisfies(ex -> assertThat(((ApiException) ex).status()).isEqualTo(HttpStatus.BAD_GATEWAY));
 
         // Reservation must be rolled back so the seats go back to the pool.
-        InOrder order = inOrder(inventoryService, sessionService);
-        order.verify(inventoryService).reserve(tierId, 2);
-        order.verify(sessionService).create(any(SessionCreateParams.class));
-        order.verify(inventoryService).releaseReservation(tierId, 2);
+        InOrder ord = inOrder(inventoryService, sessionService);
+        ord.verify(inventoryService).reserve(eq(tierId), eq(2), any(Instant.class),
+                nullable(String.class));
+        ord.verify(sessionService).create(any(SessionCreateParams.class));
+        ord.verify(inventoryService).releaseReservation(eq(reservationId), eq("STRIPE_CREATE_FAILED"));
     }
 
     @Test
@@ -235,7 +265,8 @@ class StripeCheckoutServiceTest {
                 .isInstanceOf(ApiException.class)
                 .satisfies(ex -> assertThat(((ApiException) ex).status()).isEqualTo(HttpStatus.BAD_REQUEST));
 
-        verify(inventoryService, never()).reserve(any(), org.mockito.ArgumentMatchers.anyInt());
+        verify(inventoryService, never()).reserve(any(), anyInt(),
+                any(Instant.class), nullable(String.class));
     }
 
     @Test
@@ -252,7 +283,8 @@ class StripeCheckoutServiceTest {
                 });
 
         // Inventory must NOT have been reserved when the price drifted.
-        verify(inventoryService, never()).reserve(any(), org.mockito.ArgumentMatchers.anyInt());
+        verify(inventoryService, never()).reserve(any(), anyInt(),
+                any(Instant.class), nullable(String.class));
     }
 
     @Test

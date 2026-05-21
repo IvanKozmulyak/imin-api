@@ -29,36 +29,32 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Handles Stripe webhook deliveries on {@code POST /api/v1/stripe/webhook}.
+ * Stripe webhook dispatcher. Two endpoints, two payload styles, two signing secrets.
  *
- * <p>This single endpoint handles both Stripe webhook formats:
  * <ul>
- *   <li><b>V1 events</b> ({@code payment_intent.succeeded}, {@code payment_intent.payment_failed},
- *       {@code checkout.session.expired}, …) — parsed by {@link Webhook#constructEvent}.</li>
- *   <li><b>V2 thin events</b> ({@code v2.core.account.requirements.updated},
- *       {@code v2.core.account.recipient.capability_status_updated}) — parsed by
- *       {@link StripeClient#parseEventNotification}.</li>
+ *   <li>{@link #handleV1Endpoint} — entry for {@code /api/v1/stripe/webhook/v1}.
+ *       Parses V1 payloads via {@link Webhook#constructEvent} using
+ *       {@code STRIPE_WEBHOOK_SECRET_V1}. Subscribes to {@code payment_intent.succeeded},
+ *       {@code payment_intent.payment_failed}, {@code checkout.session.expired}.</li>
+ *   <li>{@link #handleV2Endpoint} — entry for {@code /api/v1/stripe/webhook/v2}.
+ *       Parses V2 thin events via {@link StripeClient#parseEventNotification} using
+ *       {@code STRIPE_WEBHOOK_SECRET_V2}. Subscribes to
+ *       {@code v2.core.account.requirements.updated},
+ *       {@code v2.core.account.recipient.capability_status_updated}.</li>
  * </ul>
  *
- * <p>Both schemes use the same HMAC-SHA256 signature algorithm, so one shared
- * {@code STRIPE_WEBHOOK_SECRET} works for either. Routing happens by JSON-peeking
- * the body's {@code object} field — {@code "v2.core.event"} → v2 path, else v1.
- * The peek is on unverified data, but the only consequence of a wrong peek is the
- * wrong parser failing signature verification, which we reject.
+ * <p><b>Idempotency.</b> Stripe delivers events at-least-once. {@link #handleV1Endpoint}
+ * INSERTs the event id into {@code processed_webhook_events} as the first thing inside
+ * its transaction — a duplicate-key means the event was already processed and we
+ * log+ack. V2 thin events are idempotent by design (they're queries into Stripe's
+ * own state, not state mutations on our side), so no dedup gate is applied.
  *
- * <p><b>Idempotency.</b> Stripe delivers events at-least-once. The first thing
- * {@link #handleV1} does after parsing is call {@link WebhookEventDedupService}
- * to INSERT the event id into {@code processed_webhook_events}. A duplicate-key
- * means the event was already processed — we log and ack. The dispatch + the
- * dedup INSERT share a single REQUIRED transaction, so a handler exception
- * rolls the INSERT back and Stripe's retry can re-process from scratch.
- *
- * <p><b>Fulfilment signal.</b> We key off {@code payment_intent.succeeded} for
- * inventory confirm + promo redemption, not {@code checkout.session.completed},
- * because PI is what tells us the money actually moved. The Session-create
- * call mirrors session-level metadata onto {@code payment_intent_data.metadata}
- * so the PI handler sees the same {@code tier_id} / {@code qty} / {@code promo_id}
- * fields the Session would have carried.
+ * <p><b>Inventory resolution.</b> Webhook handlers prefer the
+ * {@code reservation_id} metadata stamped by {@link StripeCheckoutService} when the
+ * Session was created. Falling back to {@code session.id} lookup handles in-flight
+ * sessions that were created before the metadata-passthrough deploy; events with
+ * neither identifier are pre-V27 legacy holds and are skipped (the V27 migration
+ * already wiped their counter contributions).
  */
 @Service
 public class StripeWebhookService {
@@ -73,16 +69,16 @@ public class StripeWebhookService {
     private final PaidCheckoutService paidCheckoutService;
 
     /**
-     * Proxied self-reference used so {@link #handle} can invoke {@link #handleV1}
-     * through Spring's transaction proxy. A direct {@code this.handleV1(...)} call
-     * would bypass the proxy and silently drop the {@code @Transactional}
-     * advice, losing the rollback-on-failure idempotency contract. Injected
-     * with {@code @Lazy} to break the circular dependency at startup.
+     * Proxied self-reference so {@link #handleV1Endpoint} can invoke
+     * {@link #handleV1Transactional} through Spring's transaction proxy. A direct
+     * {@code this.handleV1Transactional(...)} call would bypass the proxy and
+     * silently drop the {@code @Transactional} advice, losing the rollback-on-
+     * failure idempotency contract. Injected with {@code @Lazy} to break the
+     * circular dependency at startup.
      *
      * <p>In unit tests this field stays null and the fallback at the call site
-     * drops back to {@code this.handleV1(...)} — fine, because the tests inject
-     * a mock {@link WebhookEventDedupService} directly rather than relying on
-     * the JDBC transaction.
+     * drops back to a direct call — fine, because tests inject a mock
+     * {@link WebhookEventDedupService} directly rather than relying on the JDBC transaction.
      */
     private StripeWebhookService self;
 
@@ -105,85 +101,36 @@ public class StripeWebhookService {
         this.self = self;
     }
 
+    // ── V1 endpoint ────────────────────────────────────────────────────────────
+
     /**
-     * @param rawBody  the unmodified request body (signature is computed over the exact bytes).
-     * @param sigHeader the value of the {@code Stripe-Signature} header.
+     * Entry point for {@code POST /api/v1/stripe/webhook/v1}.
+     *
+     * @param rawBody   unmodified request body (signature is computed over the exact bytes).
+     * @param sigHeader value of the {@code Stripe-Signature} header.
      */
-    public void handle(String rawBody, String sigHeader) {
-        String secret = props.getWebhookSecret();
-        if (secret == null || secret.isBlank()) {
-            // 503 — we can't verify, so reject. The operator should set STRIPE_WEBHOOK_SECRET.
-            log.warn("Refusing Stripe webhook: STRIPE_WEBHOOK_SECRET not configured");
-            throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, ErrorCode.UPSTREAM_UNAVAILABLE,
-                    "Stripe webhook handler not configured");
-        }
-        if (sigHeader == null || sigHeader.isBlank()) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
-                    "Missing Stripe-Signature header");
-        }
+    public void handleV1Endpoint(String rawBody, String sigHeader) {
+        String secret = props.getWebhookSecretV1();
+        requireSecret(secret, "STRIPE_WEBHOOK_SECRET_V1");
+        requireSignature(sigHeader);
 
-        if (looksLikeV2ThinEvent(rawBody)) {
-            handleV2(rawBody, sigHeader, secret);
-        } else {
-            // Go through the proxied self-reference so @Transactional on handleV1
-            // is honored in production. Tests bypass Spring entirely and self is
-            // null; fall back to a direct call.
-            StripeWebhookService target = self == null ? this : self;
-            target.handleV1(rawBody, sigHeader, secret);
-        }
-    }
-
-    private static boolean looksLikeV2ThinEvent(String body) {
-        // V2 thin events carry {"object":"v2.core.event", ...} at top level. Plain
-        // substring check is enough — the matching parser will reject mismatches via
-        // signature verification, so a false positive can't smuggle in bad data.
-        return body != null && body.contains("\"v2.core.event\"");
-    }
-
-    private void handleV2(String rawBody, String sigHeader, String secret) {
-        EventNotification notification;
-        try {
-            notification = stripeClient.parseEventNotification(rawBody, sigHeader, secret);
-        } catch (SignatureVerificationException e) {
-            log.warn("Stripe v2 webhook signature verification failed: {}", e.getMessage());
-            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
-                    "Invalid Stripe signature");
-        }
-
-        String type = notification.getType();
-        String id = notification.getId();
-        log.info("Stripe v2 webhook received: type={} id={}", type, id);
-
-        if ("v2.core.account.requirements.updated".equals(type)
-                || "v2.core.account.recipient.capability_status_updated".equals(type)) {
-            try {
-                Event full = stripeClient.v2().core().events().retrieve(id);
-                log.info("Stripe account state event: type={} eventId={} created={}",
-                        full.getType(), full.getId(), full.getCreated());
-                // No DB state to update — connect status is fetched live per the user's instruction.
-            } catch (StripeException e) {
-                log.warn("Failed to fetch full Stripe event {} (type {}): {}",
-                        id, type, e.getMessage());
-            }
-        }
+        // Route through the proxied self-reference so @Transactional on
+        // handleV1Transactional is honored in production. Tests bypass Spring
+        // entirely and self is null; fall back to a direct call.
+        StripeWebhookService target = self == null ? this : self;
+        target.handleV1Transactional(rawBody, sigHeader, secret);
     }
 
     /**
      * Dispatch a V1 webhook.
      *
-     * <p>{@code Propagation.REQUIRED} (the default; spelled out for clarity) keeps the dedup
-     * INSERT and any handler DB writes in a single transaction — on a handler exception the
-     * INSERT rolls back, so Stripe's retry will re-process from scratch rather than seeing
-     * a phantom "already done" marker.
-     *
-     * <p>The method is public so Spring's proxy can apply the transaction advice when
-     * {@link #handle} invokes it through the framework — direct {@code this.handleV1(...)}
-     * calls from inside this class still work but would bypass the proxy. Tests bypass
-     * Spring entirely and rely on Mockito mocks for the JDBC dedup, so the missing
-     * transaction wrapper is fine there.
+     * <p>{@code Propagation.REQUIRED} keeps the dedup INSERT and any handler DB writes
+     * in a single transaction — on a handler exception the INSERT rolls back, so
+     * Stripe's retry will re-process from scratch rather than seeing a phantom
+     * "already done" marker.
      */
     @Transactional(propagation = Propagation.REQUIRED)
-    public void handleV1(String rawBody, String sigHeader, String secret) {
+    public void handleV1Transactional(String rawBody, String sigHeader, String secret) {
         com.stripe.model.Event event;
         try {
             event = Webhook.constructEvent(rawBody, sigHeader, secret);
@@ -195,36 +142,102 @@ public class StripeWebhookService {
 
         String type = event.getType();
         String eventId = event.getId();
-        log.info("Stripe v1 webhook received: type={} id={}", type, eventId);
+        String apiVersion = event.getApiVersion();
+        log.info("[stripe-webhook] v1 parsed type={} id={} apiVersion={} createdAt={}",
+                type, eventId, apiVersion, event.getCreated());
 
-        // Idempotency gate. INSERT a marker row; duplicate-key means a prior delivery
-        // already finished this event's side-effects. We log + ack with 200 so Stripe
-        // stops retrying. The INSERT participates in the surrounding @Transactional,
-        // so any later exception rolls it back and the next Stripe retry re-runs the
-        // whole handler.
         if (!dedup.tryRecord(eventId, type)) {
-            log.info("Stripe v1 webhook {} (type={}) already processed — skipping", eventId, type);
+            log.info("[stripe-webhook] v1 dedup-hit eventId={} type={} — skipping (already processed)",
+                    eventId, type);
             return;
         }
 
         switch (type) {
-            case "payment_intent.succeeded" -> onPaymentIntentSucceeded(event);
-            case "payment_intent.payment_failed" -> onPaymentIntentFailed(event);
-            case "checkout.session.expired" -> onCheckoutSessionExpired(event);
+            case "payment_intent.succeeded" -> {
+                log.info("[stripe-webhook] v1 dispatch → payment_intent.succeeded eventId={}", eventId);
+                onPaymentIntentSucceeded(event);
+            }
+            case "payment_intent.payment_failed" -> {
+                log.info("[stripe-webhook] v1 dispatch → payment_intent.payment_failed eventId={}", eventId);
+                onPaymentIntentFailed(event);
+            }
+            case "checkout.session.expired" -> {
+                log.info("[stripe-webhook] v1 dispatch → checkout.session.expired eventId={}", eventId);
+                onCheckoutSessionExpired(event);
+            }
             // checkout.session.completed is intentionally a no-op. Fulfilment moved
             // to payment_intent.succeeded because PI is what tells us the money
             // actually moved (Session.completed can fire for unpaid async sessions
             // and adds an extra latency hop on the happy path).
-            case "checkout.session.completed" -> log.debug(
-                    "checkout.session.completed received but ignored — fulfilment is on payment_intent.succeeded");
-            default -> { /* ignored, ack with 200 so Stripe stops retrying */ }
+            case "checkout.session.completed" -> log.info(
+                    "[stripe-webhook] v1 ignored type=checkout.session.completed eventId={} — fulfilment is on payment_intent.succeeded",
+                    eventId);
+            default -> log.info("[stripe-webhook] v1 ignored type={} eventId={} — not subscribed",
+                    type, eventId);
         }
     }
+
+    // ── V2 endpoint ────────────────────────────────────────────────────────────
+
+    /** Entry point for {@code POST /api/v1/stripe/webhook/v2}. */
+    public void handleV2Endpoint(String rawBody, String sigHeader) {
+        String secret = props.getWebhookSecretV2();
+        requireSecret(secret, "STRIPE_WEBHOOK_SECRET_V2");
+        requireSignature(sigHeader);
+
+        EventNotification notification;
+        try {
+            notification = stripeClient.parseEventNotification(rawBody, sigHeader, secret);
+        } catch (SignatureVerificationException e) {
+            log.warn("Stripe v2 webhook signature verification failed: {}", e.getMessage());
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
+                    "Invalid Stripe signature");
+        }
+
+        String type = notification.getType();
+        String id = notification.getId();
+        log.info("[stripe-webhook] v2 parsed type={} id={}", type, id);
+
+        if ("v2.core.account.requirements.updated".equals(type)
+                || "v2.core.account.recipient.capability_status_updated".equals(type)) {
+            try {
+                Event full = stripeClient.v2().core().events().retrieve(id);
+                log.info("[stripe-webhook] v2 account-state event type={} eventId={} created={}",
+                        full.getType(), full.getId(), full.getCreated());
+                // No DB state to update — connect status is fetched live per the user's instruction.
+            } catch (StripeException e) {
+                log.warn("[stripe-webhook] v2 failed to fetch full event id={} type={} — {}",
+                        id, type, e.getMessage());
+            }
+        } else {
+            log.info("[stripe-webhook] v2 ignored type={} id={} — not subscribed", type, id);
+        }
+    }
+
+    // ── shared validation ─────────────────────────────────────────────────────
+
+    private static void requireSecret(String secret, String envVarName) {
+        if (secret == null || secret.isBlank()) {
+            // 503 — we can't verify, so reject. The operator should set the env var.
+            log.warn("Refusing Stripe webhook: {} not configured", envVarName);
+            throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, ErrorCode.UPSTREAM_UNAVAILABLE,
+                    "Stripe webhook handler not configured");
+        }
+    }
+
+    private static void requireSignature(String sigHeader) {
+        if (sigHeader == null || sigHeader.isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
+                    "Missing Stripe-Signature header");
+        }
+    }
+
+    // ── V1 handlers ────────────────────────────────────────────────────────────
 
     /**
      * Fulfilment: PI succeeded → promote the reservation to a confirmed sale, and
      * (when applicable) increment the promo's used_count. Reads the same
-     * {@code tier_id} / {@code qty} / {@code promo_id} metadata that
+     * {@code reservation_id} / {@code promo_id} metadata that
      * {@link StripeCheckoutService} stamps onto both the Session and the PI.
      */
     private void onPaymentIntentSucceeded(com.stripe.model.Event event) {
@@ -232,11 +245,14 @@ public class StripeWebhookService {
         if (pi == null) return;
 
         Map<String, String> meta = pi.getMetadata();
-        TierMeta tierMeta = parseTierMeta(meta, pi.getId());
-        if (tierMeta != null) {
-            inventoryService.confirmSold(tierMeta.tierId, tierMeta.qty);
-            log.info("Confirmed sold qty={} on tier {} after payment_intent {}",
-                    tierMeta.qty, tierMeta.tierId, pi.getId());
+        UUID reservationId = parseReservationId(meta);
+        log.info("[stripe-webhook] payment_intent.succeeded paymentIntentId={} reservationId={} amount={} currency={}",
+                pi.getId(), reservationId, pi.getAmount(), pi.getCurrency());
+        if (reservationId != null) {
+            inventoryService.confirmSold(reservationId);
+        } else {
+            log.info("[stripe-webhook] payment_intent.succeeded {} has no reservation_id metadata — pre-V27 event, skipping inventory step",
+                    pi.getId());
         }
 
         if (meta != null) {
@@ -275,11 +291,51 @@ public class StripeWebhookService {
         PaymentIntent pi = extractPaymentIntent(event, "payment_intent.payment_failed");
         if (pi == null) return;
 
-        TierMeta tierMeta = parseTierMeta(pi.getMetadata(), pi.getId());
-        if (tierMeta == null) return;
-        inventoryService.releaseReservation(tierMeta.tierId, tierMeta.qty);
-        log.info("Released reservation qty={} on tier {} after payment_intent {} failed",
-                tierMeta.qty, tierMeta.tierId, pi.getId());
+        UUID reservationId = parseReservationId(pi.getMetadata());
+        log.info("[stripe-webhook] payment_intent.payment_failed paymentIntentId={} reservationId={} lastError={}",
+                pi.getId(), reservationId,
+                pi.getLastPaymentError() == null ? null : pi.getLastPaymentError().getMessage());
+        if (reservationId != null) {
+            inventoryService.releaseReservation(reservationId, "WEBHOOK_FAILED");
+        } else {
+            log.info("[stripe-webhook] payment_intent.payment_failed {} has no reservation_id metadata — pre-V27 event, skipping",
+                    pi.getId());
+        }
+    }
+
+    /**
+     * Handle {@code checkout.session.expired}: the buyer never paid, so the seat
+     * hold must be released back to the pool. Idempotency is enforced at the
+     * top of {@link #handleV1Transactional} so a delivered-twice expiry can't
+     * double-release.
+     */
+    private void onCheckoutSessionExpired(com.stripe.model.Event event) {
+        EventDataObjectDeserializer dod = event.getDataObjectDeserializer();
+        Optional<StripeObject> obj = dod.getObject();
+        if (obj.isEmpty()) {
+            log.warn("checkout.session.expired had no deserialized object — apiVersion={}",
+                    event.getApiVersion());
+            return;
+        }
+        if (!(obj.get() instanceof Session session)) {
+            log.warn("checkout.session.expired deserialized to unexpected type: {}",
+                    obj.get().getClass().getName());
+            return;
+        }
+
+        UUID reservationId = parseReservationId(session.getMetadata());
+        log.info("[stripe-webhook] checkout.session.expired sessionId={} reservationId={}",
+                session.getId(), reservationId);
+        if (reservationId != null) {
+            inventoryService.releaseReservation(reservationId, "WEBHOOK_EXPIRED");
+            return;
+        }
+        // Fallback: legacy session created before the metadata-passthrough deploy
+        // but still within Stripe's retention window. Resolve via session id.
+        if (inventoryService.releaseReservationBySessionId(session.getId(), "WEBHOOK_EXPIRED")) {
+            log.info("[stripe-webhook] released reservation for session {} via session-id fallback",
+                    session.getId());
+        }
     }
 
     private PaymentIntent extractPaymentIntent(com.stripe.model.Event event, String label) {
@@ -297,52 +353,18 @@ public class StripeWebhookService {
     }
 
     /**
-     * Handle {@code checkout.session.expired}: the buyer never paid, so the seat hold
-     * must be released back to the pool. Legacy sessions without inventory metadata are
-     * skipped (nothing to release). Idempotency is enforced at the top of
-     * {@link #handleV1} so a delivered-twice expiry can't double-release.
+     * Extract the {@code reservation_id} from event metadata. Returns null
+     * (and logs) when missing or unparseable — the caller can fall back to a
+     * session-id lookup or treat it as a legacy event.
      */
-    private void onCheckoutSessionExpired(com.stripe.model.Event event) {
-        EventDataObjectDeserializer dod = event.getDataObjectDeserializer();
-        Optional<StripeObject> obj = dod.getObject();
-        if (obj.isEmpty()) {
-            log.warn("checkout.session.expired had no deserialized object — apiVersion={}",
-                    event.getApiVersion());
-            return;
-        }
-        if (!(obj.get() instanceof Session session)) {
-            log.warn("checkout.session.expired deserialized to unexpected type: {}",
-                    obj.get().getClass().getName());
-            return;
-        }
-
-        TierMeta tierMeta = parseTierMeta(session.getMetadata(), session.getId());
-        if (tierMeta == null) return;
-        inventoryService.releaseReservation(tierMeta.tierId, tierMeta.qty);
-        log.info("Released reservation qty={} on tier {} after session {} expired",
-                tierMeta.qty, tierMeta.tierId, session.getId());
-    }
-
-    private record TierMeta(UUID tierId, int qty) {}
-
-    /**
-     * Extract the {@code tier_id} + {@code qty} pair from event metadata. Returns null
-     * (and logs a warning) when either is missing or unparseable — the caller treats this
-     * as "legacy event, skip the inventory step."
-     */
-    private TierMeta parseTierMeta(Map<String, String> meta, String contextId) {
+    private UUID parseReservationId(Map<String, String> meta) {
         if (meta == null) return null;
-        String tierIdRaw = meta.get("tier_id");
-        String qtyRaw = meta.get("qty");
-        if (tierIdRaw == null || tierIdRaw.isBlank() || qtyRaw == null || qtyRaw.isBlank()) {
-            log.warn("Event {} missing inventory metadata (tier_id/qty) — skipping inventory step", contextId);
-            return null;
-        }
+        String raw = meta.get("reservation_id");
+        if (raw == null || raw.isBlank()) return null;
         try {
-            return new TierMeta(UUID.fromString(tierIdRaw), Integer.parseInt(qtyRaw));
+            return UUID.fromString(raw);
         } catch (IllegalArgumentException e) {
-            log.warn("Event {} has malformed inventory metadata (tier_id={}, qty={}): {}",
-                    contextId, tierIdRaw, qtyRaw, e.getMessage());
+            log.warn("Malformed reservation_id metadata: {}", raw);
             return null;
         }
     }

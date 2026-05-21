@@ -85,8 +85,9 @@ Per-org Stripe v2 connected accounts (one acct_... per `Organization`). Tickets 
 
 Required env vars:
 - `STRIPE_SECRET_KEY` — sk_test_... locally, sk_live_... in prod. App fails to start if missing.
-- `STRIPE_WEBHOOK_SECRET` — whsec_... from `stripe listen` output. Only needed for the webhook endpoint.
-- Optional: `STRIPE_APPLICATION_FEE_BPS` (default 500 = 5%), `STRIPE_PUBLIC_RETURN_URL_BASE` (default `http://localhost:3000`), `STRIPE_RETURN_URL_BASE` (default `http://localhost:5173`).
+- `STRIPE_WEBHOOK_SECRET_V1` — whsec_... for the V1 payments webhook endpoint (`/api/v1/stripe/webhook/v1`).
+- `STRIPE_WEBHOOK_SECRET_V2` — whsec_... for the V2 thin-events webhook endpoint (`/api/v1/stripe/webhook/v2`).
+- Optional: `STRIPE_APPLICATION_FEE_BPS` (default 500 = 5%), `STRIPE_PUBLIC_RETURN_URL_BASE` (default `http://localhost:3000`), `STRIPE_RETURN_URL_BASE` (default `http://localhost:5173`), `STRIPE_CHECKOUT_SESSION_TTL_MINUTES` (default 30, Stripe's documented minimum).
 
 Endpoints:
 - `POST /api/v1/orgs/{orgId}/stripe/connect` — idempotent create. Empty body.
@@ -94,7 +95,8 @@ Endpoints:
 - `POST /api/v1/orgs/{orgId}/stripe/onboarding-link` — one-shot URL for the organizer's browser (non-FR redirect flow).
 - `GET  /api/v1/orgs/{orgId}/stripe/status` — live (never cached). Returns `readyToReceivePayments`, `onboardingComplete`, `requirementsStatus`.
 - `POST /api/v1/public/events/{eventId}/checkout` — public; returns a hosted Checkout URL.
-- `POST /api/v1/stripe/webhook` — signature-verified webhook receiver.
+- `POST /api/v1/stripe/webhook/v1` — signature-verified V1 payments webhook receiver.
+- `POST /api/v1/stripe/webhook/v2` — signature-verified V2 thin-events webhook receiver.
 
 **FR vs non-FR onboarding (revised 2026-05-15).** `StripeConnectService.getOrCreateAccount` no longer branches on country — all orgs use the same v2 create payload (`identity.country`, `configuration.recipient.capabilities.stripe_balance.stripe_transfers.requested=true`, EUR defaults inferred from country, fees/losses-collector=APPLICATION). The earlier FR-specific account-token path was scrapped because Stripe.js v9 only mints v1 tokens which the v2 Accounts API rejects (`v1_token_invalid_in_v2`).
 
@@ -102,16 +104,25 @@ PSD2 compliance for FR orgs is now delivered via **embedded onboarding** with `@
 
 Non-FR orgs continue to use the hosted AccountLink redirect (`POST /stripe/onboarding-link`) — the same flow as before.
 
-Webhook dev setup:
+Webhook setup (two endpoints, two signing secrets):
 
-The single endpoint at `/api/v1/stripe/webhook` handles both webhook formats — V2 thin events for Connect account state, and V1 events for payment lifecycle. Routing is by JSON peek (see `StripeWebhookService.looksLikeV2ThinEvent`). One signing secret covers both because Stripe signs both with the same HMAC scheme — so configure ONE endpoint in your Stripe dashboard (or one `stripe listen --load-from-webhooks-api`) with the union of these event types:
+V1 and V2 events ship in structurally different JSON payloads (Stripe's dashboard flags mixed endpoints with "you've selected events with two different payload styles"). We split them: each format gets its own URL and its own signing secret. Configure two endpoints in the Stripe Dashboard → Developers → Webhooks:
 
-- V2 (Connect account): `v2.core.account.requirements.updated`, `v2.core.account.recipient.capability_status_updated`
-- V1 (payments): `checkout.session.completed`
+1. **`POST /api/v1/stripe/webhook/v1`** — secret env `STRIPE_WEBHOOK_SECRET_V1`. Subscribe to:
+   - `payment_intent.succeeded` — fulfilment (confirm sold, issue Order + Tickets, increment promo usage)
+   - `payment_intent.payment_failed` — release the inventory hold for declines / 3DS failure
+   - `checkout.session.expired` — release the inventory hold when the buyer abandons the 30-minute session
+   - Do NOT subscribe to `checkout.session.completed`; fulfilment is driven by `payment_intent.succeeded` because the PI is what proves money moved. The handler intentionally no-ops on `completed`.
 
-For ad-hoc local listening without dashboard config, two separate `stripe listen` commands work but each produces a different signing secret — easier to do `stripe listen --load-from-webhooks-api --forward-to http://localhost:8085/api/v1/stripe/webhook` against a dashboard endpoint set up once.
+2. **`POST /api/v1/stripe/webhook/v2`** — secret env `STRIPE_WEBHOOK_SECRET_V2`. Subscribe to:
+   - `v2.core.account.requirements.updated`
+   - `v2.core.account.recipient.capability_status_updated`
 
-Promo code redemption tracking: when a buyer uses a promo code at checkout, the session is created with `metadata.promo_id`. On `checkout.session.completed` (paid), the webhook atomically increments `promo_codes.used_count`. At-least-once delivery means a Stripe redelivery can over-count slightly — bounded, but the proper fix is a `processed_webhook_events` dedup table (not yet wired).
+For local dev with the Stripe CLI, point two `stripe listen` processes at the two endpoints (each will print its own `whsec_...` secret to paste into the matching env var). Or use `stripe listen --load-from-webhooks-api --forward-to http://localhost:8085/api/v1/stripe/webhook/v1` once per endpoint after the dashboard config is in place.
+
+Reservation lifecycle + safety net: every checkout writes a `ticket_reservations` row in `HELD` state with `expires_at` mirroring the Stripe session TTL. The `reservation_id` is stamped onto both the Session and PaymentIntent metadata, so the V1 webhook handler resolves the right hold deterministically. If a webhook misses (signature mismatch, endpoint down, Stripe gives up after retries), the `ReservationSweeper` `@Scheduled` job releases any `HELD` row past its `expires_at` every 60 seconds — webhooks are the fast path, the sweeper is the source of truth. ShedLock serializes the sweep across replicas via the `shedlock` table.
+
+Promo code redemption tracking: when a buyer uses a promo code at checkout, the session is created with `metadata.promo_id`. On `payment_intent.succeeded` (paid), the webhook atomically increments `promo_codes.used_count`. At-least-once delivery is bounded by the `processed_webhook_events` dedup table (V25 migration) — the dedup INSERT and the increment share a transaction, so a Stripe retry sees the marker and skips.
 
 State model: account ids are persisted (`organizations.stripe_account_id`, `ticket_tiers.stripe_product_id`, `ticket_tiers.stripe_price_id`); onboarding/capability state is fetched live from Stripe on every status read.
 
