@@ -1,7 +1,11 @@
+YOU'RE IN · imin
+
 You're in for {{eventName}}.
 {{eventWhen}}{{eventWhereSeparator}}{{eventWhere}}
 
-{{ticketBlocks}}
+YOUR TICKETS
 
+{{ticketBlocks}}
 View your order online: {{orderUrl}}
+
 Lost this email? Recover your tickets: {{recoverUrl}}

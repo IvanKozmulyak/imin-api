@@ -128,22 +128,33 @@ public class TicketIssuanceEmailer {
 
     private String renderHtmlBlocks(List<Ticket> issued, String siteBase, String apiBase, boolean walletOn) {
         StringBuilder b = new StringBuilder();
-        for (int i = 0; i < issued.size(); i++) {
+        int total = issued.size();
+        for (int i = 0; i < total; i++) {
             Ticket t = issued.get(i);
             String qrUrl = apiBase + "/api/v1/public/tickets/" + t.getToken() + "/qr.png";
             String ticketUrl = siteBase + "/tickets/" + t.getToken();
             String walletUrl = apiBase + "/api/v1/public/tickets/" + t.getToken() + "/apple-wallet.pkpass";
-            String label = "Ticket " + (i + 1) + " of " + issued.size() + " — " + htmlEscape(t.getTierName());
+            String eyebrow = "TICKET " + (i + 1) + " OF " + total;
+            String tierName = htmlEscape(t.getTierName());
 
-            b.append("<div style=\"margin: 0 0 28px;\">")
-                    .append("<div style=\"font-weight: 600; margin-bottom: 8px;\">").append(label).append("</div>")
-                    .append("<img src=\"").append(qrUrl).append("\" alt=\"QR\" ")
-                    .append("style=\"display:block; width: 240px; height: 240px; border: 1px solid #e5e5e5; padding: 12px; background: #fff;\"/>")
-                    .append("<p style=\"margin: 12px 0 4px;\"><a href=\"").append(ticketUrl)
-                    .append("\" style=\"color: #0a66c2; text-decoration: none;\">Open this ticket →</a></p>");
+            // Card matches the template style: lavender tile, mono eyebrow,
+            // brand-blue CTA links. The QR sits on a white inner tile so the
+            // scanner has a high-contrast quiet zone regardless of mail-client
+            // background tinting.
+            b.append("<div style=\"margin: 0 0 16px; padding: 18px; background: #f4f2fa; border: 1px solid #d4cee6; border-radius: 8px;\">")
+                    .append("<div style=\"font-family: 'Space Mono', ui-monospace, Menlo, Consolas, monospace; font-size: 11px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: #7a738f;\">")
+                    .append(eyebrow).append("</div>")
+                    .append("<div style=\"margin-top: 4px; font-size: 15px; font-weight: 600; color: #11091f; letter-spacing: -0.2px;\">")
+                    .append(tierName).append("</div>")
+                    .append("<div style=\"margin-top: 14px; display: inline-block; padding: 12px; background: #ffffff; border: 1px solid #d4cee6; border-radius: 6px;\">")
+                    .append("<img src=\"").append(qrUrl).append("\" alt=\"QR\" width=\"240\" height=\"240\" ")
+                    .append("style=\"display: block; width: 240px; height: 240px;\"/>")
+                    .append("</div>")
+                    .append("<p style=\"margin: 14px 0 0; font-size: 13px; line-height: 1.5;\"><a href=\"").append(ticketUrl)
+                    .append("\" style=\"color: #2d5cff; text-decoration: none; font-weight: 600;\">Open this ticket &rarr;</a></p>");
             if (walletOn) {
-                b.append("<p style=\"margin: 4px 0;\"><a href=\"").append(walletUrl)
-                        .append("\" style=\"color: #0a66c2; text-decoration: none;\">Add to Apple Wallet →</a></p>");
+                b.append("<p style=\"margin: 4px 0 0; font-size: 13px; line-height: 1.5;\"><a href=\"").append(walletUrl)
+                        .append("\" style=\"color: #2d5cff; text-decoration: none; font-weight: 600;\">Add to Apple Wallet &rarr;</a></p>");
             }
             b.append("</div>");
         }
