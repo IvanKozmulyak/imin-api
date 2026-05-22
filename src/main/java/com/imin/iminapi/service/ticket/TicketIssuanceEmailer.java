@@ -168,7 +168,7 @@ public class TicketIssuanceEmailer {
     }
 
     private String buyerSiteBase() {
-        return trimTrailingSlash(emailProps.getAppBaseUrl());
+        return trimTrailingSlash(emailProps.getBuyerSiteBaseUrl());
     }
 
     private String apiBase() {

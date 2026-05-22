@@ -28,7 +28,7 @@ class OrderRecoveryServiceTest {
                                         EmailService email,
                                         OrderRecoveryAttemptRepository attempts) {
         EmailProperties ep = new EmailProperties();
-        ep.setAppBaseUrl("https://imin.wtf");
+        ep.setBuyerSiteBaseUrl("https://app.imin.wtf");
         TicketProperties tp = new TicketProperties();
         tp.setSigningSecret("x".repeat(32));
         tp.setRecoveryWindowDays(90);

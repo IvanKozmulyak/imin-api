@@ -123,11 +123,12 @@ public class FreeCheckoutService {
 
     /**
      * Build the public-site URL the BE returns to the buyer (and embeds in the
-     * confirmation email). The host is taken from {@code imin.email.app-base-url}
-     * which already defaults to the public site for password-reset links.
+     * confirmation email). Host comes from {@code imin.email.buyer-site-base-url}
+     * (the buyer site, e.g. https://app.imin.wtf) — distinct from
+     * {@code imin.email.app-base-url} which is the organizer dashboard.
      */
     public String orderUrl(Order order) {
-        String base = emailProps.getAppBaseUrl();
+        String base = emailProps.getBuyerSiteBaseUrl();
         if (base.endsWith("/")) base = base.substring(0, base.length() - 1);
         return base + "/order/" + order.getToken();
     }
@@ -146,7 +147,7 @@ public class FreeCheckoutService {
             text.append("You're in for ").append(event.getName()).append(".\n\n");
             text.append("Open your order: ").append(url).append("\n\n");
             text.append("Each ticket can also be viewed directly:\n");
-            String base = emailProps.getAppBaseUrl();
+            String base = emailProps.getBuyerSiteBaseUrl();
             if (base.endsWith("/")) base = base.substring(0, base.length() - 1);
             for (Ticket t : issued) {
                 text.append("- ").append(base).append("/tickets/").append(t.getToken()).append("\n");

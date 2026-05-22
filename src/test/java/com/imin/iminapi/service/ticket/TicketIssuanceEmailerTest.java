@@ -35,7 +35,7 @@ class TicketIssuanceEmailerTest {
         TicketRepository tickets = mock(TicketRepository.class);
         EventRepository events = mock(EventRepository.class);
         EmailProperties emailProps = new EmailProperties();
-        emailProps.setAppBaseUrl("https://imin.wtf");
+        emailProps.setBuyerSiteBaseUrl("https://app.imin.wtf");
         AppleWalletPassService wallet = mock(AppleWalletPassService.class);
         when(wallet.isConfigured()).thenReturn(true);
 
@@ -83,14 +83,14 @@ class TicketIssuanceEmailerTest {
                 .contains("https://api.imin.test/api/v1/public/tickets/TKT_A/qr.png")
                 .contains("https://api.imin.test/api/v1/public/tickets/TKT_B/qr.png")
                 .contains("https://api.imin.test/api/v1/public/tickets/TKT_A/apple-wallet.pkpass")
-                .contains("https://imin.wtf/tickets/TKT_A")
-                .contains("https://imin.wtf/order/ORDER_TOK")
-                .contains("https://imin.wtf/recover");
+                .contains("https://app.imin.wtf/tickets/TKT_A")
+                .contains("https://app.imin.wtf/order/ORDER_TOK")
+                .contains("https://app.imin.wtf/recover");
         assertThat(text.getValue())
-                .contains("https://imin.wtf/tickets/TKT_A")
-                .contains("https://imin.wtf/tickets/TKT_B")
-                .contains("https://imin.wtf/order/ORDER_TOK")
-                .contains("https://imin.wtf/recover");
+                .contains("https://app.imin.wtf/tickets/TKT_A")
+                .contains("https://app.imin.wtf/tickets/TKT_B")
+                .contains("https://app.imin.wtf/order/ORDER_TOK")
+                .contains("https://app.imin.wtf/recover");
     }
 
     @Test
@@ -101,7 +101,7 @@ class TicketIssuanceEmailerTest {
         TicketRepository tickets = mock(TicketRepository.class);
         EventRepository events = mock(EventRepository.class);
         EmailProperties emailProps = new EmailProperties();
-        emailProps.setAppBaseUrl("https://imin.wtf");
+        emailProps.setBuyerSiteBaseUrl("https://app.imin.wtf");
         AppleWalletPassService wallet = mock(AppleWalletPassService.class);
         when(wallet.isConfigured()).thenReturn(false);
 

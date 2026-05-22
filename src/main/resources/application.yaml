@@ -89,7 +89,12 @@ imin:
     from-address: ${IMIN_EMAIL_FROM_ADDRESS:noreply@imin.local}
     from-name: ${IMIN_EMAIL_FROM_NAME:imin}
     reply-to: ${IMIN_EMAIL_REPLY_TO:}
+    # Organizer dashboard host (imin-webapp). Used in password-reset and
+    # account-notification emails. In prod: https://dashboard.imin.wtf.
     app-base-url: ${IMIN_APP_BASE_URL:http://localhost:3000}
+    # Public buyer site host (imin-public). Used in ticket-issuance, free-flow
+    # confirmation, and order-recovery emails. In prod: https://app.imin.wtf.
+    buyer-site-base-url: ${IMIN_BUYER_SITE_BASE_URL:http://localhost:3000}
   ticket:
     # HMAC-SHA256 secret used to tamper-evidence QR payloads. 32+ bytes of entropy.
     # Required at boot — QrPayloadSigner throws if blank.
@@ -100,7 +105,8 @@ imin:
     recovery-max-per-hour: ${IMIN_TICKET_RECOVERY_MAX_PER_HOUR:5}
     # The API's own public base URL (no trailing slash). Used to build absolute
     # QR / pkpass links the buyer's email client can fetch. Distinct from
-    # imin.email.app-base-url which is the buyer-facing site.
+    # imin.email.buyer-site-base-url (the buyer site, which serves the ticket
+    # HTML page) and imin.email.app-base-url (the organizer dashboard).
     api-public-base-url: ${IMIN_API_PUBLIC_BASE_URL:http://localhost:8080}
   apple-wallet:
     # Apple Pass Type ID, e.g. pass.com.imin.ticket. Required for /apple-wallet.pkpass

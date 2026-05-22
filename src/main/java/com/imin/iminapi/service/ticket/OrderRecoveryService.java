@@ -129,7 +129,7 @@ public class OrderRecoveryService {
     }
 
     private String baseUrl() {
-        String base = emailProps.getAppBaseUrl();
+        String base = emailProps.getBuyerSiteBaseUrl();
         if (base != null && base.endsWith("/")) base = base.substring(0, base.length() - 1);
         return base == null ? "" : base;
     }

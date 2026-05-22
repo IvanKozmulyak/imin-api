@@ -18,7 +18,9 @@ public class TicketProperties {
      * The API's own public base URL. Used to build absolute QR / pkpass links
      * for emails and the ticket detail response so the buyer's email client
      * can reach them. Set via IMIN_API_PUBLIC_BASE_URL; defaults to localhost
-     * for dev. Distinct from imin.email.app-base-url (the buyer site).
+     * for dev. Distinct from imin.email.buyer-site-base-url (the buyer site,
+     * which serves the ticket HTML page) and imin.email.app-base-url (the
+     * organizer dashboard).
      */
     private String apiPublicBaseUrl = "http://localhost:8080";
 
