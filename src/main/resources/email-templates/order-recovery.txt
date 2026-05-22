@@ -1,7 +1,18 @@
-Your tickets · imin
+YOUR TICKETS · imin
 
-Open one of these to see your tickets and QR codes:
+Here are your orders.
+
+We found the orders linked to this email. Open any one below to see your tickets and QR codes — show the QR at the door to get in.
 
 {{links}}
+GOOD TO KNOW
+Your tickets are tied to this email. Keep this message handy. Each QR is scanned once at entry.
 
-If you didn't ask for this, you can safely ignore it.
+DIDN'T REQUEST THIS?
+If you didn't ask to recover your tickets, you can safely ignore this email — nothing on your account has changed.
+
+—
+
+Can't see an order you expected? Reply to this email and we'll help track it down.
+
+imin.wtf · sent because someone requested the tickets linked to this email
