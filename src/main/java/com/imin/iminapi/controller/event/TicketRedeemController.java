@@ -61,6 +61,7 @@ public class TicketRedeemController {
             case ALREADY_REDEEMED -> "already_redeemed";
             case WRONG_EVENT -> "wrong_event";
             case REVOKED -> "revoked";
+            case REFUNDED -> "refunded";
             case INVALID -> "invalid";
         });
         // wrong_event deliberately omits the ticket info so the response never

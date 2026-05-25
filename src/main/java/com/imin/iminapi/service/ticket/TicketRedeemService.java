@@ -20,7 +20,7 @@ import java.util.UUID;
 @Service
 public class TicketRedeemService {
 
-    public enum Outcome { REDEEMED, ALREADY_REDEEMED, WRONG_EVENT, REVOKED, INVALID }
+    public enum Outcome { REDEEMED, ALREADY_REDEEMED, WRONG_EVENT, REVOKED, REFUNDED, INVALID }
 
     public record Result(Outcome outcome, Ticket ticket) {}
 
@@ -46,7 +46,10 @@ public class TicketRedeemService {
             // which event this ticket belongs to.
             return new Result(Outcome.WRONG_EVENT, null);
         }
-        if ("revoked".equals(t.getState())) {
+        if (Ticket.STATE_REFUNDED.equals(t.getState())) {
+            return new Result(Outcome.REFUNDED, t);
+        }
+        if (Ticket.STATE_REVOKED.equals(t.getState())) {
             return new Result(Outcome.REVOKED, t);
         }
 
@@ -55,8 +58,11 @@ public class TicketRedeemService {
         if (rows == 1) {
             return new Result(Outcome.REDEEMED, fresh);
         }
-        // 0 rows: either already redeemed, or revoked between our SELECT and UPDATE.
-        if ("revoked".equals(fresh.getState())) {
+        // 0 rows: refunded, revoked, or already redeemed between our SELECT and UPDATE.
+        if (Ticket.STATE_REFUNDED.equals(fresh.getState())) {
+            return new Result(Outcome.REFUNDED, fresh);
+        }
+        if (Ticket.STATE_REVOKED.equals(fresh.getState())) {
             return new Result(Outcome.REVOKED, fresh);
         }
         return new Result(Outcome.ALREADY_REDEEMED, fresh);

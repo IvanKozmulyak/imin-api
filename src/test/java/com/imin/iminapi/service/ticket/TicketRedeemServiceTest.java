@@ -155,6 +155,36 @@ class TicketRedeemServiceTest {
         assertThat(r.outcome()).isEqualTo(TicketRedeemService.Outcome.REVOKED);
     }
 
+    @Test
+    void refunded_returns_refunded() {
+        Ticket t = persistTicket("refunded");
+
+        TicketRedeemService.Result r = service.redeem(event.getId(),
+                signer.sign(t.getToken()), UUID.randomUUID());
+
+        assertThat(r.outcome()).isEqualTo(TicketRedeemService.Outcome.REFUNDED);
+        assertThat(r.ticket()).isNotNull();
+        assertThat(r.ticket().getTierName()).isEqualTo("GA");
+        // State must remain 'refunded' — a refund scan must never flip the row.
+        Ticket fresh = tickets.findByToken(t.getToken()).orElseThrow();
+        assertThat(fresh.getState()).isEqualTo("refunded");
+        assertThat(fresh.getRedeemedAt()).isNull();
+    }
+
+    @Test
+    void refunded_after_redeem_returns_refunded_not_already_redeemed() {
+        // Simulates: ticket was redeemed, then later refunded (state set to 'refunded').
+        // The next scan should report REFUNDED, not ALREADY_REDEEMED.
+        Ticket t = persistTicket("refunded");
+
+        TicketRedeemService.Result r = service.redeem(event.getId(),
+                signer.sign(t.getToken()), UUID.randomUUID());
+
+        assertThat(r.outcome())
+                .as("refunded ticket must not be reported as already_redeemed")
+                .isEqualTo(TicketRedeemService.Outcome.REFUNDED);
+    }
+
     private Ticket persistTicket(String state) {
         Ticket t = new Ticket();
         t.setToken("TKT_" + UUID.randomUUID());
