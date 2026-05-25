@@ -16,6 +16,7 @@ import java.util.Map;
 import com.imin.iminapi.repository.AuthSessionRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.TokenService;
+import com.imin.iminapi.service.gate.GateAuthService;
 import org.springframework.boot.security.saml2.autoconfigure.Saml2RelyingPartyAutoConfiguration;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -34,6 +35,7 @@ class GlobalExceptionHandlerTest {
     @MockitoBean AuthSessionRepository authSessionRepository;
     @MockitoBean UserRepository userRepository;
     @MockitoBean TokenService tokenService;
+    @MockitoBean GateAuthService gateAuthService;
 
     @RestController
     @RequestMapping("/__test")

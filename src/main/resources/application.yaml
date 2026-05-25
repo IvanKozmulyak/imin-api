@@ -121,11 +121,15 @@ imin:
     # Base64-encoded Apple WWDR intermediate certificate (PEM).
     wwdr-pem-base64: ${APPLE_WALLET_WWDR_PEM_BASE64:}
   cors:
-    allowed-origin-patterns: ${CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:3000,http://localhost:5173,https://imin-webapp.vercel.app,https://imin-webapp-*.vercel.app,https://dashboard.imin.wtf,https://imin.wtf,https://www.imin.wtf,https://imin-public.vercel.app,https://imin-public-*.vercel.app}
+    allowed-origin-patterns: ${CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:3000,http://localhost:5173,https://imin-webapp.vercel.app,https://imin-webapp-*.vercel.app,https://dashboard.imin.wtf,https://imin.wtf,https://www.imin.wtf,https://imin-public.vercel.app,https://imin-public-*.vercel.app,https://t.imin.wtf}
   api:
     base-path: /api/v1
   auth:
     session-ttl-days: 30
+  gate:
+    # Gate-scanner bearer-token lifetime. Gate phones live at venues and reboot
+    # rarely; default 30 days. Override with IMIN_GATE_TOKEN_TTL_DAYS.
+    token-ttl-days: ${IMIN_GATE_TOKEN_TTL_DAYS:30}
   ratelimit:
     login:
       capacity: 5

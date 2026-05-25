@@ -79,6 +79,8 @@ public class SecurityConfig {
                                          "/api/v1/auth/resend-verification",
                                          "/api/v1/auth/forgot-password",
                                          "/api/v1/auth/reset-password").permitAll()
+                        // Gate-scanner login — public (no token yet); validated server-side.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/gate/login").permitAll()
                         // Public reference data (country codes, etc.)
                         .requestMatchers(HttpMethod.GET, "/api/v1/reference/**").permitAll()
                         // Public event endpoints (unauthenticated GET)

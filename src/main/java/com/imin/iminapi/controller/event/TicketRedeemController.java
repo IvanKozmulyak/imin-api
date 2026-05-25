@@ -49,6 +49,10 @@ public class TicketRedeemController {
                     "qrPayload is required");
         }
 
+        // `userId` is null for gate-token requests — TicketRedeemService persists
+        // the redeemed-by column as the user UUID (nullable), and the
+        // audit/log trail uses me.actorLabel() ("gate:<orgId>" for gates) to
+        // keep the actor identifiable without crashing on null.
         TicketRedeemService.Result r = service.redeem(eventId, req.qrPayload(), me.userId());
 
         Map<String, Object> body = new LinkedHashMap<>();

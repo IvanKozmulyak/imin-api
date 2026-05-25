@@ -60,6 +60,8 @@ imin:
     base-path: /api/v1
   auth:
     session-ttl-days: 30
+  gate:
+    token-ttl-days: 30
   ratelimit:
     login:
       capacity: 5

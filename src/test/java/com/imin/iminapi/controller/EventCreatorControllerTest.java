@@ -12,6 +12,7 @@ import com.imin.iminapi.repository.AuthSessionRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.TokenService;
 import com.imin.iminapi.service.EventCreatorService;
+import com.imin.iminapi.service.gate.GateAuthService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.security.saml2.autoconfigure.Saml2RelyingPartyAutoConfiguration;
@@ -46,6 +47,7 @@ class EventCreatorControllerTest {
     @MockitoBean private AuthSessionRepository authSessionRepository;
     @MockitoBean private UserRepository userRepository;
     @MockitoBean private TokenService tokenService;
+    @MockitoBean private GateAuthService gateAuthService;
 
     @Test
     void create_validRequest_returns201WithBody() throws Exception {

@@ -4,6 +4,7 @@ import com.imin.iminapi.config.SecurityConfig;
 import com.imin.iminapi.repository.AuthSessionRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.TokenService;
+import com.imin.iminapi.service.gate.GateAuthService;
 import com.imin.iminapi.service.poster.ReferenceImageLibrary;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -31,6 +32,7 @@ class StyleReferenceControllerTest {
     @MockitoBean private AuthSessionRepository authSessionRepository;
     @MockitoBean private UserRepository userRepository;
     @MockitoBean private TokenService tokenService;
+    @MockitoBean private GateAuthService gateAuthService;
 
     @Test
     void list_returnsCatalogWithImageUrls() throws Exception {

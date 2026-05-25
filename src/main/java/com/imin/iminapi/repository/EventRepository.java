@@ -33,6 +33,23 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
             @Param("now") Instant now,
             Pageable pageable);
 
+    /**
+     * Scannable events for the gate scanner: events for an org whose
+     * {@code startsAt} is either in the future or within the last 24 hours
+     * (so currently-running events remain visible until they clearly end).
+     * Excludes soft-deleted events. Ordered by {@code startsAt} ascending so
+     * the gate UI shows the most imminent event first. Events with a
+     * {@code null} startsAt are excluded — the gate UX is built around
+     * scheduled events and a null start has no meaningful "near now" answer.
+     */
+    @Query(
+        "SELECT e FROM Event e WHERE e.orgId = :orgId AND e.deletedAt IS NULL " +
+        "AND e.startsAt IS NOT NULL AND e.startsAt >= :cutoff " +
+        "ORDER BY e.startsAt ASC")
+    List<Event> findScannableForGate(
+            @Param("orgId") UUID orgId,
+            @Param("cutoff") Instant cutoff);
+
     @Query(
         "SELECT e FROM Event e WHERE e.orgId = :orgId AND e.deletedAt IS NULL " +
         "AND e.status = com.imin.iminapi.model.EventStatus.PAST " +
