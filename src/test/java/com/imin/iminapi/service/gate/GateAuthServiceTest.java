@@ -102,6 +102,53 @@ class GateAuthServiceTest {
     }
 
     @Test
+    void rotate_invalidates_existing_gate_sessions_for_org() {
+        // Org #1: a credential plus two live device sessions.
+        service.rotate(owner, org.getId(), "first-password-123");
+        String hashBefore = credentials.findByOrgId(org.getId()).orElseThrow().getPasswordHash();
+        String tokenA = service.login(new GateLoginRequest(org.getSlug(), "first-password-123")).token();
+        String tokenB = service.login(new GateLoginRequest(org.getSlug(), "first-password-123")).token();
+        assertThat(service.authenticate(tokenA)).isPresent();
+        assertThat(service.authenticate(tokenB)).isPresent();
+
+        // Org #2: a completely independent org with its own active session —
+        // must not be touched by rotating org #1's credential.
+        Organization other = new Organization();
+        other.setName("Untouched Org");
+        other.setSlug("untouched-" + UUID.randomUUID().toString().substring(0, 8));
+        other.setContactEmail("untouched@example.test");
+        other.setCountry("DE");
+        Organization other2 = orgs.save(other);
+        AuthPrincipal otherOwner = new AuthPrincipal(
+                UUID.randomUUID(), other2.getId(), UserRole.OWNER, UUID.randomUUID());
+        service.rotate(otherOwner, other2.getId(), "other-password-789");
+        String tokenC = service.login(new GateLoginRequest(other2.getSlug(), "other-password-789")).token();
+        assertThat(service.authenticate(tokenC)).isPresent();
+
+        // Act: rotate org #1's password.
+        service.rotate(owner, org.getId(), "new-password-xyz");
+
+        // Org #1's existing sessions are gone.
+        assertThat(service.authenticate(tokenA)).isEmpty();
+        assertThat(service.authenticate(tokenB)).isEmpty();
+        assertThat(sessions.findAll().stream()
+                .filter(s -> s.getOrgId().equals(org.getId()))
+                .count())
+                .isZero();
+
+        // Org #2 is untouched — cross-org isolation.
+        assertThat(service.authenticate(tokenC)).isPresent();
+        assertThat(sessions.findAll().stream()
+                .filter(s -> s.getOrgId().equals(other2.getId()))
+                .count())
+                .isEqualTo(1);
+
+        // And the new password hash is in place on org #1's credential.
+        String hashAfter = credentials.findByOrgId(org.getId()).orElseThrow().getPasswordHash();
+        assertThat(hashAfter).isNotEqualTo(hashBefore);
+    }
+
+    @Test
     void rotate_for_other_org_is_forbidden() {
         Organization other = new Organization();
         other.setName("Other Org");

@@ -127,6 +127,12 @@ public class GateAuthService {
      * Upsert the org's gate credential. Replaces any existing row for the
      * org (the PK is org_id, so we save() the same row to overwrite both
      * hash and lastRotatedAt).
+     *
+     * <p>Rotation is the only revocation lever an organizer has against a lost
+     * or compromised gate device, so the same transaction also drops every
+     * existing {@link GateSession} for the org. Without that, previously-
+     * issued bearer tokens stayed valid up to their {@code expiresAt} (default
+     * 30 days), which would defeat the point of rotating the password.
      */
     @Transactional
     public void rotate(AuthPrincipal principal, UUID orgId, String newPassword) {
@@ -136,7 +142,8 @@ public class GateAuthService {
         c.setPasswordHash(hasher.hash(newPassword));
         c.setLastRotatedAt(Instant.now());
         credentials.save(c);
-        log.info("Gate credential rotated for org {}", orgId);
+        int revoked = sessions.deleteAllByOrgId(orgId);
+        log.info("Gate credential rotated for org {} (revoked {} active session(s))", orgId, revoked);
     }
 
     @Transactional(readOnly = true)
