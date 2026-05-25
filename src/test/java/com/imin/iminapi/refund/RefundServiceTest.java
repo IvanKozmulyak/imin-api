@@ -4,6 +4,7 @@ import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketRepository;
+import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
@@ -12,6 +13,7 @@ import com.imin.iminapi.model.UserRole;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.context.ApplicationEventPublisher;
 
 import java.util.List;
 import java.util.Optional;
@@ -34,6 +36,8 @@ class RefundServiceTest {
     RefundRepository refunds = mock(RefundRepository.class);
     RefundTicketRepository refundTickets = mock(RefundTicketRepository.class);
     StripeRefundService stripeRefunds = mock(StripeRefundService.class);
+    TicketTierRepository tierRepo = mock(TicketTierRepository.class);
+    ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
     RefundService service;
 
     UUID orgId;
@@ -47,7 +51,7 @@ class RefundServiceTest {
         userId = UUID.randomUUID();
         orderId = UUID.randomUUID();
         principal = new AuthPrincipal(userId, orgId, UserRole.OWNER, UUID.randomUUID());
-        service = new RefundService(orders, tickets, refunds, refundTickets, stripeRefunds);
+        service = new RefundService(orders, tickets, refunds, refundTickets, stripeRefunds, tierRepo, publisher);
     }
 
     private Order paidOrder() {

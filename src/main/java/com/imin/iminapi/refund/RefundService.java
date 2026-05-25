@@ -2,8 +2,12 @@ package com.imin.iminapi.refund;
 
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Ticket;
+import com.imin.iminapi.model.TicketTier;
+import com.imin.iminapi.refund.event.RefundConfirmedEvent;
+import com.imin.iminapi.refund.event.RefundFailedEvent;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketRepository;
+import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
@@ -11,6 +15,7 @@ import com.imin.iminapi.stripe.StripeRefundService;
 import com.stripe.exception.StripeException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -45,17 +50,23 @@ public class RefundService {
     private final RefundRepository refunds;
     private final RefundTicketRepository refundTickets;
     private final StripeRefundService stripeRefundService;
+    private final TicketTierRepository tierRepository;
+    private final ApplicationEventPublisher publisher;
 
     public RefundService(OrderRepository orders,
                          TicketRepository tickets,
                          RefundRepository refunds,
                          RefundTicketRepository refundTickets,
-                         StripeRefundService stripeRefundService) {
+                         StripeRefundService stripeRefundService,
+                         TicketTierRepository tierRepository,
+                         ApplicationEventPublisher publisher) {
         this.orders = orders;
         this.tickets = tickets;
         this.refunds = refunds;
         this.refundTickets = refundTickets;
         this.stripeRefundService = stripeRefundService;
+        this.tierRepository = tierRepository;
+        this.publisher = publisher;
     }
 
     @Transactional
@@ -192,5 +203,79 @@ public class RefundService {
         Order order = orders.findById(orderId).orElseThrow(() -> ApiException.notFound("Order"));
         if (!order.getOrgId().equals(principal.orgId())) throw ApiException.notFound("Order");
         return refunds.findByOrderIdOrderByCreatedAtDesc(orderId);
+    }
+
+    /**
+     * Called by {@link com.imin.iminapi.stripe.StripeWebhookService} on
+     * {@code charge.refund.updated}. Performs the race-safe status transition and
+     * (on SUCCEEDED) the inventory release and email publish. Late events past a
+     * terminal state are no-ops.
+     */
+    @Transactional
+    public void handleWebhookStatusChange(String stripeRefundId, RefundStatus newStatus,
+                                          String failureCode, String failureMessage) {
+        Refund refund = refunds.findByStripeRefundId(stripeRefundId).orElse(null);
+        if (refund == null) {
+            log.warn("[refund-webhook] no DB row for stripe refund {} — skipping (likely dashboard-initiated)",
+                stripeRefundId);
+            return;
+        }
+        if (refund.getStatus() == newStatus) return;
+        if (refund.getStatus().isTerminal()) {
+            log.info("[refund-webhook] refund {} already terminal ({}); ignoring late {}",
+                refund.getId(), refund.getStatus(), newStatus);
+            return;
+        }
+
+        int won = refunds.updateStatusIfCurrent(refund.getId(), refund.getStatus(), newStatus);
+        if (won == 0) {
+            log.info("[refund-webhook] refund {} concurrently transitioned — no-op", refund.getId());
+            return;
+        }
+
+        if (newStatus == RefundStatus.SUCCEEDED) {
+            releaseInventoryAndMarkTickets(refund);
+            publisher.publishEvent(new RefundConfirmedEvent(refund.getId()));
+            log.info("[refund-webhook] refund {} SUCCEEDED — inventory released, email queued",
+                refund.getId());
+        } else if (newStatus == RefundStatus.FAILED) {
+            // Conditional UPDATE only flipped status; persist failure detail separately.
+            Refund reloaded = refunds.findById(refund.getId()).orElseThrow();
+            reloaded.setFailureCode(failureCode);
+            reloaded.setFailureMessage(failureMessage);
+            refunds.save(reloaded);
+            publisher.publishEvent(new RefundFailedEvent(refund.getId()));
+            log.warn("[refund-webhook] refund {} FAILED code={} message={}",
+                refund.getId(), failureCode, failureMessage);
+        }
+    }
+
+    private void releaseInventoryAndMarkTickets(Refund refund) {
+        List<UUID> ticketIds = refundTickets.findTicketIdsByRefundId(refund.getId());
+        List<Ticket> ticketsForRefund = tickets.findAllById(ticketIds);
+        Map<UUID, Long> qtyByTier = ticketsForRefund.stream()
+            .collect(Collectors.groupingBy(Ticket::getTierId, Collectors.counting()));
+
+        // Lock tier rows in deterministic order to avoid two concurrent refunds
+        // deadlocking on cross-tier locks. Sort by tierId.
+        qtyByTier.entrySet().stream()
+            .sorted(Map.Entry.comparingByKey())
+            .forEach(entry -> {
+                TicketTier tier = tierRepository.findByIdForUpdate(entry.getKey())
+                    .orElseThrow(() -> new IllegalStateException("Missing tier " + entry.getKey()));
+                int decrement = entry.getValue().intValue();
+                int currentSold = tier.getSold();
+                if (currentSold < decrement) {
+                    log.warn("[refund] tier {} sold={} < decrement={} — clamping (inventory drift)",
+                        tier.getId(), currentSold, decrement);
+                }
+                tier.setSold(Math.max(0, currentSold - decrement));
+                tierRepository.save(tier);
+            });
+
+        for (Ticket t : ticketsForRefund) t.setState(Ticket.STATE_REFUNDED);
+        tickets.saveAll(ticketsForRefund);
+        log.info("[refund] released {} ticket(s) across {} tier(s) for refund {}",
+            ticketsForRefund.size(), qtyByTier.size(), refund.getId());
     }
 }

@@ -1,5 +1,7 @@
 package com.imin.iminapi.stripe;
 
+import com.imin.iminapi.refund.RefundService;
+import com.imin.iminapi.refund.RefundStatus;
 import com.imin.iminapi.repository.PromoCodeRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
@@ -67,6 +69,7 @@ public class StripeWebhookService {
     private final InventoryService inventoryService;
     private final WebhookEventDedupService dedup;
     private final PaidCheckoutService paidCheckoutService;
+    private final RefundService refundService;
 
     /**
      * Proxied self-reference so {@link #handleV1Endpoint} can invoke
@@ -87,13 +90,15 @@ public class StripeWebhookService {
                                 PromoCodeRepository promos,
                                 InventoryService inventoryService,
                                 WebhookEventDedupService dedup,
-                                PaidCheckoutService paidCheckoutService) {
+                                PaidCheckoutService paidCheckoutService,
+                                RefundService refundService) {
         this.stripeClient = stripeClient;
         this.props = props;
         this.promos = promos;
         this.inventoryService = inventoryService;
         this.dedup = dedup;
         this.paidCheckoutService = paidCheckoutService;
+        this.refundService = refundService;
     }
 
     @Autowired
@@ -164,6 +169,10 @@ public class StripeWebhookService {
             case "checkout.session.expired" -> {
                 log.info("[stripe-webhook] v1 dispatch → checkout.session.expired eventId={}", eventId);
                 onCheckoutSessionExpired(event);
+            }
+            case "charge.refund.updated" -> {
+                log.info("[stripe-webhook] v1 dispatch → charge.refund.updated eventId={}", eventId);
+                onChargeRefundUpdated(event);
             }
             // checkout.session.completed is intentionally a no-op. Fulfilment moved
             // to payment_intent.succeeded because PI is what tells us the money
@@ -336,6 +345,41 @@ public class StripeWebhookService {
             log.info("[stripe-webhook] released reservation for session {} via session-id fallback",
                     session.getId());
         }
+    }
+
+    /**
+     * Handle {@code charge.refund.updated}: Stripe is telling us a Refund changed
+     * status (PENDING → SUCCEEDED, or PENDING → FAILED). The event's
+     * {@code data.object} IS the Refund (Stripe nests the refund inside the
+     * charge.refund.updated event directly, not the parent Charge).
+     *
+     * <p>Idempotency is enforced two ways: the {@link WebhookEventDedupService}
+     * at the top of {@link #handleV1Transactional} no-ops replays of the same
+     * {@code event.id}, and {@link RefundService#handleWebhookStatusChange}
+     * uses a status-conditional UPDATE so only one transaction wins the
+     * transition.
+     */
+    private void onChargeRefundUpdated(com.stripe.model.Event event) {
+        EventDataObjectDeserializer dod = event.getDataObjectDeserializer();
+        Optional<StripeObject> obj = dod.getObject();
+        if (obj.isEmpty()) {
+            log.warn("charge.refund.updated had no deserialized object — apiVersion={}",
+                event.getApiVersion());
+            return;
+        }
+        if (!(obj.get() instanceof com.stripe.model.Refund stripeRefund)) {
+            log.warn("charge.refund.updated deserialized to unexpected type: {}",
+                obj.get().getClass().getName());
+            return;
+        }
+        RefundStatus newStatus = RefundStatus.fromStripe(stripeRefund.getStatus());
+        log.info("[stripe-webhook] charge.refund.updated refundId={} status={} mapped={}",
+            stripeRefund.getId(), stripeRefund.getStatus(), newStatus);
+        refundService.handleWebhookStatusChange(
+            stripeRefund.getId(),
+            newStatus,
+            stripeRefund.getFailureReason(),
+            stripeRefund.getFailureReason());   // Stripe Refund only exposes failure_reason
     }
 
     private PaymentIntent extractPaymentIntent(com.stripe.model.Event event, String label) {

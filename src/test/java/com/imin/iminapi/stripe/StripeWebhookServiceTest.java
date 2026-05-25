@@ -41,6 +41,7 @@ class StripeWebhookServiceTest {
     private InventoryService inventoryService;
     private WebhookEventDedupService dedup;
     private PaidCheckoutService paidCheckoutService;
+    private com.imin.iminapi.refund.RefundService refundService;
     private StripeWebhookService svc;
 
     /**
@@ -58,6 +59,7 @@ class StripeWebhookServiceTest {
         inventoryService = mock(InventoryService.class);
         dedup = mock(WebhookEventDedupService.class);
         paidCheckoutService = mock(PaidCheckoutService.class);
+        refundService = mock(com.imin.iminapi.refund.RefundService.class);
 
         recorded = new HashSet<>();
         when(dedup.tryRecord(anyString(), anyString())).thenAnswer(inv -> {
@@ -68,7 +70,7 @@ class StripeWebhookServiceTest {
         props = new StripeProperties();
         props.setWebhookSecretV1(SECRET);
         svc = new StripeWebhookService(stripeClient, props, promos, inventoryService, dedup,
-                paidCheckoutService);
+                paidCheckoutService, refundService);
     }
 
     // ── helpers ────────────────────────────────────────────────────────────────
@@ -145,6 +147,80 @@ class StripeWebhookServiceTest {
     private static String metaJson(UUID reservationId, UUID tierId, int qty) {
         return "{\"reservation_id\":\"" + reservationId + "\",\"tier_id\":\"" + tierId
                 + "\",\"qty\":\"" + qty + "\"}";
+    }
+
+    /**
+     * Build a minimal {@code charge.refund.updated} JSON payload. The data.object
+     * for this event is a Refund directly.
+     */
+    private String refundUpdatedEvent(String eventId, String refundId, String status,
+                                      String failureReason) {
+        return """
+            {
+              "id": "%s",
+              "object": "event",
+              "type": "charge.refund.updated",
+              "api_version": "2026-04-22.dahlia",
+              "created": %d,
+              "data": {
+                "object": {
+                  "id": "%s",
+                  "object": "refund",
+                  "amount": 5000,
+                  "currency": "eur",
+                  "charge": "ch_test_xyz",
+                  "payment_intent": "pi_test_xyz",
+                  "status": "%s",
+                  "failure_reason": %s
+                }
+              }
+            }
+            """.formatted(
+                eventId,
+                Instant.now().getEpochSecond(),
+                refundId,
+                status,
+                failureReason == null ? "null" : "\"" + failureReason + "\"");
+    }
+
+    // ── charge.refund.updated → handleWebhookStatusChange ─────────────────────
+
+    @org.junit.jupiter.api.Test
+    void chargeRefundUpdated_succeeded_callsHandleWebhookStatusChangeWithSUCCEEDED() throws Exception {
+        String body = refundUpdatedEvent("evt_refund_1", "re_test_1", "succeeded", null);
+
+        svc.handleV1Endpoint(body, sign(body));
+
+        verify(refundService).handleWebhookStatusChange(
+            eq("re_test_1"),
+            eq(com.imin.iminapi.refund.RefundStatus.SUCCEEDED),
+            org.mockito.ArgumentMatchers.isNull(),
+            org.mockito.ArgumentMatchers.isNull());
+    }
+
+    @org.junit.jupiter.api.Test
+    void chargeRefundUpdated_failed_passesFailureReason() throws Exception {
+        String body = refundUpdatedEvent("evt_refund_2", "re_test_2", "failed", "expired_or_canceled_card");
+
+        svc.handleV1Endpoint(body, sign(body));
+
+        verify(refundService).handleWebhookStatusChange(
+            eq("re_test_2"),
+            eq(com.imin.iminapi.refund.RefundStatus.FAILED),
+            eq("expired_or_canceled_card"),
+            eq("expired_or_canceled_card"));
+    }
+
+    @org.junit.jupiter.api.Test
+    void chargeRefundUpdated_replayIsDedupSkipped() throws Exception {
+        String body = refundUpdatedEvent("evt_refund_dedup", "re_test_3", "succeeded", null);
+
+        svc.handleV1Endpoint(body, sign(body));
+        svc.handleV1Endpoint(body, sign(body));   // replay
+
+        // refundService called exactly once despite two webhook deliveries
+        org.mockito.Mockito.verify(refundService, org.mockito.Mockito.times(1))
+            .handleWebhookStatusChange(eq("re_test_3"), any(), any(), any());
     }
 
     // ── payment_intent.succeeded → confirmSold + promo increment ───────────────
