@@ -9,6 +9,7 @@ import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -17,6 +18,10 @@ import java.util.UUID;
 public interface TicketRepository extends JpaRepository<Ticket, UUID> {
     Optional<Ticket> findByToken(String token);
     List<Ticket> findByOrderIdOrderByCreatedAtAsc(UUID orderId);
+
+    List<Ticket> findByIdInAndOrderId(Collection<UUID> ids, UUID orderId);
+
+    long countByOrderIdAndStateNot(UUID orderId, String state);
 
     /**
      * Atomic single-use redemption. Returns the number of rows updated:
