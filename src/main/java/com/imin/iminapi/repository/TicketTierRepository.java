@@ -22,6 +22,10 @@ public interface TicketTierRepository extends JpaRepository<TicketTier, UUID> {
     @Query("SELECT COALESCE(SUM(t.quantity), 0) FROM TicketTier t WHERE t.eventId = :eventId")
     int sumQuantityByEventId(@Param("eventId") UUID eventId);
 
+    /** Total confirmed sales across all tiers of an event (refunds decrement this). */
+    @Query("SELECT COALESCE(SUM(t.sold), 0) FROM TicketTier t WHERE t.eventId = :eventId")
+    int sumSoldByEventId(@Param("eventId") UUID eventId);
+
     @Query("""
         SELECT t.eventId, MIN(t.priceMinor)
           FROM TicketTier t

@@ -7,6 +7,7 @@ import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.CurrentUser;
 import com.imin.iminapi.service.event.EventOverviewService;
 import com.imin.iminapi.service.event.EventService;
+import com.imin.iminapi.service.event.EventVelocityService;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 
@@ -18,10 +19,14 @@ public class EventController {
 
     private final EventService eventService;
     private final EventOverviewService overviewService;
+    private final EventVelocityService velocityService;
 
-    public EventController(EventService eventService, EventOverviewService overviewService) {
+    public EventController(EventService eventService,
+                           EventOverviewService overviewService,
+                           EventVelocityService velocityService) {
         this.eventService = eventService;
         this.overviewService = overviewService;
+        this.velocityService = velocityService;
     }
 
     @GetMapping
@@ -65,5 +70,11 @@ public class EventController {
     @GetMapping("/{id}/overview")
     public EventOverviewResponse overview(@CurrentUser AuthPrincipal p, @PathVariable UUID id) {
         return overviewService.overview(p, id);
+    }
+
+    @GetMapping("/{id}/sales-velocity")
+    public EventVelocityService.VelocityResponse salesVelocity(@CurrentUser AuthPrincipal p,
+                                                                @PathVariable UUID id) {
+        return velocityService.last7Days(p, id);
     }
 }

@@ -19,6 +19,25 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
 
     List<Order> findByEventIdOrderByCreatedAtDesc(UUID eventId);
 
+    /** Gross revenue (sum of order totals) for an event, in minor units. Includes refunded amounts. */
+    @Query("select coalesce(sum(o.totalMinor), 0) from Order o where o.eventId = :eventId")
+    long sumTotalMinorByEventId(@Param("eventId") UUID eventId);
+
+    /**
+     * Created-at + total-minor pairs for orders since {@code since}. Used by the
+     * sales-velocity service to bucket by day. Returned as {@code Object[]} to
+     * avoid a per-row entity hydration cost — the only columns the caller needs
+     * are the timestamp and the amount.
+     */
+    @Query("""
+            select o.createdAt, o.totalMinor from Order o
+             where o.eventId = :eventId
+               and o.createdAt >= :since
+             order by o.createdAt asc
+            """)
+    List<Object[]> findCreatedAtAndTotalSince(@Param("eventId") UUID eventId,
+                                              @Param("since") Instant since);
+
     @Query("""
             select o from Order o
              where lower(o.email) = lower(:email)
