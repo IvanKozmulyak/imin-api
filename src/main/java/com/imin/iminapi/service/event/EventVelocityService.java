@@ -10,12 +10,12 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
+import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
 
@@ -40,7 +40,10 @@ public class EventVelocityService {
      */
     public record VelocityResponse(List<Long> points, List<String> days) {}
 
-    private static final int WINDOW_DAYS = 7;
+    /** Default window when the caller doesn't specify {@code days}. */
+    public static final int DEFAULT_WINDOW_DAYS = 7;
+    /** Hard cap to prevent unbounded queries / massive payloads. */
+    public static final int MAX_WINDOW_DAYS = 365;
 
     private final EventRepository events;
     private final OrderRepository orders;
@@ -57,45 +60,66 @@ public class EventVelocityService {
         this.clock = clock;
     }
 
+    /** Back-compat shim for callers that want the original 7-day window. */
     @Transactional(readOnly = true)
     public VelocityResponse last7Days(AuthPrincipal p, UUID eventId) {
+        return windowEndingToday(p, eventId, DEFAULT_WINDOW_DAYS);
+    }
+
+    /**
+     * Compute the velocity histogram for the {@code days}-day window ending today
+     * in the event's timezone. {@code days} is clamped to [1, MAX_WINDOW_DAYS].
+     */
+    @Transactional(readOnly = true)
+    public VelocityResponse windowEndingToday(AuthPrincipal p, UUID eventId, int days) {
         Event e = events.findActive(eventId).orElseThrow(() -> ApiException.notFound("Event"));
         if (!e.getOrgId().equals(p.orgId())) throw ApiException.notFound("Event");
 
-        ZoneId zone = (e.getTimezone() == null || e.getTimezone().isBlank())
-                ? ZoneId.of("UTC")
-                : ZoneId.of(e.getTimezone());
+        int window = Math.max(1, Math.min(days, MAX_WINDOW_DAYS));
+
+        ZoneId zone = resolveZone(e.getTimezone());
         LocalDate today = LocalDate.now(clock.withZone(zone));
-        LocalDate start = today.minusDays(WINDOW_DAYS - 1L);
+        LocalDate start = today.minusDays(window - 1L);
         Instant since = start.atStartOfDay(zone).toInstant();
 
-        long[] buckets = new long[WINDOW_DAYS];
+        long[] buckets = new long[window];
 
         for (Object[] row : orders.findCreatedAtAndTotalSince(eventId, since)) {
             Instant ts = (Instant) row[0];
             long amount = ((Number) row[1]).longValue();
             int dayIdx = bucketIndex(ts, zone, start);
-            if (dayIdx >= 0 && dayIdx < WINDOW_DAYS) buckets[dayIdx] += amount;
+            if (dayIdx >= 0 && dayIdx < window) buckets[dayIdx] += amount;
         }
 
         for (Object[] row : refunds.findSucceededRefundUpdatedAtAndAmountSince(eventId, since)) {
             Instant ts = (Instant) row[0];
             long amount = ((Number) row[1]).longValue();
             int dayIdx = bucketIndex(ts, zone, start);
-            if (dayIdx >= 0 && dayIdx < WINDOW_DAYS) buckets[dayIdx] -= amount;
+            if (dayIdx >= 0 && dayIdx < window) buckets[dayIdx] -= amount;
         }
 
-        List<Long> points = new ArrayList<>(WINDOW_DAYS);
+        List<Long> points = new ArrayList<>(window);
         for (long v : buckets) points.add(Math.max(0L, v));   // floor at 0
 
-        List<String> days = new ArrayList<>(WINDOW_DAYS);
-        for (int i = 0; i < WINDOW_DAYS; i++) days.add(start.plusDays(i).toString());
+        List<String> dayLabels = new ArrayList<>(window);
+        for (int i = 0; i < window; i++) dayLabels.add(start.plusDays(i).toString());
 
-        return new VelocityResponse(points, days);
+        return new VelocityResponse(points, dayLabels);
     }
 
     private static int bucketIndex(Instant ts, ZoneId zone, LocalDate start) {
         LocalDate day = ts.atZone(zone).toLocalDate();
         return (int) ChronoUnit.DAYS.between(start, day);
+    }
+
+    // Bad timezone strings on a stored Event row shouldn't 500 the sparkline —
+    // fall back to UTC and let the chart render rather than paging Sentry.
+    private static ZoneId resolveZone(String raw) {
+        if (raw == null || raw.isBlank()) return ZoneId.of("UTC");
+        try {
+            return ZoneId.of(raw);
+        } catch (DateTimeException ex) {
+            return ZoneId.of("UTC");
+        }
     }
 }

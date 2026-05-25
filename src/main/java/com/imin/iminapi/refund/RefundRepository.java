@@ -21,6 +21,20 @@ public interface RefundRepository extends JpaRepository<Refund, UUID> {
     List<Refund> findByOrderIdOrderByCreatedAtDesc(UUID orderId);
 
     /**
+     * All refunds for any order in the given event, newest first. Includes the
+     * order's email and short identifier so callers can render a per-event
+     * refund history without an N+1 lookup against orders. Tuple shape:
+     * {@code [Refund refund, String email, UUID orderId]}.
+     */
+    @Query("""
+            select r, o.email, o.id from Refund r
+              join com.imin.iminapi.model.Order o on o.id = r.orderId
+             where o.eventId = :eventId
+             order by r.createdAt desc
+            """)
+    List<Object[]> findByEventIdWithOrder(@Param("eventId") UUID eventId);
+
+    /**
      * Sum of SUCCEEDED refund amounts (minor units) for all orders of an event.
      * Used by the event-overview Revenue card to net out refunds from gross.
      * REQUESTED / PENDING / FAILED / CANCELED rows are excluded.

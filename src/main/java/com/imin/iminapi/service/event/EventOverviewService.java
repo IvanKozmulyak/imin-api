@@ -16,14 +16,17 @@ import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.util.MoneyFormat;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -39,6 +42,11 @@ public class EventOverviewService {
     );
 
     private static final int RECENT_LIMIT = 8;
+
+    // How many of the most-recent orders to inspect to find RECENT_LIMIT that
+    // still have non-refunded tickets. A fully-refunded order is skipped; this
+    // bounds the fetch in the rare case the latest N are all fully refunded.
+    private static final int RECENT_FETCH_FACTOR = 4;
 
     private final EventRepository events;
     private final PredictionRepository predictions;
@@ -79,17 +87,26 @@ public class EventOverviewService {
         // Recent buyers: skip fully-refunded orders, and within each order count
         // only non-refunded tickets (so the tier breakdown + amount reflect what
         // the buyer actually still holds). Take the most-recent RECENT_LIMIT
-        // surviving orders.
-        List<RecentPurchase> recentPurchases = orders.findByEventIdOrderByCreatedAtDesc(id).stream()
-                .map(o -> {
-                    List<Ticket> live = tickets.findByOrderIdOrderByCreatedAtAsc(o.getId()).stream()
-                            .filter(t -> !Ticket.STATE_REFUNDED.equals(t.getState()))
-                            .toList();
-                    return live.isEmpty() ? null : toRecentPurchase(o, live);
-                })
-                .filter(java.util.Objects::nonNull)
-                .limit(RECENT_LIMIT)
-                .toList();
+        // surviving orders. Cap the fetch at RECENT_LIMIT * RECENT_FETCH_FACTOR
+        // so a high-volume event doesn't load every order just to take 8, and
+        // batch the per-order tickets lookup into a single query (was N+1).
+        int fetchCap = RECENT_LIMIT * RECENT_FETCH_FACTOR;
+        List<Order> recentOrders = orders.findByEventIdOrderByCreatedAtDesc(
+                id, PageRequest.of(0, fetchCap, Sort.by(Sort.Direction.DESC, "createdAt")));
+        Map<UUID, List<Ticket>> ticketsByOrder = recentOrders.isEmpty()
+                ? Map.of()
+                : tickets.findByOrderIdInOrderByOrderIdAscCreatedAtAsc(
+                        recentOrders.stream().map(Order::getId).toList())
+                    .stream().collect(Collectors.groupingBy(Ticket::getOrderId));
+
+        List<RecentPurchase> recentPurchases = new ArrayList<>(RECENT_LIMIT);
+        for (Order o : recentOrders) {
+            if (recentPurchases.size() >= RECENT_LIMIT) break;
+            List<Ticket> live = ticketsByOrder.getOrDefault(o.getId(), List.of()).stream()
+                    .filter(t -> !Ticket.STATE_REFUNDED.equals(t.getState()))
+                    .toList();
+            if (!live.isEmpty()) recentPurchases.add(toRecentPurchase(o, live));
+        }
 
         var prediction = predictions.findById(id).map(PredictionDto::from).orElse(null);
         return new EventOverviewResponse(m, recentPurchases, prediction, ACTIONS);
@@ -107,8 +124,6 @@ public class EventOverviewService {
      * {@code order.totalMinor}.
      */
     private static RecentPurchase toRecentPurchase(Order order, List<Ticket> liveTickets) {
-        String currency = order.getCurrency() == null ? "" : order.getCurrency().toUpperCase(Locale.ROOT);
-
         Map<String, Long> byTier = liveTickets.stream()
                 .collect(Collectors.groupingBy(
                         Ticket::getTierName,
@@ -120,7 +135,7 @@ public class EventOverviewService {
                 .collect(Collectors.joining(", "));
 
         long amountMinor = liveTickets.stream().mapToLong(Ticket::getPriceMinor).sum();
-        String amount = String.format(Locale.ROOT, "%.2f %s", amountMinor / 100.0, currency).trim();
+        String amount = MoneyFormat.format(amountMinor, order.getCurrency());
         String sub = tierBreakdown.isEmpty() ? amount : tierBreakdown + " · " + amount;
 
         String time = order.getCreatedAt() == null ? "" : order.getCreatedAt().toString();

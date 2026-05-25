@@ -12,6 +12,7 @@ import com.imin.iminapi.refund.event.RefundConfirmedEvent;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.util.MoneyFormat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Async;
@@ -96,16 +97,12 @@ public class RefundConfirmationEmailer {
         values.put("eventName", eventName);
         values.put("orderShortCode", order.getId().toString().substring(0, 8));
         values.put("ticketCount", String.valueOf(ticketCount));
-        values.put("amountFormatted", formatAmount(refund.getAmountMinor(), refund.getCurrency()));
+        values.put("amountFormatted", MoneyFormat.format(refund.getAmountMinor(), refund.getCurrency()));
         values.put("organizerContact", organizerContact);
 
         EmailTemplateRenderer.Rendered r = renderer.render("refund-confirmed", values);
         String subject = "Refund confirmed for " + eventName;
         email.send(order.getEmail(), subject, r.html(), r.text());
         log.info("[refund-email] sent for refund {} to {}", refundId, order.getEmail());
-    }
-
-    private static String formatAmount(long minor, String currency) {
-        return String.format("%.2f %s", minor / 100.0, currency == null ? "" : currency.toUpperCase());
     }
 }

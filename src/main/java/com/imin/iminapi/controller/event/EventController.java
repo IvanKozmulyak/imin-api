@@ -73,8 +73,11 @@ public class EventController {
     }
 
     @GetMapping("/{id}/sales-velocity")
-    public EventVelocityService.VelocityResponse salesVelocity(@CurrentUser AuthPrincipal p,
-                                                                @PathVariable UUID id) {
-        return velocityService.last7Days(p, id);
+    public EventVelocityService.VelocityResponse salesVelocity(
+            @CurrentUser AuthPrincipal p,
+            @PathVariable UUID id,
+            @RequestParam(name = "days", required = false) Integer days) {
+        int window = days == null ? EventVelocityService.DEFAULT_WINDOW_DAYS : days;
+        return velocityService.windowEndingToday(p, id, window);
     }
 }

@@ -1,6 +1,7 @@
 package com.imin.iminapi.repository;
 
 import com.imin.iminapi.model.Order;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -18,6 +19,8 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
     Optional<Order> findByStripeSessionId(String sessionId);
 
     List<Order> findByEventIdOrderByCreatedAtDesc(UUID eventId);
+
+    List<Order> findByEventIdOrderByCreatedAtDesc(UUID eventId, Pageable pageable);
 
     /** Gross revenue (sum of order totals) for an event, in minor units. Includes refunded amounts. */
     @Query("select coalesce(sum(o.totalMinor), 0) from Order o where o.eventId = :eventId")

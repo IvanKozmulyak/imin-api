@@ -3,6 +3,10 @@ package com.imin.iminapi.refund;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonValue;
 
+import java.util.Arrays;
+import java.util.Locale;
+import java.util.stream.Collectors;
+
 public enum RefundReason {
     REQUESTED_BY_CUSTOMER, DUPLICATE, FRAUDULENT, OTHER;
 
@@ -28,12 +32,18 @@ public enum RefundReason {
      */
     @JsonValue
     public String toWire() {
-        return name().toLowerCase();
+        return name().toLowerCase(Locale.ROOT);
     }
 
     @JsonCreator
     public static RefundReason fromWire(String value) {
-        if (value == null) return null;
-        return RefundReason.valueOf(value.toUpperCase());
+        if (value == null || value.isBlank()) return null;
+        String normalized = value.toLowerCase(Locale.ROOT);
+        for (RefundReason r : values()) {
+            if (r.toWire().equals(normalized)) return r;
+        }
+        String accepted = Arrays.stream(values()).map(RefundReason::toWire).collect(Collectors.joining(", "));
+        throw new IllegalArgumentException(
+            "Unknown refund reason '" + value + "'. Accepted: " + accepted);
     }
 }

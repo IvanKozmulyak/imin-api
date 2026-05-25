@@ -160,6 +160,30 @@ class EventVelocityServiceTest {
     }
 
     @Test
+    void custom_window_returns_n_buckets() {
+        EventVelocityService.VelocityResponse r = service.windowEndingToday(principal, event.getId(), 30);
+        assertThat(r.points()).hasSize(30);
+        assertThat(r.days()).hasSize(30);
+
+        LocalDate today = LocalDate.now(ZoneId.of("UTC"));
+        assertThat(r.days().get(29)).isEqualTo(today.toString());
+        assertThat(r.days().get(0)).isEqualTo(today.minusDays(29).toString());
+    }
+
+    @Test
+    void window_is_clamped_to_max() {
+        int huge = EventVelocityService.MAX_WINDOW_DAYS + 100;
+        EventVelocityService.VelocityResponse r = service.windowEndingToday(principal, event.getId(), huge);
+        assertThat(r.points()).hasSize(EventVelocityService.MAX_WINDOW_DAYS);
+    }
+
+    @Test
+    void window_zero_or_negative_clamped_to_one() {
+        EventVelocityService.VelocityResponse r = service.windowEndingToday(principal, event.getId(), 0);
+        assertThat(r.points()).hasSize(1);
+    }
+
+    @Test
     void refund_subtraction_floors_at_zero_per_bucket() {
         // A refund on today subtracting more than today's sales doesn't go negative
         LocalDate today = LocalDate.now(ZoneId.of("UTC"));

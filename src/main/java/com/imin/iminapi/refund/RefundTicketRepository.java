@@ -18,4 +18,12 @@ public interface RefundTicketRepository extends JpaRepository<RefundTicket, Refu
 
     @Query("select rt.ticketId from RefundTicket rt where rt.refundId = :refundId")
     List<UUID> findTicketIdsByRefundId(@Param("refundId") UUID refundId);
+
+    /**
+     * Batch fetch of (refundId, ticketId) pairs for many refunds. Used by the
+     * event-wide refunds endpoint to avoid N+1 ticket-id lookups when listing
+     * an event's refunds.
+     */
+    @Query("select rt.refundId, rt.ticketId from RefundTicket rt where rt.refundId in :refundIds")
+    List<Object[]> findRefundIdTicketIdPairs(@Param("refundIds") Collection<UUID> refundIds);
 }
