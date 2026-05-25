@@ -27,6 +27,15 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
     long sumTotalMinorByEventId(@Param("eventId") UUID eventId);
 
     /**
+     * Sum of platform application fees ({@code application_fee_minor}) Stripe
+     * deducted across all orders for an event. Snapshot — does not account for
+     * refunded fee portions; net those out via
+     * {@code RefundRepository.sumSucceededRefundApplicationFeeMinorByEventId}.
+     */
+    @Query("select coalesce(sum(o.applicationFeeMinor), 0) from Order o where o.eventId = :eventId")
+    long sumApplicationFeeMinorByEventId(@Param("eventId") UUID eventId);
+
+    /**
      * Created-at + total-minor pairs for orders since {@code since}. Used by the
      * sales-velocity service to bucket by day. Returned as {@code Object[]} to
      * avoid a per-row entity hydration cost — the only columns the caller needs

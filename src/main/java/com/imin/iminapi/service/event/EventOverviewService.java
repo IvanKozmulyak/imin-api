@@ -82,7 +82,17 @@ public class EventOverviewService {
         long refunded = refunds.sumSucceededRefundMinorByEventId(id);
         long revenueMinor = Math.max(0L, gross - refunded);
 
-        Metrics m = new Metrics(sold, capacity, revenueMinor, e.getCurrency(), Math.max(0, daysOut));
+        // After-fees revenue: organizer's payout less the platform's
+        // application fee (also netted by any refunded fee portion). Excludes
+        // Stripe processing fees, which are deducted separately by Stripe and
+        // not tracked on the Order entity.
+        long appFee = orders.sumApplicationFeeMinorByEventId(id);
+        long appFeeRefunded = refunds.sumSucceededRefundApplicationFeeMinorByEventId(id);
+        long netAppFee = Math.max(0L, appFee - appFeeRefunded);
+        long revenueAfterFeesMinor = Math.max(0L, revenueMinor - netAppFee);
+
+        Metrics m = new Metrics(sold, capacity, revenueMinor, revenueAfterFeesMinor,
+                e.getCurrency(), Math.max(0, daysOut));
 
         // Recent buyers: skip fully-refunded orders, and within each order count
         // only non-refunded tickets (so the tier breakdown + amount reflect what

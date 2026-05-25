@@ -47,6 +47,18 @@ public interface RefundRepository extends JpaRepository<Refund, UUID> {
     long sumSucceededRefundMinorByEventId(@Param("eventId") UUID eventId);
 
     /**
+     * Sum of platform application-fee refunds (the platform-cut portion that
+     * went back to the buyer) across SUCCEEDED refunds for an event. Used to
+     * net the after-fees revenue when an order is partially or fully refunded.
+     */
+    @Query("""
+            select coalesce(sum(r.applicationFeeRefundMinor), 0) from Refund r
+             where r.orderId in (select o.id from com.imin.iminapi.model.Order o where o.eventId = :eventId)
+               and r.status = com.imin.iminapi.refund.RefundStatus.SUCCEEDED
+            """)
+    long sumSucceededRefundApplicationFeeMinorByEventId(@Param("eventId") UUID eventId);
+
+    /**
      * Per-refund (updatedAt, amountMinor) pairs for SUCCEEDED refunds of an event,
      * since {@code since}. Used by the velocity service to bucket refunds by day
      * (subtracted from the gross revenue bar for the same day). {@code updatedAt}
