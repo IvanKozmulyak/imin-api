@@ -188,6 +188,44 @@ class PaidCheckoutServiceTest {
     }
 
     @Test
+    void snapshots_application_fee_on_order_and_price_on_tickets() throws Exception {
+        PaymentIntent pi = pi("pi_test_snapshot", 3000, "eur",
+                Map.of(
+                        "tier_id", tier.getId().toString(),
+                        "qty", "2",
+                        "event_id", event.getId().toString()));
+        pi.setApplicationFeeAmount(249L);   // 5% of 3000 + 99 fixed = 249
+        wireBuyerEmail(pi, "buyer@example.com");
+        wireSessionLookup(pi, "cs_test_snapshot", null);
+
+        service.issuePaidOrder(pi);
+
+        Order order = orders.findByStripePaymentIntentId("pi_test_snapshot").orElseThrow();
+        assertThat(order.getApplicationFeeMinor()).isEqualTo(249L);
+
+        List<Ticket> issued = tickets.findByOrderIdOrderByCreatedAtAsc(order.getId());
+        assertThat(issued).hasSize(2);
+        assertThat(issued).allSatisfy(t -> assertThat(t.getPriceMinor()).isEqualTo(1500));
+    }
+
+    @Test
+    void zero_application_fee_when_pi_has_no_fee() throws Exception {
+        PaymentIntent pi = pi("pi_test_no_fee", 1500, "eur",
+                Map.of(
+                        "tier_id", tier.getId().toString(),
+                        "qty", "1",
+                        "event_id", event.getId().toString()));
+        // applicationFeeAmount intentionally null
+        wireBuyerEmail(pi, "buyer@example.com");
+        wireSessionLookup(pi, "cs_test_no_fee", null);
+
+        service.issuePaidOrder(pi);
+
+        Order order = orders.findByStripePaymentIntentId("pi_test_no_fee").orElseThrow();
+        assertThat(order.getApplicationFeeMinor()).isEqualTo(0L);
+    }
+
+    @Test
     void uses_session_email_when_charge_email_missing() throws Exception {
         PaymentIntent pi = pi("pi_test_session_email", 1500, "eur",
                 Map.of(

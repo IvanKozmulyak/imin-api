@@ -132,6 +132,7 @@ public class PaidCheckoutService {
         order.setPaymentMethod("stripe");
         order.setStripePaymentIntentId(pi.getId());
         order.setStripeSessionId(resolved.sessionId);
+        order.setApplicationFeeMinor(pi.getApplicationFeeAmount() == null ? 0L : pi.getApplicationFeeAmount());
 
         String promoIdRaw = meta.get("promo_id");
         if (promoIdRaw != null && !promoIdRaw.isBlank()) {
@@ -159,7 +160,8 @@ public class PaidCheckoutService {
             t.setEventId(event.getId());
             t.setTierId(tier.getId());
             t.setTierName(tier.getName());
-            t.setState("issued");
+            t.setPriceMinor(tier.getPriceMinor());
+            t.setState(Ticket.STATE_ISSUED);
             tickets.save(t);
         }
 
