@@ -20,7 +20,8 @@ public record PublicOrderResponse(
         List<Ticket> tickets) {
 
     public record Event(String name, String slug, Instant startsAt, String timezone,
-                        String venueName, String venueCity) {}
+                        String venueName, String venueStreet, String venueCity,
+                        String venuePostalCode, String venueCountry) {}
 
     public record Ticket(String token, String tierName, String state) {}
 }

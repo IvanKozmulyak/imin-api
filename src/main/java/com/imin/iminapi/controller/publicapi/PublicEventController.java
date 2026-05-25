@@ -49,6 +49,13 @@ public class PublicEventController {
                 .body(publicEventService.listCities());
     }
 
+    @GetMapping("/genres")
+    public ResponseEntity<List<String>> listGenres() {
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CACHE_CONTROL, "public, s-maxage=60, stale-while-revalidate=30")
+                .body(publicEventService.listGenres());
+    }
+
     @GetMapping("/{id}")
     public ResponseEntity<PublicEventResponse> get(
             @PathVariable UUID id,

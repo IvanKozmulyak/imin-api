@@ -106,7 +106,8 @@ public class PublicOrderController {
                 new PublicTicketResponse.Event(
                         event.getName(), event.getSlug(),
                         event.getStartsAt(), event.getTimezone(),
-                        event.getVenueName(), event.getVenueCity()),
+                        event.getVenueName(), event.getVenueStreet(), event.getVenueCity(),
+                        event.getVenuePostalCode(), event.getVenueCountry()),
                 new PublicTicketResponse.Order(order.getToken(), order.getEmail()));
 
         return ResponseEntity.ok()
@@ -118,7 +119,8 @@ public class PublicOrderController {
         return new PublicOrderResponse.Event(
                 event.getName(), event.getSlug(),
                 event.getStartsAt(), event.getTimezone(),
-                event.getVenueName(), event.getVenueCity());
+                event.getVenueName(), event.getVenueStreet(), event.getVenueCity(),
+                event.getVenuePostalCode(), event.getVenueCountry());
     }
 
     /**

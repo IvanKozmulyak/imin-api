@@ -383,6 +383,32 @@ class PublicEventControllerTest {
                 .andExpect(jsonPath("$.length()").value(0));
     }
 
+    // -- /genres --
+
+    @Test
+    void listGenres_returns200WithBodyAndCacheControl() throws Exception {
+        when(publicEventService.listGenres()).thenReturn(List.of("ambient", "house", "techno"));
+
+        mvc.perform(get("/api/v1/public/events/genres"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", CACHE_CONTROL_VALUE))
+                .andExpect(jsonPath("$").isArray())
+                .andExpect(jsonPath("$.length()").value(3))
+                .andExpect(jsonPath("$[0]").value("ambient"))
+                .andExpect(jsonPath("$[1]").value("house"))
+                .andExpect(jsonPath("$[2]").value("techno"));
+    }
+
+    @Test
+    void listGenres_returnsEmptyArrayWhenNoGenres() throws Exception {
+        when(publicEventService.listGenres()).thenReturn(List.of());
+
+        mvc.perform(get("/api/v1/public/events/genres"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$").isArray())
+                .andExpect(jsonPath("$.length()").value(0));
+    }
+
     // --- helpers ---
 
     private static Set<String> fieldNames(JsonNode node) {

@@ -144,6 +144,11 @@ public class PublicEventService {
                 .toList();
     }
 
+    @Transactional(readOnly = true)
+    public List<String> listGenres() {
+        return eventRepository.findDistinctPublicGenres();
+    }
+
     private static PublicEventListItem toListItem(Event e, Integer priceFromMinor, Organization org) {
         return new PublicEventListItem(
                 e.getId(), e.getSlug(), e.getName(), e.getStatus().wireValue(), e.getPublishedAt(),

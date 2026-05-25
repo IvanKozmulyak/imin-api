@@ -115,4 +115,16 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
          ORDER BY e.venueCity ASC, e.venueCountry ASC
 """)
     List<Object[]> findDistinctPublicCities();
+
+    @Query("""
+        SELECT DISTINCT e.genre FROM Event e
+         WHERE e.deletedAt IS NULL
+           AND e.visibility = com.imin.iminapi.model.EventVisibility.PUBLIC
+           AND e.publishedAt IS NOT NULL
+           AND e.status <> com.imin.iminapi.model.EventStatus.DRAFT
+           AND e.genre IS NOT NULL
+           AND e.genre <> ''
+         ORDER BY e.genre ASC
+""")
+    List<String> findDistinctPublicGenres();
 }

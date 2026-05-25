@@ -609,4 +609,71 @@ class PublicEventServiceListTest {
         List<com.imin.iminapi.dto.publicapi.PublicCityItem> cities = publicEventService.listCities();
         assertThat(cities).isEmpty();
     }
+
+    // -----------------------------------------------------------------------
+    // listGenres
+    // -----------------------------------------------------------------------
+    @Test
+    void listGenres_returns_distinct_alphabetical() {
+        Event a = publishedLiveEvent();
+        a.setGenre("techno");
+        eventRepository.save(a);
+        Event b = publishedLiveEvent();
+        b.setGenre("techno");
+        eventRepository.save(b);
+        Event c = publishedLiveEvent();
+        c.setGenre("house");
+        eventRepository.save(c);
+        Event d = publishedLiveEvent();
+        d.setGenre("ambient");
+        eventRepository.save(d);
+
+        assertThat(publicEventService.listGenres())
+                .containsExactly("ambient", "house", "techno");
+    }
+
+    @Test
+    void listGenres_excludes_empty_genre() {
+        // events.genre is NOT NULL DEFAULT '' at the schema level — only the empty-string
+        // case is reachable. The query also tolerates NULL defensively.
+        Event blank = publishedLiveEvent();
+        blank.setGenre("");
+        eventRepository.save(blank);
+
+        Event withGenre = publishedLiveEvent();
+        withGenre.setGenre("techno");
+        eventRepository.save(withGenre);
+
+        assertThat(publicEventService.listGenres()).containsExactly("techno");
+    }
+
+    @Test
+    void listGenres_excludes_non_eligible_events() {
+        Event draft = publishedLiveEvent();
+        draft.setStatus(EventStatus.DRAFT);
+        draft.setPublishedAt(null);
+        draft.setGenre("hidden");
+        eventRepository.save(draft);
+
+        Event priv = publishedLiveEvent();
+        priv.setVisibility(EventVisibility.PRIVATE);
+        priv.setGenre("private");
+        eventRepository.save(priv);
+
+        Event deleted = publishedLiveEvent();
+        deleted.setDeletedAt(NOW.minusSeconds(60));
+        deleted.setGenre("deleted");
+        eventRepository.save(deleted);
+
+        Event live = publishedLiveEvent();
+        live.setGenre("techno");
+        eventRepository.save(live);
+
+        assertThat(publicEventService.listGenres()).containsExactly("techno");
+    }
+
+    @Test
+    void listGenres_returns_empty_when_no_eligible_events() {
+        assertThat(publicEventService.listGenres()).isEmpty();
+    }
 }

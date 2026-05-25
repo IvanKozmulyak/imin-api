@@ -25,7 +25,8 @@ public record PublicTicketResponse(
         Order order) {
 
     public record Event(String name, String slug, Instant startsAt, String timezone,
-                        String venueName, String venueCity) {}
+                        String venueName, String venueStreet, String venueCity,
+                        String venuePostalCode, String venueCountry) {}
 
     /** Sibling info so the ticket page can link "back to order" without a second call. */
     public record Order(String token, String email) {}
