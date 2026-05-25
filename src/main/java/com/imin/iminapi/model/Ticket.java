@@ -39,9 +39,22 @@ public class Ticket {
     @Column(name = "tier_name", nullable = false, length = 128)
     private String tierName;
 
-    /** "issued" | "redeemed" | "revoked". Legacy rows may carry "pre" (synonym for "issued"). */
+    /**
+     * Price-at-purchase snapshot in minor units. Survives tier price changes
+     * between purchase and refund.
+     */
+    @Column(name = "price_minor", nullable = false)
+    private int priceMinor;
+
+    /** Ticket states. Stored as VARCHAR; keep in sync with the data column. */
+    public static final String STATE_ISSUED = "issued";
+    public static final String STATE_REDEEMED = "redeemed";
+    public static final String STATE_REVOKED = "revoked";
+    public static final String STATE_REFUNDED = "refunded";
+
+    /** "issued" | "redeemed" | "revoked" | "refunded". Legacy rows may carry "pre" (synonym for "issued"). */
     @Column(nullable = false, length = 16)
-    private String state = "issued";
+    private String state = STATE_ISSUED;
 
     @Column(name = "redeemed_at")
     private Instant redeemedAt;

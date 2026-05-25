@@ -45,6 +45,15 @@ public class Order {
     @Column(nullable = false, length = 8)
     private String currency;
 
+    /**
+     * Application fee (platform cut) Stripe deducted from this order, in minor units.
+     * Snapshotted at issuance from PaymentIntent.applicationFeeAmount so refund
+     * proration can compute the proportional fee refund without an extra Stripe call.
+     * 0 for free orders.
+     */
+    @Column(name = "application_fee_minor", nullable = false)
+    private long applicationFeeMinor;
+
     @Column(name = "promo_code_id")
     private UUID promoCodeId;
 
