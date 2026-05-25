@@ -8,6 +8,10 @@ import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.model.UserRole;
+import com.imin.iminapi.refund.Refund;
+import com.imin.iminapi.refund.RefundReason;
+import com.imin.iminapi.refund.RefundRepository;
+import com.imin.iminapi.refund.RefundStatus;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
@@ -40,6 +44,7 @@ class EventVelocityServiceTest {
     @Autowired UserRepository users;
     @Autowired EventRepository events;
     @Autowired OrderRepository orders;
+    @Autowired RefundRepository refunds;
 
     private Organization org;
     private User owner;
@@ -81,10 +86,27 @@ class EventVelocityServiceTest {
     void tearDown() { wipe(); }
 
     private void wipe() {
+        refunds.deleteAll();
         orders.deleteAll();
         events.deleteAll();
         users.deleteAll();
         orgs.deleteAll();
+    }
+
+    private Refund newSucceededRefund(Order o, long amountMinor, Instant updatedAt) {
+        Refund r = new Refund();
+        r.setOrderId(o.getId());
+        r.setStripePaymentIntentId(o.getStripePaymentIntentId());
+        r.setAmountMinor(amountMinor);
+        r.setCurrency(o.getCurrency());
+        r.setApplicationFeeRefundMinor(0);
+        r.setReason(RefundReason.OTHER);
+        r.setStatus(RefundStatus.SUCCEEDED);
+        r.setInitiatedByUserId(owner.getId());
+        r.setIdempotencyKey("k-" + UUID.randomUUID());
+        r.setCreatedAt(updatedAt);
+        r.setUpdatedAt(updatedAt);
+        return refunds.save(r);
     }
 
     private Order newOrder(long totalMinor, Instant createdAt) {
@@ -112,11 +134,41 @@ class EventVelocityServiceTest {
     }
 
     @Test
-    void returns_seven_buckets_today_last() {
+    void returns_seven_buckets_today_last_with_iso_date_labels() {
         EventVelocityService.VelocityResponse r = service.last7Days(principal, event.getId());
+
         assertThat(r.points()).hasSize(7);
-        // With no orders, all buckets are zero
         assertThat(r.points()).allMatch(v -> v == 0L);
+
+        assertThat(r.days()).hasSize(7);
+        // Days are ISO local-date strings, oldest first, today last
+        LocalDate today = LocalDate.now(ZoneId.of("UTC"));
+        assertThat(r.days().get(6)).isEqualTo(today.toString());
+        assertThat(r.days().get(0)).isEqualTo(today.minusDays(6).toString());
+    }
+
+    @Test
+    void succeeded_refund_subtracts_from_its_day_bucket() {
+        // Buy today (1000), refund today (300) → today bucket = 700 net
+        LocalDate today = LocalDate.now(ZoneId.of("UTC"));
+        Instant todayNoon = today.atTime(12, 0).atZone(ZoneId.of("UTC")).toInstant();
+        Order o = newOrder(1000, todayNoon);
+        newSucceededRefund(o, 300, todayNoon);
+
+        List<Long> points = service.last7Days(principal, event.getId()).points();
+        assertThat(points.get(6)).isEqualTo(700L);
+    }
+
+    @Test
+    void refund_subtraction_floors_at_zero_per_bucket() {
+        // A refund on today subtracting more than today's sales doesn't go negative
+        LocalDate today = LocalDate.now(ZoneId.of("UTC"));
+        Instant todayNoon = today.atTime(12, 0).atZone(ZoneId.of("UTC")).toInstant();
+        Order o = newOrder(500, todayNoon);
+        newSucceededRefund(o, 2000, todayNoon);
+
+        List<Long> points = service.last7Days(principal, event.getId()).points();
+        assertThat(points.get(6)).isEqualTo(0L);
     }
 
     @Test

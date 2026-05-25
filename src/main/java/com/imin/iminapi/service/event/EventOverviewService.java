@@ -76,9 +76,19 @@ public class EventOverviewService {
 
         Metrics m = new Metrics(sold, capacity, revenueMinor, e.getCurrency(), Math.max(0, daysOut));
 
+        // Recent buyers: skip fully-refunded orders, and within each order count
+        // only non-refunded tickets (so the tier breakdown + amount reflect what
+        // the buyer actually still holds). Take the most-recent RECENT_LIMIT
+        // surviving orders.
         List<RecentPurchase> recentPurchases = orders.findByEventIdOrderByCreatedAtDesc(id).stream()
+                .map(o -> {
+                    List<Ticket> live = tickets.findByOrderIdOrderByCreatedAtAsc(o.getId()).stream()
+                            .filter(t -> !Ticket.STATE_REFUNDED.equals(t.getState()))
+                            .toList();
+                    return live.isEmpty() ? null : toRecentPurchase(o, live);
+                })
+                .filter(java.util.Objects::nonNull)
                 .limit(RECENT_LIMIT)
-                .map(o -> toRecentPurchase(o, tickets.findByOrderIdOrderByCreatedAtAsc(o.getId())))
                 .toList();
 
         var prediction = predictions.findById(id).map(PredictionDto::from).orElse(null);
@@ -86,16 +96,20 @@ public class EventOverviewService {
     }
 
     /**
-     * Build a Recent Buyers row. {@code time} is an ISO-8601 instant string — the
-     * frontend formats it as a relative phrase ("5m ago"). {@code name} is the
-     * buyer's email (orders have no name field). {@code sub} is a tier breakdown
-     * plus the order amount, e.g. {@code "GA × 2 · 45.00 EUR"} or
-     * {@code "GA, VIP · 60.00 EUR"} for mixed-tier orders.
+     * Build a Recent Buyers row from the LIVE (non-refunded) tickets in the order.
+     * {@code time} is an ISO-8601 instant string — the frontend formats it as a
+     * relative phrase ("5m ago"). {@code name} is the buyer's email (orders have
+     * no name field). {@code sub} is a tier breakdown of the live tickets plus
+     * their summed price-at-purchase amount, e.g. {@code "GA × 2 · 45.00 EUR"}.
+     *
+     * <p>If some of the order's tickets have been refunded, this reflects only
+     * what the buyer actually still holds — so the row's amount can be less than
+     * {@code order.totalMinor}.
      */
-    private static RecentPurchase toRecentPurchase(Order order, List<Ticket> orderTickets) {
+    private static RecentPurchase toRecentPurchase(Order order, List<Ticket> liveTickets) {
         String currency = order.getCurrency() == null ? "" : order.getCurrency().toUpperCase(Locale.ROOT);
 
-        Map<String, Long> byTier = orderTickets.stream()
+        Map<String, Long> byTier = liveTickets.stream()
                 .collect(Collectors.groupingBy(
                         Ticket::getTierName,
                         LinkedHashMap::new,
@@ -105,7 +119,8 @@ public class EventOverviewService {
                 .map(en -> en.getValue() == 1L ? en.getKey() : en.getKey() + " × " + en.getValue())
                 .collect(Collectors.joining(", "));
 
-        String amount = String.format(Locale.ROOT, "%.2f %s", order.getTotalMinor() / 100.0, currency).trim();
+        long amountMinor = liveTickets.stream().mapToLong(Ticket::getPriceMinor).sum();
+        String amount = String.format(Locale.ROOT, "%.2f %s", amountMinor / 100.0, currency).trim();
         String sub = tierBreakdown.isEmpty() ? amount : tierBreakdown + " · " + amount;
 
         String time = order.getCreatedAt() == null ? "" : order.getCreatedAt().toString();

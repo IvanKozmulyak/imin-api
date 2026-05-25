@@ -33,6 +33,21 @@ public interface RefundRepository extends JpaRepository<Refund, UUID> {
     long sumSucceededRefundMinorByEventId(@Param("eventId") UUID eventId);
 
     /**
+     * Per-refund (updatedAt, amountMinor) pairs for SUCCEEDED refunds of an event,
+     * since {@code since}. Used by the velocity service to bucket refunds by day
+     * (subtracted from the gross revenue bar for the same day). {@code updatedAt}
+     * is the timestamp the refund flipped to SUCCEEDED.
+     */
+    @Query("""
+            select r.updatedAt, r.amountMinor from Refund r
+             where r.orderId in (select o.id from com.imin.iminapi.model.Order o where o.eventId = :eventId)
+               and r.status = com.imin.iminapi.refund.RefundStatus.SUCCEEDED
+               and r.updatedAt >= :since
+            """)
+    List<Object[]> findSucceededRefundUpdatedAtAndAmountSince(@Param("eventId") UUID eventId,
+                                                              @Param("since") java.time.Instant since);
+
+    /**
      * Race-safe status transition. Returns 1 if this caller won the transition,
      * 0 if another transaction already advanced the row. Used by the webhook
      * handler to ensure inventory release runs exactly once per refund.

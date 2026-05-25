@@ -241,6 +241,40 @@ class EventOverviewServiceTest {
     }
 
     @Test
+    void recent_purchases_skip_fully_refunded_orders() {
+        // Order A: all tickets refunded → must be excluded
+        Order a = newOrder("refunded@example.com", 3000, Instant.now().minusSeconds(60));
+        Ticket aTicket = newTicket(a, ga);
+        aTicket.setState(Ticket.STATE_REFUNDED);
+        tickets.save(aTicket);
+
+        // Order B: live
+        Order b = newOrder("live@example.com", 1500, Instant.now().minusSeconds(120));
+        newTicket(b, ga);
+
+        EventOverviewResponse r = service.overview(principal, event.getId());
+
+        assertThat(r.recentPurchases()).hasSize(1);
+        assertThat(r.recentPurchases().get(0).name()).isEqualTo("live@example.com");
+    }
+
+    @Test
+    void recent_purchase_amount_excludes_refunded_tickets() {
+        // 3 GA tickets at 1500 each = 4500 gross. One refunded → live = 3000.
+        Order o = newOrder("partial@example.com", 4500, Instant.now().minusSeconds(60));
+        newTicket(o, ga);
+        newTicket(o, ga);
+        Ticket refunded = newTicket(o, ga);
+        refunded.setState(Ticket.STATE_REFUNDED);
+        tickets.save(refunded);
+
+        EventOverviewResponse r = service.overview(principal, event.getId());
+
+        assertThat(r.recentPurchases()).hasSize(1);
+        assertThat(r.recentPurchases().get(0).sub()).isEqualTo("GA × 2 · 30.00 EUR");
+    }
+
+    @Test
     void recent_purchase_time_is_iso_instant_string() {
         // H2 in test mode shifts TIMESTAMP WITH TIME ZONE values by the JVM tz
         // offset on round-trip; production (Postgres) round-trips faithfully.
