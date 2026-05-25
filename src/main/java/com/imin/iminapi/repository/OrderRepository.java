@@ -17,6 +17,8 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
     Optional<Order> findByStripePaymentIntentId(String paymentIntentId);
     Optional<Order> findByStripeSessionId(String sessionId);
 
+    List<Order> findByEventIdOrderByCreatedAtDesc(UUID eventId);
+
     @Query("""
             select o from Order o
              where lower(o.email) = lower(:email)
