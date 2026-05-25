@@ -1,5 +1,8 @@
 package com.imin.iminapi.refund;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonValue;
+
 public enum RefundReason {
     REQUESTED_BY_CUSTOMER, DUPLICATE, FRAUDULENT, OTHER;
 
@@ -17,8 +20,20 @@ public enum RefundReason {
         };
     }
 
-    /** Stable wire format used in API responses (lowercase enum name). */
+    /**
+     * Stable wire format used in BOTH API request and response bodies (lowercase
+     * enum name). The {@code @JsonValue} makes responses serialize as lowercase;
+     * {@code fromWire} (annotated {@code @JsonCreator}) makes requests accept the
+     * same lowercase form. Frontend code can use a single string format everywhere.
+     */
+    @JsonValue
     public String toWire() {
         return name().toLowerCase();
+    }
+
+    @JsonCreator
+    public static RefundReason fromWire(String value) {
+        if (value == null) return null;
+        return RefundReason.valueOf(value.toUpperCase());
     }
 }

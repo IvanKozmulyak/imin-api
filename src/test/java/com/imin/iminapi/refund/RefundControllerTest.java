@@ -75,7 +75,7 @@ class RefundControllerTest {
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(om.writeValueAsString(Map.of(
                     "ticketIds", List.of(TICKET.toString()),
-                    "reason", "OTHER"))))
+                    "reason", "other"))))
             .andExpect(status().isBadRequest())
             .andExpect(jsonPath("$.error.code").value("MISSING_IDEMPOTENCY_KEY"));
     }
@@ -91,7 +91,7 @@ class RefundControllerTest {
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(om.writeValueAsString(Map.of(
                     "ticketIds", List.of(TICKET.toString()),
-                    "reason", "OTHER"))))
+                    "reason", "other"))))
             .andExpect(status().isNotFound())
             .andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
     }
@@ -116,7 +116,7 @@ class RefundControllerTest {
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(om.writeValueAsString(Map.of(
                     "ticketIds", List.of(TICKET.toString()),
-                    "reason", "REQUESTED_BY_CUSTOMER"))))
+                    "reason", "requested_by_customer"))))   // lowercase wire format
             .andExpect(status().isAccepted())
             .andExpect(jsonPath("$.id").value(REFUND.toString()))
             .andExpect(jsonPath("$.status").value("pending"))
@@ -128,13 +128,38 @@ class RefundControllerTest {
 
     @Test
     @WithStubOrganizer
+    void accepts_lowercase_reason_from_frontend() throws Exception {
+        // Contract: FE sends RefundReason as the lowercase wire format (matching
+        // the response). Backend must accept it via @JsonCreator on the enum.
+        Refund r = new Refund();
+        r.setId(REFUND);
+        r.setOrderId(ORDER);
+        r.setStatus(RefundStatus.PENDING);
+        r.setReason(RefundReason.DUPLICATE);
+        r.setCurrency("eur");
+        when(refundService.createRefund(eq(ORDER), any(), eq("k"),
+            any(), eq(RefundReason.DUPLICATE))).thenReturn(r);
+        when(refundTicketRepository.findTicketIdsByRefundId(REFUND)).thenReturn(List.of(TICKET));
+
+        mvc.perform(post("/api/v1/orders/{id}/refund", ORDER)
+                .header("Idempotency-Key", "k")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(om.writeValueAsString(Map.of(
+                    "ticketIds", List.of(TICKET.toString()),
+                    "reason", "duplicate"))))   // ← lowercase, as the FE sends
+            .andExpect(status().isAccepted())
+            .andExpect(jsonPath("$.reason").value("duplicate"));
+    }
+
+    @Test
+    @WithStubOrganizer
     void empty_ticket_ids_returns_400_from_bean_validation() throws Exception {
         mvc.perform(post("/api/v1/orders/{id}/refund", ORDER)
                 .header("Idempotency-Key", "k")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(om.writeValueAsString(Map.of(
                     "ticketIds", List.of(),
-                    "reason", "OTHER"))))
+                    "reason", "other"))))
             .andExpect(status().isBadRequest());
     }
 }
