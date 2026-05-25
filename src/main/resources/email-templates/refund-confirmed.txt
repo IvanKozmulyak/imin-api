@@ -1,0 +1,14 @@
+REFUND CONFIRMED
+
+Your refund for {{eventName}} has been processed.
+
+{{ticketCount}} ticket(s) from order #{{orderShortCode}} have been refunded.
+
+Amount refunded: {{amountFormatted}}
+
+The refund will appear on your original payment method, typically within
+5 to 10 business days. Your bank may take longer depending on their
+processing times.
+
+Questions about this refund? Reply to this email or contact the
+organizer at {{organizerContact}}.
