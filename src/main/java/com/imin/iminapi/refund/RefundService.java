@@ -189,13 +189,35 @@ public class RefundService {
 
         r.setStripeRefundId(stripeRefund.getId());
         r.setStripeChargeId(stripeRefund.getCharge());
-        r.setStatus(RefundStatus.fromStripe(stripeRefund.getStatus()));
+        RefundStatus initialStatus = RefundStatus.fromStripe(stripeRefund.getStatus());
+        r.setStatus(initialStatus);
         r = refunds.save(r);
+
+        // Stripe can return SUCCEEDED synchronously (e.g. instant refunds in
+        // test mode or many real-world card flows). The webhook will still
+        // arrive, but handleWebhookStatusChange short-circuits when the row
+        // is already in the same terminal state — so without releasing here,
+        // tier.sold would never be decremented and the refunded tickets would
+        // not return to inventory. Mirror the SUCCEEDED-path side effects.
+        if (initialStatus == RefundStatus.SUCCEEDED) {
+            finalizeSucceeded(r);
+        }
 
         log.info("[refund] created id={} orderId={} amount={} {} appFeeRefund={} status={}",
             r.getId(), orderId, refundAmountMinor, order.getCurrency(),
             appFeeRefundMinor, r.getStatus());
         return r;
+    }
+
+    /**
+     * SUCCEEDED-path side effects: release inventory (decrement tier.sold,
+     * flip tickets to REFUNDED) and publish the confirmation event so the
+     * buyer email goes out. Idempotent — safe to call from both the
+     * synchronous create flow and the webhook handler.
+     */
+    private void finalizeSucceeded(Refund refund) {
+        releaseInventoryAndMarkTickets(refund);
+        publisher.publishEvent(new RefundConfirmedEvent(refund.getId()));
     }
 
     @Transactional(readOnly = true)
@@ -234,8 +256,7 @@ public class RefundService {
         }
 
         if (newStatus == RefundStatus.SUCCEEDED) {
-            releaseInventoryAndMarkTickets(refund);
-            publisher.publishEvent(new RefundConfirmedEvent(refund.getId()));
+            finalizeSucceeded(refund);
             log.info("[refund-webhook] refund {} SUCCEEDED — inventory released, email queued",
                 refund.getId());
         } else if (newStatus == RefundStatus.FAILED) {
