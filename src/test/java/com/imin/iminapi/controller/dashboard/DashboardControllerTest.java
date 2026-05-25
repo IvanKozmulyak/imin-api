@@ -56,11 +56,11 @@ class DashboardControllerTest {
     @Test
     @WithStubUser
     void get_dashboard_returns_aggregate() throws Exception {
-        when(service.build(any())).thenReturn(new DashboardResponse(
+        when(service.build(any(), any(), any())).thenReturn(new DashboardResponse(
                 new Greeting("Jaune"),
                 new Now(null, 0, 0, 0),
                 new Cycle("30d", 0L, 0, 0, new Deltas(0, 0)),
-                new LastEvent(null, new LastEventMetrics(0, 0, null)),
+                new LastEvent(null, new LastEventMetrics(0, 0, 0, null)),
                 null,
                 new Business(0L, 0L, 0L, 0, 0),
                 List.of()));

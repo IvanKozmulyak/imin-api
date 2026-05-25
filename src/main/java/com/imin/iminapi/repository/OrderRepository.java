@@ -60,4 +60,31 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
     List<Order> findRecentForRecovery(@Param("email") String email,
                                        @Param("eventId") UUID eventId,
                                        @Param("cutoff") Instant cutoff);
+
+    /**
+     * (revenueMinor, orderCount) for an org over a half-open time window.
+     * Used by the dashboard "This cycle" and "Business" cards.
+     */
+    @Query("""
+            select coalesce(sum(o.totalMinor), 0), count(o) from Order o
+             where o.orgId = :orgId
+               and o.createdAt >= :since
+               and o.createdAt < :until
+            """)
+    List<Object[]> sumRevenueAndCountByOrgInWindow(@Param("orgId") UUID orgId,
+                                                   @Param("since") Instant since,
+                                                   @Param("until") Instant until);
+
+    /**
+     * Distinct (lowercased) buyer emails with their order-count for an org since
+     * a cutoff. Lets us compute repeat-rate in Java without a window function.
+     */
+    @Query("""
+            select lower(o.email), count(o) from Order o
+             where o.orgId = :orgId
+               and o.createdAt >= :since
+             group by lower(o.email)
+            """)
+    List<Object[]> orderCountsByEmailSince(@Param("orgId") UUID orgId,
+                                            @Param("since") Instant since);
 }

@@ -3,9 +3,12 @@ package com.imin.iminapi.service.dashboard;
 import com.imin.iminapi.dto.dashboard.DashboardResponse;
 import com.imin.iminapi.dto.dashboard.DashboardResponse.*;
 import com.imin.iminapi.dto.event.EventDto;
+import com.imin.iminapi.model.AuditLog;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.User;
+import com.imin.iminapi.repository.AuditLogRepository;
 import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
@@ -16,60 +19,134 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Optional;
 
 @Service
 public class DashboardService {
 
+    private static final DateTimeFormatter ACTIVITY_TIME_FMT =
+            DateTimeFormatter.ofPattern("d MMM HH:mm").withZone(ZoneOffset.UTC);
+
     private final EventRepository events;
     private final TicketTierRepository tiers;
     private final UserRepository users;
+    private final OrderRepository orders;
+    private final AuditLogRepository auditLogs;
 
-    public DashboardService(EventRepository events, TicketTierRepository tiers, UserRepository users) {
+    public DashboardService(EventRepository events, TicketTierRepository tiers, UserRepository users,
+                            OrderRepository orders, AuditLogRepository auditLogs) {
         this.events = events;
         this.tiers = tiers;
         this.users = users;
+        this.orders = orders;
+        this.auditLogs = auditLogs;
     }
 
     @Transactional(readOnly = true)
-    @Cacheable(value = "dashboard", key = "#p.orgId().toString()")
-    public DashboardResponse build(AuthPrincipal p) {
+    @Cacheable(value = "dashboard",
+            key = "T(java.lang.String).join('|', #p.orgId().toString(), #cyclePeriod.name(), #businessPeriod.name())")
+    public DashboardResponse build(AuthPrincipal p, DashboardPeriod cyclePeriod, DashboardPeriod businessPeriod) {
         User u = users.findById(p.userId()).orElseThrow();
         var firstName = displayFirstName(u.getFirstName(), u.getEmail());
 
-        Optional<Event> next = events.findUpcomingLive(p.orgId(), Instant.now(), PageRequest.of(0, 1)).stream().findFirst();
+        Instant now = Instant.now();
+        Optional<Event> next = events.findUpcomingLive(p.orgId(), now, PageRequest.of(0, 1)).stream().findFirst();
         Optional<Event> past = events.findRecentPast(p.orgId(), PageRequest.of(0, 1)).stream().findFirst();
 
-        Now now = next.map(e -> {
+        Now nowDto = next.map(e -> {
             int totalQty = tiers.sumQuantityByEventId(e.getId());
             int pct = totalQty == 0 ? 0 : (int) Math.round(100.0 * e.getSold() / totalQty);
-            int daysOut = (int) Duration.between(Instant.now(), e.getStartsAt()).toDays();
+            int daysOut = (int) Duration.between(now, e.getStartsAt()).toDays();
             return new Now(EventDto.summary(e), pct, Math.max(0, daysOut), totalQty);
         }).orElse(new Now(null, 0, 0, 0));
 
         long activeCount = events.countLive(p.orgId());
-
-        // Cycle (30d): we don't yet have a purchases table to compute true window-based deltas.
-        // V1 stub: report all-time aggregates labelled as "30d", deltas at 0%.
-        Object[] sums = events.sumRevenueAndSold(p.orgId()).get(0);
-        long totalRevenue = ((Number) sums[0]).longValue();
-        long totalSold = ((Number) sums[1]).longValue();
-        Cycle cycle = new Cycle("30d", totalRevenue, (int) totalSold,
-                (int) activeCount, new Deltas(0, 0));
+        Cycle cycle = buildCycle(p, now, cyclePeriod, activeCount);
 
         LastEvent lastEvent = past.map(e -> {
+            int capacity = tiers.sumQuantityByEventId(e.getId());
             int avgTicket = e.getSold() == 0 ? 0 : (int) (e.getRevenueMinor() / e.getSold());
             return new LastEvent(EventDto.summary(e),
-                    new LastEventMetrics(e.getSold(), avgTicket, /* nps */ null));
-        }).orElse(new LastEvent(null, new LastEventMetrics(0, 0, null)));
+                    new LastEventMetrics(e.getSold(), capacity, avgTicket, /* nps */ null));
+        }).orElse(new LastEvent(null, new LastEventMetrics(0, 0, 0, null)));
 
-        Business business = new Business(totalRevenue,
-                events.countPublished(p.orgId()), events.countPast(p.orgId()),
-                /* audienceCount */ 0, /* repeatRatePct */ 0);
+        Business business = buildBusiness(p, now, businessPeriod);
+        List<Activity> activity = recentActivity(p);
 
-        return new DashboardResponse(new Greeting(firstName), now, cycle, lastEvent,
-                /* prediction */ null, business, List.of());
+        return new DashboardResponse(new Greeting(firstName), nowDto, cycle, lastEvent,
+                /* prediction */ null, business, activity);
+    }
+
+    private Cycle buildCycle(AuthPrincipal p, Instant now, DashboardPeriod period, long activeCount) {
+        if (period.isAll()) {
+            Object[] sums = events.sumRevenueAndSold(p.orgId()).get(0);
+            long rev = ((Number) sums[0]).longValue();
+            long sold = ((Number) sums[1]).longValue();
+            return new Cycle(period.wire(), rev, (int) sold, (int) activeCount, new Deltas(0, 0));
+        }
+
+        Duration d = period.duration();
+        Instant since = now.minus(d);
+        Instant priorSince = since.minus(d);
+
+        Object[] current = orders.sumRevenueAndCountByOrgInWindow(p.orgId(), since, now).get(0);
+        Object[] prior = orders.sumRevenueAndCountByOrgInWindow(p.orgId(), priorSince, since).get(0);
+
+        long curRev = ((Number) current[0]).longValue();
+        long curCnt = ((Number) current[1]).longValue();
+        long priorRev = ((Number) prior[0]).longValue();
+        long priorCnt = ((Number) prior[1]).longValue();
+
+        return new Cycle(period.wire(), curRev, (int) curCnt, (int) activeCount,
+                new Deltas(pctDelta(curRev, priorRev), pctDelta(curCnt, priorCnt)));
+    }
+
+    private Business buildBusiness(AuthPrincipal p, Instant now, DashboardPeriod period) {
+        long revenue;
+        int repeatRate;
+        if (period.isAll()) {
+            Object[] sums = events.sumRevenueAndSold(p.orgId()).get(0);
+            revenue = ((Number) sums[0]).longValue();
+            repeatRate = repeatRatePct(orders.orderCountsByEmailSince(p.orgId(), Instant.EPOCH));
+        } else {
+            Instant since = now.minus(period.duration());
+            Object[] sums = orders.sumRevenueAndCountByOrgInWindow(p.orgId(), since, now).get(0);
+            revenue = ((Number) sums[0]).longValue();
+            repeatRate = repeatRatePct(orders.orderCountsByEmailSince(p.orgId(), since));
+        }
+        return new Business(revenue, events.countPublished(p.orgId()), events.countPast(p.orgId()),
+                /* audienceCount */ 0, repeatRate);
+    }
+
+    /** Top-5 audit-log rows for the right-rail "Activity" tile. */
+    private List<Activity> recentActivity(AuthPrincipal p) {
+        return auditLogs.findByOrgIdOrderByOccurredAtDesc(p.orgId(), PageRequest.of(0, 5)).stream()
+                .map(this::toActivity)
+                .toList();
+    }
+
+    private Activity toActivity(AuditLog a) {
+        return new Activity(ACTIVITY_TIME_FMT.format(a.getOccurredAt()), a.getSummary());
+    }
+
+    /**
+     * % of distinct buyers in window who placed >1 order. Returns 0 when no
+     * orders, or when only single-order buyers exist (so the UI shows "0%
+     * come back" instead of NaN/empty).
+     */
+    private static int repeatRatePct(List<Object[]> rows) {
+        if (rows.isEmpty()) return 0;
+        long total = rows.size();
+        long repeat = rows.stream().filter(r -> ((Number) r[1]).longValue() > 1).count();
+        return (int) Math.round(100.0 * repeat / total);
+    }
+
+    private static int pctDelta(long current, long prior) {
+        if (prior == 0) return current == 0 ? 0 : 100;
+        return (int) Math.round(100.0 * (current - prior) / prior);
     }
 
     private static String displayFirstName(String firstName, String email) {
