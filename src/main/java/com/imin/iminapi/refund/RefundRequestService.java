@@ -11,9 +11,12 @@ import com.imin.iminapi.refund.dto.ProposedRefundResponse;
 import com.imin.iminapi.refund.dto.PublicRefundFormResponse;
 import com.imin.iminapi.refund.dto.PublicRefundSubmitRequest;
 import com.imin.iminapi.refund.dto.PublicRefundSubmitResponse;
+import com.imin.iminapi.refund.dto.RefundRequestApproveRequest;
+import com.imin.iminapi.refund.dto.RefundRequestDecisionResponse;
 import com.imin.iminapi.refund.dto.RefundRequestDetailResponse;
 import com.imin.iminapi.refund.dto.RefundRequestSummaryResponse;
 import com.imin.iminapi.refund.event.RefundRequestSubmittedEvent;
+import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.repository.OrderRecoveryAttemptRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketRepository;
@@ -410,6 +413,80 @@ public class RefundRequestService {
                 rr.getRefundId(),
                 null);
         }).toList();
+    }
+
+    @Transactional
+    public RefundRequestDecisionResponse approveRequest(
+            UUID id, AuthPrincipal principal, RefundRequestApproveRequest body) {
+
+        RefundRequest rr = requests.findByIdAndOrgId(id, principal.orgId())
+            .orElseThrow(() -> ApiException.notFound("RefundRequest"));
+
+        if (rr.getStatus() != RefundRequestStatus.PENDING) {
+            throw new ApiException(
+                HttpStatus.CONFLICT,
+                ErrorCode.REFUND_REQUEST_NOT_PENDING,
+                "Refund request is not pending");
+        }
+
+        Order order = orders.findById(rr.getOrderId())
+            .orElseThrow(() -> ApiException.notFound("Order"));
+
+        List<Ticket> all = tickets.findByOrderId(order.getId());
+        Set<UUID> alreadyRefunded = all.isEmpty()
+            ? Set.of()
+            : refundTickets.findRefundedTicketIds(all.stream().map(Ticket::getId).toList());
+        List<Ticket> refundable = all.stream()
+            .filter(t -> !alreadyRefunded.contains(t.getId()))
+            .filter(t -> !Ticket.STATE_REDEEMED.equals(t.getState()))
+            .toList();
+        if (refundable.isEmpty()) {
+            throw new ApiException(
+                HttpStatus.CONFLICT,
+                ErrorCode.NO_REFUNDABLE_TICKETS,
+                "No refundable tickets remain on this order");
+        }
+
+        long amount = refundService.computeRefundAmountMinor(order, refundable);
+        long appFee = refundService.computeAppFeeRefundMinor(order, amount);
+
+        if (!body.confirm()) {
+            // Defensive backstop: typical clients read live proposedRefund from
+            // GET /{id} and pass confirm:true. When confirm:false we return the
+            // live numbers in the error body so the dashboard can re-render.
+            ProposedRefundResponse proposed = new ProposedRefundResponse(
+                amount, appFee, order.getCurrency(),
+                refundable.stream().map(Ticket::getId).toList());
+            throw new ApiException(
+                HttpStatus.BAD_REQUEST,
+                ErrorCode.REFUND_APPROVAL_NOT_CONFIRMED,
+                "Set confirm:true to issue the refund.",
+                Map.of("proposedRefund", proposed.toString()));
+        }
+
+        // Deterministic idempotency key — a re-press of Confirm is a no-op.
+        Refund stripeRefund = refundService.createRefund(
+            order.getId(), principal,
+            "refund-request-" + rr.getId(),
+            refundable.stream().map(Ticket::getId).toList(),
+            rr.getReason().toStripeReason());
+
+        rr.setStatus(RefundRequestStatus.APPROVED);
+        rr.setDecidedAt(Times.nowMicros());
+        rr.setDecidedByUserId(principal.userId());
+        rr.setDecisionNote(body.note());
+        rr.setRefundId(stripeRefund.getId());
+        // Release the "one open per order" slot enforced by UNIQUE(pending_marker).
+        rr.setPendingMarker(null);
+        requests.save(rr);
+
+        log.info("[refund-request] approved id={} refundId={} by={}",
+            rr.getId(), stripeRefund.getId(), principal.userId());
+        return new RefundRequestDecisionResponse(
+            "approved", stripeRefund.getId(),
+            stripeRefund.getStatus() == null
+                ? null
+                : stripeRefund.getStatus().name().toLowerCase(Locale.ROOT));
     }
 
     // ---------- helpers ----------

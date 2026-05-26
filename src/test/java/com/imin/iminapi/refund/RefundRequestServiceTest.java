@@ -380,6 +380,135 @@ class RefundRequestServiceTest {
     }
 
     @org.junit.jupiter.api.Nested
+    class ApproveRequest {
+
+        java.util.UUID requestId;
+        java.util.UUID orgId;
+        RefundRequest rr;
+        Order order;
+        com.imin.iminapi.security.AuthPrincipal principal;
+
+        @BeforeEach
+        void seed() {
+            requestId = java.util.UUID.randomUUID();
+            orgId = java.util.UUID.randomUUID();
+            principal = new com.imin.iminapi.security.AuthPrincipal(
+                java.util.UUID.randomUUID(), orgId,
+                com.imin.iminapi.model.UserRole.OWNER, java.util.UUID.randomUUID());
+
+            rr = new RefundRequest();
+            rr.setId(requestId);
+            rr.setOrgId(orgId);
+            rr.setOrderId(java.util.UUID.randomUUID());
+            rr.setEventId(java.util.UUID.randomUUID());
+            rr.setBuyerEmail("buyer@example.com");
+            rr.setReason(RefundRequestReason.CANT_ATTEND);
+            rr.setExplanation("...");
+            rr.setStatus(RefundRequestStatus.PENDING);
+            rr.setPendingMarker(rr.getOrderId());
+
+            order = new Order();
+            order.setId(rr.getOrderId());
+            order.setOrgId(orgId);
+            order.setEventId(rr.getEventId());
+            order.setStripePaymentIntentId("pi_x");
+            order.setTotalMinor(8000);
+            order.setCurrency("eur");
+        }
+
+        @Test
+        void requires_confirm_true_otherwise_400_with_proposed_refund() {
+            when(requests.findByIdAndOrgId(requestId, orgId)).thenReturn(Optional.of(rr));
+            when(orders.findById(rr.getOrderId())).thenReturn(Optional.of(order));
+            com.imin.iminapi.model.Ticket t = new com.imin.iminapi.model.Ticket();
+            t.setId(java.util.UUID.randomUUID());
+            t.setOrderId(order.getId());
+            t.setTierId(java.util.UUID.randomUUID());
+            t.setPriceMinor(2500);
+            t.setState(com.imin.iminapi.model.Ticket.STATE_ISSUED);
+            when(tickets.findByOrderId(order.getId())).thenReturn(List.of(t));
+            when(refundTickets.findRefundedTicketIds(any())).thenReturn(Set.of());
+            when(refundService.computeRefundAmountMinor(eq(order), org.mockito.ArgumentMatchers.anyList()))
+                .thenReturn(8000L);
+            when(refundService.computeAppFeeRefundMinor(order, 8000L)).thenReturn(400L);
+
+            com.imin.iminapi.security.ApiException ex = assertThrows(
+                com.imin.iminapi.security.ApiException.class,
+                () -> service.approveRequest(requestId, principal,
+                    new com.imin.iminapi.refund.dto.RefundRequestApproveRequest(false, "")));
+            assertThat(ex.code()).isEqualTo(com.imin.iminapi.security.ErrorCode.REFUND_APPROVAL_NOT_CONFIRMED);
+            assertThat(ex.fields()).containsKey("proposedRefund");
+        }
+
+        @Test
+        void confirmed_call_invokes_RefundService_and_marks_request_approved() {
+            when(requests.findByIdAndOrgId(requestId, orgId)).thenReturn(Optional.of(rr));
+            when(orders.findById(rr.getOrderId())).thenReturn(Optional.of(order));
+            com.imin.iminapi.model.Ticket t = new com.imin.iminapi.model.Ticket();
+            t.setId(java.util.UUID.randomUUID());
+            t.setOrderId(order.getId());
+            t.setTierId(java.util.UUID.randomUUID());
+            t.setPriceMinor(2500);
+            t.setState(com.imin.iminapi.model.Ticket.STATE_ISSUED);
+            when(tickets.findByOrderId(order.getId())).thenReturn(List.of(t));
+            when(refundTickets.findRefundedTicketIds(any())).thenReturn(Set.of());
+
+            Refund stubRefund = new Refund();
+            stubRefund.setId(java.util.UUID.randomUUID());
+            stubRefund.setStatus(RefundStatus.PENDING);
+            when(refundService.createRefund(eq(order.getId()), any(),
+                org.mockito.ArgumentMatchers.startsWith("refund-request-"),
+                any(), any())).thenReturn(stubRefund);
+            when(requests.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+            var resp = service.approveRequest(requestId, principal,
+                new com.imin.iminapi.refund.dto.RefundRequestApproveRequest(true, "ok"));
+
+            assertThat(resp.status()).isEqualTo("approved");
+            assertThat(resp.refundId()).isEqualTo(stubRefund.getId());
+            assertThat(rr.getStatus()).isEqualTo(RefundRequestStatus.APPROVED);
+            assertThat(rr.getDecisionNote()).isEqualTo("ok");
+            assertThat(rr.getPendingMarker()).isNull();
+            assertThat(rr.getRefundId()).isEqualTo(stubRefund.getId());
+            assertThat(rr.getDecidedByUserId()).isEqualTo(principal.userId());
+            assertThat(rr.getDecidedAt()).isNotNull();
+        }
+
+        @Test
+        void rejects_if_request_already_decided() {
+            rr.setStatus(RefundRequestStatus.APPROVED);
+            when(requests.findByIdAndOrgId(requestId, orgId)).thenReturn(Optional.of(rr));
+
+            com.imin.iminapi.security.ApiException ex = assertThrows(
+                com.imin.iminapi.security.ApiException.class,
+                () -> service.approveRequest(requestId, principal,
+                    new com.imin.iminapi.refund.dto.RefundRequestApproveRequest(true, "")));
+            assertThat(ex.code()).isEqualTo(com.imin.iminapi.security.ErrorCode.REFUND_REQUEST_NOT_PENDING);
+        }
+
+        @Test
+        void rejects_if_no_refundable_tickets_remain() {
+            when(requests.findByIdAndOrgId(requestId, orgId)).thenReturn(Optional.of(rr));
+            when(orders.findById(rr.getOrderId())).thenReturn(Optional.of(order));
+            // All tickets already redeemed -> none refundable.
+            com.imin.iminapi.model.Ticket t = new com.imin.iminapi.model.Ticket();
+            t.setId(java.util.UUID.randomUUID());
+            t.setOrderId(order.getId());
+            t.setTierId(java.util.UUID.randomUUID());
+            t.setPriceMinor(2500);
+            t.setState(com.imin.iminapi.model.Ticket.STATE_REDEEMED);
+            when(tickets.findByOrderId(order.getId())).thenReturn(List.of(t));
+            when(refundTickets.findRefundedTicketIds(any())).thenReturn(Set.of());
+
+            com.imin.iminapi.security.ApiException ex = assertThrows(
+                com.imin.iminapi.security.ApiException.class,
+                () -> service.approveRequest(requestId, principal,
+                    new com.imin.iminapi.refund.dto.RefundRequestApproveRequest(true, "")));
+            assertThat(ex.code()).isEqualTo(com.imin.iminapi.security.ErrorCode.NO_REFUNDABLE_TICKETS);
+        }
+    }
+
+    @org.junit.jupiter.api.Nested
     class ListRequestsForOrganizer {
 
         @Test
