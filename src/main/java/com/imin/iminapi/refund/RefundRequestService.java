@@ -363,7 +363,10 @@ public class RefundRequestService {
             String cursorBase64,
             int limit) {
 
-        Instant beforeAt = Instant.MAX;
+        // Postgres `timestamp with time zone` tops out around year 294276 AD;
+        // Instant.MAX (+1e9 AD) overflows into BC on the wire. H2 (used in tests)
+        // accepts it silently, which is how this bug shipped past CI.
+        Instant beforeAt = Instant.parse("9999-12-31T23:59:59Z");
         UUID beforeId = new UUID(Long.MAX_VALUE, Long.MAX_VALUE);
         if (cursorBase64 != null && !cursorBase64.isBlank()) {
             String decoded = new String(Base64.getUrlDecoder().decode(cursorBase64),
