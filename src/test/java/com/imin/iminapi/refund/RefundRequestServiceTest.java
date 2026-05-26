@@ -282,4 +282,161 @@ class RefundRequestServiceTest {
             assertThat(ex.code()).isEqualTo(com.imin.iminapi.security.ErrorCode.REFUND_REQUEST_ALREADY_OPEN);
         }
     }
+
+    @org.junit.jupiter.api.Nested
+    class GetRequestForOrganizer {
+
+        @Test
+        void returns_404_when_request_belongs_to_other_org() {
+            java.util.UUID rid = java.util.UUID.randomUUID();
+            when(requests.findByIdAndOrgId(eq(rid), any()))
+                .thenReturn(Optional.empty());
+
+            com.imin.iminapi.security.ApiException ex = assertThrows(
+                com.imin.iminapi.security.ApiException.class,
+                () -> service.getRequest(rid, java.util.UUID.randomUUID()));
+            assertThat(ex.code()).isEqualTo(com.imin.iminapi.security.ErrorCode.NOT_FOUND);
+        }
+
+        @Test
+        void returns_detail_with_proposed_refund_when_pending_and_refundable() {
+            java.util.UUID rid = java.util.UUID.randomUUID();
+            java.util.UUID orgId = java.util.UUID.randomUUID();
+            Order order = new Order();
+            order.setId(java.util.UUID.randomUUID());
+            order.setOrgId(orgId);
+            order.setEventId(java.util.UUID.randomUUID());
+            order.setTotalMinor(8000);
+            order.setCurrency("eur");
+            order.setStripePaymentIntentId("pi_x");
+
+            RefundRequest rr = new RefundRequest();
+            rr.setId(rid);
+            rr.setOrgId(orgId);
+            rr.setOrderId(order.getId());
+            rr.setEventId(order.getEventId());
+            rr.setBuyerEmail("buyer@example.com");
+            rr.setReason(RefundRequestReason.CANT_ATTEND);
+            rr.setExplanation("Can't make it");
+            rr.setStatus(RefundRequestStatus.PENDING);
+
+            when(requests.findByIdAndOrgId(rid, orgId)).thenReturn(Optional.of(rr));
+            when(orders.findById(order.getId())).thenReturn(Optional.of(order));
+
+            com.imin.iminapi.model.Ticket t = new com.imin.iminapi.model.Ticket();
+            t.setId(java.util.UUID.randomUUID());
+            t.setOrderId(order.getId());
+            t.setTierId(java.util.UUID.randomUUID());
+            t.setPriceMinor(2500);
+            t.setState(com.imin.iminapi.model.Ticket.STATE_ISSUED);
+            when(tickets.findByOrderId(order.getId())).thenReturn(List.of(t));
+            when(refundTickets.findRefundedTicketIds(any())).thenReturn(Set.of());
+            when(refundService.computeRefundAmountMinor(eq(order), org.mockito.ArgumentMatchers.anyList()))
+                .thenReturn(8000L);
+            when(refundService.computeAppFeeRefundMinor(order, 8000L)).thenReturn(400L);
+
+            var resp = service.getRequest(rid, orgId);
+
+            assertThat(resp.id()).isEqualTo(rid);
+            assertThat(resp.status()).isEqualTo("pending");
+            assertThat(resp.reason()).isEqualTo("cant_attend");
+            assertThat(resp.tickets()).hasSize(1);
+            assertThat(resp.proposedRefund()).isNotNull();
+            assertThat(resp.proposedRefund().amountMinor()).isEqualTo(8000L);
+            assertThat(resp.proposedRefund().appFeeRefundMinor()).isEqualTo(400L);
+        }
+
+        @Test
+        void returns_detail_without_proposed_refund_when_already_decided() {
+            java.util.UUID rid = java.util.UUID.randomUUID();
+            java.util.UUID orgId = java.util.UUID.randomUUID();
+            Order order = new Order();
+            order.setId(java.util.UUID.randomUUID());
+            order.setOrgId(orgId);
+            order.setEventId(java.util.UUID.randomUUID());
+            order.setTotalMinor(8000);
+            order.setCurrency("eur");
+
+            RefundRequest rr = new RefundRequest();
+            rr.setId(rid);
+            rr.setOrgId(orgId);
+            rr.setOrderId(order.getId());
+            rr.setEventId(order.getEventId());
+            rr.setBuyerEmail("buyer@example.com");
+            rr.setReason(RefundRequestReason.OTHER);
+            rr.setExplanation("...");
+            rr.setStatus(RefundRequestStatus.REJECTED);
+
+            when(requests.findByIdAndOrgId(rid, orgId)).thenReturn(Optional.of(rr));
+            when(orders.findById(order.getId())).thenReturn(Optional.of(order));
+            when(tickets.findByOrderId(order.getId())).thenReturn(List.of());
+            when(refundTickets.findRefundedTicketIds(any())).thenReturn(Set.of());
+
+            var resp = service.getRequest(rid, orgId);
+
+            assertThat(resp.status()).isEqualTo("rejected");
+            assertThat(resp.proposedRefund()).isNull();
+        }
+    }
+
+    @org.junit.jupiter.api.Nested
+    class ListRequestsForOrganizer {
+
+        @Test
+        void returns_empty_when_no_rows_match() {
+            java.util.UUID orgId = java.util.UUID.randomUUID();
+            java.util.UUID eventId = java.util.UUID.randomUUID();
+            when(requests.page(eq(orgId), eq(eventId),
+                eq(List.of(RefundRequestStatus.PENDING)),
+                any(), any(), any())).thenReturn(List.of());
+
+            var page = service.listRequests(orgId, eventId,
+                List.of(RefundRequestStatus.PENDING), null, 25);
+            assertThat(page).isEmpty();
+        }
+
+        @Test
+        void maps_rows_to_summary_responses() {
+            java.util.UUID orgId = java.util.UUID.randomUUID();
+            Order order = new Order();
+            order.setId(java.util.UUID.randomUUID());
+            order.setOrgId(orgId);
+            order.setEventId(java.util.UUID.randomUUID());
+            order.setTotalMinor(5000);
+            order.setCurrency("eur");
+
+            RefundRequest rr = new RefundRequest();
+            rr.setId(java.util.UUID.randomUUID());
+            rr.setOrgId(orgId);
+            rr.setOrderId(order.getId());
+            rr.setEventId(order.getEventId());
+            rr.setBuyerEmail("buyer@example.com");
+            rr.setReason(RefundRequestReason.CANT_ATTEND);
+            rr.setExplanation("...");
+            rr.setStatus(RefundRequestStatus.PENDING);
+
+            when(requests.page(eq(orgId), any(), any(), any(), any(), any()))
+                .thenReturn(List.of(rr));
+
+            com.imin.iminapi.model.Ticket t = new com.imin.iminapi.model.Ticket();
+            t.setId(java.util.UUID.randomUUID());
+            t.setOrderId(order.getId());
+            t.setTierId(java.util.UUID.randomUUID());
+            t.setPriceMinor(2500);
+            t.setState(com.imin.iminapi.model.Ticket.STATE_ISSUED);
+            when(tickets.findByOrderId(order.getId())).thenReturn(List.of(t));
+            when(refundTickets.findRefundedTicketIds(any())).thenReturn(Set.of());
+            when(orders.findById(order.getId())).thenReturn(Optional.of(order));
+            when(refundService.computeRefundAmountMinor(eq(order), org.mockito.ArgumentMatchers.anyList()))
+                .thenReturn(2500L);
+
+            var page = service.listRequests(orgId, null, null, null, 25);
+            assertThat(page).hasSize(1);
+            assertThat(page.get(0).status()).isEqualTo("pending");
+            assertThat(page.get(0).reason()).isEqualTo("cant_attend");
+            assertThat(page.get(0).ticketCount()).isEqualTo(1);
+            assertThat(page.get(0).estimatedRefundMinor()).isEqualTo(2500L);
+            assertThat(page.get(0).currency()).isEqualTo("eur");
+        }
+    }
 }

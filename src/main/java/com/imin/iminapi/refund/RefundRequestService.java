@@ -7,9 +7,12 @@ import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.OrderRecoveryAttempt;
 import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.model.TicketTier;
+import com.imin.iminapi.refund.dto.ProposedRefundResponse;
 import com.imin.iminapi.refund.dto.PublicRefundFormResponse;
 import com.imin.iminapi.refund.dto.PublicRefundSubmitRequest;
 import com.imin.iminapi.refund.dto.PublicRefundSubmitResponse;
+import com.imin.iminapi.refund.dto.RefundRequestDetailResponse;
+import com.imin.iminapi.refund.dto.RefundRequestSummaryResponse;
 import com.imin.iminapi.refund.event.RefundRequestSubmittedEvent;
 import com.imin.iminapi.repository.OrderRecoveryAttemptRepository;
 import com.imin.iminapi.repository.OrderRepository;
@@ -41,6 +44,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import org.springframework.data.domain.PageRequest;
 
 /**
  * Orchestration for buyer-initiated refund requests.
@@ -285,6 +289,127 @@ public class RefundRequestService {
         log.info("[refund-request] issued requestId={} orderId={}", rr.getId(), order.getId());
         return new PublicRefundSubmitResponse(
             rr.getId(), rr.getStatus().name().toLowerCase(Locale.ROOT), rr.getCreatedAt());
+    }
+
+    @Transactional(readOnly = true)
+    public RefundRequestDetailResponse getRequest(UUID id, UUID orgId) {
+        RefundRequest rr = requests.findByIdAndOrgId(id, orgId)
+            .orElseThrow(() -> ApiException.notFound("RefundRequest"));
+
+        Order order = orders.findById(rr.getOrderId())
+            .orElseThrow(() -> ApiException.notFound("Order"));
+
+        List<Ticket> all = tickets.findByOrderId(order.getId());
+        Set<UUID> alreadyRefunded = all.isEmpty()
+            ? Set.of()
+            : refundTickets.findRefundedTicketIds(all.stream().map(Ticket::getId).toList());
+        List<Ticket> refundable = all.stream()
+            .filter(t -> !alreadyRefunded.contains(t.getId()))
+            .filter(t -> !Ticket.STATE_REDEEMED.equals(t.getState()))
+            .toList();
+
+        Map<UUID, String> tierNames = new HashMap<>();
+        for (Ticket t : all) {
+            tierNames.computeIfAbsent(t.getTierId(), id2 -> tiers.findById(id2)
+                .map(TicketTier::getName).orElse(""));
+        }
+
+        ProposedRefundResponse proposed = null;
+        if (rr.getStatus() == RefundRequestStatus.PENDING && !refundable.isEmpty()) {
+            long amount = refundService.computeRefundAmountMinor(order, refundable);
+            long appFee = refundService.computeAppFeeRefundMinor(order, amount);
+            proposed = new ProposedRefundResponse(
+                amount, appFee, order.getCurrency(),
+                refundable.stream().map(Ticket::getId).toList());
+        }
+
+        // refundStatus left null; the controller layer may enrich if needed.
+        String refundStatus = null;
+
+        return new RefundRequestDetailResponse(
+            rr.getId(),
+            order.getId(),
+            order.getEventId(),
+            null, // eventName left null for MVP
+            rr.getBuyerEmail(),
+            rr.getBuyerPhone(),
+            rr.getStatus().name().toLowerCase(Locale.ROOT),
+            rr.getReason().toWire(),
+            rr.getExplanation(),
+            rr.getDecisionNote(),
+            rr.getCreatedAt(),
+            rr.getDecidedAt(),
+            all.stream()
+                .map(t -> new RefundRequestDetailResponse.TicketLine(
+                    t.getId(), tierNames.getOrDefault(t.getTierId(), ""),
+                    t.getPriceMinor(), t.getState()))
+                .toList(),
+            proposed,
+            rr.getRefundId(),
+            refundStatus
+        );
+    }
+
+    @Transactional(readOnly = true)
+    public List<RefundRequestSummaryResponse> listRequests(
+            UUID orgId,
+            UUID eventId,
+            List<RefundRequestStatus> statuses,
+            String cursorBase64,
+            int limit) {
+
+        Instant beforeAt = Instant.MAX;
+        UUID beforeId = new UUID(Long.MAX_VALUE, Long.MAX_VALUE);
+        if (cursorBase64 != null && !cursorBase64.isBlank()) {
+            String decoded = new String(Base64.getUrlDecoder().decode(cursorBase64),
+                StandardCharsets.UTF_8);
+            int sep = decoded.indexOf('|');
+            if (sep > 0) {
+                beforeAt = Instant.parse(decoded.substring(0, sep));
+                beforeId = UUID.fromString(decoded.substring(sep + 1));
+            }
+        }
+
+        PageRequest pageReq = PageRequest.of(0, Math.min(100, Math.max(1, limit)));
+        List<RefundRequestStatus> effectiveStatuses =
+            (statuses == null || statuses.isEmpty())
+                ? List.of(RefundRequestStatus.values())
+                : statuses;
+        List<RefundRequest> rows = requests.page(orgId, eventId,
+            effectiveStatuses, beforeAt, beforeId, pageReq);
+
+        return rows.stream().map(rr -> {
+            // ticketCount and estimatedRefundMinor are best-effort live
+            // computations. We accept the per-row cost for now and add caching
+            // if it bites.
+            List<Ticket> all = tickets.findByOrderId(rr.getOrderId());
+            Set<UUID> alreadyRefunded = all.isEmpty()
+                ? Set.of()
+                : refundTickets.findRefundedTicketIds(all.stream().map(Ticket::getId).toList());
+            List<Ticket> refundable = all.stream()
+                .filter(t -> !alreadyRefunded.contains(t.getId()))
+                .filter(t -> !Ticket.STATE_REDEEMED.equals(t.getState()))
+                .toList();
+            long estimated = 0;
+            String currency = null;
+            Order order = orders.findById(rr.getOrderId()).orElse(null);
+            if (order != null && !refundable.isEmpty()) {
+                estimated = refundService.computeRefundAmountMinor(order, refundable);
+                currency = order.getCurrency();
+            }
+            return new RefundRequestSummaryResponse(
+                rr.getId(), rr.getOrderId(), rr.getEventId(), null,
+                rr.getBuyerEmail(),
+                rr.getStatus().name().toLowerCase(Locale.ROOT),
+                rr.getReason().toWire(),
+                rr.getCreatedAt(),
+                rr.getDecidedAt(),
+                refundable.size(),
+                estimated,
+                currency,
+                rr.getRefundId(),
+                null);
+        }).toList();
     }
 
     // ---------- helpers ----------
