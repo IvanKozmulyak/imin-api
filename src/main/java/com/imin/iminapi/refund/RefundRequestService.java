@@ -5,13 +5,21 @@ import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.email.EmailTemplateRenderer;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.OrderRecoveryAttempt;
+import com.imin.iminapi.model.Ticket;
+import com.imin.iminapi.model.TicketTier;
+import com.imin.iminapi.refund.dto.PublicRefundFormResponse;
 import com.imin.iminapi.repository.OrderRecoveryAttemptRepository;
 import com.imin.iminapi.repository.OrderRepository;
+import com.imin.iminapi.repository.TicketRepository;
+import com.imin.iminapi.repository.TicketTierRepository;
+import com.imin.iminapi.security.ApiException;
+import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.service.ticket.TicketProperties;
 import com.imin.iminapi.util.Times;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -21,11 +29,14 @@ import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 
 /**
  * Orchestration for buyer-initiated refund requests.
@@ -50,6 +61,10 @@ public class RefundRequestService {
     private final EmailProperties emailProps;
     private final TicketProperties ticketProps;
     private final ApplicationEventPublisher publisher;
+    private final TicketRepository tickets;
+    private final RefundTicketRepository refundTickets;
+    private final TicketTierRepository tiers;
+    private final RefundService refundService;
 
     public RefundRequestService(OrderRepository orders,
                                 OrderRecoveryAttemptRepository attempts,
@@ -59,7 +74,11 @@ public class RefundRequestService {
                                 EmailTemplateRenderer renderer,
                                 EmailProperties emailProps,
                                 TicketProperties ticketProps,
-                                ApplicationEventPublisher publisher) {
+                                ApplicationEventPublisher publisher,
+                                TicketRepository tickets,
+                                RefundTicketRepository refundTickets,
+                                TicketTierRepository tiers,
+                                RefundService refundService) {
         this.orders = orders;
         this.attempts = attempts;
         this.tokens = tokens;
@@ -69,6 +88,10 @@ public class RefundRequestService {
         this.emailProps = emailProps;
         this.ticketProps = ticketProps;
         this.publisher = publisher;
+        this.tickets = tickets;
+        this.refundTickets = refundTickets;
+        this.tiers = tiers;
+        this.refundService = refundService;
     }
 
     @Transactional
@@ -131,6 +154,67 @@ public class RefundRequestService {
         } catch (Exception e) {
             log.warn("[refund-request] link email failed for {}: {}", normalized, e.getMessage());
         }
+    }
+
+    @Transactional(readOnly = true)
+    public PublicRefundFormResponse lookupByToken(String rawToken) {
+        RefundRequestToken token = tokens.findByTokenHash(sha256Hex(rawToken))
+            .filter(t -> t.getConsumedAt() == null)
+            .filter(t -> t.getExpiresAt().isAfter(Instant.now()))
+            .orElseThrow(() -> new ApiException(
+                HttpStatus.GONE,
+                ErrorCode.REFUND_TOKEN_EXPIRED_OR_CONSUMED,
+                "Refund link is no longer valid"));
+
+        Order order = orders.findById(token.getOrderId())
+            .orElseThrow(() -> new ApiException(
+                HttpStatus.GONE,
+                ErrorCode.REFUND_TOKEN_EXPIRED_OR_CONSUMED,
+                "Refund link is no longer valid"));
+
+        List<Ticket> refundable = refundableTicketsFor(order);
+        if (refundable.isEmpty()) {
+            throw new ApiException(
+                HttpStatus.CONFLICT,
+                ErrorCode.NO_REFUNDABLE_TICKETS,
+                "All tickets on this order have already been refunded or used");
+        }
+
+        long estimated = refundService.computeRefundAmountMinor(order, refundable);
+
+        Map<UUID, String> tierNames = new HashMap<>();
+        for (Ticket t : refundable) {
+            tierNames.computeIfAbsent(t.getTierId(), id -> tiers.findById(id)
+                .map(TicketTier::getName).orElse(""));
+        }
+
+        return new PublicRefundFormResponse(
+            order.getId(),
+            // Event name lookup intentionally omitted here; FE can hit existing
+            // /api/v1/public/events/{eventId} for richer detail if needed.
+            new PublicRefundFormResponse.EventSummary(
+                null, null, null, order.getCurrency()),
+            refundable.stream()
+                .map(t -> new PublicRefundFormResponse.TicketLine(
+                    t.getId(),
+                    tierNames.getOrDefault(t.getTierId(), ""),
+                    t.getPriceMinor()))
+                .toList(),
+            estimated,
+            order.getCurrency(),
+            PublicRefundFormResponse.defaultReasons()
+        );
+    }
+
+    private List<Ticket> refundableTicketsFor(Order order) {
+        List<Ticket> all = tickets.findByOrderId(order.getId());
+        List<UUID> ids = all.stream().map(Ticket::getId).toList();
+        Set<UUID> alreadyRefunded = ids.isEmpty()
+            ? Set.of() : refundTickets.findRefundedTicketIds(ids);
+        return all.stream()
+            .filter(t -> !alreadyRefunded.contains(t.getId()))
+            .filter(t -> !Ticket.STATE_REDEEMED.equals(t.getState()))
+            .toList();
     }
 
     // ---------- helpers ----------

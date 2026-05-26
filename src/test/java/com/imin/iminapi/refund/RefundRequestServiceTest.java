@@ -7,6 +7,8 @@ import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.OrderRecoveryAttempt;
 import com.imin.iminapi.repository.OrderRecoveryAttemptRepository;
 import com.imin.iminapi.repository.OrderRepository;
+import com.imin.iminapi.repository.TicketRepository;
+import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.service.ticket.TicketProperties;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -15,6 +17,7 @@ import org.springframework.context.ApplicationEventPublisher;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -38,6 +41,10 @@ class RefundRequestServiceTest {
     EmailProperties emailProps = new EmailProperties();
     TicketProperties ticketProps = new TicketProperties();
     ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
+    TicketRepository tickets = mock(TicketRepository.class);
+    RefundTicketRepository refundTickets = mock(RefundTicketRepository.class);
+    TicketTierRepository tiers = mock(TicketTierRepository.class);
+    RefundService refundService = mock(RefundService.class);
 
     RefundRequestService service;
 
@@ -49,7 +56,8 @@ class RefundRequestServiceTest {
         when(renderer.render(anyString(), any()))
             .thenReturn(new EmailTemplateRenderer.Rendered("<html/>", "txt"));
         service = new RefundRequestService(orders, attempts, tokens, requests,
-            email, renderer, emailProps, ticketProps, publisher);
+            email, renderer, emailProps, ticketProps, publisher,
+            tickets, refundTickets, tiers, refundService);
     }
 
     @Test
@@ -106,5 +114,95 @@ class RefundRequestServiceTest {
         verify(attempts).save(any(OrderRecoveryAttempt.class));
         verify(tokens, never()).save(any());
         verify(email, never()).send(anyString(), anyString(), anyString(), anyString());
+    }
+
+    @org.junit.jupiter.api.Nested
+    class LookupByToken {
+
+        UUID orderId;
+        Order o;
+        RefundRequestToken token;
+
+        @BeforeEach
+        void seed() {
+            orderId = UUID.randomUUID();
+            o = new Order();
+            o.setId(orderId);
+            o.setEmail("buyer@example.com");
+            o.setEventId(UUID.randomUUID());
+            o.setTotalMinor(8000);
+            o.setCurrency("eur");
+            o.setStripePaymentIntentId("pi_x");
+
+            token = new RefundRequestToken();
+            token.setOrderId(orderId);
+            token.setEmailNormalized("buyer@example.com");
+            token.setExpiresAt(Instant.now().plusSeconds(600));
+        }
+
+        @Test
+        void returns_410_when_token_unknown() {
+            when(tokens.findByTokenHash(anyString())).thenReturn(Optional.empty());
+
+            com.imin.iminapi.security.ApiException ex = assertThrows(
+                com.imin.iminapi.security.ApiException.class,
+                () -> service.lookupByToken("any"));
+            assertThat(ex.code()).isEqualTo(com.imin.iminapi.security.ErrorCode.REFUND_TOKEN_EXPIRED_OR_CONSUMED);
+        }
+
+        @Test
+        void returns_410_when_expired() {
+            token.setExpiresAt(Instant.now().minusSeconds(60));
+            when(tokens.findByTokenHash(anyString())).thenReturn(Optional.of(token));
+
+            com.imin.iminapi.security.ApiException ex = assertThrows(
+                com.imin.iminapi.security.ApiException.class,
+                () -> service.lookupByToken("raw"));
+            assertThat(ex.code()).isEqualTo(com.imin.iminapi.security.ErrorCode.REFUND_TOKEN_EXPIRED_OR_CONSUMED);
+        }
+
+        @Test
+        void returns_410_when_consumed() {
+            token.setConsumedAt(Instant.now().minusSeconds(60));
+            when(tokens.findByTokenHash(anyString())).thenReturn(Optional.of(token));
+
+            com.imin.iminapi.security.ApiException ex = assertThrows(
+                com.imin.iminapi.security.ApiException.class,
+                () -> service.lookupByToken("raw"));
+            assertThat(ex.code()).isEqualTo(com.imin.iminapi.security.ErrorCode.REFUND_TOKEN_EXPIRED_OR_CONSUMED);
+        }
+
+        @Test
+        void returns_409_when_no_refundable_tickets() {
+            when(tokens.findByTokenHash(anyString())).thenReturn(Optional.of(token));
+            when(orders.findById(orderId)).thenReturn(Optional.of(o));
+            when(tickets.findByOrderId(orderId)).thenReturn(List.of());
+
+            com.imin.iminapi.security.ApiException ex = assertThrows(
+                com.imin.iminapi.security.ApiException.class,
+                () -> service.lookupByToken("raw"));
+            assertThat(ex.code()).isEqualTo(com.imin.iminapi.security.ErrorCode.NO_REFUNDABLE_TICKETS);
+        }
+
+        @Test
+        void returns_form_data_for_valid_token() {
+            when(tokens.findByTokenHash(anyString())).thenReturn(Optional.of(token));
+            when(orders.findById(orderId)).thenReturn(Optional.of(o));
+            com.imin.iminapi.model.Ticket t = new com.imin.iminapi.model.Ticket();
+            t.setId(UUID.randomUUID());
+            t.setOrderId(orderId);
+            t.setTierId(UUID.randomUUID());
+            t.setPriceMinor(2500);
+            t.setState(com.imin.iminapi.model.Ticket.STATE_ISSUED);
+            when(tickets.findByOrderId(orderId)).thenReturn(List.of(t));
+            when(refundTickets.findRefundedTicketIds(any())).thenReturn(Set.of());
+            when(refundService.computeRefundAmountMinor(eq(o), org.mockito.ArgumentMatchers.anyList())).thenReturn(2000L);
+
+            var resp = service.lookupByToken("raw");
+
+            assertThat(resp.estimatedRefundMinor()).isEqualTo(2000L);
+            assertThat(resp.tickets()).hasSize(1);
+            assertThat(resp.reasons()).contains("cant_attend", "other");
+        }
     }
 }
