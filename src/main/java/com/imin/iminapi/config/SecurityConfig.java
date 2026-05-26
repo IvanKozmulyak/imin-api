@@ -93,6 +93,10 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/v1/public/events/*/quote").permitAll()
                         // Lost-email recovery — unauthenticated POST, always 204, rate-limited.
                         .requestMatchers(HttpMethod.POST, "/api/v1/public/orders/recover").permitAll()
+                        // Buyer-initiated refund-request surface (link issuance + form submit).
+                        .requestMatchers(HttpMethod.POST,
+                                         "/api/v1/public/refund-requests",
+                                         "/api/v1/public/refund-requests/**").permitAll()
                         // Stripe webhooks — unauthenticated; signature-verified inside the handler.
                         // Two endpoints: /webhook/v1 (V1 payments) and /webhook/v2 (V2 thin events).
                         .requestMatchers(HttpMethod.POST, "/api/v1/stripe/webhook/**").permitAll()
