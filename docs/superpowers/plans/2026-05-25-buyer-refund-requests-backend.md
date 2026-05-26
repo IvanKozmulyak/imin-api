@@ -419,6 +419,13 @@ CREATE TABLE refund_requests (
   decided_by_user_id   UUID REFERENCES users(id),
   decided_at           TIMESTAMP WITH TIME ZONE,
   refund_id            UUID REFERENCES refunds(id),
+  -- pending_marker = order_id while status='PENDING', NULL otherwise.
+  -- A plain UNIQUE on this column enforces "one open request per order"
+  -- on both Postgres and H2. Partial-WHERE indexes (which would otherwise
+  -- be the natural choice) are Postgres-only; V13 uses the same
+  -- nullable-marker pattern for the same reason. The service is
+  -- responsible for keeping pending_marker in sync with status.
+  pending_marker       UUID,
   created_at           TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
   updated_at           TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
 );
@@ -430,11 +437,12 @@ CREATE INDEX idx_refund_requests_event_created
 CREATE INDEX idx_refund_requests_order_status
   ON refund_requests (order_id, status);
 
--- Partial-unique index enforces "at most one PENDING request per order" at
--- the storage layer. Two concurrent submits race-lose with a unique violation
--- that the service maps to REFUND_REQUEST_ALREADY_OPEN.
+-- NULLs are distinct in both Postgres and H2 (PG-compat), so this UNIQUE
+-- only enforces uniqueness when pending_marker is set — i.e., on PENDING
+-- rows. Two concurrent submits race-lose with a unique violation that the
+-- service maps to REFUND_REQUEST_ALREADY_OPEN.
 CREATE UNIQUE INDEX uq_refund_requests_one_open_per_order
-  ON refund_requests (order_id) WHERE status = 'PENDING';
+  ON refund_requests (pending_marker);
 ```
 
 - [ ] **Step 2: Run a boot test to confirm the migration applies cleanly**
@@ -665,6 +673,14 @@ public class RefundRequest {
 
     @Column(name = "refund_id")
     private UUID refundId;
+
+    /**
+     * Set to {@code order_id} while {@code status==PENDING}, NULL on any
+     * terminal transition. {@code UNIQUE(pending_marker)} enforces
+     * "one open request per order" — see V30 migration.
+     */
+    @Column(name = "pending_marker")
+    private UUID pendingMarker;
 
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Times.nowMicros();
@@ -1908,11 +1924,14 @@ Append another nested class:
         rr.setReason(body.reason());
         rr.setExplanation(body.explanation());
         rr.setStatus(RefundRequestStatus.PENDING);
+        // pending_marker = order_id while PENDING; UNIQUE on this column
+        // enforces "one open request per order" across both Postgres and H2.
+        rr.setPendingMarker(order.getId());
 
         try {
             rr = requests.save(rr);
         } catch (org.springframework.dao.DataIntegrityViolationException race) {
-            // Partial unique index raced.
+            // UNIQUE(pending_marker) raced.
             throw new com.imin.iminapi.security.ApiException(
                 org.springframework.http.HttpStatus.CONFLICT,
                 com.imin.iminapi.security.ErrorCode.REFUND_REQUEST_ALREADY_OPEN,
@@ -2312,6 +2331,7 @@ git commit -m "feat(refund-request): organizer list and detail queries"
         rr.setDecidedByUserId(principal.userId());
         rr.setDecisionNote(body.note());
         rr.setRefundId(stripeRefund.getId());
+        rr.setPendingMarker(null);  // release the "one open per order" slot
         requests.save(rr);
 
         log.info("[refund-request] approved id={} refundId={} by={}",
@@ -2404,6 +2424,7 @@ git commit -m "feat(refund-request): approve invokes RefundService with confirm 
         rr.setDecidedAt(Times.nowMicros());
         rr.setDecidedByUserId(principal.userId());
         rr.setDecisionNote(body.note());
+        rr.setPendingMarker(null);  // release the "one open per order" slot
         requests.save(rr);
 
         publisher.publishEvent(new com.imin.iminapi.refund.event.RefundRequestRejectedEvent(rr.getId()));

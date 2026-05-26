@@ -142,6 +142,7 @@ Two new tables. No changes to existing tables.
 | `decided_by_user_id` | UUID NULL | Set on Approve/Reject. |
 | `decided_at` | TIMESTAMP NULL | |
 | `refund_id` | UUID NULL FK → refunds | Set on successful Approve. NULL for REJECTED/WITHDRAWN. |
+| `pending_marker` | UUID NULL | Set to `order_id` while `status='PENDING'`; cleared to NULL on any terminal transition. UNIQUE-indexed (see below). |
 | `created_at` | TIMESTAMP NOT NULL | `Times.nowMicros()` |
 | `updated_at` | TIMESTAMP NOT NULL | |
 
@@ -150,12 +151,18 @@ Two new tables. No changes to existing tables.
 - `idx_refund_requests_order_status` on `(order_id, status)` — "one open request per order" check.
 - `idx_refund_requests_event_created` on `(event_id, created_at DESC)` — per-event filter.
 
-**Partial unique index** to enforce "one open request per order":
+**`pending_marker` + plain UNIQUE** to enforce "one open request per order":
+
 ```sql
+ALTER TABLE refund_requests
+  ADD COLUMN pending_marker UUID;       -- = order_id when status='PENDING', NULL otherwise
 CREATE UNIQUE INDEX uq_refund_requests_one_open_per_order
-  ON refund_requests (order_id) WHERE status = 'PENDING';
+  ON refund_requests (pending_marker);  -- NULLs are distinct in both Postgres and H2
 ```
-A race that tries to insert a second `PENDING` for the same order fails with a unique violation; the service maps that to a clear API error.
+
+Partial-WHERE indexes (`WHERE status = 'PENDING'`) are Postgres-only — H2 in PG-compat mode (used in tests) doesn't support them. The codebase already uses this `nullable-marker + plain UNIQUE` pattern in V13 for the same reason; we follow it here.
+
+The service writes `pending_marker = order_id` when inserting a `PENDING` row and sets it to `NULL` on transition to `APPROVED`/`REJECTED`/`WITHDRAWN`. A race that tries to insert a second `PENDING` for the same order fails with a unique violation; the service maps that to a clear API error.
 
 ### 5.2 `refund_request_tokens`
 
