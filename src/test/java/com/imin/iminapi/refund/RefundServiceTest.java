@@ -218,4 +218,127 @@ class RefundServiceTest {
         assertThat(out.getStatus()).isEqualTo(RefundStatus.PENDING);
         assertThat(out.getInitiatedByUserId()).isEqualTo(userId);
     }
+
+    @org.junit.jupiter.api.Nested
+    class PromoCodeAmountAllocation {
+
+        @Test
+        void full_order_with_promo_refunds_total_minor_not_face_price() {
+            // Order total 8000 (promo applied), face price sums to 10000.
+            // A full-order refund must call Stripe with 8000, not 10000.
+            Order o = paidOrder();
+            o.setTotalMinor(8000);
+            o.setApplicationFeeMinor(400);
+            when(orders.findById(orderId)).thenReturn(Optional.of(o));
+
+            Ticket t1 = ticket(5000);
+            Ticket t2 = ticket(5000);
+            List<UUID> ids = List.of(t1.getId(), t2.getId());
+            when(tickets.findByIdInAndOrderId(ids, orderId)).thenReturn(List.of(t1, t2));
+            when(tickets.findByOrderId(orderId)).thenReturn(List.of(t1, t2));
+            when(refundTickets.findRefundedTicketIds(ids)).thenReturn(Set.of());
+            when(refunds.findByOrderIdAndIdempotencyKey(orderId, "idem-1")).thenReturn(Optional.empty());
+            when(refunds.sumActiveAmountByOrderId(orderId)).thenReturn(0L);
+            when(refunds.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+            com.stripe.model.Refund stripeRefund = new com.stripe.model.Refund();
+            stripeRefund.setId("re_1");
+            stripeRefund.setStatus("pending");
+            when(stripeRefunds.create(eq("pi_x"), eq(8000L), eq("eur"), any(), eq(400L), anyString()))
+                .thenReturn(stripeRefund);
+
+            service.createRefund(orderId, principal, "idem-1", ids, RefundReason.OTHER);
+
+            ArgumentCaptor<Long> amount = ArgumentCaptor.forClass(Long.class);
+            ArgumentCaptor<Long> fee = ArgumentCaptor.forClass(Long.class);
+            org.mockito.Mockito.verify(stripeRefunds)
+                .create(eq("pi_x"), amount.capture(), eq("eur"), any(), fee.capture(), anyString());
+            assertThat(amount.getValue()).isEqualTo(8000L);
+            assertThat(fee.getValue()).isEqualTo(400L);
+        }
+
+        @Test
+        void partial_with_promo_uses_proportional_total_minor_allocation() {
+            // Order total 8000, face total 10000, refunding one of two 5000-face tickets.
+            // Proportional amount = round(8000 * 5000 / 10000) = 4000.
+            Order o = paidOrder();
+            o.setTotalMinor(8000);
+            o.setApplicationFeeMinor(400);
+            when(orders.findById(orderId)).thenReturn(Optional.of(o));
+
+            Ticket t1 = ticket(5000);
+            Ticket t2 = ticket(5000);
+            List<UUID> ids = List.of(t1.getId());
+            when(tickets.findByIdInAndOrderId(ids, orderId)).thenReturn(List.of(t1));
+            when(tickets.findByOrderId(orderId)).thenReturn(List.of(t1, t2));
+            when(refundTickets.findRefundedTicketIds(ids)).thenReturn(Set.of());
+            when(refunds.findByOrderIdAndIdempotencyKey(orderId, "idem-1")).thenReturn(Optional.empty());
+            when(refunds.sumActiveAmountByOrderId(orderId)).thenReturn(0L);
+            when(refunds.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+            com.stripe.model.Refund stripeRefund = new com.stripe.model.Refund();
+            stripeRefund.setId("re_2");
+            stripeRefund.setStatus("pending");
+            when(stripeRefunds.create(eq("pi_x"), eq(4000L), eq("eur"), any(), eq(200L), anyString()))
+                .thenReturn(stripeRefund);
+
+            service.createRefund(orderId, principal, "idem-1", ids, RefundReason.OTHER);
+
+            org.mockito.Mockito.verify(stripeRefunds)
+                .create(eq("pi_x"), eq(4000L), eq("eur"), any(), eq(200L), anyString());
+        }
+
+        @Test
+        void last_remaining_refund_clamps_to_total_minor_minus_prior_refunds() {
+            // Prior refunded 4000 of 8000. This refund's proportional amount might
+            // overshoot due to rounding; clamp to remaining (4000).
+            Order o = paidOrder();
+            o.setTotalMinor(8000);
+            o.setApplicationFeeMinor(400);
+            when(orders.findById(orderId)).thenReturn(Optional.of(o));
+
+            Ticket t1 = ticket(5000);
+            Ticket t2 = ticket(5001);  // quirky face to provoke rounding
+            List<UUID> ids = List.of(t2.getId());
+            when(tickets.findByIdInAndOrderId(ids, orderId)).thenReturn(List.of(t2));
+            when(tickets.findByOrderId(orderId)).thenReturn(List.of(t1, t2));
+            when(refundTickets.findRefundedTicketIds(ids)).thenReturn(Set.of());
+            when(refunds.findByOrderIdAndIdempotencyKey(orderId, "idem-final")).thenReturn(Optional.empty());
+            when(refunds.sumActiveAmountByOrderId(orderId)).thenReturn(4000L);
+            when(refunds.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+            com.stripe.model.Refund stripeRefund = new com.stripe.model.Refund();
+            stripeRefund.setId("re_3");
+            stripeRefund.setStatus("pending");
+            when(stripeRefunds.create(eq("pi_x"), eq(4000L), eq("eur"), any(), eq(200L), anyString()))
+                .thenReturn(stripeRefund);
+
+            service.createRefund(orderId, principal, "idem-final", ids, RefundReason.OTHER);
+
+            org.mockito.Mockito.verify(stripeRefunds)
+                .create(eq("pi_x"), eq(4000L), eq("eur"), any(), eq(200L), anyString());
+        }
+
+        @Test
+        void zero_remaining_returns_409() {
+            // Prior refunds already cover the full order total.
+            Order o = paidOrder();
+            o.setTotalMinor(8000);
+            when(orders.findById(orderId)).thenReturn(Optional.of(o));
+
+            Ticket t1 = ticket(5000);
+            List<UUID> ids = List.of(t1.getId());
+            when(tickets.findByIdInAndOrderId(ids, orderId)).thenReturn(List.of(t1));
+            when(tickets.findByOrderId(orderId)).thenReturn(List.of(t1));
+            when(refundTickets.findRefundedTicketIds(ids)).thenReturn(Set.of());
+            when(refunds.findByOrderIdAndIdempotencyKey(orderId, "idem-z")).thenReturn(Optional.empty());
+            when(refunds.sumActiveAmountByOrderId(orderId)).thenReturn(8000L);
+
+            ApiException ex = (ApiException) assertThatThrownBy(() ->
+                service.createRefund(orderId, principal, "idem-z", ids, RefundReason.OTHER))
+                .isInstanceOf(ApiException.class).actual();
+            assertThat(ex.code()).isEqualTo(ErrorCode.ORDER_NOT_REFUNDABLE);
+            verifyNoInteractions(stripeRefunds);
+        }
+    }
 }
