@@ -205,4 +205,81 @@ class RefundRequestServiceTest {
             assertThat(resp.reasons()).contains("cant_attend", "other");
         }
     }
+
+    @org.junit.jupiter.api.Nested
+    class SubmitByToken {
+
+        UUID orderId;
+        Order o;
+        RefundRequestToken token;
+
+        @BeforeEach
+        void seed() {
+            orderId = UUID.randomUUID();
+            o = new Order();
+            o.setId(orderId);
+            o.setOrgId(UUID.randomUUID());
+            o.setEventId(UUID.randomUUID());
+            o.setEmail("buyer@example.com");
+            o.setTotalMinor(8000);
+            o.setCurrency("eur");
+
+            token = new RefundRequestToken();
+            token.setOrderId(orderId);
+            token.setEmailNormalized("buyer@example.com");
+            token.setExpiresAt(Instant.now().plusSeconds(600));
+        }
+
+        com.imin.iminapi.refund.dto.PublicRefundSubmitRequest req() {
+            return new com.imin.iminapi.refund.dto.PublicRefundSubmitRequest(
+                RefundRequestReason.CANT_ATTEND, "Can't make it", null);
+        }
+
+        @Test
+        void submits_writes_request_burns_token_and_publishes_event() {
+            when(tokens.findByTokenHash(anyString())).thenReturn(Optional.of(token));
+            when(orders.findById(orderId)).thenReturn(Optional.of(o));
+            com.imin.iminapi.model.Ticket t = new com.imin.iminapi.model.Ticket();
+            t.setId(UUID.randomUUID());
+            t.setOrderId(orderId);
+            t.setTierId(UUID.randomUUID());
+            t.setPriceMinor(2500);
+            t.setState(com.imin.iminapi.model.Ticket.STATE_ISSUED);
+            when(tickets.findByOrderId(orderId)).thenReturn(List.of(t));
+            when(refundTickets.findRefundedTicketIds(any())).thenReturn(Set.of());
+            when(requests.existsByOrderIdAndStatus(orderId, RefundRequestStatus.PENDING)).thenReturn(false);
+            when(requests.save(any())).thenAnswer(inv -> {
+                RefundRequest rr = inv.getArgument(0);
+                rr.setId(UUID.randomUUID());
+                return rr;
+            });
+
+            var resp = service.submitByToken("raw", req());
+
+            assertThat(resp.status()).isEqualTo("pending");
+            verify(requests).save(any(RefundRequest.class));
+            verify(tokens).save(org.mockito.ArgumentMatchers.argThat(t2 -> t2.getConsumedAt() != null));
+            verify(publisher).publishEvent(any(com.imin.iminapi.refund.event.RefundRequestSubmittedEvent.class));
+        }
+
+        @Test
+        void submits_returns_409_when_a_pending_request_already_exists() {
+            when(tokens.findByTokenHash(anyString())).thenReturn(Optional.of(token));
+            when(orders.findById(orderId)).thenReturn(Optional.of(o));
+            com.imin.iminapi.model.Ticket t = new com.imin.iminapi.model.Ticket();
+            t.setId(UUID.randomUUID());
+            t.setOrderId(orderId);
+            t.setTierId(UUID.randomUUID());
+            t.setPriceMinor(2500);
+            t.setState(com.imin.iminapi.model.Ticket.STATE_ISSUED);
+            when(tickets.findByOrderId(orderId)).thenReturn(List.of(t));
+            when(refundTickets.findRefundedTicketIds(any())).thenReturn(Set.of());
+            when(requests.existsByOrderIdAndStatus(orderId, RefundRequestStatus.PENDING)).thenReturn(true);
+
+            com.imin.iminapi.security.ApiException ex = assertThrows(
+                com.imin.iminapi.security.ApiException.class,
+                () -> service.submitByToken("raw", req()));
+            assertThat(ex.code()).isEqualTo(com.imin.iminapi.security.ErrorCode.REFUND_REQUEST_ALREADY_OPEN);
+        }
+    }
 }

@@ -8,6 +8,9 @@ import com.imin.iminapi.model.OrderRecoveryAttempt;
 import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.model.TicketTier;
 import com.imin.iminapi.refund.dto.PublicRefundFormResponse;
+import com.imin.iminapi.refund.dto.PublicRefundSubmitRequest;
+import com.imin.iminapi.refund.dto.PublicRefundSubmitResponse;
+import com.imin.iminapi.refund.event.RefundRequestSubmittedEvent;
 import com.imin.iminapi.repository.OrderRecoveryAttemptRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketRepository;
@@ -19,6 +22,7 @@ import com.imin.iminapi.util.Times;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -215,6 +219,72 @@ public class RefundRequestService {
             .filter(t -> !alreadyRefunded.contains(t.getId()))
             .filter(t -> !Ticket.STATE_REDEEMED.equals(t.getState()))
             .toList();
+    }
+
+    @Transactional
+    public PublicRefundSubmitResponse submitByToken(String rawToken, PublicRefundSubmitRequest body) {
+        RefundRequestToken token = tokens.findByTokenHash(sha256Hex(rawToken))
+            .filter(t -> t.getConsumedAt() == null)
+            .filter(t -> t.getExpiresAt().isAfter(Instant.now()))
+            .orElseThrow(() -> new ApiException(
+                HttpStatus.GONE,
+                ErrorCode.REFUND_TOKEN_EXPIRED_OR_CONSUMED,
+                "Refund link is no longer valid"));
+
+        Order order = orders.findById(token.getOrderId())
+            .orElseThrow(() -> new ApiException(
+                HttpStatus.GONE,
+                ErrorCode.REFUND_TOKEN_EXPIRED_OR_CONSUMED,
+                "Refund link is no longer valid"));
+
+        List<Ticket> refundable = refundableTicketsFor(order);
+        if (refundable.isEmpty()) {
+            // Burn the token so a retry doesn't hit lookup-then-409 again.
+            token.setConsumedAt(Times.nowMicros());
+            tokens.save(token);
+            throw new ApiException(
+                HttpStatus.CONFLICT,
+                ErrorCode.NO_REFUNDABLE_TICKETS,
+                "All tickets on this order have already been refunded or used");
+        }
+
+        if (requests.existsByOrderIdAndStatus(order.getId(), RefundRequestStatus.PENDING)) {
+            throw new ApiException(
+                HttpStatus.CONFLICT,
+                ErrorCode.REFUND_REQUEST_ALREADY_OPEN,
+                "A refund request is already open for this order");
+        }
+
+        RefundRequest rr = new RefundRequest();
+        rr.setOrderId(order.getId());
+        rr.setOrgId(order.getOrgId());
+        rr.setEventId(order.getEventId());
+        rr.setBuyerEmail(order.getEmail() == null ? "" : order.getEmail().toLowerCase(Locale.ROOT));
+        rr.setBuyerPhone(body.phone());
+        rr.setReason(body.reason());
+        rr.setExplanation(body.explanation());
+        rr.setStatus(RefundRequestStatus.PENDING);
+        // pending_marker = order_id while PENDING; UNIQUE on this column
+        // enforces "one open request per order" across both Postgres and H2.
+        rr.setPendingMarker(order.getId());
+
+        try {
+            rr = requests.save(rr);
+        } catch (DataIntegrityViolationException race) {
+            // UNIQUE(pending_marker) raced.
+            throw new ApiException(
+                HttpStatus.CONFLICT,
+                ErrorCode.REFUND_REQUEST_ALREADY_OPEN,
+                "A refund request is already open for this order");
+        }
+
+        token.setConsumedAt(Times.nowMicros());
+        tokens.save(token);
+
+        publisher.publishEvent(new RefundRequestSubmittedEvent(rr.getId()));
+        log.info("[refund-request] issued requestId={} orderId={}", rr.getId(), order.getId());
+        return new PublicRefundSubmitResponse(
+            rr.getId(), rr.getStatus().name().toLowerCase(Locale.ROOT), rr.getCreatedAt());
     }
 
     // ---------- helpers ----------
