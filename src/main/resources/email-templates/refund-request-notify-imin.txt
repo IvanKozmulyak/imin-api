@@ -1,0 +1,10 @@
+[imin] NEW REFUND REQUEST
+
+Org:    {{orgId}}
+Event:  {{eventName}}
+Buyer:  {{buyerEmail}}{{phoneLine}}
+Reason: {{reason}}
+
+{{explanation}}
+
+Dashboard: {{dashboardUrl}}

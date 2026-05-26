@@ -1,0 +1,12 @@
+NEW REFUND REQUEST
+
+A buyer requested a refund.
+
+Event:  {{eventName}}
+Buyer:  {{buyerEmail}}{{phoneLine}}
+Reason: {{reason}}
+
+Buyer's note:
+{{explanation}}
+
+Open in dashboard: {{dashboardUrl}}

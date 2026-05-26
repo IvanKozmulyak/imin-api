@@ -1,0 +1,11 @@
+REFUND REQUEST UPDATE
+
+Hi,
+
+The organiser reviewed your refund request and was unable to approve
+it. Their note:
+
+  {{decisionNote}}
+
+If you'd like to discuss this further, replying to this email reaches
+the organiser.

@@ -1,0 +1,9 @@
+REFUND REQUEST
+
+You asked to start a refund request on imin. Open the link below to fill
+out the form. It expires in {{ttlMinutes}} minutes.
+
+{{link}}
+
+If you didn't request this, you can safely ignore this email — nothing
+on your order has changed.
