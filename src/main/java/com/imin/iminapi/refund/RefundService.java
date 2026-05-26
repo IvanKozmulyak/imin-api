@@ -124,20 +124,16 @@ public class RefundService {
             }
         }
 
-        long refundAmountMinor = selected.stream().mapToLong(Ticket::getPriceMinor).sum();
+        long refundAmountMinor = computeRefundAmountMinor(order, selected);
         if (refundAmountMinor <= 0) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.ORDER_NOT_REFUNDABLE,
                 "Refund amount must be positive");
         }
 
-        // Per-refund proportional formula. Applied uniformly across refunds —
-        // sum of all refunds' app-fee refunds equals the original fee when the
-        // order is fully refunded (with at most N−1 cents rounding error for N refunds).
-        long appFeeRefundMinor = 0;
-        if (order.getTotalMinor() > 0 && order.getApplicationFeeMinor() > 0) {
-            appFeeRefundMinor = Math.round(
-                (double) order.getApplicationFeeMinor() * refundAmountMinor / order.getTotalMinor());
-        }
+        // Application-fee refund stays proportional to refund amount over order total.
+        // Total app-fee refunds across all refunds equal the original fee when the
+        // order is fully refunded (within at most N−1 cents drift over N refunds).
+        long appFeeRefundMinor = computeAppFeeRefundMinor(order, refundAmountMinor);
 
         Refund r = new Refund();
         r.setOrderId(orderId);
@@ -298,5 +294,39 @@ public class RefundService {
         tickets.saveAll(ticketsForRefund);
         log.info("[refund] released {} ticket(s) across {} tier(s) for refund {}",
             ticketsForRefund.size(), qtyByTier.size(), refund.getId());
+    }
+
+    /**
+     * Refund principal = totalMinor × (selected face / order face), clamped to
+     * remaining (= totalMinor − prior active refunds). Anchoring on totalMinor
+     * (not face price) means promo-discounted orders refund the actual paid
+     * amount; the clamp absorbs cross-refund rounding drift so a full-order
+     * refund always equals exactly totalMinor.
+     *
+     * <p>Package-private so {@code RefundRequestService} can reuse the same
+     * math for previews and approvals.
+     */
+    long computeRefundAmountMinor(Order order, List<Ticket> selected) {
+        long totalMinor = order.getTotalMinor();
+        if (totalMinor <= 0) return 0;
+
+        long selectedFace = selected.stream().mapToLong(Ticket::getPriceMinor).sum();
+        long orderFace = tickets.findByOrderId(order.getId()).stream()
+            .mapToLong(Ticket::getPriceMinor).sum();
+        if (orderFace <= 0 || selectedFace <= 0) return 0;
+
+        long proposed = Math.round((double) totalMinor * selectedFace / orderFace);
+
+        long priorRefunded = refunds.sumActiveAmountByOrderId(order.getId());
+        long remaining = totalMinor - priorRefunded;
+        if (remaining <= 0) return 0;
+
+        return Math.min(proposed, remaining);
+    }
+
+    long computeAppFeeRefundMinor(Order order, long refundAmountMinor) {
+        if (order.getTotalMinor() <= 0 || order.getApplicationFeeMinor() <= 0) return 0;
+        return Math.round(
+            (double) order.getApplicationFeeMinor() * refundAmountMinor / order.getTotalMinor());
     }
 }

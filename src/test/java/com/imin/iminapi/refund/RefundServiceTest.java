@@ -188,9 +188,13 @@ class RefundServiceTest {
         Order o = paidOrder();
         Ticket t1 = ticket(2500);
         Ticket t2 = ticket(2500);
+        Ticket t3 = ticket(2500);
+        Ticket t4 = ticket(2500);
         when(orders.findById(orderId)).thenReturn(Optional.of(o));
         when(refunds.findByOrderIdAndIdempotencyKey(any(), any())).thenReturn(Optional.empty());
         when(tickets.findByIdInAndOrderId(any(), eq(orderId))).thenReturn(List.of(t1, t2));
+        when(tickets.findByOrderId(orderId)).thenReturn(List.of(t1, t2, t3, t4));
+        when(refunds.sumActiveAmountByOrderId(orderId)).thenReturn(0L);
         when(refundTickets.findRefundedTicketIds(any())).thenReturn(Set.of());
 
         com.stripe.model.Refund stripeStub = new com.stripe.model.Refund();
@@ -223,7 +227,7 @@ class RefundServiceTest {
     class PromoCodeAmountAllocation {
 
         @Test
-        void full_order_with_promo_refunds_total_minor_not_face_price() {
+        void full_order_with_promo_refunds_total_minor_not_face_price() throws Exception {
             // Order total 8000 (promo applied), face price sums to 10000.
             // A full-order refund must call Stripe with 8000, not 10000.
             Order o = paidOrder();
@@ -258,7 +262,7 @@ class RefundServiceTest {
         }
 
         @Test
-        void partial_with_promo_uses_proportional_total_minor_allocation() {
+        void partial_with_promo_uses_proportional_total_minor_allocation() throws Exception {
             // Order total 8000, face total 10000, refunding one of two 5000-face tickets.
             // Proportional amount = round(8000 * 5000 / 10000) = 4000.
             Order o = paidOrder();
@@ -289,7 +293,7 @@ class RefundServiceTest {
         }
 
         @Test
-        void last_remaining_refund_clamps_to_total_minor_minus_prior_refunds() {
+        void last_remaining_refund_clamps_to_total_minor_minus_prior_refunds() throws Exception {
             // Prior refunded 4000 of 8000. This refund's proportional amount might
             // overshoot due to rounding; clamp to remaining (4000).
             Order o = paidOrder();
