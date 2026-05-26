@@ -568,4 +568,65 @@ class RefundRequestServiceTest {
             assertThat(page.get(0).currency()).isEqualTo("eur");
         }
     }
+
+    @org.junit.jupiter.api.Nested
+    class RejectRequest {
+
+        @Test
+        void rejects_and_publishes_event() {
+            java.util.UUID rid = java.util.UUID.randomUUID();
+            java.util.UUID orgId = java.util.UUID.randomUUID();
+            com.imin.iminapi.security.AuthPrincipal principal =
+                new com.imin.iminapi.security.AuthPrincipal(java.util.UUID.randomUUID(),
+                    orgId, com.imin.iminapi.model.UserRole.OWNER, java.util.UUID.randomUUID());
+            RefundRequest rr = new RefundRequest();
+            rr.setId(rid);
+            rr.setOrgId(orgId);
+            rr.setOrderId(java.util.UUID.randomUUID());
+            rr.setEventId(java.util.UUID.randomUUID());
+            rr.setBuyerEmail("buyer@example.com");
+            rr.setReason(RefundRequestReason.OTHER);
+            rr.setExplanation("...");
+            rr.setStatus(RefundRequestStatus.PENDING);
+            rr.setPendingMarker(rr.getOrderId());
+            when(requests.findByIdAndOrgId(rid, orgId)).thenReturn(Optional.of(rr));
+            when(requests.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+            var resp = service.rejectRequest(rid, principal,
+                new com.imin.iminapi.refund.dto.RefundRequestRejectRequest("Past 48h window"));
+
+            assertThat(resp.status()).isEqualTo("rejected");
+            assertThat(rr.getStatus()).isEqualTo(RefundRequestStatus.REJECTED);
+            assertThat(rr.getDecisionNote()).isEqualTo("Past 48h window");
+            assertThat(rr.getPendingMarker()).isNull();
+            assertThat(rr.getDecidedByUserId()).isEqualTo(principal.userId());
+            assertThat(rr.getDecidedAt()).isNotNull();
+            verify(publisher).publishEvent(any(com.imin.iminapi.refund.event.RefundRequestRejectedEvent.class));
+        }
+
+        @Test
+        void rejects_if_already_decided() {
+            java.util.UUID rid = java.util.UUID.randomUUID();
+            java.util.UUID orgId = java.util.UUID.randomUUID();
+            com.imin.iminapi.security.AuthPrincipal principal =
+                new com.imin.iminapi.security.AuthPrincipal(java.util.UUID.randomUUID(),
+                    orgId, com.imin.iminapi.model.UserRole.OWNER, java.util.UUID.randomUUID());
+            RefundRequest rr = new RefundRequest();
+            rr.setId(rid);
+            rr.setOrgId(orgId);
+            rr.setOrderId(java.util.UUID.randomUUID());
+            rr.setEventId(java.util.UUID.randomUUID());
+            rr.setBuyerEmail("buyer@example.com");
+            rr.setReason(RefundRequestReason.OTHER);
+            rr.setExplanation("...");
+            rr.setStatus(RefundRequestStatus.REJECTED);
+            when(requests.findByIdAndOrgId(rid, orgId)).thenReturn(Optional.of(rr));
+
+            com.imin.iminapi.security.ApiException ex = assertThrows(
+                com.imin.iminapi.security.ApiException.class,
+                () -> service.rejectRequest(rid, principal,
+                    new com.imin.iminapi.refund.dto.RefundRequestRejectRequest("note")));
+            assertThat(ex.code()).isEqualTo(com.imin.iminapi.security.ErrorCode.REFUND_REQUEST_NOT_PENDING);
+        }
+    }
 }

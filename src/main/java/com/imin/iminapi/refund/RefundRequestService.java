@@ -14,7 +14,9 @@ import com.imin.iminapi.refund.dto.PublicRefundSubmitResponse;
 import com.imin.iminapi.refund.dto.RefundRequestApproveRequest;
 import com.imin.iminapi.refund.dto.RefundRequestDecisionResponse;
 import com.imin.iminapi.refund.dto.RefundRequestDetailResponse;
+import com.imin.iminapi.refund.dto.RefundRequestRejectRequest;
 import com.imin.iminapi.refund.dto.RefundRequestSummaryResponse;
+import com.imin.iminapi.refund.event.RefundRequestRejectedEvent;
 import com.imin.iminapi.refund.event.RefundRequestSubmittedEvent;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.repository.OrderRecoveryAttemptRepository;
@@ -487,6 +489,35 @@ public class RefundRequestService {
             stripeRefund.getStatus() == null
                 ? null
                 : stripeRefund.getStatus().name().toLowerCase(Locale.ROOT));
+    }
+
+    @Transactional
+    public RefundRequestDecisionResponse rejectRequest(
+            UUID id, AuthPrincipal principal, RefundRequestRejectRequest body) {
+
+        RefundRequest rr = requests.findByIdAndOrgId(id, principal.orgId())
+            .orElseThrow(() -> ApiException.notFound("RefundRequest"));
+
+        if (rr.getStatus() != RefundRequestStatus.PENDING) {
+            throw new ApiException(
+                HttpStatus.CONFLICT,
+                ErrorCode.REFUND_REQUEST_NOT_PENDING,
+                "Refund request is not pending");
+        }
+
+        rr.setStatus(RefundRequestStatus.REJECTED);
+        rr.setDecidedAt(Times.nowMicros());
+        rr.setDecidedByUserId(principal.userId());
+        rr.setDecisionNote(body.note());
+        // Release the "one open per order" slot enforced by UNIQUE(pending_marker).
+        rr.setPendingMarker(null);
+        requests.save(rr);
+
+        publisher.publishEvent(new RefundRequestRejectedEvent(rr.getId()));
+        log.info("[refund-request] rejected id={} by={} noteLen={}",
+            rr.getId(), principal.userId(),
+            body.note() == null ? 0 : body.note().length());
+        return new RefundRequestDecisionResponse("rejected", null, null);
     }
 
     // ---------- helpers ----------
