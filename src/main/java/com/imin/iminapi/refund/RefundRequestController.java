@@ -44,11 +44,10 @@ public class RefundRequestController {
                                                    @CurrentUser AuthPrincipal principal,
                                                    @RequestParam(required = false) String status,
                                                    @RequestParam(required = false) UUID eventId,
-                                                   @RequestParam(defaultValue = "25") int limit,
-                                                   @RequestParam(required = false) String cursor) {
+                                                   @RequestParam(defaultValue = "25") int limit) {
         if (!orgId.equals(principal.orgId())) throw ApiException.notFound("Org");
         List<RefundRequestStatus> statuses = parseStatuses(status);
-        return service.listRequests(orgId, eventId, statuses, cursor, limit);
+        return service.listRequests(orgId, eventId, statuses, limit);
     }
 
     @GetMapping("/{id}")

@@ -60,7 +60,7 @@ class RefundRequestControllerTest {
     void list_returns_rows_for_own_org() throws Exception {
         UUID orgId = UUID.randomUUID();
         AuthPrincipal me = principalFor(orgId);
-        when(service.listRequests(eq(orgId), any(), any(), any(), anyInt()))
+        when(service.listRequests(eq(orgId), any(), any(), anyInt()))
             .thenReturn(List.of());
         mvc.perform(get("/api/v1/orgs/{orgId}/refund-requests", orgId)
                 .with(authentication(auth(me))))

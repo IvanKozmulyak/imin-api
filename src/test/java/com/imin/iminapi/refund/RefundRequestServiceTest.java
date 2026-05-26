@@ -517,10 +517,10 @@ class RefundRequestServiceTest {
             java.util.UUID eventId = java.util.UUID.randomUUID();
             when(requests.page(eq(orgId), eq(eventId),
                 eq(List.of(RefundRequestStatus.PENDING)),
-                any(), any(), any())).thenReturn(List.of());
+                any())).thenReturn(List.of());
 
             var page = service.listRequests(orgId, eventId,
-                List.of(RefundRequestStatus.PENDING), null, 25);
+                List.of(RefundRequestStatus.PENDING), 25);
             assertThat(page).isEmpty();
         }
 
@@ -544,7 +544,7 @@ class RefundRequestServiceTest {
             rr.setExplanation("...");
             rr.setStatus(RefundRequestStatus.PENDING);
 
-            when(requests.page(eq(orgId), any(), any(), any(), any(), any()))
+            when(requests.page(eq(orgId), any(), any(), any()))
                 .thenReturn(List.of(rr));
 
             com.imin.iminapi.model.Ticket t = new com.imin.iminapi.model.Ticket();
@@ -559,7 +559,7 @@ class RefundRequestServiceTest {
             when(refundService.computeRefundAmountMinor(eq(order), org.mockito.ArgumentMatchers.anyList()))
                 .thenReturn(2500L);
 
-            var page = service.listRequests(orgId, null, null, null, 25);
+            var page = service.listRequests(orgId, null, null, 25);
             assertThat(page).hasSize(1);
             assertThat(page.get(0).status()).isEqualTo("pending");
             assertThat(page.get(0).reason()).isEqualTo("cant_attend");

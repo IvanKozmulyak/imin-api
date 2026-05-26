@@ -360,31 +360,14 @@ public class RefundRequestService {
             UUID orgId,
             UUID eventId,
             List<RefundRequestStatus> statuses,
-            String cursorBase64,
             int limit) {
-
-        // Postgres `timestamp with time zone` tops out around year 294276 AD;
-        // Instant.MAX (+1e9 AD) overflows into BC on the wire. H2 (used in tests)
-        // accepts it silently, which is how this bug shipped past CI.
-        Instant beforeAt = Instant.parse("9999-12-31T23:59:59Z");
-        UUID beforeId = new UUID(Long.MAX_VALUE, Long.MAX_VALUE);
-        if (cursorBase64 != null && !cursorBase64.isBlank()) {
-            String decoded = new String(Base64.getUrlDecoder().decode(cursorBase64),
-                StandardCharsets.UTF_8);
-            int sep = decoded.indexOf('|');
-            if (sep > 0) {
-                beforeAt = Instant.parse(decoded.substring(0, sep));
-                beforeId = UUID.fromString(decoded.substring(sep + 1));
-            }
-        }
 
         PageRequest pageReq = PageRequest.of(0, Math.min(100, Math.max(1, limit)));
         List<RefundRequestStatus> effectiveStatuses =
             (statuses == null || statuses.isEmpty())
                 ? List.of(RefundRequestStatus.values())
                 : statuses;
-        List<RefundRequest> rows = requests.page(orgId, eventId,
-            effectiveStatuses, beforeAt, beforeId, pageReq);
+        List<RefundRequest> rows = requests.page(orgId, eventId, effectiveStatuses, pageReq);
 
         return rows.stream().map(rr -> {
             // ticketCount and estimatedRefundMinor are best-effort live
