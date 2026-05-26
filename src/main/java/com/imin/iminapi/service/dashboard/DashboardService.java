@@ -58,9 +58,11 @@ public class DashboardService {
 
         Now nowDto = next.map(e -> {
             int totalQty = tiers.sumQuantityByEventId(e.getId());
-            int pct = totalQty == 0 ? 0 : (int) Math.round(100.0 * e.getSold() / totalQty);
+            int sold = tiers.sumSoldByEventId(e.getId());
+            long revenue = orders.sumTotalMinorByEventId(e.getId());
+            int pct = totalQty == 0 ? 0 : (int) Math.round(100.0 * sold / totalQty);
             int daysOut = (int) Duration.between(now, e.getStartsAt()).toDays();
-            return new Now(EventDto.summary(e), pct, Math.max(0, daysOut), totalQty);
+            return new Now(summaryWithLiveMetrics(e, sold, revenue), pct, Math.max(0, daysOut), totalQty);
         }).orElse(new Now(null, 0, 0, 0));
 
         long activeCount = events.countLive(p.orgId());
@@ -68,9 +70,11 @@ public class DashboardService {
 
         LastEvent lastEvent = past.map(e -> {
             int capacity = tiers.sumQuantityByEventId(e.getId());
-            int avgTicket = e.getSold() == 0 ? 0 : (int) (e.getRevenueMinor() / e.getSold());
-            return new LastEvent(EventDto.summary(e),
-                    new LastEventMetrics(e.getSold(), capacity, avgTicket, /* nps */ null));
+            int sold = tiers.sumSoldByEventId(e.getId());
+            long revenue = orders.sumTotalMinorByEventId(e.getId());
+            int avgTicket = sold == 0 ? 0 : (int) (revenue / sold);
+            return new LastEvent(summaryWithLiveMetrics(e, sold, revenue),
+                    new LastEventMetrics(sold, capacity, avgTicket, /* nps */ null));
         }).orElse(new LastEvent(null, new LastEventMetrics(0, 0, 0, null)));
 
         Business business = buildBusiness(p, now, businessPeriod);
@@ -82,7 +86,7 @@ public class DashboardService {
 
     private Cycle buildCycle(AuthPrincipal p, Instant now, DashboardPeriod period, long activeCount) {
         if (period.isAll()) {
-            Object[] sums = events.sumRevenueAndSold(p.orgId()).get(0);
+            Object[] sums = orders.sumRevenueAndCountByOrgInWindow(p.orgId(), Instant.EPOCH, now).get(0);
             long rev = ((Number) sums[0]).longValue();
             long sold = ((Number) sums[1]).longValue();
             return new Cycle(period.wire(), rev, (int) sold, (int) activeCount, new Deltas(0, 0));
@@ -108,7 +112,7 @@ public class DashboardService {
         long revenue;
         int repeatRate;
         if (period.isAll()) {
-            Object[] sums = events.sumRevenueAndSold(p.orgId()).get(0);
+            Object[] sums = orders.sumRevenueAndCountByOrgInWindow(p.orgId(), Instant.EPOCH, now).get(0);
             revenue = ((Number) sums[0]).longValue();
             repeatRate = repeatRatePct(orders.orderCountsByEmailSince(p.orgId(), Instant.EPOCH));
         } else {
@@ -119,6 +123,24 @@ public class DashboardService {
         }
         return new Business(revenue, events.countPublished(p.orgId()), events.countPast(p.orgId()),
                 /* audienceCount */ 0, repeatRate);
+    }
+
+    /**
+     * Event.sold/revenueMinor columns are never written to — sales live in
+     * TicketTier.sold and the orders table. Rebuild the summary with the
+     * live values so the dashboard's Now and LastEvent cards aren't stuck at 0.
+     */
+    private static EventDto summaryWithLiveMetrics(Event e, int sold, long revenueMinor) {
+        EventDto b = EventDto.summary(e);
+        return new EventDto(b.id(), b.orgId(), b.name(), b.slug(),
+                b.visibility(), b.status(), b.genre(), b.type(),
+                b.startsAt(), b.endsAt(), b.timezone(), b.venue(),
+                b.description(), b.posterUrl(), b.videoUrl(),
+                sold, revenueMinor, b.currency(),
+                b.onSaleAt(), b.saleClosesAt(),
+                b.createdBy(), b.createdAt(), b.updatedAt(),
+                b.publishedAt(), b.deletedAt(),
+                null, null, null);
     }
 
     /** Top-5 audit-log rows for the right-rail "Activity" tile. */

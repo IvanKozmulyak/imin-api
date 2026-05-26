@@ -85,18 +85,20 @@ class DashboardServiceTest {
         next.setId(UUID.randomUUID()); next.setOrgId(orgId);
         next.setName("Next Night"); next.setSlug("next-night");
         next.setStartsAt(Instant.now().plusSeconds(28L * 24 * 3600));
-        next.setSold(57);
         when(events.findUpcomingLive(eq(orgId), any(), any())).thenReturn(List.of(next));
         when(tiers.sumQuantityByEventId(next.getId())).thenReturn(100);
+        when(tiers.sumSoldByEventId(next.getId())).thenReturn(57);
+        when(orders.sumTotalMinorByEventId(next.getId())).thenReturn(0L);
 
         Event past = new Event();
         past.setId(UUID.randomUUID()); past.setOrgId(orgId);
         past.setName("Last Night"); past.setSlug("last-night");
         past.setStatus(EventStatus.PAST);
         past.setEndsAt(Instant.now().minusSeconds(7L * 24 * 3600));
-        past.setSold(198); past.setRevenueMinor(475_200);
         when(events.findRecentPast(eq(orgId), any())).thenReturn(List.of(past));
         when(tiers.sumQuantityByEventId(past.getId())).thenReturn(200);
+        when(tiers.sumSoldByEventId(past.getId())).thenReturn(198);
+        when(orders.sumTotalMinorByEventId(past.getId())).thenReturn(475_200L);
 
         when(events.countLive(orgId)).thenReturn(3L);
         when(events.countPublished(orgId)).thenReturn(6L);
