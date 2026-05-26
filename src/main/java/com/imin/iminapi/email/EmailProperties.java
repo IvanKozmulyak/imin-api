@@ -17,6 +17,11 @@ public class EmailProperties {
     // subdomains and have disjoint routes — pointing a ticket link at the
     // dashboard 404s.
     private String buyerSiteBaseUrl = "http://localhost:3000";
+    // Imin's internal notification inbox for new refund requests. Falls back to
+    // replyTo, then fromAddress, when blank — populated at read time, not on set.
+    private String refundRequestInbox = "";
+    // Magic-link TTL in minutes. Knob for incident response without redeploying.
+    private int refundRequestTokenTtlMinutes = 60;
 
     public String getApiKey() { return apiKey; }
     public void setApiKey(String apiKey) { this.apiKey = apiKey; }
@@ -30,10 +35,21 @@ public class EmailProperties {
     public void setAppBaseUrl(String appBaseUrl) { this.appBaseUrl = appBaseUrl; }
     public String getBuyerSiteBaseUrl() { return buyerSiteBaseUrl; }
     public void setBuyerSiteBaseUrl(String buyerSiteBaseUrl) { this.buyerSiteBaseUrl = buyerSiteBaseUrl; }
+    public String getRefundRequestInbox() { return refundRequestInbox; }
+    public void setRefundRequestInbox(String refundRequestInbox) { this.refundRequestInbox = refundRequestInbox; }
+    public int getRefundRequestTokenTtlMinutes() { return refundRequestTokenTtlMinutes; }
+    public void setRefundRequestTokenTtlMinutes(int v) { this.refundRequestTokenTtlMinutes = v; }
 
     /** Convenience: "Name <addr@example.com>" or just "addr@example.com" if name blank. */
     public String fromHeader() {
         if (fromName == null || fromName.isBlank()) return fromAddress;
         return fromName + " <" + fromAddress + ">";
+    }
+
+    /** Pick refund-request inbox with fallback chain: explicit -> reply-to -> from. */
+    public String resolveRefundRequestInbox() {
+        if (refundRequestInbox != null && !refundRequestInbox.isBlank()) return refundRequestInbox;
+        if (replyTo != null && !replyTo.isBlank()) return replyTo;
+        return fromAddress;
     }
 }

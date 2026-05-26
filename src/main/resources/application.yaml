@@ -95,6 +95,11 @@ imin:
     # Public buyer site host (imin-public). Used in ticket-issuance, free-flow
     # confirmation, and order-recovery emails. In prod: https://app.imin.wtf.
     buyer-site-base-url: ${IMIN_BUYER_SITE_BASE_URL:http://localhost:3000}
+    # Imin's internal notification inbox for new refund requests. When blank,
+    # falls back to reply-to, then from-address (see EmailProperties#resolveRefundRequestInbox).
+    refund-request-inbox: ${IMIN_REFUND_REQUEST_INBOX:}
+    # Refund-request magic-link TTL in minutes. Default 60; bump via env in incident response.
+    refund-request-token-ttl-minutes: ${IMIN_REFUND_REQUEST_TOKEN_TTL_MINUTES:60}
   ticket:
     # HMAC-SHA256 secret used to tamper-evidence QR payloads. 32+ bytes of entropy.
     # Required at boot — QrPayloadSigner throws if blank.
