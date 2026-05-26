@@ -89,4 +89,13 @@ public interface RefundRepository extends JpaRepository<Refund, UUID> {
     int updateStatusIfCurrent(@Param("id") UUID id,
                               @Param("expected") RefundStatus expected,
                               @Param("next") RefundStatus next);
+
+    @Query("""
+        select coalesce(sum(r.amountMinor), 0) from Refund r
+        where r.orderId = :orderId
+          and r.status in (com.imin.iminapi.refund.RefundStatus.REQUESTED,
+                           com.imin.iminapi.refund.RefundStatus.PENDING,
+                           com.imin.iminapi.refund.RefundStatus.SUCCEEDED)
+    """)
+    long sumActiveAmountByOrderId(java.util.UUID orderId);
 }

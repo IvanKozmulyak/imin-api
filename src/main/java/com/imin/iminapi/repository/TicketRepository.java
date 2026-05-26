@@ -19,6 +19,8 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
     Optional<Ticket> findByToken(String token);
     List<Ticket> findByOrderIdOrderByCreatedAtAsc(UUID orderId);
 
+    List<Ticket> findByOrderId(java.util.UUID orderId);
+
     /**
      * Batch fetch of tickets for many orders. The caller groups by
      * {@code orderId} to avoid N+1 queries when rendering listings. Order is
