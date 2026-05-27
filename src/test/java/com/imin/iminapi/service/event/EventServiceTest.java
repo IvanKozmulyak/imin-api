@@ -312,7 +312,9 @@ class EventServiceTest {
         when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of(paid));
 
         when(stripeConnect.getStatus(eq(p), eq(p.orgId())))
-                .thenReturn(new StripeConnectService.StatusResult(null, false, false, null));
+                .thenReturn(new StripeConnectService.StatusResult(null,
+                        com.imin.iminapi.stripe.StripeConnectState.NOT_STARTED,
+                        false, false, java.util.List.of(), java.util.List.of(), null));
 
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> sut.publish(p, e.getId()))
                 .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.STRIPE_NOT_READY);
@@ -341,7 +343,9 @@ class EventServiceTest {
         when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of(paid));
 
         when(stripeConnect.getStatus(eq(p), eq(p.orgId())))
-                .thenReturn(new StripeConnectService.StatusResult("acct_123", true, true, "verified"));
+                .thenReturn(new StripeConnectService.StatusResult("acct_123",
+                        com.imin.iminapi.stripe.StripeConnectState.ACTIVE,
+                        true, true, java.util.List.of(), java.util.List.of(), null));
 
         EventDto dto = sut.publish(p, e.getId());
         assertThat(dto.status()).isEqualTo("live");

@@ -15,7 +15,6 @@ import com.stripe.model.v2.core.AccountLink;
 import com.stripe.param.AccountSessionCreateParams;
 import com.stripe.param.v2.core.AccountCreateParams;
 import com.stripe.param.v2.core.AccountLinkCreateParams;
-import com.stripe.param.v2.core.AccountRetrieveParams;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -42,12 +41,22 @@ public class StripeConnectService {
     private final StripeProperties props;
     /** Optional audit logger — null in older test constructors. */
     private final AuditLogger auditLogger;
+    /** Optional mirror — null in legacy constructors used by older tests. */
+    private final StripeConnectStatusMirror mirror;
 
     /** Legacy 3-arg constructor for existing tests. */
     public StripeConnectService(StripeClient stripeClient,
                                 OrganizationRepository orgs,
                                 StripeProperties props) {
-        this(stripeClient, orgs, props, null);
+        this(stripeClient, orgs, props, null, null);
+    }
+
+    /** Legacy 4-arg constructor for tests written before the mirror existed. */
+    public StripeConnectService(StripeClient stripeClient,
+                                OrganizationRepository orgs,
+                                StripeProperties props,
+                                AuditLogger auditLogger) {
+        this(stripeClient, orgs, props, auditLogger, null);
     }
 
     /** Primary constructor — Spring uses this one. */
@@ -55,11 +64,13 @@ public class StripeConnectService {
     public StripeConnectService(StripeClient stripeClient,
                                 OrganizationRepository orgs,
                                 StripeProperties props,
-                                AuditLogger auditLogger) {
+                                AuditLogger auditLogger,
+                                StripeConnectStatusMirror mirror) {
         this.stripeClient = stripeClient;
         this.orgs = orgs;
         this.props = props;
         this.auditLogger = auditLogger;
+        this.mirror = mirror;
     }
 
     /**
@@ -269,43 +280,38 @@ public class StripeConnectService {
     }
 
     /**
-     * Always hits Stripe live — never reads cached state.
+     * Reads Connect status from the locally-mirrored columns updated by the v2 webhook.
      *
-     * Per the spec: {@code readyToReceivePayments} iff the recipient's stripe_transfers capability
-     * status is "active", and {@code onboardingComplete} iff the requirements summary minimum
-     * deadline status is neither "currently_due" nor "past_due".
+     * <p>Falls back to a one-shot synchronous fetch through {@link StripeConnectStatusMirror}
+     * when the org has an account id but the mirror has never been populated
+     * ({@code stripe_connect_status_updated_at IS NULL}). This avoids a backfill job
+     * for historical accounts and shields the FE from a stale ONBOARDING banner on
+     * the first read after account creation.
      */
-    @Transactional(readOnly = true)
+    @Transactional
     public StatusResult getStatus(AuthPrincipal principal, UUID orgId) {
         Organization org = loadOwnedOrg(principal, orgId);
+
         if (org.getStripeAccountId() == null || org.getStripeAccountId().isBlank()) {
-            return new StatusResult(null, false, false, null);
+            return new StatusResult(null, StripeConnectState.NOT_STARTED, false, false,
+                    List.of(), List.of(), null);
         }
 
-        AccountRetrieveParams params = AccountRetrieveParams.builder()
-                // include — Stripe v2 hides expensive sub-objects by default; we have to opt in.
-                .addInclude(AccountRetrieveParams.Include.CONFIGURATION__RECIPIENT)
-                .addInclude(AccountRetrieveParams.Include.REQUIREMENTS)
-                .build();
-
-        Account account;
-        try {
-            // V2 retrieve. We deliberately do NOT cache anywhere — the user wants live truth on every read.
-            account = stripeClient.v2().core().accounts().retrieve(org.getStripeAccountId(), params);
-        } catch (StripeException e) {
-            log.error("Stripe v2 account retrieve failed for {} (org {}): {}",
-                    org.getStripeAccountId(), orgId, e.getMessage(), e);
-            throw upstream("Failed to fetch Stripe account status: " + e.getMessage(), e);
+        // Lazy first-read: if we've never received a webhook for this account, fetch
+        // synchronously this one time so the FE doesn't see stale ONBOARDING forever.
+        if (org.getStripeConnectStatusUpdatedAt() == null && mirror != null) {
+            mirror.syncFromStripe(org.getStripeAccountId());
+            org = orgs.findById(orgId).orElse(org); // re-read for the updated columns
         }
 
-        String transferStatus = readTransferStatus(account);
-        boolean ready = "active".equals(transferStatus);
-
-        String requirementsStatus = readRequirementsStatus(account);
-        boolean onboardingComplete = requirementsStatus == null
-                || (!"currently_due".equals(requirementsStatus) && !"past_due".equals(requirementsStatus));
-
-        return new StatusResult(account.getId(), ready, onboardingComplete, requirementsStatus);
+        return new StatusResult(
+                org.getStripeAccountId(),
+                org.getStripeConnectState(),
+                org.isStripePayoutsEnabled(),
+                org.isStripeDetailsSubmitted(),
+                List.copyOf(org.getStripeRequirementsCurrentlyDue()),
+                List.copyOf(org.getStripeRequirementsPastDue()),
+                org.getStripeDisabledReason());
     }
 
     // ── helpers ────────────────────────────────────────────────────────────
@@ -316,34 +322,6 @@ public class StripeConnectService {
             throw ApiException.notFound("Organization");
         }
         return orgs.findById(orgId).orElseThrow(() -> ApiException.notFound("Organization"));
-    }
-
-    private static String readTransferStatus(Account account) {
-        try {
-            return account.getConfiguration()
-                    .getRecipient()
-                    .getCapabilities()
-                    .getStripeBalance()
-                    .getStripeTransfers()
-                    .getStatus();
-        } catch (NullPointerException ignored) {
-            return null;
-        }
-    }
-
-    /**
-     * Reads the {@code requirements.summary.minimum_deadline.status} string per the spec.
-     * Returns null if Stripe hasn't populated the summary yet.
-     */
-    private static String readRequirementsStatus(Account account) {
-        try {
-            return account.getRequirements()
-                    .getSummary()
-                    .getMinimumDeadline()
-                    .getStatus();
-        } catch (NullPointerException ignored) {
-            return null;
-        }
     }
 
     private static boolean nonBlank(String s) { return s != null && !s.isBlank(); }
@@ -360,7 +338,10 @@ public class StripeConnectService {
     public record ConnectResult(String accountId, boolean created) {}
 
     public record StatusResult(String accountId,
+                               StripeConnectState state,
                                boolean readyToReceivePayments,
-                               boolean onboardingComplete,
-                               String requirementsStatus) {}
+                               boolean detailsSubmitted,
+                               List<String> currentlyDue,
+                               List<String> pastDue,
+                               String disabledReason) {}
 }

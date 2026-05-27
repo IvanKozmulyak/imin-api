@@ -97,7 +97,9 @@ class StripeCheckoutServiceTest {
         when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(tier));
         when(orgs.findById(orgId)).thenReturn(Optional.of(org));
         when(connectService.getStatus(any(), eq(orgId)))
-                .thenReturn(new StripeConnectService.StatusResult("acct_test", true, true, null));
+                .thenReturn(new StripeConnectService.StatusResult("acct_test",
+                        com.imin.iminapi.stripe.StripeConnectState.ACTIVE,
+                        true, true, java.util.List.of(), java.util.List.of(), null));
 
         Session session = mock(Session.class);
         when(session.getUrl()).thenReturn("https://checkout.stripe.com/c/pay/cs_test");

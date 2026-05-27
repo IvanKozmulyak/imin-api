@@ -329,7 +329,9 @@ class CrossOrgScopingTest {
             // mock STILL refuses to leak — but the real production code (StripeConnectService)
             // does the comparison itself, so this mock just mirrors it.
             if (!requestedOrgId.equals(p.orgId())) throw ApiException.notFound("Organization");
-            return new StripeConnectService.StatusResult(null, false, false, null);
+            return new StripeConnectService.StatusResult(null,
+                    com.imin.iminapi.stripe.StripeConnectState.NOT_STARTED,
+                    false, false, java.util.List.of(), java.util.List.of(), null);
         });
         expectLeakSafeNotFound(get("/api/v1/orgs/" + orgB + "/stripe/status"));
     }
