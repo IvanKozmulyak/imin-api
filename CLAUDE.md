@@ -124,7 +124,7 @@ Reservation lifecycle + safety net: every checkout writes a `ticket_reservations
 
 Promo code redemption tracking: when a buyer uses a promo code at checkout, the session is created with `metadata.promo_id`. On `payment_intent.succeeded` (paid), the webhook atomically increments `promo_codes.used_count`. At-least-once delivery is bounded by the `processed_webhook_events` dedup table (V25 migration) — the dedup INSERT and the increment share a transaction, so a Stripe retry sees the marker and skips.
 
-State model: account ids are persisted (`organizations.stripe_account_id`, `ticket_tiers.stripe_product_id`, `ticket_tiers.stripe_price_id`); onboarding/capability state is fetched live from Stripe on every status read.
+State model: account ids are persisted (`organizations.stripe_account_id`, `ticket_tiers.stripe_product_id`, `ticket_tiers.stripe_price_id`). Connect onboarding/capability state is **mirrored locally** to `organizations.stripe_connect_state` (enum: `NOT_STARTED` / `ONBOARDING` / `PENDING_VERIFICATION` / `RESTRICTED` / `ACTIVE`) plus `stripe_payouts_enabled`, `stripe_details_submitted`, `stripe_requirements_currently_due` (jsonb), `stripe_requirements_past_due` (jsonb), `stripe_disabled_reason`, `stripe_connect_status_updated_at`. The mirror is driven by the v2 webhook (`requirements.updated`, `capability_status_updated`) via `StripeConnectStatusMirror`. `GET /stripe/status` reads from the mirror; the first call after `POST /stripe/connect` triggers a one-shot lazy sync. `details_submitted` is sticky — once observed true, never un-flagged.
 
 ### LLM configuration
 
