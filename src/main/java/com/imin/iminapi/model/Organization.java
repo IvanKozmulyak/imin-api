@@ -1,5 +1,6 @@
 package com.imin.iminapi.model;
 
+import com.imin.iminapi.stripe.StripeConnectState;
 import com.imin.iminapi.util.Times;
 import jakarta.persistence.*;
 import lombok.Getter;
@@ -7,6 +8,8 @@ import lombok.Setter;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 @Entity
@@ -50,6 +53,30 @@ public class Organization {
      */
     @Column(name = "stripe_account_id", length = 64)
     private String stripeAccountId;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "stripe_connect_state", nullable = false, length = 32)
+    private StripeConnectState stripeConnectState = StripeConnectState.NOT_STARTED;
+
+    @Column(name = "stripe_payouts_enabled", nullable = false)
+    private boolean stripePayoutsEnabled = false;
+
+    @Column(name = "stripe_details_submitted", nullable = false)
+    private boolean stripeDetailsSubmitted = false;
+
+    @Convert(converter = StringListJsonConverter.class)
+    @Column(name = "stripe_requirements_currently_due", nullable = false, columnDefinition = "jsonb")
+    private List<String> stripeRequirementsCurrentlyDue = new ArrayList<>();
+
+    @Convert(converter = StringListJsonConverter.class)
+    @Column(name = "stripe_requirements_past_due", nullable = false, columnDefinition = "jsonb")
+    private List<String> stripeRequirementsPastDue = new ArrayList<>();
+
+    @Column(name = "stripe_disabled_reason", length = 128)
+    private String stripeDisabledReason;
+
+    @Column(name = "stripe_connect_status_updated_at")
+    private Instant stripeConnectStatusUpdatedAt;
 
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Times.nowMicros();
