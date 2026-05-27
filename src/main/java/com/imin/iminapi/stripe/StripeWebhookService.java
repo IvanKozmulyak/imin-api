@@ -85,6 +85,14 @@ public class StripeWebhookService {
      */
     private StripeWebhookService self;
 
+    /** Optional collaborator — null in unit tests that don't exercise the v2 connect path. */
+    private StripeConnectStatusMirror connectMirror;
+
+    @Autowired(required = false)
+    public void setConnectMirror(StripeConnectStatusMirror connectMirror) {
+        this.connectMirror = connectMirror;
+    }
+
     public StripeWebhookService(StripeClient stripeClient,
                                 StripeProperties props,
                                 PromoCodeRepository promos,
@@ -213,13 +221,41 @@ public class StripeWebhookService {
                 Event full = stripeClient.v2().core().events().retrieve(id);
                 log.info("[stripe-webhook] v2 account-state event type={} eventId={} created={}",
                         full.getType(), full.getId(), full.getCreated());
-                // No DB state to update — connect status is fetched live per the user's instruction.
+                String accountId = extractRelatedObjectId(full);
+                if (accountId == null) {
+                    log.warn("[stripe-webhook] v2 account-state event {} has no related_object.id — cannot mirror", id);
+                } else if (connectMirror == null) {
+                    log.warn("[stripe-webhook] v2 account-state event {} — connect mirror not wired", id);
+                } else {
+                    connectMirror.syncFromStripe(accountId);
+                }
             } catch (StripeException e) {
                 log.warn("[stripe-webhook] v2 failed to fetch full event id={} type={} — {}",
                         id, type, e.getMessage());
             }
         } else {
             log.info("[stripe-webhook] v2 ignored type={} id={} — not subscribed", type, id);
+        }
+    }
+
+    /**
+     * Pull the {@code related_object.id} off a v2 Event. The base {@link Event} class
+     * doesn't expose it (each concrete subclass like
+     * {@code V2CoreAccountIncludingRequirementsUpdatedEvent} adds its own field), so we
+     * reflectively read whatever concrete subtype Stripe's deserializer produced. Returns
+     * null if the field is absent or unreadable.
+     */
+    private static String extractRelatedObjectId(Event event) {
+        if (event == null) return null;
+        try {
+            var method = event.getClass().getMethod("getRelatedObject");
+            Object related = method.invoke(event);
+            if (related == null) return null;
+            var idMethod = related.getClass().getMethod("getId");
+            Object idValue = idMethod.invoke(related);
+            return idValue == null ? null : idValue.toString();
+        } catch (ReflectiveOperationException ignored) {
+            return null;
         }
     }
 
