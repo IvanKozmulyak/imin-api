@@ -50,13 +50,21 @@ public class StripeConnectController {
     }
 
     /**
-     * Live status — never cached. Returns nulls/false if the org has no account yet.
+     * Reads Connect status from the locally-mirrored columns (updated by the v2
+     * webhook). On the first read after {@code POST /stripe/connect} the service
+     * triggers a one-shot lazy sync so the FE doesn't see a stale ONBOARDING banner.
      */
     @GetMapping("/status")
     public StatusResponse status(@CurrentUser AuthPrincipal p, @PathVariable UUID orgId) {
         var s = connect.getStatus(p, orgId);
-        return new StatusResponse(s.accountId(), s.readyToReceivePayments(),
-                s.onboardingComplete(), s.requirementsStatus());
+        return new StatusResponse(
+                s.accountId(),
+                s.state(),
+                s.readyToReceivePayments(),
+                s.detailsSubmitted(),
+                s.currentlyDue(),
+                s.pastDue(),
+                s.disabledReason());
     }
 
     // Wire-shape DTOs — kept inline because they only exist on this surface.
@@ -70,7 +78,10 @@ public class StripeConnectController {
     public record OnboardingLinkResponse(String url) {}
 
     public record StatusResponse(String accountId,
+                                  StripeConnectState state,
                                   boolean readyToReceivePayments,
-                                  boolean onboardingComplete,
-                                  String requirementsStatus) {}
+                                  boolean detailsSubmitted,
+                                  java.util.List<String> currentlyDue,
+                                  java.util.List<String> pastDue,
+                                  String disabledReason) {}
 }
