@@ -13,4 +13,6 @@ public interface OrganizationRepository extends JpaRepository<Organization, UUID
     boolean existsBySlug(String slug);
 
     Optional<Organization> findBySlug(String slug);
+
+    Optional<Organization> findByStripeAccountId(String stripeAccountId);
 }
