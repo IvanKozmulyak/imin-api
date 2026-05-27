@@ -65,11 +65,11 @@ public class Organization {
     private boolean stripeDetailsSubmitted = false;
 
     @Convert(converter = StringListJsonConverter.class)
-    @Column(name = "stripe_requirements_currently_due", nullable = false, columnDefinition = "jsonb")
+    @Column(name = "stripe_requirements_currently_due", nullable = false, columnDefinition = "TEXT")
     private List<String> stripeRequirementsCurrentlyDue = new ArrayList<>();
 
     @Convert(converter = StringListJsonConverter.class)
-    @Column(name = "stripe_requirements_past_due", nullable = false, columnDefinition = "jsonb")
+    @Column(name = "stripe_requirements_past_due", nullable = false, columnDefinition = "TEXT")
     private List<String> stripeRequirementsPastDue = new ArrayList<>();
 
     @Column(name = "stripe_disabled_reason", length = 128)
