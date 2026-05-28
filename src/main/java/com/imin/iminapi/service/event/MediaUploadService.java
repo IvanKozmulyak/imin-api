@@ -44,9 +44,9 @@ public class MediaUploadService {
         Integer durationSec = null;
         if (kind == MediaKind.VIDEO) {
             durationSec = videoMetadata.probeMp4DurationSec(bytes);
-            if (durationSec == null || durationSec > 30) {
+            if (durationSec == null) {
                 throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID,
-                        "Video must be a parseable MP4 ≤ 30 seconds", Map.of("file", "duration > 30s"));
+                        "Video must be a parseable MP4", Map.of("file", "not a parseable MP4"));
             }
         }
         // Hash the bytes into the key so each unique upload gets a unique URL.

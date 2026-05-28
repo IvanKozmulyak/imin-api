@@ -638,7 +638,7 @@ Response: { "url": "https://cdn.../poster-abc.jpg", "sizeBytes": 2456789, "conte
 
 **Size and format limits (server MUST enforce; FE pre-validates for UX):**
 - Poster: ≤ 5 MB, JPG/PNG, recommended 1080×1350 (4:5).
-- Video: ≤ 50 MB, MP4, ≤ 30 s, recommended 1080×1920 or 1920×1080.
+- Video: ≤ 50 MB, MP4, recommended 1080×1920 or 1920×1080.
 - Cover: ≤ 5 MB, JPG/PNG, recommended 1920×1080 (16:9).
 
 **URL semantics:** `url` should be a stable, publicly-readable CDN URL.
