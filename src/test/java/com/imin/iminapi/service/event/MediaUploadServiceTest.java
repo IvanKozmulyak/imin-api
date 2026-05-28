@@ -160,16 +160,21 @@ class MediaUploadServiceTest {
     }
 
     @Test
-    void video_with_unreadable_duration_rejected() {
+    void video_with_unreadable_duration_still_uploads() {
+        // The jcodec probe returns null for many valid MP4s; an unknown duration
+        // must not block the upload (duration is informational only).
         UUID orgId = UUID.randomUUID();
         Event e = ev(orgId);
         when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
         when(video.probeMp4DurationSec(any())).thenReturn(null);
 
         byte[] mp4Bytes = mp4Bytes(200);
-        assertThatThrownBy(() -> sut.upload(owner(orgId), e.getId(), MediaKind.VIDEO, mp4Bytes, "video/mp4", "v.mp4"))
-                .isInstanceOf(ApiException.class)
-                .hasFieldOrPropertyWithValue("code", ErrorCode.FIELD_INVALID);
+        MediaUploadResponse r = sut.upload(owner(orgId), e.getId(), MediaKind.VIDEO, mp4Bytes, "video/mp4", "v.mp4");
+
+        assertThat(r.url()).endsWith(".mp4");
+        assertThat(r.durationSec()).isNull();
+        assertThat(e.getVideoUrl()).isEqualTo(r.url());
     }
 
     @Test

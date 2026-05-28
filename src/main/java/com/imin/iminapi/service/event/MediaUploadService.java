@@ -43,11 +43,12 @@ public class MediaUploadService {
         validate(kind, bytes, contentType);
         Integer durationSec = null;
         if (kind == MediaKind.VIDEO) {
+            // Best-effort metadata only — do NOT gate the upload on it. The jcodec
+            // probe returns null for many perfectly valid MP4s (box orderings/brands
+            // it doesn't support), so rejecting on null would bounce real files. The
+            // format is already validated via content-type + ftyp magic bytes in
+            // validate(); a null here just means "duration unknown".
             durationSec = videoMetadata.probeMp4DurationSec(bytes);
-            if (durationSec == null) {
-                throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID,
-                        "Video must be a parseable MP4", Map.of("file", "not a parseable MP4"));
-            }
         }
         // Hash the bytes into the key so each unique upload gets a unique URL.
         // Two reasons this matters: (1) R2 serves objects with Cache-Control: immutable,
