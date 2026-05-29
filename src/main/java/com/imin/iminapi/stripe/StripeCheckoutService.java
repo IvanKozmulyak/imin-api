@@ -28,7 +28,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.Clock;
@@ -104,18 +103,25 @@ public class StripeCheckoutService {
      *                  typo, not a "this event doesn't exist" question).
      * @return the Stripe-hosted Checkout URL. Buyer is sent here directly; we never see the card.
      */
-    @Transactional
     public String createCheckoutSession(UUID eventId, UUID tierId, int quantity, String promoCode) {
         return createCheckoutSession(eventId, tierId, quantity, promoCode, null, null);
     }
 
-    @Transactional
     public String createCheckoutSession(UUID eventId, UUID tierId, int quantity,
                                          String promoCode, Integer expectedPriceMinor) {
         return createCheckoutSession(eventId, tierId, quantity, promoCode, expectedPriceMinor, null);
     }
 
-    @Transactional
+    /**
+     * Deliberately NOT {@code @Transactional}. Each DB mutation here goes through an
+     * independently-transactional {@link InventoryService} / {@link FreeCheckoutService} method,
+     * so wrapping the whole flow in one transaction would hold the pessimistic tier row-lock
+     * taken by {@link InventoryService#reserve} across TWO blocking Stripe HTTP calls (coupon +
+     * session create) — serializing every concurrent buyer of a hot tier behind remote I/O. By
+     * leaving the boundary off, {@code reserve} commits and releases its lock before we call
+     * Stripe; the explicit release-on-failure path below and the ReservationSweeper keep holds
+     * correct if Stripe then fails or this process dies mid-flight.
+     */
     public String createCheckoutSession(UUID eventId, UUID tierId, int quantity,
                                          String promoCode, Integer expectedPriceMinor, String buyerEmail) {
         if (quantity < 1 || quantity > 10) {
@@ -192,9 +198,9 @@ public class StripeCheckoutService {
         if (org.getStripeAccountId() == null || org.getStripeAccountId().isBlank()) {
             throw ApiException.notFound("Event");
         }
-        // Live check — never cached.
-        StripeConnectService.StatusResult status = connectService.getStatus(
-                new com.imin.iminapi.security.AuthPrincipal(null, org.getId(), null, null), org.getId());
+        // Authoritative readiness: force-refresh from Stripe (degrading to the mirror if Stripe
+        // is down) rather than trusting a possibly-stale local mirror to gate money movement.
+        StripeConnectService.StatusResult status = connectService.getStatusLive(org.getId());
         if (!status.readyToReceivePayments()) {
             throw ApiException.notFound("Event");
         }
@@ -316,6 +322,12 @@ public class StripeCheckoutService {
                     .build());
         }
 
+        // Prefill + lock the buyer email on the hosted Checkout when we have it, so issuance can
+        // read it straight back from the Session (no dependency on post-hoc charge/session lookups).
+        if (buyerEmail != null && !buyerEmail.isBlank()) {
+            builder.setCustomerEmail(buyerEmail.trim());
+        }
+
         SessionCreateParams params = builder.build();
 
         Session session;
@@ -332,6 +344,16 @@ public class StripeCheckoutService {
             } catch (Exception releaseFailure) {
                 log.error("Failed to release reservation {} after Stripe session create failure: {}",
                         reservationId, releaseFailure.getMessage(), releaseFailure);
+            }
+            // Best-effort: delete the one-shot coupon we minted above — it was never attached to a
+            // live session, so leaving it dangles a useless object on the platform account.
+            if (couponId != null) {
+                try {
+                    stripeClient.coupons().delete(couponId);
+                } catch (Exception couponFailure) {
+                    log.warn("Failed to delete orphaned coupon {} after session create failure: {}",
+                            couponId, couponFailure.getMessage());
+                }
             }
             log.error("Stripe checkout session create failed (event {}, tier {}, reservation {}): {}",
                     eventId, tierId, reservationId, e.getMessage(), e);

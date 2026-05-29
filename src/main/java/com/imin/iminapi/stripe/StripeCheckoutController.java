@@ -2,6 +2,8 @@ package com.imin.iminapi.stripe;
 
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.security.RateLimiter;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
@@ -19,14 +21,20 @@ import java.util.UUID;
 public class StripeCheckoutController {
 
     private final StripeCheckoutService checkout;
+    private final RateLimiter rateLimiter;
 
-    public StripeCheckoutController(StripeCheckoutService checkout) {
+    public StripeCheckoutController(StripeCheckoutService checkout, RateLimiter rateLimiter) {
         this.checkout = checkout;
+        this.rateLimiter = rateLimiter;
     }
 
     @PostMapping("/{eventId}/checkout")
     public CheckoutResponse create(@PathVariable UUID eventId,
-                                    @RequestBody CheckoutRequest body) {
+                                    @RequestBody CheckoutRequest body,
+                                    HttpServletRequest http) {
+        // Throttle the unauthenticated checkout per client IP before doing any Stripe work, so a
+        // loop can't mint unbounded Coupons/Sessions or lock real inventory for 30-min windows.
+        rateLimiter.consume("checkout", "ip:" + http.getRemoteAddr());
         if (body == null || body.tierId() == null) {
             throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
                     "tierId is required");

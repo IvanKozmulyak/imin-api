@@ -172,6 +172,17 @@ public class RefundService {
             // to retry the Stripe call on next attempt, but the idempotency short-circuit
             // skips it. Acceptable for Phase A — operator can manually nudge stuck REQUESTED
             // rows. TODO Phase B: retry on REQUESTED-status existing rows.
+            if ("balance_insufficient".equals(e.getCode())) {
+                // reverse_transfer=true can't pull funds back when the connected account's
+                // balance is too low (e.g. already paid out). Surface a distinct, actionable
+                // error rather than a generic Stripe failure — and deliberately do NOT silently
+                // absorb the refund onto the platform balance; whether to do so is an operator
+                // money-policy decision, not a default to bake in here.
+                throw new ApiException(HttpStatus.CONFLICT, ErrorCode.ORDER_NOT_REFUNDABLE,
+                    "The connected account's balance is too low to fund this refund — funds may have "
+                    + "already been paid out. Top up the Stripe balance or contact support.",
+                    Map.of("stripeCode", "balance_insufficient"));
+            }
             HttpStatus status = e.getStatusCode() >= 500
                 ? HttpStatus.BAD_GATEWAY
                 : HttpStatus.UNPROCESSABLE_ENTITY;

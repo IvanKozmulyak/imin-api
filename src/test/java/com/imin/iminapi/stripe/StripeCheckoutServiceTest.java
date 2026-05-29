@@ -96,7 +96,7 @@ class StripeCheckoutServiceTest {
         when(events.findPublic(eventId)).thenReturn(Optional.of(event));
         when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(tier));
         when(orgs.findById(orgId)).thenReturn(Optional.of(org));
-        when(connectService.getStatus(any(), eq(orgId)))
+        when(connectService.getStatusLive(eq(orgId)))
                 .thenReturn(new StripeConnectService.StatusResult("acct_test",
                         com.imin.iminapi.stripe.StripeConnectState.ACTIVE,
                         true, true, java.util.List.of(), java.util.List.of(), null));

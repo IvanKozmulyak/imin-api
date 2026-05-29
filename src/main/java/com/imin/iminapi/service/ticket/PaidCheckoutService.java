@@ -64,10 +64,16 @@ public class PaidCheckoutService {
         this.publisher = publisher;
     }
 
-    public void issuePaidOrder(PaymentIntent pi) {
+    /**
+     * @return {@code true} only when THIS call created the Order (first successful issuance);
+     *         {@code false} on any idempotent short-circuit (already issued, missing/invalid
+     *         metadata, duplicate-key race). Callers use the boolean to gate side effects that
+     *         must happen exactly once per paid order — e.g. incrementing promo usage.
+     */
+    public boolean issuePaidOrder(PaymentIntent pi) {
         if (pi == null || pi.getId() == null) {
             log.warn("issuePaidOrder called with null PI — skipping");
-            return;
+            return false;
         }
 
         // Belt: short-circuit if already issued. The suspenders are the UNIQUE
@@ -76,13 +82,13 @@ public class PaidCheckoutService {
         // INSERT attempt.
         if (orders.findByStripePaymentIntentId(pi.getId()).isPresent()) {
             log.info("Order already exists for PaymentIntent {} — skipping (idempotent)", pi.getId());
-            return;
+            return false;
         }
 
         Map<String, String> meta = pi.getMetadata();
         if (meta == null) {
             log.warn("PaymentIntent {} has no metadata — skipping issuance", pi.getId());
-            return;
+            return false;
         }
         String tierIdRaw = meta.get("tier_id");
         String qtyRaw = meta.get("qty");
@@ -90,7 +96,7 @@ public class PaidCheckoutService {
         if (tierIdRaw == null || qtyRaw == null || eventIdRaw == null) {
             log.warn("PaymentIntent {} missing required metadata (tier_id/qty/event_id) — skipping",
                     pi.getId());
-            return;
+            return false;
         }
 
         UUID tierId;
@@ -102,11 +108,11 @@ public class PaidCheckoutService {
             qty = Integer.parseInt(qtyRaw);
         } catch (IllegalArgumentException e) {
             log.warn("PaymentIntent {} has malformed metadata: {}", pi.getId(), e.getMessage());
-            return;
+            return false;
         }
         if (qty < 1) {
             log.warn("PaymentIntent {} has non-positive qty={} — skipping", pi.getId(), qty);
-            return;
+            return false;
         }
 
         Event event = events.findById(eventId).orElseThrow(() ->
@@ -150,7 +156,7 @@ public class PaidCheckoutService {
             // and this save. Treat as success — the other deliverer is finishing the job.
             log.info("PaymentIntent {} hit duplicate-key on Order insert — treating as success",
                     pi.getId());
-            return;
+            return false; // another concurrent delivery created it — not OUR first issuance
         }
 
         for (int i = 0; i < qty; i++) {
@@ -167,6 +173,7 @@ public class PaidCheckoutService {
 
         publisher.publishEvent(new TicketsIssuedEvent(order.getId()));
         log.info("Issued {} ticket(s) for PI {} → order {}", qty, pi.getId(), order.getId());
+        return true;
     }
 
     /** One Stripe lookup that returns both the buyer email and the session id. */

@@ -41,6 +41,10 @@ public class RateLimitConfig {
     private int passwordResetCapacity;
     @Value("${imin.ratelimit.password-reset.window-minutes}")
     private int passwordResetWindow;
+    @Value("${imin.ratelimit.checkout.capacity}")
+    private int checkoutCapacity;
+    @Value("${imin.ratelimit.checkout.window-minutes}")
+    private int checkoutWindow;
 
     @Bean
     public RedisClient redisClient(@Value("${spring.data.redis.url}") String url) {
@@ -72,6 +76,9 @@ public class RateLimitConfig {
                 .build());
         configs.put("password-reset", BucketConfiguration.builder()
                 .addLimit(Bandwidth.simple(passwordResetCapacity, Duration.ofMinutes(passwordResetWindow)))
+                .build());
+        configs.put("checkout", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(checkoutCapacity, Duration.ofMinutes(checkoutWindow)))
                 .build());
 
         return (bucketName, key) -> {

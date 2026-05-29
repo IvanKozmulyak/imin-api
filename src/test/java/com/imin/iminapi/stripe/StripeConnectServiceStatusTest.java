@@ -89,4 +89,69 @@ class StripeConnectServiceStatusTest {
 
         assertThat(svc.getStatus(p, orgId).state()).isEqualTo(StripeConnectState.NOT_STARTED);
     }
+
+    @Test
+    void getStatusLive_forces_refresh_when_state_not_active() {
+        OrganizationRepository orgs = mock(OrganizationRepository.class);
+        StripeConnectStatusMirror mirror = mock(StripeConnectStatusMirror.class);
+        UUID orgId = UUID.randomUUID();
+        Organization org = new Organization();
+        org.setId(orgId);
+        org.setStripeAccountId("acct_live1");
+        org.setStripeConnectState(StripeConnectState.ONBOARDING);
+        org.setStripeConnectStatusUpdatedAt(java.time.Instant.now()); // fresh, but not ACTIVE
+        when(orgs.findById(orgId)).thenReturn(Optional.of(org));
+
+        StripeConnectService svc = new StripeConnectService(
+                mock(StripeClient.class), orgs, new StripeProperties(), null, mirror);
+
+        svc.getStatusLive(orgId);
+
+        // A not-ready org might have just been verified — always re-check live before gating money.
+        verify(mirror).syncFromStripe("acct_live1");
+    }
+
+    @Test
+    void getStatusLive_skips_refresh_when_active_and_fresh() {
+        OrganizationRepository orgs = mock(OrganizationRepository.class);
+        StripeConnectStatusMirror mirror = mock(StripeConnectStatusMirror.class);
+        UUID orgId = UUID.randomUUID();
+        Organization org = new Organization();
+        org.setId(orgId);
+        org.setStripeAccountId("acct_live2");
+        org.setStripeConnectState(StripeConnectState.ACTIVE);
+        org.setStripePayoutsEnabled(true);
+        org.setStripeConnectStatusUpdatedAt(java.time.Instant.now()); // ACTIVE + fresh
+        when(orgs.findById(orgId)).thenReturn(Optional.of(org));
+
+        StripeConnectService svc = new StripeConnectService(
+                mock(StripeClient.class), orgs, new StripeProperties(), null, mirror);
+
+        StripeConnectService.StatusResult r = svc.getStatusLive(orgId);
+
+        assertThat(r.readyToReceivePayments()).isTrue();
+        verify(mirror, never()).syncFromStripe(any()); // trust the recent mirror — fast path
+    }
+
+    @Test
+    void getStatusLive_forces_refresh_when_active_but_stale() {
+        OrganizationRepository orgs = mock(OrganizationRepository.class);
+        StripeConnectStatusMirror mirror = mock(StripeConnectStatusMirror.class);
+        UUID orgId = UUID.randomUUID();
+        Organization org = new Organization();
+        org.setId(orgId);
+        org.setStripeAccountId("acct_live3");
+        org.setStripeConnectState(StripeConnectState.ACTIVE);
+        org.setStripePayoutsEnabled(true);
+        org.setStripeConnectStatusUpdatedAt(java.time.Instant.now().minusSeconds(3600)); // 1h stale
+        when(orgs.findById(orgId)).thenReturn(Optional.of(org));
+
+        StripeConnectService svc = new StripeConnectService(
+                mock(StripeClient.class), orgs, new StripeProperties(), null, mirror);
+
+        svc.getStatusLive(orgId);
+
+        // Stale ACTIVE could have been disabled since — re-check so we don't sell on a dead account.
+        verify(mirror).syncFromStripe("acct_live3");
+    }
 }

@@ -148,6 +148,12 @@ imin:
     password-reset:
       capacity: 3
       window-minutes: 15
+    checkout:
+      # Public unauthenticated buyer checkout, keyed per client IP (forward-headers-strategy=framework
+      # makes getRemoteAddr the real client IP in prod). Generous for a real buyer (a few retries)
+      # while throttling a loop that would mint unbounded Stripe Coupons/Sessions and lock inventory.
+      capacity: 20
+      window-minutes: 5
   media:
     enabled: ${MEDIA_ENABLED:true}
     bucket: ${R2_BUCKET:imin-media-dev}

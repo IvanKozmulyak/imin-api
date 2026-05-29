@@ -40,9 +40,10 @@ import java.util.UUID;
  *       {@code payment_intent.payment_failed}, {@code checkout.session.expired}.</li>
  *   <li>{@link #handleV2Endpoint} — entry for {@code /api/v1/stripe/webhook/v2}.
  *       Parses V2 thin events via {@link StripeClient#parseEventNotification} using
- *       {@code STRIPE_WEBHOOK_SECRET_V2}. Subscribes to
- *       {@code v2.core.account.requirements.updated},
- *       {@code v2.core.account.recipient.capability_status_updated}.</li>
+ *       {@code STRIPE_WEBHOOK_SECRET_V2}. Subscribes to the bracket-notation account events
+ *       Stripe actually emits, e.g. {@code v2.core.account[requirements].updated} and
+ *       {@code v2.core.account[configuration.recipient].capability_status_updated}
+ *       (see {@link #V2_ACCOUNT_STATE_TYPES}).</li>
  * </ul>
  *
  * <p><b>Idempotency.</b> Stripe delivers events at-least-once. {@link #handleV1Endpoint}
@@ -178,8 +179,15 @@ public class StripeWebhookService {
                 log.info("[stripe-webhook] v1 dispatch → checkout.session.expired eventId={}", eventId);
                 onCheckoutSessionExpired(event);
             }
-            case "charge.refund.updated" -> {
-                log.info("[stripe-webhook] v1 dispatch → charge.refund.updated eventId={}", eventId);
+            // refund.updated / refund.failed are the unified events that fire for ALL refund
+            // types (Stripe Acacia 2024-10-28); charge.refund.updated is the legacy alias that
+            // only fires for "selected payment methods". All three carry a Refund as
+            // data.object, so route them identically. processed_webhook_events dedups overlapping
+            // deliveries and RefundService's status-conditional UPDATE makes a duplicate
+            // transition a no-op — so subscribing to all three is safe and closes the gap where
+            // refunds on non-"selected" payment methods never transitioned out of PENDING.
+            case "charge.refund.updated", "refund.updated", "refund.failed" -> {
+                log.info("[stripe-webhook] v1 dispatch → {} eventId={}", type, eventId);
                 onChargeRefundUpdated(event);
             }
             // checkout.session.completed is intentionally a no-op. Fulfilment moved
@@ -215,8 +223,16 @@ public class StripeWebhookService {
         String id = notification.getId();
         log.info("[stripe-webhook] v2 parsed type={} id={}", type, id);
 
-        if ("v2.core.account.requirements.updated".equals(type)
-                || "v2.core.account.recipient.capability_status_updated".equals(type)) {
+        // Stripe delivers v2 core account events in BRACKET notation, e.g.
+        // "v2.core.account[requirements].updated" and
+        // "v2.core.account[configuration.recipient].capability_status_updated"
+        // (NOT the dot-notation we previously matched, which never fired — leaving the
+        // Connect mirror permanently stale). Match the whole v2.core.account[...] family by
+        // prefix: every such event is just a "go re-fetch the account" notification, and
+        // syncFromStripe is idempotent, so handling the full family is safe and future-proof
+        // against Stripe adding new sub-resource events. See V2_ACCOUNT_STATE_TYPES for the
+        // canonical list to subscribe in the Dashboard.
+        if (type != null && type.startsWith("v2.core.account")) {
             try {
                 Event full = stripeClient.v2().core().events().retrieve(id);
                 log.info("[stripe-webhook] v2 account-state event type={} eventId={} created={}",
@@ -230,13 +246,31 @@ public class StripeWebhookService {
                     connectMirror.syncFromStripe(accountId);
                 }
             } catch (StripeException e) {
-                log.warn("[stripe-webhook] v2 failed to fetch full event id={} type={} — {}",
+                // Don't ack 200 on a fetch failure — that silently drops the state change and
+                // Stripe never retries. Surface a non-2xx so Stripe re-delivers; the
+                // StripeConnectStatusSweeper is the slower backstop if retries are also exhausted.
+                log.warn("[stripe-webhook] v2 failed to fetch full event id={} type={} — {} (returning 502 for retry)",
                         id, type, e.getMessage());
+                throw new ApiException(HttpStatus.BAD_GATEWAY, ErrorCode.UPSTREAM_UNAVAILABLE,
+                        "Failed to fetch Stripe v2 event");
             }
         } else {
             log.info("[stripe-webhook] v2 ignored type={} id={} — not subscribed", type, id);
         }
     }
+
+    /**
+     * Canonical v2 thin-event types to subscribe the {@code /webhook/v2} endpoint to in the
+     * Stripe Dashboard. Bracket notation is the literal {@code event.type} Stripe sends.
+     * Matching in {@link #handleV2Endpoint} is by {@code "v2.core.account"} prefix so this set
+     * is documentation, not the gate.
+     */
+    static final java.util.Set<String> V2_ACCOUNT_STATE_TYPES = java.util.Set.of(
+            "v2.core.account[requirements].updated",
+            "v2.core.account[configuration.recipient].capability_status_updated",
+            "v2.core.account[configuration.recipient].updated",
+            "v2.core.account[future_requirements].updated",
+            "v2.core.account.updated");
 
     /**
      * Pull the {@code related_object.id} off a v2 Event. The base {@link Event} class
@@ -300,7 +334,15 @@ public class StripeWebhookService {
                     pi.getId());
         }
 
-        if (meta != null) {
+        // Persist Order + N Ticket rows for the buyer. Idempotent on PI id, so a Stripe retry is a
+        // noop. Publishes TicketsIssuedEvent on success; the @Async listener emails the buyer with
+        // the tickets and QR. Returns true ONLY on the first successful issuance for this PI.
+        boolean issued = paidCheckoutService.issuePaidOrder(pi);
+
+        // Increment promo usage ONLY on first issuance, tying it to the same idempotency boundary
+        // as Order creation — so a second, distinct-event-id delivery for the same PI that slips
+        // past the event-id dedup can't double-count a redemption.
+        if (issued && meta != null) {
             String promoIdRaw = meta.get("promo_id");
             if (promoIdRaw != null && !promoIdRaw.isBlank()) {
                 try {
@@ -319,11 +361,6 @@ public class StripeWebhookService {
                 }
             }
         }
-
-        // Persist Order + N Ticket rows for the buyer. Idempotent on PI id, so a
-        // Stripe retry is a noop. Publishes TicketsIssuedEvent on success; the
-        // @Async listener then emails the buyer with the tickets and QR.
-        paidCheckoutService.issuePaidOrder(pi);
     }
 
     /**

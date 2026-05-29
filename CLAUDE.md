@@ -93,7 +93,7 @@ Endpoints:
 - `POST /api/v1/orgs/{orgId}/stripe/connect` — idempotent create. Empty body.
 - `POST /api/v1/orgs/{orgId}/stripe/account-session` — short-lived `clientSecret` for the FR embedded onboarding (`@stripe/connect-js`).
 - `POST /api/v1/orgs/{orgId}/stripe/onboarding-link` — one-shot URL for the organizer's browser (non-FR redirect flow).
-- `GET  /api/v1/orgs/{orgId}/stripe/status` — live (never cached). Returns `readyToReceivePayments`, `onboardingComplete`, `requirementsStatus`.
+- `GET  /api/v1/orgs/{orgId}/stripe/status` — reads the local mirror (one-shot lazy sync on the first read). Returns `accountId`, `state`, `readyToReceivePayments`, `detailsSubmitted`, `currentlyDue`, `pastDue`, `disabledReason`.
 - `POST /api/v1/public/events/{eventId}/checkout` — public; returns a hosted Checkout URL.
 - `POST /api/v1/stripe/webhook/v1` — signature-verified V1 payments webhook receiver.
 - `POST /api/v1/stripe/webhook/v2` — signature-verified V2 thin-events webhook receiver.
@@ -112,11 +112,14 @@ V1 and V2 events ship in structurally different JSON payloads (Stripe's dashboar
    - `payment_intent.succeeded` — fulfilment (confirm sold, issue Order + Tickets, increment promo usage)
    - `payment_intent.payment_failed` — release the inventory hold for declines / 3DS failure
    - `checkout.session.expired` — release the inventory hold when the buyer abandons the 30-minute session
+   - `refund.updated` **and** `refund.failed` — refund status transitions (pending → succeeded/failed) for **all** refund types. These are the unified events (Acacia 2024-10-28); subscribe to both.
+   - `charge.refund.updated` — legacy alias kept for "selected payment methods"; handled too (deduped). Subscribe alongside the `refund.*` events, do not rely on it alone.
    - Do NOT subscribe to `checkout.session.completed`; fulfilment is driven by `payment_intent.succeeded` because the PI is what proves money moved. The handler intentionally no-ops on `completed`.
 
-2. **`POST /api/v1/stripe/webhook/v2`** — secret env `STRIPE_WEBHOOK_SECRET_V2`. Subscribe to:
-   - `v2.core.account.requirements.updated`
-   - `v2.core.account.recipient.capability_status_updated`
+2. **`POST /api/v1/stripe/webhook/v2`** — secret env `STRIPE_WEBHOOK_SECRET_V2`. Subscribe to (Stripe uses **bracket notation** in `event.type` — the literal strings below):
+   - `v2.core.account[requirements].updated`
+   - `v2.core.account[configuration.recipient].capability_status_updated`
+   - `v2.core.account[configuration.recipient].updated`, `v2.core.account[future_requirements].updated`, `v2.core.account.updated` — recommended extra coverage; the handler matches the whole `v2.core.account…` family by prefix (`StripeWebhookService.V2_ACCOUNT_STATE_TYPES`).
 
 For local dev with the Stripe CLI, point two `stripe listen` processes at the two endpoints (each will print its own `whsec_...` secret to paste into the matching env var). Or use `stripe listen --load-from-webhooks-api --forward-to http://localhost:8085/api/v1/stripe/webhook/v1` once per endpoint after the dashboard config is in place.
 
@@ -124,7 +127,11 @@ Reservation lifecycle + safety net: every checkout writes a `ticket_reservations
 
 Promo code redemption tracking: when a buyer uses a promo code at checkout, the session is created with `metadata.promo_id`. On `payment_intent.succeeded` (paid), the webhook atomically increments `promo_codes.used_count`. At-least-once delivery is bounded by the `processed_webhook_events` dedup table (V25 migration) — the dedup INSERT and the increment share a transaction, so a Stripe retry sees the marker and skips.
 
-State model: account ids are persisted (`organizations.stripe_account_id`, `ticket_tiers.stripe_product_id`, `ticket_tiers.stripe_price_id`). Connect onboarding/capability state is **mirrored locally** to `organizations.stripe_connect_state` (enum: `NOT_STARTED` / `ONBOARDING` / `PENDING_VERIFICATION` / `RESTRICTED` / `ACTIVE`) plus `stripe_payouts_enabled`, `stripe_details_submitted`, `stripe_requirements_currently_due` (jsonb), `stripe_requirements_past_due` (jsonb), `stripe_disabled_reason`, `stripe_connect_status_updated_at`. The mirror is driven by the v2 webhook (`requirements.updated`, `capability_status_updated`) via `StripeConnectStatusMirror`. `GET /stripe/status` reads from the mirror; the first call after `POST /stripe/connect` triggers a one-shot lazy sync. `details_submitted` is sticky — once observed true, never un-flagged.
+State model: account ids are persisted (`organizations.stripe_account_id`, `ticket_tiers.stripe_product_id`, `ticket_tiers.stripe_price_id`). Connect onboarding/capability state is **mirrored locally** to `organizations.stripe_connect_state` (enum: `NOT_STARTED` / `ONBOARDING` / `PENDING_VERIFICATION` / `RESTRICTED` / `DISABLED` / `ACTIVE`) plus `stripe_payouts_enabled`, `stripe_details_submitted`, `stripe_requirements_currently_due` (jsonb), `stripe_requirements_past_due` (jsonb), `stripe_disabled_reason`, `stripe_connect_status_updated_at`. The mirror is driven by the v2 webhook (`v2.core.account[requirements].updated`, `v2.core.account[configuration.recipient].capability_status_updated`) via `StripeConnectStatusMirror`, with the `StripeConnectStatusSweeper` (`@Scheduled` + ShedLock) re-reconciling any non-terminal org whose mirror has gone stale as the backstop for missed webhooks.
+
+**Submission/verification is derived from the recipient `stripe_transfers` capability, NOT from `minimum_deadline.status`.** The v2 `requirements…minimum_deadline.status` is only ever `currently_due`/`eventually_due`/`past_due` — it never carries `verified`/`pending_verification`. So `StripeConnectStatusMirror.applyTo` reads `configuration.recipient.capabilities.stripe_balance.stripe_transfers.{status,status_details}`: `active` ⇒ payouts/ACTIVE; `pending` or `status_details.code=requirements_pending_verification` ⇒ submitted/PENDING_VERIFICATION; `unsupported` or `status_details.resolution=contact_stripe` ⇒ terminal DISABLED. `details_submitted` is sticky — once observed true, never un-flagged. `DISABLED` is terminal/unrecoverable from the organizer side (the FE shows "contact support", not a retry CTA).
+
+`GET /stripe/status` reads the mirror (one-shot lazy sync on the first read). The buyer-checkout readiness gate uses `StripeConnectService.getStatusLive`, which force-refreshes from Stripe when the cached state isn't a recently-synced `ACTIVE` (degrading to the mirror if Stripe is unreachable) so a freshly verified org isn't wrongly blocked and a just-disabled one isn't wrongly allowed.
 
 ### LLM configuration
 

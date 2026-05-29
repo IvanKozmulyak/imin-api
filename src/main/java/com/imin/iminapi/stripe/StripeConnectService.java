@@ -7,6 +7,7 @@ import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.util.Times;
 import com.stripe.StripeClient;
 import com.stripe.exception.StripeException;
 import com.stripe.model.AccountSession;
@@ -21,15 +22,19 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 
 /**
  * Manages a single Stripe v2 Connected Account per Organization.
  *
- * Status is intentionally NEVER cached locally — every call to {@link #getStatus(AuthPrincipal, UUID)}
- * hits Stripe live. This matches the user's instruction: the DB stores only the account id;
- * onboarding progress + capability state are derived on demand from the live account object.
+ * <p>Onboarding/capability state is mirrored into the {@code organizations.stripe_*} columns by
+ * {@link StripeConnectStatusMirror}, driven by the v2 webhook (fast path) and the
+ * {@link StripeConnectStatusSweeper} (reconciliation backstop). {@link #getStatus} reads that
+ * local mirror (with a one-shot lazy sync on the very first read). {@link #getStatusLive}
+ * force-refreshes from Stripe for the money path (checkout readiness), degrading to the mirror
+ * if Stripe is unreachable.
  */
 @Service
 public class StripeConnectService {
@@ -292,18 +297,69 @@ public class StripeConnectService {
     public StatusResult getStatus(AuthPrincipal principal, UUID orgId) {
         Organization org = loadOwnedOrg(principal, orgId);
 
-        if (org.getStripeAccountId() == null || org.getStripeAccountId().isBlank()) {
-            return new StatusResult(null, StripeConnectState.NOT_STARTED, false, false,
-                    List.of(), List.of(), null);
+        if (!hasAccount(org)) {
+            return notStarted();
         }
 
         // Lazy first-read: if we've never received a webhook for this account, fetch
         // synchronously this one time so the FE doesn't see stale ONBOARDING forever.
+        //
+        // Multi-replica note: two replicas can both observe updatedAt==null and both run the
+        // sync. That's intentionally left unguarded — the projection in StripeConnectStatusMirror
+        // is deterministic, so the concurrent writes set identical columns (last-writer-wins with
+        // the same values). The only cost is a duplicate Stripe fetch on first read, which isn't
+        // worth an @Version optimistic lock on the heavily-updated Organization entity (that would
+        // risk OptimisticLockExceptions across many unrelated org-update paths). Steady-state
+        // reconciliation is the ShedLock-serialized StripeConnectStatusSweeper.
         if (org.getStripeConnectStatusUpdatedAt() == null && mirror != null) {
             mirror.syncFromStripe(org.getStripeAccountId());
             org = orgs.findById(orgId).orElse(org); // re-read for the updated columns
         }
 
+        return toStatusResult(org);
+    }
+
+    /**
+     * Authoritative readiness read for the money path (checkout). Unlike {@link #getStatus},
+     * this force-refreshes the mirror from Stripe whenever the cached state could be wrong —
+     * i.e. whenever the org is not already {@code ACTIVE-and-recently-synced} — so a freshly
+     * verified org isn't wrongly blocked from selling and a just-disabled org isn't wrongly
+     * allowed. Best-effort: a Stripe outage degrades to the last-known mirror value
+     * ({@link StripeConnectStatusMirror#syncFromStripe} swallows upstream errors), so checkout
+     * never hard-fails just because Stripe is down. No ownership check — internal call by orgId.
+     */
+    @Transactional
+    public StatusResult getStatusLive(UUID orgId) {
+        Organization org = orgs.findById(orgId).orElseThrow(() -> ApiException.notFound("Organization"));
+        if (!hasAccount(org)) {
+            return notStarted();
+        }
+        if (mirror != null && shouldRefresh(org)) {
+            mirror.syncFromStripe(org.getStripeAccountId());
+            org = orgs.findById(orgId).orElse(org);
+        }
+        return toStatusResult(org);
+    }
+
+    // ── helpers ────────────────────────────────────────────────────────────
+
+    private static boolean hasAccount(Organization org) {
+        return org.getStripeAccountId() != null && !org.getStripeAccountId().isBlank();
+    }
+
+    /** Refresh when not provably ready, or when an ACTIVE mirror is older than the freshness window. */
+    private static boolean shouldRefresh(Organization org) {
+        if (org.getStripeConnectState() != StripeConnectState.ACTIVE) return true;
+        var updatedAt = org.getStripeConnectStatusUpdatedAt();
+        return updatedAt == null || updatedAt.isBefore(Times.nowMicros().minus(Duration.ofMinutes(5)));
+    }
+
+    private static StatusResult notStarted() {
+        return new StatusResult(null, StripeConnectState.NOT_STARTED, false, false,
+                List.of(), List.of(), null);
+    }
+
+    private static StatusResult toStatusResult(Organization org) {
         return new StatusResult(
                 org.getStripeAccountId(),
                 org.getStripeConnectState(),
@@ -313,8 +369,6 @@ public class StripeConnectService {
                 List.copyOf(org.getStripeRequirementsPastDue()),
                 org.getStripeDisabledReason());
     }
-
-    // ── helpers ────────────────────────────────────────────────────────────
 
     private Organization loadOwnedOrg(AuthPrincipal p, UUID orgId) {
         if (!orgId.equals(p.orgId())) {

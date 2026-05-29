@@ -202,8 +202,16 @@ public class InventoryService {
             // Stripe is the source of truth for "money moved" — credit sold so the
             // buyer's ticket issuance proceeds, but log loudly so the organizer
             // notices the over-allocation.
-            log.warn("confirmSold: reservation {} was already RELEASED — crediting sold without reserved decrement (over-allocation on tier {})",
-                    reservationId, r.getTierId());
+            // Alertable marker: the seat was already returned to the pool (and possibly resold)
+            // before this paid webhook landed. We still credit sold because Stripe is the source
+            // of truth that the buyer paid — they get their ticket — but the organizer is now over
+            // capacity for the tier and must reconcile (refund or honor). We deliberately do NOT
+            // auto-refund here: the buyer wanted the ticket, and whether to refund vs honor is the
+            // organizer's call. Monitor on "[OVERSOLD]" to surface these for manual reconciliation.
+            log.error("[OVERSOLD] confirmSold: reservation {} qty={} on tier {} was already RELEASED "
+                    + "before the paid webhook arrived — crediting sold without a reserved decrement; "
+                    + "tier is now over capacity and needs operator reconciliation",
+                    reservationId, r.getQty(), r.getTierId());
             tier.setSold(tier.getSold() + r.getQty());
             tiers.save(tier);
             // Flip the row back to CONFIRMED so a Stripe retry of the success event

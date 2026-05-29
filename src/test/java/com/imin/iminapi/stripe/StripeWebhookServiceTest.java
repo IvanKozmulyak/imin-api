@@ -1,6 +1,7 @@
 package com.imin.iminapi.stripe;
 
 import com.imin.iminapi.repository.PromoCodeRepository;
+import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.service.event.InventoryService;
 import com.imin.iminapi.service.ticket.PaidCheckoutService;
 import com.stripe.StripeClient;
@@ -15,6 +16,7 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -60,6 +62,11 @@ class StripeWebhookServiceTest {
         dedup = mock(WebhookEventDedupService.class);
         paidCheckoutService = mock(PaidCheckoutService.class);
         refundService = mock(com.imin.iminapi.refund.RefundService.class);
+
+        // Default: issuance succeeds (first-time). Promo increment is now gated on this returning
+        // true (so a duplicate delivery can't double-count); the "never increments" cases below
+        // are driven by missing promo metadata, not by issuance returning false.
+        when(paidCheckoutService.issuePaidOrder(any(PaymentIntent.class))).thenReturn(true);
 
         recorded = new HashSet<>();
         when(dedup.tryRecord(anyString(), anyString())).thenAnswer(inv -> {
@@ -155,11 +162,16 @@ class StripeWebhookServiceTest {
      */
     private String refundUpdatedEvent(String eventId, String refundId, String status,
                                       String failureReason) {
+        return refundEvent("charge.refund.updated", eventId, refundId, status, failureReason);
+    }
+
+    private String refundEvent(String type, String eventId, String refundId, String status,
+                               String failureReason) {
         return """
             {
               "id": "%s",
               "object": "event",
-              "type": "charge.refund.updated",
+              "type": "%s",
               "api_version": "2026-04-22.dahlia",
               "created": %d,
               "data": {
@@ -177,6 +189,7 @@ class StripeWebhookServiceTest {
             }
             """.formatted(
                 eventId,
+                type,
                 Instant.now().getEpochSecond(),
                 refundId,
                 status,
@@ -221,6 +234,63 @@ class StripeWebhookServiceTest {
         // refundService called exactly once despite two webhook deliveries
         org.mockito.Mockito.verify(refundService, org.mockito.Mockito.times(1))
             .handleWebhookStatusChange(eq("re_test_3"), any(), any(), any());
+    }
+
+    @org.junit.jupiter.api.Test
+    void refundUpdated_unifiedEvent_succeeded_callsHandleWebhookStatusChange() throws Exception {
+        // refund.updated is the unified event (all payment methods), not the legacy
+        // charge.refund.updated alias — it must drive the same status transition.
+        String body = refundEvent("refund.updated", "evt_refund_u1", "re_test_u1", "succeeded", null);
+
+        svc.handleV1Endpoint(body, sign(body));
+
+        verify(refundService).handleWebhookStatusChange(
+            eq("re_test_u1"),
+            eq(com.imin.iminapi.refund.RefundStatus.SUCCEEDED),
+            org.mockito.ArgumentMatchers.isNull(),
+            org.mockito.ArgumentMatchers.isNull());
+    }
+
+    @org.junit.jupiter.api.Test
+    void refundFailed_unifiedEvent_passesFailureReason() throws Exception {
+        String body = refundEvent("refund.failed", "evt_refund_f1", "re_test_f1", "failed", "lost_or_stolen_card");
+
+        svc.handleV1Endpoint(body, sign(body));
+
+        verify(refundService).handleWebhookStatusChange(
+            eq("re_test_f1"),
+            eq(com.imin.iminapi.refund.RefundStatus.FAILED),
+            eq("lost_or_stolen_card"),
+            eq("lost_or_stolen_card"));
+    }
+
+    // ── endpoint must REJECT (non-2xx) so Stripe retries, never silently 200 ──────
+
+    @Test
+    void v1_invalidSignature_throwsSoStripeRetries() {
+        // A bad signature must surface as an exception (controller → 400) so Stripe re-delivers,
+        // and must NOT reach any handler — a forged event can't poison the dedup table either.
+        String body = "{\"id\":\"evt_forged\",\"type\":\"payment_intent.succeeded\"}";
+
+        assertThatThrownBy(() -> svc.handleV1Endpoint(body, "t=1,v1=deadbeef"))
+                .isInstanceOf(ApiException.class);
+
+        verify(dedup, never()).tryRecord(anyString(), anyString());
+        verify(paidCheckoutService, never()).issuePaidOrder(any(PaymentIntent.class));
+    }
+
+    @Test
+    void v1_missingSecret_throwsServiceUnavailable() {
+        props.setWebhookSecretV1(null);
+
+        assertThatThrownBy(() -> svc.handleV1Endpoint("{}", "t=1,v1=whatever"))
+                .isInstanceOf(ApiException.class);
+    }
+
+    @Test
+    void v1_missingSignatureHeader_throws() {
+        assertThatThrownBy(() -> svc.handleV1Endpoint("{}", null))
+                .isInstanceOf(ApiException.class);
     }
 
     // ── payment_intent.succeeded → confirmSold + promo increment ───────────────

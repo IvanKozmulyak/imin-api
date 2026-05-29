@@ -73,35 +73,61 @@ public class StripeConnectStatusMirror {
 
     /** Pure projection — unit-testable, no Stripe call. */
     static void applyTo(Organization org, Account account) {
-        boolean payoutsEnabled = "active".equals(readTransferStatus(account));
-        String minDeadlineStatus = readMinimumDeadlineStatus(account);
+        String transferStatus = readTransferStatus(account);
+        List<String> statusDetailCodes = readTransferStatusDetails(account, true);
+        List<String> statusDetailResolutions = readTransferStatusDetails(account, false);
+
+        boolean payoutsEnabled = "active".equals(transferStatus);
         List<String> currentlyDue = readRequirementFields(account, "currently_due");
         List<String> pastDue = readRequirementFields(account, "past_due");
 
-        // details_submitted is sticky: once we observe submission, never un-flag.
-        // Sources that indicate submission: payouts active, OR deadline status != currently_due
-        // (e.g., pending_verification, verified, past_due — anything that means Stripe is past
-        // the initial intake), OR currently_due empty for a non-fresh account.
-        boolean observedSubmission = payoutsEnabled
-                || (minDeadlineStatus != null && !"currently_due".equals(minDeadlineStatus));
+        // "Submitted, now in review" is a CAPABILITY signal, not a requirements-deadline one.
+        // The v2 minimum_deadline.status is only ever currently_due/eventually_due/past_due and
+        // never carries a verification lifecycle, so the old {pending_verification, verified, …}
+        // deadline allowlist was dead code that stranded submitted-but-in-review organizers on
+        // ONBOARDING. The real lifecycle lives on
+        // configuration.recipient.capabilities.stripe_balance.stripe_transfers:
+        //   status == active                                  → enabled (payouts)
+        //   status == pending / code requirements_pending_verification → submitted, Stripe verifying
+        //   status == restricted | unsupported                → blocked (recoverable vs terminal)
+        boolean pendingVerification = statusDetailCodes.contains("requirements_pending_verification");
+        boolean inReview = pendingVerification
+                || ("pending".equals(transferStatus) && !statusDetailCodes.contains("determining_status"));
+
+        // details_submitted is sticky: once we observe submission (payouts active OR Stripe
+        // actively verifying), never un-flag. A fresh/abandoned account sits at
+        // restricted/unsupported with nothing in review, so it stays ONBOARDING.
+        boolean observedSubmission = payoutsEnabled || inReview;
         if (observedSubmission) {
             org.setStripeDetailsSubmitted(true);
         }
 
+        // Terminal-and-unrecoverable from the organizer's side: capability unsupported, or any
+        // status-detail resolution == contact_stripe (Stripe must intervene; no self-serve CTA).
+        boolean terminalDisabled = "unsupported".equals(transferStatus)
+                || statusDetailResolutions.contains("contact_stripe");
+
         org.setStripePayoutsEnabled(payoutsEnabled);
         org.setStripeRequirementsCurrentlyDue(currentlyDue);
         org.setStripeRequirementsPastDue(pastDue);
-        // The v2 Requirements object has no top-level disabled_reason; we leave the
-        // column null. (The legacy v1 disabled_reason isn't surfaced on v2 accounts
-        // — the per-entry impact / errors carry the equivalent context.)
-        org.setStripeDisabledReason(null);
-        org.setStripeConnectState(derive(org, currentlyDue.isEmpty(), payoutsEnabled));
+        // disabledReason: surface the first capability status-detail code (e.g. unsupported_country,
+        // requirements_past_due) as the actionable signal. Stripe leaves status_details empty when
+        // the capability is active, so this is null for a healthy account.
+        org.setStripeDisabledReason(
+                (payoutsEnabled || statusDetailCodes.isEmpty()) ? null : statusDetailCodes.get(0));
+        org.setStripeConnectState(derive(org, currentlyDue.isEmpty(), payoutsEnabled, terminalDisabled));
         org.setStripeConnectStatusUpdatedAt(Times.nowMicros());
     }
 
-    private static StripeConnectState derive(Organization org, boolean noCurrentlyDue, boolean payoutsEnabled) {
+    private static StripeConnectState derive(Organization org, boolean noCurrentlyDue,
+                                             boolean payoutsEnabled, boolean terminalDisabled) {
         if (org.getStripeAccountId() == null || org.getStripeAccountId().isBlank()) {
             return StripeConnectState.NOT_STARTED;
+        }
+        // Terminal block is checked before the submitted gate: an account can be unsupported
+        // (e.g. unsupported country) before the organizer ever submits anything.
+        if (terminalDisabled) {
+            return StripeConnectState.DISABLED;
         }
         if (!org.isStripeDetailsSubmitted()) {
             return StripeConnectState.ONBOARDING;
@@ -122,10 +148,24 @@ public class StripeConnectStatusMirror {
         } catch (NullPointerException ignored) { return null; }
     }
 
-    private static String readMinimumDeadlineStatus(Account a) {
+    /**
+     * Reads the recipient {@code stripe_transfers} capability {@code status_details[]} —
+     * {@code code=true} returns the machine-readable codes, otherwise the resolutions.
+     */
+    private static List<String> readTransferStatusDetails(Account a, boolean code) {
         try {
-            return a.getRequirements().getSummary().getMinimumDeadline().getStatus();
-        } catch (NullPointerException ignored) { return null; }
+            var details = a.getConfiguration().getRecipient().getCapabilities()
+                    .getStripeBalance().getStripeTransfers().getStatusDetails();
+            if (details == null) return List.of();
+            List<String> out = new ArrayList<>();
+            for (var d : details) {
+                String v = code ? d.getCode() : d.getResolution();
+                if (v != null) out.add(v);
+            }
+            return out;
+        } catch (NullPointerException ignored) {
+            return List.of();
+        }
     }
 
     private static List<String> readRequirementFields(Account a, String status) {
