@@ -108,6 +108,17 @@ public class StripeConnectService {
         try {
             account = stripeClient.v2().core().accounts().create(buildCreateParams(org));
         } catch (StripeException e) {
+            if (isCountryUnsupported(e)) {
+                // Permanent, deterministic rejection: Stripe doesn't offer the recipient
+                // capability in this org's country. Don't surface a retryable 502 — the
+                // organizer would retry forever. Map to a terminal 422 with a clear message.
+                // Expected business outcome, so log at WARN (no stack trace), not ERROR.
+                log.warn("Stripe Connect unavailable for org {} in country {}: {}",
+                        orgId, org.getCountry(), e.getMessage());
+                throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, ErrorCode.COUNTRY_NOT_SUPPORTED,
+                        "Stripe payouts aren't available for organisations in " + org.getCountry() + " yet.",
+                        java.util.Map.of("country", "not supported"));
+            }
             log.error("Stripe v2 account create failed for org {}: {}", orgId, e.getMessage(), e);
             throw upstream("Failed to create Stripe connected account: " + e.getMessage(), e);
         }
@@ -382,6 +393,19 @@ public class StripeConnectService {
 
     private ApiException upstream(String message, Throwable cause) {
         return new ApiException(HttpStatus.BAD_GATEWAY, ErrorCode.UPSTREAM_UNAVAILABLE, message, cause);
+    }
+
+    /**
+     * True only for Stripe's canonical capability-unavailable-in-country rejection. Kept narrow
+     * (specific exception type + exact phrase) so genuine transient upstream failures still map
+     * to a retryable 502 — see the {@code keepsTransientStripeErrorAs502} guard test. We
+     * intentionally do NOT maintain a Stripe-supported-country allowlist (Stripe changes it
+     * monthly); Stripe stays the authority and we just translate its rejection.
+     */
+    private static boolean isCountryUnsupported(StripeException e) {
+        return e instanceof com.stripe.exception.InvalidRequestException
+                && e.getMessage() != null
+                && e.getMessage().contains("is currently unavailable in");
     }
 
     /** @noinspection unused — used by tests + reflection-friendly */

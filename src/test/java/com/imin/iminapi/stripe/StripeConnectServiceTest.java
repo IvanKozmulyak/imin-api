@@ -3,8 +3,12 @@ package com.imin.iminapi.stripe;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.security.ErrorCode;
 import com.stripe.StripeClient;
+import com.stripe.exception.ApiConnectionException;
+import com.stripe.exception.InvalidRequestException;
 import com.stripe.model.AccountSession;
 import com.stripe.model.v2.core.Account;
 import com.stripe.param.AccountSessionCreateParams;
@@ -16,11 +20,14 @@ import com.stripe.service.v2.core.AccountService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.http.HttpStatus;
 
 import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -117,6 +124,45 @@ class StripeConnectServiceTest {
         assertThat(sent.getComponents()).isNotNull();
         assertThat(sent.getComponents().getAccountOnboarding()).isNotNull();
         assertThat(sent.getComponents().getAccountOnboarding().getEnabled()).isTrue();
+    }
+
+    @Test
+    void mapsUnsupportedCountryRejectionTo422() throws Exception {
+        Organization org = org("UA");
+        when(orgs.findById(orgId)).thenReturn(Optional.of(org));
+
+        // Canonical Stripe rejection for a capability that isn't available in the org's country.
+        InvalidRequestException unsupported = new InvalidRequestException(
+                "Error: configuration.recipient.capabilities.stripe_balance.stripe_transfers "
+                        + "is currently unavailable in UA for your platform.; request-id: req_test123",
+                null,
+                "req_test123",
+                "invalid_request_error",
+                400,
+                null);
+        when(accountService.create(any(AccountCreateParams.class))).thenThrow(unsupported);
+
+        ApiException ex = assertThrows(ApiException.class,
+                () -> svc.getOrCreateAccount(principal, orgId));
+        assertThat(ex.status()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(ex.code()).isEqualTo(ErrorCode.COUNTRY_NOT_SUPPORTED);
+    }
+
+    @Test
+    void keepsTransientStripeErrorAs502() throws Exception {
+        Organization org = org("UA");
+        when(orgs.findById(orgId)).thenReturn(Optional.of(org));
+
+        // A genuine transient/unrelated upstream failure must NOT be swallowed as a
+        // terminal country rejection — it stays a retryable 502.
+        ApiConnectionException transient_ = new ApiConnectionException(
+                "Could not connect to Stripe", null);
+        when(accountService.create(any(AccountCreateParams.class))).thenThrow(transient_);
+
+        ApiException ex = assertThrows(ApiException.class,
+                () -> svc.getOrCreateAccount(principal, orgId));
+        assertThat(ex.status()).isEqualTo(HttpStatus.BAD_GATEWAY);
+        assertThat(ex.code()).isEqualTo(ErrorCode.UPSTREAM_UNAVAILABLE);
     }
 
     private Organization org(String country) {
