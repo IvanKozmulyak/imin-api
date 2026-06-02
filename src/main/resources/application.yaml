@@ -40,6 +40,10 @@ replicate:
 poster:
   references:
     config-file: classpath:poster-references.yaml
+    # When true, the vision LLM analyzes each tag's reference images at boot to cache a
+    # style descriptor (signature-cached, so it only runs on first boot / when refs change).
+    # Disabled in tests so context startup makes no network calls.
+    analyze-on-startup: ${POSTER_ANALYZE_ON_STARTUP:true}
   overlay:
     qr-size-px: 120
     address-max-chars: 80

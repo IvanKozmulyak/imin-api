@@ -34,6 +34,7 @@ public class ReferenceImageLibrary {
 
     private final ResourceLoader resourceLoader;
     private final String configFile;
+    private final boolean analyzeOnStartup;
     private final StyleReferenceAnalysisRepository analysisRepo;
     private final ReferenceImageAnalyzer analyzer;
     private final Map<String, String> descriptors = new HashMap<>();
@@ -43,11 +44,13 @@ public class ReferenceImageLibrary {
             ResourceLoader resourceLoader,
             StyleReferenceAnalysisRepository analysisRepo,
             ReferenceImageAnalyzer analyzer,
-            @Value("${poster.references.config-file:classpath:poster-references.yaml}") String configFile) {
+            @Value("${poster.references.config-file:classpath:poster-references.yaml}") String configFile,
+            @Value("${poster.references.analyze-on-startup:true}") boolean analyzeOnStartup) {
         this.resourceLoader = resourceLoader;
         this.analysisRepo = analysisRepo;
         this.analyzer = analyzer;
         this.configFile = configFile;
+        this.analyzeOnStartup = analyzeOnStartup;
     }
 
     @PostConstruct
@@ -71,7 +74,11 @@ public class ReferenceImageLibrary {
         } catch (IOException e) {
             log.error("Failed to load reference image config {}", configFile, e);
         }
-        loadDescriptors();
+        if (analyzeOnStartup) {
+            loadDescriptors();
+        } else {
+            log.info("Startup style-descriptor analysis disabled (poster.references.analyze-on-startup=false)");
+        }
     }
 
     private Map<String, List<LoadedReference>> resolveAll(Map<?, ?> src) {

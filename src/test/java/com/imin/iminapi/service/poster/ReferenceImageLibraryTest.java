@@ -37,6 +37,18 @@ class ReferenceImageLibraryTest {
     }
 
     @Test
+    void everyConfiguredTag_resolvesAtLeastOneReference() {
+        // Guard against the silent-breakage bug: poster-references.yaml once pointed at
+        // reference-images/<f>.png while the files lived under reference-images/Simple/<f>.png,
+        // so every tag resolved to an EMPTY list and no style_reference_images were ever sent.
+        for (String tag : library.tags()) {
+            assertThat(library.referenceCount(tag))
+                    .as("tag '%s' must resolve at least one reference image", tag)
+                    .isGreaterThanOrEqualTo(1);
+        }
+    }
+
+    @Test
     void referenceCount_matchesYamlForKnownTag() {
         assertThat(library.referenceCount("neon_underground")).isEqualTo(3);
         assertThat(library.referenceCount("chrome_tropical")).isEqualTo(2);

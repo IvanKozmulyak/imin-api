@@ -12,19 +12,19 @@
 
 references:
   neon_underground:
-    - reference-images/neon_underground_01_friday_night.png
-    - reference-images/neon_underground_02_party_night_green.png
-    - reference-images/neon_underground_03_karaoke_night.png
+    - reference-images/Simple/neon_underground_01_friday_night.png
+    - reference-images/Simple/neon_underground_02_party_night_green.png
+    - reference-images/Simple/neon_underground_03_karaoke_night.png
   chrome_tropical:
-    - reference-images/chrome_tropical_01_spring_break.png
-    - reference-images/chrome_tropical_02_summer_edition.png
+    - reference-images/Simple/chrome_tropical_01_spring_break.png
+    - reference-images/Simple/chrome_tropical_02_summer_edition.png
   sunset_silhouette:
-    - reference-images/sunset_silhouette_01_chillout.png
+    - reference-images/Simple/sunset_silhouette_01_chillout.png
   flat_graphic:
-    - reference-images/flat_graphic_01_epic_sunday.png
+    - reference-images/Simple/flat_graphic_01_epic_sunday.png
   aquatic_distressed:
-    - reference-images/aquatic_distressed_01_pool_party.png
+    - reference-images/Simple/aquatic_distressed_01_pool_party.png
   industrial_minimal:
-    - reference-images/industrial_minimal_01_dj_kelci.png
+    - reference-images/Simple/industrial_minimal_01_dj_kelci.png
   golden_editorial:
-    - reference-images/golden_editorial_01_good_vibes.png
+    - reference-images/Simple/golden_editorial_01_good_vibes.png

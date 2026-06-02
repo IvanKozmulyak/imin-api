@@ -33,6 +33,11 @@ replicate:
   image:
     storage-dir: /tmp/imin-test-images
 
+poster:
+  references:
+    # No network calls during tests: skip startup style-descriptor analysis.
+    analyze-on-startup: false
+
 imin:
   stripe:
     # Dummy values — tests must mock all Stripe calls (no live network traffic in tests).
