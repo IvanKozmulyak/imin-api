@@ -15,6 +15,7 @@ import com.imin.iminapi.service.AiEventDescriptionService;
 import com.imin.iminapi.service.PricingService;
 import com.imin.iminapi.service.poster.PosterOrchestrator;
 import com.imin.iminapi.service.poster.PosterOrchestrator.OrchestrationResult;
+import com.imin.iminapi.service.poster.VibeLibrary;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -37,17 +38,20 @@ public class ConceptStudioService {
     private final PricingService pricing;
     private final ConceptOverviewLlm overviewLlm;
     private final GeneratedEventRepository repo;
+    private final VibeLibrary vibeLibrary;
 
     public ConceptStudioService(AiEventDescriptionService descService,
                                 PosterOrchestrator orchestrator,
                                 PricingService pricing,
                                 ConceptOverviewLlm overviewLlm,
-                                GeneratedEventRepository repo) {
+                                GeneratedEventRepository repo,
+                                VibeLibrary vibeLibrary) {
         this.descService = descService;
         this.orchestrator = orchestrator;
         this.pricing = pricing;
         this.overviewLlm = overviewLlm;
         this.repo = repo;
+        this.vibeLibrary = vibeLibrary;
     }
 
     @Transactional
@@ -62,11 +66,17 @@ public class ConceptStudioService {
         ConceptRequest req = new ConceptRequest(
                 prior.getVibe() == null ? "rerun" : prior.getVibe(),
                 prior.getGenre(), prior.getCity(),
-                /* capacity hint */ null);
+                /* capacity hint */ null,
+                /* vibeId */ null);
         return run(p, req);
     }
 
     private ConceptResponse run(AuthPrincipal p, ConceptRequest req) {
+        if (req.vibeId() != null && !req.vibeId().isBlank() && !vibeLibrary.hasVibe(req.vibeId())) {
+            throw new ApiException(org.springframework.http.HttpStatus.BAD_REQUEST,
+                    com.imin.iminapi.security.ErrorCode.FIELD_INVALID,
+                    "Unknown vibeId: " + req.vibeId());
+        }
         GeneratedEvent staging = newStagingRow(p, req);
         repo.save(staging);
 

@@ -34,9 +34,11 @@ class ConceptStudioServiceTest {
     PricingService pricing = mock(PricingService.class);
     ConceptOverviewLlm overviewLlm = mock(ConceptOverviewLlm.class);
     GeneratedEventRepository repo = mock(GeneratedEventRepository.class);
+    com.imin.iminapi.service.poster.VibeLibrary vibeLibrary =
+            mock(com.imin.iminapi.service.poster.VibeLibrary.class);
 
     ConceptStudioService sut = new ConceptStudioService(
-            descService, orchestrator, pricing, overviewLlm, repo);
+            descService, orchestrator, pricing, overviewLlm, repo, vibeLibrary);
 
     private AuthPrincipal owner() {
         return new AuthPrincipal(UUID.randomUUID(), UUID.randomUUID(), UserRole.OWNER, UUID.randomUUID());
@@ -72,7 +74,7 @@ class ConceptStudioServiceTest {
                 new ConceptOverview("ANTRUM", "Deep in a Berlin warehouse...",
                         List.of("#1a1a18", "#2d5cff", "#c03030", "#f2f1ec"), 250, 78));
 
-        ConceptResponse r = sut.create(p, new ConceptRequest("Moody Berlin techno warehouse", "Techno", "Berlin", null));
+        ConceptResponse r = sut.create(p, new ConceptRequest("Moody Berlin techno warehouse", "Techno", "Berlin", null, null));
 
         assertThat(r.conceptId()).isNotNull();
         assertThat(r.name()).isEqualTo("ANTRUM");
