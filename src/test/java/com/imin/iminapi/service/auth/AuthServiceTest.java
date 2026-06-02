@@ -98,6 +98,16 @@ class AuthServiceTest {
     }
 
     @Test
+    void signup_blocked_for_unsupported_country() {
+        assertThatThrownBy(() -> sut.signup(new SignupRequest("ada@example.com", "lovelace12",
+                "Ada", "Lovelace", "X", "UA")))
+                .isInstanceOf(ApiException.class)
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.COUNTRY_NOT_SUPPORTED);
+        verifyNoInteractions(orgs);
+        verify(users, never()).save(any(User.class));
+    }
+
+    @Test
     void signup_with_existing_email_throws_DUPLICATE() {
         when(users.existsByEmailLower("dupe@example.com")).thenReturn(true);
         assertThatThrownBy(() -> sut.signup(new SignupRequest("dupe@example.com", "valid12345", "Dupe", "User", "X", "FR")))

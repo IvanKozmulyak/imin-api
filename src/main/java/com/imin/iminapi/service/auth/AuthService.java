@@ -96,6 +96,7 @@ public class AuthService {
     @Transactional
     public VerificationPendingResponse signup(SignupRequest req) {
         com.imin.iminapi.util.SanctionedCountries.requireAllowed(req.country());
+        com.imin.iminapi.util.StripeSupportedCountries.requireSupported(req.country());
         String emailLower = req.email().toLowerCase();
         if (users.existsByEmailLower(emailLower)) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.DUPLICATE,

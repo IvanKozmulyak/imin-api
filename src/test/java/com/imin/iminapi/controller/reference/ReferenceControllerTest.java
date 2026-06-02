@@ -31,7 +31,21 @@ class ReferenceControllerTest {
                 .andExpect(jsonPath("$[?(@.code == 'GB')].name").exists())
                 // All codes are 2 uppercase letters
                 .andExpect(jsonPath("$[*].code", everyItem(matchesPattern("^[A-Z]{2}$"))))
-                // Alphabetical by name — first entry should be "Afghanistan" (A…)
+                // Alphabetical by name — first entry starts with "A" (e.g. "Austria")
                 .andExpect(jsonPath("$[0].name", startsWith("A")));
+    }
+
+    @Test
+    void countries_only_includes_stripe_supported() throws Exception {
+        mvc.perform(get("/api/v1/reference/countries"))
+                .andExpect(status().isOk())
+                // Stripe-supported bloc countries are present
+                .andExpect(jsonPath("$[?(@.code == 'FR')]", not(empty())))
+                .andExpect(jsonPath("$[?(@.code == 'US')]", not(empty())))
+                .andExpect(jsonPath("$[?(@.code == 'CH')]", not(empty())))
+                // Unsupported countries are absent (present today → RED before the filter change)
+                .andExpect(jsonPath("$[?(@.code == 'UA')]", empty()))
+                .andExpect(jsonPath("$[?(@.code == 'JP')]", empty()))
+                .andExpect(jsonPath("$[?(@.code == 'AU')]", empty()));
     }
 }

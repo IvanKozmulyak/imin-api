@@ -8,6 +8,7 @@ import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.util.SanctionedCountries;
+import com.imin.iminapi.util.StripeSupportedCountries;
 import com.imin.iminapi.web.IfMatchSupport;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -37,8 +38,12 @@ public class OrgService {
         ifMatch.requireMatch(ifMatchHeader, o.getUpdatedAt());
         if (body.name() != null) o.setName(body.name());
         if (body.contactEmail() != null) o.setContactEmail(body.contactEmail());
-        if (body.country() != null) {
+        // Only validate/replace when the country actually changes — this grandfathers existing
+        // orgs whose (now-unsupported) country predates the supported-country gate, so they can
+        // still edit other fields. A real change must pass both sanctions and Stripe-support checks.
+        if (body.country() != null && !body.country().equalsIgnoreCase(o.getCountry())) {
             SanctionedCountries.requireAllowed(body.country());
+            StripeSupportedCountries.requireSupported(body.country());
             o.setCountry(body.country().toUpperCase());
         }
         if (body.timezone() != null) o.setTimezone(body.timezone());

@@ -83,6 +83,36 @@ class OrgServiceTest {
     }
 
     @Test
+    void patch_to_unsupported_country_throws_COUNTRY_NOT_SUPPORTED() {
+        UUID orgId = UUID.randomUUID();
+        Organization o = new Organization();
+        o.setId(orgId); o.setName("Old"); o.setContactEmail("a@b.com"); o.setCountry("GB");
+        Instant updated = Instant.parse("2026-04-23T10:00:00Z");
+        o.setUpdatedAt(updated);
+        when(orgs.findById(orgId)).thenReturn(Optional.of(o));
+
+        assertThatThrownBy(() -> sut.patch(owner(orgId), "\"" + updated + "\"",
+                new OrgPatchRequest(null, null, "UA", null)))
+                .hasFieldOrPropertyWithValue("code", ErrorCode.COUNTRY_NOT_SUPPORTED);
+        verify(orgs, never()).save(any(Organization.class));
+    }
+
+    @Test
+    void patch_keeping_grandfathered_unsupported_country_succeeds() {
+        UUID orgId = UUID.randomUUID();
+        Organization o = new Organization();
+        o.setId(orgId); o.setName("Old"); o.setContactEmail("a@b.com"); o.setCountry("UA");
+        Instant updated = Instant.parse("2026-04-23T10:00:00Z");
+        o.setUpdatedAt(updated);
+        when(orgs.findById(orgId)).thenReturn(Optional.of(o));
+        when(orgs.save(any(Organization.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        OrganizationDto dto = sut.patch(owner(orgId), "\"" + updated + "\"",
+                new OrgPatchRequest("New Name", null, "UA", null));
+        assertThat(dto.name()).isEqualTo("New Name");
+    }
+
+    @Test
     void delete_only_allowed_for_owner() {
         UUID orgId = UUID.randomUUID();
         AuthPrincipal admin = new AuthPrincipal(UUID.randomUUID(), orgId, UserRole.ADMIN, UUID.randomUUID());
