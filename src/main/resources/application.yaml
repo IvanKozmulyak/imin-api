@@ -50,11 +50,18 @@ poster:
   generation:
     variant-count: 3
     retry-on-validation-failure: 1
+    # Ideogram magic_prompt_option: Auto | On | Off. Auto lets Ideogram enrich thin prompts.
+    magic-prompt: ${POSTER_MAGIC_PROMPT:Auto}
+    # Universal negative prompt applied to every image generation (Ivan's draft "Universal rules").
+    negative-prompt: ${POSTER_NEGATIVE_PROMPT:text artifacts, gibberish text, watermark, logo, signature, deformed faces, extra limbs, low-res, jpeg artifacts, blurry, stock-photo look, generic clipart}
 
 openrouter:
   api-key: ${OPENROUTER_API_KEY}
   base-url: ${OPENROUTER_BASE_URL:https://openrouter.ai/api}
   model: ${OPENROUTER_MODEL:openai/gpt-4o-mini}
+  # Lower temperature → stable concept JSON + coherent art direction. The provider
+  # otherwise defaults near 1.0 (noisy, inconsistent prompts). Tune via env.
+  temperature: ${OPENROUTER_TEMPERATURE:0.6}
 
 openai:
   image:

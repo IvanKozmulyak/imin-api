@@ -121,8 +121,8 @@ public class OpenAiImageClient {
         if (aspectRatio == null) return "1024x1536";
         return switch (aspectRatio) {
             case "1:1" -> "1024x1024";
-            case "3:2", "16:9" -> "1536x1024";
-            // 3:4 and 4:5 both fall back to portrait — OpenAI doesn't offer 4:5 natively.
+            case "3:2", "16:9", "1.91:1" -> "1536x1024";
+            // 3:4, 4:5, 9:16 all fall back to portrait — OpenAI offers only 1024x1536 portrait.
             default -> "1024x1536";
         };
     }

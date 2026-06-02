@@ -34,7 +34,9 @@ public class AiEventDescriptionService {
     );
 
     private static final Set<String> VALID_VARIANT_STYLES = Set.of("atmospheric", "graphic", "minimal");
-    private static final Set<String> VALID_ASPECTS = Set.of("3:4", "1:1", "4:5");
+    // Target social ratios: 4:5 (poster), 1:1 (feed), 9:16 (story/reel), 16:9 (landscape/OG ≈ 1.91:1).
+    // 3:4 retained for backward compatibility. (Ideogram V3 has no native 1.91:1; 16:9 is the closest.)
+    private static final Set<String> VALID_ASPECTS = Set.of("4:5", "1:1", "9:16", "16:9", "3:4");
     private static final Pattern WORDS = Pattern.compile("\\s+");
     private static final int MIN_WORDS = 30;
     private static final int MAX_WORDS = 150;
@@ -114,7 +116,7 @@ public class AiEventDescriptionService {
           .append("- variants: exactly 3 objects, each with:\n")
           .append("    - variant_style: one of atmospheric, graphic, minimal\n")
           .append("    - ideogram_prompt: a COMPLETE self-contained prompt, 30-150 words, describing the scene and explicitly including every text element in DOUBLE QUOTES for literal rendering (Ideogram renders quoted strings as typography)\n")
-          .append("    - aspect_ratio: one of 3:4, 1:1, 4:5\n")
+          .append("    - aspect_ratio: one of 4:5, 1:1, 9:16, 16:9\n")
           .append("    - style_type: always \"Design\"\n\n")
           .append("STRICT RULES for each ideogram_prompt:\n")
           .append("- Include a MAXIMUM of 7 text elements (event title, date, venue, DJ, city, ticket price/CTA, hashtag — only the ones given below)\n")

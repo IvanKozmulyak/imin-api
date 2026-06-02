@@ -36,4 +36,18 @@ class OpenRouterConfigTest {
         assertThat(OpenRouterConfig.normalizeOpenRouterBaseUrl(null))
                 .isEqualTo("");
     }
+
+    @Test
+    void chatOptions_appliesModelAndTemperature() {
+        var opts = OpenRouterConfig.chatOptions("openai/gpt-4o", 0.6);
+        assertThat(opts.getModel()).isEqualTo("openai/gpt-4o");
+        assertThat(opts.getTemperature()).isEqualTo(0.6);
+    }
+
+    @Test
+    void chatOptions_nullTemperatureLeavesItUnset() {
+        var opts = OpenRouterConfig.chatOptions("openai/gpt-4o-mini", null);
+        assertThat(opts.getModel()).isEqualTo("openai/gpt-4o-mini");
+        assertThat(opts.getTemperature()).isNull();
+    }
 }

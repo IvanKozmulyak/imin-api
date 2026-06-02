@@ -19,14 +19,20 @@ public class IdeogramClient {
     private final ReplicateClient replicateClient;
     private final String turboModel;
     private final String qualityModel;
+    private final String magicPromptOption;
+    private final String negativePrompt;
 
     public IdeogramClient(
             ReplicateClient replicateClient,
             @Value("${replicate.models.ideogram-turbo:ideogram-ai/ideogram-v3-turbo}") String turboModel,
-            @Value("${replicate.models.ideogram-quality:ideogram-ai/ideogram-v3-quality}") String qualityModel) {
+            @Value("${replicate.models.ideogram-quality:ideogram-ai/ideogram-v3-quality}") String qualityModel,
+            @Value("${poster.generation.magic-prompt:Auto}") String magicPromptOption,
+            @Value("${poster.generation.negative-prompt:}") String negativePrompt) {
         this.replicateClient = replicateClient;
         this.turboModel = turboModel;
         this.qualityModel = qualityModel;
+        this.magicPromptOption = magicPromptOption;
+        this.negativePrompt = negativePrompt;
     }
 
     public record IdeogramResult(String imageUrl, long seed, Duration generationTime, String model) {}
@@ -63,10 +69,14 @@ public class IdeogramClient {
 
         Map<String, Object> input = new LinkedHashMap<>();
         input.put("prompt", prompt);
-        input.put("aspect_ratio", aspectRatio != null ? aspectRatio : "3:4");
+        input.put("aspect_ratio", aspectRatio != null ? aspectRatio : "4:5");
         input.put("style_type", effectiveStyleType);
-        input.put("magic_prompt_option", "Off");
+        input.put("magic_prompt_option", magicPromptOption != null && !magicPromptOption.isBlank()
+                ? magicPromptOption : "Auto");
         input.put("seed", seed);
+        if (negativePrompt != null && !negativePrompt.isBlank()) {
+            input.put("negative_prompt", negativePrompt);
+        }
         if (hasRefs) {
             input.put("style_reference_images", styleReferenceImages);
         }

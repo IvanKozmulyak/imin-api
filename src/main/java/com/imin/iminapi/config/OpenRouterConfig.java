@@ -25,11 +25,15 @@ public class OpenRouterConfig {
     @Value("${openrouter.model}")
     private String model;
 
+    @Value("${openrouter.temperature:0.6}")
+    private Double temperature;
+
     @Bean
     @Primary
     public ChatClient openRouterChatClient() {
         String normalizedBaseUrl = normalizeOpenRouterBaseUrl(baseUrl);
-        log.info("Configuring OpenRouter ChatClient with baseUrl={}", normalizedBaseUrl);
+        log.info("Configuring OpenRouter ChatClient with baseUrl={}, model={}, temperature={}",
+                normalizedBaseUrl, model, temperature);
 
         OpenAiApi openAiApi = OpenAiApi.builder()
                 .baseUrl(normalizedBaseUrl)
@@ -37,11 +41,22 @@ public class OpenRouterConfig {
                 .build();
         OpenAiChatModel chatModel = OpenAiChatModel.builder()
                 .openAiApi(openAiApi)
-                .defaultOptions(OpenAiChatOptions.builder()
-                        .model(model)
-                        .build())
+                .defaultOptions(chatOptions(model, temperature))
                 .build();
         return ChatClient.builder(chatModel).build();
+    }
+
+    /**
+     * Build the default chat options. A lower-than-default temperature keeps poster-concept
+     * JSON stable and the art direction coherent (the model otherwise defaults near 1.0,
+     * which produces noisy, inconsistent prompts).
+     */
+    static OpenAiChatOptions chatOptions(String model, Double temperature) {
+        OpenAiChatOptions.Builder b = OpenAiChatOptions.builder().model(model);
+        if (temperature != null) {
+            b.temperature(temperature);
+        }
+        return b.build();
     }
 
     static String normalizeOpenRouterBaseUrl(String rawBaseUrl) {
