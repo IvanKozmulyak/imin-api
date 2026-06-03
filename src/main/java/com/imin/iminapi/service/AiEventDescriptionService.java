@@ -5,10 +5,7 @@ import com.imin.iminapi.dto.PosterConcept;
 import com.imin.iminapi.dto.PosterVariant;
 import com.imin.iminapi.dto.UniversalRules;
 import com.imin.iminapi.dto.Vibe;
-import com.imin.iminapi.service.poster.ReferenceImageLibrary;
 import com.imin.iminapi.service.poster.VibeLibrary;
-
-import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,6 +16,12 @@ import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
 
+/**
+ * Turns an event brief into a {@link PosterConcept} (a chosen vibe + 3 variants) via one LLM call.
+ * Vibe-only: the concept's {@code sub_style_tag} is a {@link VibeLibrary} vibe id, and the prompt is
+ * assembled deterministically from that vibe's structured preset (palette / typography / composition
+ * / avoid) plus the universal negative prompt + IP rule. There is no legacy aesthetic-tag path.
+ */
 @Service
 @RequiredArgsConstructor
 public class AiEventDescriptionService {
@@ -26,23 +29,11 @@ public class AiEventDescriptionService {
     private static final Logger log = LoggerFactory.getLogger(AiEventDescriptionService.class);
 
     private final ChatClient chatClient;
-    private final ReferenceImageLibrary referenceLibrary;
     private final VibeLibrary vibeLibrary;
-
-    public static final Set<String> VALID_SUB_STYLE_TAGS = Set.of(
-            "neon_underground",
-            "chrome_tropical",
-            "sunset_silhouette",
-            "flat_graphic",
-            "aquatic_distressed",
-            "industrial_minimal",
-            "golden_editorial"
-    );
 
     private static final Set<String> VALID_VARIANT_STYLES = Set.of("atmospheric", "graphic", "minimal");
     // Target social ratios: 4:5 (poster), 1:1 (feed), 9:16 (story/reel), 16:9 (landscape/OG ≈ 1.91:1).
-    // 3:4 retained for backward compatibility. (Ideogram V3 has no native 1.91:1; 16:9 is the closest.)
-    private static final Set<String> VALID_ASPECTS = Set.of("4:5", "1:1", "9:16", "16:9", "3:4");
+    private static final Set<String> VALID_ASPECTS = Set.of("4:5", "1:1", "9:16", "16:9");
     private static final Pattern WORDS = Pattern.compile("\\s+");
     private static final int MIN_WORDS = 30;
     private static final int MAX_WORDS = 150;
@@ -57,7 +48,7 @@ public class AiEventDescriptionService {
                     .entity(PosterConcept.class);
             String validationError = validate(concept);
             if (validationError == null) {
-                log.debug("Concept generated on attempt {}: tag={}, variants={}",
+                log.debug("Concept generated on attempt {}: vibe={}, variants={}",
                         attempt, concept.subStyleTag(), concept.variants().size());
                 return concept;
             }
@@ -69,10 +60,8 @@ public class AiEventDescriptionService {
 
     String validate(PosterConcept concept) {
         if (concept == null) return "null concept";
-        if (concept.subStyleTag() == null
-                || !(VALID_SUB_STYLE_TAGS.contains(concept.subStyleTag())
-                     || vibeLibrary.hasVibe(concept.subStyleTag()))) {
-            return "sub_style_tag must be one of " + VALID_SUB_STYLE_TAGS + " or a known vibe id";
+        if (concept.subStyleTag() == null || !vibeLibrary.hasVibe(concept.subStyleTag())) {
+            return "sub_style_tag must be a known vibe id";
         }
         List<PosterVariant> variants = concept.variants();
         if (variants == null || variants.size() != 3) return "exactly 3 variants required";
@@ -102,30 +91,22 @@ public class AiEventDescriptionService {
         return WORDS.split(trimmed).length;
     }
 
+    /** Resolve the vibe driving this concept: the pinned vibe id, else auto-suggested from genre. */
+    Vibe resolveVibe(EventCreatorRequest request) {
+        return vibeLibrary.byId(request.subStyleTag())
+                .orElseGet(() -> vibeLibrary.suggestForGenre(request.genre()));
+    }
+
     String buildPrompt(EventCreatorRequest request, String reinforcement) {
+        Vibe vibe = resolveVibe(request);
         StringBuilder sb = new StringBuilder();
         sb.append("You are an art director for a nightlife event poster. Your output drives ")
           .append("Ideogram V3, a text-in-image model (~90-95% accuracy on quoted strings).\n\n")
-          .append("Return a JSON object with exactly these fields:\n");
-        String pinned = request.subStyleTag();
-        Optional<Vibe> pinnedVibe = pinned == null ? Optional.empty() : vibeLibrary.byId(pinned);
-        if (pinnedVibe.isPresent()) {
-            sb.append("- sub_style_tag is pre-selected as ").append(pinned)
-              .append(". Render EVERY variant in this exact visual style:\n")
-              .append(vibeStyleBlock(pinnedVibe.get()));
-        } else if (pinned != null && !pinned.isBlank()) {
-            String descriptor = nonBlankOrPlaceholder(referenceLibrary.descriptor(pinned));
-            sb.append("- sub_style_tag is pre-selected as ").append(pinned)
-              .append(". Use the following style notes in every variant:\n    ")
-              .append(descriptor).append("\n");
-        } else {
-            sb.append("- sub_style_tag: pick one and weave its style notes into every variant\n");
-            for (String tag : referenceLibrary.tags()) {
-                String descriptor = nonBlankOrPlaceholder(referenceLibrary.descriptor(tag));
-                sb.append("    ").append(tag).append(" — ").append(descriptor).append("\n");
-            }
-        }
-        sb.append("- color_palette_description: a brief human-readable description of the dominant colors\n")
+          .append("Return a JSON object with exactly these fields:\n")
+          .append("- sub_style_tag: must be exactly \"").append(vibe.id())
+          .append("\". Render EVERY variant in this exact visual style:\n")
+          .append(vibeStyleBlock(vibe))
+          .append("- color_palette_description: a brief human-readable description of the dominant colors\n")
           .append("- variants: exactly 3 objects, each with:\n")
           .append("    - variant_style: one of atmospheric, graphic, minimal\n")
           .append("    - ideogram_prompt: a COMPLETE self-contained prompt, 30-150 words, describing the scene and explicitly including every text element in DOUBLE QUOTES for literal rendering (Ideogram renders quoted strings as typography)\n")
@@ -154,11 +135,7 @@ public class AiEventDescriptionService {
         return sb.toString();
     }
 
-    private static String nonBlankOrPlaceholder(String s) {
-        return (s == null || s.isBlank()) ? "(no descriptor available)" : s;
-    }
-
-    /** Deterministic structured style block for a pinned vibe — the building blocks of the prompt. */
+    /** Deterministic structured style block for the vibe — the building blocks of the prompt. */
     private static String vibeStyleBlock(Vibe v) {
         StringBuilder b = new StringBuilder();
         b.append("    Visual style: ").append(v.visualStyle()).append("\n");

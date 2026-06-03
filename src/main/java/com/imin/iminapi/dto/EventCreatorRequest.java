@@ -1,8 +1,6 @@
 package com.imin.iminapi.dto;
 
 import com.imin.iminapi.model.ImageProvider;
-import com.imin.iminapi.service.AiEventDescriptionService;
-import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
@@ -28,12 +26,5 @@ public record EventCreatorRequest(
 ) {
     public ImageProvider effectiveImageProvider() {
         return imageProvider != null ? imageProvider : ImageProvider.REPLICATE;
-    }
-
-    @AssertTrue(message = "subStyleTag must be one of the known style tags")
-    public boolean isSubStyleTagValid() {
-        return subStyleTag == null
-                || subStyleTag.isBlank()
-                || AiEventDescriptionService.VALID_SUB_STYLE_TAGS.contains(subStyleTag);
     }
 }

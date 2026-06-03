@@ -66,8 +66,7 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/images/**").permitAll()
                         .requestMatchers("/swagger-ui/**", "/v3/api-docs/**").permitAll()
-                        // Legacy poster pipeline (moved under /api/v1, still public)
-                        .requestMatchers(HttpMethod.POST, "/api/v1/events/ai-create").permitAll()
+                        // Public AI content (event copy) generation + style-reference images.
                         .requestMatchers(HttpMethod.POST, "/api/v1/events/ai-content").permitAll()
                         .requestMatchers("/api/v1/posters/**").permitAll()
                         // V1 auth endpoints are public — login etc.

@@ -2,7 +2,6 @@ package com.imin.iminapi;
 
 import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.service.EventContentService;
-import com.imin.iminapi.service.EventCreatorService;
 import com.imin.iminapi.service.auth.AuthService;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -17,7 +16,6 @@ class IminApiApplicationTests {
     @MockitoBean(name = "replicateRestClient")
     RestClient replicateRestClient;
 
-    @MockitoBean EventCreatorService eventCreatorService;
     @MockitoBean EventContentService eventContentService;
     @MockitoBean AuthService authService;
 

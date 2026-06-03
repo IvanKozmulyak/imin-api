@@ -86,11 +86,10 @@ public class ConceptStudioService {
         ConceptOverview overview;
         try {
             poster = descService.generateConcept(legacy);
-            // Pin the chosen vibe as the concept's style tag so the orchestrator resolves the
-            // vibe's curated reference flyers (forTag(vibeId)), regardless of what the LLM echoed.
-            if (req.vibeId() != null && !req.vibeId().isBlank()) {
-                poster = new PosterConcept(req.vibeId(), poster.colorPaletteDescription(), poster.variants());
-            }
+            // Pin the resolved vibe (legacy.subStyleTag is the selected vibe, or one auto-suggested
+            // from genre) as the concept's style tag, so the orchestrator resolves that vibe's curated
+            // reference flyers (forTag) regardless of what the LLM echoed.
+            poster = new PosterConcept(legacy.subStyleTag(), poster.colorPaletteDescription(), poster.variants());
             render = orchestrator.run(staging.getId(), legacy, poster);
             overview = overviewLlm.generate(req, poster);
         } catch (Exception e) {
@@ -142,6 +141,15 @@ public class ConceptStudioService {
         return g;
     }
 
+    /** The selected vibe id, or one auto-suggested from genre (so a vibe always drives generation). */
+    private String resolveVibeId(ConceptRequest req) {
+        if (req.vibeId() != null && !req.vibeId().isBlank()) {
+            return req.vibeId();
+        }
+        var v = vibeLibrary.suggestForGenre(req.genre());
+        return v == null ? null : v.id();
+    }
+
     private EventCreatorRequest toLegacyRequest(ConceptRequest req) {
         return new EventCreatorRequest(
                 req.vibe(),
@@ -156,8 +164,8 @@ public class ConceptStudioService {
                 /* accentColor */ null,
                 /* address */ null,
                 /* rsvpUrl */ null,
-                /* subStyleTag: pin the selected vibe (drives prompt + references); else let LLM pick */
-                (req.vibeId() != null && !req.vibeId().isBlank()) ? req.vibeId() : null,
+                /* subStyleTag: the selected vibe, or one auto-suggested from genre (always set) */
+                resolveVibeId(req),
                 ImageProvider.REPLICATE);
     }
 

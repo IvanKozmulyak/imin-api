@@ -1,11 +1,11 @@
 package com.imin.iminapi.service;
 
 import com.imin.iminapi.dto.EventCreatorRequest;
+import com.imin.iminapi.dto.PosterConcept;
+import com.imin.iminapi.dto.PosterVariant;
 import com.imin.iminapi.dto.UniversalRules;
 import com.imin.iminapi.dto.Vibe;
-import com.imin.iminapi.service.poster.ReferenceImageLibrary;
 import com.imin.iminapi.service.poster.VibeLibrary;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -14,6 +14,7 @@ import org.springframework.ai.chat.client.ChatClient;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.lenient;
@@ -23,68 +24,39 @@ import static org.mockito.Mockito.when;
 class AiEventDescriptionServiceTest {
 
     @Mock private ChatClient chatClient;
-    @Mock private ReferenceImageLibrary library;
     @Mock private VibeLibrary vibeLibrary;
 
     private AiEventDescriptionService service;
 
-    @BeforeEach
+    private static final Vibe BRUTALIST = new Vibe(
+            "brutalist_techno", "Brutalist Techno", List.of("techno"),
+            "raw exposed concrete, harsh single-source lighting", List.of("#0A0A0A", "#FF2D00"),
+            "oversized condensed grotesk, all caps", "giant headline, lots of negative space",
+            List.of("severe"), List.of("color gradients", "warmth"),
+            "recraft", List.of("reference-images/Brutalist Techno"), null, "brutalist", false);
+
+    @org.junit.jupiter.api.BeforeEach
     void setUp() {
-        service = new AiEventDescriptionService(chatClient, library, vibeLibrary);
-        lenient().when(library.tags()).thenReturn(List.of("neon_underground", "chrome_tropical"));
-        lenient().when(library.descriptor("neon_underground")).thenReturn("Magenta neon and black void.");
-        lenient().when(library.descriptor("chrome_tropical")).thenReturn("Chrome 3D type, sunset gradient.");
+        service = new AiEventDescriptionService(chatClient, vibeLibrary);
+        lenient().when(vibeLibrary.universalRules()).thenReturn(new UniversalRules(
+                List.of("4:5"), "blurry, watermark", "never in the style of a real artist"));
     }
 
-    private EventCreatorRequest req(String pinnedTag) {
+    private EventCreatorRequest req(String pinnedVibeId) {
         return new EventCreatorRequest(
-                "vibe", "tone", "genre", "city",
+                "vibe", "tone", "techno", "city",
                 LocalDate.of(2026, 6, 14), List.of("INSTAGRAM"),
                 null, null, null, null, null, null,
-                pinnedTag, null);
-    }
-
-    @Test
-    void buildPrompt_noPinnedTag_includesStyleGuideForEveryTag() {
-        String prompt = service.buildPrompt(req(null), null);
-
-        assertThat(prompt).contains("neon_underground — Magenta neon and black void.");
-        assertThat(prompt).contains("chrome_tropical — Chrome 3D type, sunset gradient.");
-        assertThat(prompt).contains("pick one and weave its style notes");
-    }
-
-    @Test
-    void buildPrompt_pinnedTag_emitsSingleImperativeLine() {
-        String prompt = service.buildPrompt(req("chrome_tropical"), null);
-
-        assertThat(prompt).contains("sub_style_tag is pre-selected as chrome_tropical");
-        assertThat(prompt).contains("Chrome 3D type, sunset gradient.");
-        assertThat(prompt).doesNotContain("neon_underground —");
-    }
-
-    @Test
-    void buildPrompt_descriptorMissing_emitsPlaceholder() {
-        when(library.descriptor("neon_underground")).thenReturn("");
-
-        String prompt = service.buildPrompt(req(null), null);
-
-        assertThat(prompt).contains("neon_underground — (no descriptor available)");
+                pinnedVibeId, null);
     }
 
     @Test
     void buildPrompt_pinnedVibe_injectsStructuredPresetAndUniversalRules() {
-        Vibe v = new Vibe("brutalist_techno", "Brutalist Techno", List.of("techno"),
-                "raw exposed concrete, harsh single-source lighting", List.of("#0A0A0A", "#FF2D00"),
-                "oversized condensed grotesk, all caps", "giant headline, lots of negative space",
-                List.of("severe"), List.of("color gradients", "warmth"),
-                "recraft", List.of("reference-images/Brutalist Techno"), null, "brutalist", false);
-        when(vibeLibrary.byId("brutalist_techno")).thenReturn(java.util.Optional.of(v));
-        when(vibeLibrary.universalRules()).thenReturn(new UniversalRules(
-                List.of("4:5"), "blurry, watermark", "never in the style of a real artist"));
+        when(vibeLibrary.byId("brutalist_techno")).thenReturn(Optional.of(BRUTALIST));
 
         String prompt = service.buildPrompt(req("brutalist_techno"), null);
 
-        assertThat(prompt).contains("sub_style_tag is pre-selected as brutalist_techno");
+        assertThat(prompt).contains("must be exactly \"brutalist_techno\"");
         assertThat(prompt).contains("Visual style: raw exposed concrete");
         assertThat(prompt).contains("Palette: #0A0A0A, #FF2D00");
         assertThat(prompt).contains("Typography: oversized condensed grotesk");
@@ -92,5 +64,32 @@ class AiEventDescriptionServiceTest {
         assertThat(prompt).contains("AVOID in the artwork: blurry, watermark");
         assertThat(prompt).contains("IP rule: never in the style of a real artist");
         assertThat(prompt).doesNotContain("(no descriptor available)");
+    }
+
+    @Test
+    void buildPrompt_noVibeId_autoSuggestsFromGenre() {
+        when(vibeLibrary.byId(null)).thenReturn(Optional.empty());
+        when(vibeLibrary.suggestForGenre("techno")).thenReturn(BRUTALIST);
+
+        String prompt = service.buildPrompt(req(null), null);
+
+        assertThat(prompt).contains("must be exactly \"brutalist_techno\"");
+        assertThat(prompt).contains("Visual style: raw exposed concrete");
+    }
+
+    @Test
+    void validate_acceptsKnownVibe_rejectsUnknown() {
+        when(vibeLibrary.hasVibe("brutalist_techno")).thenReturn(true);
+        when(vibeLibrary.hasVibe("bogus")).thenReturn(false);
+
+        String body = "word ".repeat(40).trim();
+        List<PosterVariant> variants = List.of(
+                new PosterVariant("atmospheric", body, "4:5", "Design"),
+                new PosterVariant("graphic", body, "1:1", "Design"),
+                new PosterVariant("minimal", body, "9:16", "Design"));
+
+        assertThat(service.validate(new PosterConcept("brutalist_techno", "palette", variants))).isNull();
+        assertThat(service.validate(new PosterConcept("bogus", "palette", variants)))
+                .contains("known vibe id");
     }
 }

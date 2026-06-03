@@ -1,63 +1,60 @@
 package com.imin.iminapi.service.poster;
 
 import com.imin.iminapi.dto.ReferenceImageSet;
-import com.imin.iminapi.model.StyleReferenceAnalysis;
-import com.imin.iminapi.repository.StyleReferenceAnalysisRepository;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
+import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 import org.springframework.stereotype.Component;
 import org.yaml.snakeyaml.Yaml;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
+import java.util.Objects;
 
+/**
+ * Loads curated reference flyer images keyed by sub-style tag / vibe id and exposes them as
+ * data URIs (for style_reference_images) or raw bytes (for Recraft training / OpenAI edits).
+ *
+ * Sources, merged into one {@code byTag} map at startup:
+ *   - {@code poster-references.yaml} — the legacy 7 aesthetic tags (explicit files or folders).
+ *   - {@code vibes.yaml} (via {@link VibeLibrary}) — each curated vibe's reference folder, keyed
+ *     by vibe id, so {@code forTag(vibeId)} resolves the vibe's flyers. Text-only vibes are skipped.
+ *
+ * Folder / glob locators are expanded over the classpath, sorted by filename and capped at
+ * {@code poster.references.max-per-tag}. This component does no LLM / network work.
+ */
 @Component
 public class ReferenceImageLibrary {
 
     private static final Logger log = LoggerFactory.getLogger(ReferenceImageLibrary.class);
 
     private final ResourceLoader resourceLoader;
-    private final org.springframework.core.io.support.PathMatchingResourcePatternResolver patternResolver;
-    private final String configFile;
-    private final boolean analyzeOnStartup;
-    private final int maxPerTag;
-    private final StyleReferenceAnalysisRepository analysisRepo;
-    private final ReferenceImageAnalyzer analyzer;
+    private final PathMatchingResourcePatternResolver patternResolver;
     private final VibeLibrary vibeLibrary;
-    private final Map<String, String> descriptors = new HashMap<>();
+    private final String configFile;
+    private final int maxPerTag;
     private Map<String, List<LoadedReference>> byTag = Collections.emptyMap();
 
     public ReferenceImageLibrary(
             ResourceLoader resourceLoader,
-            StyleReferenceAnalysisRepository analysisRepo,
-            ReferenceImageAnalyzer analyzer,
             VibeLibrary vibeLibrary,
             @Value("${poster.references.config-file:classpath:poster-references.yaml}") String configFile,
-            @Value("${poster.references.analyze-on-startup:true}") boolean analyzeOnStartup,
             @Value("${poster.references.max-per-tag:4}") int maxPerTag) {
         this.resourceLoader = resourceLoader;
-        this.patternResolver = new org.springframework.core.io.support.PathMatchingResourcePatternResolver(resourceLoader);
-        this.analysisRepo = analysisRepo;
-        this.analyzer = analyzer;
+        this.patternResolver = new PathMatchingResourcePatternResolver(resourceLoader);
         this.vibeLibrary = vibeLibrary;
         this.configFile = configFile;
-        this.analyzeOnStartup = analyzeOnStartup;
         this.maxPerTag = maxPerTag;
     }
 
@@ -88,19 +85,13 @@ public class ReferenceImageLibrary {
         int nonEmptyTags = (int) byTag.values().stream().filter(l -> !l.isEmpty()).count();
         log.info("ReferenceImageLibrary loaded: {} tags, {} populated, {} total references",
                 byTag.size(), nonEmptyTags, totalLoaded);
-
-        if (analyzeOnStartup) {
-            loadDescriptors();
-        } else {
-            log.info("Startup style-descriptor analysis disabled (poster.references.analyze-on-startup=false)");
-        }
     }
 
     private void mergeVibeReferences(Map<String, List<LoadedReference>> target) {
         if (vibeLibrary == null) return;
         for (com.imin.iminapi.dto.Vibe v : vibeLibrary.all()) {
             if (v.references() == null || v.references().isEmpty()) continue;
-            List<LoadedReference> resolved = new java.util.ArrayList<>();
+            List<LoadedReference> resolved = new ArrayList<>();
             for (String locator : v.references()) {
                 for (String expanded : expandEntry(locator)) {
                     try {
@@ -138,9 +129,9 @@ public class ReferenceImageLibrary {
         String pattern = "classpath*:" + dir + "/*";
         try {
             Resource[] hits = patternResolver.getResources(pattern);
-            return java.util.Arrays.stream(hits)
+            return Arrays.stream(hits)
                     .map(Resource::getFilename)
-                    .filter(java.util.Objects::nonNull)
+                    .filter(Objects::nonNull)
                     .filter(this::hasImageExtension)
                     .sorted()
                     .limit(maxPerTag)
@@ -161,7 +152,7 @@ public class ReferenceImageLibrary {
         Map<String, List<LoadedReference>> out = new LinkedHashMap<>();
         for (Map.Entry<?, ?> e : src.entrySet()) {
             String tag = String.valueOf(e.getKey());
-            List<LoadedReference> resolved = new java.util.ArrayList<>();
+            List<LoadedReference> resolved = new ArrayList<>();
             if (e.getValue() instanceof List<?> list) {
                 for (Object item : list) {
                     if (item == null) continue;
@@ -239,7 +230,7 @@ public class ReferenceImageLibrary {
 
     public List<byte[]> loadAllBytes(String subStyleTag) {
         List<LoadedReference> refs = byTag.getOrDefault(subStyleTag, List.of());
-        List<byte[]> out = new java.util.ArrayList<>(refs.size());
+        List<byte[]> out = new ArrayList<>(refs.size());
         for (int i = 0; i < refs.size(); i++) {
             try {
                 out.add(bytesFor(refs.get(i)));
@@ -276,81 +267,6 @@ public class ReferenceImageLibrary {
         }
     }
 
-    public String descriptor(String subStyleTag) {
-        return descriptors.getOrDefault(subStyleTag, "");
-    }
-
-    /** Test hook — re-runs the cache check pass without reloading the YAML. */
-    public void reloadDescriptors() {
-        loadDescriptors();
-    }
-
-    /** Test hook — exposes the signature this library computes for a tag right now. */
-    public String computeCurrentSignatureFor(String subStyleTag) {
-        return imageSignature(toSignatureInputs(subStyleTag));
-    }
-
-    private void loadDescriptors() {
-        descriptors.clear();
-        String currentModel = analyzer.modelId();
-
-        for (String tag : byTag.keySet()) {
-            try {
-                String value = resolveDescriptor(tag, currentModel);
-                if (!value.isEmpty()) {
-                    descriptors.put(tag, value);
-                }
-            } catch (Exception e) {
-                log.warn("Descriptor task failed for tag '{}': {}", tag, e.getMessage());
-            }
-        }
-        log.info("Style descriptors loaded for {} of {} tags", descriptors.size(), byTag.size());
-    }
-
-    private String resolveDescriptor(String tag, String currentModel) {
-        try {
-            String signature = imageSignature(toSignatureInputs(tag));
-            Optional<StyleReferenceAnalysis> existing = analysisRepo.findById(tag);
-            if (existing.isPresent()
-                    && signature.equals(existing.get().getImageSignature())
-                    && currentModel.equals(existing.get().getModelId())) {
-                return existing.get().getDescriptor();
-            }
-
-            ReferenceImageSet refs = forTag(tag);
-            String descriptor = analyzer.analyze(tag, refs.referenceUrls());
-            if (descriptor == null || descriptor.isBlank()) {
-                log.warn("Empty descriptor for tag '{}' — not persisting", tag);
-                return "";
-            }
-
-            StyleReferenceAnalysis row = existing.orElseGet(StyleReferenceAnalysis::new);
-            row.setSubStyleTag(tag);
-            row.setDescriptor(descriptor);
-            row.setImageSignature(signature);
-            row.setModelId(currentModel);
-            row.setAnalyzedAt(LocalDateTime.now());
-            analysisRepo.save(row);
-            return descriptor;
-        } catch (RuntimeException e) {
-            log.warn("Failed to analyze references for tag '{}': {}", tag, e.getMessage());
-            return "";
-        }
-    }
-
-    private List<SignatureInput> toSignatureInputs(String tag) {
-        List<LoadedReference> refs = byTag.getOrDefault(tag, List.of());
-        List<SignatureInput> inputs = new java.util.ArrayList<>(refs.size());
-        for (int i = 0; i < refs.size(); i++) {
-            try {
-                inputs.add(new SignatureInput(refs.get(i).id(), bytesFor(refs.get(i))));
-            } catch (Exception e) {
-                log.warn("Could not read bytes for {}/{}: {}", tag, i, e.getMessage());
-            }
-        }
-        return inputs;
-    }
-
     private byte[] bytesFor(LoadedReference ref) throws IOException {
         String locator = ref.sourceLocator();
         if (locator.startsWith("http://") || locator.startsWith("https://") || locator.startsWith("data:")) {
@@ -359,23 +275,6 @@ public class ReferenceImageLibrary {
         Resource r = resourceLoader.getResource(locator);
         try (InputStream in = r.getInputStream()) {
             return in.readAllBytes();
-        }
-    }
-
-    public record SignatureInput(String referenceId, byte[] bytes) {}
-
-    static String imageSignature(List<SignatureInput> inputs) {
-        try {
-            MessageDigest sha = MessageDigest.getInstance("SHA-256");
-            HexFormat hex = HexFormat.of();
-            List<String> entries = inputs.stream()
-                    .map(in -> in.referenceId() + ":" + hex.formatHex(sha.digest(in.bytes())))
-                    .sorted(Comparator.naturalOrder())
-                    .toList();
-            String joined = String.join("\n", entries);
-            return hex.formatHex(sha.digest(joined.getBytes()));
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 unavailable", e);
         }
     }
 

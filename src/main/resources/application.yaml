@@ -39,12 +39,9 @@ replicate:
 
 poster:
   references:
-    config-file: classpath:poster-references.yaml
-    # When true, the vision LLM analyzes each tag's reference images at boot to cache a style
-    # descriptor. Default OFF: the hand-authored vibe presets (vibes.yaml) now supersede the
-    # descriptor for the vibe-driven path, and synchronous per-tag vision calls would block boot.
-    # Set true (and ideally make async) only if you want descriptors for the legacy old-tag path.
-    analyze-on-startup: ${POSTER_ANALYZE_ON_STARTUP:false}
+    # Curated reference flyers are loaded per-vibe from vibes.yaml (folders under
+    # reference-images/). Cap how many flyers per vibe are sent to the image model.
+    max-per-tag: ${POSTER_MAX_REFERENCES_PER_TAG:4}
   overlay:
     qr-size-px: 120
     address-max-chars: 80
@@ -113,8 +110,6 @@ imin:
     # (anything shorter is rejected). Mirrored into TicketReservation.expires_at
     # so the ReservationSweeper releases stale holds even when webhooks miss.
     checkout-session-ttl-minutes: ${STRIPE_CHECKOUT_SESSION_TTL_MINUTES:30}
-  reference-analyzer:
-    model-id: ${IMIN_REFERENCE_ANALYZER_MODEL:openai/gpt-4o-mini}
   email:
     api-key: ${RESEND_API_KEY:}
     from-address: ${IMIN_EMAIL_FROM_ADDRESS:noreply@imin.local}
