@@ -23,7 +23,9 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -36,13 +38,14 @@ class PosterOrchestratorTest {
     @Mock VibeStyleTrainingService vibeStyleTrainingService;
     @Mock ReferenceImageLibrary referenceLibrary;
     @Mock OverlayCompositor overlayCompositor;
+    @Mock PosterTextCompositorClient textCompositor;
     @Mock PosterImageStorage storage;
     @Mock PosterGenerationRepository generationRepository;
 
     private PosterOrchestrator orchestrator() {
         return new PosterOrchestrator(
                 ideogramClient, openAiImageClient, recraftClient, vibeStyleTrainingService,
-                referenceLibrary, overlayCompositor, storage, generationRepository, 6);
+                referenceLibrary, overlayCompositor, textCompositor, storage, generationRepository, 6);
     }
 
     private EventCreatorRequest req() {
@@ -169,6 +172,30 @@ class PosterOrchestratorTest {
         verify(ideogramClient, org.mockito.Mockito.never()).generate(any(), any(), any(), anyLong(), any());
         verify(openAiImageClient, org.mockito.Mockito.never()).generate(any(), any(), any(), anyLong());
         assertThat(styleIdCaptor.getAllValues()).contains("trained-style-xyz");
+    }
+
+    @Test
+    void run_compositorEnabledAndSupportedVibe_usesTextCompositorNotJava2dOverlay() {
+        stubRepoAssignsId();
+        when(referenceLibrary.forTag("brutalist_techno"))
+                .thenReturn(new ReferenceImageSet("brutalist_techno", List.of("https://r/1.jpg"), List.of("1.jpg")));
+        when(ideogramClient.generate(any(), any(), any(), anyLong(), any()))
+                .thenReturn(new IdeogramClient.IdeogramResult(
+                        "https://replicate.delivery/x.png", 1L, Duration.ofMillis(5), "turbo"));
+        when(storage.download(any())).thenReturn(new byte[]{1, 2, 3});
+        when(storage.writePng(any())).thenReturn("/images/out.png");
+        when(textCompositor.supports("brutalist_techno")).thenReturn(true);
+        when(textCompositor.composite(any(), eq("brutalist_techno"), any())).thenReturn(new byte[]{9, 9, 9});
+
+        // req() has title "Void" (real event text) and a curated, supported vibe.
+        PosterConcept c = new PosterConcept("brutalist_techno", "palette",
+                List.of(new PosterVariant("graphic", "p".repeat(40), "4:5", "Design")));
+        PosterOrchestrator.OrchestrationResult result =
+                orchestrator().run(UUID.randomUUID(), req(), c);
+
+        assertThat(result.posters()).allMatch(p -> "COMPLETE".equals(p.status()));
+        verify(textCompositor, atLeastOnce()).composite(any(), eq("brutalist_techno"), any());
+        verify(overlayCompositor, never()).applyOverlays(any());
     }
 
     @Test

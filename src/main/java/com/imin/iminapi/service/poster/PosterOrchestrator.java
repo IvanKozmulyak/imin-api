@@ -40,6 +40,7 @@ public class PosterOrchestrator {
     private final VibeStyleTrainingService vibeStyleTrainingService;
     private final ReferenceImageLibrary referenceLibrary;
     private final OverlayCompositor overlayCompositor;
+    private final PosterTextCompositorClient textCompositor;
     private final PosterImageStorage storage;
     private final PosterGenerationRepository generationRepository;
     private final Semaphore replicateCap;
@@ -52,6 +53,7 @@ public class PosterOrchestrator {
             VibeStyleTrainingService vibeStyleTrainingService,
             ReferenceImageLibrary referenceLibrary,
             OverlayCompositor overlayCompositor,
+            PosterTextCompositorClient textCompositor,
             PosterImageStorage storage,
             PosterGenerationRepository generationRepository,
             @Value("${replicate.max-concurrent:6}") int maxConcurrent) {
@@ -61,6 +63,7 @@ public class PosterOrchestrator {
         this.vibeStyleTrainingService = vibeStyleTrainingService;
         this.referenceLibrary = referenceLibrary;
         this.overlayCompositor = overlayCompositor;
+        this.textCompositor = textCompositor;
         this.storage = storage;
         this.generationRepository = generationRepository;
         this.replicateCap = new Semaphore(maxConcurrent, true);
@@ -177,10 +180,7 @@ public class PosterOrchestrator {
 
             // TODO(phase-2): OCR sanity check on rawBytes; auto-regen once on failure.
 
-            byte[] finalBytes = overlayCompositor.applyOverlays(new OverlayCompositor.Input(
-                    rawBytes,
-                    request.rsvpUrl(),
-                    request.address()));
+            byte[] finalBytes = applyTextLayer(rawBytes, refs, request);
             String finalUrl = finalBytes == rawBytes
                     ? rawUrl
                     : storage.writePng(finalBytes);
@@ -197,6 +197,31 @@ public class PosterOrchestrator {
         } finally {
             replicateCap.release();
         }
+    }
+
+    /**
+     * Composite the text layer onto the background art. For curated vibes with real event text and
+     * the compositor enabled, this calls the imin-public Satori route (full real-font text layer);
+     * otherwise — or if that call fails — it falls back to the Java2D QR + address overlay.
+     */
+    private byte[] applyTextLayer(byte[] rawBytes, ReferenceImageSet refs, EventCreatorRequest request) {
+        String vibeId = refs.subStyleTag();
+        if (textCompositor.supports(vibeId) && hasEventText(request)) {
+            try {
+                return textCompositor.composite(
+                        rawBytes, vibeId, PosterTextCompositorClient.EventText.from(request));
+            } catch (RuntimeException e) {
+                log.warn("Text compositor failed for vibe {} — falling back to Java2D overlay: {}",
+                        vibeId, e.getMessage());
+            }
+        }
+        return overlayCompositor.applyOverlays(new OverlayCompositor.Input(
+                rawBytes, request.rsvpUrl(), request.address()));
+    }
+
+    /** The text layer is only meaningful when there is a real event title to render. */
+    private static boolean hasEventText(EventCreatorRequest request) {
+        return request.title() != null && !request.title().isBlank();
     }
 
     private byte[] renderVariant(

@@ -40,10 +40,11 @@ replicate:
 poster:
   references:
     config-file: classpath:poster-references.yaml
-    # When true, the vision LLM analyzes each tag's reference images at boot to cache a
-    # style descriptor (signature-cached, so it only runs on first boot / when refs change).
-    # Disabled in tests so context startup makes no network calls.
-    analyze-on-startup: ${POSTER_ANALYZE_ON_STARTUP:true}
+    # When true, the vision LLM analyzes each tag's reference images at boot to cache a style
+    # descriptor. Default OFF: the hand-authored vibe presets (vibes.yaml) now supersede the
+    # descriptor for the vibe-driven path, and synchronous per-tag vision calls would block boot.
+    # Set true (and ideally make async) only if you want descriptors for the legacy old-tag path.
+    analyze-on-startup: ${POSTER_ANALYZE_ON_STARTUP:false}
   overlay:
     qr-size-px: 120
     address-max-chars: 80
@@ -54,6 +55,14 @@ poster:
     magic-prompt: ${POSTER_MAGIC_PROMPT:Auto}
     # Universal negative prompt applied to every image generation (Ivan's draft "Universal rules").
     negative-prompt: ${POSTER_NEGATIVE_PROMPT:text artifacts, gibberish text, watermark, logo, signature, deformed faces, extra limbs, low-res, jpeg artifacts, blurry, stock-photo look, generic clipart}
+  compositor:
+    # When true, the real-font text layer is composited by the imin-public Satori route
+    # (POST {base-url}/api/poster) for curated vibes with real event text. Falls back to the
+    # Java2D QR+address overlay when off, for unsupported vibes, or on error. Off by default.
+    enabled: ${POSTER_COMPOSITOR_ENABLED:false}
+    # imin-public base URL (no trailing slash), e.g. https://imin.wtf or the Vercel deploy URL.
+    base-url: ${POSTER_COMPOSITOR_BASE_URL:}
+    width: ${POSTER_COMPOSITOR_WIDTH:1080}
 
 openrouter:
   api-key: ${OPENROUTER_API_KEY}
