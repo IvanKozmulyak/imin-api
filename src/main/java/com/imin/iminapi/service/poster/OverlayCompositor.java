@@ -53,7 +53,12 @@ public class OverlayCompositor {
         try {
             BufferedImage base = ImageIO.read(new ByteArrayInputStream(input.basePng()));
             if (base == null) {
-                throw new IllegalArgumentException("basePng is not a decodable image");
+                // ImageIO has no decoder for this format (e.g. WebP, which Recraft V3 returns).
+                // Don't fail the whole variant — return the raw art without the QR/address band.
+                // (The Satori compositor on imin-public decodes WebP via resvg for the text layer.)
+                log.warn("basePng is not ImageIO-decodable ({} bytes) — skipping QR/address overlay",
+                        input.basePng() == null ? 0 : input.basePng().length);
+                return input.basePng();
             }
             Graphics2D g = base.createGraphics();
             try {
