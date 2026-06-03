@@ -3,7 +3,12 @@ package com.imin.iminapi.service;
 import com.imin.iminapi.dto.EventCreatorRequest;
 import com.imin.iminapi.dto.PosterConcept;
 import com.imin.iminapi.dto.PosterVariant;
+import com.imin.iminapi.dto.UniversalRules;
+import com.imin.iminapi.dto.Vibe;
 import com.imin.iminapi.service.poster.ReferenceImageLibrary;
+import com.imin.iminapi.service.poster.VibeLibrary;
+
+import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,6 +27,7 @@ public class AiEventDescriptionService {
 
     private final ChatClient chatClient;
     private final ReferenceImageLibrary referenceLibrary;
+    private final VibeLibrary vibeLibrary;
 
     public static final Set<String> VALID_SUB_STYLE_TAGS = Set.of(
             "neon_underground",
@@ -63,8 +69,10 @@ public class AiEventDescriptionService {
 
     String validate(PosterConcept concept) {
         if (concept == null) return "null concept";
-        if (concept.subStyleTag() == null || !VALID_SUB_STYLE_TAGS.contains(concept.subStyleTag())) {
-            return "sub_style_tag must be one of " + VALID_SUB_STYLE_TAGS;
+        if (concept.subStyleTag() == null
+                || !(VALID_SUB_STYLE_TAGS.contains(concept.subStyleTag())
+                     || vibeLibrary.hasVibe(concept.subStyleTag()))) {
+            return "sub_style_tag must be one of " + VALID_SUB_STYLE_TAGS + " or a known vibe id";
         }
         List<PosterVariant> variants = concept.variants();
         if (variants == null || variants.size() != 3) return "exactly 3 variants required";
@@ -100,7 +108,12 @@ public class AiEventDescriptionService {
           .append("Ideogram V3, a text-in-image model (~90-95% accuracy on quoted strings).\n\n")
           .append("Return a JSON object with exactly these fields:\n");
         String pinned = request.subStyleTag();
-        if (pinned != null && !pinned.isBlank()) {
+        Optional<Vibe> pinnedVibe = pinned == null ? Optional.empty() : vibeLibrary.byId(pinned);
+        if (pinnedVibe.isPresent()) {
+            sb.append("- sub_style_tag is pre-selected as ").append(pinned)
+              .append(". Render EVERY variant in this exact visual style:\n")
+              .append(vibeStyleBlock(pinnedVibe.get()));
+        } else if (pinned != null && !pinned.isBlank()) {
             String descriptor = nonBlankOrPlaceholder(referenceLibrary.descriptor(pinned));
             sb.append("- sub_style_tag is pre-selected as ").append(pinned)
               .append(". Use the following style notes in every variant:\n    ")
@@ -123,8 +136,9 @@ public class AiEventDescriptionService {
           .append("- Wrap every single text element in double quotes exactly as it should appear\n")
           .append("- Describe typography treatment explicitly (e.g. \"chrome 3D lettering\", \"distressed serif\", \"neon outline\")\n")
           .append("- Never name real venues, real brands, or real DJs by name other than the djName provided\n")
-          .append("- End the prompt with: \"no other text elements\"\n\n")
-          .append("Event brief:\n")
+          .append("- End the prompt with: \"no other text elements\"\n\n");
+        appendUniversalRules(sb);
+        sb.append("Event brief:\n")
           .append("- vibe: ").append(request.vibe()).append("\n")
           .append("- tone: ").append(request.tone()).append("\n")
           .append("- genre: ").append(request.genre()).append("\n")
@@ -142,5 +156,33 @@ public class AiEventDescriptionService {
 
     private static String nonBlankOrPlaceholder(String s) {
         return (s == null || s.isBlank()) ? "(no descriptor available)" : s;
+    }
+
+    /** Deterministic structured style block for a pinned vibe — the building blocks of the prompt. */
+    private static String vibeStyleBlock(Vibe v) {
+        StringBuilder b = new StringBuilder();
+        b.append("    Visual style: ").append(v.visualStyle()).append("\n");
+        if (v.palette() != null && !v.palette().isEmpty()) {
+            b.append("    Palette: ").append(String.join(", ", v.palette())).append("\n");
+        }
+        b.append("    Typography: ").append(v.typography()).append("\n");
+        b.append("    Composition: ").append(v.composition()).append("\n");
+        if (v.avoid() != null && !v.avoid().isEmpty()) {
+            b.append("    Avoid: ").append(String.join(", ", v.avoid())).append("\n");
+        }
+        return b.toString();
+    }
+
+    /** Appends the universal negative prompt + IP rule when configured (guarded for unit tests). */
+    private void appendUniversalRules(StringBuilder sb) {
+        UniversalRules rules = vibeLibrary.universalRules();
+        if (rules == null) return;
+        if (rules.negativePrompt() != null && !rules.negativePrompt().isBlank()) {
+            sb.append("AVOID in the artwork: ").append(rules.negativePrompt()).append("\n");
+        }
+        if (rules.ipRule() != null && !rules.ipRule().isBlank()) {
+            sb.append("IP rule: ").append(rules.ipRule()).append("\n");
+        }
+        sb.append("\n");
     }
 }

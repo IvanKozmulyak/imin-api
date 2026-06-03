@@ -1,7 +1,10 @@
 package com.imin.iminapi.service;
 
 import com.imin.iminapi.dto.EventCreatorRequest;
+import com.imin.iminapi.dto.UniversalRules;
+import com.imin.iminapi.dto.Vibe;
 import com.imin.iminapi.service.poster.ReferenceImageLibrary;
+import com.imin.iminapi.service.poster.VibeLibrary;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -21,12 +24,13 @@ class AiEventDescriptionServiceTest {
 
     @Mock private ChatClient chatClient;
     @Mock private ReferenceImageLibrary library;
+    @Mock private VibeLibrary vibeLibrary;
 
     private AiEventDescriptionService service;
 
     @BeforeEach
     void setUp() {
-        service = new AiEventDescriptionService(chatClient, library);
+        service = new AiEventDescriptionService(chatClient, library, vibeLibrary);
         lenient().when(library.tags()).thenReturn(List.of("neon_underground", "chrome_tropical"));
         lenient().when(library.descriptor("neon_underground")).thenReturn("Magenta neon and black void.");
         lenient().when(library.descriptor("chrome_tropical")).thenReturn("Chrome 3D type, sunset gradient.");
@@ -65,5 +69,28 @@ class AiEventDescriptionServiceTest {
         String prompt = service.buildPrompt(req(null), null);
 
         assertThat(prompt).contains("neon_underground — (no descriptor available)");
+    }
+
+    @Test
+    void buildPrompt_pinnedVibe_injectsStructuredPresetAndUniversalRules() {
+        Vibe v = new Vibe("brutalist_techno", "Brutalist Techno", List.of("techno"),
+                "raw exposed concrete, harsh single-source lighting", List.of("#0A0A0A", "#FF2D00"),
+                "oversized condensed grotesk, all caps", "giant headline, lots of negative space",
+                List.of("severe"), List.of("color gradients", "warmth"),
+                "recraft", List.of("reference-images/Brutalist Techno"), null, "brutalist", false);
+        when(vibeLibrary.byId("brutalist_techno")).thenReturn(java.util.Optional.of(v));
+        when(vibeLibrary.universalRules()).thenReturn(new UniversalRules(
+                List.of("4:5"), "blurry, watermark", "never in the style of a real artist"));
+
+        String prompt = service.buildPrompt(req("brutalist_techno"), null);
+
+        assertThat(prompt).contains("sub_style_tag is pre-selected as brutalist_techno");
+        assertThat(prompt).contains("Visual style: raw exposed concrete");
+        assertThat(prompt).contains("Palette: #0A0A0A, #FF2D00");
+        assertThat(prompt).contains("Typography: oversized condensed grotesk");
+        assertThat(prompt).contains("Avoid: color gradients, warmth");
+        assertThat(prompt).contains("AVOID in the artwork: blurry, watermark");
+        assertThat(prompt).contains("IP rule: never in the style of a real artist");
+        assertThat(prompt).doesNotContain("(no descriptor available)");
     }
 }

@@ -16,7 +16,9 @@ import com.imin.iminapi.service.AiEventDescriptionService;
 import com.imin.iminapi.service.PricingService;
 import com.imin.iminapi.service.poster.PosterOrchestrator;
 import com.imin.iminapi.service.poster.PosterOrchestrator.OrchestrationResult;
+import com.imin.iminapi.security.ApiException;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -24,6 +26,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
@@ -123,5 +126,46 @@ class ConceptStudioServiceTest {
         ConceptResponse r = sut.regenerate(p, conceptId, java.util.List.of());
         assertThat(r.conceptId()).isNotEqualTo(conceptId); // a fresh row
         assertThat(r.name()).isEqualTo("NEW NAME");
+    }
+
+    @Test
+    void create_withVibeId_pins_vibe_as_concept_style_tag() {
+        AuthPrincipal p = owner();
+        when(repo.save(any(GeneratedEvent.class))).thenAnswer(inv -> {
+            GeneratedEvent e = inv.getArgument(0);
+            if (e.getId() == null) e.setId(UUID.randomUUID());
+            return e;
+        });
+        when(vibeLibrary.hasVibe("brutalist_techno")).thenReturn(true);
+
+        String body = "p".repeat(40);
+        when(descService.generateConcept(any())).thenReturn(new PosterConcept("neon_underground", "palette",
+                List.of(new PosterVariant("atmospheric", body, "4:5", "Design"),
+                        new PosterVariant("graphic", body, "1:1", "Design"),
+                        new PosterVariant("minimal", body, "9:16", "Design"))));
+        when(orchestrator.run(any(), any(), any())).thenReturn(new OrchestrationResult(
+                UUID.randomUUID(), "brutalist_techno",
+                List.of(new GeneratedPoster(UUID.randomUUID(), "atmospheric", "raw", "u1", 1L, "p", List.of(), Map.of(), "COMPLETE", null))));
+        when(pricing.recommend(any(), any(), any())).thenReturn(
+                new PricingRecommendation(new BigDecimal("12.00"), new BigDecimal("24.00"), "ok"));
+        when(overviewLlm.generate(any(), any())).thenReturn(
+                new ConceptOverview("N", "d", List.of("#000"), 100, 50));
+
+        sut.create(p, new ConceptRequest("Brutalist warehouse rave brief", "Techno", "Berlin", null, "brutalist_techno"));
+
+        // The concept handed to the orchestrator carries the pinned vibe id, not the LLM's echo.
+        ArgumentCaptor<PosterConcept> cap = ArgumentCaptor.forClass(PosterConcept.class);
+        verify(orchestrator).run(any(), any(), cap.capture());
+        assertThat(cap.getValue().subStyleTag()).isEqualTo("brutalist_techno");
+    }
+
+    @Test
+    void create_withUnknownVibeId_throws() {
+        AuthPrincipal p = owner();
+        when(vibeLibrary.hasVibe("not_a_vibe")).thenReturn(false);
+
+        assertThatThrownBy(() -> sut.create(p,
+                new ConceptRequest("Some brief text long enough", null, null, null, "not_a_vibe")))
+                .isInstanceOf(ApiException.class);
     }
 }

@@ -86,6 +86,11 @@ public class ConceptStudioService {
         ConceptOverview overview;
         try {
             poster = descService.generateConcept(legacy);
+            // Pin the chosen vibe as the concept's style tag so the orchestrator resolves the
+            // vibe's curated reference flyers (forTag(vibeId)), regardless of what the LLM echoed.
+            if (req.vibeId() != null && !req.vibeId().isBlank()) {
+                poster = new PosterConcept(req.vibeId(), poster.colorPaletteDescription(), poster.variants());
+            }
             render = orchestrator.run(staging.getId(), legacy, poster);
             overview = overviewLlm.generate(req, poster);
         } catch (Exception e) {
@@ -151,7 +156,8 @@ public class ConceptStudioService {
                 /* accentColor */ null,
                 /* address */ null,
                 /* rsvpUrl */ null,
-                /* subStyleTag (let LLM pick) */ null,
+                /* subStyleTag: pin the selected vibe (drives prompt + references); else let LLM pick */
+                (req.vibeId() != null && !req.vibeId().isBlank()) ? req.vibeId() : null,
                 ImageProvider.REPLICATE);
     }
 
