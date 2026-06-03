@@ -69,6 +69,17 @@ openai:
     base-url: ${OPENAI_BASE_URL:https://api.openai.com}
     model: ${OPENAI_IMAGE_MODEL:gpt-image-1}
 
+recraft:
+  # Recraft image-gen + per-vibe style training. Required only when
+  # imageProvider=RECRAFT or when training a vibe style.
+  api-key: ${RECRAFT_API_KEY:}
+  base-url: ${RECRAFT_BASE_URL:https://external.api.recraft.ai/v1}
+  model: ${RECRAFT_MODEL:recraftv3}
+  # Base style used for untrained vibes (style_id absent) and as the training
+  # base for POST /styles. One of: realistic_image | digital_illustration |
+  # vector_illustration | icon.
+  base-style: ${RECRAFT_BASE_STYLE:realistic_image}
+
 imin:
   stripe:
     # STRIPE_SECRET_KEY (sk_test_... locally, sk_live_... in prod). Required — see README.
