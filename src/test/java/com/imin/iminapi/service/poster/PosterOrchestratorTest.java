@@ -32,6 +32,8 @@ class PosterOrchestratorTest {
 
     @Mock IdeogramClient ideogramClient;
     @Mock OpenAiImageClient openAiImageClient;
+    @Mock RecraftClient recraftClient;
+    @Mock VibeStyleTrainingService vibeStyleTrainingService;
     @Mock ReferenceImageLibrary referenceLibrary;
     @Mock OverlayCompositor overlayCompositor;
     @Mock PosterImageStorage storage;
@@ -39,8 +41,8 @@ class PosterOrchestratorTest {
 
     private PosterOrchestrator orchestrator() {
         return new PosterOrchestrator(
-                ideogramClient, openAiImageClient, referenceLibrary,
-                overlayCompositor, storage, generationRepository, 6);
+                ideogramClient, openAiImageClient, recraftClient, vibeStyleTrainingService,
+                referenceLibrary, overlayCompositor, storage, generationRepository, 6);
     }
 
     private EventCreatorRequest req() {
@@ -140,6 +142,33 @@ class PosterOrchestratorTest {
         assertThat(result.posters()).allMatch(p -> "COMPLETE".equals(p.status()));
         verify(openAiImageClient, atLeastOnce()).generate(any(), any(), any(), anyLong());
         verify(ideogramClient, org.mockito.Mockito.never()).generate(any(), any(), any(), anyLong(), any());
+    }
+
+    @Test
+    void run_withRecraftProvider_routesToRecraftClientWithResolvedStyleId() {
+        stubRepoAssignsId();
+        when(referenceLibrary.forTag("neon_underground"))
+                .thenReturn(new ReferenceImageSet("neon_underground", List.of("data:..."), List.of("1.png")));
+        when(referenceLibrary.loadAllBytes("neon_underground"))
+                .thenReturn(List.of(new byte[]{5, 5, 5}));
+        when(vibeStyleTrainingService.resolveStyleId("neon_underground", ImageProvider.RECRAFT))
+                .thenReturn("trained-style-xyz");
+        ArgumentCaptor<String> styleIdCaptor = ArgumentCaptor.forClass(String.class);
+        when(recraftClient.generate(any(), any(), styleIdCaptor.capture(), any()))
+                .thenReturn(new RecraftClient.RecraftResult(
+                        new byte[]{3, 3, 3}, Duration.ofMillis(50), "recraftv3"));
+        when(storage.writePng(any())).thenReturn("/images/recraft.png");
+        when(overlayCompositor.applyOverlays(any())).thenReturn(new byte[]{6, 6, 6});
+
+        PosterOrchestrator.OrchestrationResult result =
+                orchestrator().run(UUID.randomUUID(), req(ImageProvider.RECRAFT), concept());
+
+        assertThat(result.posters()).hasSize(3);
+        assertThat(result.posters()).allMatch(p -> "COMPLETE".equals(p.status()));
+        verify(recraftClient, atLeastOnce()).generate(any(), any(), any(), any());
+        verify(ideogramClient, org.mockito.Mockito.never()).generate(any(), any(), any(), anyLong(), any());
+        verify(openAiImageClient, org.mockito.Mockito.never()).generate(any(), any(), any(), anyLong());
+        assertThat(styleIdCaptor.getAllValues()).contains("trained-style-xyz");
     }
 
     @Test

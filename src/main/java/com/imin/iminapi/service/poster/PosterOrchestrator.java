@@ -22,6 +22,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadLocalRandom;
 
@@ -32,15 +36,20 @@ public class PosterOrchestrator {
 
     private final IdeogramClient ideogramClient;
     private final OpenAiImageClient openAiImageClient;
+    private final RecraftClient recraftClient;
+    private final VibeStyleTrainingService vibeStyleTrainingService;
     private final ReferenceImageLibrary referenceLibrary;
     private final OverlayCompositor overlayCompositor;
     private final PosterImageStorage storage;
     private final PosterGenerationRepository generationRepository;
     private final Semaphore replicateCap;
+    private final ExecutorService variantPool;
 
     public PosterOrchestrator(
             IdeogramClient ideogramClient,
             OpenAiImageClient openAiImageClient,
+            RecraftClient recraftClient,
+            VibeStyleTrainingService vibeStyleTrainingService,
             ReferenceImageLibrary referenceLibrary,
             OverlayCompositor overlayCompositor,
             PosterImageStorage storage,
@@ -48,12 +57,28 @@ public class PosterOrchestrator {
             @Value("${replicate.max-concurrent:6}") int maxConcurrent) {
         this.ideogramClient = ideogramClient;
         this.openAiImageClient = openAiImageClient;
+        this.recraftClient = recraftClient;
+        this.vibeStyleTrainingService = vibeStyleTrainingService;
         this.referenceLibrary = referenceLibrary;
         this.overlayCompositor = overlayCompositor;
         this.storage = storage;
         this.generationRepository = generationRepository;
         this.replicateCap = new Semaphore(maxConcurrent, true);
+        // Small fixed pool sized for the 3 variants of one generation; the
+        // Semaphore (shared across all in-flight generations) is the real upstream
+        // concurrency cap. Daemon threads so the pool never blocks JVM shutdown.
+        this.variantPool = Executors.newFixedThreadPool(
+                Math.min(VARIANT_POOL_SIZE, Math.max(1, maxConcurrent)),
+                r -> {
+                    Thread t = new Thread(r, "poster-variant-" + POOL_THREAD_SEQ.incrementAndGet());
+                    t.setDaemon(true);
+                    return t;
+                });
     }
+
+    private static final int VARIANT_POOL_SIZE = 3;
+    private static final java.util.concurrent.atomic.AtomicInteger POOL_THREAD_SEQ =
+            new java.util.concurrent.atomic.AtomicInteger();
 
     public record OrchestrationResult(UUID generationId, String subStyleTag, List<GeneratedPoster> posters) {}
 
@@ -71,13 +96,31 @@ public class PosterOrchestrator {
         }
 
         List<PosterVariant> variants = concept.variants();
-        List<GeneratedPoster> results = new ArrayList<>(variants.size());
+        final PosterGeneration gen = generation;
+        // Dispatch the variants concurrently on the bounded pool; the Semaphore
+        // inside generateOne is the real upstream concurrency cap. Submit in order,
+        // collect Futures in order, then join in order so results preserve the
+        // variant order regardless of completion order. Each task does only
+        // in-memory mutations + external calls on the pool thread; the single
+        // generationRepository.save happens on the main thread after join.
+        List<Future<GeneratedPoster>> futures = new ArrayList<>(variants.size());
         for (PosterVariant v : variants) {
+            futures.add(variantPool.submit(() -> generateOne(gen, v, refs, request)));
+        }
+
+        List<GeneratedPoster> results = new ArrayList<>(variants.size());
+        for (int i = 0; i < variants.size(); i++) {
+            PosterVariant v = variants.get(i);
             try {
-                results.add(generateOne(generation, v, refs, request));
-            } catch (RuntimeException e) {
-                log.error("Variant task threw unexpectedly", e);
-                results.add(failedPoster(null, v.variantStyle(), e.getMessage()));
+                results.add(futures.get(i).get());
+            } catch (ExecutionException e) {
+                Throwable cause = e.getCause() != null ? e.getCause() : e;
+                log.error("Variant task threw unexpectedly", cause);
+                results.add(failedPoster(null, v.variantStyle(), cause.getMessage()));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.error("Interrupted while awaiting variant task", e);
+                results.add(failedPoster(null, v.variantStyle(), "interrupted while awaiting variant"));
             }
         }
 
@@ -112,7 +155,10 @@ public class PosterOrchestrator {
         entity.setReferenceImagesUsed(String.join(",", refs.referenceIds()));
         entity.setSeed(seed);
         entity.setStatus(PosterVariantStatus.PENDING);
-        generation.getVariants().add(entity);
+        // Shared mutable collection across the variant pool threads — synchronize the add.
+        synchronized (generation) {
+            generation.getVariants().add(entity);
+        }
 
         ImageProvider provider = request.effectiveImageProvider();
         try {
@@ -165,6 +211,19 @@ public class PosterOrchestrator {
                     variant.aspectRatio(),
                     refBytes,
                     seed).imageBytes();
+        }
+        if (provider == ImageProvider.RECRAFT) {
+            // The sub-style tag is the vibe id; resolve the trained style_id (vibe_style
+            // table, falling back to Vibe.styleId() from vibes.yaml) and the curated
+            // reference bytes for that vibe.
+            String styleId = vibeStyleTrainingService.resolveStyleId(
+                    refs.subStyleTag(), ImageProvider.RECRAFT);
+            List<byte[]> refBytes = referenceLibrary.loadAllBytes(refs.subStyleTag());
+            return recraftClient.generate(
+                    variant.ideogramPrompt(),
+                    variant.aspectRatio(),
+                    styleId,
+                    refBytes).imageBytes();
         }
         IdeogramClient.IdeogramResult ideogram = ideogramClient.generate(
                 variant.ideogramPrompt(),
