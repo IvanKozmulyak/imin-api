@@ -238,6 +238,20 @@ JSON scene-graph describing each text slot:
    real/Cyrillic text is overlay.
 6. **Variant count & cost envelope** per generation (today 3). Default: keep 3.
 
+## 9b. Decisions resolved (2026-06-03)
+
+- **Q1 Coverage:** keep all 12 vibes; the 7 without curated flyers ship text-only (preset-driven)
+  and get reference images curated over time. No vibe is hidden.
+- **Q2 IP:** curated flyers are used **only** as private style conditioning (trained style /
+  style refs); outputs are original; sources are never named, shipped, or attributed.
+- **Q2b Engine:** **Recraft V3** (reusable per-vibe trained `style_id`) is the day-one primary;
+  Ideogram 3.0 is the fallback. Requires a Recraft API key + a one-time per-vibe training step
+  (operator action). Until trained, the Ideogram fallback conditions via `style_reference_images`.
+- **Q3 Render stack:** **Satori → SVG → resvg** server-side for the text layer (rich layout +
+  Cyrillic/i18n), sharing markup with the client renderer.
+
+Still open: Q5 (decorative model-text language) — see below / asked separately.
+
 ## 10. Non-goals
 
 - Organizer-uploaded brand kits / custom reference images (future).
