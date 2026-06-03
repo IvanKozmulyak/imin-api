@@ -3,6 +3,9 @@ package com.imin.iminapi.dto.ai;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
+import java.time.LocalDate;
+import java.util.List;
+
 public record ConceptRequest(
         @NotBlank @Size(min = 10, max = 500) String vibe,
         String genre,
@@ -10,4 +13,13 @@ public record ConceptRequest(
         Integer capacity,
         // Optional selected vibe preset id (one of the VibeLibrary ids). When present it pins the
         // aesthetic; when absent the vibe is auto-suggested from genre. Validated in the service.
-        String vibeId) {}
+        String vibeId,
+        // Optional real event details. When provided they drive the deterministic text layer:
+        // the real-font Satori overlay (title/date/venue/lineup) and the QR (rsvpUrl) + address band.
+        // Absent → exploratory concept (art only); present → the text layer can be composited.
+        String title,
+        LocalDate eventDate,
+        String venue,
+        List<String> lineup,
+        String address,
+        String rsvpUrl) {}

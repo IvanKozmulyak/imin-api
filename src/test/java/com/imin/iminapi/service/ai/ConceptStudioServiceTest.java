@@ -3,6 +3,7 @@ package com.imin.iminapi.service.ai;
 import com.imin.iminapi.dto.GeneratedPoster;
 import com.imin.iminapi.dto.PosterConcept;
 import com.imin.iminapi.dto.PosterVariant;
+import com.imin.iminapi.dto.Vibe;
 import com.imin.iminapi.dto.PricingRecommendation;
 import com.imin.iminapi.dto.ai.ConceptOverview;
 import com.imin.iminapi.dto.ai.ConceptRequest;
@@ -77,7 +78,9 @@ class ConceptStudioServiceTest {
                 new ConceptOverview("ANTRUM", "Deep in a Berlin warehouse...",
                         List.of("#1a1a18", "#2d5cff", "#c03030", "#f2f1ec"), 250, 78));
 
-        ConceptResponse r = sut.create(p, new ConceptRequest("Moody Berlin techno warehouse", "Techno", "Berlin", null, null));
+        ConceptResponse r = sut.create(p, new ConceptRequest(
+                "Moody Berlin techno warehouse", "Techno", "Berlin", null, null,
+                null, null, null, null, null, null));
 
         assertThat(r.conceptId()).isNotNull();
         assertThat(r.name()).isEqualTo("ANTRUM");
@@ -137,6 +140,9 @@ class ConceptStudioServiceTest {
             return e;
         });
         when(vibeLibrary.hasVibe("brutalist_techno")).thenReturn(true);
+        when(vibeLibrary.byId("brutalist_techno")).thenReturn(java.util.Optional.of(new Vibe(
+                "brutalist_techno", "Brutalist Techno", List.of("techno"), "vs", List.of("#000"),
+                "typ", "comp", List.of(), List.of(), "recraft", List.of(), null, "brutalist", false)));
 
         String body = "p".repeat(40);
         when(descService.generateConcept(any())).thenReturn(new PosterConcept("neon_underground", "palette",
@@ -151,7 +157,9 @@ class ConceptStudioServiceTest {
         when(overviewLlm.generate(any(), any())).thenReturn(
                 new ConceptOverview("N", "d", List.of("#000"), 100, 50));
 
-        sut.create(p, new ConceptRequest("Brutalist warehouse rave brief", "Techno", "Berlin", null, "brutalist_techno"));
+        sut.create(p, new ConceptRequest(
+                "Brutalist warehouse rave brief", "Techno", "Berlin", null, "brutalist_techno",
+                null, null, null, null, null, null));
 
         // The concept handed to the orchestrator carries the pinned vibe id, not the LLM's echo.
         ArgumentCaptor<PosterConcept> cap = ArgumentCaptor.forClass(PosterConcept.class);
@@ -160,12 +168,31 @@ class ConceptStudioServiceTest {
     }
 
     @Test
+    void providerFor_mapsModelRoute_onlyWhenRoutingEnabled() {
+        Vibe recraftVibe = vibe("recraft");
+        // Default: routing disabled -> always REPLICATE.
+        assertThat(sut.providerFor(recraftVibe)).isEqualTo(com.imin.iminapi.model.ImageProvider.REPLICATE);
+
+        org.springframework.test.util.ReflectionTestUtils.setField(sut, "providerRoutingEnabled", true);
+        assertThat(sut.providerFor(recraftVibe)).isEqualTo(com.imin.iminapi.model.ImageProvider.RECRAFT);
+        assertThat(sut.providerFor(vibe("gpt-image"))).isEqualTo(com.imin.iminapi.model.ImageProvider.OPENAI);
+        assertThat(sut.providerFor(vibe("sdxl"))).isEqualTo(com.imin.iminapi.model.ImageProvider.REPLICATE);
+        assertThat(sut.providerFor(null)).isEqualTo(com.imin.iminapi.model.ImageProvider.REPLICATE);
+    }
+
+    private static Vibe vibe(String modelRoute) {
+        return new Vibe("v", "V", List.of("g"), "vs", List.of("#000"), "typ", "comp",
+                List.of(), List.of(), modelRoute, List.of(), null, "tpl", false);
+    }
+
+    @Test
     void create_withUnknownVibeId_throws() {
         AuthPrincipal p = owner();
         when(vibeLibrary.hasVibe("not_a_vibe")).thenReturn(false);
 
         assertThatThrownBy(() -> sut.create(p,
-                new ConceptRequest("Some brief text long enough", null, null, null, "not_a_vibe")))
+                new ConceptRequest("Some brief text long enough", null, null, null, "not_a_vibe",
+                        null, null, null, null, null, null)))
                 .isInstanceOf(ApiException.class);
     }
 }

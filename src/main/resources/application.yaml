@@ -60,6 +60,11 @@ poster:
     # imin-public base URL (no trailing slash), e.g. https://imin.wtf or the Vercel deploy URL.
     base-url: ${POSTER_COMPOSITOR_BASE_URL:}
     width: ${POSTER_COMPOSITOR_WIDTH:1080}
+  provider-routing:
+    # When true, each vibe's model_route (vibes.yaml: recraft | gpt-image | sdxl) selects the image
+    # provider (recraft->RECRAFT, gpt-image->OPENAI, else REPLICATE/Ideogram). Default false →
+    # REPLICATE for all vibes. Enable only once RECRAFT_API_KEY + per-vibe trained styles exist.
+    enabled: ${POSTER_PROVIDER_ROUTING_ENABLED:false}
 
 openrouter:
   api-key: ${OPENROUTER_API_KEY}

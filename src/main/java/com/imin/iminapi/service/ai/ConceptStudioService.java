@@ -4,10 +4,12 @@ import com.imin.iminapi.dto.EventCreatorRequest;
 import com.imin.iminapi.dto.GeneratedPoster;
 import com.imin.iminapi.dto.PosterConcept;
 import com.imin.iminapi.dto.PricingRecommendation;
+import com.imin.iminapi.dto.Vibe;
 import com.imin.iminapi.dto.ai.*;
 import com.imin.iminapi.model.GeneratedEvent;
 import com.imin.iminapi.model.GeneratedEventStatus;
 import com.imin.iminapi.model.ImageProvider;
+import org.springframework.beans.factory.annotation.Value;
 import com.imin.iminapi.repository.GeneratedEventRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
@@ -40,6 +42,12 @@ public class ConceptStudioService {
     private final GeneratedEventRepository repo;
     private final VibeLibrary vibeLibrary;
 
+    // When true, the resolved vibe's model_route (vibes.yaml) selects the image provider
+    // (recraft->RECRAFT, gpt-image->OPENAI, else REPLICATE). Default false → REPLICATE/Ideogram
+    // for every vibe (safe until Recraft keys + per-vibe trained styles are in place).
+    @Value("${poster.provider-routing.enabled:false}")
+    private boolean providerRoutingEnabled;
+
     public ConceptStudioService(AiEventDescriptionService descService,
                                 PosterOrchestrator orchestrator,
                                 PricingService pricing,
@@ -66,8 +74,9 @@ public class ConceptStudioService {
         ConceptRequest req = new ConceptRequest(
                 prior.getVibe() == null ? "rerun" : prior.getVibe(),
                 prior.getGenre(), prior.getCity(),
-                /* capacity hint */ null,
-                /* vibeId */ null);
+                /* capacity */ null, /* vibeId */ null,
+                /* title */ null, /* eventDate */ null, /* venue */ null,
+                /* lineup */ null, /* address */ null, /* rsvpUrl */ null);
         return run(p, req);
     }
 
@@ -141,32 +150,44 @@ public class ConceptStudioService {
         return g;
     }
 
-    /** The selected vibe id, or one auto-suggested from genre (so a vibe always drives generation). */
-    private String resolveVibeId(ConceptRequest req) {
-        if (req.vibeId() != null && !req.vibeId().isBlank()) {
-            return req.vibeId();
+    /** The selected vibe, or one auto-suggested from genre (so a vibe always drives generation). */
+    private Vibe resolveVibe(ConceptRequest req) {
+        return vibeLibrary.byId(req.vibeId())
+                .orElseGet(() -> vibeLibrary.suggestForGenre(req.genre()));
+    }
+
+    /** Map the vibe's declared model_route to a provider when routing is enabled; else REPLICATE. */
+    ImageProvider providerFor(Vibe vibe) {
+        if (!providerRoutingEnabled || vibe == null || vibe.modelRoute() == null) {
+            return ImageProvider.REPLICATE;
         }
-        var v = vibeLibrary.suggestForGenre(req.genre());
-        return v == null ? null : v.id();
+        return switch (vibe.modelRoute().toLowerCase()) {
+            case "recraft" -> ImageProvider.RECRAFT;
+            case "gpt-image", "openai" -> ImageProvider.OPENAI;
+            default -> ImageProvider.REPLICATE; // sdxl, ideogram, or unknown
+        };
     }
 
     private EventCreatorRequest toLegacyRequest(ConceptRequest req) {
+        Vibe vibe = resolveVibe(req);
+        String djName = (req.lineup() == null || req.lineup().isEmpty())
+                ? null : String.join(", ", req.lineup());
         return new EventCreatorRequest(
                 req.vibe(),
                 DEFAULT_TONE,
                 req.genre() == null ? "Techno" : req.genre(),
                 req.city() == null ? "Berlin" : req.city(),
-                LocalDate.now().plusMonths(2),
+                req.eventDate() != null ? req.eventDate() : LocalDate.now().plusMonths(2),
                 DEFAULT_PLATFORMS,
-                /* djName */ null,
-                /* location */ null,
-                /* title */ null,
+                /* djName  */ djName,
+                /* location*/ req.venue(),
+                /* title   */ req.title(),
                 /* accentColor */ null,
-                /* address */ null,
-                /* rsvpUrl */ null,
+                /* address */ req.address(),
+                /* rsvpUrl */ req.rsvpUrl(),
                 /* subStyleTag: the selected vibe, or one auto-suggested from genre (always set) */
-                resolveVibeId(req),
-                ImageProvider.REPLICATE);
+                vibe == null ? null : vibe.id(),
+                providerFor(vibe));
     }
 
     private static List<PosterDto> mapPosters(List<GeneratedPoster> posters, List<String> palette) {
