@@ -33,10 +33,13 @@ public class ReferenceImageLibrary {
     private static final Logger log = LoggerFactory.getLogger(ReferenceImageLibrary.class);
 
     private final ResourceLoader resourceLoader;
+    private final org.springframework.core.io.support.PathMatchingResourcePatternResolver patternResolver;
     private final String configFile;
     private final boolean analyzeOnStartup;
+    private final int maxPerTag;
     private final StyleReferenceAnalysisRepository analysisRepo;
     private final ReferenceImageAnalyzer analyzer;
+    private final VibeLibrary vibeLibrary;
     private final Map<String, String> descriptors = new HashMap<>();
     private Map<String, List<LoadedReference>> byTag = Collections.emptyMap();
 
@@ -44,41 +47,114 @@ public class ReferenceImageLibrary {
             ResourceLoader resourceLoader,
             StyleReferenceAnalysisRepository analysisRepo,
             ReferenceImageAnalyzer analyzer,
+            VibeLibrary vibeLibrary,
             @Value("${poster.references.config-file:classpath:poster-references.yaml}") String configFile,
-            @Value("${poster.references.analyze-on-startup:true}") boolean analyzeOnStartup) {
+            @Value("${poster.references.analyze-on-startup:true}") boolean analyzeOnStartup,
+            @Value("${poster.references.max-per-tag:4}") int maxPerTag) {
         this.resourceLoader = resourceLoader;
+        this.patternResolver = new org.springframework.core.io.support.PathMatchingResourcePatternResolver(resourceLoader);
         this.analysisRepo = analysisRepo;
         this.analyzer = analyzer;
+        this.vibeLibrary = vibeLibrary;
         this.configFile = configFile;
         this.analyzeOnStartup = analyzeOnStartup;
+        this.maxPerTag = maxPerTag;
     }
 
     @PostConstruct
     void load() {
+        Map<String, List<LoadedReference>> resolved = new LinkedHashMap<>();
         Resource resource = resourceLoader.getResource(configFile);
-        if (!resource.exists()) {
-            log.warn("Reference image config not found at {} — library will be empty", configFile);
-            return;
+        if (resource.exists()) {
+            try (InputStream in = resource.getInputStream()) {
+                Yaml yaml = new Yaml();
+                Map<String, Object> root = yaml.load(in);
+                Object raw = root == null ? null : root.get("references");
+                if (raw instanceof Map<?, ?> refs) {
+                    resolved.putAll(resolveAll(refs));
+                }
+            } catch (IOException e) {
+                log.error("Failed to load reference image config {}", configFile, e);
+            }
+        } else {
+            log.warn("Reference image config not found at {} — only vibe references will be used", configFile);
         }
-        try (InputStream in = resource.getInputStream()) {
-            Yaml yaml = new Yaml();
-            Map<String, Object> root = yaml.load(in);
-            if (root == null) return;
-            Object raw = root.get("references");
-            if (!(raw instanceof Map<?, ?> refs)) return;
-            byTag = resolveAll(refs);
-            int totalLoaded = byTag.values().stream().mapToInt(List::size).sum();
-            int nonEmptyTags = (int) byTag.values().stream().filter(l -> !l.isEmpty()).count();
-            log.info("ReferenceImageLibrary loaded: {} tags, {} populated, {} total references",
-                    byTag.size(), nonEmptyTags, totalLoaded);
-        } catch (IOException e) {
-            log.error("Failed to load reference image config {}", configFile, e);
-        }
+        // Curated vibes (vibes.yaml) contribute references keyed by vibe id, so forTag(vibeId)
+        // resolves the vibe's flyers. Text-only vibes (empty references) are skipped.
+        mergeVibeReferences(resolved);
+        byTag = resolved;
+
+        int totalLoaded = byTag.values().stream().mapToInt(List::size).sum();
+        int nonEmptyTags = (int) byTag.values().stream().filter(l -> !l.isEmpty()).count();
+        log.info("ReferenceImageLibrary loaded: {} tags, {} populated, {} total references",
+                byTag.size(), nonEmptyTags, totalLoaded);
+
         if (analyzeOnStartup) {
             loadDescriptors();
         } else {
             log.info("Startup style-descriptor analysis disabled (poster.references.analyze-on-startup=false)");
         }
+    }
+
+    private void mergeVibeReferences(Map<String, List<LoadedReference>> target) {
+        if (vibeLibrary == null) return;
+        for (com.imin.iminapi.dto.Vibe v : vibeLibrary.all()) {
+            if (v.references() == null || v.references().isEmpty()) continue;
+            List<LoadedReference> resolved = new java.util.ArrayList<>();
+            for (String locator : v.references()) {
+                for (String expanded : expandEntry(locator)) {
+                    try {
+                        resolved.add(resolveOne(expanded));
+                    } catch (IOException e) {
+                        log.warn("Failed to load vibe reference '{}' for vibe '{}': {}",
+                                expanded, v.id(), e.getMessage());
+                    }
+                }
+            }
+            if (!resolved.isEmpty()) {
+                target.put(v.id(), resolved);
+            } else {
+                log.warn("Vibe '{}' declares references {} but none resolved", v.id(), v.references());
+            }
+        }
+    }
+
+    /**
+     * Expand a single config locator into concrete image locators. A folder or {@code .../*} entry
+     * is globbed (classpath) to its image files, sorted by filename and capped at {@code maxPerTag};
+     * an explicit file or remote/data URI passes through unchanged.
+     */
+    private List<String> expandEntry(String entry) {
+        String t = entry.trim();
+        if (t.startsWith("http://") || t.startsWith("https://") || t.startsWith("data:")) {
+            return List.of(t);
+        }
+        boolean looksLikeFile = hasImageExtension(t) && !t.endsWith("/*") && !t.endsWith("/");
+        if (looksLikeFile) {
+            return List.of(t);
+        }
+        String dir = t.endsWith("/*") ? t.substring(0, t.length() - 2)
+                : t.endsWith("/") ? t.substring(0, t.length() - 1) : t;
+        String pattern = "classpath*:" + dir + "/*";
+        try {
+            Resource[] hits = patternResolver.getResources(pattern);
+            return java.util.Arrays.stream(hits)
+                    .map(Resource::getFilename)
+                    .filter(java.util.Objects::nonNull)
+                    .filter(this::hasImageExtension)
+                    .sorted()
+                    .limit(maxPerTag)
+                    .map(name -> dir + "/" + name)
+                    .toList();
+        } catch (IOException e) {
+            log.warn("Failed to glob reference folder '{}': {}", pattern, e.getMessage());
+            return List.of();
+        }
+    }
+
+    private boolean hasImageExtension(String s) {
+        String l = s.toLowerCase();
+        return l.endsWith(".jpg") || l.endsWith(".jpeg") || l.endsWith(".png") || l.endsWith(".webp");
     }
 
     private Map<String, List<LoadedReference>> resolveAll(Map<?, ?> src) {
@@ -89,10 +165,12 @@ public class ReferenceImageLibrary {
             if (e.getValue() instanceof List<?> list) {
                 for (Object item : list) {
                     if (item == null) continue;
-                    try {
-                        resolved.add(resolveOne(item.toString()));
-                    } catch (IOException ioe) {
-                        log.warn("Failed to load reference '{}' for tag '{}': {}", item, tag, ioe.getMessage());
+                    for (String locator : expandEntry(item.toString())) {
+                        try {
+                            resolved.add(resolveOne(locator));
+                        } catch (IOException ioe) {
+                            log.warn("Failed to load reference '{}' for tag '{}': {}", locator, tag, ioe.getMessage());
+                        }
                     }
                 }
             }
