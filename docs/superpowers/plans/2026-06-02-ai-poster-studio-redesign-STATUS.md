@@ -46,17 +46,31 @@ Ideogram as fallback.
    ConceptRequest (validated against VibeLibrary).
 5. `docs` — the spec + the full implementation plan.
 
-Verification: each commit ran its targeted tests green; a final `./mvnw clean test` gate was run
-(see the end of this session). The clean build is what proves the reference fix (no stale classpath).
+## Continued 2026-06-03 (after your 4 decisions: keep 12 vibes / IP=conditioning-only / Recraft primary / Satori render)
 
-## What I deliberately deferred (and why)
+6. `feat(poster)` — **glob folder references + merge curated vibe flyers**: `ReferenceImageLibrary`
+   expands folder locators (capped, deterministic) and merges each curated vibe's flyers keyed by
+   vibe id, so `forTag(vibeId)` resolves them. Boot now loads 12 tags / 30 refs.
+7. `feat(ai)` — **vibe-driven generation, end-to-end**: a selected `vibeId` is pinned as the
+   concept's style tag → the prompt gets the vibe's structured preset (palette/typography/
+   composition/avoid) + universal negative + IP rule (no more `(no descriptor available)`), and the
+   orchestrator feeds the vibe's curated flyers to Ideogram as `style_reference_images`. This is the
+   working "posters that match the curated references" path via Ideogram. Recraft drops into the same
+   `ImageProvider` seam once you add a key + train per-vibe styles.
 
-- **Variant parallelization** — has Hibernate-session threading subtleties I can't validate
-  without live image-gen keys; wants a reviewed change + real run. (Today: ~30–60s sequential.)
-- **Wiring `vibeId` → references + prompt end-to-end** — depends on your taxonomy call (open Q3:
-  do we keep the 5 curated folders, curate the other 7, or redefine tags?). The pieces exist;
-  final wiring is a small follow-up.
-- **Glob/folder reference resolution** — only needed once we feed the genre folders to the model.
+Verification: each commit ran targeted tests green; final `./mvnw clean test` gates the lot
+(665+ tests). The clean build is what proves the reference fix (no stale classpath).
+
+## What's still deferred (and why)
+
+- **Recraft provider (P3)** — your chosen primary engine; needs a Recraft API key + a one-time
+  per-vibe style-training step (operator action). Today the vibe path runs through Ideogram.
+- **Server text compositor + LayoutDocument (P2)** — Satori→SVG→resvg is a Node toolchain; likely
+  lives in a Next.js route / sidecar, not imin-api (Java). Needs its own design + repo decision.
+- **Frontend rebuild (P4)** — replace the Canvas mock; consume `GET /ai/vibes`, send `vibeId`, live
+  text editing. Separate repo (`imin-webapp`); contract is already additive.
+- **Variant parallelization** — Hibernate-session threading subtleties; wants a reviewed change +
+  a real run with keys. (Today: ~30–60s sequential.)
 - **Recraft provider, server text-compositor + LayoutDocument, the frontend rebuild** — P2–P5,
   need keys / a render-stack decision / the other repo. Outlined in the plan.
 
