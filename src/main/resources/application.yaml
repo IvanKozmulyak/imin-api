@@ -46,6 +46,7 @@ poster:
     enabled: ${POSTER_TEXT_VALIDATION_ENABLED:true}
     model: ${POSTER_TEXT_VALIDATION_MODEL:openai/gpt-4o-mini}
     max-extra-text-items: ${POSTER_TEXT_VALIDATION_MAX_EXTRA_TEXT_ITEMS:2}
+    max-regenerations: ${POSTER_TEXT_VALIDATION_MAX_REGENERATIONS:1}
   overlay:
     qr-size-px: 120
     address-max-chars: 80

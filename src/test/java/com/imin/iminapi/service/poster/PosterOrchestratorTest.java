@@ -27,6 +27,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -49,7 +50,7 @@ class PosterOrchestratorTest {
         return new PosterOrchestrator(
                 ideogramClient, openAiImageClient, recraftClient, vibeStyleTrainingService,
                 referenceLibrary, overlayCompositor, textCompositor, textSpecFactory, textValidation,
-                storage, generationRepository, 6);
+                storage, generationRepository, 1, 6);
     }
 
     private EventCreatorRequest req() {
@@ -242,9 +243,52 @@ class PosterOrchestratorTest {
         assertThatThrownBy(() -> orchestrator().run(UUID.randomUUID(), request, c))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("missing required text");
-        verify(textValidation).validateOrExplain(rawBytes, spec);
+        verify(recraftClient, times(2)).generate(any(), any(), any(), any());
+        verify(textValidation, times(2)).validateOrExplain(rawBytes, spec);
         verify(textCompositor, never()).composite(any(), any(), any());
         verify(overlayCompositor, never()).applyOverlays(any());
+    }
+
+    @Test
+    void run_withRecraftProvider_retriesOnceWhenTextValidationFails() {
+        stubRepoAssignsId();
+        EventCreatorRequest request = req(ImageProvider.RECRAFT);
+        byte[] rejectedRawBytes = new byte[]{1};
+        byte[] acceptedRawBytes = new byte[]{2};
+        PosterTextSpec spec = new PosterTextSpec(List.of("Void"), List.of("Void", "BERLIN"), "prompt");
+        PosterConcept c = new PosterConcept("neon_underground", "palette",
+                List.of(new PosterVariant("graphic", "p".repeat(40), "4:5", "Design")));
+        OverlayCompositor.Input expectedOverlay =
+                new OverlayCompositor.Input(acceptedRawBytes, request.rsvpUrl(), null);
+        when(referenceLibrary.forTag("neon_underground"))
+                .thenReturn(new ReferenceImageSet("neon_underground", List.of("data:..."), List.of("1.png")));
+        when(referenceLibrary.loadAllBytes("neon_underground"))
+                .thenReturn(List.of(new byte[]{5, 5, 5}));
+        when(vibeStyleTrainingService.resolveStyleId("neon_underground", ImageProvider.RECRAFT))
+                .thenReturn("trained-style-xyz");
+        when(recraftClient.generate(any(), any(), any(), any()))
+                .thenReturn(new RecraftClient.RecraftResult(rejectedRawBytes, Duration.ofMillis(50), "recraftv3"))
+                .thenReturn(new RecraftClient.RecraftResult(acceptedRawBytes, Duration.ofMillis(50), "recraftv3"));
+        when(textSpecFactory.from(request)).thenReturn(spec);
+        when(textValidation.validateOrExplain(rejectedRawBytes, spec))
+                .thenReturn(new PosterTextValidationService.ValidationDecision(false, "missing required text"));
+        when(textValidation.validateOrExplain(acceptedRawBytes, spec))
+                .thenReturn(new PosterTextValidationService.ValidationDecision(true, null));
+        when(storage.writePng(rejectedRawBytes)).thenReturn("/images/recraft-raw-1.png");
+        when(storage.writePng(acceptedRawBytes)).thenReturn("/images/recraft-raw-2.png");
+        when(overlayCompositor.applyOverlays(expectedOverlay)).thenReturn(acceptedRawBytes);
+
+        PosterOrchestrator.OrchestrationResult result =
+                orchestrator().run(UUID.randomUUID(), request, c);
+
+        assertThat(result.posters()).hasSize(1);
+        GeneratedPoster poster = result.posters().get(0);
+        assertThat(poster.status()).isEqualTo("COMPLETE");
+        assertThat(poster.finalUrl()).isEqualTo("/images/recraft-raw-2.png");
+        verify(recraftClient, times(2)).generate(any(), any(), any(), any());
+        verify(textValidation).validateOrExplain(rejectedRawBytes, spec);
+        verify(textValidation).validateOrExplain(acceptedRawBytes, spec);
+        verify(overlayCompositor).applyOverlays(expectedOverlay);
     }
 
     @Test

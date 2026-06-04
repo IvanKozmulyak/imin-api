@@ -46,6 +46,7 @@ public class PosterOrchestrator {
     private final PosterTextValidationService textValidation;
     private final PosterImageStorage storage;
     private final PosterGenerationRepository generationRepository;
+    private final int maxTextValidationRegenerations;
     private final Semaphore replicateCap;
     private final ExecutorService variantPool;
 
@@ -61,6 +62,7 @@ public class PosterOrchestrator {
             PosterTextValidationService textValidation,
             PosterImageStorage storage,
             PosterGenerationRepository generationRepository,
+            @Value("${poster.text-validation.max-regenerations:1}") int maxTextValidationRegenerations,
             @Value("${replicate.max-concurrent:6}") int maxConcurrent) {
         this.ideogramClient = ideogramClient;
         this.openAiImageClient = openAiImageClient;
@@ -73,6 +75,7 @@ public class PosterOrchestrator {
         this.textValidation = textValidation;
         this.storage = storage;
         this.generationRepository = generationRepository;
+        this.maxTextValidationRegenerations = Math.max(0, maxTextValidationRegenerations);
         this.replicateCap = new Semaphore(maxConcurrent, true);
         // Small fixed pool sized for the 3 variants of one generation; the
         // Semaphore (shared across all in-flight generations) is the real upstream
@@ -180,15 +183,15 @@ public class PosterOrchestrator {
             return toDto(entity);
         }
         try {
+            if (provider == ImageProvider.RECRAFT) {
+                return generateRecraftWithValidationRetry(entity, provider, variant, refs, seed, request);
+            }
             byte[] rawBytes = renderVariant(provider, variant, refs, seed);
             String rawUrl = storage.writePng(rawBytes);
             entity.setRawUrl(rawUrl);
             entity.setStatus(PosterVariantStatus.RAW_READY);
 
-            // Recraft owns visible event typography; keep Satori full-text compositing for fallback providers.
-            byte[] finalBytes = provider == ImageProvider.RECRAFT
-                    ? validateAndApplyQrOnly(rawBytes, request)
-                    : applyTextLayer(rawBytes, refs, request);
+            byte[] finalBytes = applyTextLayer(rawBytes, refs, request);
             String finalUrl = finalBytes == rawBytes
                     ? rawUrl
                     : storage.writePng(finalBytes);
@@ -207,15 +210,52 @@ public class PosterOrchestrator {
         }
     }
 
+    private GeneratedPoster generateRecraftWithValidationRetry(
+            PosterVariantEntity entity,
+            ImageProvider provider,
+            PosterVariant variant,
+            ReferenceImageSet refs,
+            long seed,
+            EventCreatorRequest request) {
+        for (int attempt = 0; attempt <= maxTextValidationRegenerations; attempt++) {
+            byte[] rawBytes = renderVariant(provider, variant, refs, seed);
+            String rawUrl = storage.writePng(rawBytes);
+            entity.setRawUrl(rawUrl);
+            entity.setStatus(PosterVariantStatus.RAW_READY);
+
+            try {
+                byte[] finalBytes = validateAndApplyQrOnly(rawBytes, request);
+                String finalUrl = finalBytes == rawBytes
+                        ? rawUrl
+                        : storage.writePng(finalBytes);
+                entity.setFinalUrl(finalUrl);
+                entity.setStatus(PosterVariantStatus.COMPLETE);
+                return toDto(entity);
+            } catch (PosterTextValidationRejectedException e) {
+                if (attempt == maxTextValidationRegenerations) {
+                    throw e;
+                }
+                log.warn("Recraft poster text validation failed; regenerating once: {}", e.getMessage());
+            }
+        }
+        throw new IllegalStateException("Recraft poster text validation retry loop exhausted");
+    }
+
     private byte[] validateAndApplyQrOnly(byte[] rawBytes, EventCreatorRequest request) {
         PosterTextSpec spec = textSpecFactory.from(request);
         PosterTextValidationService.ValidationDecision decision =
                 textValidation.validateOrExplain(rawBytes, spec);
         if (!decision.accepted()) {
-            throw new IllegalStateException("Poster text validation failed: " + decision.reason());
+            throw new PosterTextValidationRejectedException("Poster text validation failed: " + decision.reason());
         }
         return overlayCompositor.applyOverlays(new OverlayCompositor.Input(
                 rawBytes, request.rsvpUrl(), null));
+    }
+
+    private static class PosterTextValidationRejectedException extends IllegalStateException {
+        private PosterTextValidationRejectedException(String message) {
+            super(message);
+        }
     }
 
     /**
