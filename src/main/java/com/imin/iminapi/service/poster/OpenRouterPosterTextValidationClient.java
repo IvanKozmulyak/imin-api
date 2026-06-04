@@ -30,12 +30,11 @@ public class OpenRouterPosterTextValidationClient implements PosterTextValidatio
     private final int maxExtraTextItems;
 
     public OpenRouterPosterTextValidationClient(
-            ObjectMapper objectMapper,
             @Value("${openrouter.api-key}") String apiKey,
             @Value("${openrouter.base-url:https://openrouter.ai/api}") String baseUrl,
             @Value("${poster.text-validation.model:openai/gpt-4o-mini}") String model,
             @Value("${poster.text-validation.max-extra-text-items:2}") int maxExtraTextItems) {
-        this.objectMapper = objectMapper;
+        this.objectMapper = new ObjectMapper();
         this.model = model;
         this.maxExtraTextItems = Math.max(0, maxExtraTextItems);
         this.restClient = RestClient.builder()
