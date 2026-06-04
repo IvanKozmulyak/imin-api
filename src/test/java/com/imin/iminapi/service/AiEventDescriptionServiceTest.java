@@ -214,6 +214,47 @@ class AiEventDescriptionServiceTest {
         assertThat(service.validate(c)).contains("typographic) must not contain a human subject");
     }
 
+    // The art-director template itself asks for a "4:5 portrait poster"; a typographic prompt that
+    // faithfully names that orientation must NOT be mistaken for a human subject (regression).
+    private static String typographicWithPortraitOrientation() {
+        return "Oversized condensed grotesk lettering fractures across three separate baselines, knocked clean out "
+                + "of crushed film grain and marbled toner streaks and laid out as a 4:5 portrait poster, with no "
+                + "imagery whatsoever — the type alone is the entire composition, set tight in all-caps with one "
+                + "acid-green accent line slicing diagonally through the stack while dense xerox degradation eats the "
+                + "edges of every glyph down to a small monospaced credit block anchoring the foot of the machine-stamped sheet.";
+    }
+
+    @Test
+    void mentionsHumanSubject_ignoresOrientationAndTypographyVocabulary() {
+        assertThat(AiEventDescriptionService.mentionsHumanSubject("a 4:5 portrait poster of pure type")).isFalse();
+        assertThat(AiEventDescriptionService.mentionsHumanSubject("portrait orientation, body text, geometric figures")).isFalse();
+        assertThat(AiEventDescriptionService.mentionsHumanSubject("a close-crop portrait of a raver")).isTrue();
+        assertThat(AiEventDescriptionService.mentionsHumanSubject("a lone dancer in motion")).isTrue();
+    }
+
+    @Test
+    void validate_acceptsTypographicPromptNamingPortraitOrientation() {
+        PosterConcept c = new PosterConcept("brutalist_techno", "pal", List.of(
+                new PosterVariant("people", peoplePrompt(), "4:5", "Design"),
+                new PosterVariant("object", objectPrompt(), "4:5", "Design"),
+                new PosterVariant("typographic", typographicWithPortraitOrientation(), "4:5", "Design")));
+        assertThat(service.validate(c)).isNull();
+    }
+
+    @Test
+    void validate_rejectsPeopleVariantWhoseOnlyHumanWordIsOrientation() {
+        String peopleNoActualHuman = "An empty concrete warehouse interior shot wide and low for a 4:5 portrait poster, "
+                + "raw formwork ribs and a single hard overhead bulb burning one hot highlight, heavy film grain across the "
+                + "cavernous vacant space with nobody in the frame at all. The bold condensed headline stacks across the very "
+                + "top while the date locks beneath it and a tracked-out venue line runs along the bottom edge as native "
+                + "typography filling the tall vertical sheet completely from corner to corner throughout the whole layout.";
+        PosterConcept c = new PosterConcept("brutalist_techno", "pal", List.of(
+                new PosterVariant("people", peopleNoActualHuman, "4:5", "Design"),
+                new PosterVariant("object", objectPrompt(), "4:5", "Design"),
+                new PosterVariant("typographic", typographicPrompt(), "4:5", "Design")));
+        assertThat(service.validate(c)).contains("must contain a human subject");
+    }
+
     @Test
     void validate_rejectsNearDuplicatePrompts() {
         String p = peoplePrompt();

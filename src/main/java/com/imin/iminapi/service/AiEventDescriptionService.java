@@ -69,6 +69,28 @@ public class AiEventDescriptionService {
     private static final Pattern HUMAN_NOUN = Pattern.compile(
             "\\b(figures?|dancers?|crowds?|portraits?|silhouettes?|faces?|bodies|body|persons?|people)\\b",
             Pattern.CASE_INSENSITIVE);
+    /**
+     * Phrases where a human-noun token actually describes layout/typography, not a person — e.g.
+     * "4:5 portrait poster" (orientation), "body text"/"body copy" (typography), "geometric figures"
+     * (abstract shapes). Neutralized before the human-subject test so a compliant typographic prompt
+     * that names the 4:5 portrait format is not mistaken for a person, and a people prompt is not
+     * satisfied by the orientation word alone.
+     */
+    private static final Pattern DESIGN_VOCAB = Pattern.compile(
+            "\\b(?:"
+            + "portrait\\s+(?:poster|orientation|format|frame|crop|mode|layout|aspect|ratio|sheet|composition)"
+            + "|(?:\\d+\\s*:\\s*\\d+|tall|vertical|upright)\\s+portrait"
+            + "|body\\s+(?:text|copy|of|type|font)"
+            + "|(?:geometric|abstract|stick|line)\\s+figures?"
+            + ")\\b",
+            Pattern.CASE_INSENSITIVE);
+
+    /** True when the prompt names a real human subject, ignoring orientation/typography vocabulary. */
+    static boolean mentionsHumanSubject(String prompt) {
+        if (prompt == null) return false;
+        String cleaned = DESIGN_VOCAB.matcher(prompt).replaceAll(" ");
+        return HUMAN_NOUN.matcher(cleaned).find();
+    }
 
     /** The concept plus the creative directions sampled for it (carried into the orchestrator). */
     public record GeneratedConcept(PosterConcept concept, List<CreativeDirection> directions) {}
@@ -158,10 +180,11 @@ public class AiEventDescriptionService {
         }
 
         // The people variant must show a human; the typographic variant must not (it is type-as-image).
-        if (!HUMAN_NOUN.matcher(variants.get(0).ideogramPrompt()).find()) {
+        // Orientation/typography vocabulary ("4:5 portrait poster", "body text") is neutralized first.
+        if (!mentionsHumanSubject(variants.get(0).ideogramPrompt())) {
             return "variant[0] (people) must contain a human subject (one of " + HUMAN_NOUNS + ")";
         }
-        if (HUMAN_NOUN.matcher(variants.get(2).ideogramPrompt()).find()) {
+        if (mentionsHumanSubject(variants.get(2).ideogramPrompt())) {
             return "variant[2] (typographic) must not contain a human subject — typography is the image";
         }
 
@@ -251,7 +274,7 @@ public class AiEventDescriptionService {
           .append("    - ideogram_prompt: a COMPLETE self-contained Recraft prompt, 60-180 words, following this exact anatomy in order:\n")
           .append("      1. hero subject (or type-as-image for typographic) with concrete visual nouns\n")
           .append("      2. medium (photograph / photocopy / collage / illustration — per the treatment)\n")
-          .append("      3. layout and crop for a 4:5 portrait poster\n")
+          .append("      3. layout and crop for a 4:5 vertical poster (taller than wide)\n")
           .append("      4. lighting\n")
           .append("      5. colors\n")
           .append("      6. typography treatment and where each text element sits\n")
