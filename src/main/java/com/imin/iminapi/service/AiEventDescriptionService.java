@@ -52,7 +52,7 @@ public class AiEventDescriptionService {
                     .user(buildPrompt(request, reinforcement))
                     .call()
                     .entity(PosterConcept.class);
-            String validationError = validate(concept);
+            String validationError = validate(concept, request);
             if (validationError == null) {
                 log.debug("Concept generated on attempt {}: vibe={}, variants={}",
                         attempt, concept.subStyleTag(), concept.variants().size());
@@ -87,6 +87,25 @@ public class AiEventDescriptionService {
             int wc = wordCount(p);
             if (wc < MIN_WORDS) return "variant[" + i + "].ideogram_prompt too short (" + wc + " words, min " + MIN_WORDS + ")";
             if (wc > MAX_WORDS) return "variant[" + i + "].ideogram_prompt too long (" + wc + " words, max " + MAX_WORDS + ")";
+        }
+        return null;
+    }
+
+    String validate(PosterConcept concept, EventCreatorRequest request) {
+        String shapeError = validate(concept);
+        if (shapeError != null) return shapeError;
+
+        PosterTextSpec textSpec = posterTextSpecFactory.from(request);
+        if (textSpec.required().isEmpty()) return null;
+
+        List<PosterVariant> variants = concept.variants();
+        for (int i = 0; i < variants.size(); i++) {
+            String prompt = variants.get(i).ideogramPrompt();
+            for (String requiredText : textSpec.required()) {
+                if (!prompt.contains(requiredText)) {
+                    return "variant[" + i + "].ideogram_prompt missing required text \"" + requiredText + "\"";
+                }
+            }
         }
         return null;
     }

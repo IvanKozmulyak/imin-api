@@ -93,6 +93,34 @@ class AiEventDescriptionServiceTest {
                 .contains("known vibe id");
     }
 
+    @Test
+    void validate_withRequest_rejectsAnyVariantPromptMissingRequiredText() {
+        EventCreatorRequest request = new EventCreatorRequest(
+                "warehouse rave", "energetic", "techno", "Berlin",
+                LocalDate.of(2026, 6, 7), List.of("INSTAGRAM"),
+                "DJ A, DJ B", "RSO", "BIG NIGHT - BERLIN", null,
+                "Schnellerstrasse 137", "https://imin.wtf/e/big-night",
+                "brutalist_techno", null);
+        String completePrompt = "Create a finished brutalist event poster for \"BIG NIGHT - BERLIN\" on "
+                + "\"7 JUN 2026\" at \"RSO\" with native typography, raw exposed concrete, harsh light, "
+                + "oversized condensed grotesk type, torn label details, stamped rails, sparse composition, "
+                + "severe contrast, industrial texture, precise hierarchy, and a clean Recraft-ready layout.";
+        String promptMissingDate = "Create a finished brutalist event poster for \"BIG NIGHT - BERLIN\" at \"RSO\" with native typography, "
+                + "raw exposed concrete, harsh light, oversized condensed grotesk type, torn label details, "
+                + "stamped rails, sparse composition, severe contrast, industrial texture, precise hierarchy, "
+                + "and a clean Recraft-ready layout, but omit the exact date string from the generated poster prompt.";
+        List<PosterVariant> variants = List.of(
+                new PosterVariant("atmospheric", completePrompt, "4:5", "Design"),
+                new PosterVariant("graphic", promptMissingDate, "1:1", "Design"),
+                new PosterVariant("minimal", completePrompt, "9:16", "Design"));
+
+        String error = service.validate(new PosterConcept("brutalist_techno", "palette", variants), request);
+
+        assertThat(error).contains("required text");
+        assertThat(error).contains("variant[1]");
+        assertThat(error).contains("7 JUN 2026");
+    }
+
     private static class FakeVibeLibrary extends VibeLibrary {
         FakeVibeLibrary() {
             super(null, "");
