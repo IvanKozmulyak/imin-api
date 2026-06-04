@@ -38,6 +38,7 @@ class RecraftClientTest {
                 .andExpect(jsonPath("$.size").value("1024x1365"))
                 .andExpect(jsonPath("$.n").value(1))
                 .andExpect(jsonPath("$.response_format").value("b64_json"))
+                .andExpect(jsonPath("$.image_format").value("png"))
                 .andExpect(jsonPath("$.style_id").value("style-abc-123"))
                 .andExpect(jsonPath("$.style").doesNotExist())
                 .andRespond(withSuccess("{\"data\":[{\"b64_json\":\"" + PNG_B64 + "\"}]}",

@@ -47,6 +47,8 @@ public class RecraftClient {
 
     /** Base style used when no trained style_id exists, and as the training base. */
     static final String DEFAULT_BASE_STYLE = "realistic_image";
+    /** The downstream storage/compositor path expects raster bytes that can be embedded as PNG. */
+    static final String DEFAULT_IMAGE_FORMAT = "png";
 
     private final RestClient recraftRestClient;
     private final String model;
@@ -83,6 +85,7 @@ public class RecraftClient {
         body.put("size", size);
         body.put("n", 1);
         body.put("response_format", "b64_json");
+        body.put("image_format", DEFAULT_IMAGE_FORMAT);
         // style and style_id are mutually exclusive in the Recraft API.
         if (hasStyle) {
             body.put("style_id", styleId);
@@ -99,8 +102,8 @@ public class RecraftClient {
                 .body(ImagesResponse.class);
         byte[] bytes = decodeSingle(resp);
         Duration elapsed = Duration.between(start, Instant.now());
-        log.info("Recraft image ({}) generated in {} ms (size={}, style_id={}, baseStyle={}, refs={})",
-                model, elapsed.toMillis(), size, hasStyle ? styleId : "(none)",
+        log.info("Recraft image ({}) generated in {} ms (size={}, image_format={}, style_id={}, baseStyle={}, refs={})",
+                model, elapsed.toMillis(), size, DEFAULT_IMAGE_FORMAT, hasStyle ? styleId : "(none)",
                 hasStyle ? "(unused)" : baseStyle, refCount);
         return new RecraftResult(bytes, elapsed, model);
     }
