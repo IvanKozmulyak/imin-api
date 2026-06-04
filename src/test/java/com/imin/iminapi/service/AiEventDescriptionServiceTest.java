@@ -81,6 +81,38 @@ class AiEventDescriptionServiceTest {
     }
 
     @Test
+    void buildPrompt_forcesNineBySixteenAspectRatio() {
+        String prompt = service.buildPrompt(req("brutalist_techno"), null);
+
+        assertThat(prompt).contains("aspect_ratio: always exactly \"9:16\"");
+        assertThat(prompt).doesNotContain("one of 4:5, 1:1, 9:16, 16:9");
+    }
+
+    @Test
+    void forcePortrait_setsEveryVariantToNineBySixteen() {
+        String body = "word ".repeat(50).trim();
+        List<PosterVariant> variants = List.of(
+                new PosterVariant("atmospheric", body, "4:5", "Design"),
+                new PosterVariant("graphic", body, "1:1", "Design"),
+                new PosterVariant("minimal", body, "16:9", "Design"));
+
+        PosterConcept forced = service.forcePortrait(
+                new PosterConcept("brutalist_techno", "palette", variants));
+
+        assertThat(forced.variants()).extracting(PosterVariant::aspectRatio)
+                .containsExactly("9:16", "9:16", "9:16");
+        // Everything except the aspect ratio is preserved.
+        assertThat(forced.variants()).extracting(PosterVariant::variantStyle)
+                .containsExactly("atmospheric", "graphic", "minimal");
+        assertThat(forced.variants()).extracting(PosterVariant::ideogramPrompt)
+                .containsExactly(body, body, body);
+        assertThat(forced.variants()).extracting(PosterVariant::styleType)
+                .containsExactly("Design", "Design", "Design");
+        assertThat(forced.subStyleTag()).isEqualTo("brutalist_techno");
+        assertThat(forced.colorPaletteDescription()).isEqualTo("palette");
+    }
+
+    @Test
     void validate_acceptsKnownVibe_rejectsUnknown() {
         String body = "word ".repeat(50).trim();
         List<PosterVariant> variants = List.of(
