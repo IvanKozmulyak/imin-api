@@ -112,15 +112,16 @@ public class AiEventDescriptionService {
           .append("- color_palette_description: a brief human-readable description of the dominant colors\n")
           .append("- variants: exactly 3 objects, each with:\n")
           .append("    - variant_style: one of atmospheric, graphic, minimal\n")
-          .append("    - ideogram_prompt: a COMPLETE self-contained prompt, 30-150 words, describing the scene and explicitly including every text element in DOUBLE QUOTES for literal rendering (Ideogram renders quoted strings as typography)\n")
+          .append("    - ideogram_prompt: a COMPLETE self-contained prompt, 30-150 words, describing the scene and the designed EMPTY typographic surfaces where the platform will later place exact event text\n")
           .append("    - aspect_ratio: one of 4:5, 1:1, 9:16, 16:9\n")
           .append("    - style_type: always \"Design\"\n\n")
           .append("STRICT RULES for each ideogram_prompt:\n")
-          .append("- Include a MAXIMUM of 7 text elements (event title, date, venue, DJ, city, ticket price/CTA, hashtag — only the ones given below)\n")
-          .append("- Wrap every single text element in double quotes exactly as it should appear\n")
-          .append("- Describe typography treatment explicitly (e.g. \"chrome 3D lettering\", \"distressed serif\", \"neon outline\")\n")
-          .append("- Never name real venues, real brands, or real DJs by name other than the djName provided\n")
-          .append("- End the prompt with: \"no other text elements\"\n\n");
+          .append("- Do NOT render factual event text, dates, venues, prices, DJ names, URLs, QR codes, or readable words\n")
+          .append("- Instead design empty text surfaces that feel native to the poster: sticker plates, raw headline zones, stamped rails, torn labels, engraved corner marks, or glowing badges\n")
+          .append("- Decorative abstract lettering is allowed only when it is illegible/non-factual and does not compete with the later text layer\n")
+          .append("- Describe typography integration explicitly (e.g. empty chrome sticker plate, distressed stamped rail, raw-print headline zone, engraved minimal corner marks)\n")
+          .append("- Never name real venues, real brands, real DJs, or event-specific text in the artwork\n")
+          .append("- End the prompt with: \"no factual text, blank designed text surfaces only\"\n\n");
         appendUniversalRules(sb);
         sb.append("Event brief:\n")
           .append("- vibe: ").append(request.vibe()).append("\n")
