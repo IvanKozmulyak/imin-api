@@ -32,6 +32,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.*;
 
 class ConceptStudioServiceTest {
@@ -64,15 +65,16 @@ class ConceptStudioServiceTest {
                 List.of(new PosterVariant("atmospheric", "Large event prompt text here one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four twenty-five twenty-six twenty-seven twenty-eight twenty-nine thirty more words here", "3:4", "Design"),
                         new PosterVariant("graphic",     "Large event prompt text here one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four twenty-five twenty-six twenty-seven twenty-eight twenty-nine thirty more words here", "1:1", "Design"),
                         new PosterVariant("minimal",     "Large event prompt text here one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four twenty-five twenty-six twenty-seven twenty-eight twenty-nine thirty more words here", "4:5", "Design")));
-        when(descService.generateConcept(any())).thenReturn(concept);
+        when(descService.generateConcept(any(), anyLong()))
+                .thenReturn(new AiEventDescriptionService.GeneratedConcept(concept, List.of()));
 
         OrchestrationResult result = new OrchestrationResult(
                 UUID.randomUUID(), "neon_underground",
                 List.of(
-                        new GeneratedPoster(UUID.randomUUID(), "atmospheric", "https://cdn/raw1.png", "https://cdn/p1.png", 1L, "prompt", List.of(), Map.of(), "COMPLETE", null),
-                        new GeneratedPoster(UUID.randomUUID(), "graphic",     "https://cdn/raw2.png", "https://cdn/p2.png", 2L, "prompt", List.of(), Map.of(), "COMPLETE", null),
-                        new GeneratedPoster(UUID.randomUUID(), "minimal",     "https://cdn/raw3.png", "https://cdn/p3.png", 3L, "prompt", List.of(), Map.of(), "COMPLETE", null)));
-        when(orchestrator.run(any(), any(), any())).thenReturn(result);
+                        new GeneratedPoster(UUID.randomUUID(), "people", "https://cdn/raw1.png", "https://cdn/p1.png", 1L, "prompt", List.of(), Map.of(), "COMPLETE", null),
+                        new GeneratedPoster(UUID.randomUUID(), "object",     "https://cdn/raw2.png", "https://cdn/p2.png", 2L, "prompt", List.of(), Map.of(), "COMPLETE", null),
+                        new GeneratedPoster(UUID.randomUUID(), "typographic",     "https://cdn/raw3.png", "https://cdn/p3.png", 3L, "prompt", List.of(), Map.of(), "COMPLETE", null)));
+        when(orchestrator.run(any(), any(), any(), anyLong(), any())).thenReturn(result);
 
         when(pricing.recommend(any(), any(), any())).thenReturn(
                 new PricingRecommendation(new BigDecimal("12.00"), new BigDecimal("24.00"), "ok"));
@@ -118,12 +120,13 @@ class ConceptStudioServiceTest {
                 List.of(new PosterVariant("atmospheric", "Large event prompt text here one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four twenty-five twenty-six twenty-seven twenty-eight twenty-nine thirty more words here", "3:4", "Design"),
                         new PosterVariant("graphic", "Large event prompt text here one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four twenty-five twenty-six twenty-seven twenty-eight twenty-nine thirty more words here", "1:1", "Design"),
                         new PosterVariant("minimal", "Large event prompt text here one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four twenty-five twenty-six twenty-seven twenty-eight twenty-nine thirty more words here", "4:5", "Design")));
-        when(descService.generateConcept(any())).thenReturn(concept);
-        when(orchestrator.run(any(), any(), any())).thenReturn(new OrchestrationResult(
+        when(descService.generateConcept(any(), anyLong()))
+                .thenReturn(new AiEventDescriptionService.GeneratedConcept(concept, List.of()));
+        when(orchestrator.run(any(), any(), any(), anyLong(), any())).thenReturn(new OrchestrationResult(
                 UUID.randomUUID(), "flat_graphic",
-                List.of(new GeneratedPoster(UUID.randomUUID(), "atmospheric", "raw", "url1", 1L, "p", List.of(), Map.of(), "COMPLETE", null),
-                        new GeneratedPoster(UUID.randomUUID(), "graphic",     "raw", "url2", 2L, "p", List.of(), Map.of(), "COMPLETE", null),
-                        new GeneratedPoster(UUID.randomUUID(), "minimal",     "raw", "url3", 3L, "p", List.of(), Map.of(), "COMPLETE", null))));
+                List.of(new GeneratedPoster(UUID.randomUUID(), "people", "raw", "url1", 1L, "p", List.of(), Map.of(), "COMPLETE", null),
+                        new GeneratedPoster(UUID.randomUUID(), "object",     "raw", "url2", 2L, "p", List.of(), Map.of(), "COMPLETE", null),
+                        new GeneratedPoster(UUID.randomUUID(), "typographic",     "raw", "url3", 3L, "p", List.of(), Map.of(), "COMPLETE", null))));
         when(pricing.recommend(any(), any(), any())).thenReturn(
                 new PricingRecommendation(new BigDecimal("10.00"), new BigDecimal("20.00"), "ok"));
         when(overviewLlm.generate(any(), any())).thenReturn(new ConceptOverview(
@@ -145,16 +148,19 @@ class ConceptStudioServiceTest {
         when(vibeLibrary.hasVibe("brutalist_techno")).thenReturn(true);
         when(vibeLibrary.byId("brutalist_techno")).thenReturn(java.util.Optional.of(new Vibe(
                 "brutalist_techno", "Brutalist Techno", List.of("techno"), "vs", List.of("#000"),
-                "typ", "comp", List.of(), List.of(), "recraft", List.of(), null, "brutalist", false)));
+                "typ", "comp", List.of(), List.of(), "recraft", List.of(), null, "brutalist", false,
+                "subject", com.imin.iminapi.dto.StyleMode.CURATED_SUBSTYLE, "urban_drama")));
 
         String body = "p".repeat(40);
-        when(descService.generateConcept(any())).thenReturn(new PosterConcept("neon_underground", "palette",
-                List.of(new PosterVariant("atmospheric", body, "4:5", "Design"),
-                        new PosterVariant("graphic", body, "1:1", "Design"),
-                        new PosterVariant("minimal", body, "9:16", "Design"))));
-        when(orchestrator.run(any(), any(), any())).thenReturn(new OrchestrationResult(
+        when(descService.generateConcept(any(), anyLong())).thenReturn(new AiEventDescriptionService.GeneratedConcept(
+                new PosterConcept("neon_underground", "palette",
+                        List.of(new PosterVariant("people", body, "4:5", "Design"),
+                                new PosterVariant("object", body, "1:1", "Design"),
+                                new PosterVariant("typographic", body, "9:16", "Design"))),
+                List.of()));
+        when(orchestrator.run(any(), any(), any(), anyLong(), any())).thenReturn(new OrchestrationResult(
                 UUID.randomUUID(), "brutalist_techno",
-                List.of(new GeneratedPoster(UUID.randomUUID(), "atmospheric", "raw", "u1", 1L, "p", List.of(), Map.of(), "COMPLETE", null))));
+                List.of(new GeneratedPoster(UUID.randomUUID(), "people", "raw", "u1", 1L, "p", List.of(), Map.of(), "COMPLETE", null))));
         when(pricing.recommend(any(), any(), any())).thenReturn(
                 new PricingRecommendation(new BigDecimal("12.00"), new BigDecimal("24.00"), "ok"));
         when(overviewLlm.generate(any(), any())).thenReturn(
@@ -166,7 +172,7 @@ class ConceptStudioServiceTest {
 
         // The concept handed to the orchestrator carries the pinned vibe id, not the LLM's echo.
         ArgumentCaptor<PosterConcept> cap = ArgumentCaptor.forClass(PosterConcept.class);
-        verify(orchestrator).run(any(), any(), cap.capture());
+        verify(orchestrator).run(any(), any(), cap.capture(), anyLong(), any());
         assertThat(cap.getValue().subStyleTag()).isEqualTo("brutalist_techno");
     }
 
@@ -201,7 +207,8 @@ class ConceptStudioServiceTest {
 
     private static Vibe vibe(String modelRoute) {
         return new Vibe("v", "V", List.of("g"), "vs", List.of("#000"), "typ", "comp",
-                List.of(), List.of(), modelRoute, List.of(), null, "tpl", false);
+                List.of(), List.of(), modelRoute, List.of(), null, "tpl", false,
+                "subject", com.imin.iminapi.dto.StyleMode.TRAINED_STYLE_ID, null);
     }
 
     @Test

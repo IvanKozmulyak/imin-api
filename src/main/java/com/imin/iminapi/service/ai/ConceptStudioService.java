@@ -88,17 +88,22 @@ public class ConceptStudioService {
         GeneratedEvent staging = newStagingRow(p, req);
         repo.save(staging);
 
+        // Creative seed for this run, derived from the generation UUID: reproducible per generation,
+        // varies across runs (a regenerate creates a fresh row → fresh seed → fresh creative directions).
+        long creativeSeed = seedFrom(staging.getId());
+
         EventCreatorRequest legacy = toLegacyRequest(req);
         PosterConcept poster;
         OrchestrationResult render;
         ConceptOverview overview;
         try {
-            poster = descService.generateConcept(legacy);
+            AiEventDescriptionService.GeneratedConcept generated = descService.generateConcept(legacy, creativeSeed);
             // Pin the resolved vibe (legacy.subStyleTag is the selected vibe, or one auto-suggested
             // from genre) as the concept's style tag, so the orchestrator resolves that vibe's curated
             // reference flyers (forTag) regardless of what the LLM echoed.
-            poster = new PosterConcept(legacy.subStyleTag(), poster.colorPaletteDescription(), poster.variants());
-            render = orchestrator.run(staging.getId(), legacy, poster);
+            poster = new PosterConcept(legacy.subStyleTag(),
+                    generated.concept().colorPaletteDescription(), generated.concept().variants());
+            render = orchestrator.run(staging.getId(), legacy, poster, creativeSeed, generated.directions());
             overview = overviewLlm.generate(req, poster);
         } catch (Exception e) {
             staging.setStatus(GeneratedEventStatus.FAILED);
@@ -134,6 +139,11 @@ public class ConceptStudioService {
                 tiers,
                 overview.suggestedCapacity(),
                 overview.confidencePct());
+    }
+
+    /** Deterministic creative seed from the generation UUID (reproducible per run, varies across runs). */
+    private static long seedFrom(UUID id) {
+        return id == null ? 1L : Math.abs(id.getMostSignificantBits() ^ id.getLeastSignificantBits());
     }
 
     private GeneratedEvent newStagingRow(AuthPrincipal p, ConceptRequest req) {

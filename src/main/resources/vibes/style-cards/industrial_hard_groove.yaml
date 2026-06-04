@@ -1,0 +1,52 @@
+# Style card for industrial_hard_groove — authored from the curated reference flyers.
+# medium: mixed | recommended substyle: hard_flash
+# subject: A hard-edged techno/groove poster: a single human hero (a dancer mid-motion or a flash-lit figure) or a metallic object hero (a gold skull, raw machinery) sitting on distressed steel, scratched concrete, or a stark grid floor, with brutal bold type layered over.
+# notes: Across the five references: one human hero (a dancer mid-jump, and a motion-blurred figure in the techno flyer), one metallic object hero (the gold skull), one full-frame duotone machinery piece, and one riso club flyer over a blurred building. Medium is genuinely mixed (photo textures + treated photography + heavy type), so mediumPrimary is mixed; hard direct-flash photography and scratched-metal/concrete grit dominate, hence the hard_flash substyle.
+medium: 'mixed'
+palette:
+  - [212, 160, 52]
+  - [198, 54, 28]
+  - [232, 228, 220]
+hero_subjects:
+  people:
+    - 'a young man mid-jump seen from behind, fists raised, in an orange denim jacket and black cargo pants, sneakers off the floor, frozen on a white tiled grid'
+    - 'a lone dancer caught in long-exposure motion blur, body smeared into a streak of light against a scratched dark wall'
+    - 'a flash-lit figure crouched low in a windowless concrete room, hard shadow thrown behind them, face turned away'
+    - 'a crowd of partygoers under a hard direct flash, arms up, sweat-shined skin, faces half-lost in deep shadow'
+    - 'a hooded raver gripping a chain-link fence, harsh top light raking across distressed denim and metal'
+  object:
+    - 'a polished gold-brass skull glowing on scratched dark concrete, light blooming off the cranium'
+    - 'red-and-orange halftone close-up of industrial machinery: turbine blades, gears, pipework and bolts'
+    - 'a sheet of riveted brushed steel scored with deep scratches and drag marks'
+    - 'a single spinning circular saw blade or turbine disc isolated on a grimy black field'
+    - 'coiled hazard-striped tape and a padlocked steel chain on a rusted hatch door'
+    - 'a cluster of stacked speaker cabinets and exposed cabling in a raw concrete bunker'
+compositions:
+  - 'centered single hero (skull or figure) on the vertical axis, type wrapping top and bottom thirds'
+  - 'full-bleed human hero standing tall with a giant slab headline punched horizontally across the torso'
+  - 'hero floating on a receding tiled-grid floor, geometric color blocks scattered as accents'
+  - 'duotone machinery filling the full frame edge-to-edge, large display letter bleeding off the top corner'
+  - 'thin neon line geometry (triangles/diamonds) framing a centered object, small labels parked in corners'
+  - 'tiny utilitarian credits stacked in one column down the right margin beside a QR code'
+accents:
+  - 'coarse photocopied halftone grain'
+  - 'deep surface scratches and drag marks on metal'
+  - 'hard direct-flash blowout and hot specular highlights'
+  - 'long-exposure motion-blur smear'
+  - 'risograph mis-registration and ink texture'
+  - 'concrete grunge and dust speckle'
+palette_twists:
+  - 'molten gold-brass on near-black charcoal'
+  - 'red-and-orange duotone over deep black'
+  - 'off-white paper with safety-orange and dense black blocks'
+  - 'scratched silver-grey brushed steel monochrome'
+  - 'teal-and-coral riso clash over a blurred bluish ground'
+type_treatments:
+  - 'ultra-bold black slab/condensed headline punched across the hero, sometimes repeated and ghosted'
+  - 'monospaced utilitarian small caps for dates, venue and credit lists'
+  - 'thin geometric sans tracked out wide for a small kicker line'
+  - 'distorted photocopied display letterforms bleeding off an edge'
+example_prompts:
+  - 'Hard industrial groove poster, 4:5. A young man shot from behind mid-jump, fists raised, wearing a safety-orange denim jacket and black cargo pants, worn sneakers lifting off a stark white tiled-grid floor that recedes into the distance. Photoreal, hard flat studio light, slight photocopied grain over everything. A massive ultra-bold black condensed headline reads "GROOVE" punched horizontally across his torso, ghosted and repeated just below it. A small monospaced kicker up top reads "LET THE GROOVE GUIDE YOUR FEET". Scattered safety-orange rectangle and circle blocks as geometric accents. Off-white paper ground, dense black type, one hot orange. Utilitarian, brutal, grid-driven.'
+  - 'Industrial techno flyer, 4:5 vertical. A polished gold-brass skull centered and glowing on scratched dark charcoal concrete, light blooming off the cranium, deep grime and dust speckle across the surface. Thin yellow neon triangle and diamond linework frames the skull. A tracked-out thin geometric sans kicker reads "URBAN TREND" top-left; bold lowercase "are you ready ?" parked bottom-right above monospaced small-caps detail lines "ARTIST EXHIBITION / 08.12 / 14:00". Tiny corner labels and plus-sign marks scattered as utilitarian accents. Molten gold on near-black, militant and cold.'
+  - 'Raw machinery rave poster, 4:5. A full-frame red-and-orange duotone halftone close-up of industrial machinery, turbine blades, gears and bolted pipework, dissolving into coarse photocopied grain over a deep black field. A huge distorted display letter "A" bleeds off the top-left corner into the headline. A single narrow column of monospaced small caps runs down the right margin: "SAT NOV 16th / 9PM-4AM / SECRET LOCATION" followed by a stacked lineup list and a small black-and-white QR code. Mis-registered ink texture, scratched grit, militant utilitarian.'

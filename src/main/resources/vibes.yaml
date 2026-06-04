@@ -6,12 +6,20 @@
 # `text_only`   — true when no curated references exist yet (runs from the structured preset alone).
 # `style_id`    — provider reusable trained-style id (filled once trained; null until then).
 # `layout_template` — per-vibe text-overlay layout (see P2 LayoutDocument).
+# `subject`     — hero subject matter (drawn from the reference posters). Injected into the
+#                 art-director prompt so the model renders a real subject, not an empty texture plate.
+# `style_mode`  — recraft render mode: `trained_style_id` (illustration-led, trained style transfers
+#                 the look) | `curated_substyle` (photo-led, realistic_image + `substyle` + palette).
+# `substyle`    — recraft realistic_image substyle when style_mode=curated_substyle (e.g. hard_flash).
 
 fallback_vibe: liquid_melodic
 
 universal_rules:
   aspect_ratios: ["4:5", "1:1", "9:16", "16:9"]
-  negative_prompt: "text artifacts, gibberish text, watermark, logo, signature, deformed faces, extra limbs, low-res, jpeg artifacts, blurry, stock-photo look, generic clipart"
+  # Instructional (not diffusion negative tokens): this is fed to an instruction-following LLM, where
+  # tokens like "deformed faces" read as "avoid faces" and produce subject-less plates. Keep it as a
+  # plain imperative the art-director model can honor.
+  negative_prompt: "No watermarks, logos, signatures, stock-template flyer layouts, or invented words."
   ip_rule: "Never use 'in the style of <real artist / label / club>'; never reference real venues, brands, or copyrighted characters. Keep all descriptions generic and original."
 
 vibes:
@@ -24,6 +32,9 @@ vibes:
     composition: "giant centered or top-aligned headline, lots of empty space, single dominant texture"
     mood_tags: [raw, severe, monolithic, cold, dark]
     avoid: [soft lighting, decoration, warmth, generic flyer tropes]
+    subject: "Raw monochrome brutalism: a worm's-eye concrete tower or a blown-out high-contrast human face, shot on grainy black-and-white, drowned in matte-black negative space with one acid accent color and machine-stamped type. Some sheets swap the hero for an industrial object or a stippled scientific specimen."
+    style_mode: curated_substyle
+    substyle: urban_drama
     model_route: recraft
     references: ["reference-images/Brutalist Techno"]
     style_id: null
@@ -39,6 +50,9 @@ vibes:
     composition: "maximal negative space, one small focal element, asymmetric balance"
     mood_tags: [minimal, precise, intellectual, quiet, austere]
     avoid: [imagery clutter, busy layouts, photographic backgrounds, generic flyer tropes]
+    subject: "A single grainy, motion-smeared human figure or anonymous crowd dissolving into an almost-empty black field, or a precise line-constructed graphic mark on a pale gallery-white ground — extreme restraint, one hero, vast negative space."
+    style_mode: curated_substyle
+    substyle: b_and_w
     model_route: recraft
     references: ["reference-images/Berlin Minimal"]
     style_id: null
@@ -54,6 +68,11 @@ vibes:
     composition: "central glossy 3D object, energetic, bold, maximalist"
     mood_tags: [euphoric, glossy, nostalgic, hyper, playful]
     avoid: [matte textures, minimalism, realism, generic flyer tropes]
+    # CHOSEN per style card: references are glossy chrome / liquid-metal 3D renders (no photographic
+    # human heroes), so a realistic_image substyle would lose the render look — keep the trained style.
+    subject: "A single glossy chrome / liquid-metal 3D form — blob chain, splash, twisted knot, or a sculpted reflective head — floating over a saturated mono background, with huge bold type layered across it. Object-and-render-led, not flash-photo crowds."
+    style_mode: trained_style_id
+    substyle: null
     model_route: recraft
     references: ["reference-images/Acid Rave - Y2K"]
     style_id: null
@@ -69,6 +88,9 @@ vibes:
     composition: "symmetrical mandala center, dense detail edge-to-edge, hypnotic depth"
     mood_tags: [psychedelic, hypnotic, otherworldly, intense, spiritual]
     avoid: [flat minimalism, empty space, corporate look, generic flyer tropes]
+    subject: "A single hyper-detailed psychedelic illustration as hero: a serene alien or tribal figure in lotus meditation, hair and limbs dissolving into fractal flame, sacred-geometry mandalas and bioluminescent flora — UV-glowing line art over a deep cosmic gradient."
+    style_mode: trained_style_id
+    substyle: null
     model_route: recraft
     references: ["reference-images/Psytrance - Goa"]
     style_id: null
@@ -84,6 +106,9 @@ vibes:
     composition: "hazard-stripe framing, gritty full-bleed texture, aggressive"
     mood_tags: [militant, gritty, aggressive, mechanical, dystopian]
     avoid: [clean surfaces, softness, organic shapes, generic flyer tropes]
+    subject: "A hard-edged techno/groove poster: a single human hero (a dancer mid-motion or a flash-lit figure) or a metallic object hero (a gold skull, raw machinery) sitting on distressed steel, scratched concrete, or a stark grid floor, with brutal bold type layered over."
+    style_mode: curated_substyle
+    substyle: urban_drama
     model_route: recraft
     references: ["reference-images/Industrial - Hard Groove"]
     style_id: null
@@ -99,6 +124,11 @@ vibes:
     composition: "soft focal gradient, layered depth, breathing room, atmospheric"
     mood_tags: [dreamy, warm, emotional, atmospheric, elevated]
     avoid: [harsh contrast, aggression, industrial grit, generic flyer tropes]
+    # CHOSEN per style card: references are abstract / 3D-rendered liquid-chrome objects with no
+    # photographic human heroes, so the trained style fits better than a realistic_image substyle.
+    subject: "Glossy liquid-chrome and 3D-rendered hero objects suspended in dreamy gradient haze — molten metallic flows, iridescent creatures, and surreal organic forms rendered with diffused atmospheric light and fine film grain."
+    style_mode: trained_style_id
+    substyle: null
     model_route: recraft
     references: ["reference-images/Liquid Melodic"]
     style_id: null
@@ -114,6 +144,9 @@ vibes:
     composition: "chaotic layered collage, off-grid, overwhelming, digital"
     mood_tags: [chaotic, saturated, online, fast, fun]
     avoid: [minimalism, vintage, calm, generic flyer tropes]
+    subject: "A flash-lit club-goer shot up close in a dark venue — face, drink, or hands toward the camera — with oversized display type colliding over the photo. The hero is a real partygoer; the energy is harsh on-camera flash, motion blur, and neon scrawl."
+    style_mode: curated_substyle
+    substyle: hard_flash
     model_route: recraft
     references: ["reference-images/Hyperpop - Club"]
     style_id: null
@@ -129,6 +162,9 @@ vibes:
     composition: "diagonal motion, dark background with neon hits, dense and fast"
     mood_tags: [fast, urban, raw, kinetic, underground]
     avoid: [stillness, luxury, clean minimalism, generic flyer tropes]
+    subject: "Sound-system rave energy: a towering speaker stack or a flash-lit dancer's upturned face cut by laser light, rendered in acid-green, Rasta gold-and-red, and electric blue with graffiti lettering layered over."
+    style_mode: curated_substyle
+    substyle: motion_blur
     model_route: recraft
     references: ["reference-images/DnB - Jungle"]
     style_id: null
@@ -144,6 +180,11 @@ vibes:
     composition: "strong central energy, patterned border, warm and inviting"
     mood_tags: [warm, joyful, vibrant, rhythmic, sun-soaked]
     avoid: [dark industrial cues, minimalism, grit, generic flyer tropes]
+    # CHOSEN per style card: references are flash-lit human heroes (dancers, portraits, crowds) —
+    # photo-led, so a curated realistic_image hard_flash substyle fits.
+    subject: "A human hero is the centerpiece: a Black dancer, partygoer, or portrait subject shot in warm sun-drenched or fiery light, often with white-and-gold tribal face paint or a patterned headwrap, framed by bold African textile geometry and big display type."
+    style_mode: curated_substyle
+    substyle: hard_flash
     model_route: recraft
     references: ["reference-images/Afro - Amapiano"]
     style_id: null
@@ -159,6 +200,9 @@ vibes:
     composition: "wide landscape framing, low horizon, sky-dominant, open"
     mood_tags: [expansive, free, sunny, natural, escapist]
     avoid: [claustrophobic spaces, indoor warehouse cues, grit, generic flyer tropes]
+    subject: "Wide open-air festival scenes under golden-hour and blazing-sun skies: outdoor stages, beaches, and grassy fields packed with crowds, rendered in warm, saturated light with chunky dimensional festival type sitting over the horizon."
+    style_mode: curated_substyle
+    substyle: evening_light
     model_route: recraft
     references: ["reference-images/Open Air - Festival"]
     style_id: null
@@ -174,6 +218,9 @@ vibes:
     composition: "centered retro emblem, glowing sunset gradient, symmetrical"
     mood_tags: [nostalgic, glamorous, warm, fun, retro]
     avoid: [brutalism, harsh industrial, minimalism, glitch, generic flyer tropes]
+    subject: "A single magazine-glossy partygoer or club DJ shot from chest up under saturated neon rim-light — mirror-lens sunglasses, slicked or wind-blown hair, lit from one side by hot red, magenta or acid-green tube lighting against a near-black club void."
+    style_mode: curated_substyle
+    substyle: hard_flash
     model_route: recraft
     references: ["reference-images/Disco - Italo Revival"]
     style_id: null
@@ -189,6 +236,11 @@ vibes:
     composition: "abstract and disorienting, off-balance, conceptual"
     mood_tags: [cold, cerebral, abstract, unsettling, avant-garde]
     avoid: [warmth, friendliness, conventional layout, generic flyer tropes]
+    # CHOSEN per style card: references are distorted, near-monochrome HUMAN photography (motion-blur,
+    # glitch, halftone), so a curated realistic_image motion_blur substyle fits.
+    subject: "A single human figure rendered as a tormented, distorted photograph — a motion-blurred crowd, a screaming halftone face, or hands clenched over a head — pushed into near-monochrome darkness with grain, glitch and crushed contrast."
+    style_mode: curated_substyle
+    substyle: motion_blur
     model_route: recraft
     references: ["reference-images/Dark - Experimental"]
     style_id: null

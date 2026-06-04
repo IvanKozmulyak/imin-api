@@ -1,17 +1,24 @@
 package com.imin.iminapi.service.poster;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.imin.iminapi.dto.EventCreatorRequest;
 import com.imin.iminapi.dto.GeneratedPoster;
+import com.imin.iminapi.dto.HeroType;
 import com.imin.iminapi.dto.PosterConcept;
 import com.imin.iminapi.dto.PosterTextSpec;
 import com.imin.iminapi.dto.PosterVariant;
 import com.imin.iminapi.dto.ReferenceImageSet;
+import com.imin.iminapi.dto.Rgb;
+import com.imin.iminapi.dto.StyleCard;
+import com.imin.iminapi.dto.StyleMode;
+import com.imin.iminapi.dto.Vibe;
 import com.imin.iminapi.model.ImageProvider;
 import com.imin.iminapi.model.PosterGeneration;
 import com.imin.iminapi.model.PosterGenerationStatus;
 import com.imin.iminapi.model.PosterVariantEntity;
 import com.imin.iminapi.model.PosterVariantStatus;
 import com.imin.iminapi.repository.PosterGenerationRepository;
+import com.imin.iminapi.service.ai.CreativeDirection;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -28,7 +35,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.ThreadLocalRandom;
 
 @Service
 public class PosterOrchestrator {
@@ -39,14 +45,19 @@ public class PosterOrchestrator {
     private final OpenAiImageClient openAiImageClient;
     private final RecraftClient recraftClient;
     private final VibeStyleTrainingService vibeStyleTrainingService;
+    private final VibeLibrary vibeLibrary;
+    private final StyleCardLibrary styleCardLibrary;
     private final ReferenceImageLibrary referenceLibrary;
     private final OverlayCompositor overlayCompositor;
     private final PosterTextCompositorClient textCompositor;
     private final PosterTextSpecFactory textSpecFactory;
     private final PosterTextValidationService textValidation;
+    private final PosterStyleValidationService styleValidation;
     private final PosterImageStorage storage;
     private final PosterGenerationRepository generationRepository;
-    private final int maxTextValidationRegenerations;
+    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final int maxRegenerations;
+    private final boolean skipCompositorWhenTextBaked;
     private final Semaphore replicateCap;
     private final ExecutorService variantPool;
 
@@ -55,31 +66,39 @@ public class PosterOrchestrator {
             OpenAiImageClient openAiImageClient,
             RecraftClient recraftClient,
             VibeStyleTrainingService vibeStyleTrainingService,
+            VibeLibrary vibeLibrary,
+            StyleCardLibrary styleCardLibrary,
             ReferenceImageLibrary referenceLibrary,
             OverlayCompositor overlayCompositor,
             PosterTextCompositorClient textCompositor,
             PosterTextSpecFactory textSpecFactory,
             PosterTextValidationService textValidation,
+            PosterStyleValidationService styleValidation,
             PosterImageStorage storage,
             PosterGenerationRepository generationRepository,
-            @Value("${poster.text-validation.max-regenerations:1}") int maxTextValidationRegenerations,
+            // Unified regeneration budget covering legibility + style checks combined (cost/latency control).
+            // poster.text-validation.max-regenerations is kept as a deprecated alias.
+            @Value("${poster.validation.max-regenerations:${poster.text-validation.max-regenerations:2}}") int maxRegenerations,
+            // Text is now always Recraft-baked, so the Satori real-font compositor is skipped by default.
+            @Value("${poster.compositor.skip-when-text-baked:true}") boolean skipCompositorWhenTextBaked,
             @Value("${replicate.max-concurrent:6}") int maxConcurrent) {
         this.ideogramClient = ideogramClient;
         this.openAiImageClient = openAiImageClient;
         this.recraftClient = recraftClient;
         this.vibeStyleTrainingService = vibeStyleTrainingService;
+        this.vibeLibrary = vibeLibrary;
+        this.styleCardLibrary = styleCardLibrary;
         this.referenceLibrary = referenceLibrary;
         this.overlayCompositor = overlayCompositor;
         this.textCompositor = textCompositor;
         this.textSpecFactory = textSpecFactory;
         this.textValidation = textValidation;
+        this.styleValidation = styleValidation;
         this.storage = storage;
         this.generationRepository = generationRepository;
-        this.maxTextValidationRegenerations = Math.max(0, maxTextValidationRegenerations);
+        this.maxRegenerations = Math.max(0, maxRegenerations);
+        this.skipCompositorWhenTextBaked = skipCompositorWhenTextBaked;
         this.replicateCap = new Semaphore(maxConcurrent, true);
-        // Small fixed pool sized for the 3 variants of one generation; the
-        // Semaphore (shared across all in-flight generations) is the real upstream
-        // concurrency cap. Daemon threads so the pool never blocks JVM shutdown.
         this.variantPool = Executors.newFixedThreadPool(
                 Math.min(VARIANT_POOL_SIZE, Math.max(1, maxConcurrent)),
                 r -> {
@@ -95,30 +114,41 @@ public class PosterOrchestrator {
 
     public record OrchestrationResult(UUID generationId, String subStyleTag, List<GeneratedPoster> posters) {}
 
+    /** The render config resolved once per generation from the vibe + its style card. */
+    private record RenderContext(Vibe vibe, StyleCard card) {}
+
     public OrchestrationResult run(UUID generatedEventId, EventCreatorRequest request, PosterConcept concept) {
+        return run(generatedEventId, request, concept, deriveSeed(generatedEventId), List.of());
+    }
+
+    public OrchestrationResult run(UUID generatedEventId, EventCreatorRequest request, PosterConcept concept,
+                                   long creativeSeed, List<CreativeDirection> directions) {
         PosterGeneration generation = new PosterGeneration();
         generation.setGeneratedEventId(generatedEventId);
         generation.setStatus(PosterGenerationStatus.PENDING);
         generation.setSubStyleTag(concept.subStyleTag());
+        generation.setCreativeSeed(creativeSeed);
         generation = generationRepository.save(generation);
 
         ReferenceImageSet refs = referenceLibrary.forTag(concept.subStyleTag());
         if (refs.referenceUrls().isEmpty()) {
-            log.warn("No reference images seeded for tag '{}' — Ideogram will run without style_reference_images",
+            log.warn("No reference images seeded for tag '{}' — provider will run without style_reference_images",
                     concept.subStyleTag());
         }
+        RenderContext ctx = new RenderContext(
+                vibeLibrary.byId(concept.subStyleTag()).orElse(null),
+                styleCardLibrary.get(concept.subStyleTag()).orElse(null));
 
         List<PosterVariant> variants = concept.variants();
         final PosterGeneration gen = generation;
-        // Dispatch the variants concurrently on the bounded pool; the Semaphore
-        // inside generateOne is the real upstream concurrency cap. Submit in order,
-        // collect Futures in order, then join in order so results preserve the
-        // variant order regardless of completion order. Each task does only
-        // in-memory mutations + external calls on the pool thread; the single
-        // generationRepository.save happens on the main thread after join.
+        // Dispatch the variants concurrently; the Semaphore inside generateOne is the real upstream
+        // concurrency cap. Submit/collect/join in order so results preserve variant order.
         List<Future<GeneratedPoster>> futures = new ArrayList<>(variants.size());
-        for (PosterVariant v : variants) {
-            futures.add(variantPool.submit(() -> generateOne(gen, v, refs, request)));
+        for (int i = 0; i < variants.size(); i++) {
+            final PosterVariant v = variants.get(i);
+            final CreativeDirection dir = i < directions.size() ? directions.get(i) : null;
+            final long seed = deriveSeed(creativeSeed, i);
+            futures.add(variantPool.submit(() -> generateOne(gen, v, dir, seed, refs, request, ctx)));
         }
 
         List<GeneratedPoster> results = new ArrayList<>(variants.size());
@@ -129,11 +159,11 @@ public class PosterOrchestrator {
             } catch (ExecutionException e) {
                 Throwable cause = e.getCause() != null ? e.getCause() : e;
                 log.error("Variant task threw unexpectedly", cause);
-                results.add(failedPoster(null, v.variantStyle(), cause.getMessage()));
+                results.add(failedPoster(null, v.heroType(), cause.getMessage()));
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 log.error("Interrupted while awaiting variant task", e);
-                results.add(failedPoster(null, v.variantStyle(), "interrupted while awaiting variant"));
+                results.add(failedPoster(null, v.heroType(), "interrupted while awaiting variant"));
             }
         }
 
@@ -158,15 +188,18 @@ public class PosterOrchestrator {
     private GeneratedPoster generateOne(
             PosterGeneration generation,
             PosterVariant variant,
+            CreativeDirection direction,
+            long seed,
             ReferenceImageSet refs,
-            EventCreatorRequest request) {
-        long seed = ThreadLocalRandom.current().nextLong(1L, 1_000_000_000L);
+            EventCreatorRequest request,
+            RenderContext ctx) {
         PosterVariantEntity entity = new PosterVariantEntity();
         entity.setPosterGeneration(generation);
-        entity.setVariantStyle(variant.variantStyle());
+        entity.setVariantStyle(variant.heroType());
         entity.setIdeogramPrompt(variant.ideogramPrompt());
         entity.setReferenceImagesUsed(String.join(",", refs.referenceIds()));
         entity.setSeed(seed);
+        entity.setCreativeDirectionJson(serializeDirection(direction));
         entity.setStatus(PosterVariantStatus.PENDING);
         // Shared mutable collection across the variant pool threads — synchronize the add.
         synchronized (generation) {
@@ -184,7 +217,7 @@ public class PosterOrchestrator {
         }
         try {
             if (provider == ImageProvider.RECRAFT) {
-                return generateRecraftWithValidationRetry(entity, provider, variant, refs, seed, request);
+                return generateRecraftWithValidation(entity, variant, refs, seed, request, ctx);
             }
             byte[] rawBytes = renderVariant(provider, variant, refs, seed);
             String rawUrl = storage.writePng(rawBytes);
@@ -192,16 +225,13 @@ public class PosterOrchestrator {
             entity.setStatus(PosterVariantStatus.RAW_READY);
 
             byte[] finalBytes = applyTextLayer(rawBytes, refs, request);
-            String finalUrl = finalBytes == rawBytes
-                    ? rawUrl
-                    : storage.writePng(finalBytes);
+            String finalUrl = finalBytes == rawBytes ? rawUrl : storage.writePng(finalBytes);
             entity.setFinalUrl(finalUrl);
             entity.setStatus(PosterVariantStatus.COMPLETE);
-
             return toDto(entity);
         } catch (RuntimeException e) {
-            log.error("Variant generation failed: provider={}, style={}, seed={}",
-                    provider, variant.variantStyle(), seed, e);
+            log.error("Variant generation failed: provider={}, hero_type={}, seed={}",
+                    provider, variant.heroType(), seed, e);
             entity.setStatus(PosterVariantStatus.FAILED);
             entity.setFailureReason(e.getMessage());
             return toDto(entity);
@@ -210,63 +240,88 @@ public class PosterOrchestrator {
         }
     }
 
-    private GeneratedPoster generateRecraftWithValidationRetry(
+    /**
+     * Recraft path with a unified validation budget. Each render is checked against two gates, in
+     * order, and a failure of either consumes one regeneration (a fresh seed) from the shared budget:
+     * <ol>
+     *   <li>legibility (the existing text gate) — a HARD gate: exhausting the budget here fails the
+     *       variant, because a poster missing the required event text is unusable;</li>
+     *   <li>style adherence (hero present, medium/palette right) — a SOFT gate: once the budget is
+     *       exhausted the last render is accepted best-effort with a warning, since style is subjective
+     *       and we already paid the cost cap.</li>
+     * </ol>
+     */
+    private GeneratedPoster generateRecraftWithValidation(
             PosterVariantEntity entity,
-            ImageProvider provider,
             PosterVariant variant,
             ReferenceImageSet refs,
-            long seed,
-            EventCreatorRequest request) {
-        for (int attempt = 0; attempt <= maxTextValidationRegenerations; attempt++) {
-            byte[] rawBytes = renderVariant(provider, variant, refs, seed);
+            long baseSeed,
+            EventCreatorRequest request,
+            RenderContext ctx) {
+        PosterTextSpec spec = textSpecFactory.from(request);
+        HeroType heroType = HeroType.fromWire(variant.heroType());
+        long seed = baseSeed;
+
+        for (int attempt = 0; attempt <= maxRegenerations; attempt++) {
+            boolean last = attempt == maxRegenerations;
+            entity.setSeed(seed);
+            byte[] rawBytes = renderRecraft(variant, refs, ctx);
             String rawUrl = storage.writePng(rawBytes);
             entity.setRawUrl(rawUrl);
             entity.setStatus(PosterVariantStatus.RAW_READY);
 
-            try {
-                byte[] finalBytes = validateAndApplyQrOnly(rawBytes, request);
-                String finalUrl = finalBytes == rawBytes
-                        ? rawUrl
-                        : storage.writePng(finalBytes);
-                entity.setFinalUrl(finalUrl);
-                entity.setStatus(PosterVariantStatus.COMPLETE);
-                return toDto(entity);
-            } catch (PosterTextValidationRejectedException e) {
-                if (attempt == maxTextValidationRegenerations) {
-                    throw e;
+            PosterTextValidationService.ValidationDecision textDecision =
+                    textValidation.validateOrExplain(rawBytes, spec);
+            if (!textDecision.accepted()) {
+                if (last) {
+                    throw new PosterValidationRejectedException(
+                            "text validation failed after " + maxRegenerations + " regenerations: " + textDecision.reason());
                 }
-                log.warn("Recraft poster text validation failed; regenerating once: {}", e.getMessage());
+                log.warn("Recraft text validation failed (attempt {}/{}); regenerating with a new seed: {}",
+                        attempt, maxRegenerations, textDecision.reason());
+                seed = nextSeed(seed);
+                continue;
             }
+
+            PosterStyleValidationService.ValidationDecision styleDecision =
+                    styleValidation.validateOrExplain(rawBytes, ctx.card(), heroType);
+            if (!styleDecision.accepted()) {
+                if (!last) {
+                    log.warn("Recraft style validation failed (attempt {}/{}); regenerating with a new seed: {}",
+                            attempt, maxRegenerations, styleDecision.reason());
+                    seed = nextSeed(seed);
+                    continue;
+                }
+                log.warn("Recraft style validation still failing after {} regenerations; accepting best effort: {}",
+                        maxRegenerations, styleDecision.reason());
+            }
+
+            // Accept: text is Recraft-baked, so only the QR + address overlay is applied (no Satori compositor).
+            byte[] finalBytes = overlayCompositor.applyOverlays(
+                    new OverlayCompositor.Input(rawBytes, request.rsvpUrl(), request.address()));
+            String finalUrl = finalBytes == rawBytes ? rawUrl : storage.writePng(finalBytes);
+            entity.setFinalUrl(finalUrl);
+            entity.setStatus(PosterVariantStatus.COMPLETE);
+            return toDto(entity);
         }
-        throw new IllegalStateException("Recraft poster text validation retry loop exhausted");
+        throw new IllegalStateException("Recraft validation loop exhausted");
     }
 
-    private byte[] validateAndApplyQrOnly(byte[] rawBytes, EventCreatorRequest request) {
-        PosterTextSpec spec = textSpecFactory.from(request);
-        PosterTextValidationService.ValidationDecision decision =
-                textValidation.validateOrExplain(rawBytes, spec);
-        if (!decision.accepted()) {
-            throw new PosterTextValidationRejectedException("Poster text validation failed: " + decision.reason());
-        }
-        return overlayCompositor.applyOverlays(new OverlayCompositor.Input(
-                rawBytes, request.rsvpUrl(), null));
-    }
-
-    private static class PosterTextValidationRejectedException extends IllegalStateException {
-        private PosterTextValidationRejectedException(String message) {
+    private static class PosterValidationRejectedException extends IllegalStateException {
+        private PosterValidationRejectedException(String message) {
             super(message);
         }
     }
 
     /**
-     * Composite the text layer onto the background art. For curated vibes with real event text and
-     * the compositor enabled, this calls the imin-public Satori route (full real-font text layer).
-     * If that configured path fails, fail the variant rather than returning a poster without event
-     * text. Unsupported/disabled compositor paths still fall back to the Java2D QR + address overlay.
+     * Composite the text layer for the non-Recraft providers. Since text is now always baked into the
+     * generated image, the Satori real-font compositor is skipped by default
+     * ({@code poster.compositor.skip-when-text-baked=true}) and only the QR + address overlay is applied.
+     * Set the flag false to restore the Satori compositor for curated vibes with real event text.
      */
     private byte[] applyTextLayer(byte[] rawBytes, ReferenceImageSet refs, EventCreatorRequest request) {
         String vibeId = refs.subStyleTag();
-        if (textCompositor.supports(vibeId) && hasEventText(request)) {
+        if (!skipCompositorWhenTextBaked && textCompositor.supports(vibeId) && hasEventText(request)) {
             try {
                 return textCompositor.composite(
                         rawBytes, vibeId, PosterTextCompositorClient.EventText.from(request));
@@ -285,6 +340,24 @@ public class PosterOrchestrator {
         return request.title() != null && !request.title().isBlank();
     }
 
+    /** Recraft render under the vibe's {@link StyleMode}: trained style_id vs curated substyle + palette. */
+    private byte[] renderRecraft(PosterVariant variant, ReferenceImageSet refs, RenderContext ctx) {
+        Vibe vibe = ctx.vibe();
+        StyleMode mode = (vibe != null && vibe.styleMode() != null) ? vibe.styleMode() : StyleMode.TRAINED_STYLE_ID;
+        List<byte[]> refBytes = referenceLibrary.loadAllBytes(refs.subStyleTag());
+
+        RecraftClient.RenderSpec renderSpec;
+        if (mode == StyleMode.CURATED_SUBSTYLE) {
+            List<Rgb> palette = ctx.card() != null ? ctx.card().palette() : List.of();
+            renderSpec = RecraftClient.RenderSpec.curated(vibe == null ? null : vibe.substyle(), palette);
+        } else {
+            String styleId = vibeStyleTrainingService.resolveStyleId(refs.subStyleTag(), ImageProvider.RECRAFT);
+            renderSpec = RecraftClient.RenderSpec.trained(styleId);
+        }
+        return recraftClient.generate(
+                variant.ideogramPrompt(), variant.aspectRatio(), renderSpec, refBytes).imageBytes();
+    }
+
     private byte[] renderVariant(
             ImageProvider provider,
             PosterVariant variant,
@@ -298,19 +371,6 @@ public class PosterOrchestrator {
                     refBytes,
                     seed).imageBytes();
         }
-        if (provider == ImageProvider.RECRAFT) {
-            // The sub-style tag is the vibe id; resolve the trained style_id (vibe_style
-            // table, falling back to Vibe.styleId() from vibes.yaml) and the curated
-            // reference bytes for that vibe.
-            String styleId = vibeStyleTrainingService.resolveStyleId(
-                    refs.subStyleTag(), ImageProvider.RECRAFT);
-            List<byte[]> refBytes = referenceLibrary.loadAllBytes(refs.subStyleTag());
-            return recraftClient.generate(
-                    variant.ideogramPrompt(),
-                    variant.aspectRatio(),
-                    styleId,
-                    refBytes).imageBytes();
-        }
         IdeogramClient.IdeogramResult ideogram = ideogramClient.generate(
                 variant.ideogramPrompt(),
                 variant.aspectRatio(),
@@ -318,6 +378,33 @@ public class PosterOrchestrator {
                 seed,
                 variant.styleType());
         return storage.download(ideogram.imageUrl());
+    }
+
+    private String serializeDirection(CreativeDirection direction) {
+        if (direction == null) return null;
+        try {
+            return objectMapper.writeValueAsString(direction);
+        } catch (Exception e) {
+            log.warn("Could not serialize creative direction: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** Deterministic per-variant image seed derived from the generation's creative seed + index. */
+    private static long deriveSeed(long creativeSeed, int index) {
+        long s = creativeSeed * 1_000_003L + index;
+        return Math.floorMod(s, 1_000_000_000L) + 1L;
+    }
+
+    /** Deterministic creative seed from the generation/event UUID (when none is supplied). */
+    private static long deriveSeed(UUID id) {
+        return id == null ? 1L : Math.abs(id.getMostSignificantBits() ^ id.getLeastSignificantBits());
+    }
+
+    /** A fresh seed for a regeneration attempt (deterministic step so runs stay reproducible). */
+    private static long nextSeed(long seed) {
+        long s = seed * 6364136223846793005L + 1442695040888963407L;
+        return Math.floorMod(s, 1_000_000_000L) + 1L;
     }
 
     private GeneratedPoster toDto(PosterVariantEntity e) {

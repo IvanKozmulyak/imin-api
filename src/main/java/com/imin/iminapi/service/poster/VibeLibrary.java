@@ -1,5 +1,6 @@
 package com.imin.iminapi.service.poster;
 
+import com.imin.iminapi.dto.StyleMode;
 import com.imin.iminapi.dto.UniversalRules;
 import com.imin.iminapi.dto.Vibe;
 import jakarta.annotation.PostConstruct;
@@ -104,7 +105,10 @@ public class VibeLibrary {
                 toStringList(m.get("references")),
                 str(m, "style_id"),
                 str(m, "layout_template"),
-                Boolean.TRUE.equals(m.get("text_only")));
+                Boolean.TRUE.equals(m.get("text_only")),
+                str(m, "subject"),
+                StyleMode.fromConfig(str(m, "style_mode")),
+                str(m, "substyle"));
     }
 
     private static String str(Map<String, Object> m, String key) {

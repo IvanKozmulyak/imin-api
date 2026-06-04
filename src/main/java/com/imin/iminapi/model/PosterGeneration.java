@@ -34,6 +34,13 @@ public class PosterGeneration {
     @Column(name = "sub_style_tag", length = 64)
     private String subStyleTag;
 
+    /**
+     * The creative seed for this generation. Seeds the {@code CreativeDirectionSampler} so the run's
+     * three creative directions are reproducible (same seed → same directions) yet vary across runs.
+     */
+    @Column(name = "creative_seed")
+    private Long creativeSeed;
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 

@@ -1,0 +1,56 @@
+# Style card for disco_italo — authored from the curated reference flyers.
+# medium: photo | recommended substyle: urban_drama
+# subject: A single magazine-glossy partygoer or club DJ shot from chest up under saturated neon rim-light — mirror-lens sunglasses, slicked or wind-blown hair, lit from one side by hot red, magenta or acid-green tube lighting against a near-black club void.
+# notes: All five references are image-led with a single human hero (four are a chest-up DJ/partygoer/model; one tropical full-body) composited over a saturated neon club background, so the medium is photo (photo-illustration). Each layers an oversized condensed caps headline plus a flowing script accent over the figure, with corner date/price badges and a bottom DJ/perks band — driving the urban_drama substyle for its high-contrast colored-rim neon-club lighting.
+medium: 'photo'
+palette:
+  - [214, 28, 22]
+  - [232, 30, 200]
+  - [16, 18, 26]
+  - [60, 200, 96]
+hero_subjects:
+  people:
+    - 'A confident person in mirror-lens wraparound sunglasses and a hoodie, shot chest-up and lit by hot orange-red rim light, flames licking the air around them against a dark stormy sky'
+    - 'A glamorous woman in a hooded jacket and tinted neon-green shades, one hand raised to her temple, glowing acid-green light wrapping her silhouette over a dark palm-tree backdrop'
+    - 'A model in a bright tropical-floral swimsuit, arms lifted to her hair, framed by green palm fronds and a wall of magenta and pink stage uplights'
+    - 'A stylish partygoer in profile inside a glowing red neon ring, red-tinted bar sunglasses catching the light, hair backlit against a deep crimson haze'
+    - 'A DJ silhouette behind decks, head tipped back under a single colored spotlight, face half in shadow with magenta and cyan light streaks crossing the frame'
+    - 'A dancer caught mid-motion under a mirrorball, light flares blurring across colored sunglasses, body edged in pink and blue neon against black'
+  object:
+    - 'A spinning mirrorball scattering pinpoint light flares across a dark dancefloor haze'
+    - 'A row of vintage stage par-can lights glowing hot magenta and pink in a smoke-filled void'
+    - 'A red neon ring suspended in darkness with geometric triangle outlines floating inside it'
+    - 'A tropical scene of backlit palm fronds against a blazing orange-red sunset gradient'
+    - 'Curling orange flames and lightning bolts erupting from a black night background'
+    - 'A cluster of glowing club speaker stacks edged in pink and violet rim light'
+compositions:
+  - 'Centered chest-up hero behind a giant condensed display word, the figure overlapping and punching through the lettering'
+  - 'Hero offset slightly up-center with a huge headline filling the lower third and a script word crossing over it'
+  - 'Top corner badges (age/price left, date right) flanking a small ''YOUR CLUB PRESENTS'' kicker above the hero'
+  - 'Tall full-bleed 4:5 with the subject framed by foreground foliage or flames on both edges, type stacked top and bottom'
+  - 'Hero ringed by a glowing circular halo with radiating geometric arrows and triangles in the negative space'
+  - 'Lower band reserved for DJ names, perks line (DRINKS . HOOKAH . LIVE MUSIC) and a QR code in the corner'
+  - 'Headline split into two weights — bold condensed caps word over a flowing italic script word'
+  - 'Symmetrical layout with mirrored chevron/arrow motifs pointing inward toward a centered performer name'
+accents:
+  - 'heavy analog film grain over the whole frame'
+  - 'neon tube glow and colored rim-light bloom'
+  - 'lens flares and mirrorball sparkle pinpoints'
+  - 'smoke haze softening the background'
+  - 'drop-shadowed beveled chrome lettering with inner glow'
+  - 'warm flame and ember overlay texture'
+palette_twists:
+  - 'hot flame red (214,28,22) over near-black club void (16,18,26)'
+  - 'electric magenta-to-pink neon (232,30,200) bleeding into violet shadow'
+  - 'acid neon green (60,200,96) rim light on a charcoal-teal ground'
+  - 'sunset orange-to-crimson gradient with white-hot highlights'
+  - 'magenta and cyan dual-gel lighting split across a dark stage'
+type_treatments:
+  - 'oversized condensed sans-serif caps headline (SUMMER / FRIDAY) in chrome or gradient fill with heavy drop shadow'
+  - 'flowing italic neon script accent word (Night / Tropical) crossing over the bold headline'
+  - 'small bold tracked-out kicker line ''YOUR CLUB PRESENTS'' centered up top'
+  - 'rounded-rectangle outlined badges for date, age and entry price in the corners'
+example_prompts:
+  - 'Retro club night poster, 4:5 vertical. A confident person shot chest-up in mirror-lens wraparound sunglasses and a red hoodie, lit by hot orange-red rim light with curling flames and faint lightning around them against a dark stormy night sky, heavy analog film grain. Centered composition: the figure punches through a giant condensed chrome-orange caps headline reading "BONFIRE" with a flowing white neon script "Night" crossing over it in the lower third. Small tracked kicker "YOUR CLUB PRESENTS" at top, badge stack upper-left reading "SAT 24 MAY 7:30PM". Bottom band on black with bold caps "DJ SPINZ & MC MIKER" and a perks line "DRINKS . HOOKAH . LIVE MUSIC", a small QR code in the corner. Palette of flame red, ember orange and near-black, lens flare and smoke haze, glossy nostalgic print look.'
+  - 'Neon summer club flyer, 4:5 vertical. A glamorous woman in a hooded jacket and tinted acid-green shades, one hand raised to her temple, her silhouette wrapped in glowing neon-green light over a dark backdrop of backlit palm fronds, soft smoke and film grain throughout. Oversized condensed caps headline "SUMMER" fills the top, overlaid by a flowing green italic script "Vip Night" crossing the figure''s shoulders. Centered tracked kicker "YOUR CLUB PRESENTS" above. Lower third in clean white: "SUNDAY, JUNE 15TH - STARTS AT 8PM" and bold "DRINKS-HOOKAH-LIVE MUSIC". Palette of acid neon green, charcoal-teal and white, vintage glossy gradient, mirrorball sparkle highlights.'
+  - 'Electric pink disco night poster, 4:5 vertical. A stylish partygoer in profile framed inside a glowing red-magenta neon ring, red-tinted bar sunglasses catching the light, hair backlit against a deep crimson and violet haze with floating geometric triangle outlines and chevron arrows in the negative space, heavy film grain. Big condensed caps headline "FRIDAY" in dark gradient over a magenta italic display "NIGHT" beneath. Corner badges read "ENTRY $20" upper-left and "31 DEC" upper-right, kicker "YOUR CLUB PRESENTS" centered top. Bottom panel: "MUSIC PERFORMED BY" over bold "DJ SAGAR | DJ MANDLY" flanked by mirrored chevrons. Palette of hot magenta, neon red and near-black, neon tube glow and lens flares.'

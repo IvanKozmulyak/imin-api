@@ -1,0 +1,55 @@
+# Style card for berlin_minimal — authored from the curated reference flyers.
+# medium: mixed | recommended substyle: motion_blur
+# subject: A single grainy, motion-smeared human figure or anonymous crowd dissolving into an almost-empty black field, or a precise line-constructed graphic mark on a pale gallery-white ground — extreme restraint, one hero, vast negative space.
+# notes: Five references split between two grainy black-and-white flash/long-exposure photo posters with human heroes (a blurred drummer; an anonymous crowd at a lit booth) and three graphic/illustration-led pieces (a screened green duotone of leaping dancers, white wireframe line-art on black, and red grid-constructed lettering on gallery white). All share extreme minimalism, huge empty fields, precise tiny marks, and oversized geometric sans — hence mixed medium, monochrome-leaning, with motion_blur as the strongest single photo treatment.
+medium: 'mixed'
+palette:
+  - [12, 12, 12]
+  - [235, 235, 232]
+  - [224, 58, 52]
+hero_subjects:
+  people:
+    - 'a lone drummer mid-strike smeared into long-exposure motion blur, ghosted silver-grey against pure black, only a hint of cymbals and shoulders legible'
+    - 'an anonymous crowd of clubgoers around a glowing display booth, faces lost in shadow, bodies blurred by slow shutter, shot grainy black-and-white'
+    - 'a single dancer caught mid-leap in halftone screen, limbs frozen, printed as a flat duotone silhouette over an empty pastel field'
+    - 'a back-lit silhouette of one person standing alone at the edge of a dark room, edges dissolving into grain, face unreadable'
+    - 'two figures in motion overlapping into a single blurred mass, captured on grainy monochrome film, set low in a black frame'
+    - 'a wireframe vector rendering of a human head and shoulders drawn in thin white contour lines on black, no face detail'
+  object:
+    - 'a thin white wireframe hand cradling a wireframe globe of latitude/longitude lines, floating in black void'
+    - 'a single red constructed letter built on a visible drafting grid with compass circles and crop ticks'
+    - 'a lone cymbal and drum kit dissolving into motion blur and film grain'
+    - 'concentric fingerprint-like contour swirls in fine white line on a black field, framed by small red brackets'
+    - 'a glowing white retail/display vitrine standing alone in a dark grainy hall'
+    - 'a bare drafting grid of pale squares with tiny tick-mark numerals and a single geometric mark'
+compositions:
+  - 'headline locked hard to the top edge in two stacked lines, hero image floating low and small in a vast empty field below'
+  - 'single blurred hero centered in the lower third, enormous black or pale negative space above carrying only tiny marks'
+  - 'giant interlocking sans letters overlaid directly across the human figures, type and image fused into one plane'
+  - 'construction-grid fills the upper two-thirds, a dense multi-column footer of tiny text banded across the bottom'
+  - 'vertical stacked-caps word running edge-to-edge up the right margin, hero element anchored bottom-center'
+  - 'asymmetric top-left headline with a tiny isolated year or numeral kicked to the opposite top corner'
+  - 'thin red bracket frames and dashed registration marks pinning small graphic elements into an otherwise bare field'
+  - 'everything pushed to the four edges, the geometric center left almost entirely empty'
+accents:
+  - 'heavy 35mm film grain across pure black'
+  - 'slow-shutter motion blur smearing the hero'
+  - 'halftone / coarse dot screen on the photo'
+  - 'thin red registration ticks and crop brackets'
+  - 'visible construction grid with compass-circle overlays'
+  - 'flat duotone / single-color screen print'
+palette_twists:
+  - 'pure black field with chalk-white grain and a single red accent mark'
+  - 'gallery off-white ground with one signal-red graphic element and tiny black type'
+  - 'grainy silver-grey monochrome, no color at all'
+  - 'pastel pink ground under a flat screened green duotone figure'
+  - 'near-black charcoal with bone-white type and faint warm grain'
+type_treatments:
+  - 'oversized geometric/grotesque sans headline locked tight to an edge, near-flush justified'
+  - 'stacked all-caps lines filling the column width with minimal leading'
+  - 'tiny precise tracked small-caps footer in clinical multi-column blocks'
+  - 'repeated outlined-only word echoed in a descending stack'
+example_prompts:
+  - 'Minimal Berlin-style event poster, 4:5. Pure black field flooded with fine 35mm film grain. A single drummer caught mid-strike, smeared into long-exposure motion blur — only ghosted silver-grey shoulders and a glint of cymbal legible — floating low in the lower-middle, surrounded by vast empty black. Hard top-left, an oversized white geometric grotesque headline in two stacked lines reads "NIGHT FORM". Bottom edge: a tiny tracked white line reads "22.11.2025" with a thin hairline rule and "HALL C, RIVERSIDE" in small caps. No color but one faint red tick mark beside the date. Gallery-like restraint, extreme negative space, cold monochrome, high contrast, grainy analog texture.'
+  - 'Minimalist exhibition poster, 4:5, gallery white off-white ground. A single dancer frozen mid-leap rendered as a flat coarse-halftone screen in signal red, limbs sharp, set against empty pale space. Enormous black geometric sans letters spelling "OPEN FORM" overlap directly across the figure, type and image fused into one plane. A visible faint drafting grid with small compass circles and crop ticks underlies the composition. Bottom band: dense tiny black multi-column footer text with red sub-labels. Restrained, precise, constructed, lots of negative space, museum typography.'
+  - 'Stark techno club poster, 4:5, pure black void. Thin white wireframe line-art of a hand cradling a globe of latitude lines floats center, fine contour swirls and a wireframe head pinned in the upper field by small red registration brackets and red dashed marks. Outlined-only word "TECHNO" echoed in a descending stack at upper-left; "LIVE NOW" in bold white caps near the base. Tiny tracked white caption "DOORS 23:00 — UNTIL LATE". No photography, line-only, extreme minimalism, vast black emptiness, clinical precision, single red accent.'

@@ -1,6 +1,8 @@
 package com.imin.iminapi.service.poster;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.imin.iminapi.dto.Rgb;
+import com.imin.iminapi.dto.StyleMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -15,6 +17,7 @@ import org.springframework.web.client.RestClient;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -51,6 +54,8 @@ public class RecraftClient {
     static final String DEFAULT_BASE_STYLE = "realistic_image";
     /** The downstream storage/compositor path expects raster bytes that can be embedded as PNG. */
     static final String DEFAULT_IMAGE_FORMAT = "png";
+    /** Recraft V3 {@code controls.artistic_level} (0–5). 4 = strong styling for curated substyles. */
+    static final int ARTISTIC_LEVEL = 4;
 
     private final RestClient recraftRestClient;
     private final String model;
@@ -68,18 +73,33 @@ public class RecraftClient {
     public record RecraftResult(byte[] imageBytes, Duration generationTime, String model) {}
 
     /**
-     * Generate one image. When {@code styleId} is non-blank it is sent as the
-     * mutually-exclusive {@code style_id}; otherwise the configured base
-     * {@code style} is sent so untrained vibes still render.
+     * How to style one generation. {@code style} and {@code style_id} are mutually exclusive in the
+     * Recraft API, so the two modes are kept apart:
+     * <ul>
+     *   <li>{@link StyleMode#TRAINED_STYLE_ID} — send {@code style_id} when present, else the base
+     *       {@code style} so untrained vibes still render.</li>
+     *   <li>{@link StyleMode#CURATED_SUBSTYLE} — send base {@code style=realistic_image} +
+     *       {@code substyle} + {@code controls.colors}/{@code artistic_level}; never a {@code style_id}.</li>
+     * </ul>
      */
+    public record RenderSpec(StyleMode mode, String styleId, String substyle, List<Rgb> colors) {
+        public static RenderSpec trained(String styleId) {
+            return new RenderSpec(StyleMode.TRAINED_STYLE_ID, styleId, null, List.of());
+        }
+        public static RenderSpec curated(String substyle, List<Rgb> colors) {
+            return new RenderSpec(StyleMode.CURATED_SUBSTYLE, null, substyle, colors == null ? List.of() : colors);
+        }
+    }
+
+    /** Generate one image under the given {@link RenderSpec}. */
     public RecraftResult generate(
             String prompt,
             String aspectRatio,
-            String styleId,
+            RenderSpec render,
             List<byte[]> referenceImageBytes) {
         String size = mapAspectRatio(aspectRatio);
-        boolean hasStyle = styleId != null && !styleId.isBlank();
         int refCount = referenceImageBytes == null ? 0 : referenceImageBytes.size();
+        RenderSpec spec = render == null ? RenderSpec.trained(null) : render;
 
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("prompt", prompt);
@@ -88,15 +108,31 @@ public class RecraftClient {
         body.put("n", 1);
         body.put("response_format", "b64_json");
         body.put("image_format", DEFAULT_IMAGE_FORMAT);
-        // style and style_id are mutually exclusive in the Recraft API.
-        if (hasStyle) {
-            body.put("style_id", styleId);
-        } else {
+
+        String modeLabel;
+        if (spec.mode() == StyleMode.CURATED_SUBSTYLE) {
+            // Photo-led vibes: curated realistic_image + substyle + palette controls. Never style_id.
             body.put("style", baseStyle);
+            if (isBlank(spec.substyle())) {
+                log.warn("Recraft CURATED_SUBSTYLE requested with no substyle — sending base style only");
+            } else {
+                body.put("substyle", spec.substyle());
+            }
+            List<Map<String, Object>> colors = toColorControls(spec.colors());
+            Map<String, Object> controls = new LinkedHashMap<>();
+            if (!colors.isEmpty()) controls.put("colors", colors);
+            controls.put("artistic_level", ARTISTIC_LEVEL);
+            body.put("controls", controls);
+            modeLabel = "curated:" + baseStyle + "/" + (isBlank(spec.substyle()) ? "(none)" : spec.substyle())
+                    + " colors=" + colors.size() + " artistic_level=" + ARTISTIC_LEVEL;
+        } else {
+            boolean hasStyle = !isBlank(spec.styleId());
+            if (hasStyle) body.put("style_id", spec.styleId());
+            else body.put("style", baseStyle);
+            modeLabel = hasStyle ? "trained:" + spec.styleId() : "trained:base/" + baseStyle;
         }
 
-        log.info("[Recraft image] prompt sent (model={}, size={}, style_id={}):\n{}",
-                model, size, hasStyle ? styleId : "(none)", prompt);
+        log.info("[Recraft image] prompt sent (model={}, size={}, mode={}):\n{}", model, size, modeLabel, prompt);
 
         Instant start = Instant.now();
         ImagesResponse resp = recraftRestClient.post()
@@ -107,10 +143,26 @@ public class RecraftClient {
                 .body(ImagesResponse.class);
         byte[] bytes = decodeSingle(resp);
         Duration elapsed = Duration.between(start, Instant.now());
-        log.info("Recraft image ({}) generated in {} ms (size={}, image_format={}, style_id={}, baseStyle={}, refs={})",
-                model, elapsed.toMillis(), size, DEFAULT_IMAGE_FORMAT, hasStyle ? styleId : "(none)",
-                hasStyle ? "(unused)" : baseStyle, refCount);
+        log.info("Recraft image ({}) generated in {} ms (size={}, image_format={}, mode={}, refs={})",
+                model, elapsed.toMillis(), size, DEFAULT_IMAGE_FORMAT, modeLabel, refCount);
         return new RecraftResult(bytes, elapsed, model);
+    }
+
+    /** Map a style-card palette to Recraft {@code controls.colors}: a list of {@code {"rgb":[r,g,b]}}. */
+    private static List<Map<String, Object>> toColorControls(List<Rgb> colors) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        if (colors == null) return out;
+        for (Rgb c : colors) {
+            if (c == null) continue;
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("rgb", List.of(c.r(), c.g(), c.b()));
+            out.add(entry);
+        }
+        return out;
+    }
+
+    private static boolean isBlank(String s) {
+        return s == null || s.isBlank();
     }
 
     /**

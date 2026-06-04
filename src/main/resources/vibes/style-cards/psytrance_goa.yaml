@@ -1,0 +1,51 @@
+# Style card for psytrance_goa — authored from the curated reference flyers.
+# medium: illustration | recommended substyle: trained
+# subject: A single hyper-detailed psychedelic illustration as hero: a serene alien or tribal figure in lotus meditation, hair and limbs dissolving into fractal flame, sacred-geometry mandalas and bioluminescent flora — UV-glowing line art over a deep cosmic gradient.
+# notes: All five references are illustration-led, not photographic: four are dense digital illustrations (alien lotus meditator, retro-futurist sci-fi jungle city, fire-haired gray tribal woman, glossy cyber-strawberry eye) and one is a fluid abstract neon bloom. Heroes are centered, symmetric, and saturated with UV glow, sacred geometry, and organic alien detail — hence illustration medium and the \"trained\" substyle rather than a photo substyle.
+medium: 'illustration'
+palette:
+  - [230, 52, 38]
+  - [219, 64, 178]
+  - [86, 200, 168]
+  - [44, 18, 64]
+hero_subjects:
+  people:
+    - 'a cross-legged figure in lotus meditation seen front-on, glowing third-eye gem at the forehead, arms folded, hair streaming upward into curling flame and smoke, eyes closed in shadow'
+    - 'a gray-skinned tribal woman with fire-orange hair erupting into swirling tendrils, face calm and softly lit, neck ringed by metallic torcs, surrounded by hummingbirds and floating snails'
+    - 'a seated meditator dissolving into a fractal mandala body, lower torso fading into crystalline shards and koi fish, framed by hibiscus blooms and glowing mushrooms'
+    - 'silhouetted partygoers walking away down a jungle path toward distant neon towers, backlit so faces stay in shadow, rim-lit by magenta sky glow'
+  object:
+    - 'a giant ripe strawberry rendered as a textured orb with a single realistic human eye at its center, a ring of liquid fire orbiting it, syrup dripping down'
+    - 'a glowing abstract bloom of fluid neon tendrils unfurling from a radiant white-hot core, like a melting jellyfish flower on a warm gradient'
+    - 'retro-futurist saucer-topped mushroom towers rising over an alien jungle, flying discs beaming light shafts under a giant ringed planet and starfield'
+    - 'a faceted floating crystal sigil ringed in UV light, hovering above cupped hands amid vines and red flowers'
+    - 'a sacred-geometry mandala portal of nested triangles and dots glowing inside a lotus arch'
+compositions:
+  - 'centered vertically-symmetric hero figure filling the frame, title arched across the top, date band carved through the lower third'
+  - 'hero object dead-center on a flat color field, big display type stacked top and bottom, small caption row across the mid-line'
+  - 'deep one-point-perspective scene: foreground jungle silhouette framing a luminous mid-ground city, bold title floating in the sky'
+  - 'totem stack — face/third-eye at top, body in the middle, fish and flora orbiting the base, URL pinned at the very bottom'
+  - 'full-bleed swirling energy radiating from a central glowing point, title and lineup compressed into the lower quarter'
+  - 'ornate arch or portal enclosing the hero, mirrored flora flanking left and right like an altar'
+accents:
+  - 'UV blacklight neon glow on line edges'
+  - 'fine ink-line stippling and intricate linework detail'
+  - 'subtle paper/canvas grain under flat color fields'
+  - 'halftone dot gradients in the cosmic sky'
+  - 'lens-flare starbursts and bokeh on light sources'
+  - 'liquid-chrome syrup drips and gloss highlights'
+palette_twists:
+  - 'fire-orange and ember red bleeding into smoke gray'
+  - 'ultraviolet magenta and teal on near-black cosmic ground'
+  - 'acid green field with hot strawberry red hero'
+  - 'deep violet-to-cyan dusk gradient with pink rim light'
+  - 'bioluminescent mint and gold linework glowing on indigo'
+type_treatments:
+  - 'ornate interlocking psychedelic display letters with vine/flame serifs filled in neon gradient'
+  - 'heavy condensed sans headline knocked out or carved through the artwork'
+  - 'small all-caps tracked-out caption rows and lineup names in a clean grotesque'
+  - 'script/italic flourish word paired with a chunky block word for contrast'
+example_prompts:
+  - 'Vertical 4:5 psytrance event poster, dense digital illustration. Hero: a serene gray-skinned figure seated in lotus meditation, dead-center and vertically symmetric, a glowing magenta third-eye gem on the forehead, long hair erupting upward into curling orange flame and smoke laced with tiny hummingbirds. Lower torso dissolves into faceted teal crystal shards and a pair of koi fish; mirrored hibiscus blooms and luminous mushrooms flank the base like an altar. Background is a deep violet-to-cyan cosmic gradient with a faint sacred-geometry mandala halo and halftone starfield. UV blacklight glow on every line edge, fine stippled linework, subtle canvas grain. Ornate interlocking psychedelic display title arched across the top reading "ZEN ISLAND" in a neon gold-green gradient, a carved condensed date band "MAY 05" through the lower third, small tracked caption "festival.example" pinned at the very bottom. Colors: ember orange, ultraviolet magenta, mint teal, near-black indigo.'
+  - 'Vertical 4:5 surreal psychedelic poster, glossy 3D illustration on a flat split green field. Hero object dead-center: a giant ripe strawberry rendered as a pitted red orb with one realistic human eye at its core, a thin ring of liquid fire orbiting it horizontally, glossy syrup dripping down the base. Subtle paper grain over the color field, soft halftone in the corners, liquid-chrome highlights. Heavy condensed sans headline stacked top and bottom — "FUTURE" above the hero, "BERRY" below it — with a small script flourish word between, plus a tiny all-caps caption row "sensory glitch" across the mid-line. Colors: strawberry red, acid green, syrup amber, off-white.'
+  - 'Vertical 4:5 retro-futurist psytrance poster, detailed line-and-color illustration with deep one-point perspective. Foreground: dark silhouetted jungle palms and a handful of partygoers walking away down a path, backlit so their faces stay in shadow. Mid-ground: luminous saucer-topped mushroom towers and flying discs beaming pale light shafts over a pink alien mountain range. Sky: a giant ringed planet and dense starfield in a magenta-to-teal dusk gradient. UV neon rim light on the towers, fine ink stippling, halftone sky. Bold condensed display title "UTOPIA" floating in the upper sky in hot pink, small tracked date "23.05" beneath it. Colors: ultraviolet magenta, teal, pale cyan, near-black.'

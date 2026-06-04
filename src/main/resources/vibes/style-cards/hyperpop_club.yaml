@@ -1,0 +1,55 @@
+# Style card for hyperpop_club — authored from the curated reference flyers.
+# medium: photo | recommended substyle: hard_flash
+# subject: A flash-lit club-goer shot up close in a dark venue — face, drink, or hands toward the camera — with oversized display type colliding over the photo. The hero is a real partygoer; the energy is harsh on-camera flash, motion blur, and neon scrawl.
+# notes: Four of five references are flash-lit photographs with a human hero (partygoer baring a gold grill, women holding drinks to the camera, a motion-blurred crowd) and oversized type colliding over the image; one is a glossy 3D object render (disco-ball lips dripping gold). Medium is photo-led with harsh on-camera flash, grain, motion blur and neon marker doodles, so hard_flash is the closest realistic substyle.
+medium: 'photo'
+palette:
+  - [224, 64, 18]
+  - [193, 214, 30]
+  - [240, 232, 200]
+hero_subjects:
+  people:
+    - 'young woman in a black slip dress leaning toward camera, holding a tall champagne flute out at arm''s length, harsh on-camera flash, dark club with a mirror-ball wall glittering behind her'
+    - 'club-goer in extreme close-up baring a gold-grill smile, mirrored wraparound sunglasses, throwing a shaka hand sign, blurred white-tent crowd behind, flash blowing out the highlights'
+    - 'woman pressing two amber cocktail glasses over her eyes like goggles, pursed red lips, blue tinsel top, deep teal curtain backdrop, direct flash flattening her face'
+    - 'dense crowd of dancers shot in grainy black-and-white motion blur, raised arms and silhouetted heads, single hard light flaring from the back of the room'
+    - 'two friends mid-cheers clinking glasses at the camera, flash catching the liquid, sweaty skin and smudged makeup, near-black club background'
+    - 'DJ behind decks lit only by a phone flash and red gel, hand on the mixer, headphones half-on, crowd a blur of motion behind'
+  object:
+    - 'a chrome disco-ball rendered as a pair of glossy lips dripping liquid gold, floating over crimson satin folds'
+    - 'a tall champagne flute catching amber flash highlights against a glittering mirror-ball wall'
+    - 'two coupe glasses of orange spritz clinked together, droplets frozen mid-splash under harsh flash'
+    - 'a gold open-mouth grill catching a single flash highlight in macro, lips and teeth wet and glossy'
+    - 'a mirror-ball half-submerged in pooling liquid gold on black, hard specular glints'
+    - 'crumpled red silk fabric with scattered chrome sequins, raking light and deep shadow'
+compositions:
+  - 'full-bleed flash photo of a single hero, oversized display headline crashing across the top third and partly behind the subject''s head'
+  - 'centered face in macro close-up, giant headline word sitting directly behind the head so the hair breaks the letters'
+  - 'hero pushed low/center, headline stacked top-left in huge condensed caps overlapping the figure''s shoulders'
+  - 'object render floating center on near-black, big serif headline stacked directly beneath it'
+  - 'info block (DJ names, date, address) pinned to the bottom edge in a tight small-caps cluster with a boxed date tag'
+  - 'tiny top banner of venue/credit small caps spanning the full width above the hero'
+  - 'neon outline doodles scattered across the mid-field, drawn on top of the photo around the subject'
+  - 'headline split into two flush-left lines that the hero''s arm or drink visually interrupts'
+accents:
+  - 'harsh direct on-camera flash with blown-out highlights and hard shadows'
+  - 'heavy photographic grain and gritty black-and-white conversion'
+  - 'motion blur on the crowd and on raised hands'
+  - 'hand-scrawled neon marker doodles (dancing stick figures, splat-flowers) drawn over the photo'
+  - 'specular chrome and liquid-gold glints on a 3D-rendered object'
+  - 'smudged-glass and lens-flare bloom from a single back light'
+palette_twists:
+  - 'acid lime-green neon scrawl on grainy black-and-white photo'
+  - 'blown-out flash highlights with deep near-black club shadows'
+  - 'molten gold and chrome over crimson satin'
+  - 'highlighter-yellow oversized type on warm amber flash photo'
+  - 'bright orange display type over a flat teal-to-black photo'
+type_treatments:
+  - 'oversized condensed sans headline in caps, set huge and overlapping the photo subject'
+  - 'acid-neon headline that matches scrawled marker doodles drawn over the image'
+  - 'flowing white handwritten script laid across a giant block headline word'
+  - 'tight small-caps info cluster (DJ names, date, address) with a boxed date tag pinned to the bottom'
+example_prompts:
+  - 'Vertical 4:5 club poster. Full-bleed flash photograph of a young woman in a black slip dress leaning toward the camera, holding a tall champagne flute out at arm''s length; dark venue behind her with a mirror-ball wall glittering out of focus, harsh on-camera flash blowing out her highlights and casting hard shadows, warm amber color cast, visible photographic grain. Oversized highlighter-yellow condensed sans headline reads "LADIES NIGHT" stacked across the top third, the second line crashing partly behind her hair. A small-caps top banner spans the full width; a tight cluster of event details and a boxed date tag sit pinned to the bottom edge. Scrawled orange marker flower doodles drawn over the photo around her. Internet-core club flyer energy. No real brand or venue names.'
+  - 'Vertical 4:5 club flyer. Grainy black-and-white flash photograph of a dense crowd of dancers in motion blur, raised arms and silhouetted heads, a single hard light flaring from the back of the room. Drawn on top of the photo in acid lime-green neon outline: scribbled dancing stick figures with music notes and splat-flower bursts. Acid-green type — a bold caps headline at the top and a huge date set across the lower third — matching the neon scrawl. Tiny vertical credit text up the right edge. Deep blacks, blown highlights, heavy grain, deconstructed screen-grab aesthetic. No real brand or artist names.'
+  - 'Vertical 4:5 poster. Glossy 3D render of a pair of chrome disco-ball lips dripping liquid gold, floating center over crumpled crimson satin on near-black, hard specular glints and molten reflections. Beneath it a large cream serif headline stacks in two caps lines; a thin rule divides an ''artists'' label and a short bold name. A small-caps address line runs along the bottom edge with a tiny outlined circle mark in the corner. Luxe, dark, hyperpop-club mood — chrome, gold, blood-red. No real brand, label, or artist names.'

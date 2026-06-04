@@ -23,8 +23,14 @@ public class PosterVariantEntity {
     @JoinColumn(name = "generation_id", nullable = false)
     private PosterGeneration posterGeneration;
 
+    // Holds the variant's hero_type (people | object | typographic). Column name kept as
+    // variant_style for backward compatibility with the existing schema/OpenAPI surface.
     @Column(name = "variant_style", nullable = false, length = 32)
     private String variantStyle;
+
+    /** The sampled {@code CreativeDirection} for this variant, serialized as JSON, for debugging. */
+    @Column(name = "creative_direction_json", columnDefinition = "TEXT")
+    private String creativeDirectionJson;
 
     @Column(name = "ideogram_prompt", columnDefinition = "TEXT", nullable = false)
     private String ideogramPrompt;

@@ -1,0 +1,38 @@
+medium: "photo"
+palette:
+  - [12, 12, 12]
+  - [233, 64, 87]
+  - [240, 236, 225]
+hero_subjects:
+  people:
+    - "a lone vocalist gripping the mic under a single hard flash"
+    - "two dancers mid-spin on a sweat-slick floor"
+    - "a crowd surfer caught against a wash of stage light"
+    - "a DJ silhouetted behind a haze of fog"
+  object:
+    - "a battered cassette tape spilling its ribbon"
+    - "a cracked vinyl record propped against a brick wall"
+    - "a chrome boombox shot in raking light"
+    - "a fistful of crumpled gig flyers"
+compositions:
+  - "hero bottom-third, oversized title stacked above"
+  - "centered hero, title wrapping the edges"
+  - "full-bleed photo with a thin type band across the top"
+  - "diagonal crop, type running up the right margin"
+  - "tight portrait crop, date in the lower corner"
+accents:
+  - "heavy film grain"
+  - "direct on-camera flash"
+  - "photocopier high-contrast"
+  - "light leaks at the frame edge"
+palette_twists:
+  - "push the red hotter toward magenta"
+  - "knock the cream down to bone grey"
+  - "deepen the near-black to ink"
+type_treatments:
+  - "condensed grotesque, all caps, tight tracking"
+  - "hand-inked marker scrawl"
+  - "stencil-cut display face"
+example_prompts:
+  - "Gritty flash-lit photo poster of a lone vocalist gripping the mic, oversized condensed all-caps title 'NIGHT SHIFT' stacked above, heavy grain, ink-black and hot magenta."
+  - "High-contrast photocopier-style poster of a cracked vinyl record against brick, stencil title 'OFF THE RECORD' running up the right margin, bone-grey and ink."

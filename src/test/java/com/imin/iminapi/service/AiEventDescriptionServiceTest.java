@@ -1,11 +1,17 @@
 package com.imin.iminapi.service;
 
 import com.imin.iminapi.dto.EventCreatorRequest;
+import com.imin.iminapi.dto.HeroType;
 import com.imin.iminapi.dto.PosterConcept;
 import com.imin.iminapi.dto.PosterVariant;
+import com.imin.iminapi.dto.StyleMode;
 import com.imin.iminapi.dto.UniversalRules;
 import com.imin.iminapi.dto.Vibe;
+import com.imin.iminapi.service.ai.CreativeDirection;
+import com.imin.iminapi.service.ai.CreativeDirectionSampler;
+import com.imin.iminapi.service.ai.CreativeDirectionSampler.SampledRun;
 import com.imin.iminapi.service.poster.PosterTextSpecFactory;
+import com.imin.iminapi.service.poster.StyleCardLibrary;
 import com.imin.iminapi.service.poster.VibeLibrary;
 import org.junit.jupiter.api.Test;
 
@@ -18,19 +24,31 @@ import static org.assertj.core.api.Assertions.assertThat;
 class AiEventDescriptionServiceTest {
 
     private final VibeLibrary vibeLibrary = new FakeVibeLibrary();
-
-    private AiEventDescriptionService service;
+    private final StyleCardLibrary styleCardLibrary = new StyleCardLibrary(new org.springframework.core.io.DefaultResourceLoader(), "classpath*:nonexistent/*.yaml");
+    private final AiEventDescriptionService service =
+            new AiEventDescriptionService(null, vibeLibrary, new PosterTextSpecFactory(),
+                    styleCardLibrary, new CreativeDirectionSampler());
 
     private static final Vibe BRUTALIST = new Vibe(
             "brutalist_techno", "Brutalist Techno", List.of("techno"),
             "raw exposed concrete, harsh single-source lighting", List.of("#0A0A0A", "#FF2D00"),
             "oversized condensed grotesk, all caps", "giant headline, lots of negative space",
             List.of("severe"), List.of("color gradients", "warmth"),
-            "recraft", List.of("reference-images/Brutalist Techno"), null, "brutalist", false);
+            "recraft", List.of("reference-images/Brutalist Techno"), null, "brutalist", false,
+            "a lone figure dwarfed by raw concrete under one hard light", StyleMode.CURATED_SUBSTYLE, "urban_drama");
 
-    @org.junit.jupiter.api.BeforeEach
-    void setUp() {
-        service = new AiEventDescriptionService(null, vibeLibrary, new PosterTextSpecFactory());
+    private SampledRun sampled() {
+        return new SampledRun(List.of(
+                new CreativeDirection(HeroType.PEOPLE, "lone dancer mid-motion under one cold spotlight",
+                        "giant headline top, hero anchored bottom third", "heavy film grain",
+                        "near-black with one acid-green accent", "condensed all-caps, tight tracking"),
+                new CreativeDirection(HeroType.OBJECT, "monolithic concrete stairwell shot from below",
+                        "full-bleed texture, headline up the left edge", "photocopy scratches and dust",
+                        "black with vermilion accent", "outline headline over solid sub-line"),
+                new CreativeDirection(HeroType.TYPOGRAPHIC, null,
+                        "type fractured across three baselines", "xerox photocopy degradation",
+                        "monochrome with one signal accent", "stacked grotesk, strict left alignment")),
+                "An example reference poster prompt written for a different event entirely.");
     }
 
     private EventCreatorRequest req(String pinnedVibeId) {
@@ -41,116 +59,225 @@ class AiEventDescriptionServiceTest {
                 pinnedVibeId, null);
     }
 
-    @Test
-    void buildPrompt_pinnedVibe_injectsStructuredPresetAndUniversalRules() {
-        EventCreatorRequest request = new EventCreatorRequest(
+    private EventCreatorRequest brief() {
+        return new EventCreatorRequest(
                 "warehouse rave", "energetic", "techno", "Berlin",
                 LocalDate.of(2026, 6, 7), List.of("INSTAGRAM"),
                 "DJ A, DJ B", "RSO", "BIG NIGHT - BERLIN", null,
                 "Schnellerstrasse 137", "https://imin.wtf/e/big-night",
                 "brutalist_techno", null);
+    }
 
-        String prompt = service.buildPrompt(request, null);
+    // ---- T4: art-director template v2 ------------------------------------------------------------
 
+    @Test
+    void buildPrompt_injectsVibeWorldSubjectAndPerVariantDirections() {
+        String prompt = service.buildPrompt(brief(), BRUTALIST, sampled(), null);
+
+        assertThat(prompt).contains("ONE-OF-A-KIND nightlife event posters");
         assertThat(prompt).contains("must be exactly \"brutalist_techno\"");
         assertThat(prompt).contains("Visual style: raw exposed concrete");
-        assertThat(prompt).doesNotContain("Palette:");
-        assertThat(prompt).doesNotContain("#0A0A0A");
         assertThat(prompt).contains("Typography: oversized condensed grotesk");
-        assertThat(prompt).contains("Avoid: color gradients, warmth");
-        assertThat(prompt).contains("AVOID in the artwork: blurry, watermark");
-        assertThat(prompt).contains("stock flyer layout");
-        assertThat(prompt).contains("template poster");
-        assertThat(prompt).contains("Create a finished event poster");
+        assertThat(prompt).contains("Hero subject matter for this vibe: a lone figure dwarfed by raw concrete");
+        // per-variant sampled directions
+        assertThat(prompt).contains("Variant 1 — hero_type \"people\"");
+        assertThat(prompt).contains("lone dancer mid-motion under one cold spotlight");
+        assertThat(prompt).contains("Variant 2 — hero_type \"object\"");
+        assertThat(prompt).contains("monolithic concrete stairwell shot from below");
+        assertThat(prompt).contains("Variant 3 — hero_type \"typographic\"");
+        assertThat(prompt).contains("typography IS the image");
+        // the few-shot anchor + the JSON contract
+        assertThat(prompt).contains("An example reference poster prompt written for a different event");
+        assertThat(prompt).contains("hero_type: people | object | typographic");
         assertThat(prompt).contains("Render the following required text exactly as written");
         assertThat(prompt).contains("\"BIG NIGHT - BERLIN\"");
         assertThat(prompt).contains("\"7 JUN 2026\"");
-        assertThat(prompt).doesNotContain("EMPTY typographic surfaces");
-        assertThat(prompt).doesNotContain("No letters, no glyphs");
-        assertThat(prompt).doesNotContain("Decorative abstract lettering is allowed");
-        assertThat(prompt).contains("IP rule: never in the style of a real artist");
-        assertThat(prompt).doesNotContain("(no descriptor available)");
+        assertThat(prompt).contains("IP rule: never reference real venues");
+        assertThat(prompt).contains("Any people must be rendered photorealistically with correct anatomy");
+    }
+
+    // ---- T1: diffusion negative-token leakage is purged ------------------------------------------
+
+    @Test
+    void buildPrompt_purgesDiffusionNegativeTokensAndForcedTypePlate() {
+        String prompt = service.buildPrompt(brief(), BRUTALIST, sampled(), null);
+
+        assertThat(prompt).doesNotContain("AVOID in the artwork");
+        assertThat(prompt).doesNotContain("deformed faces");
+        assertThat(prompt).doesNotContain("extra limbs");
+        assertThat(prompt).doesNotContain("jpeg artifacts");
+        assertThat(prompt).doesNotContain("low-res");
+        assertThat(prompt).doesNotContain("blurry");
+        assertThat(prompt).doesNotContain("generic neon crowd");
+        assertThat(prompt).doesNotContain("typography is the main visual composition");
+        assertThat(prompt).doesNotContain("variant_style");
+        // the genuinely instructional avoid stays, as an imperative
+        assertThat(prompt).contains("No watermarks, logos, signatures, stock-template flyer layouts, or invented words");
     }
 
     @Test
-    void buildPrompt_noVibeId_autoSuggestsFromGenre() {
-        String prompt = service.buildPrompt(req(null), null);
-
-        assertThat(prompt).contains("must be exactly \"brutalist_techno\"");
-        assertThat(prompt).contains("Visual style: raw exposed concrete");
-    }
-
-    @Test
-    void buildPrompt_forcesFourByFiveAspectRatio() {
-        String prompt = service.buildPrompt(req("brutalist_techno"), null);
-
+    void buildPrompt_forcesFourByFiveAndDesign() {
+        String prompt = service.buildPrompt(req("brutalist_techno"), BRUTALIST, sampled(), null);
         assertThat(prompt).contains("aspect_ratio: always exactly \"4:5\"");
-        assertThat(prompt).doesNotContain("one of 4:5, 1:1, 9:16, 16:9");
+        assertThat(prompt).contains("style_type: always \"Design\"");
     }
 
     @Test
-    void forcePortrait_setsEveryVariantToFourByFive() {
-        String body = "word ".repeat(50).trim();
+    void buildPrompt_appendsReinforcementOnRetry() {
+        String prompt = service.buildPrompt(req("brutalist_techno"), BRUTALIST, sampled(),
+                "Previous attempt rejected: variants too similar");
+        assertThat(prompt).contains("Previous attempt rejected: variants too similar");
+        assertThat(prompt).contains("Fix the issue above and return valid JSON only");
+    }
+
+    // ---- forcePortrait --------------------------------------------------------------------------
+
+    @Test
+    void forcePortrait_setsEveryVariantToFourByFivePreservingHeroType() {
+        String body = "word ".repeat(70).trim();
         List<PosterVariant> variants = List.of(
-                new PosterVariant("atmospheric", body, "9:16", "Design"),
-                new PosterVariant("graphic", body, "1:1", "Design"),
-                new PosterVariant("minimal", body, "16:9", "Design"));
+                new PosterVariant("people", body, "9:16", "Design"),
+                new PosterVariant("object", body, "1:1", "Design"),
+                new PosterVariant("typographic", body, "16:9", "Design"));
 
         PosterConcept forced = service.forcePortrait(
                 new PosterConcept("brutalist_techno", "palette", variants));
 
         assertThat(forced.variants()).extracting(PosterVariant::aspectRatio)
                 .containsExactly("4:5", "4:5", "4:5");
-        // Everything except the aspect ratio is preserved.
-        assertThat(forced.variants()).extracting(PosterVariant::variantStyle)
-                .containsExactly("atmospheric", "graphic", "minimal");
-        assertThat(forced.variants()).extracting(PosterVariant::ideogramPrompt)
-                .containsExactly(body, body, body);
-        assertThat(forced.variants()).extracting(PosterVariant::styleType)
-                .containsExactly("Design", "Design", "Design");
-        assertThat(forced.subStyleTag()).isEqualTo("brutalist_techno");
-        assertThat(forced.colorPaletteDescription()).isEqualTo("palette");
+        assertThat(forced.variants()).extracting(PosterVariant::heroType)
+                .containsExactly("people", "object", "typographic");
+    }
+
+    // ---- T8: concept validation -----------------------------------------------------------------
+
+    private static String peoplePrompt() {
+        return "A lone dancer mid-spin under one hard flash, the crowd dissolving into motion blur behind her "
+                + "inside a dark concrete room, shot on grainy high-contrast black-and-white film for a tall portrait "
+                + "poster. The bold condensed headline stacks heavy across the very top of the frame while the date is "
+                + "locked beneath it, and a tracked-out acid-green venue line sits along the bottom edge integrated as "
+                + "native poster typography, with crushed shadows swallowing every margin of the brutalist composition.";
+    }
+
+    private static String objectPrompt() {
+        return "Monolithic concrete stairwell viewed from directly below, raw formwork ribs receding into a black "
+                + "void lit by a single burning industrial bulb, heavy photocopy grain and dust scratches degrading "
+                + "the whole vertical sheet toward pure xerox texture. Vermilion-orange typography knocks out of the "
+                + "deepest shadow: the oversized headline runs ninety degrees up the left edge, the date anchors the "
+                + "lower margin, and a small monospaced credit row pins the bottom corner of the stark brutalist sheet.";
+    }
+
+    private static String typographicPrompt() {
+        return "Oversized condensed grotesk lettering fractures across three separate baselines, knocked clean out of "
+                + "a field of crushed film grain and marbled toner streaks, with no imagery whatsoever — the type alone "
+                + "is the entire composition, set tight in all-caps with one acid-green accent line slicing diagonally "
+                + "through the stack. The dense xerox degradation eats the edges of every glyph while a small monospaced "
+                + "credit block anchors the foot of the stark vertical sheet, severe and machine-stamped throughout.";
+    }
+
+    private PosterConcept validConcept() {
+        return new PosterConcept("brutalist_techno", "near-black with acid green", List.of(
+                new PosterVariant("people", peoplePrompt(), "4:5", "Design"),
+                new PosterVariant("object", objectPrompt(), "4:5", "Design"),
+                new PosterVariant("typographic", typographicPrompt(), "4:5", "Design")));
     }
 
     @Test
-    void validate_acceptsKnownVibe_rejectsUnknown() {
-        String body = "word ".repeat(50).trim();
-        List<PosterVariant> variants = List.of(
-                new PosterVariant("atmospheric", body, "4:5", "Design"),
-                new PosterVariant("graphic", body, "1:1", "Design"),
-                new PosterVariant("minimal", body, "9:16", "Design"));
-
-        assertThat(service.validate(new PosterConcept("brutalist_techno", "palette", variants))).isNull();
-        assertThat(service.validate(new PosterConcept("bogus", "palette", variants)))
-                .contains("known vibe id");
+    void validate_acceptsWellFormedHeroTypedDistinctConcept() {
+        assertThat(service.validate(validConcept())).isNull();
     }
 
     @Test
-    void validate_withRequest_rejectsAnyVariantPromptMissingRequiredText() {
-        EventCreatorRequest request = new EventCreatorRequest(
-                "warehouse rave", "energetic", "techno", "Berlin",
-                LocalDate.of(2026, 6, 7), List.of("INSTAGRAM"),
-                "DJ A, DJ B", "RSO", "BIG NIGHT - BERLIN", null,
-                "Schnellerstrasse 137", "https://imin.wtf/e/big-night",
-                "brutalist_techno", null);
-        String completePrompt = "Create a finished brutalist event poster for \"BIG NIGHT - BERLIN\" on "
-                + "\"7 JUN 2026\" at \"RSO\" with native typography, raw exposed concrete, harsh light, "
-                + "oversized condensed grotesk type, torn label details, stamped rails, sparse composition, "
-                + "severe contrast, industrial texture, precise hierarchy, and a clean Recraft-ready layout.";
-        String promptMissingDate = "Create a finished brutalist event poster for \"BIG NIGHT - BERLIN\" at \"RSO\" with native typography, "
-                + "raw exposed concrete, harsh light, oversized condensed grotesk type, torn label details, "
-                + "stamped rails, sparse composition, severe contrast, industrial texture, precise hierarchy, "
-                + "and a clean Recraft-ready layout, but omit the exact date string from the generated poster prompt.";
-        List<PosterVariant> variants = List.of(
-                new PosterVariant("atmospheric", completePrompt, "4:5", "Design"),
-                new PosterVariant("graphic", promptMissingDate, "1:1", "Design"),
-                new PosterVariant("minimal", completePrompt, "9:16", "Design"));
+    void validate_rejectsWrongHeroTypeOrder() {
+        PosterConcept c = new PosterConcept("brutalist_techno", "p", List.of(
+                new PosterVariant("object", peoplePrompt(), "4:5", "Design"),
+                new PosterVariant("people", objectPrompt(), "4:5", "Design"),
+                new PosterVariant("typographic", typographicPrompt(), "4:5", "Design")));
+        assertThat(service.validate(c)).contains("hero_type must be exactly \"people\"");
+    }
 
-        String error = service.validate(new PosterConcept("brutalist_techno", "palette", variants), request);
+    @Test
+    void validate_rejectsPeopleVariantWithoutHumanNoun() {
+        PosterConcept c = new PosterConcept("brutalist_techno", "p", List.of(
+                new PosterVariant("people", objectPrompt(), "4:5", "Design"),  // no human noun
+                new PosterVariant("object", objectPrompt() + " extra distinct words to differ greatly here today now", "4:5", "Design"),
+                new PosterVariant("typographic", typographicPrompt(), "4:5", "Design")));
+        assertThat(service.validate(c)).contains("must contain a human subject");
+    }
 
-        assertThat(error).contains("required text");
+    @Test
+    void validate_rejectsTypographicVariantContainingHuman() {
+        PosterConcept c = new PosterConcept("brutalist_techno", "p", List.of(
+                new PosterVariant("people", peoplePrompt(), "4:5", "Design"),
+                new PosterVariant("object", objectPrompt(), "4:5", "Design"),
+                new PosterVariant("typographic", typographicPrompt() + " a lone dancer appears", "4:5", "Design")));
+        assertThat(service.validate(c)).contains("typographic) must not contain a human subject");
+    }
+
+    @Test
+    void validate_rejectsNearDuplicatePrompts() {
+        String p = peoplePrompt();
+        PosterConcept c = new PosterConcept("brutalist_techno", "pal", List.of(
+                new PosterVariant("people", p, "4:5", "Design"),
+                new PosterVariant("object", p.replace("dancer", "stairwell figure"), "4:5", "Design"),
+                new PosterVariant("typographic", typographicPrompt(), "4:5", "Design")));
+        assertThat(service.validate(c)).contains("variants too similar");
+    }
+
+    @Test
+    void validate_rejectsTooShortPrompt() {
+        PosterConcept c = new PosterConcept("brutalist_techno", "pal", List.of(
+                new PosterVariant("people", "a lone dancer under a flash", "4:5", "Design"),
+                new PosterVariant("object", objectPrompt(), "4:5", "Design"),
+                new PosterVariant("typographic", typographicPrompt(), "4:5", "Design")));
+        assertThat(service.validate(c)).contains("too short");
+    }
+
+    @Test
+    void validate_withRequest_rejectsVariantMissingRequiredText() {
+        EventCreatorRequest request = brief();
+        // Build prompts that satisfy shape (hero order, distinct, human-noun rules) and embed required text,
+        // except the object variant omits the date.
+        String people = "A lone dancer mid-spin under a hard flash, the crowd behind her smeared into motion blur in a "
+                + "dark concrete room shot on grainy film. The bold headline \"BIG NIGHT - BERLIN\" stacks across the top, "
+                + "the date \"7 JUN 2026\" locks beneath it and the venue \"RSO\" sits along the bottom edge as native "
+                + "tracked-out acid-green poster typography filling the tall portrait frame end to end completely.";
+        String objectMissingDate = "Monolithic concrete stairwell shot from directly below, raw formwork receding into a "
+                + "black void under one burning industrial bulb, heavy photocopy grain across the vertical sheet. Vermilion "
+                + "typography knocks out of shadow: the headline \"BIG NIGHT - BERLIN\" runs up the left edge and the venue "
+                + "\"RSO\" anchors the bottom-right corner as bold native brutalist lettering on the stark grainy poster sheet today.";
+        String typographic = "Oversized condensed grotesk type fractures across three baselines over crushed grain and toner "
+                + "streaks, no imagery at all. The headline \"BIG NIGHT - BERLIN\" dominates the upper stack, the date "
+                + "\"7 JUN 2026\" cuts diagonally through the center in acid-green, and \"RSO\" anchors a small monospaced "
+                + "credit block at the foot of the stark vertical machine-stamped composition sheet rendered entirely as type.";
+        PosterConcept c = new PosterConcept("brutalist_techno", "pal", List.of(
+                new PosterVariant("people", people, "4:5", "Design"),
+                new PosterVariant("object", objectMissingDate, "4:5", "Design"),
+                new PosterVariant("typographic", typographic, "4:5", "Design")));
+
+        String error = service.validate(c, request);
+        assertThat(error).contains("missing required text");
         assertThat(error).contains("variant[1]");
         assertThat(error).contains("7 JUN 2026");
+    }
+
+    // ---- T9: defensive JSON parsing -------------------------------------------------------------
+
+    @Test
+    void extractJson_stripsMarkdownFencesAndProse() {
+        assertThat(AiEventDescriptionService.extractJson("```json\n{\"a\":1}\n```")).isEqualTo("{\"a\":1}");
+        assertThat(AiEventDescriptionService.extractJson("Here is the JSON: {\"a\":1} thanks")).isEqualTo("{\"a\":1}");
+        assertThat(AiEventDescriptionService.extractJson("{\"a\":1}")).isEqualTo("{\"a\":1}");
+    }
+
+    @Test
+    void parseConcept_parsesFencedHeroTypedJson() {
+        String raw = "```json\n{\"sub_style_tag\":\"brutalist_techno\",\"color_palette_description\":\"black\","
+                + "\"variants\":[{\"hero_type\":\"people\",\"ideogram_prompt\":\"p\",\"aspect_ratio\":\"4:5\",\"style_type\":\"Design\"}]}\n```";
+        PosterConcept c = service.parseConcept(raw);
+        assertThat(c.subStyleTag()).isEqualTo("brutalist_techno");
+        assertThat(c.variants()).hasSize(1);
+        assertThat(c.variants().get(0).heroType()).isEqualTo("people");
     }
 
     private static class FakeVibeLibrary extends VibeLibrary {
@@ -170,7 +297,9 @@ class AiEventDescriptionServiceTest {
 
         @Override
         public UniversalRules universalRules() {
-            return new UniversalRules(List.of("4:5"), "blurry, watermark", "never in the style of a real artist");
+            return new UniversalRules(List.of("4:5"),
+                    "No watermarks, logos, signatures, stock-template flyer layouts, or invented words.",
+                    "never reference real venues, brands, or artists");
         }
 
         @Override

@@ -42,11 +42,23 @@ poster:
     # Curated reference flyers are loaded per-vibe from vibes.yaml (folders under
     # reference-images/). Cap how many flyers per vibe are sent to the image model.
     max-per-tag: ${POSTER_MAX_REFERENCES_PER_TAG:5}
+  style-cards:
+    # Committed per-vibe style cards (sampling pools + palette extracted from the reference flyers),
+    # loaded by StyleCardLibrary at startup. Authored once via the @Profile("tools") StyleCardGenerator.
+    location: ${POSTER_STYLE_CARDS_LOCATION:classpath*:vibes/style-cards/*.yaml}
   text-validation:
+    # Legibility (vision) gate — kept on gpt-4o-mini for cost.
     enabled: ${POSTER_TEXT_VALIDATION_ENABLED:true}
     model: ${POSTER_TEXT_VALIDATION_MODEL:openai/gpt-4o-mini}
     max-extra-text-items: ${POSTER_TEXT_VALIDATION_MAX_EXTRA_TEXT_ITEMS:2}
-    max-regenerations: ${POSTER_TEXT_VALIDATION_MAX_REGENERATIONS:1}
+  style-validation:
+    # Style-adherence (vision) gate — hero present, medium/palette match. Cheap model like the text gate.
+    enabled: ${POSTER_STYLE_VALIDATION_ENABLED:true}
+    model: ${POSTER_STYLE_VALIDATION_MODEL:openai/gpt-4o-mini}
+  validation:
+    # Unified regeneration budget shared by the legibility + style gates (total per variant; cost/latency
+    # control, keep <= 2). POSTER_TEXT_VALIDATION_MAX_REGENERATIONS is kept as a deprecated alias.
+    max-regenerations: ${POSTER_VALIDATION_MAX_REGENERATIONS:${POSTER_TEXT_VALIDATION_MAX_REGENERATIONS:2}}
   overlay:
     qr-size-px: 120
     address-max-chars: 80
@@ -62,6 +74,10 @@ poster:
     # (POST {base-url}/api/poster) for curated vibes with real event text. This must
     # be on by default now that image generation is instructed not to render factual text.
     enabled: ${POSTER_COMPOSITOR_ENABLED:true}
+    # Text is now always Recraft-baked, so the Satori real-font compositor is skipped by default to
+    # avoid double-rendering the event text. The QR/address OverlayCompositor is always kept. Set false
+    # to restore the Satori text layer for the non-Recraft providers.
+    skip-when-text-baked: ${POSTER_COMPOSITOR_SKIP_WHEN_TEXT_BAKED:true}
     # imin-public base URL (no trailing slash), e.g. https://imin.wtf or the Vercel deploy URL.
     base-url: ${POSTER_COMPOSITOR_BASE_URL:${IMIN_BUYER_SITE_BASE_URL:http://localhost:3000}}
     width: ${POSTER_COMPOSITOR_WIDTH:1080}
@@ -74,7 +90,9 @@ poster:
 openrouter:
   api-key: ${OPENROUTER_API_KEY}
   base-url: ${OPENROUTER_BASE_URL:https://openrouter.ai/api}
-  model: ${OPENROUTER_MODEL:openai/gpt-4o-mini}
+  # Stage-1 art director. Claude Sonnet 4.6 produces stronger, less boilerplate poster concepts than
+  # gpt-4o-mini. Vision gates stay on openai/gpt-4o-mini (configured under poster.*-validation.model).
+  model: ${OPENROUTER_MODEL:anthropic/claude-sonnet-4.6}
   # Lower temperature → stable concept JSON + coherent art direction. The provider
   # otherwise defaults near 1.0 (noisy, inconsistent prompts). Tune via env.
   temperature: ${OPENROUTER_TEMPERATURE:0.6}

@@ -1,0 +1,54 @@
+# Style card for afro_amapiano — authored from the curated reference flyers.
+# medium: photo | recommended substyle: hard_flash
+# subject: A human hero is the centerpiece: a Black dancer, partygoer, or portrait subject shot in warm sun-drenched or fiery light, often with white-and-gold tribal face paint or a patterned headwrap, framed by bold African textile geometry and big display type.
+# notes: Four of the five references are photographic human heroes (flash club crowd, two tribal-face-paint portraits, a B&W headwrap portrait) and one is an illustrated geometric crowd, so the vibe is image-led with a human hero. Palette is consistently warm and sun-drenched: burnt orange, ochre/gold, cream, deep red and near-black, with African textile/geometric motifs and bold display type layered over.
+medium: 'photo'
+palette:
+  - [214, 78, 30]
+  - [232, 168, 92]
+  - [38, 30, 26]
+hero_subjects:
+  people:
+    - 'A Black woman in a richly patterned headwrap, photographed head-on in high-contrast near-monochrome, chin lifted, beaded necklaces stacked at the throat, eyes hidden behind a banner of type'
+    - 'A dancer with half their face and one raised hand covered in white and gold tribal paint, hoop earring catching warm rim light against a fiery orange backdrop'
+    - 'A packed nightclub crowd of dancers mid-motion, faces lit by red and green stage wash, hands up, sweat-sheen, shot on a hard direct flash that flares the front row'
+    - 'A solo amapiano DJ silhouetted behind decks, backlit by amber haze, one fist raised, the crowd''s hands blurred in the foreground'
+    - 'A close three-quarter portrait of a man with cropped natural hair, gold-painted linework swirling across one cheek, gazing off-frame in soft golden-hour light'
+    - 'Two friends laughing shoulder-to-shoulder on a dancefloor, gele headties and hoop earrings, caught in a candid flash with motion-blurred bodies behind them'
+  object:
+    - 'A pair of carved wooden djembe drums with taut goatskin heads, lit warm against a glowing orange gradient'
+    - 'A draped panel of kente / mudcloth textile in ochre, black, red and green geometric blocks filling the frame'
+    - 'A brass-toned tribal mask motif centered on a cream mudcloth-patterned ground'
+    - 'A cluster of tall green cactus columns rising at the edges of a sun-baked cream backdrop'
+    - 'An assembly of stylized African profile silhouettes in patterned textile colors forming a crowd'
+    - 'A scatter of cowrie shells and brass beads spilling across woven raffia cloth'
+compositions:
+  - 'Centered human hero filling the lower two-thirds, giant display headline stacked across the upper third'
+  - 'Tight head-on portrait with a horizontal banner of type laid directly across the subject''s eyes'
+  - 'Full-bleed flash crowd photo with a distressed headline pinned to the top edge and an event ticker band along the bottom'
+  - 'Hero subject set on a sun-drenched cream or fiery gradient field with African pattern borders framing the left and right edges'
+  - 'Symmetrical layout: hero centered, two matching motif props (drums, cactus) flanking the lower corners'
+  - 'Lower-edge color band (orange or red) carrying date, time and lineup as a hard horizontal strip'
+  - 'Illustrated crowd of geometric figures rising from the bottom like a frieze under an arched headline'
+accents:
+  - 'hard on-camera flash blowing out the front of a crowd'
+  - 'heavy red-and-green stage-light color cast over photo'
+  - 'high-contrast black-and-white halftone cutout of the portrait'
+  - 'warm golden grain and lens flare across a fiery gradient'
+  - 'torn / rough-deckle paper edges on the headline block'
+  - 'gold-foil metallic sheen on display lettering'
+palette_twists:
+  - 'sun-baked ochre and burnt orange on near-black'
+  - 'fiery red-to-orange gradient with white tribal-paint highlights'
+  - 'cream mudcloth ground with brass-gold display type'
+  - 'club-shadow black flushed with crimson and emerald stage light'
+  - 'kente blocks of red, green, gold and black on charcoal'
+type_treatments:
+  - 'oversized distressed/rough-textured sans display headline in chalk white spanning full width'
+  - 'gold metallic tribal-styled capitals with notched, angular letterforms'
+  - 'white brush-script and rough hand-painted display lettering'
+  - 'bold condensed lineup names in stacked caps over a flat color band with star and dash dividers'
+example_prompts:
+  - 'Event poster, 4:5. Full-bleed flash photograph of a packed amapiano dancefloor: a Black crowd mid-dance, hands raised, front row blown out by a hard direct on-camera flash, the bodies behind dissolving into a deep red-and-green stage-light haze and motion blur. Across the top edge, an oversized distressed chalk-white sans headline reads ''AFROGROOVE'', rough-textured as if screenprinted. A thin orange ticker band runs along the very bottom carrying the date, time and DJ lineup in bold condensed black caps separated by small stars. Warm grain, sweaty energy, club shadow flushed with crimson and emerald. Colors: black, crimson, emerald, burnt orange.'
+  - 'Event poster, 4:5. Tight head-on near-monochrome portrait of a Black woman in a richly patterned headwrap, chin lifted, stacked beaded necklaces at her throat, photographed in high-contrast black-and-white halftone against a warm cream ground. Orange tribal shapes radiate outward behind her head. A crimson rough brushstroke banner crosses directly over her eyes carrying a bold gold-and-white display headline; smaller hand-painted caps sit above it. Sun-baked ochre accents, grain, torn paper edges. Colors: cream, burnt orange, crimson, charcoal.'
+  - 'Event poster, 4:5. A Black dancer fills the lower two-thirds, half their face and one raised hand covered in intricate white-and-gold tribal paint, a gold hoop earring catching warm rim light against a fiery red-to-orange gradient with a soft lens flare. Two carved wooden djembe drums flank the lower corners; a red kuba-cloth geometric border frames the left and right edges. A giant white rough-brush display headline ''AMAPIANO'' sweeps across the lower third with a script subline beneath it. Golden grain, sun-drenched heat. Colors: fiery orange, deep red, white, gold.'

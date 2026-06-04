@@ -55,8 +55,22 @@ class VibeLibraryTest {
     void universal_rules_present() {
         assertThat(library.universalRules().aspectRatios())
                 .containsExactly("4:5", "1:1", "9:16", "16:9");
-        assertThat(library.universalRules().negativePrompt()).contains("gibberish text");
+        // T1: diffusion negative tokens are purged from the instruction-following prompt; the rule is
+        // now a plain imperative.
+        assertThat(library.universalRules().negativePrompt())
+                .contains("No watermarks").doesNotContain("gibberish text").doesNotContain("deformed faces");
         assertThat(library.universalRules().ipRule()).contains("in the style of");
+    }
+
+    @Test
+    void vibes_carry_subject_and_render_mode() {
+        Vibe brut = library.byId("brutalist_techno").orElseThrow();
+        assertThat(brut.subject()).isNotBlank();
+        assertThat(brut.styleMode()).isEqualTo(com.imin.iminapi.dto.StyleMode.CURATED_SUBSTYLE);
+        assertThat(brut.substyle()).isEqualTo("urban_drama");
+
+        Vibe psy = library.byId("psytrance_goa").orElseThrow();
+        assertThat(psy.styleMode()).isEqualTo(com.imin.iminapi.dto.StyleMode.TRAINED_STYLE_ID);
     }
 
     @Test

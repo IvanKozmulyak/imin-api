@@ -36,7 +36,8 @@ class VibeStyleTrainingServiceTest {
 
     private Vibe vibe(String id, String styleId) {
         return new Vibe(id, "Name", List.of(), "vs", List.of(), "typo", "comp",
-                List.of(), List.of(), "recraft", List.of("reference-images/" + id), styleId, "layout", false);
+                List.of(), List.of(), "recraft", List.of("reference-images/" + id), styleId, "layout", false,
+                "subject", com.imin.iminapi.dto.StyleMode.TRAINED_STYLE_ID, null);
     }
 
     @Test

@@ -19,6 +19,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -38,19 +39,28 @@ class PosterOrchestratorTest {
     @Mock OpenAiImageClient openAiImageClient;
     @Mock RecraftClient recraftClient;
     @Mock VibeStyleTrainingService vibeStyleTrainingService;
+    @Mock VibeLibrary vibeLibrary;
+    @Mock StyleCardLibrary styleCardLibrary;
     @Mock ReferenceImageLibrary referenceLibrary;
     @Mock OverlayCompositor overlayCompositor;
     @Mock PosterTextCompositorClient textCompositor;
     @Mock PosterTextSpecFactory textSpecFactory;
     @Mock PosterTextValidationService textValidation;
+    @Mock PosterStyleValidationService styleValidation;
     @Mock PosterImageStorage storage;
     @Mock PosterGenerationRepository generationRepository;
 
+    /** maxRegenerations=1 keeps the existing retry-mechanics assertions (2 renders on a reject). */
     private PosterOrchestrator orchestrator() {
+        return orchestrator(true);
+    }
+
+    private PosterOrchestrator orchestrator(boolean skipCompositorWhenTextBaked) {
         return new PosterOrchestrator(
                 ideogramClient, openAiImageClient, recraftClient, vibeStyleTrainingService,
-                referenceLibrary, overlayCompositor, textCompositor, textSpecFactory, textValidation,
-                storage, generationRepository, 1, 6);
+                vibeLibrary, styleCardLibrary, referenceLibrary, overlayCompositor, textCompositor,
+                textSpecFactory, textValidation, styleValidation, storage, generationRepository,
+                1, skipCompositorWhenTextBaked, 6);
     }
 
     private EventCreatorRequest req() {
@@ -66,9 +76,9 @@ class PosterOrchestratorTest {
     }
 
     private PosterConcept concept() {
-        PosterVariant v1 = new PosterVariant("atmospheric", "p".repeat(200), "3:4", "Design");
-        PosterVariant v2 = new PosterVariant("graphic", "p".repeat(200), "1:1", "Design");
-        PosterVariant v3 = new PosterVariant("minimal", "p".repeat(200), "4:5", "Design");
+        PosterVariant v1 = new PosterVariant("people", "p".repeat(200), "3:4", "Design");
+        PosterVariant v2 = new PosterVariant("object", "p".repeat(200), "1:1", "Design");
+        PosterVariant v3 = new PosterVariant("typographic", "p".repeat(200), "4:5", "Design");
         return new PosterConcept("neon_underground", "magenta + cyan", List.of(v1, v2, v3));
     }
 
@@ -78,6 +88,11 @@ class PosterOrchestratorTest {
             if (g.getId() == null) g.setId(UUID.randomUUID());
             return g;
         });
+    }
+
+    private void stubStyleValidationAccepted() {
+        when(styleValidation.validateOrExplain(any(), any(), any()))
+                .thenReturn(new PosterStyleValidationService.ValidationDecision(true, null));
     }
 
     @Test
@@ -102,6 +117,25 @@ class PosterOrchestratorTest {
         verify(generationRepository, atLeastOnce()).save(saves.capture());
         PosterGeneration last = saves.getAllValues().get(saves.getAllValues().size() - 1);
         assertThat(last.getStatus()).isEqualTo(PosterGenerationStatus.COMPLETE);
+    }
+
+    @Test
+    void run_persistsCreativeSeed() {
+        stubRepoAssignsId();
+        when(referenceLibrary.forTag("neon_underground"))
+                .thenReturn(new ReferenceImageSet("neon_underground", List.of("https://r/1.jpg"), List.of("1.jpg")));
+        when(ideogramClient.generate(any(), any(), any(), anyLong(), any()))
+                .thenReturn(new IdeogramClient.IdeogramResult(
+                        "https://replicate.delivery/x.png", 1L, Duration.ofMillis(50), "turbo"));
+        when(storage.download(any())).thenReturn(new byte[]{1, 2, 3});
+        when(storage.writePng(any())).thenReturn("/images/out.png");
+        when(overlayCompositor.applyOverlays(any())).thenReturn(new byte[]{4, 5, 6});
+
+        orchestrator().run(UUID.randomUUID(), req(), concept(), 4242L, List.of());
+
+        ArgumentCaptor<PosterGeneration> saves = ArgumentCaptor.forClass(PosterGeneration.class);
+        verify(generationRepository, atLeastOnce()).save(saves.capture());
+        assertThat(saves.getAllValues().get(0).getCreativeSeed()).isEqualTo(4242L);
     }
 
     @Test
@@ -149,26 +183,28 @@ class PosterOrchestratorTest {
         assertThat(result.posters()).hasSize(3);
         assertThat(result.posters()).allMatch(p -> "COMPLETE".equals(p.status()));
         verify(openAiImageClient, atLeastOnce()).generate(any(), any(), any(), anyLong());
-        verify(ideogramClient, org.mockito.Mockito.never()).generate(any(), any(), any(), anyLong(), any());
+        verify(ideogramClient, never()).generate(any(), any(), any(), anyLong(), any());
     }
 
     @Test
-    void run_withRecraftProvider_routesToRecraftClientWithResolvedStyleId() {
+    void run_withRecraftProvider_trainedMode_passesResolvedStyleIdInRenderSpec() {
         stubRepoAssignsId();
         PosterTextSpec spec = new PosterTextSpec(List.of("Void"), List.of("Void"), "prompt");
         when(referenceLibrary.forTag("neon_underground"))
                 .thenReturn(new ReferenceImageSet("neon_underground", List.of("data:..."), List.of("1.png")));
         when(referenceLibrary.loadAllBytes("neon_underground"))
                 .thenReturn(List.of(new byte[]{5, 5, 5}));
+        // vibeLibrary.byId(neon_underground) is unstubbed → empty → TRAINED_STYLE_ID default.
         when(vibeStyleTrainingService.resolveStyleId("neon_underground", ImageProvider.RECRAFT))
                 .thenReturn("trained-style-xyz");
-        ArgumentCaptor<String> styleIdCaptor = ArgumentCaptor.forClass(String.class);
-        when(recraftClient.generate(any(), any(), styleIdCaptor.capture(), any()))
+        ArgumentCaptor<RecraftClient.RenderSpec> specCaptor = ArgumentCaptor.forClass(RecraftClient.RenderSpec.class);
+        when(recraftClient.generate(any(), any(), specCaptor.capture(), any()))
                 .thenReturn(new RecraftClient.RecraftResult(
                         new byte[]{3, 3, 3}, Duration.ofMillis(50), "recraftv3"));
         when(textSpecFactory.from(any())).thenReturn(spec);
         when(textValidation.validateOrExplain(any(), eq(spec)))
                 .thenReturn(new PosterTextValidationService.ValidationDecision(true, null));
+        stubStyleValidationAccepted();
         when(storage.writePng(any())).thenReturn("/images/recraft.png");
         when(overlayCompositor.applyOverlays(any())).thenReturn(new byte[]{6, 6, 6});
 
@@ -178,9 +214,49 @@ class PosterOrchestratorTest {
         assertThat(result.posters()).hasSize(3);
         assertThat(result.posters()).allMatch(p -> "COMPLETE".equals(p.status()));
         verify(recraftClient, atLeastOnce()).generate(any(), any(), any(), any());
-        verify(ideogramClient, org.mockito.Mockito.never()).generate(any(), any(), any(), anyLong(), any());
-        verify(openAiImageClient, org.mockito.Mockito.never()).generate(any(), any(), any(), anyLong());
-        assertThat(styleIdCaptor.getAllValues()).contains("trained-style-xyz");
+        verify(ideogramClient, never()).generate(any(), any(), any(), anyLong(), any());
+        verify(openAiImageClient, never()).generate(any(), any(), any(), anyLong());
+        assertThat(specCaptor.getAllValues()).extracting(RecraftClient.RenderSpec::styleId)
+                .contains("trained-style-xyz");
+    }
+
+    @Test
+    void run_withRecraftProvider_curatedMode_passesSubstyleAndPalette() {
+        stubRepoAssignsId();
+        PosterTextSpec spec = new PosterTextSpec(List.of("Void"), List.of("Void"), "prompt");
+        // hyperpop_club is a curated_substyle vibe (hard_flash) with a palette card.
+        when(vibeLibrary.byId("hyperpop_club")).thenReturn(Optional.of(new com.imin.iminapi.dto.Vibe(
+                "hyperpop_club", "Hyperpop", List.of("club"), "vs", List.of("#000"), "typ", "comp",
+                List.of(), List.of(), "recraft", List.of(), null, "tpl", false,
+                "flash-lit club-goer", com.imin.iminapi.dto.StyleMode.CURATED_SUBSTYLE, "hard_flash")));
+        when(styleCardLibrary.get("hyperpop_club")).thenReturn(Optional.of(new com.imin.iminapi.dto.StyleCard(
+                "hyperpop_club", "photo",
+                List.of(new com.imin.iminapi.dto.Rgb(224, 64, 18)),
+                List.of("a"), List.of("b"), List.of("c"), List.of("d"), List.of("e"), List.of("f"), List.of("g"))));
+        when(referenceLibrary.forTag("hyperpop_club"))
+                .thenReturn(new ReferenceImageSet("hyperpop_club", List.of("data:..."), List.of("1.png")));
+        when(referenceLibrary.loadAllBytes("hyperpop_club")).thenReturn(List.of(new byte[]{5, 5, 5}));
+        ArgumentCaptor<RecraftClient.RenderSpec> specCaptor = ArgumentCaptor.forClass(RecraftClient.RenderSpec.class);
+        when(recraftClient.generate(any(), any(), specCaptor.capture(), any()))
+                .thenReturn(new RecraftClient.RecraftResult(new byte[]{3, 3, 3}, Duration.ofMillis(50), "recraftv3"));
+        when(textSpecFactory.from(any())).thenReturn(spec);
+        when(textValidation.validateOrExplain(any(), eq(spec)))
+                .thenReturn(new PosterTextValidationService.ValidationDecision(true, null));
+        stubStyleValidationAccepted();
+        when(storage.writePng(any())).thenReturn("/images/recraft.png");
+        when(overlayCompositor.applyOverlays(any())).thenReturn(new byte[]{6, 6, 6});
+
+        PosterConcept c = new PosterConcept("hyperpop_club", "palette",
+                List.of(new PosterVariant("people", "p".repeat(40), "4:5", "Design")));
+        orchestrator().run(UUID.randomUUID(), req(ImageProvider.RECRAFT), c);
+
+        RecraftClient.RenderSpec used = specCaptor.getValue();
+        assertThat(used.mode()).isEqualTo(com.imin.iminapi.dto.StyleMode.CURATED_SUBSTYLE);
+        assertThat(used.substyle()).isEqualTo("hard_flash");
+        assertThat(used.styleId()).isNull();
+        assertThat(used.colors()).containsExactly(new com.imin.iminapi.dto.Rgb(224, 64, 18));
+        // Curated mode does not resolve a trained style id.
+        verify(vibeStyleTrainingService, never()).resolveStyleId(any(), any());
     }
 
     @Test
@@ -191,9 +267,9 @@ class PosterOrchestratorTest {
         byte[] finalBytes = new byte[]{6, 6, 6};
         PosterTextSpec spec = new PosterTextSpec(List.of("Void"), List.of("Void", "BERLIN"), "prompt");
         PosterConcept c = new PosterConcept("neon_underground", "palette",
-                List.of(new PosterVariant("graphic", "p".repeat(40), "4:5", "Design")));
+                List.of(new PosterVariant("people", "p".repeat(40), "4:5", "Design")));
         OverlayCompositor.Input expectedOverlay =
-                new OverlayCompositor.Input(rawBytes, request.rsvpUrl(), null);
+                new OverlayCompositor.Input(rawBytes, request.rsvpUrl(), request.address());
         when(referenceLibrary.forTag("neon_underground"))
                 .thenReturn(new ReferenceImageSet("neon_underground", List.of("data:..."), List.of("1.png")));
         when(referenceLibrary.loadAllBytes("neon_underground"))
@@ -205,6 +281,7 @@ class PosterOrchestratorTest {
         when(textSpecFactory.from(request)).thenReturn(spec);
         when(textValidation.validateOrExplain(rawBytes, spec))
                 .thenReturn(new PosterTextValidationService.ValidationDecision(true, null));
+        stubStyleValidationAccepted();
         when(storage.writePng(rawBytes)).thenReturn("/images/recraft-raw.png");
         when(storage.writePng(finalBytes)).thenReturn("/images/recraft-final.png");
         when(overlayCompositor.applyOverlays(expectedOverlay)).thenReturn(finalBytes);
@@ -220,13 +297,13 @@ class PosterOrchestratorTest {
     }
 
     @Test
-    void run_withRecraftProvider_validationRejected_marksVariantFailed() {
+    void run_withRecraftProvider_textValidationRejected_marksVariantFailed() {
         stubRepoAssignsId();
         EventCreatorRequest request = req(ImageProvider.RECRAFT);
         byte[] rawBytes = new byte[]{3, 3, 3};
         PosterTextSpec spec = new PosterTextSpec(List.of("Void"), List.of("Void", "BERLIN"), "prompt");
         PosterConcept c = new PosterConcept("neon_underground", "palette",
-                List.of(new PosterVariant("graphic", "p".repeat(40), "4:5", "Design")));
+                List.of(new PosterVariant("people", "p".repeat(40), "4:5", "Design")));
         when(referenceLibrary.forTag("neon_underground"))
                 .thenReturn(new ReferenceImageSet("neon_underground", List.of("data:..."), List.of("1.png")));
         when(referenceLibrary.loadAllBytes("neon_underground"))
@@ -243,10 +320,47 @@ class PosterOrchestratorTest {
         assertThatThrownBy(() -> orchestrator().run(UUID.randomUUID(), request, c))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("missing required text");
+        // maxRegenerations=1 → 2 renders, 2 legibility checks, style gate never reached, no overlay.
         verify(recraftClient, times(2)).generate(any(), any(), any(), any());
         verify(textValidation, times(2)).validateOrExplain(rawBytes, spec);
+        verify(styleValidation, never()).validateOrExplain(any(), any(), any());
         verify(textCompositor, never()).composite(any(), any(), any());
         verify(overlayCompositor, never()).applyOverlays(any());
+    }
+
+    @Test
+    void run_withRecraftProvider_styleValidationRejected_regeneratesThenAcceptsBestEffort() {
+        stubRepoAssignsId();
+        EventCreatorRequest request = req(ImageProvider.RECRAFT);
+        byte[] raw1 = new byte[]{1};
+        byte[] raw2 = new byte[]{2};
+        PosterTextSpec spec = new PosterTextSpec(List.of("Void"), List.of("Void"), "prompt");
+        PosterConcept c = new PosterConcept("neon_underground", "palette",
+                List.of(new PosterVariant("people", "p".repeat(40), "4:5", "Design")));
+        when(referenceLibrary.forTag("neon_underground"))
+                .thenReturn(new ReferenceImageSet("neon_underground", List.of("data:..."), List.of("1.png")));
+        when(referenceLibrary.loadAllBytes("neon_underground")).thenReturn(List.of(new byte[]{5, 5, 5}));
+        when(vibeStyleTrainingService.resolveStyleId("neon_underground", ImageProvider.RECRAFT))
+                .thenReturn("trained-style-xyz");
+        when(recraftClient.generate(any(), any(), any(), any()))
+                .thenReturn(new RecraftClient.RecraftResult(raw1, Duration.ofMillis(50), "recraftv3"))
+                .thenReturn(new RecraftClient.RecraftResult(raw2, Duration.ofMillis(50), "recraftv3"));
+        when(textSpecFactory.from(request)).thenReturn(spec);
+        when(textValidation.validateOrExplain(any(), eq(spec)))
+                .thenReturn(new PosterTextValidationService.ValidationDecision(true, null));
+        // Style gate fails both times → regenerate once, then accept best-effort on the last attempt.
+        when(styleValidation.validateOrExplain(any(), any(), any()))
+                .thenReturn(new PosterStyleValidationService.ValidationDecision(false, "hero absent"));
+        when(storage.writePng(any())).thenReturn("/images/r.png");
+        when(overlayCompositor.applyOverlays(any())).thenReturn(new byte[]{9});
+
+        PosterOrchestrator.OrchestrationResult result =
+                orchestrator().run(UUID.randomUUID(), request, c);
+
+        assertThat(result.posters().get(0).status()).isEqualTo("COMPLETE");
+        verify(recraftClient, times(2)).generate(any(), any(), any(), any());
+        verify(styleValidation, times(2)).validateOrExplain(any(), any(), any());
+        verify(overlayCompositor).applyOverlays(any());
     }
 
     @Test
@@ -257,9 +371,9 @@ class PosterOrchestratorTest {
         byte[] acceptedRawBytes = new byte[]{2};
         PosterTextSpec spec = new PosterTextSpec(List.of("Void"), List.of("Void", "BERLIN"), "prompt");
         PosterConcept c = new PosterConcept("neon_underground", "palette",
-                List.of(new PosterVariant("graphic", "p".repeat(40), "4:5", "Design")));
+                List.of(new PosterVariant("people", "p".repeat(40), "4:5", "Design")));
         OverlayCompositor.Input expectedOverlay =
-                new OverlayCompositor.Input(acceptedRawBytes, request.rsvpUrl(), null);
+                new OverlayCompositor.Input(acceptedRawBytes, request.rsvpUrl(), request.address());
         when(referenceLibrary.forTag("neon_underground"))
                 .thenReturn(new ReferenceImageSet("neon_underground", List.of("data:..."), List.of("1.png")));
         when(referenceLibrary.loadAllBytes("neon_underground"))
@@ -274,6 +388,7 @@ class PosterOrchestratorTest {
                 .thenReturn(new PosterTextValidationService.ValidationDecision(false, "missing required text"));
         when(textValidation.validateOrExplain(acceptedRawBytes, spec))
                 .thenReturn(new PosterTextValidationService.ValidationDecision(true, null));
+        stubStyleValidationAccepted();
         when(storage.writePng(rejectedRawBytes)).thenReturn("/images/recraft-raw-1.png");
         when(storage.writePng(acceptedRawBytes)).thenReturn("/images/recraft-raw-2.png");
         when(overlayCompositor.applyOverlays(expectedOverlay)).thenReturn(acceptedRawBytes);
@@ -292,7 +407,30 @@ class PosterOrchestratorTest {
     }
 
     @Test
-    void run_compositorEnabledAndSupportedVibe_usesTextCompositorNotJava2dOverlay() {
+    void run_textBaked_skipsSatoriCompositor_usesOverlay() {
+        // Default skip-when-text-baked=true → the Satori compositor is skipped even for a supported vibe.
+        stubRepoAssignsId();
+        when(referenceLibrary.forTag("brutalist_techno"))
+                .thenReturn(new ReferenceImageSet("brutalist_techno", List.of("https://r/1.jpg"), List.of("1.jpg")));
+        when(ideogramClient.generate(any(), any(), any(), anyLong(), any()))
+                .thenReturn(new IdeogramClient.IdeogramResult(
+                        "https://replicate.delivery/x.png", 1L, Duration.ofMillis(5), "turbo"));
+        when(storage.download(any())).thenReturn(new byte[]{1, 2, 3});
+        when(storage.writePng(any())).thenReturn("/images/out.png");
+        when(overlayCompositor.applyOverlays(any())).thenReturn(new byte[]{9, 9, 9});
+
+        PosterConcept c = new PosterConcept("brutalist_techno", "palette",
+                List.of(new PosterVariant("people", "p".repeat(40), "4:5", "Design")));
+        PosterOrchestrator.OrchestrationResult result =
+                orchestrator().run(UUID.randomUUID(), req(), c);
+
+        assertThat(result.posters()).allMatch(p -> "COMPLETE".equals(p.status()));
+        verify(textCompositor, never()).composite(any(), any(), any());
+        verify(overlayCompositor, atLeastOnce()).applyOverlays(any());
+    }
+
+    @Test
+    void run_skipFalse_supportedVibe_usesTextCompositorNotJava2dOverlay() {
         stubRepoAssignsId();
         when(referenceLibrary.forTag("brutalist_techno"))
                 .thenReturn(new ReferenceImageSet("brutalist_techno", List.of("https://r/1.jpg"), List.of("1.jpg")));
@@ -306,9 +444,9 @@ class PosterOrchestratorTest {
 
         // req() has title "Void" (real event text) and a curated, supported vibe.
         PosterConcept c = new PosterConcept("brutalist_techno", "palette",
-                List.of(new PosterVariant("graphic", "p".repeat(40), "4:5", "Design")));
+                List.of(new PosterVariant("people", "p".repeat(40), "4:5", "Design")));
         PosterOrchestrator.OrchestrationResult result =
-                orchestrator().run(UUID.randomUUID(), req(), c);
+                orchestrator(false).run(UUID.randomUUID(), req(), c);
 
         assertThat(result.posters()).allMatch(p -> "COMPLETE".equals(p.status()));
         verify(textCompositor, atLeastOnce()).composite(any(), eq("brutalist_techno"), any());
@@ -316,7 +454,7 @@ class PosterOrchestratorTest {
     }
 
     @Test
-    void run_compositorEnabledAndFails_doesNotSilentlyReturnPosterWithoutEventText() {
+    void run_skipFalse_compositorFails_doesNotSilentlyReturnPosterWithoutEventText() {
         stubRepoAssignsId();
         when(referenceLibrary.forTag("brutalist_techno"))
                 .thenReturn(new ReferenceImageSet("brutalist_techno", List.of("https://r/1.jpg"), List.of("1.jpg")));
@@ -330,9 +468,9 @@ class PosterOrchestratorTest {
                 .thenThrow(new RuntimeException("compositor unavailable"));
 
         PosterConcept c = new PosterConcept("brutalist_techno", "palette",
-                List.of(new PosterVariant("graphic", "p".repeat(40), "4:5", "Design")));
+                List.of(new PosterVariant("people", "p".repeat(40), "4:5", "Design")));
 
-        assertThatThrownBy(() -> orchestrator().run(UUID.randomUUID(), req(), c))
+        assertThatThrownBy(() -> orchestrator(false).run(UUID.randomUUID(), req(), c))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("All 3 poster variants failed");
         verify(overlayCompositor, never()).applyOverlays(any());

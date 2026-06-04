@@ -1,12 +1,20 @@
 package com.imin.iminapi.service;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.imin.iminapi.dto.EventCreatorRequest;
+import com.imin.iminapi.dto.HeroType;
 import com.imin.iminapi.dto.PosterConcept;
 import com.imin.iminapi.dto.PosterTextSpec;
 import com.imin.iminapi.dto.PosterVariant;
-import com.imin.iminapi.dto.UniversalRules;
+import com.imin.iminapi.dto.StyleCard;
 import com.imin.iminapi.dto.Vibe;
+import com.imin.iminapi.service.ai.CreativeDirection;
+import com.imin.iminapi.service.ai.CreativeDirectionSampler;
+import com.imin.iminapi.service.ai.CreativeDirectionSampler.SampledRun;
+import com.imin.iminapi.service.ai.PromptDistinctness;
 import com.imin.iminapi.service.poster.PosterTextSpecFactory;
+import com.imin.iminapi.service.poster.StyleCardLibrary;
 import com.imin.iminapi.service.poster.VibeLibrary;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
@@ -19,10 +27,15 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
- * Turns an event brief into a {@link PosterConcept} (a chosen vibe + 3 variants) via one LLM call.
- * Vibe-only: the concept's {@code sub_style_tag} is a {@link VibeLibrary} vibe id, and the prompt is
- * assembled deterministically from that vibe's structured preset (palette / typography / composition
- * / avoid) plus the universal negative prompt + IP rule. There is no legacy aesthetic-tag path.
+ * Turns an event brief into a {@link PosterConcept} (a chosen vibe + 3 hero-typed variants) via one
+ * LLM call. The art director (stage-1 LLM) is given the vibe's visual world + a code-sampled
+ * {@link CreativeDirection} per variant (drawn from the vibe's style-card pools), so the three
+ * variants are concrete, subject-led, and distinct from each other and from run to run.
+ *
+ * <p>No diffusion negative tokens are injected: this prompt drives an instruction-following LLM, so
+ * "AVOID deformed faces"-style vocabulary (which a diffusion model reads as a negation but an LLM
+ * reads as "avoid faces") is gone. Variation comes from {@link CreativeDirectionSampler}, not from
+ * asking the model to "be creative".
  */
 @Service
 @RequiredArgsConstructor
@@ -33,39 +46,87 @@ public class AiEventDescriptionService {
     private final ChatClient chatClient;
     private final VibeLibrary vibeLibrary;
     private final PosterTextSpecFactory posterTextSpecFactory;
+    private final StyleCardLibrary styleCardLibrary;
+    private final CreativeDirectionSampler creativeDirectionSampler;
 
-    private static final Set<String> VALID_VARIANT_STYLES = Set.of("atmospheric", "graphic", "minimal");
-    // Target social ratios: 4:5 (poster), 1:1 (feed), 9:16 (story/reel), 16:9 (landscape/OG ≈ 1.91:1).
+    private final ObjectMapper objectMapper =
+            new ObjectMapper().configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+
+    // Target social ratios; every variant is forced to 4:5 downstream regardless.
     private static final Set<String> VALID_ASPECTS = Set.of("4:5", "1:1", "9:16", "16:9");
     private static final Pattern WORDS = Pattern.compile("\\s+");
-    private static final int MIN_WORDS = 45;
+    private static final int MIN_WORDS = 60;
     private static final int MAX_WORDS = 180;
     private static final int MAX_ATTEMPTS = 2;
     /** Every variant renders in this single portrait format. */
     private static final String FORCED_ASPECT_RATIO = "4:5";
-    private static final String GENERIC_POSTER_NEGATIVE_PROMPT =
-            "stock flyer layout, centered generic object, obvious music iconography, clipart, "
-                    + "generic neon crowd, template poster, bland gradient background";
+    /** Three prompts must not be paraphrases: pairwise word-trigram Jaccard must stay below this. */
+    private static final double DISTINCTNESS_THRESHOLD = 0.45;
 
-    public PosterConcept generateConcept(EventCreatorRequest request) {
+    /** Human nouns the PEOPLE variant must contain and the TYPOGRAPHIC variant must not (code constant). */
+    static final List<String> HUMAN_NOUNS = List.of(
+            "figure", "dancer", "crowd", "portrait", "silhouette", "face", "body", "person", "people");
+    private static final Pattern HUMAN_NOUN = Pattern.compile(
+            "\\b(figures?|dancers?|crowds?|portraits?|silhouettes?|faces?|bodies|body|persons?|people)\\b",
+            Pattern.CASE_INSENSITIVE);
+
+    /** The concept plus the creative directions sampled for it (carried into the orchestrator). */
+    public record GeneratedConcept(PosterConcept concept, List<CreativeDirection> directions) {}
+
+    public GeneratedConcept generateConcept(EventCreatorRequest request, long seed) {
+        Vibe vibe = resolveVibe(request);
+        StyleCard card = styleCardLibrary.get(vibe.id()).orElse(null);
+        SampledRun sampled = creativeDirectionSampler.sample(card, seed);
+
         String reinforcement = null;
         for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-            String prompt = buildPrompt(request, reinforcement);
+            String prompt = buildPrompt(request, vibe, sampled, reinforcement);
             log.info("[LLM concept] prompt sent (attempt {}/{}):\n{}", attempt, MAX_ATTEMPTS, prompt);
-            PosterConcept concept = chatClient.prompt()
-                    .user(prompt)
-                    .call()
-                    .entity(PosterConcept.class);
+            PosterConcept concept = parseConcept(chatClient.prompt().user(prompt).call().content());
             String validationError = validate(concept, request);
             if (validationError == null) {
                 log.debug("Concept generated on attempt {}: vibe={}, variants={}",
                         attempt, concept.subStyleTag(), concept.variants().size());
-                return forcePortrait(concept);
+                return new GeneratedConcept(forcePortrait(concept), sampled.directions());
             }
             reinforcement = "Previous attempt rejected: " + validationError;
             log.warn("Concept rejected (attempt {}): {}", attempt, validationError);
         }
         throw new IllegalStateException("Could not produce a valid PosterConcept after " + MAX_ATTEMPTS + " attempts");
+    }
+
+    /**
+     * Parse the model's reply into a {@link PosterConcept}. Tolerant of the new art-director model:
+     * strips markdown fences and any prose around the JSON object before deserializing.
+     */
+    PosterConcept parseConcept(String raw) {
+        if (raw == null || raw.isBlank()) {
+            throw new IllegalStateException("Art-director LLM returned an empty response");
+        }
+        String json = extractJson(raw);
+        try {
+            return objectMapper.readValue(json, PosterConcept.class);
+        } catch (Exception e) {
+            throw new IllegalStateException("Could not parse PosterConcept JSON from LLM response", e);
+        }
+    }
+
+    /** Strip ```json fences / surrounding prose; fall back to the outermost {...} span. */
+    static String extractJson(String raw) {
+        String t = raw.trim();
+        if (t.startsWith("```")) {
+            int firstNl = t.indexOf('\n');
+            if (firstNl >= 0) t = t.substring(firstNl + 1);
+            int fence = t.lastIndexOf("```");
+            if (fence >= 0) t = t.substring(0, fence);
+            t = t.trim();
+        }
+        if (!t.startsWith("{")) {
+            int open = t.indexOf('{');
+            int close = t.lastIndexOf('}');
+            if (open >= 0 && close > open) t = t.substring(open, close + 1);
+        }
+        return t;
     }
 
     String validate(PosterConcept concept) {
@@ -75,10 +136,13 @@ public class AiEventDescriptionService {
         }
         List<PosterVariant> variants = concept.variants();
         if (variants == null || variants.size() != 3) return "exactly 3 variants required";
+
         for (int i = 0; i < variants.size(); i++) {
             PosterVariant v = variants.get(i);
-            if (v.variantStyle() == null || !VALID_VARIANT_STYLES.contains(v.variantStyle())) {
-                return "variant[" + i + "].variant_style must be one of " + VALID_VARIANT_STYLES;
+            String expectedHero = HeroType.ORDER[i].wire();
+            if (v.heroType() == null || !expectedHero.equals(v.heroType().trim().toLowerCase())) {
+                return "variant[" + i + "].hero_type must be exactly \"" + expectedHero
+                        + "\" (order: people, object, typographic)";
             }
             if (v.aspectRatio() == null || !VALID_ASPECTS.contains(v.aspectRatio())) {
                 return "variant[" + i + "].aspect_ratio must be one of " + VALID_ASPECTS;
@@ -91,6 +155,20 @@ public class AiEventDescriptionService {
             int wc = wordCount(p);
             if (wc < MIN_WORDS) return "variant[" + i + "].ideogram_prompt too short (" + wc + " words, min " + MIN_WORDS + ")";
             if (wc > MAX_WORDS) return "variant[" + i + "].ideogram_prompt too long (" + wc + " words, max " + MAX_WORDS + ")";
+        }
+
+        // The people variant must show a human; the typographic variant must not (it is type-as-image).
+        if (!HUMAN_NOUN.matcher(variants.get(0).ideogramPrompt()).find()) {
+            return "variant[0] (people) must contain a human subject (one of " + HUMAN_NOUNS + ")";
+        }
+        if (HUMAN_NOUN.matcher(variants.get(2).ideogramPrompt()).find()) {
+            return "variant[2] (typographic) must not contain a human subject — typography is the image";
+        }
+
+        // The three prompts must be visually distinct, not paraphrases of each other.
+        List<String> prompts = variants.stream().map(PosterVariant::ideogramPrompt).toList();
+        if (!PromptDistinctness.allPairwiseBelow(prompts, DISTINCTNESS_THRESHOLD)) {
+            return "variants too similar — rewrite with different sentence structures, subjects, and layouts";
         }
         return null;
     }
@@ -120,17 +198,11 @@ public class AiEventDescriptionService {
         return WORDS.split(trimmed).length;
     }
 
-    /**
-     * Force every variant to the single {@value #FORCED_ASPECT_RATIO} portrait, regardless of the
-     * aspect ratio the LLM chose. The prompt already asks for 4:5; this is the deterministic
-     * guarantee so all three posters share the same format. Aspect ratio is consumed downstream by
-     * each image provider via {@link PosterVariant#aspectRatio()} and is not part of the API
-     * response, so this is a backend-only normalization.
-     */
+    /** Force every variant to the single {@value #FORCED_ASPECT_RATIO} portrait, preserving everything else. */
     PosterConcept forcePortrait(PosterConcept concept) {
         List<PosterVariant> portrait = concept.variants().stream()
                 .map(v -> new PosterVariant(
-                        v.variantStyle(), v.ideogramPrompt(), FORCED_ASPECT_RATIO, v.styleType()))
+                        v.heroType(), v.ideogramPrompt(), FORCED_ASPECT_RATIO, v.styleType()))
                 .toList();
         return new PosterConcept(concept.subStyleTag(), concept.colorPaletteDescription(), portrait);
     }
@@ -141,32 +213,68 @@ public class AiEventDescriptionService {
                 .orElseGet(() -> vibeLibrary.suggestForGenre(request.genre()));
     }
 
-    String buildPrompt(EventCreatorRequest request, String reinforcement) {
-        Vibe vibe = resolveVibe(request);
+    String buildPrompt(EventCreatorRequest request, Vibe vibe, SampledRun sampled, String reinforcement) {
         PosterTextSpec textSpec = posterTextSpecFactory.from(request);
+        List<CreativeDirection> d = sampled.directions();
+        String example = sampled.examplePrompt();
+
         StringBuilder sb = new StringBuilder();
-        sb.append("You are an art director for a nightlife event poster. Your output drives ")
-          .append("Recraft final poster generation with native typography integrated into the artwork.\n\n")
-          .append("Return a JSON object with exactly these fields:\n")
-          .append("- sub_style_tag: must be exactly \"").append(vibe.id())
-          .append("\". Render EVERY variant in this exact visual style:\n")
-          .append(vibeStyleBlock(vibe))
-          .append("- color_palette_description: a brief human-readable description of the dominant colors\n")
+        sb.append("You are an art director creating ONE-OF-A-KIND nightlife event posters. Your output drives ")
+          .append("Recraft image generation with native typography integrated into the artwork. Tonight's three ")
+          .append("concepts must be visually distinct from each other and from any generic flyer.\n\n");
+
+        sb.append("VIBE — every variant stays inside this visual world:\n")
+          .append("    Visual style: ").append(vibe.visualStyle()).append("\n")
+          .append("    Typography: ").append(vibe.typography()).append("\n")
+          .append("    Composition feel: ").append(vibe.composition()).append("\n");
+        if (notBlank(vibe.subject())) {
+            sb.append("Hero subject matter for this vibe: ").append(vibe.subject()).append("\n");
+        }
+        sb.append("\n");
+
+        sb.append("CREATIVE DIRECTIONS — one per variant, follow them precisely:\n\n");
+        sb.append(variantBlock(1, "people", d.get(0), vibe, false));
+        sb.append(variantBlock(2, "object", d.get(1), vibe, false));
+        sb.append(variantBlock(3, "typographic", d.get(2), vibe, true));
+        sb.append("\n");
+
+        if (notBlank(example)) {
+            sb.append("Example of the caliber expected (different event — do NOT copy its content or sentence structure):\n")
+              .append("\"").append(example).append("\"\n\n");
+        }
+
+        sb.append("Return a JSON object with exactly these fields:\n")
+          .append("- sub_style_tag: must be exactly \"").append(vibe.id()).append("\"\n")
+          .append("- color_palette_description: brief human-readable description of the dominant colors\n")
           .append("- variants: exactly 3 objects, each with:\n")
-          .append("    - variant_style: one of atmospheric, graphic, minimal\n")
-          .append("    - ideogram_prompt: a COMPLETE self-contained Recraft prompt, 45-180 words, for a FINISHED event poster where typography is the main visual composition\n")
-          .append("    - aspect_ratio: always exactly \"4:5\" (a portrait poster)\n")
-          .append("    - style_type: always \"Design\"\n\n")
-          .append("STRICT RULES for each ideogram_prompt:\n")
-          .append("- Create a finished event poster, not a background plate and not a mockup\n")
-          .append("- Compose for a 4:5 portrait poster (vertical, slightly taller than wide)\n")
-          .append("- The required event text must be integrated into the poster composition as native typography, not added as a caption\n")
-          .append("- Use exactly the required text elements and only optional text elements listed below\n")
-          .append("- No filler text, lorem ipsum, fake letters, pseudo-text, paragraphs, logos, watermarks, or invented words\n")
-          .append("- If text is long, change layout or scale; never misspell, abbreviate, translate, or replace it\n\n")
-          .append(textSpec.forPrompt())
-          .append("\n");
-        appendUniversalRules(sb);
+          .append("    - hero_type: people | object | typographic, in the order above\n")
+          .append("    - ideogram_prompt: a COMPLETE self-contained Recraft prompt, 60-180 words, following this exact anatomy in order:\n")
+          .append("      1. hero subject (or type-as-image for typographic) with concrete visual nouns\n")
+          .append("      2. medium (photograph / photocopy / collage / illustration — per the treatment)\n")
+          .append("      3. layout and crop for a 4:5 portrait poster\n")
+          .append("      4. lighting\n")
+          .append("      5. colors\n")
+          .append("      6. typography treatment and where each text element sits\n")
+          .append("      7. the required text, integrated as native poster typography\n")
+          .append("    - aspect_ratio: always exactly \"4:5\"\n")
+          .append("    - style_type: always \"Design\"\n\n");
+
+        sb.append("STRICT RULES for each ideogram_prompt:\n")
+          .append("- A finished event poster, not a background plate, not a mockup\n")
+          .append("- An image-led poster where the hero dominates and the required text is integrated as bold native typography\n")
+          .append("- The three prompts must not share opening words, sentence structure, or layout\n")
+          .append("- Never open with \"Create a\", \"Design a\", or \"Craft a\" — start with the visual content itself\n")
+          .append("- Any people must be rendered photorealistically with correct anatomy; faces may be cropped, motion-blurred, or in shadow for style\n")
+          .append("- ").append(notBlank(universalNegative()) ? universalNegative()
+                  : "No watermarks, logos, signatures, stock-template flyer layouts, or invented words.").append("\n\n");
+
+        sb.append(textSpec.forPrompt()).append("\n");
+
+        String ipRule = vibeLibrary.universalRules() == null ? null : vibeLibrary.universalRules().ipRule();
+        if (notBlank(ipRule)) {
+            sb.append("IP rule: ").append(ipRule).append("\n\n");
+        }
+
         sb.append("Event brief:\n")
           .append("- vibe: ").append(request.vibe()).append("\n")
           .append("- tone: ").append(request.tone()).append("\n")
@@ -177,40 +285,39 @@ public class AiEventDescriptionService {
         if (request.djName()   != null) sb.append("- djName:   \"").append(request.djName()).append("\"\n");
         if (request.location() != null) sb.append("- venue:    \"").append(request.location()).append("\"\n");
         if (request.accentColor() != null) sb.append("- accentColor: ").append(request.accentColor()).append("\n");
-        if (reinforcement != null && !reinforcement.isBlank()) {
+
+        sb.append("\nReturn ONLY the JSON object, with no markdown fences or commentary.\n");
+        if (notBlank(reinforcement)) {
             sb.append("\n").append(reinforcement).append("\nFix the issue above and return valid JSON only.\n");
         }
         return sb.toString();
     }
 
-    /** Deterministic structured style block for the vibe — the building blocks of the prompt. */
-    private static String vibeStyleBlock(Vibe v) {
+    private static String variantBlock(int n, String heroType, CreativeDirection dir, Vibe vibe, boolean typographic) {
         StringBuilder b = new StringBuilder();
-        b.append("    Visual style: ").append(v.visualStyle()).append("\n");
-        b.append("    Typography: ").append(v.typography()).append("\n");
-        b.append("    Composition: ").append(v.composition()).append("\n");
-        if (v.avoid() != null && !v.avoid().isEmpty()) {
-            b.append("    Avoid: ").append(String.join(", ", v.avoid())).append("\n");
+        b.append("Variant ").append(n).append(" — hero_type \"").append(heroType).append("\":\n");
+        if (typographic) {
+            b.append("- No pictorial hero: typography IS the image. Texture: ")
+             .append(nv(dir.accent(), "expressive type texture and grain")).append("\n");
+        } else {
+            b.append("- Hero subject: ").append(nv(dir.heroSubject(), vibe.subject())).append("\n");
+            b.append("- Treatment: ").append(nv(dir.accent(), "in-keeping texture")).append("\n");
         }
+        b.append("- Layout: ").append(nv(dir.composition(), vibe.composition())).append("\n");
+        b.append("- Palette: ").append(nv(dir.paletteTwist(), "the vibe palette")).append("; type: ")
+         .append(nv(dir.typeTreatment(), vibe.typography())).append("\n\n");
         return b.toString();
     }
 
-    /** Appends the universal negative prompt + IP rule when configured (guarded for unit tests). */
-    private void appendUniversalRules(StringBuilder sb) {
-        UniversalRules rules = vibeLibrary.universalRules();
-        if (rules == null) return;
-        if (rules.negativePrompt() != null && !rules.negativePrompt().isBlank()) {
-            sb.append("AVOID in the artwork: ")
-                    .append(rules.negativePrompt())
-                    .append(", ")
-                    .append(GENERIC_POSTER_NEGATIVE_PROMPT)
-                    .append("\n");
-        } else {
-            sb.append("AVOID in the artwork: ").append(GENERIC_POSTER_NEGATIVE_PROMPT).append("\n");
-        }
-        if (rules.ipRule() != null && !rules.ipRule().isBlank()) {
-            sb.append("IP rule: ").append(rules.ipRule()).append("\n");
-        }
-        sb.append("\n");
+    private String universalNegative() {
+        return vibeLibrary.universalRules() == null ? null : vibeLibrary.universalRules().negativePrompt();
+    }
+
+    private static boolean notBlank(String s) {
+        return s != null && !s.isBlank();
+    }
+
+    private static String nv(String value, String fallback) {
+        return notBlank(value) ? value : (fallback == null ? "" : fallback);
     }
 }

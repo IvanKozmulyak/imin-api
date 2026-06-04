@@ -1,0 +1,54 @@
+# Style card for dnb_jungle — authored from the curated reference flyers.
+# medium: mixed | recommended substyle: hard_flash
+# subject: Sound-system rave energy: a towering speaker stack or a flash-lit dancer's upturned face cut by laser light, rendered in acid-green, Rasta gold-and-red, and electric blue with graffiti lettering layered over.
+# notes: Genuinely mixed across the five: two are image-led (a green flash-lit disco-helmet portrait with lasers, and a blue/red 3D-rendered wireframe face), two are illustration-led reggae/dancehall flyers (a giant sound-system speaker stack with palms/crowd, and a tropical graffiti jungle flyer), and one is stark black-and-white speaker-cone line art. Because a flash/laser human portrait carries the strongest poster, hard_flash is the recommended photo substyle, but the deck leans heavily on graffiti lettering, sound-system speakers, and a green/gold/red plus electric-blue palette.
+medium: 'mixed'
+palette:
+  - [58, 196, 74]
+  - [225, 200, 40]
+  - [38, 70, 200]
+hero_subjects:
+  people:
+    - 'a young raver''s upturned face flash-lit from below, eyes closed in the rush, drenched in acid-green club glow with laser beams streaking across the frame'
+    - 'a dancer mid-motion with arms raised, body smeared by long-exposure motion blur and strobe trails against a dark concrete club wall'
+    - 'a tightly cropped portrait in electric-blue and red duotone, skin overlaid with a glowing orange wireframe mesh, mouth open mid-shout'
+    - 'a back-of-crowd silhouette of dozens of raised hands and heads facing a wall of speakers, lit by a single hot spotlight'
+    - 'a DJ hunched over the decks shot in harsh flash, sweat-shine on the skin, smoke and green laser haze filling the booth'
+    - 'a woman''s head tilted skyward wearing a mirrored disco-ball helmet, lasers refracting off the mirror facets into sharp green streaks'
+  object:
+    - 'a towering stacked sound-system speaker wall, dozens of woofer cones glowing under stage light, flanked by palm trees'
+    - 'concentric speaker-cone rings forming a hypnotic skull-like totem in stark black-and-white line art'
+    - 'a single bass woofer cone shot head-on, dust dancing in the cone, lit by one raking beam'
+    - 'tangled patch cables and jack plugs coiling across a black field like graffiti squiggles'
+    - 'a chrome 3D-rendered face fractured into orange wireframe mesh floating over a cobalt grid'
+    - 'a cluster of green laser beams fanning out from a single point across an urban concrete wall'
+compositions:
+  - 'centred vertical hero (face or speaker stack) filling the frame with type stacked top and bottom'
+  - 'low-angle hero subject looking/rising upward, light beams radiating from a single point behind the head'
+  - 'full-bleed dark field with a high-contrast line-art motif centred and small block type clustered in the corners'
+  - 'giant graffiti title arcing across the top third, hero illustration occupying the middle, crowd silhouette grounding the bottom'
+  - 'ghosted repeated wordmark tiling the background behind a sharp foreground hero'
+  - 'tropical palm-leaf border framing a dense dancehall flyer with stacked credits down the centre'
+  - 'duotone bust portrait cropped at the shoulders, big condensed title overlapping the chin and neck'
+accents:
+  - 'chromatic green light-leak glow bleeding off bright edges'
+  - 'long-exposure laser streaks and motion-blur light trails'
+  - 'raw graffiti spray texture and hand-tagged lettering'
+  - 'halftone and risograph dot grain over flat color fields'
+  - 'concrete and photocopy roughness on dark backgrounds'
+  - 'neon wireframe mesh overlaid on rendered skin'
+palette_twists:
+  - 'acid green on near-black with a hot yellow laser accent'
+  - 'Rasta triad — jungle green, gold, and blood red — over warm cream'
+  - 'electric cobalt blue and red duotone with white wireframe highlights'
+  - 'monochrome black-and-white line art with a single chartreuse cable accent'
+  - 'smoky concrete grey lit by one cold green spotlight'
+type_treatments:
+  - 'bulky graffiti / dancehall bubble lettering with thick outlines as the hero title'
+  - 'tall condensed sans block caps mixed with a flowing cursive script subhead'
+  - 'ghosted oversized wordmark repeated and tiled behind the subject'
+  - 'stencil-style block credits stacked in tight left-aligned columns'
+example_prompts:
+  - 'Event poster, 4:5 vertical. Flash-photo hero: a young raver''s upturned face lit hard from below, eyes shut in the rush, skin drenched in acid-green club glow while sharp laser beams streak diagonally across the whole frame. Dark concrete club wall behind, chromatic green light-leak bleeding off the bright edges. A ghosted oversized wordmark repeats faintly behind the head. Bold tall condensed block caps reading ''JUNGLE PRESSURE'' span the top, a flowing green cursive subhead ''all night'' underneath, stencil credits and ''11PM TILL LATE'' clustered bottom-left. Palette acid green, hot yellow, near-black. Risograph dot grain and motion-blur light trails throughout, raw sound-system energy.'
+  - 'Illustrated event poster, 4:5 vertical. A towering stacked sound-system speaker wall dominates the centre, dozens of woofer cones glowing under warm stage light, flanked by silhouetted palm trees against a gold sunset radiating halftone rays. A crowd of dark raised-hand silhouettes packs the bottom third. Big hand-lettered graffiti bubble title ''YARD RIDDIM'' arcs across the top in jungle green with thick cream outlines. Stacked stencil credits run down the centre over the speaker. Rasta triad palette — green, gold, blood red — on a warm cream stock with photocopy grain and risograph texture.'
+  - 'Event poster, 4:5 vertical. Duotone hero bust: a tightly cropped face in electric cobalt blue and red, the skin overlaid with a glowing orange wireframe mesh, mouth open mid-shout, floating over a dark cobalt grid where a ghosted title tiles the background. White condensed block caps ''FULL SPECTRUM'' overlap the chin and neck, a thin tracked subhead ''drum & bass all night'' beneath. Line-up in stencil caps lower-left, time and entry lower-right. Palette electric blue, red, white wireframe highlights. Neon glow, fine grain, kinetic club energy.'

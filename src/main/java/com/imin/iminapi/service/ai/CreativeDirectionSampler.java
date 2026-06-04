@@ -1,0 +1,124 @@
+package com.imin.iminapi.service.ai;
+
+import com.imin.iminapi.dto.HeroType;
+import com.imin.iminapi.dto.StyleCard;
+import org.springframework.stereotype.Component;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Random;
+
+/**
+ * Draws the three creative directions of a poster run from a vibe's {@link StyleCard} pools, in code
+ * rather than by the LLM, so a generation seed reproduces the same run and different generations vary.
+ *
+ * <p>Every draw of a single run uses one {@link Random} seeded with the run's seed, so the output is
+ * 100% deterministic for a given {@code (card, seed)} pair and varies across seeds.
+ *
+ * <p>The run always carries exactly one of each {@link HeroType} in {@link HeroType#ORDER}
+ * (PEOPLE, OBJECT, TYPOGRAPHIC). {@code composition} and {@code accent} are drawn <em>without
+ * replacement</em> across the three directions, so no two variants share either. {@code paletteTwist}
+ * and {@code typeTreatment} are also drawn without replacement when their pool has at least three
+ * entries; smaller pools fall back to independent draws (repeats allowed). {@code heroSubject} comes
+ * from the hero-type's pool — PEOPLE and OBJECT draw from disjoint pools, and TYPOGRAPHIC has no
+ * pictorial subject ({@code null}).
+ */
+@Component
+public class CreativeDirectionSampler {
+
+    /**
+     * The three creative directions of one run plus the single few-shot anchor prompt rotated for
+     * this run.
+     *
+     * @param directions   exactly three {@link CreativeDirection}, hero types in {@link HeroType#ORDER}
+     * @param examplePrompt one prompt rotated from {@code card.examplePrompts()}, or {@code null} if none
+     */
+    public record SampledRun(List<CreativeDirection> directions, String examplePrompt) {}
+
+    /**
+     * Sample a run of three creative directions for {@code card}, deterministic in {@code seed}.
+     *
+     * <p>Null- and empty-safe: a null card yields three directions with the right hero types and all
+     * null fields and a null example prompt; any individually empty pool yields {@code null}/empty for
+     * that field without throwing.
+     */
+    public SampledRun sample(StyleCard card, long seed) {
+        Random random = new Random(seed);
+
+        if (card == null) {
+            List<CreativeDirection> directions = new ArrayList<>(HeroType.ORDER.length);
+            for (HeroType heroType : HeroType.ORDER) {
+                directions.add(new CreativeDirection(heroType, null, null, null, null, null));
+            }
+            return new SampledRun(List.copyOf(directions), null);
+        }
+
+        int count = HeroType.ORDER.length;
+
+        // Without-replacement draws for composition and accent (always), and for paletteTwist and
+        // typeTreatment when the pool is large enough to cover all three variants.
+        List<String> compositions = drawWithoutReplacement(card.compositions(), count, random);
+        List<String> accents = drawWithoutReplacement(card.accents(), count, random);
+        List<String> paletteTwists = drawWithoutReplacement(card.paletteTwists(), count, random);
+        List<String> typeTreatments = drawWithoutReplacement(card.typeTreatments(), count, random);
+
+        List<CreativeDirection> directions = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            HeroType heroType = HeroType.ORDER[i];
+            String heroSubject = pickOne(card.heroSubjectsFor(heroType), random);
+            directions.add(new CreativeDirection(
+                    heroType,
+                    heroSubject,
+                    compositions.get(i),
+                    accents.get(i),
+                    paletteTwists.get(i),
+                    typeTreatments.get(i)
+            ));
+        }
+
+        String examplePrompt = pickOne(card.examplePrompts(), random);
+
+        return new SampledRun(List.copyOf(directions), examplePrompt);
+    }
+
+    /**
+     * Returns a list of length {@code count} of picks from {@code pool}, using {@code random}.
+     *
+     * <ul>
+     *   <li>{@code pool} null/empty → all {@code null} (no draws consumed; size stays {@code count}).</li>
+     *   <li>{@code pool.size() >= count} → without replacement: shuffle a copy and take the first
+     *       {@code count}, so no two positions collide.</li>
+     *   <li>{@code 0 < pool.size() < count} → independent draws (repeats allowed).</li>
+     * </ul>
+     */
+    private List<String> drawWithoutReplacement(List<String> pool, int count, Random random) {
+        List<String> result = new ArrayList<>(count);
+        if (pool == null || pool.isEmpty()) {
+            for (int i = 0; i < count; i++) {
+                result.add(null);
+            }
+            return result;
+        }
+        if (pool.size() >= count) {
+            List<String> copy = new ArrayList<>(pool);
+            java.util.Collections.shuffle(copy, random);
+            for (int i = 0; i < count; i++) {
+                result.add(copy.get(i));
+            }
+            return result;
+        }
+        // Pool too small to cover all variants without repeats — fall back to independent draws.
+        for (int i = 0; i < count; i++) {
+            result.add(pool.get(random.nextInt(pool.size())));
+        }
+        return result;
+    }
+
+    /** One pick from {@code pool} using {@code random}; {@code null} when the pool is null/empty. */
+    private String pickOne(List<String> pool, Random random) {
+        if (pool == null || pool.isEmpty()) {
+            return null;
+        }
+        return pool.get(random.nextInt(pool.size()));
+    }
+}

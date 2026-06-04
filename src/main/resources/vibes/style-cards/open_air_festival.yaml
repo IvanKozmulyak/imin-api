@@ -1,0 +1,53 @@
+# Style card for open_air_festival — authored from the curated reference flyers.
+# medium: illustration | recommended substyle: trained
+# subject: Wide open-air festival scenes under golden-hour and blazing-sun skies: outdoor stages, beaches, and grassy fields packed with crowds, rendered in warm, saturated illustration and 3D with chunky dimensional festival type sitting over the horizon.
+# notes: All five references are illustration/3D-render led, not photographic: a 3D city-park-meets-grass scene with chrome type, a hand-drawn block-party crowd, a 3D bubble-text beach aerial, a painted stage-and-crowd concert scene, and a 3D collage festival mascot. Shared DNA is warm sunset/blazing-sun skies, lens flare, wide horizons, palms, festival crowds and chunky dimensional display type — hence illustration medium and the 'trained' substyle.
+medium: 'illustration'
+palette:
+  - [247, 138, 36]
+  - [86, 168, 222]
+  - [232, 74, 132]
+hero_subjects:
+  people:
+    - 'a dense festival crowd shot from behind facing a lit outdoor stage at sunset, hundreds of raised hands and silhouetted heads against amber sky'
+    - 'a tight group of summer day-party revelers crammed together outdoors, sunglasses and bucket hats, one shirtless guy with arms spread at the center, faces sun-flushed'
+    - 'silhouetted dancers with arms in the air along a glowing horizon line, low sun flaring between their bodies'
+    - 'a smiling crowd at a beach festival waist-deep in golden light, hands up, palm trees flanking the frame'
+    - 'a single festival-goer on someone''s shoulders above the crowd, backlit by stage spotlights and sunset haze'
+  object:
+    - 'an outdoor concert stage with truss, tall speaker stacks and bright LED screens lit against a dusk skyline and waterfront'
+    - 'an aerial top-down view of a packed beach with umbrellas, bars, a ferris wheel and a beach ball scattered across pale sand'
+    - 'a grassy city park in the foreground with a hazy skyline and a tall tower rising behind under blue sky'
+    - 'rows of colorful prayer/festival bunting flags strung in an arc across a sunset sky above a stage'
+    - 'leaning palm trees framing the left and right edges of a glowing orange festival sky'
+    - 'a blazing low sun bursting in lens flare over a wide flat horizon with scattered clouds'
+compositions:
+  - 'hero scene fills the lower two-thirds, big dimensional title stacked across the upper-middle over the sky'
+  - 'wide horizon line low in the frame with crowd or beach below and a tall type lockup floating in the open sky above'
+  - 'aerial bird''s-eye view with chunky 3D words laid flat across the sand/ground like signage'
+  - 'symmetrical stage centered between flanking palms or flag garlands, crowd as a textured base band'
+  - 'central mascot/object motif radiating sunbeams, title block directly beneath it'
+  - 'tiered lineup text cascading down the lower third in shrinking rows over the landscape'
+  - 'info chips (date, FOOD/DRINKS/GAMES) tucked into the top corners flanking the title'
+accents:
+  - 'radiating sunbeam rays bursting from behind the hero'
+  - 'warm lens flare and glow blooming off the low sun'
+  - 'soft atmospheric haze and gradient sky banding orange-to-blue'
+  - 'chromatic-edge / glossy 3D-render highlights on bubble type'
+  - 'scattered floating confetti, music notes, butterflies and birds'
+  - 'subtle film-grain warmth over saturated color'
+palette_twists:
+  - 'blazing sunset: hot orange (247,138,36) into magenta-pink (232,74,132)'
+  - 'golden-hour amber sky over teal water and blue daylight sky (86,168,222)'
+  - 'tropical pop: candy pink, lime green and electric cyan over warm sand'
+  - 'dusk gradient: deep blue skyline melting into peach and coral at the horizon'
+  - 'high-noon blue sky with green grass and silver-chrome title metal'
+type_treatments:
+  - 'chunky extruded 3D display letters with glossy bevels and drop shadows, stacked as the hero title'
+  - 'inflated rounded bubble lettering in clashing candy colors laid across the scene'
+  - 'polished chrome / liquid-metal title with reflective highlights over the landscape'
+  - 'tiered lineup typography shrinking row by row down the lower third, hand-lettered brush script tagline tucked under the logo'
+example_prompts:
+  - 'Open-air summer festival poster, 4:5 vertical. Wide outdoor concert stage centered between two leaning palm trees, tall speaker stacks and glowing LED screens, lit against a dusk waterfront skyline; a dense crowd of silhouetted festival-goers fills the lower band with hundreds of raised hands. Low sun bursting in warm lens flare on the horizon, sky banding from deep blue down to coral and peach, soft atmospheric haze. Chunky extruded 3D title ''NIGHT ESCAPE'' stacked in the open sky upper-middle with glossy bevels and drop shadow, hand-lettered brush script tagline ''Coming soon!'' beneath, colorful bunting flags arcing overhead. Saturated illustration, faint film grain. Tiered lineup text shrinking down the lower third.'
+  - 'Tropical day-party poster, 4:5 vertical. A tight group of summer revelers crammed together outdoors under a blazing sky, sunglasses and bucket hats, one sun-flushed reveler at center with arms spread, faces warm and lively. Hot-orange-to-magenta-pink sunset gradient with radiating sunbeams behind them, palm fronds at the edges, scattered confetti. Inflated rounded bubble lettering ''END OF SUMMER BLOCK PARTY'' in clashing candy colors across the upper third, glossy highlights; date chip in a yellow box top-left, ''FOOD / DRINKS / GAMES'' chips top-right. Bright saturated illustration with chromatic-edge 3D-render shine.'
+  - 'Beach music festival poster, 4:5 vertical. Aerial bird''s-eye view of a packed pale-sand beach meeting teal water at the top, dotted with colorful umbrellas, beach bars, a ferris wheel and a stray beach ball. Chunky inflated 3D bubble words ''THREE DAYS OF PARTY'', ''DOZENS OF BARS'', ''NEW INSTALLATIONS'' laid flat across the sand in candy pink, lime green and orange like signage. Bright high-noon daylight, soft glossy render highlights, faint haze. Small clean festival logo and dates tucked into the top corners, web address centered along the bottom. Saturated 3D illustration.'
