@@ -28,7 +28,7 @@ public class RecraftImageConfig {
     public RestClient recraftRestClient() {
         if (apiKey == null || apiKey.isBlank()) {
             log.warn("RECRAFT_API_KEY is not set — Recraft image generation and style training "
-                    + "will fail with 401. Required only when imageProvider=RECRAFT or when "
+                    + "will fail with 401. Required for default poster generation and when "
                     + "training a vibe style via POST /api/v1/ai/vibes/{vibeId}/train-style.");
         }
         return RestClient.builder()
@@ -37,7 +37,7 @@ public class RecraftImageConfig {
                     if (apiKey == null || apiKey.isBlank()) {
                         throw new IllegalStateException(
                                 "RECRAFT_API_KEY is not configured. "
-                                + "Set the environment variable and restart the app before using imageProvider=RECRAFT.");
+                                + "Set the environment variable and restart the app before generating posters with Recraft.");
                     }
                     request.getHeaders().setBearerAuth(apiKey);
                     return execution.execute(request, body);

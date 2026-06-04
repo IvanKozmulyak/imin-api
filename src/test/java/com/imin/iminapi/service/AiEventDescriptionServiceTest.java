@@ -58,10 +58,13 @@ class AiEventDescriptionServiceTest {
 
         assertThat(prompt).contains("must be exactly \"brutalist_techno\"");
         assertThat(prompt).contains("Visual style: raw exposed concrete");
-        assertThat(prompt).contains("Palette: #0A0A0A, #FF2D00");
+        assertThat(prompt).doesNotContain("Palette:");
+        assertThat(prompt).doesNotContain("#0A0A0A");
         assertThat(prompt).contains("Typography: oversized condensed grotesk");
         assertThat(prompt).contains("Avoid: color gradients, warmth");
         assertThat(prompt).contains("AVOID in the artwork: blurry, watermark");
+        assertThat(prompt).contains("stock flyer layout");
+        assertThat(prompt).contains("template poster");
         assertThat(prompt).contains("IP rule: never in the style of a real artist");
         assertThat(prompt).doesNotContain("(no descriptor available)");
     }

@@ -25,6 +25,6 @@ public record EventCreatorRequest(
         ImageProvider imageProvider
 ) {
     public ImageProvider effectiveImageProvider() {
-        return imageProvider != null ? imageProvider : ImageProvider.REPLICATE;
+        return imageProvider != null ? imageProvider : ImageProvider.RECRAFT;
     }
 }

@@ -18,12 +18,12 @@ vibes:
   - id: brutalist_techno
     name: "Brutalist Techno"
     genres: [techno, hard techno, warehouse, peak-time]
-    visual_style: "raw exposed concrete, industrial warehouse, harsh single-source lighting, heavy film grain, high-contrast black and white photography, oversized negative space, stark and severe"
+    visual_style: "raw exposed concrete, industrial warehouse, harsh single-source lighting, heavy film grain, high-contrast photography, oversized negative space, stark and severe"
     palette: ["#0A0A0A", "#1C1C1C", "#E8E8E8", "#FF2D00"]
     typography: "oversized condensed grotesk, all caps, tight tracking, brutalist grid"
     composition: "giant centered or top-aligned headline, lots of empty space, single dominant texture"
     mood_tags: [raw, severe, monolithic, cold, dark]
-    avoid: [color gradients, soft lighting, decoration, warmth]
+    avoid: [soft lighting, decoration, warmth, generic flyer tropes]
     model_route: recraft
     references: ["reference-images/Brutalist Techno"]
     style_id: null
@@ -33,13 +33,13 @@ vibes:
   - id: berlin_minimal
     name: "Berlin Minimal"
     genres: [minimal techno, dub techno, microhouse]
-    visual_style: "near-empty black field, extreme minimalism, precise tiny typographic marks, subtle texture or single thin line, gallery-like restraint"
+    visual_style: "near-empty field, extreme minimalism, precise tiny typographic marks, subtle texture or single thin line, gallery-like restraint"
     palette: ["#000000", "#FFFFFF", "#7A7A7A"]
     typography: "very small monospaced or thin grotesk, wide letter-spacing, precise alignment"
     composition: "maximal negative space, one small focal element, asymmetric balance"
     mood_tags: [minimal, precise, intellectual, quiet, austere]
-    avoid: [imagery clutter, bright color, busy layouts, photographic backgrounds]
-    model_route: gpt-image
+    avoid: [imagery clutter, busy layouts, photographic backgrounds, generic flyer tropes]
+    model_route: recraft
     references: ["reference-images/Berlin Minimal"]
     style_id: null
     layout_template: berlin_minimal
@@ -53,7 +53,7 @@ vibes:
     typography: "bubble / inflated 3D type, chrome bevels, playful and loud"
     composition: "central glossy 3D object, energetic, bold, maximalist"
     mood_tags: [euphoric, glossy, nostalgic, hyper, playful]
-    avoid: [muted tones, matte textures, minimalism, realism]
+    avoid: [matte textures, minimalism, realism, generic flyer tropes]
     model_route: recraft
     references: ["reference-images/Acid Rave - Y2K"]
     style_id: null
@@ -63,13 +63,13 @@ vibes:
   - id: psytrance_goa
     name: "Psytrance / Goa"
     genres: [psytrance, goa, forest, hi-tech, full-on]
-    visual_style: "fractal patterns, sacred geometry, fluorescent psychedelic gradients, organic alien forms, dense intricate detail, blacklight UV glow"
+    visual_style: "fractal patterns, sacred geometry, psychedelic gradients, organic alien forms, dense intricate detail, UV-inspired glow"
     palette: ["#1A0033", "#7B2FF7", "#00FFB2", "#FF6A00", "#F0FF00"]
     typography: "flowing organic or tribal display type, glowing edges"
     composition: "symmetrical mandala center, dense detail edge-to-edge, hypnotic depth"
     mood_tags: [psychedelic, hypnotic, otherworldly, intense, spiritual]
-    avoid: [flat minimalism, muted palette, empty space, corporate look]
-    model_route: sdxl
+    avoid: [flat minimalism, empty space, corporate look, generic flyer tropes]
+    model_route: recraft
     references: ["reference-images/Psytrance - Goa"]
     style_id: null
     layout_template: psytrance_goa
@@ -83,7 +83,7 @@ vibes:
     typography: "stencil or industrial sans, distressed, warning-label style"
     composition: "hazard-stripe framing, gritty full-bleed texture, aggressive"
     mood_tags: [militant, gritty, aggressive, mechanical, dystopian]
-    avoid: [clean surfaces, pastel color, softness, organic shapes]
+    avoid: [clean surfaces, softness, organic shapes, generic flyer tropes]
     model_route: recraft
     references: ["reference-images/Industrial - Hard Groove"]
     style_id: null
@@ -93,12 +93,12 @@ vibes:
   - id: liquid_melodic
     name: "Liquid Melodic"
     genres: [melodic house & techno, progressive, organic house, downtempo]
-    visual_style: "warm soft gradients, dreamy haze, organic flowing forms, golden-hour light, fine film grain, abstract or natural textures, emotional and atmospheric"
+    visual_style: "soft gradients, dreamy haze, organic flowing forms, diffused event light, fine film grain, abstract or natural textures, emotional and atmospheric"
     palette: ["#2B1B3D", "#E8A87C", "#F6D9B0", "#6C5B7B", "#C06C84"]
     typography: "elegant light serif or refined sans, generous spacing"
     composition: "soft focal gradient, layered depth, breathing room, atmospheric"
     mood_tags: [dreamy, warm, emotional, atmospheric, elevated]
-    avoid: [harsh contrast, neon, aggression, industrial grit]
+    avoid: [harsh contrast, aggression, industrial grit, generic flyer tropes]
     model_route: recraft
     references: []
     style_id: null
@@ -108,13 +108,13 @@ vibes:
   - id: hyperpop_club
     name: "Hyperpop / Club"
     genres: [hyperpop, club, bass, deconstructed club]
-    visual_style: "internet-core, hyper-saturated color, glitch and chromatic aberration, glossy blur, deconstructed collage, motion-blurred energy, screen-grab aesthetic"
+    visual_style: "internet-core, glitch and chromatic aberration, glossy blur, deconstructed collage, motion-blurred energy, screen-grab aesthetic"
     palette: ["#FF3CAC", "#784BA0", "#2B86C5", "#00FFD1", "#FFFFFF"]
     typography: "bold inflated display type, glitched, stretched, layered"
     composition: "chaotic layered collage, off-grid, overwhelming, digital"
     mood_tags: [chaotic, saturated, online, fast, fun]
-    avoid: [muted palette, minimalism, vintage, calm]
-    model_route: sdxl
+    avoid: [minimalism, vintage, calm, generic flyer tropes]
+    model_route: recraft
     references: []
     style_id: null
     layout_template: hyperpop_club
@@ -123,12 +123,12 @@ vibes:
   - id: dnb_jungle
     name: "DnB / Jungle"
     genres: [drum & bass, jungle, breakbeat, neurofunk]
-    visual_style: "motion blur, speed lines, urban concrete, neon glow on black, dub-plate / sound-system energy, raw graffiti texture, kinetic"
+    visual_style: "motion blur, speed lines, urban concrete, club-light glow, dub-plate / sound-system energy, raw graffiti texture, kinetic"
     palette: ["#000000", "#00FF66", "#FF0033", "#1E90FF"]
     typography: "fast italic sans, condensed, kinetic, ragga-flyer energy"
     composition: "diagonal motion, dark background with neon hits, dense and fast"
     mood_tags: [fast, urban, raw, kinetic, underground]
-    avoid: [soft pastels, stillness, luxury, clean minimalism]
+    avoid: [stillness, luxury, clean minimalism, generic flyer tropes]
     model_route: recraft
     references: []
     style_id: null
@@ -138,12 +138,12 @@ vibes:
   - id: afro_amapiano
     name: "Afro / Amapiano"
     genres: [amapiano, afro house, afrobeats, global club]
-    visual_style: "warm earth tones, rich gold accents, bold geometric pattern, sun-drenched, vibrant photographic energy, textile-inspired motifs"
+    visual_style: "sun-drenched atmosphere, bold geometric pattern, vibrant photographic energy, textile-inspired motifs"
     palette: ["#3A1F0B", "#E2711D", "#F4C430", "#1B7A3D", "#FFF3E0"]
     typography: "bold rounded display type, confident, warm"
     composition: "strong central energy, patterned border, warm and inviting"
     mood_tags: [warm, joyful, vibrant, rhythmic, sun-soaked]
-    avoid: [cold tones, dark industrial, minimalism, grit]
+    avoid: [dark industrial cues, minimalism, grit, generic flyer tropes]
     model_route: recraft
     references: []
     style_id: null
@@ -153,12 +153,12 @@ vibes:
   - id: open_air_festival
     name: "Open Air / Festival"
     genres: [open air, festival, day party, sunset sessions]
-    visual_style: "expansive natural landscape, daytime or golden sunset, wide horizon, organic and spacious, lens-flare sun, atmospheric depth"
+    visual_style: "expansive natural landscape, daytime or sunset atmosphere, wide horizon, organic and spacious, lens-flare sun, atmospheric depth"
     palette: ["#FDB813", "#FF6B35", "#3A6EA5", "#264653", "#FAF3E0"]
     typography: "clean airy sans, light weight, lots of space"
     composition: "wide landscape framing, low horizon, sky-dominant, open"
     mood_tags: [expansive, free, sunny, natural, escapist]
-    avoid: [dark/claustrophobic spaces, neon, indoor warehouse, grit]
+    avoid: [claustrophobic spaces, indoor warehouse cues, grit, generic flyer tropes]
     model_route: recraft
     references: []
     style_id: null
@@ -168,13 +168,13 @@ vibes:
   - id: disco_italo
     name: "Disco / Italo Revival"
     genres: [disco, italo, nu-disco, cosmic, balearic]
-    visual_style: "retro 70s-80s, warm vintage neon, mirrorball sparkle, analog film grain, sunset gradients, nostalgic vintage print look"
+    visual_style: "retro 70s-80s, vintage club-light atmosphere, mirrorball sparkle, analog film grain, sunset gradients, nostalgic vintage print look"
     palette: ["#2D0A4E", "#FF5DA2", "#FFB347", "#00C2CB", "#F7E7CE"]
     typography: "retro chrome or rounded vintage display type, italic"
     composition: "centered retro emblem, glowing sunset gradient, symmetrical"
     mood_tags: [nostalgic, glamorous, warm, fun, retro]
-    avoid: [brutalism, harsh industrial, cold minimalism, glitch]
-    model_route: sdxl
+    avoid: [brutalism, harsh industrial, minimalism, glitch, generic flyer tropes]
+    model_route: recraft
     references: []
     style_id: null
     layout_template: disco_italo
@@ -183,13 +183,13 @@ vibes:
   - id: dark_experimental
     name: "Dark / Experimental"
     genres: [ambient, experimental, idm, leftfield, noise, drone]
-    visual_style: "abstract monochrome, heavy noise and grain, deconstructed forms, avant-garde, cold and cerebral, blown-out or crushed contrast, anti-design"
+    visual_style: "abstract tonal restraint, heavy noise and grain, deconstructed forms, avant-garde, cold and cerebral, blown-out or crushed contrast, anti-design"
     palette: ["#0B0B0B", "#2A2A2A", "#C4C4C4", "#5A00FF"]
     typography: "distorted or fragmented type, experimental layout, broken grid"
     composition: "abstract and disorienting, off-balance, conceptual"
     mood_tags: [cold, cerebral, abstract, unsettling, avant-garde]
-    avoid: [warmth, friendliness, bright color, conventional layout]
-    model_route: sdxl
+    avoid: [warmth, friendliness, conventional layout, generic flyer tropes]
+    model_route: recraft
     references: []
     style_id: null
     layout_template: dark_experimental

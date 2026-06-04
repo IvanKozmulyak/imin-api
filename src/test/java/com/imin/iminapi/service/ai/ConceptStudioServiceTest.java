@@ -1,5 +1,6 @@
 package com.imin.iminapi.service.ai;
 
+import com.imin.iminapi.dto.EventCreatorRequest;
 import com.imin.iminapi.dto.GeneratedPoster;
 import com.imin.iminapi.dto.PosterConcept;
 import com.imin.iminapi.dto.PosterVariant;
@@ -10,6 +11,7 @@ import com.imin.iminapi.dto.ai.ConceptRequest;
 import com.imin.iminapi.dto.ai.ConceptResponse;
 import com.imin.iminapi.model.GeneratedEvent;
 import com.imin.iminapi.model.GeneratedEventStatus;
+import com.imin.iminapi.model.ImageProvider;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.GeneratedEventRepository;
 import com.imin.iminapi.security.AuthPrincipal;
@@ -22,6 +24,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -168,16 +171,32 @@ class ConceptStudioServiceTest {
     }
 
     @Test
-    void providerFor_mapsModelRoute_onlyWhenRoutingEnabled() {
+    void providerFor_defaultsToRecraftForReferenceFirstGeneration() {
         Vibe recraftVibe = vibe("recraft");
-        // Default: routing disabled -> always REPLICATE.
-        assertThat(sut.providerFor(recraftVibe)).isEqualTo(com.imin.iminapi.model.ImageProvider.REPLICATE);
+        assertThat(sut.providerFor(recraftVibe)).isEqualTo(ImageProvider.RECRAFT);
+        assertThat(sut.providerFor(vibe("sdxl"))).isEqualTo(ImageProvider.RECRAFT);
+        assertThat(sut.providerFor(null)).isEqualTo(ImageProvider.RECRAFT);
+    }
 
+    @Test
+    void providerFor_mapsModelRoute_whenRoutingEnabled() {
         org.springframework.test.util.ReflectionTestUtils.setField(sut, "providerRoutingEnabled", true);
-        assertThat(sut.providerFor(recraftVibe)).isEqualTo(com.imin.iminapi.model.ImageProvider.RECRAFT);
-        assertThat(sut.providerFor(vibe("gpt-image"))).isEqualTo(com.imin.iminapi.model.ImageProvider.OPENAI);
-        assertThat(sut.providerFor(vibe("sdxl"))).isEqualTo(com.imin.iminapi.model.ImageProvider.REPLICATE);
-        assertThat(sut.providerFor(null)).isEqualTo(com.imin.iminapi.model.ImageProvider.REPLICATE);
+        assertThat(sut.providerFor(vibe("recraft"))).isEqualTo(ImageProvider.RECRAFT);
+        assertThat(sut.providerFor(vibe("gpt-image"))).isEqualTo(ImageProvider.OPENAI);
+        assertThat(sut.providerFor(vibe("replicate"))).isEqualTo(ImageProvider.REPLICATE);
+        assertThat(sut.providerFor(vibe("sdxl"))).isEqualTo(ImageProvider.RECRAFT);
+        assertThat(sut.providerFor(null)).isEqualTo(ImageProvider.RECRAFT);
+    }
+
+    @Test
+    void eventCreatorRequest_defaultProviderIsRecraft() {
+        EventCreatorRequest request = new EventCreatorRequest(
+                "vibe", "tone", "techno", "Berlin",
+                LocalDate.of(2026, 6, 14), List.of("INSTAGRAM"),
+                null, null, "Void", null, null, null,
+                "brutalist_techno", null);
+
+        assertThat(request.effectiveImageProvider()).isEqualTo(ImageProvider.RECRAFT);
     }
 
     private static Vibe vibe(String modelRoute) {

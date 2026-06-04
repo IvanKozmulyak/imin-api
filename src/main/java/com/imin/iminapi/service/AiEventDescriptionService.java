@@ -38,6 +38,9 @@ public class AiEventDescriptionService {
     private static final int MIN_WORDS = 30;
     private static final int MAX_WORDS = 150;
     private static final int MAX_ATTEMPTS = 2;
+    private static final String GENERIC_POSTER_NEGATIVE_PROMPT =
+            "stock flyer layout, centered generic object, obvious music iconography, clipart, "
+                    + "generic neon crowd, template poster, bland gradient background";
 
     public PosterConcept generateConcept(EventCreatorRequest request) {
         String reinforcement = null;
@@ -139,9 +142,6 @@ public class AiEventDescriptionService {
     private static String vibeStyleBlock(Vibe v) {
         StringBuilder b = new StringBuilder();
         b.append("    Visual style: ").append(v.visualStyle()).append("\n");
-        if (v.palette() != null && !v.palette().isEmpty()) {
-            b.append("    Palette: ").append(String.join(", ", v.palette())).append("\n");
-        }
         b.append("    Typography: ").append(v.typography()).append("\n");
         b.append("    Composition: ").append(v.composition()).append("\n");
         if (v.avoid() != null && !v.avoid().isEmpty()) {
@@ -155,7 +155,13 @@ public class AiEventDescriptionService {
         UniversalRules rules = vibeLibrary.universalRules();
         if (rules == null) return;
         if (rules.negativePrompt() != null && !rules.negativePrompt().isBlank()) {
-            sb.append("AVOID in the artwork: ").append(rules.negativePrompt()).append("\n");
+            sb.append("AVOID in the artwork: ")
+                    .append(rules.negativePrompt())
+                    .append(", ")
+                    .append(GENERIC_POSTER_NEGATIVE_PROMPT)
+                    .append("\n");
+        } else {
+            sb.append("AVOID in the artwork: ").append(GENERIC_POSTER_NEGATIVE_PROMPT).append("\n");
         }
         if (rules.ipRule() != null && !rules.ipRule().isBlank()) {
             sb.append("IP rule: ").append(rules.ipRule()).append("\n");

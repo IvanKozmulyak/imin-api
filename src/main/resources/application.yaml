@@ -61,9 +61,9 @@ poster:
     base-url: ${POSTER_COMPOSITOR_BASE_URL:}
     width: ${POSTER_COMPOSITOR_WIDTH:1080}
   provider-routing:
-    # When true, each vibe's model_route (vibes.yaml: recraft | gpt-image | sdxl) selects the image
-    # provider (recraft->RECRAFT, gpt-image->OPENAI, else REPLICATE/Ideogram). Default false →
-    # REPLICATE for all vibes. Enable only once RECRAFT_API_KEY + per-vibe trained styles exist.
+    # When true, each vibe's model_route selects the image provider.
+    # Default false keeps all concept/poster generation on RECRAFT, which is the
+    # reference-first path. Use explicit routing only for provider experiments/fallbacks.
     enabled: ${POSTER_PROVIDER_ROUTING_ENABLED:false}
 
 openrouter:
@@ -81,8 +81,8 @@ openai:
     model: ${OPENAI_IMAGE_MODEL:gpt-image-1}
 
 recraft:
-  # Recraft image-gen + per-vibe style training. Required only when
-  # imageProvider=RECRAFT or when training a vibe style.
+  # Recraft image-gen + per-vibe style training. Required for the default
+  # reference-first poster path and for training a vibe style.
   api-key: ${RECRAFT_API_KEY:}
   base-url: ${RECRAFT_BASE_URL:https://external.api.recraft.ai/v1}
   model: ${RECRAFT_MODEL:recraftv3}

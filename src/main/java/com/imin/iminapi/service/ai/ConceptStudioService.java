@@ -42,9 +42,8 @@ public class ConceptStudioService {
     private final GeneratedEventRepository repo;
     private final VibeLibrary vibeLibrary;
 
-    // When true, the resolved vibe's model_route (vibes.yaml) selects the image provider
-    // (recraft->RECRAFT, gpt-image->OPENAI, else REPLICATE). Default false → REPLICATE/Ideogram
-    // for every vibe (safe until Recraft keys + per-vibe trained styles are in place).
+    // When true, the resolved vibe's model_route (vibes.yaml) selects the image provider.
+    // Default false keeps the reference-first path on Recraft for every vibe.
     @Value("${poster.provider-routing.enabled:false}")
     private boolean providerRoutingEnabled;
 
@@ -156,15 +155,16 @@ public class ConceptStudioService {
                 .orElseGet(() -> vibeLibrary.suggestForGenre(req.genre()));
     }
 
-    /** Map the vibe's declared model_route to a provider when routing is enabled; else REPLICATE. */
+    /** Map the vibe's declared model_route to a provider when routing is enabled; else Recraft. */
     ImageProvider providerFor(Vibe vibe) {
         if (!providerRoutingEnabled || vibe == null || vibe.modelRoute() == null) {
-            return ImageProvider.REPLICATE;
+            return ImageProvider.RECRAFT;
         }
         return switch (vibe.modelRoute().toLowerCase()) {
             case "recraft" -> ImageProvider.RECRAFT;
             case "gpt-image", "openai" -> ImageProvider.OPENAI;
-            default -> ImageProvider.REPLICATE; // sdxl, ideogram, or unknown
+            case "replicate", "ideogram" -> ImageProvider.REPLICATE;
+            default -> ImageProvider.RECRAFT; // sdxl or unknown: keep the reference-first default.
         };
     }
 
