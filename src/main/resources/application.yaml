@@ -56,7 +56,7 @@ poster:
     # Ideogram magic_prompt_option: Auto | On | Off. Auto lets Ideogram enrich thin prompts.
     magic-prompt: ${POSTER_MAGIC_PROMPT:Auto}
     # Universal negative prompt applied to every image generation (Ivan's draft "Universal rules").
-    negative-prompt: ${POSTER_NEGATIVE_PROMPT:text artifacts, gibberish text, pseudo-text, fake letters, random glyphs, watermark, logo, signature, deformed faces, extra limbs, low-res, jpeg artifacts, blurry, stock-photo look, generic clipart}
+    negative-prompt: ${POSTER_NEGATIVE_PROMPT:text artifacts, gibberish text, pseudo-text, fake letters, random glyphs, watermark, logo, signature, extra limbs, low-res, jpeg artifacts}
   compositor:
     # The real-font text layer is composited by the imin-public Satori route
     # (POST {base-url}/api/poster) for curated vibes with real event text. This must
