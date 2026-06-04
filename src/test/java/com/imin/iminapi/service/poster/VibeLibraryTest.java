@@ -60,13 +60,16 @@ class VibeLibraryTest {
     }
 
     @Test
-    void five_vibes_have_curated_references_seven_are_text_only() {
+    void six_vibes_have_curated_references_six_are_text_only() {
         long withRefs = library.all().stream().filter(v -> !v.references().isEmpty()).count();
         long textOnly = library.all().stream().filter(Vibe::textOnly).count();
-        assertThat(withRefs).isEqualTo(5);
-        assertThat(textOnly).isEqualTo(7);
-        // The five covered vibes point at the curated genre folders.
+        assertThat(withRefs).isEqualTo(6);
+        assertThat(textOnly).isEqualTo(6);
+        // The curated vibes point at their reference folders.
         assertThat(library.byId("brutalist_techno").orElseThrow().references())
                 .containsExactly("reference-images/Brutalist Techno");
+        assertThat(library.byId("disco_italo").orElseThrow().references())
+                .containsExactly("reference-images/Disco - Italo Revival");
+        assertThat(library.byId("disco_italo").orElseThrow().textOnly()).isFalse();
     }
 }

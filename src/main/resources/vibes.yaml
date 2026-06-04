@@ -175,10 +175,10 @@ vibes:
     mood_tags: [nostalgic, glamorous, warm, fun, retro]
     avoid: [brutalism, harsh industrial, minimalism, glitch, generic flyer tropes]
     model_route: recraft
-    references: []
+    references: ["reference-images/Disco - Italo Revival"]
     style_id: null
     layout_template: disco_italo
-    text_only: true
+    text_only: false
 
   - id: dark_experimental
     name: "Dark / Experimental"
