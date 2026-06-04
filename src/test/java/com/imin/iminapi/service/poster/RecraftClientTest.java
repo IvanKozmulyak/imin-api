@@ -82,6 +82,50 @@ class RecraftClientTest {
     }
 
     @Test
+    void createStyle_webpBytes_useWebpFilenameAndContentType() {
+        Harness h = harness();
+        // RIFF....WEBP magic header
+        byte[] webp = new byte[]{'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'E', 'B', 'P', 1, 2, 3, 4};
+        h.server().expect(requestTo("https://external.api.recraft.ai/v1/styles"))
+                .andExpect(method(org.springframework.http.HttpMethod.POST))
+                .andExpect(content().contentTypeCompatibleWith(MediaType.MULTIPART_FORM_DATA))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("filename=\"ref_0.webp\"")))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("image/webp")))
+                .andRespond(withSuccess("{\"id\":\"s1\"}", MediaType.APPLICATION_JSON));
+
+        String id = h.client().createStyle(List.of(webp));
+
+        assertThat(id).isEqualTo("s1");
+        h.server().verify();
+    }
+
+    @Test
+    void createStyle_jpegBytes_useJpgFilenameAndContentType() {
+        Harness h = harness();
+        byte[] jpeg = new byte[]{(byte) 0xFF, (byte) 0xD8, (byte) 0xFF, (byte) 0xE0, 0, 0};
+        h.server().expect(requestTo("https://external.api.recraft.ai/v1/styles"))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("filename=\"ref_0.jpg\"")))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("image/jpeg")))
+                .andRespond(withSuccess("{\"id\":\"s1\"}", MediaType.APPLICATION_JSON));
+
+        h.client().createStyle(List.of(jpeg));
+
+        h.server().verify();
+    }
+
+    @Test
+    void createStyle_unknownBytes_defaultToPng() {
+        Harness h = harness();
+        h.server().expect(requestTo("https://external.api.recraft.ai/v1/styles"))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("filename=\"ref_0.png\"")))
+                .andRespond(withSuccess("{\"id\":\"s1\"}", MediaType.APPLICATION_JSON));
+
+        h.client().createStyle(List.of(new byte[]{1, 2, 3, 4}));
+
+        h.server().verify();
+    }
+
+    @Test
     void createStyle_emptyReferences_throws() {
         Harness h = harness();
         org.assertj.core.api.Assertions

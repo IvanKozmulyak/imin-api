@@ -5,6 +5,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.ByteArrayResource;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.util.LinkedMultiValueMap;
@@ -129,12 +131,20 @@ public class RecraftClient {
         int count = Math.min(referenceImages.size(), MAX_STYLE_FILES);
         for (int i = 0; i < count; i++) {
             byte[] bytes = referenceImages.get(i);
-            final String filename = "ref_" + i + ".png";
+            // Recraft accepts png/jpg/webp; curated flyer folders mix all three. Label each
+            // part by its real format — sniffed from the magic bytes — so the filename and
+            // Content-Type match the payload instead of being hard-coded to png (which would
+            // mislabel webp/jpg bytes and risk rejection).
+            ImageFormat fmt = sniffImageFormat(bytes);
+            final String filename = "ref_" + i + "." + fmt.extension;
+            ByteArrayResource resource = new ByteArrayResource(bytes) {
+                @Override public String getFilename() { return filename; }
+            };
+            HttpHeaders partHeaders = new HttpHeaders();
+            partHeaders.setContentType(fmt.mediaType);
             // Recraft expects file fields named file (single) / file1..fileN; we use
             // the indexed form which the API accepts for one or many references.
-            parts.add("file" + (i + 1), new ByteArrayResource(bytes) {
-                @Override public String getFilename() { return filename; }
-            });
+            parts.add("file" + (i + 1), new HttpEntity<>(resource, partHeaders));
         }
         if (referenceImages.size() > MAX_STYLE_FILES) {
             log.warn("Recraft style training received {} references; capping at {} (API max)",
@@ -182,6 +192,43 @@ public class RecraftClient {
                     "Recraft image response missing b64_json (url-only responses are not supported)");
         }
         return Base64.getDecoder().decode(first.b64_json());
+    }
+
+    /** Image formats Recraft accepts for style training, with canonical extension + MIME. */
+    private enum ImageFormat {
+        PNG("png", MediaType.IMAGE_PNG),
+        JPEG("jpg", MediaType.IMAGE_JPEG),
+        WEBP("webp", MediaType.valueOf("image/webp"));
+
+        final String extension;
+        final MediaType mediaType;
+
+        ImageFormat(String extension, MediaType mediaType) {
+            this.extension = extension;
+            this.mediaType = mediaType;
+        }
+    }
+
+    /** Detect the image format from the leading magic bytes; defaults to PNG when unrecognized. */
+    private static ImageFormat sniffImageFormat(byte[] b) {
+        if (b != null) {
+            if (b.length >= 3
+                    && (b[0] & 0xFF) == 0xFF && (b[1] & 0xFF) == 0xD8 && (b[2] & 0xFF) == 0xFF) {
+                return ImageFormat.JPEG; // FF D8 FF
+            }
+            if (b.length >= 12
+                    && b[0] == 'R' && b[1] == 'I' && b[2] == 'F' && b[3] == 'F'
+                    && b[8] == 'W' && b[9] == 'E' && b[10] == 'B' && b[11] == 'P') {
+                return ImageFormat.WEBP; // "RIFF"...."WEBP"
+            }
+            if (b.length >= 8
+                    && (b[0] & 0xFF) == 0x89 && b[1] == 'P' && b[2] == 'N' && b[3] == 'G'
+                    && (b[4] & 0xFF) == 0x0D && (b[5] & 0xFF) == 0x0A
+                    && (b[6] & 0xFF) == 0x1A && (b[7] & 0xFF) == 0x0A) {
+                return ImageFormat.PNG; // 89 50 4E 47 0D 0A 1A 0A
+            }
+        }
+        return ImageFormat.PNG; // safe default — Recraft accepts png/jpg/webp
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
