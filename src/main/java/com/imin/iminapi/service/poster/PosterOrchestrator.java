@@ -3,6 +3,7 @@ package com.imin.iminapi.service.poster;
 import com.imin.iminapi.dto.EventCreatorRequest;
 import com.imin.iminapi.dto.GeneratedPoster;
 import com.imin.iminapi.dto.PosterConcept;
+import com.imin.iminapi.dto.PosterTextSpec;
 import com.imin.iminapi.dto.PosterVariant;
 import com.imin.iminapi.dto.ReferenceImageSet;
 import com.imin.iminapi.model.ImageProvider;
@@ -41,6 +42,8 @@ public class PosterOrchestrator {
     private final ReferenceImageLibrary referenceLibrary;
     private final OverlayCompositor overlayCompositor;
     private final PosterTextCompositorClient textCompositor;
+    private final PosterTextSpecFactory textSpecFactory;
+    private final PosterTextValidationService textValidation;
     private final PosterImageStorage storage;
     private final PosterGenerationRepository generationRepository;
     private final Semaphore replicateCap;
@@ -54,6 +57,8 @@ public class PosterOrchestrator {
             ReferenceImageLibrary referenceLibrary,
             OverlayCompositor overlayCompositor,
             PosterTextCompositorClient textCompositor,
+            PosterTextSpecFactory textSpecFactory,
+            PosterTextValidationService textValidation,
             PosterImageStorage storage,
             PosterGenerationRepository generationRepository,
             @Value("${replicate.max-concurrent:6}") int maxConcurrent) {
@@ -64,6 +69,8 @@ public class PosterOrchestrator {
         this.referenceLibrary = referenceLibrary;
         this.overlayCompositor = overlayCompositor;
         this.textCompositor = textCompositor;
+        this.textSpecFactory = textSpecFactory;
+        this.textValidation = textValidation;
         this.storage = storage;
         this.generationRepository = generationRepository;
         this.replicateCap = new Semaphore(maxConcurrent, true);
@@ -178,9 +185,10 @@ public class PosterOrchestrator {
             entity.setRawUrl(rawUrl);
             entity.setStatus(PosterVariantStatus.RAW_READY);
 
-            // TODO(phase-2): OCR sanity check on rawBytes; auto-regen once on failure.
-
-            byte[] finalBytes = applyTextLayer(rawBytes, refs, request);
+            // Recraft owns visible event typography; keep Satori full-text compositing for fallback providers.
+            byte[] finalBytes = provider == ImageProvider.RECRAFT
+                    ? validateAndApplyQrOnly(rawBytes, request)
+                    : applyTextLayer(rawBytes, refs, request);
             String finalUrl = finalBytes == rawBytes
                     ? rawUrl
                     : storage.writePng(finalBytes);
@@ -197,6 +205,17 @@ public class PosterOrchestrator {
         } finally {
             replicateCap.release();
         }
+    }
+
+    private byte[] validateAndApplyQrOnly(byte[] rawBytes, EventCreatorRequest request) {
+        PosterTextSpec spec = textSpecFactory.from(request);
+        PosterTextValidationService.ValidationDecision decision =
+                textValidation.validateOrExplain(rawBytes, spec);
+        if (!decision.accepted()) {
+            throw new IllegalStateException("Poster text validation failed: " + decision.reason());
+        }
+        return overlayCompositor.applyOverlays(new OverlayCompositor.Input(
+                rawBytes, request.rsvpUrl(), null));
     }
 
     /**

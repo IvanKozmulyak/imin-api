@@ -3,6 +3,7 @@ package com.imin.iminapi.service.poster;
 import com.imin.iminapi.dto.EventCreatorRequest;
 import com.imin.iminapi.dto.GeneratedPoster;
 import com.imin.iminapi.dto.PosterConcept;
+import com.imin.iminapi.dto.PosterTextSpec;
 import com.imin.iminapi.dto.PosterVariant;
 import com.imin.iminapi.dto.ReferenceImageSet;
 import com.imin.iminapi.model.ImageProvider;
@@ -39,17 +40,20 @@ class PosterOrchestratorTest {
     @Mock ReferenceImageLibrary referenceLibrary;
     @Mock OverlayCompositor overlayCompositor;
     @Mock PosterTextCompositorClient textCompositor;
+    @Mock PosterTextSpecFactory textSpecFactory;
+    @Mock PosterTextValidationService textValidation;
     @Mock PosterImageStorage storage;
     @Mock PosterGenerationRepository generationRepository;
 
     private PosterOrchestrator orchestrator() {
         return new PosterOrchestrator(
                 ideogramClient, openAiImageClient, recraftClient, vibeStyleTrainingService,
-                referenceLibrary, overlayCompositor, textCompositor, storage, generationRepository, 6);
+                referenceLibrary, overlayCompositor, textCompositor, textSpecFactory, textValidation,
+                storage, generationRepository, 6);
     }
 
     private EventCreatorRequest req() {
-        return req(null);
+        return req(ImageProvider.REPLICATE);
     }
 
     private EventCreatorRequest req(ImageProvider provider) {
@@ -150,6 +154,7 @@ class PosterOrchestratorTest {
     @Test
     void run_withRecraftProvider_routesToRecraftClientWithResolvedStyleId() {
         stubRepoAssignsId();
+        PosterTextSpec spec = new PosterTextSpec(List.of("Void"), List.of("Void"), "prompt");
         when(referenceLibrary.forTag("neon_underground"))
                 .thenReturn(new ReferenceImageSet("neon_underground", List.of("data:..."), List.of("1.png")));
         when(referenceLibrary.loadAllBytes("neon_underground"))
@@ -160,6 +165,9 @@ class PosterOrchestratorTest {
         when(recraftClient.generate(any(), any(), styleIdCaptor.capture(), any()))
                 .thenReturn(new RecraftClient.RecraftResult(
                         new byte[]{3, 3, 3}, Duration.ofMillis(50), "recraftv3"));
+        when(textSpecFactory.from(any())).thenReturn(spec);
+        when(textValidation.validateOrExplain(any(), eq(spec)))
+                .thenReturn(new PosterTextValidationService.ValidationDecision(true, null));
         when(storage.writePng(any())).thenReturn("/images/recraft.png");
         when(overlayCompositor.applyOverlays(any())).thenReturn(new byte[]{6, 6, 6});
 
@@ -172,6 +180,71 @@ class PosterOrchestratorTest {
         verify(ideogramClient, org.mockito.Mockito.never()).generate(any(), any(), any(), anyLong(), any());
         verify(openAiImageClient, org.mockito.Mockito.never()).generate(any(), any(), any(), anyLong());
         assertThat(styleIdCaptor.getAllValues()).contains("trained-style-xyz");
+    }
+
+    @Test
+    void run_withRecraftProvider_validatesRawPosterAndSkipsTextCompositor() {
+        stubRepoAssignsId();
+        EventCreatorRequest request = req(ImageProvider.RECRAFT);
+        byte[] rawBytes = new byte[]{3, 3, 3};
+        byte[] finalBytes = new byte[]{6, 6, 6};
+        PosterTextSpec spec = new PosterTextSpec(List.of("Void"), List.of("Void", "BERLIN"), "prompt");
+        PosterConcept c = new PosterConcept("neon_underground", "palette",
+                List.of(new PosterVariant("graphic", "p".repeat(40), "4:5", "Design")));
+        OverlayCompositor.Input expectedOverlay =
+                new OverlayCompositor.Input(rawBytes, request.rsvpUrl(), null);
+        when(referenceLibrary.forTag("neon_underground"))
+                .thenReturn(new ReferenceImageSet("neon_underground", List.of("data:..."), List.of("1.png")));
+        when(referenceLibrary.loadAllBytes("neon_underground"))
+                .thenReturn(List.of(new byte[]{5, 5, 5}));
+        when(vibeStyleTrainingService.resolveStyleId("neon_underground", ImageProvider.RECRAFT))
+                .thenReturn("trained-style-xyz");
+        when(recraftClient.generate(any(), any(), any(), any()))
+                .thenReturn(new RecraftClient.RecraftResult(rawBytes, Duration.ofMillis(50), "recraftv3"));
+        when(textSpecFactory.from(request)).thenReturn(spec);
+        when(textValidation.validateOrExplain(rawBytes, spec))
+                .thenReturn(new PosterTextValidationService.ValidationDecision(true, null));
+        when(storage.writePng(rawBytes)).thenReturn("/images/recraft-raw.png");
+        when(storage.writePng(finalBytes)).thenReturn("/images/recraft-final.png");
+        when(overlayCompositor.applyOverlays(expectedOverlay)).thenReturn(finalBytes);
+
+        PosterOrchestrator.OrchestrationResult result =
+                orchestrator().run(UUID.randomUUID(), request, c);
+
+        assertThat(result.posters()).hasSize(1);
+        assertThat(result.posters().get(0).status()).isEqualTo("COMPLETE");
+        verify(textValidation).validateOrExplain(rawBytes, spec);
+        verify(textCompositor, never()).composite(any(), any(), any());
+        verify(overlayCompositor).applyOverlays(expectedOverlay);
+    }
+
+    @Test
+    void run_withRecraftProvider_validationRejected_marksVariantFailed() {
+        stubRepoAssignsId();
+        EventCreatorRequest request = req(ImageProvider.RECRAFT);
+        byte[] rawBytes = new byte[]{3, 3, 3};
+        PosterTextSpec spec = new PosterTextSpec(List.of("Void"), List.of("Void", "BERLIN"), "prompt");
+        PosterConcept c = new PosterConcept("neon_underground", "palette",
+                List.of(new PosterVariant("graphic", "p".repeat(40), "4:5", "Design")));
+        when(referenceLibrary.forTag("neon_underground"))
+                .thenReturn(new ReferenceImageSet("neon_underground", List.of("data:..."), List.of("1.png")));
+        when(referenceLibrary.loadAllBytes("neon_underground"))
+                .thenReturn(List.of(new byte[]{5, 5, 5}));
+        when(vibeStyleTrainingService.resolveStyleId("neon_underground", ImageProvider.RECRAFT))
+                .thenReturn("trained-style-xyz");
+        when(recraftClient.generate(any(), any(), any(), any()))
+                .thenReturn(new RecraftClient.RecraftResult(rawBytes, Duration.ofMillis(50), "recraftv3"));
+        when(textSpecFactory.from(request)).thenReturn(spec);
+        when(textValidation.validateOrExplain(rawBytes, spec))
+                .thenReturn(new PosterTextValidationService.ValidationDecision(false, "missing required text"));
+        when(storage.writePng(rawBytes)).thenReturn("/images/recraft-raw.png");
+
+        assertThatThrownBy(() -> orchestrator().run(UUID.randomUUID(), request, c))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("missing required text");
+        verify(textValidation).validateOrExplain(rawBytes, spec);
+        verify(textCompositor, never()).composite(any(), any(), any());
+        verify(overlayCompositor, never()).applyOverlays(any());
     }
 
     @Test
