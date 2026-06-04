@@ -24,8 +24,8 @@ import java.util.Set;
  * event text, it returns the final poster with a real-font text layer composited on top (replacing
  * the Java2D QR+address overlay). Only the five CURATED vibes have layout templates in imin-public,
  * and only requests with real event text are worth compositing — {@link #supports} gates both.
- * Disabled by default ({@code poster.compositor.enabled=false}); the orchestrator falls back to the
- * Java2D overlay when this is off, unsupported, or the call fails.
+ * Enabled by default ({@code poster.compositor.enabled=true}) because the image model is instructed
+ * not to render factual text.
  */
 @Component
 public class PosterTextCompositorClient {
@@ -44,7 +44,7 @@ public class PosterTextCompositorClient {
 
     public PosterTextCompositorClient(
             RestClient posterCompositorRestClient,
-            @Value("${poster.compositor.enabled:false}") boolean enabled,
+            @Value("${poster.compositor.enabled:true}") boolean enabled,
             @Value("${poster.compositor.width:1080}") int width) {
         this.posterCompositorRestClient = posterCompositorRestClient;
         this.enabled = enabled;

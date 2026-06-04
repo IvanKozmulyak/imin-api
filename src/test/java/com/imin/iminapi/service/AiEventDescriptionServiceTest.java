@@ -65,6 +65,9 @@ class AiEventDescriptionServiceTest {
         assertThat(prompt).contains("AVOID in the artwork: blurry, watermark");
         assertThat(prompt).contains("stock flyer layout");
         assertThat(prompt).contains("template poster");
+        assertThat(prompt).contains("no letters");
+        assertThat(prompt).contains("no pseudo-text");
+        assertThat(prompt).doesNotContain("Decorative abstract lettering is allowed");
         assertThat(prompt).contains("IP rule: never in the style of a real artist");
         assertThat(prompt).doesNotContain("(no descriptor available)");
     }

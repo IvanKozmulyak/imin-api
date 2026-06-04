@@ -201,8 +201,9 @@ public class PosterOrchestrator {
 
     /**
      * Composite the text layer onto the background art. For curated vibes with real event text and
-     * the compositor enabled, this calls the imin-public Satori route (full real-font text layer);
-     * otherwise — or if that call fails — it falls back to the Java2D QR + address overlay.
+     * the compositor enabled, this calls the imin-public Satori route (full real-font text layer).
+     * If that configured path fails, fail the variant rather than returning a poster without event
+     * text. Unsupported/disabled compositor paths still fall back to the Java2D QR + address overlay.
      */
     private byte[] applyTextLayer(byte[] rawBytes, ReferenceImageSet refs, EventCreatorRequest request) {
         String vibeId = refs.subStyleTag();
@@ -211,8 +212,9 @@ public class PosterOrchestrator {
                 return textCompositor.composite(
                         rawBytes, vibeId, PosterTextCompositorClient.EventText.from(request));
             } catch (RuntimeException e) {
-                log.warn("Text compositor failed for vibe {} — falling back to Java2D overlay: {}",
+                log.error("Text compositor failed for vibe {} — failing variant to avoid poster without event text: {}",
                         vibeId, e.getMessage());
+                throw e;
             }
         }
         return overlayCompositor.applyOverlays(new OverlayCompositor.Input(

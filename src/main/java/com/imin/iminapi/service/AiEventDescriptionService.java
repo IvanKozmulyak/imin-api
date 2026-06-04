@@ -118,8 +118,8 @@ public class AiEventDescriptionService {
           .append("STRICT RULES for each ideogram_prompt:\n")
           .append("- Do NOT render factual event text, dates, venues, prices, DJ names, URLs, QR codes, or readable words\n")
           .append("- Instead design empty text surfaces that feel native to the poster: sticker plates, raw headline zones, stamped rails, torn labels, engraved corner marks, or glowing badges\n")
-          .append("- Decorative abstract lettering is allowed only when it is illegible/non-factual and does not compete with the later text layer\n")
-          .append("- Describe typography integration explicitly (e.g. empty chrome sticker plate, distressed stamped rail, raw-print headline zone, engraved minimal corner marks)\n")
+          .append("- No letters, no glyphs, no pseudo-text, no abstract alphabets, no decorative writing, no readable or unreadable word-like marks\n")
+          .append("- Describe blank typography integration surfaces explicitly (e.g. empty chrome sticker plate, distressed stamped rail, raw-print headline zone, engraved minimal corner marks)\n")
           .append("- Never name real venues, real brands, real DJs, or event-specific text in the artwork\n")
           .append("- End the prompt with: \"no factual text, blank designed text surfaces only\"\n\n");
         appendUniversalRules(sb);

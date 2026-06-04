@@ -199,6 +199,29 @@ class PosterOrchestratorTest {
     }
 
     @Test
+    void run_compositorEnabledAndFails_doesNotSilentlyReturnPosterWithoutEventText() {
+        stubRepoAssignsId();
+        when(referenceLibrary.forTag("brutalist_techno"))
+                .thenReturn(new ReferenceImageSet("brutalist_techno", List.of("https://r/1.jpg"), List.of("1.jpg")));
+        when(ideogramClient.generate(any(), any(), any(), anyLong(), any()))
+                .thenReturn(new IdeogramClient.IdeogramResult(
+                        "https://replicate.delivery/x.png", 1L, Duration.ofMillis(5), "turbo"));
+        when(storage.download(any())).thenReturn(new byte[]{1, 2, 3});
+        when(storage.writePng(any())).thenReturn("/images/raw.png");
+        when(textCompositor.supports("brutalist_techno")).thenReturn(true);
+        when(textCompositor.composite(any(), eq("brutalist_techno"), any()))
+                .thenThrow(new RuntimeException("compositor unavailable"));
+
+        PosterConcept c = new PosterConcept("brutalist_techno", "palette",
+                List.of(new PosterVariant("graphic", "p".repeat(40), "4:5", "Design")));
+
+        assertThatThrownBy(() -> orchestrator().run(UUID.randomUUID(), req(), c))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("All 3 poster variants failed");
+        verify(overlayCompositor, never()).applyOverlays(any());
+    }
+
+    @Test
     void run_allFail_throws() {
         stubRepoAssignsId();
         when(referenceLibrary.forTag(any())).thenReturn(new ReferenceImageSet("neon_underground", List.of(), List.of()));

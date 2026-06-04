@@ -33,6 +33,10 @@ replicate:
   image:
     storage-dir: /tmp/imin-test-images
 
+poster:
+  compositor:
+    enabled: false
+
 imin:
   stripe:
     # Dummy values — tests must mock all Stripe calls (no live network traffic in tests).

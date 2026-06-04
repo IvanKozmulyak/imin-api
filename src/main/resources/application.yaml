@@ -51,14 +51,14 @@ poster:
     # Ideogram magic_prompt_option: Auto | On | Off. Auto lets Ideogram enrich thin prompts.
     magic-prompt: ${POSTER_MAGIC_PROMPT:Auto}
     # Universal negative prompt applied to every image generation (Ivan's draft "Universal rules").
-    negative-prompt: ${POSTER_NEGATIVE_PROMPT:text artifacts, gibberish text, watermark, logo, signature, deformed faces, extra limbs, low-res, jpeg artifacts, blurry, stock-photo look, generic clipart}
+    negative-prompt: ${POSTER_NEGATIVE_PROMPT:text artifacts, gibberish text, pseudo-text, fake letters, random glyphs, watermark, logo, signature, deformed faces, extra limbs, low-res, jpeg artifacts, blurry, stock-photo look, generic clipart}
   compositor:
-    # When true, the real-font text layer is composited by the imin-public Satori route
-    # (POST {base-url}/api/poster) for curated vibes with real event text. Falls back to the
-    # Java2D QR+address overlay when off, for unsupported vibes, or on error. Off by default.
-    enabled: ${POSTER_COMPOSITOR_ENABLED:false}
+    # The real-font text layer is composited by the imin-public Satori route
+    # (POST {base-url}/api/poster) for curated vibes with real event text. This must
+    # be on by default now that image generation is instructed not to render factual text.
+    enabled: ${POSTER_COMPOSITOR_ENABLED:true}
     # imin-public base URL (no trailing slash), e.g. https://imin.wtf or the Vercel deploy URL.
-    base-url: ${POSTER_COMPOSITOR_BASE_URL:}
+    base-url: ${POSTER_COMPOSITOR_BASE_URL:${IMIN_BUYER_SITE_BASE_URL:http://localhost:3000}}
     width: ${POSTER_COMPOSITOR_WIDTH:1080}
   provider-routing:
     # When true, each vibe's model_route selects the image provider.
