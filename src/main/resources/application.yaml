@@ -41,7 +41,7 @@ poster:
   references:
     # Curated reference flyers are loaded per-vibe from vibes.yaml (folders under
     # reference-images/). Cap how many flyers per vibe are sent to the image model.
-    max-per-tag: ${POSTER_MAX_REFERENCES_PER_TAG:4}
+    max-per-tag: ${POSTER_MAX_REFERENCES_PER_TAG:5}
   text-validation:
     enabled: ${POSTER_TEXT_VALIDATION_ENABLED:true}
     model: ${POSTER_TEXT_VALIDATION_MODEL:openai/gpt-4o-mini}
