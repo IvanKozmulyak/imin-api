@@ -5,6 +5,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.imin.iminapi.dto.PosterTextSpec;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
@@ -17,6 +19,8 @@ import java.util.Map;
 
 @Component
 public class OpenRouterPosterTextValidationClient implements PosterTextValidationClient {
+    private static final Logger log = LoggerFactory.getLogger(OpenRouterPosterTextValidationClient.class);
+
     private static final String VALIDATION_PROMPT = """
             You are checking an event poster. Required text must appear exactly or near-exactly.
             Ignore QR codes. Reject if required title/date/venue is missing or badly misspelled.
@@ -54,9 +58,12 @@ public class OpenRouterPosterTextValidationClient implements PosterTextValidatio
     public ValidationResult validate(byte[] imageBytes, PosterTextSpec spec) {
         String dataUri = "data:image/png;base64," + Base64.getEncoder().encodeToString(imageBytes);
 
+        String promptText = validationPrompt(spec);
+        log.info("[LLM text-validation] prompt sent (model={}):\n{}", model, promptText);
+
         Map<String, Object> textPart = new LinkedHashMap<>();
         textPart.put("type", "text");
-        textPart.put("text", validationPrompt(spec));
+        textPart.put("text", promptText);
 
         Map<String, Object> imageUrl = new LinkedHashMap<>();
         imageUrl.put("url", dataUri);

@@ -95,6 +95,9 @@ public class RecraftClient {
             body.put("style", baseStyle);
         }
 
+        log.info("[Recraft image] prompt sent (model={}, size={}, style_id={}):\n{}",
+                model, size, hasStyle ? styleId : "(none)", prompt);
+
         Instant start = Instant.now();
         ImagesResponse resp = recraftRestClient.post()
                 .uri("/images/generations")

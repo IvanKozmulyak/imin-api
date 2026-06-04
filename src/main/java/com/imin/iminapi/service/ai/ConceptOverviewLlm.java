@@ -3,11 +3,15 @@ package com.imin.iminapi.service.ai;
 import com.imin.iminapi.dto.PosterConcept;
 import com.imin.iminapi.dto.ai.ConceptOverview;
 import com.imin.iminapi.dto.ai.ConceptRequest;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.stereotype.Service;
 
 @Service
 public class ConceptOverviewLlm {
+
+    private static final Logger log = LoggerFactory.getLogger(ConceptOverviewLlm.class);
 
     private final ChatClient chat;
 
@@ -40,6 +44,7 @@ public class ConceptOverviewLlm {
                         poster.subStyleTag(),
                         poster.colorPaletteDescription());
 
+        log.info("[LLM overview] prompt sent:\n{}", prompt);
         return chat.prompt().user(prompt).call().entity(ConceptOverview.class);
     }
 }

@@ -48,8 +48,10 @@ public class AiEventDescriptionService {
     public PosterConcept generateConcept(EventCreatorRequest request) {
         String reinforcement = null;
         for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            String prompt = buildPrompt(request, reinforcement);
+            log.info("[LLM concept] prompt sent (attempt {}/{}):\n{}", attempt, MAX_ATTEMPTS, prompt);
             PosterConcept concept = chatClient.prompt()
-                    .user(buildPrompt(request, reinforcement))
+                    .user(prompt)
                     .call()
                     .entity(PosterConcept.class);
             String validationError = validate(concept, request);
