@@ -41,8 +41,8 @@ public class AiEventDescriptionService {
     private static final int MIN_WORDS = 45;
     private static final int MAX_WORDS = 180;
     private static final int MAX_ATTEMPTS = 2;
-    /** Every variant renders in this single tall portrait format. */
-    private static final String FORCED_ASPECT_RATIO = "9:16";
+    /** Every variant renders in this single portrait format. */
+    private static final String FORCED_ASPECT_RATIO = "4:5";
     private static final String GENERIC_POSTER_NEGATIVE_PROMPT =
             "stock flyer layout, centered generic object, obvious music iconography, clipart, "
                     + "generic neon crowd, template poster, bland gradient background";
@@ -121,11 +121,11 @@ public class AiEventDescriptionService {
     }
 
     /**
-     * Force every variant to the single tall {@value #FORCED_ASPECT_RATIO} portrait, regardless of
-     * the aspect ratio the LLM chose. The prompt already asks for 9:16; this is the deterministic
-     * guarantee so all three posters share the same vertical format. Aspect ratio is consumed
-     * downstream by each image provider via {@link PosterVariant#aspectRatio()} and is not part of
-     * the API response, so this is a backend-only normalization.
+     * Force every variant to the single {@value #FORCED_ASPECT_RATIO} portrait, regardless of the
+     * aspect ratio the LLM chose. The prompt already asks for 4:5; this is the deterministic
+     * guarantee so all three posters share the same format. Aspect ratio is consumed downstream by
+     * each image provider via {@link PosterVariant#aspectRatio()} and is not part of the API
+     * response, so this is a backend-only normalization.
      */
     PosterConcept forcePortrait(PosterConcept concept) {
         List<PosterVariant> portrait = concept.variants().stream()
@@ -155,11 +155,11 @@ public class AiEventDescriptionService {
           .append("- variants: exactly 3 objects, each with:\n")
           .append("    - variant_style: one of atmospheric, graphic, minimal\n")
           .append("    - ideogram_prompt: a COMPLETE self-contained Recraft prompt, 45-180 words, for a FINISHED event poster where typography is the main visual composition\n")
-          .append("    - aspect_ratio: always exactly \"9:16\" (a tall vertical poster)\n")
+          .append("    - aspect_ratio: always exactly \"4:5\" (a portrait poster)\n")
           .append("    - style_type: always \"Design\"\n\n")
           .append("STRICT RULES for each ideogram_prompt:\n")
           .append("- Create a finished event poster, not a background plate and not a mockup\n")
-          .append("- Compose for a tall vertical 9:16 poster (portrait, much taller than wide)\n")
+          .append("- Compose for a 4:5 portrait poster (vertical, slightly taller than wide)\n")
           .append("- The required event text must be integrated into the poster composition as native typography, not added as a caption\n")
           .append("- Use exactly the required text elements and only optional text elements listed below\n")
           .append("- No filler text, lorem ipsum, fake letters, pseudo-text, paragraphs, logos, watermarks, or invented words\n")

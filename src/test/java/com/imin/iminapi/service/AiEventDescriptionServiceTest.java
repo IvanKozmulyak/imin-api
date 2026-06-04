@@ -81,18 +81,18 @@ class AiEventDescriptionServiceTest {
     }
 
     @Test
-    void buildPrompt_forcesNineBySixteenAspectRatio() {
+    void buildPrompt_forcesFourByFiveAspectRatio() {
         String prompt = service.buildPrompt(req("brutalist_techno"), null);
 
-        assertThat(prompt).contains("aspect_ratio: always exactly \"9:16\"");
+        assertThat(prompt).contains("aspect_ratio: always exactly \"4:5\"");
         assertThat(prompt).doesNotContain("one of 4:5, 1:1, 9:16, 16:9");
     }
 
     @Test
-    void forcePortrait_setsEveryVariantToNineBySixteen() {
+    void forcePortrait_setsEveryVariantToFourByFive() {
         String body = "word ".repeat(50).trim();
         List<PosterVariant> variants = List.of(
-                new PosterVariant("atmospheric", body, "4:5", "Design"),
+                new PosterVariant("atmospheric", body, "9:16", "Design"),
                 new PosterVariant("graphic", body, "1:1", "Design"),
                 new PosterVariant("minimal", body, "16:9", "Design"));
 
@@ -100,7 +100,7 @@ class AiEventDescriptionServiceTest {
                 new PosterConcept("brutalist_techno", "palette", variants));
 
         assertThat(forced.variants()).extracting(PosterVariant::aspectRatio)
-                .containsExactly("9:16", "9:16", "9:16");
+                .containsExactly("4:5", "4:5", "4:5");
         // Everything except the aspect ratio is preserved.
         assertThat(forced.variants()).extracting(PosterVariant::variantStyle)
                 .containsExactly("atmospheric", "graphic", "minimal");
