@@ -45,7 +45,7 @@ class ReferenceImageLibraryTest {
         for (String vibe : CURATED_VIBES) {
             assertThat(library.referenceCount(vibe))
                     .as("vibe '%s' references", vibe)
-                    .isBetween(1, 4); // glob-capped at poster.references.max-per-tag (default 4)
+                    .isBetween(1, 5); // glob-capped at poster.references.max-per-tag (default 5)
         }
     }
 

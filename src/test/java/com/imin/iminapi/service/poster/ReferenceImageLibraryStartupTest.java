@@ -34,8 +34,8 @@ class ReferenceImageLibraryStartupTest {
         assertThat(library.forTag("brutalist_techno").referenceUrls())
                 .isNotEmpty()
                 .allMatch(u -> u.startsWith("data:"));
-        // A text-only vibe contributes no references.
-        assertThat(library.referenceCount("liquid_melodic")).isZero();
+        // Every curated vibe (all 12) resolves its folder; capped at maxPerTag (4 here).
+        assertThat(library.referenceCount("liquid_melodic")).isBetween(1, 4);
     }
 
     @Test

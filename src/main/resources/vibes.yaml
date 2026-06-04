@@ -100,10 +100,10 @@ vibes:
     mood_tags: [dreamy, warm, emotional, atmospheric, elevated]
     avoid: [harsh contrast, aggression, industrial grit, generic flyer tropes]
     model_route: recraft
-    references: []
+    references: ["reference-images/Liquid Melodic"]
     style_id: null
     layout_template: liquid_melodic
-    text_only: true
+    text_only: false
 
   - id: hyperpop_club
     name: "Hyperpop / Club"
@@ -115,10 +115,10 @@ vibes:
     mood_tags: [chaotic, saturated, online, fast, fun]
     avoid: [minimalism, vintage, calm, generic flyer tropes]
     model_route: recraft
-    references: []
+    references: ["reference-images/Hyperpop - Club"]
     style_id: null
     layout_template: hyperpop_club
-    text_only: true
+    text_only: false
 
   - id: dnb_jungle
     name: "DnB / Jungle"
@@ -130,10 +130,10 @@ vibes:
     mood_tags: [fast, urban, raw, kinetic, underground]
     avoid: [stillness, luxury, clean minimalism, generic flyer tropes]
     model_route: recraft
-    references: []
+    references: ["reference-images/DnB - Jungle"]
     style_id: null
     layout_template: dnb_jungle
-    text_only: true
+    text_only: false
 
   - id: afro_amapiano
     name: "Afro / Amapiano"
@@ -145,10 +145,10 @@ vibes:
     mood_tags: [warm, joyful, vibrant, rhythmic, sun-soaked]
     avoid: [dark industrial cues, minimalism, grit, generic flyer tropes]
     model_route: recraft
-    references: []
+    references: ["reference-images/Afro - Amapiano"]
     style_id: null
     layout_template: afro_amapiano
-    text_only: true
+    text_only: false
 
   - id: open_air_festival
     name: "Open Air / Festival"
@@ -160,10 +160,10 @@ vibes:
     mood_tags: [expansive, free, sunny, natural, escapist]
     avoid: [claustrophobic spaces, indoor warehouse cues, grit, generic flyer tropes]
     model_route: recraft
-    references: []
+    references: ["reference-images/Open Air - Festival"]
     style_id: null
     layout_template: open_air_festival
-    text_only: true
+    text_only: false
 
   - id: disco_italo
     name: "Disco / Italo Revival"
@@ -190,7 +190,7 @@ vibes:
     mood_tags: [cold, cerebral, abstract, unsettling, avant-garde]
     avoid: [warmth, friendliness, conventional layout, generic flyer tropes]
     model_route: recraft
-    references: []
+    references: ["reference-images/Dark - Experimental"]
     style_id: null
     layout_template: dark_experimental
-    text_only: true
+    text_only: false
