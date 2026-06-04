@@ -5,26 +5,19 @@ import com.imin.iminapi.dto.PosterConcept;
 import com.imin.iminapi.dto.PosterVariant;
 import com.imin.iminapi.dto.UniversalRules;
 import com.imin.iminapi.dto.Vibe;
+import com.imin.iminapi.service.poster.PosterTextSpecFactory;
 import com.imin.iminapi.service.poster.VibeLibrary;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.ai.chat.client.ChatClient;
 
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.lenient;
-import static org.mockito.Mockito.when;
 
-@ExtendWith(MockitoExtension.class)
 class AiEventDescriptionServiceTest {
 
-    @Mock private ChatClient chatClient;
-    @Mock private VibeLibrary vibeLibrary;
+    private final VibeLibrary vibeLibrary = new FakeVibeLibrary();
 
     private AiEventDescriptionService service;
 
@@ -37,9 +30,7 @@ class AiEventDescriptionServiceTest {
 
     @org.junit.jupiter.api.BeforeEach
     void setUp() {
-        service = new AiEventDescriptionService(chatClient, vibeLibrary);
-        lenient().when(vibeLibrary.universalRules()).thenReturn(new UniversalRules(
-                List.of("4:5"), "blurry, watermark", "never in the style of a real artist"));
+        service = new AiEventDescriptionService(null, vibeLibrary, new PosterTextSpecFactory());
     }
 
     private EventCreatorRequest req(String pinnedVibeId) {
@@ -52,9 +43,14 @@ class AiEventDescriptionServiceTest {
 
     @Test
     void buildPrompt_pinnedVibe_injectsStructuredPresetAndUniversalRules() {
-        when(vibeLibrary.byId("brutalist_techno")).thenReturn(Optional.of(BRUTALIST));
+        EventCreatorRequest request = new EventCreatorRequest(
+                "warehouse rave", "energetic", "techno", "Berlin",
+                LocalDate.of(2026, 6, 7), List.of("INSTAGRAM"),
+                "DJ A, DJ B", "RSO", "BIG NIGHT - BERLIN", null,
+                "Schnellerstrasse 137", "https://imin.wtf/e/big-night",
+                "brutalist_techno", null);
 
-        String prompt = service.buildPrompt(req("brutalist_techno"), null);
+        String prompt = service.buildPrompt(request, null);
 
         assertThat(prompt).contains("must be exactly \"brutalist_techno\"");
         assertThat(prompt).contains("Visual style: raw exposed concrete");
@@ -65,8 +61,12 @@ class AiEventDescriptionServiceTest {
         assertThat(prompt).contains("AVOID in the artwork: blurry, watermark");
         assertThat(prompt).contains("stock flyer layout");
         assertThat(prompt).contains("template poster");
-        assertThat(prompt).contains("no letters");
-        assertThat(prompt).contains("no pseudo-text");
+        assertThat(prompt).contains("Create a finished event poster");
+        assertThat(prompt).contains("Render the following required text exactly as written");
+        assertThat(prompt).contains("\"BIG NIGHT - BERLIN\"");
+        assertThat(prompt).contains("\"7 JUN 2026\"");
+        assertThat(prompt).doesNotContain("EMPTY typographic surfaces");
+        assertThat(prompt).doesNotContain("No letters, no glyphs");
         assertThat(prompt).doesNotContain("Decorative abstract lettering is allowed");
         assertThat(prompt).contains("IP rule: never in the style of a real artist");
         assertThat(prompt).doesNotContain("(no descriptor available)");
@@ -74,9 +74,6 @@ class AiEventDescriptionServiceTest {
 
     @Test
     void buildPrompt_noVibeId_autoSuggestsFromGenre() {
-        when(vibeLibrary.byId(null)).thenReturn(Optional.empty());
-        when(vibeLibrary.suggestForGenre("techno")).thenReturn(BRUTALIST);
-
         String prompt = service.buildPrompt(req(null), null);
 
         assertThat(prompt).contains("must be exactly \"brutalist_techno\"");
@@ -85,10 +82,7 @@ class AiEventDescriptionServiceTest {
 
     @Test
     void validate_acceptsKnownVibe_rejectsUnknown() {
-        when(vibeLibrary.hasVibe("brutalist_techno")).thenReturn(true);
-        when(vibeLibrary.hasVibe("bogus")).thenReturn(false);
-
-        String body = "word ".repeat(40).trim();
+        String body = "word ".repeat(50).trim();
         List<PosterVariant> variants = List.of(
                 new PosterVariant("atmospheric", body, "4:5", "Design"),
                 new PosterVariant("graphic", body, "1:1", "Design"),
@@ -97,5 +91,31 @@ class AiEventDescriptionServiceTest {
         assertThat(service.validate(new PosterConcept("brutalist_techno", "palette", variants))).isNull();
         assertThat(service.validate(new PosterConcept("bogus", "palette", variants)))
                 .contains("known vibe id");
+    }
+
+    private static class FakeVibeLibrary extends VibeLibrary {
+        FakeVibeLibrary() {
+            super(null, "");
+        }
+
+        @Override
+        public Optional<Vibe> byId(String id) {
+            return "brutalist_techno".equals(id) ? Optional.of(BRUTALIST) : Optional.empty();
+        }
+
+        @Override
+        public boolean hasVibe(String id) {
+            return "brutalist_techno".equals(id);
+        }
+
+        @Override
+        public UniversalRules universalRules() {
+            return new UniversalRules(List.of("4:5"), "blurry, watermark", "never in the style of a real artist");
+        }
+
+        @Override
+        public Vibe suggestForGenre(String genre) {
+            return BRUTALIST;
+        }
     }
 }

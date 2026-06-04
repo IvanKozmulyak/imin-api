@@ -2,9 +2,11 @@ package com.imin.iminapi.service;
 
 import com.imin.iminapi.dto.EventCreatorRequest;
 import com.imin.iminapi.dto.PosterConcept;
+import com.imin.iminapi.dto.PosterTextSpec;
 import com.imin.iminapi.dto.PosterVariant;
 import com.imin.iminapi.dto.UniversalRules;
 import com.imin.iminapi.dto.Vibe;
+import com.imin.iminapi.service.poster.PosterTextSpecFactory;
 import com.imin.iminapi.service.poster.VibeLibrary;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
@@ -30,13 +32,14 @@ public class AiEventDescriptionService {
 
     private final ChatClient chatClient;
     private final VibeLibrary vibeLibrary;
+    private final PosterTextSpecFactory posterTextSpecFactory;
 
     private static final Set<String> VALID_VARIANT_STYLES = Set.of("atmospheric", "graphic", "minimal");
     // Target social ratios: 4:5 (poster), 1:1 (feed), 9:16 (story/reel), 16:9 (landscape/OG ≈ 1.91:1).
     private static final Set<String> VALID_ASPECTS = Set.of("4:5", "1:1", "9:16", "16:9");
     private static final Pattern WORDS = Pattern.compile("\\s+");
-    private static final int MIN_WORDS = 30;
-    private static final int MAX_WORDS = 150;
+    private static final int MIN_WORDS = 45;
+    private static final int MAX_WORDS = 180;
     private static final int MAX_ATTEMPTS = 2;
     private static final String GENERIC_POSTER_NEGATIVE_PROMPT =
             "stock flyer layout, centered generic object, obvious music iconography, clipart, "
@@ -102,9 +105,10 @@ public class AiEventDescriptionService {
 
     String buildPrompt(EventCreatorRequest request, String reinforcement) {
         Vibe vibe = resolveVibe(request);
+        PosterTextSpec textSpec = posterTextSpecFactory.from(request);
         StringBuilder sb = new StringBuilder();
         sb.append("You are an art director for a nightlife event poster. Your output drives ")
-          .append("Ideogram V3, a text-in-image model (~90-95% accuracy on quoted strings).\n\n")
+          .append("Recraft final poster generation with native typography integrated into the artwork.\n\n")
           .append("Return a JSON object with exactly these fields:\n")
           .append("- sub_style_tag: must be exactly \"").append(vibe.id())
           .append("\". Render EVERY variant in this exact visual style:\n")
@@ -112,16 +116,17 @@ public class AiEventDescriptionService {
           .append("- color_palette_description: a brief human-readable description of the dominant colors\n")
           .append("- variants: exactly 3 objects, each with:\n")
           .append("    - variant_style: one of atmospheric, graphic, minimal\n")
-          .append("    - ideogram_prompt: a COMPLETE self-contained prompt, 30-150 words, describing the scene and the designed EMPTY typographic surfaces where the platform will later place exact event text\n")
+          .append("    - ideogram_prompt: a COMPLETE self-contained Recraft prompt, 45-180 words, for a FINISHED event poster where typography is the main visual composition\n")
           .append("    - aspect_ratio: one of 4:5, 1:1, 9:16, 16:9\n")
           .append("    - style_type: always \"Design\"\n\n")
           .append("STRICT RULES for each ideogram_prompt:\n")
-          .append("- Do NOT render factual event text, dates, venues, prices, DJ names, URLs, QR codes, or readable words\n")
-          .append("- Instead design empty text surfaces that feel native to the poster: sticker plates, raw headline zones, stamped rails, torn labels, engraved corner marks, or glowing badges\n")
-          .append("- No letters, no glyphs, no pseudo-text, no abstract alphabets, no decorative writing, no readable or unreadable word-like marks\n")
-          .append("- Describe blank typography integration surfaces explicitly (e.g. empty chrome sticker plate, distressed stamped rail, raw-print headline zone, engraved minimal corner marks)\n")
-          .append("- Never name real venues, real brands, real DJs, or event-specific text in the artwork\n")
-          .append("- End the prompt with: \"no factual text, blank designed text surfaces only\"\n\n");
+          .append("- Create a finished event poster, not a background plate and not a mockup\n")
+          .append("- The required event text must be integrated into the poster composition as native typography, not added as a caption\n")
+          .append("- Use exactly the required text elements and only optional text elements listed below\n")
+          .append("- No filler text, lorem ipsum, fake letters, pseudo-text, paragraphs, logos, watermarks, or invented words\n")
+          .append("- If text is long, change layout or scale; never misspell, abbreviate, translate, or replace it\n\n")
+          .append(textSpec.forPrompt())
+          .append("\n");
         appendUniversalRules(sb);
         sb.append("Event brief:\n")
           .append("- vibe: ").append(request.vibe()).append("\n")
