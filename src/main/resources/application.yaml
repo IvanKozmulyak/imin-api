@@ -63,6 +63,8 @@ poster:
     # control, keep <= 2). POSTER_TEXT_VALIDATION_MAX_REGENERATIONS is kept as a deprecated alias.
     max-regenerations: ${POSTER_VALIDATION_MAX_REGENERATIONS:${POSTER_TEXT_VALIDATION_MAX_REGENERATIONS:2}}
   overlay:
+    # QR rendering is OFF for now; set =true to restore it on the generated poster.
+    qr-enabled: ${POSTER_OVERLAY_QR_ENABLED:false}
     qr-size-px: 120
     address-max-chars: 80
   generation:

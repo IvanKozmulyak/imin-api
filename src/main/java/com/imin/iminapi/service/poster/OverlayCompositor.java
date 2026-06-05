@@ -34,20 +34,24 @@ public class OverlayCompositor {
 
     private final int qrSizePx;
     private final int addressMaxChars;
+    private final boolean qrEnabled;
 
     public OverlayCompositor(
             @Value("${poster.overlay.qr-size-px:120}") int qrSizePx,
-            @Value("${poster.overlay.address-max-chars:80}") int addressMaxChars) {
+            @Value("${poster.overlay.address-max-chars:80}") int addressMaxChars,
+            // QR rendering is OFF by default for now; set poster.overlay.qr-enabled=true to restore it.
+            @Value("${poster.overlay.qr-enabled:false}") boolean qrEnabled) {
         this.qrSizePx = qrSizePx;
         this.addressMaxChars = addressMaxChars;
+        this.qrEnabled = qrEnabled;
     }
 
     public record Input(byte[] basePng, String qrPayload, String addressText) {}
 
     public byte[] applyOverlays(Input input) {
-        boolean noQr   = input.qrPayload()   == null || input.qrPayload().isBlank();
-        boolean noAddr = input.addressText() == null || input.addressText().isBlank();
-        if (noQr && noAddr) {
+        boolean drawQr   = qrEnabled && input.qrPayload() != null && !input.qrPayload().isBlank();
+        boolean drawAddr = input.addressText() != null && !input.addressText().isBlank();
+        if (!drawQr && !drawAddr) {
             return input.basePng();
         }
         try {
@@ -65,11 +69,24 @@ public class OverlayCompositor {
                 g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
                 g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
 
-                if (input.addressText() != null && !input.addressText().isBlank()) {
-                    drawAddressBand(g, base.getWidth(), base.getHeight(), input.addressText());
+                // The address band needs the JVM's native font stack (libfreetype). On a slim container
+                // without it, that init throws an Error (NoClassDefFoundError/UnsatisfiedLinkError), which
+                // is NOT a RuntimeException — so guard it explicitly and skip the band rather than fail the
+                // variant. The QR uses no fonts and still renders.
+                if (drawAddr) {
+                    try {
+                        drawAddressBand(g, base.getWidth(), base.getHeight(), input.addressText());
+                    } catch (Throwable t) {
+                        log.warn("Skipping address band — text rendering unavailable (missing native fonts?): {}",
+                                t.toString());
+                    }
                 }
-                if (input.qrPayload() != null && !input.qrPayload().isBlank()) {
-                    drawQrCode(g, base.getWidth(), base.getHeight(), input.qrPayload());
+                if (drawQr) {
+                    try {
+                        drawQrCode(g, base.getWidth(), base.getHeight(), input.qrPayload());
+                    } catch (Throwable t) {
+                        log.warn("Skipping QR overlay: {}", t.toString());
+                    }
                 }
             } finally {
                 g.dispose();
@@ -77,8 +94,10 @@ public class OverlayCompositor {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             ImageIO.write(base, "png", out);
             return out.toByteArray();
-        } catch (IOException e) {
-            throw new RuntimeException("Overlay composite failed", e);
+        } catch (Throwable t) {
+            // The overlay is cosmetic — never fail the poster variant over it. Return the raw art.
+            log.warn("Overlay compositing failed; returning raw poster art: {}", t.toString());
+            return input.basePng();
         }
     }
 
@@ -143,16 +162,9 @@ public class OverlayCompositor {
     }
 
     private Font chooseFont(int sizePx) {
-        String[] preferred = {"Inter", "DM Sans", "Helvetica Neue", "Helvetica", "Arial", "SansSerif"};
-        String[] available = java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment().getAvailableFontFamilyNames();
-        for (String name : preferred) {
-            for (String av : available) {
-                if (av.equalsIgnoreCase(name)) {
-                    return new Font(name, Font.BOLD, sizePx);
-                }
-            }
-        }
-        log.debug("No preferred font found, falling back to SansSerif");
+        // Use the logical SansSerif font; avoid getAvailableFontFamilyNames(), which eagerly initializes
+        // the native font manager (and throws on a container missing libfreetype). The caller guards
+        // the actual text rasterization, which still needs native fonts when present.
         return new Font(Font.SANS_SERIF, Font.BOLD, sizePx);
     }
 }
