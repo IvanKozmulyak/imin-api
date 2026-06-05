@@ -297,13 +297,16 @@ class PosterOrchestratorTest {
     }
 
     @Test
-    void run_withRecraftProvider_textValidationRejected_marksVariantFailed() {
+    void run_withRecraftProvider_textValidationFailsBudget_acceptsBestEffortNot502() {
         stubRepoAssignsId();
         EventCreatorRequest request = req(ImageProvider.RECRAFT);
         byte[] rawBytes = new byte[]{3, 3, 3};
+        byte[] finalBytes = new byte[]{6, 6, 6};
         PosterTextSpec spec = new PosterTextSpec(List.of("Void"), List.of("Void", "BERLIN"), "prompt");
         PosterConcept c = new PosterConcept("neon_underground", "palette",
                 List.of(new PosterVariant("people", "p".repeat(40), "4:5", "Design")));
+        OverlayCompositor.Input expectedOverlay =
+                new OverlayCompositor.Input(rawBytes, request.rsvpUrl(), request.address());
         when(referenceLibrary.forTag("neon_underground"))
                 .thenReturn(new ReferenceImageSet("neon_underground", List.of("data:..."), List.of("1.png")));
         when(referenceLibrary.loadAllBytes("neon_underground"))
@@ -316,16 +319,20 @@ class PosterOrchestratorTest {
         when(textValidation.validateOrExplain(rawBytes, spec))
                 .thenReturn(new PosterTextValidationService.ValidationDecision(false, "missing required text"));
         when(storage.writePng(rawBytes)).thenReturn("/images/recraft-raw.png");
+        when(storage.writePng(finalBytes)).thenReturn("/images/recraft-final.png");
+        when(overlayCompositor.applyOverlays(expectedOverlay)).thenReturn(finalBytes);
 
-        assertThatThrownBy(() -> orchestrator().run(UUID.randomUUID(), request, c))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("missing required text");
-        // maxRegenerations=1 → 2 renders, 2 legibility checks, style gate never reached, no overlay.
+        PosterOrchestrator.OrchestrationResult result =
+                orchestrator().run(UUID.randomUUID(), request, c);
+
+        // A poster with imperfect text beats a 502: best-effort COMPLETE, not FAILED.
+        assertThat(result.posters().get(0).status()).isEqualTo("COMPLETE");
+        // maxRegenerations=1 → 2 renders, 2 legibility checks; style gate never reached (text short-circuits).
         verify(recraftClient, times(2)).generate(any(), any(), any(), any());
         verify(textValidation, times(2)).validateOrExplain(rawBytes, spec);
         verify(styleValidation, never()).validateOrExplain(any(), any(), any());
         verify(textCompositor, never()).composite(any(), any(), any());
-        verify(overlayCompositor, never()).applyOverlays(any());
+        verify(overlayCompositor).applyOverlays(expectedOverlay);
     }
 
     @Test

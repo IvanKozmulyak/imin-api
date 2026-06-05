@@ -273,44 +273,45 @@ public class PosterOrchestrator {
             PosterTextValidationService.ValidationDecision textDecision =
                     textValidation.validateOrExplain(rawBytes, spec);
             if (!textDecision.accepted()) {
-                if (last) {
-                    throw new PosterValidationRejectedException(
-                            "text validation failed after " + maxRegenerations + " regenerations: " + textDecision.reason());
+                if (!last) {
+                    log.warn("Recraft text validation failed (attempt {}/{}); regenerating with a new seed: {}",
+                            attempt, maxRegenerations, textDecision.reason());
+                    seed = nextSeed(seed);
+                    continue;
                 }
-                log.warn("Recraft text validation failed (attempt {}/{}); regenerating with a new seed: {}",
-                        attempt, maxRegenerations, textDecision.reason());
-                seed = nextSeed(seed);
-                continue;
+                // Budget exhausted: a draft poster with imperfect text beats a 502 to the organizer. The
+                // text was requested in the prompt and checked here; the image model just couldn't render it.
+                log.warn("Recraft text validation still failing after {} regenerations; accepting best-effort: {}",
+                        maxRegenerations, textDecision.reason());
+                return acceptRecraftVariant(entity, rawBytes, rawUrl, request);
             }
 
             PosterStyleValidationService.ValidationDecision styleDecision =
                     styleValidation.validateOrExplain(rawBytes, ctx.card(), heroType);
+            if (!styleDecision.accepted() && !last) {
+                log.warn("Recraft style validation failed (attempt {}/{}); regenerating with a new seed: {}",
+                        attempt, maxRegenerations, styleDecision.reason());
+                seed = nextSeed(seed);
+                continue;
+            }
             if (!styleDecision.accepted()) {
-                if (!last) {
-                    log.warn("Recraft style validation failed (attempt {}/{}); regenerating with a new seed: {}",
-                            attempt, maxRegenerations, styleDecision.reason());
-                    seed = nextSeed(seed);
-                    continue;
-                }
-                log.warn("Recraft style validation still failing after {} regenerations; accepting best effort: {}",
+                log.warn("Recraft style validation still failing after {} regenerations; accepting best-effort: {}",
                         maxRegenerations, styleDecision.reason());
             }
-
-            // Accept: text is Recraft-baked, so only the QR + address overlay is applied (no Satori compositor).
-            byte[] finalBytes = overlayCompositor.applyOverlays(
-                    new OverlayCompositor.Input(rawBytes, request.rsvpUrl(), request.address()));
-            String finalUrl = finalBytes == rawBytes ? rawUrl : storage.writePng(finalBytes);
-            entity.setFinalUrl(finalUrl);
-            entity.setStatus(PosterVariantStatus.COMPLETE);
-            return toDto(entity);
+            return acceptRecraftVariant(entity, rawBytes, rawUrl, request);
         }
         throw new IllegalStateException("Recraft validation loop exhausted");
     }
 
-    private static class PosterValidationRejectedException extends IllegalStateException {
-        private PosterValidationRejectedException(String message) {
-            super(message);
-        }
+    /** Apply the QR + address overlay (text is Recraft-baked; no Satori compositor) and mark COMPLETE. */
+    private GeneratedPoster acceptRecraftVariant(
+            PosterVariantEntity entity, byte[] rawBytes, String rawUrl, EventCreatorRequest request) {
+        byte[] finalBytes = overlayCompositor.applyOverlays(
+                new OverlayCompositor.Input(rawBytes, request.rsvpUrl(), request.address()));
+        String finalUrl = finalBytes == rawBytes ? rawUrl : storage.writePng(finalBytes);
+        entity.setFinalUrl(finalUrl);
+        entity.setStatus(PosterVariantStatus.COMPLETE);
+        return toDto(entity);
     }
 
     /**

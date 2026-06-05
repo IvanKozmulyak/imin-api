@@ -47,13 +47,16 @@ poster:
     # loaded by StyleCardLibrary at startup. Authored once via the @Profile("tools") StyleCardGenerator.
     location: ${POSTER_STYLE_CARDS_LOCATION:classpath*:vibes/style-cards/*.yaml}
   text-validation:
-    # Legibility (vision) gate — kept on gpt-4o-mini for cost.
-    enabled: ${POSTER_TEXT_VALIDATION_ENABLED:true}
+    # Legibility (vision) gate. DISABLED by default for now — recraftv3 (esp. realistic_image) renders
+    # event text imperfectly, so this gate was rejecting real posters. Re-enable via env when text
+    # fidelity improves (or the Satori compositor is adopted for curated vibes). gpt-4o-mini for cost.
+    enabled: ${POSTER_TEXT_VALIDATION_ENABLED:false}
     model: ${POSTER_TEXT_VALIDATION_MODEL:openai/gpt-4o-mini}
     max-extra-text-items: ${POSTER_TEXT_VALIDATION_MAX_EXTRA_TEXT_ITEMS:2}
   style-validation:
-    # Style-adherence (vision) gate — hero present, medium/palette match. Cheap model like the text gate.
-    enabled: ${POSTER_STYLE_VALIDATION_ENABLED:true}
+    # Style-adherence (vision) gate — hero present, medium/palette match. DISABLED by default for now
+    # alongside the legibility gate; re-enable via env. Cheap model like the text gate.
+    enabled: ${POSTER_STYLE_VALIDATION_ENABLED:false}
     model: ${POSTER_STYLE_VALIDATION_MODEL:openai/gpt-4o-mini}
   validation:
     # Unified regeneration budget shared by the legibility + style gates (total per variant; cost/latency
