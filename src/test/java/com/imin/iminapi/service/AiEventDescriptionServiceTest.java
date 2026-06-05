@@ -211,7 +211,7 @@ class AiEventDescriptionServiceTest {
                 new PosterVariant("people", peoplePrompt(), "4:5", "Design"),
                 new PosterVariant("object", objectPrompt(), "4:5", "Design"),
                 new PosterVariant("typographic", typographicPrompt() + " a lone dancer appears", "4:5", "Design")));
-        assertThat(service.validate(c)).contains("typographic) must not contain a human subject");
+        assertThat(service.validate(c)).contains("typographic) must not be built around a person");
     }
 
     // The art-director template itself asks for a "4:5 portrait poster"; a typographic prompt that
@@ -266,6 +266,45 @@ class AiEventDescriptionServiceTest {
     }
 
     @Test
+    void validate_acceptsPeopleVariantDescribedAsWomanRaverOrDj() {
+        // Real "people" heroes (and the style-card pools) use words like woman/man/raver/DJ/club-goer
+        // that the narrow base noun list missed. None of crowd/dancer/face/body/portrait appear here.
+        String people = "A young woman in mirror-lens sunglasses leans toward the camera holding a tall "
+                + "champagne flute under a hard on-camera flash, a lone raver beside her and a DJ hunched over "
+                + "the decks in deep club shadow, shot on grainy high-contrast film for a tall vertical poster. "
+                + "The bold condensed headline stacks heavy across the top while the date locks beneath it and a "
+                + "tracked-out acid-green venue line runs along the bottom edge as native typography filling the frame.";
+        PosterConcept c = new PosterConcept("brutalist_techno", "pal", List.of(
+                new PosterVariant("people", people, "4:5", "Design"),
+                new PosterVariant("object", objectPrompt(), "4:5", "Design"),
+                new PosterVariant("typographic", typographicPrompt(), "4:5", "Design")));
+        assertThat(service.validate(c)).isNull();
+    }
+
+    @Test
+    void validate_withRequest_matchesRequiredTextCaseInsensitively() {
+        EventCreatorRequest request = brief(); // required: BIG NIGHT - BERLIN, 7 JUN 2026, RSO
+        String people = "A young woman dances in motion blur under a hard flash in a dark concrete room while a "
+                + "DJ works the decks behind her, shot on grainy film. The headline \"Big Night - Berlin\" stacks "
+                + "across the top, the date \"7 jun 2026\" locks beneath it and the venue \"rso\" sits along the bottom "
+                + "edge as native acid-green typography filling the tall vertical frame from corner to corner completely.";
+        String object = "Monolithic concrete stairwell shot from directly below under one industrial bulb, heavy "
+                + "photocopy grain across the vertical sheet. Vermilion typography knocks out of shadow: the headline "
+                + "\"big night - berlin\" runs up the left edge, the date \"7 JUN 2026\" sits in the lower margin and "
+                + "\"RSO\" anchors the bottom-right corner as bold native brutalist lettering on the stark grainy poster.";
+        String typographic = "Oversized condensed grotesk type fractures across three separate baselines over a field of "
+                + "crushed film grain and marbled toner streaks, with no imagery at all. The headline \"BIG NIGHT - BERLIN\" "
+                + "dominates the upper stack, the date \"7 Jun 2026\" cuts diagonally through the center in acid-green, and "
+                + "\"Rso\" anchors a small monospaced credit block at the foot of the stark vertical machine-stamped composition "
+                + "sheet, severe and rendered entirely as type with heavy xerox degradation eating every single glyph edge today.";
+        PosterConcept c = new PosterConcept("brutalist_techno", "pal", List.of(
+                new PosterVariant("people", people, "4:5", "Design"),
+                new PosterVariant("object", object, "4:5", "Design"),
+                new PosterVariant("typographic", typographic, "4:5", "Design")));
+        assertThat(service.validate(c, request)).isNull();
+    }
+
+    @Test
     void validate_rejectsTooShortPrompt() {
         PosterConcept c = new PosterConcept("brutalist_techno", "pal", List.of(
                 new PosterVariant("people", "a lone dancer under a flash", "4:5", "Design"),
@@ -300,6 +339,70 @@ class AiEventDescriptionServiceTest {
         assertThat(error).contains("missing required text");
         assertThat(error).contains("variant[1]");
         assertThat(error).contains("7 JUN 2026");
+    }
+
+    @Test
+    void containsHumanHero_strictAboutPersonHero_allowsAtmosphericWords() {
+        // type-led posters legitimately say "no people", "faces in the grain", "a faint silhouette"
+        assertThat(AiEventDescriptionService.containsHumanHero(
+                "no people, just type; faces in the grain and a faint silhouette behind the letters")).isFalse();
+        assertThat(AiEventDescriptionService.containsHumanHero(
+                "geometric figures and body text on a 4:5 portrait poster")).isFalse();
+        // but a real person hero is caught
+        assertThat(AiEventDescriptionService.containsHumanHero("a lone dancer dominates the frame")).isTrue();
+        assertThat(AiEventDescriptionService.containsHumanHero("a young woman in mirror sunglasses")).isTrue();
+    }
+
+    // ---- graceful degradation (no 502 over quality nits) ----------------------------------------
+
+    private AiEventDescriptionService serviceReturning(String cannedJson) {
+        return new AiEventDescriptionService(null, vibeLibrary, new PosterTextSpecFactory(),
+                styleCardLibrary, new CreativeDirectionSampler()) {
+            @Override
+            String callLlm(String prompt) {
+                return cannedJson;
+            }
+        };
+    }
+
+    @Test
+    void generateConcept_returnsBestEffortWhenOnlyQualityChecksFail() {
+        // Renderable (3 variants, valid hero types, non-empty) but fails quality (too short / not distinct):
+        // must NOT 502 — render it best-effort.
+        String json = "{\"sub_style_tag\":\"brutalist_techno\",\"color_palette_description\":\"black\",\"variants\":["
+                + "{\"hero_type\":\"people\",\"ideogram_prompt\":\"a brutalist techno poster\",\"aspect_ratio\":\"1:1\",\"style_type\":\"Design\"},"
+                + "{\"hero_type\":\"object\",\"ideogram_prompt\":\"a brutalist techno poster\",\"aspect_ratio\":\"1:1\",\"style_type\":\"Design\"},"
+                + "{\"hero_type\":\"typographic\",\"ideogram_prompt\":\"a brutalist techno poster\",\"aspect_ratio\":\"1:1\",\"style_type\":\"Design\"}]}";
+
+        AiEventDescriptionService.GeneratedConcept gc =
+                serviceReturning(json).generateConcept(req("brutalist_techno"), 1L);
+
+        assertThat(gc.concept().variants()).hasSize(3);
+        assertThat(gc.concept().variants()).extracting(PosterVariant::aspectRatio)
+                .containsExactly("4:5", "4:5", "4:5");  // forcePortrait still applied
+    }
+
+    @Test
+    void generateConcept_throwsWhenConceptNeverRenderable() {
+        String json = "{\"sub_style_tag\":\"brutalist_techno\",\"variants\":[]}";
+        org.assertj.core.api.Assertions
+                .assertThatThrownBy(() -> serviceReturning(json).generateConcept(req("brutalist_techno"), 1L))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Could not produce a renderable PosterConcept")
+                .hasMessageContaining("exactly 3 variants required");
+    }
+
+    @Test
+    void validateRenderable_requiresThreeVariantsValidHeroTypesNonEmptyPrompts() {
+        assertThat(service.validateRenderable(validConcept())).isNull();
+        assertThat(service.validateRenderable(new PosterConcept("brutalist_techno", "p", List.of(
+                new PosterVariant("people", peoplePrompt(), "4:5", "Design")))))
+                .contains("exactly 3 variants");
+        assertThat(service.validateRenderable(new PosterConcept("brutalist_techno", "p", List.of(
+                new PosterVariant("bogus", peoplePrompt(), "4:5", "Design"),
+                new PosterVariant("object", objectPrompt(), "4:5", "Design"),
+                new PosterVariant("typographic", typographicPrompt(), "4:5", "Design")))))
+                .contains("hero_type must be one of");
     }
 
     // ---- T9: defensive JSON parsing -------------------------------------------------------------

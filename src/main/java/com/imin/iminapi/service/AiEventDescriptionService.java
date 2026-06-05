@@ -63,18 +63,33 @@ public class AiEventDescriptionService {
     /** Three prompts must not be paraphrases: pairwise word-trigram Jaccard must stay below this. */
     private static final double DISTINCTNESS_THRESHOLD = 0.45;
 
-    /** Human nouns the PEOPLE variant must contain and the TYPOGRAPHIC variant must not (code constant). */
+    /** Person words the PEOPLE variant must contain — broad, because real heroes are described many ways. */
     static final List<String> HUMAN_NOUNS = List.of(
-            "figure", "dancer", "crowd", "portrait", "silhouette", "face", "body", "person", "people");
-    private static final Pattern HUMAN_NOUN = Pattern.compile(
-            "\\b(figures?|dancers?|crowds?|portraits?|silhouettes?|faces?|bodies|body|persons?|people)\\b",
+            "figure", "dancer", "crowd", "portrait", "silhouette", "face", "body", "person", "people",
+            "woman", "man", "girl", "boy", "guy", "raver", "clubber", "club-goer", "partygoer", "reveler",
+            "dj", "model", "performer", "audience", "friend", "hand", "head");
+    /** Lenient: anything indicating a person — used for the people-variant requirement. */
+    private static final Pattern HUMAN_SUBJECT = Pattern.compile(
+            "\\b(figures?|dancers?|crowds?|portraits?|silhouettes?|faces?|bodies|body|persons?|people"
+            + "|wom[ae]n|m[ae]n|girls?|boys?|guys?|ravers?|clubbers?|club-?goers?|party-?goers?|revell?ers?"
+            + "|djs?|models?|performers?|audience|friends?|hands?|heads?)\\b",
             Pattern.CASE_INSENSITIVE);
     /**
-     * Phrases where a human-noun token actually describes layout/typography, not a person — e.g.
+     * Strict: only a person rendered as the HERO — used for the typographic exclusion. Deliberately omits
+     * atmospheric/ambiguous tokens (silhouette, face, figure, body, hand, head, crowd) and negation-prone
+     * ones (people, person), since a type-led poster legitimately mentions "no people", "faces in the
+     * grain", or "geometric figures" without being person-led. A hard person-hero word here is the signal.
+     */
+    private static final Pattern HUMAN_HERO = Pattern.compile(
+            "\\b(dancers?|portraits?|wom[ae]n|m[ae]n|girls?|boys?|ravers?|clubbers?|club-?goers?"
+            + "|party-?goers?|revell?ers?|djs?|models?|performers?)\\b",
+            Pattern.CASE_INSENSITIVE);
+    /**
+     * Phrases where a human token actually describes layout/typography, not a person — e.g.
      * "4:5 portrait poster" (orientation), "body text"/"body copy" (typography), "geometric figures"
-     * (abstract shapes). Neutralized before the human-subject test so a compliant typographic prompt
-     * that names the 4:5 portrait format is not mistaken for a person, and a people prompt is not
-     * satisfied by the orientation word alone.
+     * (abstract shapes). Neutralized before both checks so a compliant typographic prompt that names the
+     * 4:5 portrait format is not mistaken for a person, and a people prompt is not satisfied by orientation
+     * vocabulary alone.
      */
     private static final Pattern DESIGN_VOCAB = Pattern.compile(
             "\\b(?:"
@@ -85,11 +100,20 @@ public class AiEventDescriptionService {
             + ")\\b",
             Pattern.CASE_INSENSITIVE);
 
-    /** True when the prompt names a real human subject, ignoring orientation/typography vocabulary. */
+    /** True when the prompt names a person at all (lenient), ignoring orientation/typography vocabulary. */
     static boolean mentionsHumanSubject(String prompt) {
+        return matchesAfterDesignStrip(prompt, HUMAN_SUBJECT);
+    }
+
+    /** True when the prompt names a person as the hero (strict), ignoring orientation/typography vocabulary. */
+    static boolean containsHumanHero(String prompt) {
+        return matchesAfterDesignStrip(prompt, HUMAN_HERO);
+    }
+
+    private static boolean matchesAfterDesignStrip(String prompt, Pattern pattern) {
         if (prompt == null) return false;
         String cleaned = DESIGN_VOCAB.matcher(prompt).replaceAll(" ");
-        return HUMAN_NOUN.matcher(cleaned).find();
+        return pattern.matcher(cleaned).find();
     }
 
     /** The concept plus the creative directions sampled for it (carried into the orchestrator). */
@@ -101,20 +125,65 @@ public class AiEventDescriptionService {
         SampledRun sampled = creativeDirectionSampler.sample(card, seed);
 
         String reinforcement = null;
+        PosterConcept lastRenderable = null;
+        String lastError = "no concept produced";
         for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
             String prompt = buildPrompt(request, vibe, sampled, reinforcement);
             log.info("[LLM concept] prompt sent (attempt {}/{}):\n{}", attempt, MAX_ATTEMPTS, prompt);
-            PosterConcept concept = parseConcept(chatClient.prompt().user(prompt).call().content());
-            String validationError = validate(concept, request);
-            if (validationError == null) {
-                log.debug("Concept generated on attempt {}: vibe={}, variants={}",
-                        attempt, concept.subStyleTag(), concept.variants().size());
-                return new GeneratedConcept(forcePortrait(concept), sampled.directions());
+            PosterConcept concept = parseConcept(callLlm(prompt));
+
+            String renderableError = validateRenderable(concept);
+            if (renderableError == null) {
+                lastRenderable = concept;   // keep the most recent structurally-valid concept as a fallback
+                String validationError = validate(concept, request);
+                if (validationError == null) {
+                    log.debug("Concept accepted on attempt {}: vibe={}, variants={}",
+                            attempt, concept.subStyleTag(), concept.variants().size());
+                    return new GeneratedConcept(forcePortrait(concept), sampled.directions());
+                }
+                lastError = validationError;
+            } else {
+                lastError = renderableError;
             }
-            reinforcement = "Previous attempt rejected: " + validationError;
-            log.warn("Concept rejected (attempt {}): {}", attempt, validationError);
+            reinforcement = "Previous attempt rejected: " + lastError;
+            log.warn("Concept rejected (attempt {}/{}): {}", attempt, MAX_ATTEMPTS, lastError);
         }
-        throw new IllegalStateException("Could not produce a valid PosterConcept after " + MAX_ATTEMPTS + " attempts");
+
+        // Don't fail the whole pipeline over quality nits: if the last concept is structurally renderable
+        // (3 variants, valid hero types, non-empty prompts), render it best-effort. The downstream
+        // legibility + style validation gates are the real per-image quality backstop.
+        if (lastRenderable != null) {
+            log.warn("Returning best-effort concept after {} attempts (residual issue: {})", MAX_ATTEMPTS, lastError);
+            return new GeneratedConcept(forcePortrait(lastRenderable), sampled.directions());
+        }
+        throw new IllegalStateException(
+                "Could not produce a renderable PosterConcept after " + MAX_ATTEMPTS + " attempts: " + lastError);
+    }
+
+    /** The stage-1 LLM call. Package-private seam so the validation/degradation loop is unit-testable. */
+    String callLlm(String prompt) {
+        return chatClient.prompt().user(prompt).call().content();
+    }
+
+    /**
+     * The minimum a concept needs to be rendered into the three posters, so quality issues degrade to a
+     * best-effort render rather than failing the whole request: exactly 3 variants, each with a non-blank
+     * prompt and a hero_type the renderer/style gate can read.
+     */
+    String validateRenderable(PosterConcept concept) {
+        if (concept == null) return "null concept";
+        List<PosterVariant> variants = concept.variants();
+        if (variants == null || variants.size() != 3) return "exactly 3 variants required";
+        for (int i = 0; i < variants.size(); i++) {
+            PosterVariant v = variants.get(i);
+            if (v.ideogramPrompt() == null || v.ideogramPrompt().isBlank()) {
+                return "variant[" + i + "].ideogram_prompt is empty";
+            }
+            if (HeroType.fromWire(v.heroType()) == null) {
+                return "variant[" + i + "].hero_type must be one of people, object, typographic";
+            }
+        }
+        return null;
     }
 
     /**
@@ -179,13 +248,13 @@ public class AiEventDescriptionService {
             if (wc > MAX_WORDS) return "variant[" + i + "].ideogram_prompt too long (" + wc + " words, max " + MAX_WORDS + ")";
         }
 
-        // The people variant must show a human; the typographic variant must not (it is type-as-image).
-        // Orientation/typography vocabulary ("4:5 portrait poster", "body text") is neutralized first.
+        // The people variant must show a human (lenient); the typographic variant must not be built around
+        // a person (strict — atmospheric mentions are fine). Orientation/typography vocabulary is stripped first.
         if (!mentionsHumanSubject(variants.get(0).ideogramPrompt())) {
             return "variant[0] (people) must contain a human subject (one of " + HUMAN_NOUNS + ")";
         }
-        if (mentionsHumanSubject(variants.get(2).ideogramPrompt())) {
-            return "variant[2] (typographic) must not contain a human subject — typography is the image";
+        if (containsHumanHero(variants.get(2).ideogramPrompt())) {
+            return "variant[2] (typographic) must not be built around a person — typography is the image";
         }
 
         // The three prompts must be visually distinct, not paraphrases of each other.
@@ -205,9 +274,11 @@ public class AiEventDescriptionService {
 
         List<PosterVariant> variants = concept.variants();
         for (int i = 0; i < variants.size(); i++) {
-            String prompt = variants.get(i).ideogramPrompt();
+            // Case-insensitive: the model often re-cases the title/date in prose (e.g. "7 Jun 2026" vs the
+            // contract's "7 JUN 2026"); the downstream vision legibility gate is the exact-rendering check.
+            String prompt = variants.get(i).ideogramPrompt().toLowerCase(java.util.Locale.ROOT);
             for (String requiredText : textSpec.required()) {
-                if (!prompt.contains(requiredText)) {
+                if (!prompt.contains(requiredText.toLowerCase(java.util.Locale.ROOT))) {
                     return "variant[" + i + "].ideogram_prompt missing required text \"" + requiredText + "\"";
                 }
             }
