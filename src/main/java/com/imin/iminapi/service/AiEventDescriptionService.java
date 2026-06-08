@@ -373,7 +373,7 @@ public class AiEventDescriptionService {
           .append("- vibe: ").append(request.vibe()).append("\n")
           .append("- tone: ").append(request.tone()).append("\n")
           .append("- genre: ").append(request.genre()).append("\n")
-          .append("- city: ").append(request.city()).append("\n")
+          .append("- city: ").append(request.city() == null ? "(unspecified)" : request.city()).append("\n")
           .append("- date: ").append(request.date()).append("\n");
         if (request.title()    != null) sb.append("- title:    \"").append(request.title()).append("\"\n");
         if (request.djName()   != null) sb.append("- djName:   \"").append(request.djName()).append("\"\n");
