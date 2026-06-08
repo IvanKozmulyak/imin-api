@@ -24,8 +24,8 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Recraft image-generation client (alternative to {@link IdeogramClient} and
- * {@link OpenAiImageClient}).
+ * Recraft image-generation client, retained for per-vibe style training
+ * ({@code POST /styles}) used by the (off-render-path) vibe style-training endpoint.
  *
  * <p>Generation uses {@code POST /images/generations} with {@code model=recraftv3}
  * and {@code response_format=b64_json}, returning materialized PNG bytes. When a

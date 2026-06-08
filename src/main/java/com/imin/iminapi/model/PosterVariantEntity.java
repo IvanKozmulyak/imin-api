@@ -56,4 +56,12 @@ public class PosterVariantEntity {
 
     @Column(name = "failure_reason", columnDefinition = "TEXT")
     private String failureReason;
+
+    /** Final gate outcome: ACCEPTED (both gates passed) or BEST_EFFORT (accepted despite a gate). */
+    @Column(name = "validation_verdict", length = 16)
+    private String validationVerdict;
+
+    /** Per-attempt validation journal as JSON: [{attempt,seed,mode,text,style}]. */
+    @Column(name = "validation_attempts_json", columnDefinition = "TEXT")
+    private String validationAttemptsJson;
 }

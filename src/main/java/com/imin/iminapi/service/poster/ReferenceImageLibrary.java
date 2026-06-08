@@ -242,6 +242,40 @@ public class ReferenceImageLibrary {
         return out;
     }
 
+    /**
+     * Up to {@code maxRefs} curated references for a tag as raw multipart parts, in load order,
+     * capped at {@code maxTotalBytes} across all parts. Remote/data-URI references are skipped
+     * (Ideogram uploads file bytes). Used for Ideogram V3 {@code style_reference_images}.
+     */
+    public List<com.imin.iminapi.dto.StyleReferencePart> topReferenceParts(
+            String subStyleTag, int maxRefs, long maxTotalBytes) {
+        List<LoadedReference> refs = byTag.getOrDefault(subStyleTag, List.of());
+        List<com.imin.iminapi.dto.StyleReferencePart> out = new ArrayList<>();
+        long total = 0;
+        for (LoadedReference ref : refs) {
+            if (out.size() >= maxRefs) break;
+            String loc = ref.sourceLocator();
+            if (loc.startsWith("http://") || loc.startsWith("https://") || loc.startsWith("data:")) {
+                continue;
+            }
+            byte[] bytes;
+            try {
+                bytes = bytesFor(ref);
+            } catch (Exception e) {
+                log.warn("Skipping reference {} for tag {}: {}", ref.id(), subStyleTag, e.getMessage());
+                continue;
+            }
+            if (bytes == null || bytes.length == 0) continue;
+            if (total + bytes.length > maxTotalBytes) {
+                log.warn("[ideogram-refs] {}: dropping '{}' — exceeds {} byte cap", subStyleTag, ref.id(), maxTotalBytes);
+                continue;
+            }
+            total += bytes.length;
+            out.add(new com.imin.iminapi.dto.StyleReferencePart(bytes, ref.id(), guessMime(ref.id())));
+        }
+        return out;
+    }
+
     public byte[] loadBytes(String subStyleTag, int index) {
         List<LoadedReference> refs = byTag.get(subStyleTag);
         if (refs == null) {

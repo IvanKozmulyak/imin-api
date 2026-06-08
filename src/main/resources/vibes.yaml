@@ -40,6 +40,7 @@ vibes:
     style_id: null
     layout_template: brutalist
     text_only: false
+    ideogram_style_preset: HIGH_CONTRAST
 
   - id: berlin_minimal
     name: "Berlin Minimal"
@@ -58,6 +59,7 @@ vibes:
     style_id: null
     layout_template: berlin_minimal
     text_only: false
+    ideogram_style_preset: MONOCHROME
 
   - id: acid_rave_y2k
     name: "Acid Rave / Y2K"
@@ -78,6 +80,7 @@ vibes:
     style_id: null
     layout_template: acid_rave_y2k
     text_only: false
+    ideogram_style_preset: 90S_NOSTALGIA
 
   - id: psytrance_goa
     name: "Psytrance / Goa"
@@ -96,6 +99,7 @@ vibes:
     style_id: null
     layout_template: psytrance_goa
     text_only: false
+    ideogram_style_preset: SURREAL_COLLAGE
 
   - id: industrial_hard_groove
     name: "Industrial / Hard Groove"
@@ -114,6 +118,7 @@ vibes:
     style_id: null
     layout_template: industrial_hard_groove
     text_only: false
+    ideogram_style_preset: BLUEPRINT
 
   - id: liquid_melodic
     name: "Liquid Melodic"
@@ -134,6 +139,7 @@ vibes:
     style_id: null
     layout_template: liquid_melodic
     text_only: false
+    ideogram_style_preset: ETHEREAL_PARTY
 
   - id: hyperpop_club
     name: "Hyperpop / Club"
@@ -152,6 +158,7 @@ vibes:
     style_id: null
     layout_template: hyperpop_club
     text_only: false
+    ideogram_style_preset: POP_ART
 
   - id: dnb_jungle
     name: "DnB / Jungle"
@@ -170,6 +177,7 @@ vibes:
     style_id: null
     layout_template: dnb_jungle
     text_only: false
+    ideogram_style_preset: GRAFFITI_I
 
   - id: afro_amapiano
     name: "Afro / Amapiano"
@@ -190,6 +198,7 @@ vibes:
     style_id: null
     layout_template: afro_amapiano
     text_only: false
+    ideogram_style_preset: BRIGHT_ART
 
   - id: open_air_festival
     name: "Open Air / Festival"
@@ -208,6 +217,7 @@ vibes:
     style_id: null
     layout_template: open_air_festival
     text_only: false
+    ideogram_style_preset: GOLDEN_HOUR
 
   - id: disco_italo
     name: "Disco / Italo Revival"
@@ -226,6 +236,7 @@ vibes:
     style_id: null
     layout_template: disco_italo
     text_only: false
+    ideogram_style_preset: RIVIERA_POP
 
   - id: dark_experimental
     name: "Dark / Experimental"
@@ -246,3 +257,4 @@ vibes:
     style_id: null
     layout_template: dark_experimental
     text_only: false
+    ideogram_style_preset: DARK_AURA

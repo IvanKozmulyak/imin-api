@@ -35,6 +35,7 @@ public class VibeLibrary {
 
     private Map<String, Vibe> byId = Collections.emptyMap();
     private Map<String, String> genreToVibeId = Collections.emptyMap();
+    private Map<String, String> ideogramPresetById = Collections.emptyMap();
     private UniversalRules universalRules =
             new UniversalRules(List.of("4:5", "1:1", "9:16", "16:9"), "", "");
     private String fallbackVibeId;
@@ -70,12 +71,17 @@ public class VibeLibrary {
 
             Map<String, Vibe> ids = new LinkedHashMap<>();
             Map<String, String> genres = new LinkedHashMap<>();
+            Map<String, String> presets = new LinkedHashMap<>();
             Object vibesRaw = root.get("vibes");
             if (vibesRaw instanceof List<?> list) {
                 for (Object item : list) {
                     if (!(item instanceof Map<?, ?> m)) continue;
-                    Vibe v = toVibe((Map<String, Object>) m);
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> mm = (Map<String, Object>) m;
+                    Vibe v = toVibe(mm);
                     ids.put(v.id(), v);
+                    String preset = str(mm, "ideogram_style_preset");
+                    if (preset != null && !preset.isBlank()) presets.put(v.id(), preset);
                     for (String g : v.genres()) {
                         genres.putIfAbsent(g.toLowerCase(), v.id());
                     }
@@ -83,6 +89,7 @@ public class VibeLibrary {
             }
             byId = ids;
             genreToVibeId = genres;
+            ideogramPresetById = presets;
             log.info("VibeLibrary loaded: {} vibes, {} genre mappings, fallback={}",
                     byId.size(), genreToVibeId.size(), fallbackVibeId);
         } catch (IOException e) {
@@ -144,6 +151,11 @@ public class VibeLibrary {
 
     public UniversalRules universalRules() {
         return universalRules;
+    }
+
+    /** The vibe's Ideogram V3 {@code style_preset} fallback (used only when it has no reference images). */
+    public String ideogramStylePreset(String vibeId) {
+        return vibeId == null ? null : ideogramPresetById.get(vibeId);
     }
 
     /**

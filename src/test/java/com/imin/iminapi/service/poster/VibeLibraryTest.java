@@ -74,6 +74,13 @@ class VibeLibraryTest {
     }
 
     @Test
+    void exposesIdeogramStylePresetPerVibe() {
+        assertThat(library.ideogramStylePreset("brutalist_techno")).isEqualTo("HIGH_CONTRAST");
+        assertThat(library.ideogramStylePreset("berlin_minimal")).isEqualTo("MONOCHROME");
+        assertThat(library.ideogramStylePreset("nope")).isNull();
+    }
+
+    @Test
     void all_twelve_vibes_have_curated_references_none_text_only() {
         long withRefs = library.all().stream().filter(v -> !v.references().isEmpty()).count();
         long textOnly = library.all().stream().filter(Vibe::textOnly).count();

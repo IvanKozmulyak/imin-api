@@ -62,6 +62,25 @@ class PosterTextValidationServiceTest {
     }
 
     @Test
+    void decision_carriesStructuredMissingAndExtra() {
+        FakeValidationClient client = new FakeValidationClient(
+                new PosterTextValidationClient.ValidationResult(
+                        false, List.of("BIG NIGHT - BERLIN"), List.of("BAG NIGKT")));
+        PosterTextValidationService service = new PosterTextValidationService(client, true);
+        PosterTextSpec spec = new PosterTextSpec(
+                List.of("BIG NIGHT - BERLIN"),
+                List.of("BIG NIGHT - BERLIN"),
+                "prompt");
+
+        PosterTextValidationService.ValidationDecision decision =
+                service.validateOrExplain(new byte[]{1}, spec);
+
+        assertThat(decision.accepted()).isFalse();
+        assertThat(decision.missingRequired()).containsExactly("BIG NIGHT - BERLIN");
+        assertThat(decision.extraText()).containsExactly("BAG NIGKT");
+    }
+
+    @Test
     void acceptsWithoutCallingClient_whenNoRequiredText() {
         FakeValidationClient client = new FakeValidationClient(
                 new PosterTextValidationClient.ValidationResult(false, List.of("A"), List.of()));

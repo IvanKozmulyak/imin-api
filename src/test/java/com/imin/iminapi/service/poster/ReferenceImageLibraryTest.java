@@ -66,4 +66,23 @@ class ReferenceImageLibraryTest {
         assertThatThrownBy(() -> library.loadBytes("brutalist_techno", 99))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    void topReferenceParts_capsCountAndCarriesMime() {
+        java.util.List<com.imin.iminapi.dto.StyleReferencePart> parts =
+                library.topReferenceParts("brutalist_techno", 3, 10L * 1024 * 1024);
+
+        assertThat(parts).isNotEmpty();
+        assertThat(parts.size()).isLessThanOrEqualTo(3);
+        assertThat(parts).allSatisfy(p -> {
+            assertThat(p.bytes()).isNotEmpty();
+            assertThat(p.filename()).isNotBlank();
+            assertThat(p.mimeType()).startsWith("image/");
+        });
+    }
+
+    @Test
+    void topReferenceParts_unknownTagIsEmpty() {
+        assertThat(library.topReferenceParts("does_not_exist", 3, 10L * 1024 * 1024)).isEmpty();
+    }
 }

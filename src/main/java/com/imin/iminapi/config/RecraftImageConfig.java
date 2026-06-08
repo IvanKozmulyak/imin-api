@@ -8,10 +8,9 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.web.client.RestClient;
 
 /**
- * RestClient for the Recraft image-generation API (alternative provider to
- * Replicate/Ideogram and OpenAI). Mirrors {@link OpenAiImageConfig}: a single
- * bearer-auth interceptor that fails fast with a clear message when the key is
- * missing, so a misconfigured deploy surfaces a config error rather than a 401.
+ * RestClient for the Recraft image-generation API, retained for per-vibe style
+ * training. A single bearer-auth interceptor fails fast with a clear message when
+ * the key is missing, so a misconfigured deploy surfaces a config error rather than a 401.
  */
 @Configuration
 public class RecraftImageConfig {

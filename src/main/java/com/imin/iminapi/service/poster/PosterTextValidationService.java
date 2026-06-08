@@ -18,17 +18,25 @@ public class PosterTextValidationService {
 
     public ValidationDecision validateOrExplain(byte[] imageBytes, PosterTextSpec spec) {
         if (!enabled || spec.required().isEmpty()) {
-            return new ValidationDecision(true, null);
+            return ValidationDecision.pass();
         }
 
         PosterTextValidationClient.ValidationResult result = client.validate(imageBytes, spec);
         if (result.accepted()) {
-            return new ValidationDecision(true, null);
+            return ValidationDecision.pass();
         }
 
         return new ValidationDecision(false,
-                "missing required text: " + result.missingRequired() + "; extra text: " + result.extraText());
+                "missing required text: " + result.missingRequired() + "; extra text: " + result.extraText(),
+                result.missingRequired() == null ? java.util.List.of() : result.missingRequired(),
+                result.extraText() == null ? java.util.List.of() : result.extraText());
     }
 
-    public record ValidationDecision(boolean accepted, String reason) {}
+    public record ValidationDecision(
+            boolean accepted, String reason,
+            java.util.List<String> missingRequired, java.util.List<String> extraText) {
+        public static ValidationDecision pass() {
+            return new ValidationDecision(true, null, java.util.List.of(), java.util.List.of());
+        }
+    }
 }
