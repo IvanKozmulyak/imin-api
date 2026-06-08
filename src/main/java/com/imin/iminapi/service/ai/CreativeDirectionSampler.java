@@ -22,13 +22,13 @@ import java.util.Set;
  * <p>Every draw of a single run uses one {@link Random} seeded with the run's seed, so the output is
  * 100% deterministic for a given {@code (card, seed)} pair and varies across seeds.
  *
- * <p>The run always carries exactly one of each {@link HeroType} in {@link HeroType#ORDER}
- * (PEOPLE, OBJECT, TYPOGRAPHIC). {@code composition} and {@code accent} are drawn <em>without
- * replacement</em> across the three directions, so no two variants share either. {@code paletteTwist}
- * and {@code typeTreatment} are also drawn without replacement when their pool has at least three
- * entries; smaller pools fall back to independent draws (repeats allowed). {@code heroSubject} comes
- * from the hero-type's pool — PEOPLE and OBJECT draw from disjoint pools, and TYPOGRAPHIC has no
- * pictorial subject ({@code null}).
+ * <p>The run carries the three hero modes declared by the vibe's {@code variant_plan} (falling back to
+ * {@link HeroType#ORDER} only when a vibe declares no plan). {@code composition} and {@code accent} are
+ * drawn <em>without replacement</em> across the three directions, so no two variants share either.
+ * {@code paletteTwist} and {@code typeTreatment} are also drawn without replacement when their pool has
+ * at least three entries; smaller pools fall back to independent draws (repeats allowed).
+ * {@code heroSubject} comes from the slot mode's pool, drawn without replacement when a mode repeats;
+ * TYPOGRAPHIC has no pictorial subject ({@code null}).
  */
 @Component
 public class CreativeDirectionSampler {
@@ -37,7 +37,7 @@ public class CreativeDirectionSampler {
      * The three creative directions of one run plus the single few-shot anchor prompt rotated for
      * this run.
      *
-     * @param directions   exactly three {@link CreativeDirection}, hero types in {@link HeroType#ORDER}
+     * @param directions   exactly three {@link CreativeDirection}, hero modes following the vibe's variant_plan
      * @param examplePrompt one prompt rotated from {@code card.examplePrompts()}, or {@code null} if none
      */
     public record SampledRun(List<CreativeDirection> directions, String examplePrompt) {}
