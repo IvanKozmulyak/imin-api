@@ -13,7 +13,7 @@ class PosterTextValidationServiceTest {
     void accepts_whenClientAcceptsPosterText() {
         FakeValidationClient client = new FakeValidationClient(
                 new PosterTextValidationClient.ValidationResult(true, List.of(), List.of()));
-        PosterTextValidationService service = new PosterTextValidationService(client, true);
+        PosterTextValidationService service = new PosterTextValidationService(client, true, 0);
         PosterTextSpec spec = new PosterTextSpec(
                 List.of("BIG NIGHT - BERLIN", "7 JUN 2026"),
                 List.of("BIG NIGHT - BERLIN", "7 JUN 2026", "BERLIN"),
@@ -31,7 +31,7 @@ class PosterTextValidationServiceTest {
         FakeValidationClient client = new FakeValidationClient(
                 new PosterTextValidationClient.ValidationResult(
                         false, List.of("BIG NIGHT - BERLIN"), List.of("BAG NIGKT")));
-        PosterTextValidationService service = new PosterTextValidationService(client, true);
+        PosterTextValidationService service = new PosterTextValidationService(client, true, 0);
         PosterTextSpec spec = new PosterTextSpec(
                 List.of("BIG NIGHT - BERLIN"),
                 List.of("BIG NIGHT - BERLIN"),
@@ -51,7 +51,7 @@ class PosterTextValidationServiceTest {
     void disabledValidationAcceptsWithoutCallingClient() {
         FakeValidationClient client = new FakeValidationClient(
                 new PosterTextValidationClient.ValidationResult(false, List.of("A"), List.of()));
-        PosterTextValidationService service = new PosterTextValidationService(client, false);
+        PosterTextValidationService service = new PosterTextValidationService(client, false, 0);
         PosterTextSpec spec = new PosterTextSpec(List.of("A"), List.of("A"), "prompt");
 
         var decision = service.validateOrExplain(new byte[]{1}, spec);
@@ -66,7 +66,7 @@ class PosterTextValidationServiceTest {
         FakeValidationClient client = new FakeValidationClient(
                 new PosterTextValidationClient.ValidationResult(
                         false, List.of("BIG NIGHT - BERLIN"), List.of("BAG NIGKT")));
-        PosterTextValidationService service = new PosterTextValidationService(client, true);
+        PosterTextValidationService service = new PosterTextValidationService(client, true, 0);
         PosterTextSpec spec = new PosterTextSpec(
                 List.of("BIG NIGHT - BERLIN"),
                 List.of("BIG NIGHT - BERLIN"),
@@ -81,11 +81,69 @@ class PosterTextValidationServiceTest {
     }
 
     @Test
-    void acceptsWithoutCallingClient_whenNoRequiredText() {
+    void rejects_whenModelAcceptsButInventedTextPresent() {
+        // The exact failure from the journal: model returns accepted:true over a poster with garbage text.
+        FakeValidationClient client = new FakeValidationClient(
+                new PosterTextValidationClient.ValidationResult(true, List.of(), List.of("GLITCHWORD")));
+        PosterTextValidationService service = new PosterTextValidationService(client, true, 0);
+        PosterTextSpec spec = new PosterTextSpec(
+                List.of("BIG NIGHT - BERLIN"), List.of("BIG NIGHT - BERLIN"), "prompt");
+
+        var decision = service.validateOrExplain(new byte[]{1}, spec);
+
+        assertThat(decision.accepted()).isFalse();
+        assertThat(decision.extraText()).containsExactly("GLITCHWORD");
+    }
+
+    @Test
+    void rejects_whenModelAcceptsButRequiredMissing() {
+        FakeValidationClient client = new FakeValidationClient(
+                new PosterTextValidationClient.ValidationResult(true, List.of("7 JUN 2026"), List.of()));
+        PosterTextValidationService service = new PosterTextValidationService(client, true, 0);
+        PosterTextSpec spec = new PosterTextSpec(
+                List.of("BIG NIGHT - BERLIN", "7 JUN 2026"),
+                List.of("BIG NIGHT - BERLIN", "7 JUN 2026"), "prompt");
+
+        var decision = service.validateOrExplain(new byte[]{1}, spec);
+
+        assertThat(decision.accepted()).isFalse();
+        assertThat(decision.missingRequired()).containsExactly("7 JUN 2026");
+    }
+
+    @Test
+    void toleratesInventedText_upToConfiguredThreshold() {
+        FakeValidationClient client = new FakeValidationClient(
+                new PosterTextValidationClient.ValidationResult(true, List.of(), List.of("X")));
+        PosterTextValidationService service = new PosterTextValidationService(client, true, 1);
+        PosterTextSpec spec = new PosterTextSpec(
+                List.of("BIG NIGHT"), List.of("BIG NIGHT"), "prompt");
+
+        var decision = service.validateOrExplain(new byte[]{1}, spec);
+
+        assertThat(decision.accepted()).isTrue();
+    }
+
+    @Test
+    void runsGate_whenRequiredEmptyButOptionalTextAllowed() {
+        // Bypass fix: invented text must still be caught on posters that carry only optional text.
+        FakeValidationClient client = new FakeValidationClient(
+                new PosterTextValidationClient.ValidationResult(false, List.of(), List.of("GLITCH")));
+        PosterTextValidationService service = new PosterTextValidationService(client, true, 0);
+        PosterTextSpec spec = new PosterTextSpec(List.of(), List.of("BERLIN"), "prompt");
+
+        var decision = service.validateOrExplain(new byte[]{1}, spec);
+
+        assertThat(decision.accepted()).isFalse();
+        assertThat(decision.extraText()).containsExactly("GLITCH");
+        assertThat(client.calls).isEqualTo(1);
+    }
+
+    @Test
+    void acceptsWithoutCallingClient_whenNoTextContractAtAll() {
         FakeValidationClient client = new FakeValidationClient(
                 new PosterTextValidationClient.ValidationResult(false, List.of("A"), List.of()));
-        PosterTextValidationService service = new PosterTextValidationService(client, true);
-        PosterTextSpec spec = new PosterTextSpec(List.of(), List.of("BERLIN"), "prompt");
+        PosterTextValidationService service = new PosterTextValidationService(client, true, 0);
+        PosterTextSpec spec = new PosterTextSpec(List.of(), List.of(), "prompt");
 
         var decision = service.validateOrExplain(new byte[]{1}, spec);
 

@@ -22,25 +22,37 @@ public class OpenRouterPosterTextValidationClient implements PosterTextValidatio
     private static final Logger log = LoggerFactory.getLogger(OpenRouterPosterTextValidationClient.class);
 
     private static final String VALIDATION_PROMPT = """
-            You are checking an event poster. Required text must appear exactly or near-exactly.
-            Ignore QR codes. Reject if required title/date/venue is missing or badly misspelled.
-            Reject if there are obvious large invented words outside the allowed text list.
-            Return JSON only.
+            You are an OCR-and-verification checker for an event poster. Work in three steps.
+
+            STEP 1 — Transcribe: read and list EVERY piece of text visible in the image,
+            including small, faint, stylized, rotated, or decorative text. Do not skip anything.
+
+            STEP 2 — Classify each transcribed string against the lists below:
+              - matches a Required line (exactly or near-exactly) -> required
+              - matches an Allowed line -> allowed
+              - anything else -> invented. "invented" covers misspelled or garbled words,
+                nonsense or fake letterforms, pseudo-text, lorem ipsum, duplicated/repeated
+                text, logos, watermarks, and any words not present in the lists.
+
+            STEP 3 — Report:
+              - missingRequired: every Required line that does NOT appear in the image.
+              - extraText: every string you classified as invented (most prominent first).
+              - accepted: true ONLY IF missingRequired is empty AND extraText is empty.
+
+            Ignore QR codes. Be strict: when unsure whether a string is real or invented,
+            put it in extraText. Return JSON only.
             """;
 
     private final RestClient restClient;
     private final ObjectMapper objectMapper;
     private final String model;
-    private final int maxExtraTextItems;
 
     public OpenRouterPosterTextValidationClient(
             @Value("${openrouter.api-key}") String apiKey,
             @Value("${openrouter.base-url:https://openrouter.ai/api}") String baseUrl,
-            @Value("${poster.text-validation.model:openai/gpt-4o-mini}") String model,
-            @Value("${poster.text-validation.max-extra-text-items:2}") int maxExtraTextItems) {
+            @Value("${poster.text-validation.model:openai/gpt-4o}") String model) {
         this.objectMapper = new ObjectMapper();
         this.model = model;
-        this.maxExtraTextItems = Math.max(0, maxExtraTextItems);
         this.restClient = RestClient.builder()
                 .baseUrl(normalizeOpenRouterV1BaseUrl(baseUrl))
                 .requestInterceptor((request, body, execution) -> {
@@ -109,7 +121,7 @@ public class OpenRouterPosterTextValidationClient implements PosterTextValidatio
         return VALIDATION_PROMPT + "\n"
                 + "Required text:\n" + bulletLines(spec.required()) + "\n\n"
                 + "Allowed text:\n" + bulletLines(spec.allowed()) + "\n\n"
-                + "Return at most " + maxExtraTextItems + " extraText items.\n"
+                + "List every invented string you find in extraText.\n"
                 + "Expected JSON shape:\n"
                 + "{\"accepted\":true,\"missingRequired\":[],\"extraText\":[]}";
     }
