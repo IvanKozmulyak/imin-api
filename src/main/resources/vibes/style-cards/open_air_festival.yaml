@@ -15,12 +15,15 @@ hero_subjects:
     - 'a smiling crowd at a beach festival waist-deep in golden light, hands up, palm trees flanking the frame'
     - 'a single festival-goer on someone''s shoulders above the crowd, backlit by stage spotlights and sunset haze'
   object:
-    - 'an outdoor concert stage with truss, tall speaker stacks and bright LED screens lit against a dusk skyline and waterfront'
-    - 'an aerial top-down view of a packed beach with umbrellas, bars, a ferris wheel and a beach ball scattered across pale sand'
-    - 'a grassy city park in the foreground with a hazy skyline and a tall tower rising behind under blue sky'
     - 'rows of colorful prayer/festival bunting flags strung in an arc across a sunset sky above a stage'
     - 'leaning palm trees framing the left and right edges of a glowing orange festival sky'
     - 'a blazing low sun bursting in lens flare over a wide flat horizon with scattered clouds'
+    - 'a central festival mascot motif radiating sunbeams — a screaming sunglasses-wearing mouth made of flowers and speakers'
+  scene:
+    - 'an outdoor concert stage with truss, tall speaker stacks and bright LED screens lit against a dusk skyline and waterfront'
+    - 'an aerial top-down view of a packed beach with umbrellas, bars, a ferris wheel and a beach ball scattered across pale sand'
+    - 'a grassy city park in the foreground with a hazy skyline and a tall tower rising behind under blue sky'
+    - 'a wide grassy festival field meeting a billboard-lined skyline under a chrome-titled sunset horizon'
 compositions:
   - 'hero scene fills the lower two-thirds, big dimensional title stacked across the upper-middle over the sky'
   - 'wide horizon line low in the frame with crowd or beach below and a tall type lockup floating in the open sky above'
@@ -51,3 +54,9 @@ example_prompts:
   - 'Open-air summer festival poster, 4:5 vertical. Wide outdoor concert stage centered between two leaning palm trees, tall speaker stacks and glowing LED screens, lit against a dusk waterfront skyline; a dense crowd of silhouetted festival-goers fills the lower band with hundreds of raised hands. Low sun bursting in warm lens flare on the horizon, sky banding from deep blue down to coral and peach, soft atmospheric haze. Chunky extruded 3D title ''NIGHT ESCAPE'' stacked in the open sky upper-middle with glossy bevels and drop shadow, hand-lettered brush script tagline ''Coming soon!'' beneath, colorful bunting flags arcing overhead. Saturated illustration, faint film grain. Tiered lineup text shrinking down the lower third.'
   - 'Tropical day-party poster, 4:5 vertical. A tight group of summer revelers crammed together outdoors under a blazing sky, sunglasses and bucket hats, one sun-flushed reveler at center with arms spread, faces warm and lively. Hot-orange-to-magenta-pink sunset gradient with radiating sunbeams behind them, palm fronds at the edges, scattered confetti. Inflated rounded bubble lettering ''END OF SUMMER BLOCK PARTY'' in clashing candy colors across the upper third, glossy highlights; date chip in a yellow box top-left, ''FOOD / DRINKS / GAMES'' chips top-right. Bright saturated illustration with chromatic-edge 3D-render shine.'
   - 'Beach music festival poster, 4:5 vertical. Aerial bird''s-eye view of a packed pale-sand beach meeting teal water at the top, dotted with colorful umbrellas, beach bars, a ferris wheel and a stray beach ball. Chunky inflated 3D bubble words ''THREE DAYS OF PARTY'', ''DOZENS OF BARS'', ''NEW INSTALLATIONS'' laid flat across the sand in candy pink, lime green and orange like signage. Bright high-noon daylight, soft glossy render highlights, faint haze. Small clean festival logo and dates tucked into the top corners, web address centered along the bottom. Saturated 3D illustration.'
+human_policy: optional
+human_style: photographic
+variant_plan:
+  - { mode: scene }
+  - { mode: object }
+  - { mode: people }
