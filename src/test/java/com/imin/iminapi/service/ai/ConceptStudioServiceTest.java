@@ -221,4 +221,56 @@ class ConceptStudioServiceTest {
                         null, null, null, null, null, null)))
                 .isInstanceOf(ApiException.class);
     }
+
+    @Test
+    void create_passesCityThroughToRender() {
+        AuthPrincipal p = owner();
+        stubPipeline();
+
+        sut.create(p, new ConceptRequest(
+                "Moody warehouse techno brief here", "Techno", "Metz", null, null,
+                null, null, null, null, null, null));
+
+        ArgumentCaptor<EventCreatorRequest> cap = ArgumentCaptor.forClass(EventCreatorRequest.class);
+        verify(descService).generateConcept(cap.capture(), anyLong());
+        assertThat(cap.getValue().city()).isEqualTo("Metz");
+    }
+
+    @Test
+    void create_withNullCity_doesNotInjectBerlinDefault() {
+        AuthPrincipal p = owner();
+        stubPipeline();
+
+        sut.create(p, new ConceptRequest(
+                "Moody warehouse techno brief here", "Techno", null, null, null,
+                null, null, null, null, null, null));
+
+        ArgumentCaptor<EventCreatorRequest> cap = ArgumentCaptor.forClass(EventCreatorRequest.class);
+        verify(descService).generateConcept(cap.capture(), anyLong());
+        assertThat(cap.getValue().city()).isNull();
+    }
+
+    /** Common happy-path stubs (repo + concept LLM + orchestrator + pricing + overview). */
+    private void stubPipeline() {
+        when(repo.save(any(GeneratedEvent.class))).thenAnswer(inv -> {
+            GeneratedEvent e = inv.getArgument(0);
+            if (e.getId() == null) e.setId(UUID.randomUUID());
+            return e;
+        });
+        String body = "p".repeat(40);
+        when(descService.generateConcept(any(), anyLong())).thenReturn(
+                new AiEventDescriptionService.GeneratedConcept(
+                        new PosterConcept("neon_underground", "palette",
+                                List.of(new PosterVariant("people", body, "4:5", "Design"),
+                                        new PosterVariant("object", body, "1:1", "Design"),
+                                        new PosterVariant("typographic", body, "9:16", "Design"))),
+                        List.of()));
+        when(orchestrator.run(any(), any(), any(), anyLong(), any())).thenReturn(new OrchestrationResult(
+                UUID.randomUUID(), "neon_underground",
+                List.of(new GeneratedPoster(UUID.randomUUID(), "people", "raw", "u1", 1L, "p", List.of(), Map.of(), "COMPLETE", null))));
+        when(pricing.recommend(any(), any(), any())).thenReturn(
+                new PricingRecommendation(new BigDecimal("12.00"), new BigDecimal("24.00"), "ok"));
+        when(overviewLlm.generate(any(), any())).thenReturn(
+                new ConceptOverview("N", "d", List.of("#000"), 100, 50));
+    }
 }

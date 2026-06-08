@@ -186,7 +186,7 @@ public class ConceptStudioService {
                 req.vibe(),
                 DEFAULT_TONE,
                 req.genre() == null ? "Techno" : req.genre(),
-                req.city() == null ? "Berlin" : req.city(),
+                req.city(),
                 req.eventDate() != null ? req.eventDate() : LocalDate.now().plusMonths(2),
                 DEFAULT_PLATFORMS,
                 /* djName  */ djName,
