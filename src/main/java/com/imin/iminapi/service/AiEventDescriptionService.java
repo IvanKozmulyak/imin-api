@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.imin.iminapi.dto.EventCreatorRequest;
 import com.imin.iminapi.dto.HeroType;
+import com.imin.iminapi.dto.HumanStyle;
 import com.imin.iminapi.dto.PosterConcept;
 import com.imin.iminapi.dto.PosterTextSpec;
 import com.imin.iminapi.dto.PosterVariant;
@@ -310,6 +311,8 @@ public class AiEventDescriptionService {
     String buildPrompt(EventCreatorRequest request, Vibe vibe, SampledRun sampled, String reinforcement) {
         PosterTextSpec textSpec = posterTextSpecFactory.from(request);
         List<CreativeDirection> d = sampled.directions();
+        HumanStyle humanStyle = styleCardLibrary.get(vibe.id())
+                .map(StyleCard::humanStyle).orElse(null);
         String example = sampled.examplePrompt();
 
         StringBuilder sb = new StringBuilder();
@@ -327,9 +330,9 @@ public class AiEventDescriptionService {
         sb.append("\n");
 
         sb.append("CREATIVE DIRECTIONS — one per variant, follow them precisely:\n\n");
-        sb.append(variantBlock(1, "people", d.get(0), vibe, false));
-        sb.append(variantBlock(2, "object", d.get(1), vibe, false));
-        sb.append(variantBlock(3, "typographic", d.get(2), vibe, true));
+        for (int i = 0; i < d.size(); i++) {
+            sb.append(variantBlock(i + 1, d.get(i), vibe));
+        }
         sb.append("\n");
 
         if (notBlank(example)) {
@@ -341,7 +344,7 @@ public class AiEventDescriptionService {
           .append("- sub_style_tag: must be exactly \"").append(vibe.id()).append("\"\n")
           .append("- color_palette_description: brief human-readable description of the dominant colors\n")
           .append("- variants: exactly 3 objects, each with:\n")
-          .append("    - hero_type: people | object | typographic, in the order above\n")
+          .append("    - hero_type: one of people | object | typographic | scene | abstract_graphic, matching the variant role above\n")
           .append("    - ideogram_prompt: a COMPLETE self-contained Recraft prompt, 60-180 words, following this exact anatomy in order:\n")
           .append("      1. hero subject (or type-as-image for typographic) with concrete visual nouns\n")
           .append("      2. medium (photograph / photocopy / collage / illustration — per the treatment)\n")
@@ -358,7 +361,7 @@ public class AiEventDescriptionService {
           .append("- An image-led poster where the hero dominates and the required text is integrated as bold native typography\n")
           .append("- The three prompts must not share opening words, sentence structure, or layout\n")
           .append("- Never open with \"Create a\", \"Design a\", or \"Craft a\" — start with the visual content itself\n")
-          .append("- Any people must be rendered photorealistically with correct anatomy; faces may be cropped, motion-blurred, or in shadow for style\n")
+          .append(humanRule(humanStyle)).append("\n")
           .append("- ").append(notBlank(universalNegative()) ? universalNegative()
                   : "No watermarks, logos, signatures, stock-template flyer layouts, or invented words.").append("\n\n");
 
@@ -387,9 +390,11 @@ public class AiEventDescriptionService {
         return sb.toString();
     }
 
-    private static String variantBlock(int n, String heroType, CreativeDirection dir, Vibe vibe, boolean typographic) {
+    private static String variantBlock(int n, CreativeDirection dir, Vibe vibe) {
+        HeroType mode = dir.heroType();
+        boolean typographic = mode == HeroType.TYPOGRAPHIC;
         StringBuilder b = new StringBuilder();
-        b.append("Variant ").append(n).append(" — hero_type \"").append(heroType).append("\":\n");
+        b.append("Variant ").append(n).append(" — hero_type \"").append(mode.wire()).append("\":\n");
         if (typographic) {
             b.append("- No pictorial hero: typography IS the image. Texture: ")
              .append(nv(dir.accent(), "expressive type texture and grain")).append("\n");
@@ -401,6 +406,17 @@ public class AiEventDescriptionService {
         b.append("- Palette: ").append(nv(dir.paletteTwist(), "the vibe palette")).append("; type: ")
          .append(nv(dir.typeTreatment(), vibe.typography())).append("\n\n");
         return b.toString();
+    }
+
+    /** The strict human-rendering rule, conditioned on the vibe's human_style (null ⇒ photographic). */
+    private static String humanRule(HumanStyle humanStyle) {
+        if (humanStyle == HumanStyle.ABSTRACTED) {
+            return "- Render any human figure abstracted — motion-blur, halftone, or silhouette — never a clean centered portrait";
+        }
+        if (humanStyle == HumanStyle.FIGURE_AS_OBJECT) {
+            return "- Any human form must be a sculpted/rendered material object (chrome, wireframe, posterized), never a photographed person";
+        }
+        return "- Any people must be rendered photorealistically with correct anatomy; faces may be cropped, motion-blurred, or in shadow for style";
     }
 
     private String universalNegative() {

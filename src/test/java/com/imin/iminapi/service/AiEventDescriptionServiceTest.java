@@ -88,11 +88,19 @@ class AiEventDescriptionServiceTest {
         assertThat(prompt).contains("typography IS the image");
         // the few-shot anchor + the JSON contract
         assertThat(prompt).contains("An example reference poster prompt written for a different event");
-        assertThat(prompt).contains("hero_type: people | object | typographic");
+        assertThat(prompt).contains("hero_type: one of people | object | typographic | scene | abstract_graphic");
         assertThat(prompt).contains("Render the following required text exactly as written");
         assertThat(prompt).contains("\"BIG NIGHT - BERLIN\"");
         assertThat(prompt).contains("\"7 JUN 2026\"");
         assertThat(prompt).contains("IP rule: never reference real venues");
+        assertThat(prompt).contains("Any people must be rendered photorealistically with correct anatomy");
+    }
+
+    @Test
+    void buildPrompt_emitsFiveModeContractAndDefaultPhotographicRule() {
+        String prompt = service.buildPrompt(brief(), BRUTALIST, sampled(), null);
+        assertThat(prompt).contains("hero_type: one of people | object | typographic | scene | abstract_graphic");
+        // null style-card ⇒ photographic default ⇒ the photorealistic line is present
         assertThat(prompt).contains("Any people must be rendered photorealistically with correct anatomy");
     }
 
