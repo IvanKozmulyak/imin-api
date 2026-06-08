@@ -3,16 +3,18 @@ package com.imin.iminapi.dto;
 import java.util.Locale;
 
 /**
- * The kind of hero a poster variant is built around. Exactly one of each is sampled per
- * generation, always in this declaration order, so the three variants are structurally distinct:
- * a photographic person, a photographic object/scene, and a type-as-image poster.
+ * The kind of hero a poster variant is built around. The three original modes (PEOPLE, OBJECT,
+ * TYPOGRAPHIC) remain the legacy default plan order; SCENE and ABSTRACT_GRAPHIC are new per-vibe
+ * variant plan modes.
  */
 public enum HeroType {
     PEOPLE,
     OBJECT,
-    TYPOGRAPHIC;
+    TYPOGRAPHIC,
+    SCENE,
+    ABSTRACT_GRAPHIC;
 
-    /** The lowercase token used in the LLM JSON contract ("people" | "object" | "typographic"). */
+    /** The lowercase token used in the LLM JSON contract. */
     public String wire() {
         return name().toLowerCase(Locale.ROOT);
     }
@@ -24,10 +26,12 @@ public enum HeroType {
             case "people" -> PEOPLE;
             case "object" -> OBJECT;
             case "typographic" -> TYPOGRAPHIC;
+            case "scene" -> SCENE;
+            case "abstract_graphic" -> ABSTRACT_GRAPHIC;
             default -> null;
         };
     }
 
-    /** The canonical order one-of-each is sampled / validated in. */
+    /** Legacy default plan order, used only as a fallback when a vibe declares no variant_plan. */
     public static final HeroType[] ORDER = { PEOPLE, OBJECT, TYPOGRAPHIC };
 }
