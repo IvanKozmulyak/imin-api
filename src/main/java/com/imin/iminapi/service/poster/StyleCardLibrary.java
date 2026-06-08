@@ -1,7 +1,11 @@
 package com.imin.iminapi.service.poster;
 
+import com.imin.iminapi.dto.HeroType;
+import com.imin.iminapi.dto.HumanPolicy;
+import com.imin.iminapi.dto.HumanStyle;
 import com.imin.iminapi.dto.Rgb;
 import com.imin.iminapi.dto.StyleCard;
+import com.imin.iminapi.dto.VariantSlot;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -95,17 +99,23 @@ public class StyleCardLibrary {
                 heroSubjects = (Map<String, Object>) hsm;
             }
 
+            List<VariantSlot> plan = toVariantPlan(root.get("variant_plan"));
             return new StyleCard(
                     vibeId,
                     str(root, "medium"),
                     toPalette(root.get("palette")),
                     toStringList(heroSubjects.get("people")),
                     toStringList(heroSubjects.get("object")),
+                    toStringList(heroSubjects.get("scene")),
+                    toStringList(heroSubjects.get("abstract_graphic")),
                     toStringList(root.get("compositions")),
                     toStringList(root.get("accents")),
                     toStringList(root.get("palette_twists")),
                     toStringList(root.get("type_treatments")),
-                    toStringList(root.get("example_prompts")));
+                    toStringList(root.get("example_prompts")),
+                    HumanPolicy.fromWire(str(root, "human_policy")),
+                    HumanStyle.fromWire(str(root, "human_style")),
+                    plan);
         }
     }
 
@@ -144,6 +154,31 @@ public class StyleCardLibrary {
             if (!numbers.isEmpty()) out.add(Rgb.of(numbers));
         }
         return out;
+    }
+
+    /**
+     * Parse a {@code variant_plan:} list of {@code {mode: <hero>}} maps into 3 {@link VariantSlot}s.
+     * Falls back to {@link StyleCard#defaultPlan()} when absent, the wrong size, or containing an
+     * unknown mode — so a malformed plan degrades to legacy behavior instead of breaking a vibe.
+     */
+    @SuppressWarnings("unchecked")
+    private List<VariantSlot> toVariantPlan(Object raw) {
+        if (!(raw instanceof List<?> list) || list.size() != 3) {
+            return StyleCard.defaultPlan();
+        }
+        List<VariantSlot> slots = new ArrayList<>(3);
+        for (Object item : list) {
+            HeroType mode = null;
+            if (item instanceof Map<?, ?> m) {
+                mode = HeroType.fromWire(m.get("mode") == null ? null : String.valueOf(m.get("mode")));
+            }
+            if (mode == null) {
+                log.warn("variant_plan slot has unknown mode {} — using legacy plan for this card", item);
+                return StyleCard.defaultPlan();
+            }
+            slots.add(new VariantSlot(mode));
+        }
+        return slots;
     }
 
     /** The style card for a vibe id, if loaded. */

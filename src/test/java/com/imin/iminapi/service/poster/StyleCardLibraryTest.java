@@ -78,6 +78,18 @@ class StyleCardLibraryTest {
     }
 
     @Test
+    void parsesVariantPlanPolicyStyleAndNewPools() {
+        StyleCard card = library.get("test_vibe").orElseThrow();
+
+        assertThat(card.humanPolicy()).isEqualTo(com.imin.iminapi.dto.HumanPolicy.OPTIONAL);
+        assertThat(card.humanStyle()).isEqualTo(com.imin.iminapi.dto.HumanStyle.ABSTRACTED);
+        assertThat(card.variantPlan()).extracting(com.imin.iminapi.dto.VariantSlot::mode)
+                .containsExactly(HeroType.OBJECT, HeroType.SCENE, HeroType.TYPOGRAPHIC);
+        assertThat(card.heroSubjectsFor(HeroType.SCENE)).anyMatch(s -> s.contains("warehouse"));
+        assertThat(card.heroSubjectsFor(HeroType.ABSTRACT_GRAPHIC)).anyMatch(s -> s.contains("halftone"));
+    }
+
+    @Test
     void unknownVibeIsAbsentAndNeverThrows() {
         assertThat(library.has("does_not_exist")).isFalse();
         assertThat(library.get("does_not_exist")).isEmpty();
