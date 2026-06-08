@@ -113,10 +113,10 @@ public class OpenRouterPosterStyleValidationClient implements PosterStyleValidat
         sb.append("Expected medium: ").append(mediumOf(card)).append("\n");
         sb.append("Expected palette: ").append(paletteDescription(card)).append("\n");
 
-        if (declaredHeroType == HeroType.TYPOGRAPHIC) {
-            sb.append("This is a TYPOGRAPHIC poster: typography IS the hero — there is intentionally NO ")
-                    .append("pictorial hero subject. Therefore report \"heroSubjectPresent\":true for typographic ")
-                    .append("variants, and judge only the medium and palette.\n");
+        if (declaredHeroType == HeroType.TYPOGRAPHIC || declaredHeroType == HeroType.ABSTRACT_GRAPHIC) {
+            sb.append("This poster has NO discrete pictorial hero subject (typography or an abstract ")
+                    .append("graphic field IS the hero). Therefore report \"heroSubjectPresent\":true and ")
+                    .append("judge only the medium and palette.\n");
         } else {
             sb.append("Expected hero subject — the poster should clearly feature one of these scenes:\n")
                     .append(bulletLines(card.heroSubjectsFor(declaredHeroType)))

@@ -183,7 +183,7 @@ public class AiEventDescriptionService {
                 return "variant[" + i + "].ideogram_prompt is empty";
             }
             if (HeroType.fromWire(v.heroType()) == null) {
-                return "variant[" + i + "].hero_type must be one of people, object, typographic";
+                return "variant[" + i + "].hero_type must be one of people, object, typographic, scene, abstract_graphic";
             }
         }
         return null;
