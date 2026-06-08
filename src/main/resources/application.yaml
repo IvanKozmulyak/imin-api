@@ -61,11 +61,15 @@ poster:
     # loaded by StyleCardLibrary at startup. Authored once via the @Profile("tools") StyleCardGenerator.
     location: ${POSTER_STYLE_CARDS_LOCATION:classpath*:vibes/style-cards/*.yaml}
   text-validation:
-    # Legibility (vision) gate — HARD. ENABLED for the Ideogram V3 flow: it renders baked text well, and
-    # a failure triggers a corrective remix (not a blind reseed). gpt-4o-mini for cost.
+    # Legibility + invented-text (vision) gate — HARD. Enforced server-side: the gate fails on ANY
+    # missing required string or invented/garbled text, regardless of the model's own `accepted` verdict;
+    # a failure triggers a corrective remix (not a blind reseed). Uses a strong vision model because the
+    # old gpt-4o-mini under-read dense poster type and false-passed hallucinated text. For a cheaper
+    # reader set POSTER_TEXT_VALIDATION_MODEL=google/gemini-2.0-flash-001 (strong OCR, low cost).
     enabled: ${POSTER_TEXT_VALIDATION_ENABLED:true}
-    model: ${POSTER_TEXT_VALIDATION_MODEL:openai/gpt-4o-mini}
-    max-extra-text-items: ${POSTER_TEXT_VALIDATION_MAX_EXTRA_TEXT_ITEMS:2}
+    model: ${POSTER_TEXT_VALIDATION_MODEL:openai/gpt-4o}
+    # Server-side tolerance for invented text items before the gate fails. 0 = reject any invented text.
+    max-extra-text-items: ${POSTER_TEXT_VALIDATION_MAX_EXTRA_TEXT_ITEMS:0}
   style-validation:
     # Style-adherence (vision) gate — SOFT (hero present, medium/palette match). ENABLED for the
     # Ideogram V3 flow; a failure is accepted best-effort. Cheap model like the text gate.
