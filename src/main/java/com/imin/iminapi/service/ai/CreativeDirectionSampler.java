@@ -2,11 +2,18 @@ package com.imin.iminapi.service.ai;
 
 import com.imin.iminapi.dto.HeroType;
 import com.imin.iminapi.dto.StyleCard;
+import com.imin.iminapi.dto.VariantSlot;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.Deque;
+import java.util.EnumMap;
+import java.util.LinkedHashSet;
+import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 
 /**
  * Draws the three creative directions of a poster run from a vibe's {@link StyleCard} pools, in code
@@ -44,30 +51,40 @@ public class CreativeDirectionSampler {
      */
     public SampledRun sample(StyleCard card, long seed) {
         Random random = new Random(seed);
+        List<HeroType> plan = planModes(card);
+        int count = plan.size();
 
         if (card == null) {
-            List<CreativeDirection> directions = new ArrayList<>(HeroType.ORDER.length);
-            for (HeroType heroType : HeroType.ORDER) {
-                directions.add(new CreativeDirection(heroType, null, null, null, null, null));
+            List<CreativeDirection> directions = new ArrayList<>(count);
+            for (HeroType mode : plan) {
+                directions.add(new CreativeDirection(mode, null, null, null, null, null));
             }
             return new SampledRun(List.copyOf(directions), null);
         }
 
-        int count = HeroType.ORDER.length;
-
-        // Without-replacement draws for composition and accent (always), and for paletteTwist and
-        // typeTreatment when the pool is large enough to cover all three variants.
         List<String> compositions = drawWithoutReplacement(card.compositions(), count, random);
         List<String> accents = drawWithoutReplacement(card.accents(), count, random);
         List<String> paletteTwists = drawWithoutReplacement(card.paletteTwists(), count, random);
         List<String> typeTreatments = drawWithoutReplacement(card.typeTreatments(), count, random);
 
+        // Per-mode subject queues, drawn WITHOUT replacement so a repeated mode (e.g. people,people,
+        // people) yields distinct subjects. Deterministic in seed: distinct modes are visited in
+        // first-appearance order.
+        // A repeated TYPOGRAPHIC slot draws from an empty pool, so drawWithoutReplacement returns
+        // nulls — LinkedList (not ArrayDeque) is used because the queue must permit null elements.
+        Set<HeroType> distinctModes = new LinkedHashSet<>(plan);
+        Map<HeroType, Deque<String>> subjectQueues = new EnumMap<>(HeroType.class);
+        for (HeroType mode : distinctModes) {
+            int n = (int) plan.stream().filter(mode::equals).count();
+            subjectQueues.put(mode, new LinkedList<>(drawWithoutReplacement(card.heroSubjectsFor(mode), n, random)));
+        }
+
         List<CreativeDirection> directions = new ArrayList<>(count);
         for (int i = 0; i < count; i++) {
-            HeroType heroType = HeroType.ORDER[i];
-            String heroSubject = pickOne(card.heroSubjectsFor(heroType), random);
+            HeroType mode = plan.get(i);
+            String heroSubject = subjectQueues.get(mode).poll();
             directions.add(new CreativeDirection(
-                    heroType,
+                    mode,
                     heroSubject,
                     compositions.get(i),
                     accents.get(i),
@@ -77,8 +94,15 @@ public class CreativeDirectionSampler {
         }
 
         String examplePrompt = pickOne(card.examplePrompts(), random);
-
         return new SampledRun(List.copyOf(directions), examplePrompt);
+    }
+
+    /** The 3 hero modes this run renders: the card's variant_plan, or the legacy order if absent. */
+    private static List<HeroType> planModes(StyleCard card) {
+        if (card == null || card.variantPlan() == null || card.variantPlan().isEmpty()) {
+            return List.of(HeroType.ORDER);
+        }
+        return card.variantPlan().stream().map(VariantSlot::mode).toList();
     }
 
     /**

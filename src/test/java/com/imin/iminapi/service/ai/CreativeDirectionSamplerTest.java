@@ -206,4 +206,46 @@ class CreativeDirectionSamplerTest {
         assertThat(run.directions()).allSatisfy(d ->
                 assertThat(d.paletteTwist()).isEqualTo("only-twist"));
     }
+
+    private StyleCard plannedCard(java.util.List<com.imin.iminapi.dto.VariantSlot> plan,
+                                  java.util.List<String> scene, java.util.List<String> abstractPool) {
+        return new StyleCard(
+                "planned", "photo",
+                List.of(new Rgb(10, 10, 12)),
+                PEOPLE, OBJECTS, scene, abstractPool,
+                List.of("c1", "c2", "c3", "c4"),
+                List.of("a1", "a2", "a3", "a4"),
+                List.of("t1", "t2", "t3", "t4"),
+                List.of("ty1", "ty2", "ty3", "ty4"),
+                List.of("ex1"),
+                com.imin.iminapi.dto.HumanPolicy.OPTIONAL, null, plan);
+    }
+
+    @Test
+    void heroTypesFollowTheDeclaredPlanNotTheLegacyOrder() {
+        var plan = List.of(
+                new com.imin.iminapi.dto.VariantSlot(HeroType.SCENE),
+                new com.imin.iminapi.dto.VariantSlot(HeroType.OBJECT),
+                new com.imin.iminapi.dto.VariantSlot(HeroType.TYPOGRAPHIC));
+        SampledRun run = sampler.sample(
+                plannedCard(plan, List.of("a wide festival field at dusk"), List.of()), 42L);
+
+        assertThat(run.directions()).extracting(CreativeDirection::heroType)
+                .containsExactly(HeroType.SCENE, HeroType.OBJECT, HeroType.TYPOGRAPHIC);
+        assertThat(run.directions().get(0).heroSubject()).isEqualTo("a wide festival field at dusk");
+        assertThat(run.directions().get(2).heroSubject()).isNull(); // typographic draws no subject
+    }
+
+    @Test
+    void repeatedModeDrawsDistinctSubjectsWithoutReplacement() {
+        var plan = List.of(
+                new com.imin.iminapi.dto.VariantSlot(HeroType.PEOPLE),
+                new com.imin.iminapi.dto.VariantSlot(HeroType.PEOPLE),
+                new com.imin.iminapi.dto.VariantSlot(HeroType.PEOPLE));
+        SampledRun run = sampler.sample(plannedCard(plan, List.of(), List.of()), 7L);
+
+        List<String> subjects = run.directions().stream().map(CreativeDirection::heroSubject).toList();
+        assertThat(subjects).doesNotContainNull().doesNotHaveDuplicates(); // PEOPLE pool has 4 >= 3
+        assertThat(PEOPLE).containsAll(subjects);
+    }
 }
