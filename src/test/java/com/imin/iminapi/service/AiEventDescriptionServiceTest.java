@@ -2,9 +2,14 @@ package com.imin.iminapi.service;
 
 import com.imin.iminapi.dto.EventCreatorRequest;
 import com.imin.iminapi.dto.HeroType;
+import com.imin.iminapi.dto.HumanPolicy;
+import com.imin.iminapi.dto.HumanStyle;
 import com.imin.iminapi.dto.PosterConcept;
 import com.imin.iminapi.dto.PosterVariant;
+import com.imin.iminapi.dto.Rgb;
+import com.imin.iminapi.dto.StyleCard;
 import com.imin.iminapi.dto.StyleMode;
+import com.imin.iminapi.dto.VariantSlot;
 import com.imin.iminapi.dto.UniversalRules;
 import com.imin.iminapi.dto.Vibe;
 import com.imin.iminapi.service.ai.CreativeDirection;
@@ -359,6 +364,73 @@ class AiEventDescriptionServiceTest {
         // but a real person hero is caught
         assertThat(AiEventDescriptionService.containsHumanHero("a lone dancer dominates the frame")).isTrue();
         assertThat(AiEventDescriptionService.containsHumanHero("a young woman in mirror sunglasses")).isTrue();
+    }
+
+    // ---- T7: plan- and policy-driven validation -------------------------------------------------
+
+    private static StyleCard cardWith(HumanPolicy policy, List<VariantSlot> plan) {
+        return new StyleCard(
+                "brutalist_techno", "mixed", List.of(new Rgb(13, 13, 13)),
+                List.of("p"), List.of("o"), List.of("s"), List.of("ag"),
+                List.of("c"), List.of("a"), List.of("tw"), List.of("ty"), List.of("ex"),
+                policy, HumanStyle.PHOTOGRAPHIC, plan);
+    }
+
+    private static final List<VariantSlot> OBJ_ABS_TYPO = List.of(
+            new VariantSlot(HeroType.OBJECT),
+            new VariantSlot(HeroType.ABSTRACT_GRAPHIC),
+            new VariantSlot(HeroType.TYPOGRAPHIC));
+
+    // A human-less abstract-graphic hero prompt, distinct from objectPrompt()/typographicPrompt()
+    // (no person-hero word ⇒ containsHumanHero == false).
+    private static String abstractPrompt() {
+        return "An edge-to-edge molten liquid-chrome field floods the whole sheet, acid-green ripples melting into "
+                + "rose-pink over a near-black ground, oil-slick iridescence catching diffused glow with no discrete "
+                + "subject anywhere in the frame. Heavy condensed white lettering reverses out of the haze along the "
+                + "upper band while a tracked-out date line sits low and a thin lineup column slides down the right "
+                + "margin, fine film grain and gentle gradient banding drifting across the dreamy atmospheric vertical poster.";
+    }
+
+    @Test
+    void validate_forbidden_rejectsAnyHumanHero() {
+        PosterConcept c = new PosterConcept("brutalist_techno", "p", List.of(
+                new PosterVariant("object", peoplePrompt(), "4:5", "Design"),       // "a lone dancer..."
+                new PosterVariant("abstract_graphic", abstractPrompt(), "4:5", "Design"),
+                new PosterVariant("typographic", typographicPrompt(), "4:5", "Design")));
+        assertThat(service.validate(c, cardWith(HumanPolicy.FORBIDDEN, OBJ_ABS_TYPO)))
+                .contains("forbids human heroes");
+    }
+
+    @Test
+    void validate_forbidden_acceptsHumanLessRun() {
+        PosterConcept c = new PosterConcept("brutalist_techno", "p", List.of(
+                new PosterVariant("object", objectPrompt(), "4:5", "Design"),
+                new PosterVariant("abstract_graphic", abstractPrompt(), "4:5", "Design"),
+                new PosterVariant("typographic", typographicPrompt(), "4:5", "Design")));
+        assertThat(service.validate(c, cardWith(HumanPolicy.FORBIDDEN, OBJ_ABS_TYPO))).isNull();
+    }
+
+    @Test
+    void validate_planOrderIsCheckedAgainstTheCardNotLegacyOrder() {
+        PosterConcept c = new PosterConcept("brutalist_techno", "p", List.of(
+                new PosterVariant("people", peoplePrompt(), "4:5", "Design"),
+                new PosterVariant("abstract_graphic", objectPrompt(), "4:5", "Design"),
+                new PosterVariant("typographic", typographicPrompt(), "4:5", "Design")));
+        assertThat(service.validate(c, cardWith(HumanPolicy.RARE, OBJ_ABS_TYPO)))
+                .contains("hero_type must be exactly \"object\"");
+    }
+
+    @Test
+    void validate_rare_rejectsTwoHumanHeroes() {
+        var plan = List.of(new VariantSlot(HeroType.OBJECT), new VariantSlot(HeroType.OBJECT),
+                new VariantSlot(HeroType.TYPOGRAPHIC));
+        PosterConcept c = new PosterConcept("brutalist_techno", "p", List.of(
+                new PosterVariant("object", peoplePrompt(), "4:5", "Design"),
+                new PosterVariant("object", peoplePrompt().replace("dancer", "woman").replace("crowd", "raver")
+                        + " with distinct extra wording here today now to differ greatly", "4:5", "Design"),
+                new PosterVariant("typographic", typographicPrompt(), "4:5", "Design")));
+        assertThat(service.validate(c, cardWith(HumanPolicy.RARE, plan)))
+                .contains("at most one human-hero variant");
     }
 
     // ---- graceful degradation (no 502 over quality nits) ----------------------------------------

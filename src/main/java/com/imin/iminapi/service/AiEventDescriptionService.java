@@ -4,11 +4,13 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.imin.iminapi.dto.EventCreatorRequest;
 import com.imin.iminapi.dto.HeroType;
+import com.imin.iminapi.dto.HumanPolicy;
 import com.imin.iminapi.dto.HumanStyle;
 import com.imin.iminapi.dto.PosterConcept;
 import com.imin.iminapi.dto.PosterTextSpec;
 import com.imin.iminapi.dto.PosterVariant;
 import com.imin.iminapi.dto.StyleCard;
+import com.imin.iminapi.dto.VariantSlot;
 import com.imin.iminapi.dto.Vibe;
 import com.imin.iminapi.service.ai.CreativeDirection;
 import com.imin.iminapi.service.ai.CreativeDirectionSampler;
@@ -136,7 +138,7 @@ public class AiEventDescriptionService {
             String renderableError = validateRenderable(concept);
             if (renderableError == null) {
                 lastRenderable = concept;   // keep the most recent structurally-valid concept as a fallback
-                String validationError = validate(concept, request);
+                String validationError = validate(concept, request, card);
                 if (validationError == null) {
                     log.debug("Concept accepted on attempt {}: vibe={}, variants={}",
                             attempt, concept.subStyleTag(), concept.variants().size());
@@ -221,7 +223,16 @@ public class AiEventDescriptionService {
         return t;
     }
 
+    /** Resolve the style card backing a concept's vibe (null when the vibe has no card). */
+    private StyleCard cardFor(PosterConcept concept) {
+        return concept == null ? null : styleCardLibrary.get(concept.subStyleTag()).orElse(null);
+    }
+
     String validate(PosterConcept concept) {
+        return validate(concept, cardFor(concept));
+    }
+
+    String validate(PosterConcept concept, StyleCard card) {
         if (concept == null) return "null concept";
         if (concept.subStyleTag() == null || !vibeLibrary.hasVibe(concept.subStyleTag())) {
             return "sub_style_tag must be a known vibe id";
@@ -229,12 +240,14 @@ public class AiEventDescriptionService {
         List<PosterVariant> variants = concept.variants();
         if (variants == null || variants.size() != 3) return "exactly 3 variants required";
 
+        List<HeroType> plan = planModes(card);
+        HumanPolicy policy = (card == null || card.humanPolicy() == null) ? HumanPolicy.REQUIRED : card.humanPolicy();
+
         for (int i = 0; i < variants.size(); i++) {
             PosterVariant v = variants.get(i);
-            String expectedHero = HeroType.ORDER[i].wire();
-            if (v.heroType() == null || !expectedHero.equals(v.heroType().trim().toLowerCase())) {
-                return "variant[" + i + "].hero_type must be exactly \"" + expectedHero
-                        + "\" (order: people, object, typographic)";
+            String expectedWire = plan.get(i).wire();
+            if (v.heroType() == null || !expectedWire.equals(v.heroType().trim().toLowerCase())) {
+                return "variant[" + i + "].hero_type must be exactly \"" + expectedWire + "\" (planned: " + planWire(plan) + ")";
             }
             if (v.aspectRatio() == null || !VALID_ASPECTS.contains(v.aspectRatio())) {
                 return "variant[" + i + "].aspect_ratio must be one of " + VALID_ASPECTS;
@@ -249,13 +262,30 @@ public class AiEventDescriptionService {
             if (wc > MAX_WORDS) return "variant[" + i + "].ideogram_prompt too long (" + wc + " words, max " + MAX_WORDS + ")";
         }
 
-        // The people variant must show a human (lenient); the typographic variant must not be built around
-        // a person (strict — atmospheric mentions are fine). Orientation/typography vocabulary is stripped first.
-        if (!mentionsHumanSubject(variants.get(0).ideogramPrompt())) {
-            return "variant[0] (people) must contain a human subject (one of " + HUMAN_NOUNS + ")";
+        // Mode-driven per-slot human rules: a people slot must show a human; a typographic slot must
+        // not be built around a person (type is the image).
+        for (int i = 0; i < variants.size(); i++) {
+            HeroType mode = plan.get(i);
+            String p = variants.get(i).ideogramPrompt();
+            if (mode == HeroType.PEOPLE && !mentionsHumanSubject(p)) {
+                return "variant[" + i + "] (people) must contain a human subject (one of " + HUMAN_NOUNS + ")";
+            }
+            if (mode == HeroType.TYPOGRAPHIC && containsHumanHero(p)) {
+                return "variant[" + i + "] (typographic) must not be built around a person — typography is the image";
+            }
         }
-        if (containsHumanHero(variants.get(2).ideogramPrompt())) {
-            return "variant[2] (typographic) must not be built around a person — typography is the image";
+
+        // Policy caps on human heroes across the whole run.
+        long humanHeroes = variants.stream().filter(v -> containsHumanHero(v.ideogramPrompt())).count();
+        if (policy == HumanPolicy.FORBIDDEN && humanHeroes > 0) {
+            return "this vibe forbids human heroes, but a person appears in a variant";
+        }
+        if (policy == HumanPolicy.RARE && humanHeroes > 1) {
+            return "this vibe allows at most one human-hero variant, but " + humanHeroes + " contain a person";
+        }
+        if (policy == HumanPolicy.REQUIRED
+                && variants.stream().noneMatch(v -> mentionsHumanSubject(v.ideogramPrompt()))) {
+            return "this vibe requires a human hero, but no variant contains a person";
         }
 
         // The three prompts must be visually distinct, not paraphrases of each other.
@@ -266,8 +296,24 @@ public class AiEventDescriptionService {
         return null;
     }
 
+    /** The 3 planned hero modes for a card, or the legacy order when the card has no plan. */
+    private static List<HeroType> planModes(StyleCard card) {
+        if (card == null || card.variantPlan() == null || card.variantPlan().isEmpty()) {
+            return List.of(HeroType.ORDER);
+        }
+        return card.variantPlan().stream().map(VariantSlot::mode).toList();
+    }
+
+    private static String planWire(List<HeroType> plan) {
+        return plan.stream().map(HeroType::wire).reduce((a, b) -> a + ", " + b).orElse("");
+    }
+
     String validate(PosterConcept concept, EventCreatorRequest request) {
-        String shapeError = validate(concept);
+        return validate(concept, request, cardFor(concept));
+    }
+
+    String validate(PosterConcept concept, EventCreatorRequest request, StyleCard card) {
+        String shapeError = validate(concept, card);
         if (shapeError != null) return shapeError;
 
         PosterTextSpec textSpec = posterTextSpecFactory.from(request);
