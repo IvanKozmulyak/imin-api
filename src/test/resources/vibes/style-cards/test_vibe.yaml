@@ -14,6 +14,16 @@ hero_subjects:
     - "a cracked vinyl record propped against a brick wall"
     - "a chrome boombox shot in raking light"
     - "a fistful of crumpled gig flyers"
+  scene:
+    - "a fog-drowned warehouse floor seen wide under one shaft of light"
+  abstract_graphic:
+    - "a field of torn-poster halftone texture in red and bone"
+human_policy: optional
+human_style: abstracted
+variant_plan:
+  - { mode: object }
+  - { mode: scene }
+  - { mode: typographic }
 compositions:
   - "hero bottom-third, oversized title stacked above"
   - "centered hero, title wrapping the edges"
