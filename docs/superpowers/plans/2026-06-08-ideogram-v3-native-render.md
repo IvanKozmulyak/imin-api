@@ -356,7 +356,7 @@ class IdeogramV3ClientTest {
     private Harness harness() {
         RestClient.Builder builder = RestClient.builder().baseUrl("https://api.ideogram.ai");
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
-        IdeogramV3Client client = new IdeogramV3Client(builder.build(), "TURBO", true);
+        IdeogramV3Client client = new IdeogramV3Client(builder.build(), "QUALITY", "TURBO", true);
         return new Harness(client, server);
     }
 
@@ -372,7 +372,7 @@ class IdeogramV3ClientTest {
                 .andExpect(content().string(Matchers.containsString("name=\"aspect_ratio\"")))
                 .andExpect(content().string(Matchers.containsString("4x5")))
                 .andExpect(content().string(Matchers.containsString("name=\"rendering_speed\"")))
-                .andExpect(content().string(Matchers.containsString("TURBO")))
+                .andExpect(content().string(Matchers.containsString("QUALITY")))
                 .andExpect(content().string(Matchers.containsString("name=\"magic_prompt\"")))
                 .andExpect(content().string(Matchers.containsString("OFF")))
                 .andExpect(content().string(Matchers.containsString("name=\"enable_copyright_detection\"")))
@@ -465,15 +465,18 @@ public class IdeogramV3Client {
     static final String MAGIC_PROMPT = "OFF";
 
     private final RestClient ideogramRestClient;
-    private final String renderingSpeed;
+    private final String generateSpeed;
+    private final String remixSpeed;
     private final boolean copyrightDetection;
 
     public IdeogramV3Client(
             RestClient ideogramRestClient,
-            @Value("${ideogram.rendering-speed:TURBO}") String renderingSpeed,
+            @Value("${ideogram.generate.rendering-speed:QUALITY}") String generateSpeed,
+            @Value("${ideogram.remix.rendering-speed:TURBO}") String remixSpeed,
             @Value("${ideogram.copyright-detection:true}") boolean copyrightDetection) {
         this.ideogramRestClient = ideogramRestClient;
-        this.renderingSpeed = (renderingSpeed == null || renderingSpeed.isBlank()) ? "TURBO" : renderingSpeed;
+        this.generateSpeed = (generateSpeed == null || generateSpeed.isBlank()) ? "QUALITY" : generateSpeed;
+        this.remixSpeed = (remixSpeed == null || remixSpeed.isBlank()) ? "TURBO" : remixSpeed;
         this.copyrightDetection = copyrightDetection;
     }
 
@@ -484,13 +487,13 @@ public class IdeogramV3Client {
         MultiValueMap<String, Object> parts = new LinkedMultiValueMap<>();
         parts.add("prompt", prompt);
         parts.add("aspect_ratio", ASPECT_RATIO);
-        parts.add("rendering_speed", renderingSpeed);
+        parts.add("rendering_speed", generateSpeed);
         parts.add("magic_prompt", MAGIC_PROMPT);
         parts.add("enable_copyright_detection", String.valueOf(copyrightDetection));
         parts.add("seed", String.valueOf(seed));
         applyStyleControl(parts, styleRefs, stylePreset);
         log.info("[ideogram v3 generate] promptLen={} speed={} {} seed={}",
-                prompt.length(), renderingSpeed, styleLabel(styleRefs, stylePreset), seed);
+                prompt.length(), generateSpeed, styleLabel(styleRefs, stylePreset), seed);
         return new IdeogramResult(post(GENERATE_PATH, parts), seed);
     }
 
@@ -587,6 +590,8 @@ git commit -m "feat(poster): native Ideogram V3 generate (multipart, one style c
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("name=\"image\"")))
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("name=\"image_weight\"")))
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("70")))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("name=\"rendering_speed\"")))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("TURBO")))
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("CORRECTION")))
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("name=\"magic_prompt\"")))
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("OFF")))
@@ -620,7 +625,7 @@ Expected: FAIL — `cannot find symbol method remix`.
         parts.add("prompt", prompt);
         parts.add("image_weight", String.valueOf(imageWeight));
         parts.add("aspect_ratio", ASPECT_RATIO);
-        parts.add("rendering_speed", renderingSpeed);
+        parts.add("rendering_speed", remixSpeed);
         parts.add("magic_prompt", MAGIC_PROMPT);
         parts.add("seed", String.valueOf(seed));
         applyStyleControl(parts, styleRefs, stylePreset);
@@ -1420,10 +1425,12 @@ git commit -m "feat(poster): render via native Ideogram V3 with corrective-remix
 ideogram:
   api-key: ${IDEOGRAM_API_KEY:}
   base-url: ${IDEOGRAM_BASE_URL:https://api.ideogram.ai}
-  rendering-speed: ${IDEOGRAM_RENDERING_SPEED:TURBO}
   copyright-detection: ${IDEOGRAM_COPYRIGHT_DETECTION:true}
   max-references: ${IDEOGRAM_MAX_REFERENCES:3}
+  generate:
+    rendering-speed: ${IDEOGRAM_GENERATE_RENDERING_SPEED:QUALITY}
   remix:
+    rendering-speed: ${IDEOGRAM_REMIX_RENDERING_SPEED:TURBO}
     image-weight: ${IDEOGRAM_REMIX_IMAGE_WEIGHT:70}
 ```
 

@@ -103,7 +103,7 @@ Replaces the Replicate-based `IdeogramClient`. Built on a dedicated `RestClient`
 |---|---|
 | `prompt` | the variant's render prompt, **sent unchanged** |
 | `aspect_ratio` | `4x5` (native uses `NxM`, not `N:M`) |
-| `rendering_speed` | `TURBO` (configurable) |
+| `rendering_speed` | `QUALITY` for generate (configurable) |
 | `magic_prompt` | `OFF` (art director already wrote the prompt) |
 | `enable_copyright_detection` | `true` |
 | `seed` | per-variant seed |
@@ -112,7 +112,12 @@ Replaces the Replicate-based `IdeogramClient`. Built on a dedicated `RestClient`
 **`remix(...)`** → `POST /v1/ideogram-v3/remix`, `multipart/form-data`: same fields plus
 - `image` (binary, ≤10 MB, JPG/PNG/WebP) — the failing image to fix
 - `image_weight` (0–100, default config ~70) — hold composition, free the text
+- `rendering_speed=TURBO` — the corrective remix only fixes text, so the fast/cheap tier
 - (no `enable_copyright_detection`; not part of the remix contract)
+
+**Rendering tiers:** the initial `generate` renders at **`QUALITY`**; the corrective `remix`
+renders at **`TURBO`**. Both are configurable (`IDEOGRAM_GENERATE_RENDERING_SPEED` /
+`IDEOGRAM_REMIX_RENDERING_SPEED`).
 
 Response (both): `data[0].url` → **download bytes immediately** (link expires).
 No `negative_prompt` is sent (the art-director rules carry the "avoid" list; diffusion
@@ -192,11 +197,12 @@ does not call it):
 ideogram:
   api-key: ${IDEOGRAM_API_KEY:}
   base-url: ${IDEOGRAM_BASE_URL:https://api.ideogram.ai}
-  rendering-speed: ${IDEOGRAM_RENDERING_SPEED:TURBO}
   copyright-detection: ${IDEOGRAM_COPYRIGHT_DETECTION:true}
-  style-mode: ${IDEOGRAM_STYLE_MODE:refs}      # refs | preset
   max-references: ${IDEOGRAM_MAX_REFERENCES:3}
+  generate:
+    rendering-speed: ${IDEOGRAM_GENERATE_RENDERING_SPEED:QUALITY}
   remix:
+    rendering-speed: ${IDEOGRAM_REMIX_RENDERING_SPEED:TURBO}
     image-weight: ${IDEOGRAM_REMIX_IMAGE_WEIGHT:70}
 ```
 
