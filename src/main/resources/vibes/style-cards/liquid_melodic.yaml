@@ -8,18 +8,15 @@ palette:
   - [232, 150, 200]
   - [40, 60, 110]
 hero_subjects:
-  people:
-    - 'a lone dancer dissolving into a long-exposure smear of motion, body softened into flowing chrome-like streaks under colored haze'
-    - 'a cropped close-up of hands raised in liquid silhouette, fingers blurred into trailing light, faces out of frame'
-    - 'a single figure submerged behind a sheet of rippling liquid glass, features refracted and unrecognizable in soft focus'
-    - 'a back-lit silhouette of a head and shoulders melting into a gradient fog, edges glowing iridescent green-to-pink'
   object:
-    - 'a molten liquid-chrome blob with green and pink iridescent ripples flowing across a black field'
     - 'a glossy 3D-rendered iridescent beetle-dragonfly creature with mirrored wings and metallic body'
     - 'a fuzzy green pom-pom clover orb wrapped in silver chains, spikes, and a smiley sticker'
     - 'an x-ray-style cactus cluster with pink blooms enclosing a small machine, on near-black ground'
-    - 'a thermal-camera fluid surface of amber, blue and teal blobs melting into one another'
     - 'a cluster of chrome mushrooms and bubble spheres glowing under purple and green laser light'
+  abstract_graphic:
+    - 'a molten liquid-chrome blob with green and pink iridescent ripples flowing across a black field'
+    - 'a thermal-camera fluid surface of amber, blue and teal blobs melting into one another'
+    - 'an edge-to-edge liquid-glass field, soft-focused gradients bending like mercury under haze'
 compositions:
   - 'centered hero object floating in negative black space, type stacked top and bottom'
   - 'edge-to-edge liquid texture filling the whole frame with type reversed out in clear corners'
@@ -49,3 +46,8 @@ example_prompts:
   - 'Event poster, 4:5 vertical. A molten liquid-chrome blob flowing edge to edge across the frame, acid-green ripples melting into soft rose-pink over a near-black field, iridescent oil-slick highlights catching diffused light. The surface bends like mercury under a haze of soft glow. Heavy condensed white sans-serif headline reversed out top-left reading ''CONTROL THEORY'', a tracked-out caps line beneath reading ''SAT JULY 30'', and a tight stacked lineup of DJ names down the right margin in thin uppercase grotesk. Fine film grain over the whole image, subtle gradient banding in the haze, dreamy and atmospheric, deep blacks. No real brand names.'
   - 'Event poster, 4:5 vertical. Centered glossy 3D-rendered iridescent beetle-dragonfly creature with mirrored chrome wings and a metallic body, surrounded by softly glowing mushrooms and floating bubble spheres lit by purple and green laser haze, magenta core glow at center. The creature floats in dark negative space. Rounded melted blobby display lettering overlaid across its body reading ''TRIBE SOUNDS'', a small pill-shaped date bar below reading ''06.DEC.2025 22H'', smaller credits along the bottom margin in thin tracked caps. Lens bloom, soft chromatic fringing, fine film grain, emotional and dreamy.'
   - 'Event poster, 4:5 vertical. A thermal-camera fluid surface filling the frame — amber, teal and cool grey-blue blobs melting into one another with warm sodium-amber veins, everything soft-focused and diffused like liquid glass. Bold uppercase grotesk headline stacked top-left reversed white reading ''IN STORE'', three left-aligned date-and-name blocks down the lower left in mixed-weight caps, venue address tracked out along the bottom. Fine film grain, gentle gradient banding, dreamy haze, atmospheric and calm. No real venue names.'
+human_policy: forbidden
+variant_plan:
+  - { mode: object }
+  - { mode: abstract_graphic }
+  - { mode: typographic }

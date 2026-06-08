@@ -8,18 +8,13 @@ palette:
   - [33, 64, 156]
   - [217, 38, 169]
 hero_subjects:
-  people:
-    - 'A chrome liquid-metal sculpted human head tilted back, eyes closed, surface a mirror of holographic rainbow reflections, floating on flat black'
-    - 'A featureless reflective figure made of molten mercury, faceless and smooth, catching iridescent highlights against a violet wash'
-    - 'A pair of hands sculpted in polished chrome reaching upward, fingers melting into liquid-metal drips, lit by magenta rim light'
-    - 'A bust of a raver rendered entirely as oil-slick iridescent glass, surface warped and dripping, set on a grainy blue field'
   object:
+    - 'A chrome liquid-metal sculpted human head tilted back, eyes closed, surface a mirror of holographic rainbow reflections, floating on flat black'
     - 'A descending chain of glossy chrome blobs / metaballs blurred in motion against an all-violet ground with faint wireframe grid'
     - 'A twisted polished liquid-metal knot or skeletal sculpture coiling on itself over hot-magenta concentric ripple rings'
     - 'A holographic iridescent liquid splash frozen mid-air, ribbons of oil-slick paint swirling across flat black'
     - 'A dark mirror-chrome orb or teardrop softly out of focus, reflecting blue light, buried in heavy film grain'
     - 'A melting acid-smiley face cast in liquid chrome, mouth drooping into a metallic drip'
-    - 'A cluster of mercury droplets and lens-flare sparkles scattered across a saturated mono backdrop'
 compositions:
   - 'Hero chrome form centered, giant headline straddling the top third and reading across the object'
   - 'Headline broken into two stacked words top and bottom with the liquid form weaving between them'
@@ -50,3 +45,9 @@ example_prompts:
   - 'Vertical 4:5 rave poster. Hero: a chrome liquid-metal sculpted human head tilted back with eyes closed, its mirror surface ablaze with holographic rainbow reflections, floating dead-center on flat near-black. A giant heavy condensed all-caps headline ''INFINITY'' straddles the top third in off-white, slightly overlapping the crown of the head. Lower-center: medium condensed caps ''REFLECTIONS BEYOND THE VISIBLE'' tucked against the neck; tiny tracked-out caps ''OFFTIME EDIT'' and ''7TH EDIT'' anchored bottom-left and bottom-right with slash glyphs. A one-line band of small fine print runs across the very bottom. Oil-slick iridescence, pinpoint specular sparkles, subtle film grain. Palette: black ground, white type, full-spectrum chrome. No real brand or artist names.'
   - 'Vertical 4:5 club poster, edge-to-edge electric-violet duotone wash with faint wireframe-grid lines. Hero: a descending diagonal chain of glossy chrome blobs blurred in motion, falling from upper-left to lower-right, each metaball glowing with a soft pale core. Headline ''THE FLOW'' in a tall pale-violet display face top-right, with small caps ''12TH JULY 11PM'' beneath it. Lower-left: a stacked bold lineup of five short names in white caps; tiny corner tags read ''village underground'' and ''beats reality''. Heavy photocopy grain, monochrome purple throughout, CRT scanline texture. No real venue, brand, or artist names.'
   - 'Vertical 4:5 techno poster on hot magenta-pink. Hero: a twisted polished liquid-chrome knot, a skeletal mercury sculpture coiling on itself, centered over concentric ripple rings radiating outward. Top: outlined circular logo lockup, with bold caps ''JUNE 7 2025'' top-left and ''11PM 6AM'' top-right. Giant bold sans headline ''TRANCY & BOUNCY'' across the upper-center in white. Lower-center: a tight stacked lineup of names in heavy caps with small ''B2B'' separators. Bottom corners hold address lines and a ''tickets & infos'' handle. Glossy specular highlights, faint grain, magenta-and-silver palette. No real brand or artist names.'
+human_policy: rare
+human_style: figure_as_object
+variant_plan:
+  - { mode: object }
+  - { mode: object }
+  - { mode: typographic }

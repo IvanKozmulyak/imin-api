@@ -8,20 +8,16 @@ palette:
   - [225, 60, 28]
   - [70, 209, 120]
 hero_subjects:
-  people:
-    - 'extreme worm''s-eye crop of a faceless dancer''s silhouette against a black warehouse ceiling, lit by a single hard overhead bulb, heavy film grain'
-    - 'blown-out high-contrast threshold portrait of a single raver, eyes and nose dissolving into posterized halftone, rendered in one acid tone on black'
-    - 'tight black-and-white flash photo of a sweat-slicked crowd with faces cropped at the brow, harsh on-camera flash, deep crushed shadows'
-    - 'lone clubber leaning against an exposed-concrete pillar, face turned away into shadow, hard single-source side light, coarse grain'
-    - 'back-of-head shot of a dancer under a strobe, motion-blurred hair, silhouette swallowed by black negative space'
-    - 'monochrome close-up of clasped hands and a forearm above a fog-filled dancefloor, faces out of frame, grainy high contrast'
   object:
     - 'dramatic upward worm''s-eye view of a raw exposed-concrete brutalist tower''s corner, ribbed balconies vanishing into a grainy black sky'
-    - 'abstract orange-and-teal thermal smoke cloud sliced into vertical strips, heavy paper grain'
     - 'engraving-style stippled astronomical specimen (ringed planet) floating in black, fine etched dot texture'
     - 'industrial steel stairwell and concrete soffit shot head-on, single harsh light raking the formwork, film grain'
     - 'vintage halftone black-and-white city street of old sedans and concrete blocks, scratched and marbled like a worn photocopy'
     - 'single bare hanging warehouse bulb burning a hot highlight into total black surrounding void'
+  abstract_graphic:
+    - 'abstract orange-and-teal thermal smoke cloud sliced into vertical strips, heavy paper grain'
+    - 'a blown-out high-contrast posterized face reduced to two acid-green tones, used as flat graphic texture on black'
+    - 'a field of marbled toner streaks and photocopy dust over matte black, no discrete subject'
 compositions:
   - 'hero photo confined to a hard-edged central rectangle, leaving wide matte-black margins on all four sides'
   - 'worm''s-eye hero occupying the lower-right diagonal, oversized headline anchored top-left, date stacked beneath'
@@ -51,3 +47,9 @@ example_prompts:
   - 'Brutalist techno event poster, 4:5. Dramatic worm''s-eye black-and-white photograph of a raw exposed-concrete tower''s corner, ribbed balconies converging into a grainy black night sky, single harsh light raking the formwork, heavy 35mm film grain. Hero photo fills the lower-right diagonal; oversized bold condensed all-caps headline ''LABORATORIUM'' in hot vermilion-orange anchored top-left with a row of three four-point orange star glyphs above it; date ''10.02.24'' in orange small caps beneath. Two DJ names in orange condensed caps along the bottom edge. Matte black ground (13,13,13), vermilion accent (225,60,28), oversized negative space, crushed shadows, photocopy dust. No real brand or artist names.'
   - 'Brutalist techno poster, 4:5, matte pure-black background with oversized negative margins. Central hard-edged rectangle holds an extreme high-contrast threshold portrait of a single raver, eyes and hair dissolving into posterized acid-green halftone on black, coarse grain. Headline ''MECHTA'' set in heavy condensed acid-green caps top-center, date line below; a narrow left sidebar runs stacked artist names vertically in green; a small green-and-black QR square sits top-left. Monospace location tags in square brackets [LIVE][RU]. Two-tone black and acid-green (70,209,120), brutalist machine-stamped typography, no real brands.'
   - 'Brutalist techno poster, 4:5. Near-black paper-grain field, cream off-white ink. Center panel shows an abstract orange-and-teal thermal smoke cloud sliced into four thin vertical strips with black gutters, heavy grain. Giant condensed off-white wordmark sits on the bottom edge; below it a dense tour-date table in tiny monospace rows aligned in three columns. Wide empty black margins frame everything. Colors: black ground (13,13,13), cream type, muted orange/teal accent. Engraving grain, photocopy texture, oversized negative space, brutalist editorial layout, no real venue or artist names.'
+human_policy: rare
+human_style: figure_as_object
+variant_plan:
+  - { mode: object }
+  - { mode: typographic }
+  - { mode: abstract_graphic }
