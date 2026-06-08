@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **REST**: Spring Data REST + `@RestController` for custom endpoints; SpringDoc OpenAPI
 - **Security**: Spring Security (SAML2 deps present but not wired; `/api/**` routes are currently `permitAll`)
 - **AI**: Spring AI `ChatClient` — primary bean points at **OpenRouter** (OpenAI-compatible), not OpenAI directly
-- **Image gen**: Replicate → Ideogram V3 Turbo
+- **Image gen**: native Ideogram V3 API (generate at QUALITY, corrective remix at TURBO)
 - **Codegen**: Lombok
 
 ## Commands
@@ -34,15 +34,24 @@ docker compose up -d
 ```
 
 Required env vars for running locally (app will log warnings / fail requests otherwise):
-- `OPENROUTER_API_KEY` — LLM calls (concept generation, reference image analysis)
-- `REPLICATE_API_TOKEN` — Ideogram image generation (must start with `r8_`); only needed when `imageProvider=REPLICATE` (the default)
-- `OPENAI_API_KEY` — required by Spring AI starter even when OpenRouter is `@Primary` (any non-empty value works); also used directly by `OpenAiImageClient` when `imageProvider=OPENAI`
-- Optional: `OPENAI_IMAGE_MODEL` (default `gpt-image-1`) — set to e.g. `gpt-image-2` to test a newer model without code changes
+- `OPENROUTER_API_KEY` — LLM calls (art-director concept generation, reference image analysis, and the vision text/style gates via `openai/gpt-4o-mini`)
+- `IDEOGRAM_API_KEY` — native Ideogram V3 poster rendering (generate + remix). Required for poster generation.
+- `OPENAI_API_KEY` — required by the Spring AI starter even when OpenRouter is `@Primary` (any non-empty value works)
+- Optional: `IDEOGRAM_GENERATE_RENDERING_SPEED` (default `QUALITY`), `IDEOGRAM_REMIX_RENDERING_SPEED` (default `TURBO`), `IDEOGRAM_REMIX_IMAGE_WEIGHT` (default `70`), `IDEOGRAM_MAX_REFERENCES` (default `3`)
 - `RESEND_API_KEY` — Resend API key (required to send any auth email; signup/verify/resend/forgot-password fail without it)
 - `IMIN_EMAIL_FROM_ADDRESS` — sender email address (default `noreply@imin.local` — must be a verified Resend sender in prod)
 - `IMIN_EMAIL_FROM_NAME` — sender display name (default `imin`)
 - `IMIN_EMAIL_REPLY_TO` — optional reply-to header
 - `IMIN_APP_BASE_URL` — frontend base URL used to build password-reset links (default `http://localhost:3000`)
+
+Object storage (Cloudflare R2, S3-compatible) for generated poster images and event-media uploads. Bound to `imin.media.*`; consumed by `R2Config` (builds the `S3Client`) and `R2MediaStorage`, both gated on `imin.media.enabled`:
+- `MEDIA_ENABLED` — master switch for R2 object storage (default `true`). When `true`, `PosterImageStorage` uploads PNGs to R2 under key `ai-posters/{uuid}.png` and returns the R2 public URL; when `false`, posters are written to local disk and served via `/images/**`. **For local dev without R2 credentials, set `MEDIA_ENABLED=false`** — the `S3Client` is built eagerly at startup, so `MEDIA_ENABLED=true` with an empty/invalid `R2_ENDPOINT` fails app startup.
+- `R2_ENDPOINT` — R2 S3 API endpoint, e.g. `https://<account-id>.r2.cloudflarestorage.com` (no default; required when `MEDIA_ENABLED=true`)
+- `R2_ACCESS_KEY_ID` — R2 access key id (no default; required when `MEDIA_ENABLED=true`)
+- `R2_SECRET_ACCESS_KEY` — R2 secret access key (no default; required when `MEDIA_ENABLED=true`)
+- `R2_BUCKET` — target bucket (default `imin-media-dev`)
+- `R2_REGION` — region passed to the SDK; R2 ignores it but one is required (default `auto`)
+- `R2_PUBLIC_URL_PREFIX` — public read base URL for the bucket (R2 public bucket domain or custom domain); returned image URLs are `<prefix>/<key>` (no default; required when `MEDIA_ENABLED=true`)
 
 Swagger UI: `http://localhost:8085/swagger-ui.html` (dev only; disabled in prod).
 
@@ -50,28 +59,30 @@ Swagger UI: `http://localhost:8085/swagger-ui.html` (dev only; disabled in prod)
 
 The core feature is **AI event poster generation**. Entry point: `IminApiApplication.java` at `src/main/java/com/imin/iminapi/`.
 
-### Request flow: `POST /api/events/ai-create`
+### Request flow: `POST /api/v1/ai/events/concept`
 
 ```
-EventCreatorController
-  → EventCreatorService               (transaction boundary, persists GeneratedEvent)
-      → AiEventDescriptionService     (1 LLM call → PosterConcept with 3 variants)
-      → PosterOrchestrator
-          → IdeogramClient            (3 sequential calls, bounded by Semaphore(6))
-              → ReplicateClient       (POST /v1/models/{model}/predictions, Prefer: wait=60)
-          → PosterImageStorage.download  (raw PNG from Replicate CDN)
-          → OverlayCompositor         (Java2D: zxing QR + address band only)
-          → PosterImageStorage.writePng (local disk → /images/{uuid}.png)
+ConceptController → ConceptStudioService
+  → AiEventDescriptionService     (Sonnet 4.6 via OpenRouter → PosterConcept: 3 hero-typed variants)
+  → PosterOrchestrator            (3 variants in parallel, bounded by Semaphore)
+      per variant:
+        IdeogramV3Client.generate (native API, multipart, QUALITY, 4x5, magic_prompt OFF,
+                                   one style control: reference images | style_preset)
+        → text gate (hard)  → on fail: IdeogramV3Client.remix(failing image + correction
+                              prompt, TURBO) up to the regen budget, then best-effort
+        → style gate (soft) → best-effort on fail
+      → PosterImageStorage.writePng (R2 when MEDIA_ENABLED, else local disk → /images/{uuid}.png)
 ```
 
-Served via `/images/**` → filesystem mapping in `WebConfig` (dir from `replicate.image.storage-dir`, default `./generated-images`).
+Text is fully baked by the model — there is no QR/address/Satori overlay; the downloaded PNG is final.
+The native Ideogram render flow is specced in `docs/superpowers/specs/2026-06-08-ideogram-v3-native-render-design.md`.
 
 ### Key design decisions (see `docs/decisions/ADR-0001-ideogram-direct.md`)
 
-- **Typography lives inside the generated image**, not in the compositor. Ideogram V3 renders quoted strings as actual typography at ~90–95% accuracy. The prompt builder in `AiEventDescriptionService.buildPrompt` wraps every text element in double quotes.
-- **`OverlayCompositor` only draws QR code + address band.** These two must be character-perfect; everything else is trusted to the model. Do not add more overlay logic here without revisiting the ADR.
-- **Image-gen provider switch.** `EventCreatorRequest.imageProvider` (enum `REPLICATE` | `OPENAI`, default `REPLICATE`) selects the backend. `PosterOrchestrator.renderVariant` branches between `IdeogramClient` (Replicate) and `OpenAiImageClient` (OpenAI `/v1/images/edits` or `/v1/images/generations`). Same prompts and reference images feed both; aspect-ratio maps in `OpenAiImageClient.mapAspectRatio` squash to OpenAI's supported sizes (1024x1024, 1024x1536, 1536x1024).
-- **Local disk storage for Phase 1.** `PosterImageStorage` is the seam — swap it for R2/S3 without touching callers.
+- **Typography lives inside the generated image**, not in a compositor. Ideogram V3 renders the required event text as actual typography; the art-director prompt writes the exact strings into the render prompt, and the vision **text gate** verifies legibility (re-rendering via remix on failure).
+- **Exactly one style control.** Ideogram V3 accepts reference images OR a style preset OR style codes — never combined. This flow attaches the vibe's 1–3 curated reference images (`style_reference_images`, ≤10 MB); the per-vibe `ideogram_style_preset` is the no-refs fallback only.
+- **No post-render overlay.** All text is model-baked, so there is no QR/address band or Satori real-font layer. (`ImageProvider` enum + the Recraft style-training endpoint remain in the tree but are off the render path.)
+- **Object storage (Cloudflare R2) with local-disk fallback.** `PosterImageStorage` is the seam: when `MEDIA_ENABLED=true` it uploads PNGs via the `MediaStorage` bean (`R2MediaStorage`, key `ai-posters/{uuid}.png`) and returns the R2 public URL; otherwise — or if a put fails — it writes to local disk and returns an absolute `/images/{uuid}.png` URL. The R2 `S3Client` is built in `R2Config`, and both it and `R2MediaStorage` are gated on `imin.media.enabled`. See the R2 env vars above.
 
 ### Sub-style tags & reference images
 
