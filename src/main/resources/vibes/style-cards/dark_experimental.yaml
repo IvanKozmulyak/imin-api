@@ -52,3 +52,9 @@ example_prompts:
   - 'Event poster, 4:5 vertical, pure black field edge to edge, heavy film grain over everything. Center: a tight crowd of dancers shot on a slow shutter so the bodies melt into one ghostly grey motion-blurred mass, no sharp faces, just smeared light on shoulders and a hand raised mid-air, crushed blacks swallowing the edges. Top margin: bold grotesque sans title in acid yellow reading "NULL STATE" set tight in two lines. Bottom margin: large yellow date "22.11.2025" with a thin rule and small white caption underneath. Cold, cerebral, deconstructed, monochrome with a single yellow accent.'
   - 'Event poster, 4:5 vertical, warm off-white paper with coarse photocopy grain. Hero: a person clutching their own head with both hands, the fingers and arms smeared into red-and-cyan chromatic-aberration ghosts by long exposure, the face dissolving into blur. Title across the top in condensed oxblood-red blackletter display type reading "DISTORTED SIGNAL", broken to two lines. Tiny red annotation labels float beside the head, a hairline orbit curve loops behind the figure, small mono caption block and a barcode pinned bottom corners. Avant-garde, cold, glitch.'
   - 'Event poster, 4:5 vertical, cyan ground against a high-contrast burnt-orange and black halftone-dot portrait of a screaming open-mouthed face cropped tight and bleeding off both side edges, eyes lost to shadow, skin reduced to coarse dots, paper visibly creased and torn. A single heavy black slab word "RUPTURE" straddles the eyes, its letters interrupted by the figure. Small black date and venue line set quietly in the lower corner. Crushed contrast, screenprint texture, deconstructed and raw.'
+human_policy: required
+human_style: abstracted
+variant_plan:
+  - { mode: people }
+  - { mode: object }
+  - { mode: typographic }

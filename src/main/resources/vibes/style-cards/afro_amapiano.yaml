@@ -52,3 +52,9 @@ example_prompts:
   - 'Event poster, 4:5. Full-bleed flash photograph of a packed amapiano dancefloor: a Black crowd mid-dance, hands raised, front row blown out by a hard direct on-camera flash, the bodies behind dissolving into a deep red-and-green stage-light haze and motion blur. Across the top edge, an oversized distressed chalk-white sans headline reads ''AFROGROOVE'', rough-textured as if screenprinted. A thin orange ticker band runs along the very bottom carrying the date, time and DJ lineup in bold condensed black caps separated by small stars. Warm grain, sweaty energy, club shadow flushed with crimson and emerald. Colors: black, crimson, emerald, burnt orange.'
   - 'Event poster, 4:5. Tight head-on near-monochrome portrait of a Black woman in a richly patterned headwrap, chin lifted, stacked beaded necklaces at her throat, photographed in high-contrast black-and-white halftone against a warm cream ground. Orange tribal shapes radiate outward behind her head. A crimson rough brushstroke banner crosses directly over her eyes carrying a bold gold-and-white display headline; smaller hand-painted caps sit above it. Sun-baked ochre accents, grain, torn paper edges. Colors: cream, burnt orange, crimson, charcoal.'
   - 'Event poster, 4:5. A Black dancer fills the lower two-thirds, half their face and one raised hand covered in intricate white-and-gold tribal paint, a gold hoop earring catching warm rim light against a fiery red-to-orange gradient with a soft lens flare. Two carved wooden djembe drums flank the lower corners; a red kuba-cloth geometric border frames the left and right edges. A giant white rough-brush display headline ''AMAPIANO'' sweeps across the lower third with a script subline beneath it. Golden grain, sun-drenched heat. Colors: fiery orange, deep red, white, gold.'
+human_policy: required
+human_style: photographic
+variant_plan:
+  - { mode: people }
+  - { mode: object }
+  - { mode: typographic }
