@@ -74,6 +74,35 @@ class StripeConnectServiceStatusTest {
     }
 
     @Test
+    void status_forces_refresh_when_synced_but_state_not_active() {
+        // The stuck-banner bug: an org synced at least once (updatedAt != null) but frozen at
+        // ONBOARDING because the post-onboarding v2 webhook never landed. getStatus must re-check
+        // Stripe instead of serving the stale mirror until the 15-min sweeper runs, so a
+        // genuinely-finished organizer drops off the "Finish your Stripe onboarding" banner
+        // immediately — the same self-heal getStatusLive already applies to the checkout path.
+        StripeClient stripeClient = mock(StripeClient.class, Mockito.RETURNS_DEEP_STUBS);
+        OrganizationRepository orgs = mock(OrganizationRepository.class);
+        StripeConnectStatusMirror mirror = mock(StripeConnectStatusMirror.class);
+
+        UUID orgId = UUID.randomUUID();
+        Organization org = new Organization();
+        org.setId(orgId);
+        org.setStripeAccountId("acct_stuck");
+        org.setStripeConnectState(StripeConnectState.ONBOARDING);
+        org.setStripeConnectStatusUpdatedAt(java.time.Instant.now()); // already synced, yet still ONBOARDING
+        when(orgs.findById(orgId)).thenReturn(Optional.of(org));
+
+        StripeConnectService svc = new StripeConnectService(
+                stripeClient, orgs, new StripeProperties(), null, mirror);
+        AuthPrincipal p = new AuthPrincipal(UUID.randomUUID(), orgId,
+                com.imin.iminapi.model.UserRole.OWNER, UUID.randomUUID());
+
+        svc.getStatus(p, orgId);
+
+        verify(mirror).syncFromStripe("acct_stuck");
+    }
+
+    @Test
     void status_returns_not_started_when_no_account() {
         OrganizationRepository orgs = mock(OrganizationRepository.class);
         UUID orgId = UUID.randomUUID();

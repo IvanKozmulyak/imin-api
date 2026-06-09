@@ -296,13 +296,26 @@ public class StripeConnectService {
     }
 
     /**
-     * Reads Connect status from the locally-mirrored columns updated by the v2 webhook.
+     * Reads Connect status for the organizer dashboard, self-healing a stale mirror.
      *
-     * <p>Falls back to a one-shot synchronous fetch through {@link StripeConnectStatusMirror}
-     * when the org has an account id but the mirror has never been populated
-     * ({@code stripe_connect_status_updated_at IS NULL}). This avoids a backfill job
-     * for historical accounts and shields the FE from a stale ONBOARDING banner on
-     * the first read after account creation.
+     * <p>Force-refreshes through {@link StripeConnectStatusMirror} whenever the cached state
+     * could be wrong — i.e. whenever {@link #shouldRefresh} is true: any non-{@code ACTIVE}
+     * state (including the never-synced first read, where {@code updatedAt IS NULL}), or an
+     * {@code ACTIVE} mirror older than the freshness window. This is the same gate
+     * {@link #getStatusLive} applies to the checkout money path, so a genuinely-onboarded
+     * organizer drops off the "Finish your Stripe onboarding" banner on the next read rather
+     * than waiting up to ~15 min for the {@link StripeConnectStatusSweeper} backstop — closing
+     * the window where a missed/late v2 webhook freezes the dashboard at ONBOARDING. A healthy
+     * {@code ACTIVE} org stays on the fast cached path (no Stripe call within the window), and a
+     * Stripe outage degrades to the last-known mirror ({@code syncFromStripe} swallows upstream
+     * errors), so this read never hard-fails.
+     *
+     * <p>Multi-replica note: two replicas can both observe a refresh-due org and both run the
+     * sync. That's intentionally left unguarded — the projection in StripeConnectStatusMirror
+     * is deterministic, so the concurrent writes set identical columns (last-writer-wins with
+     * the same values). The only cost is a duplicate Stripe fetch, which isn't worth an
+     * {@code @Version} optimistic lock on the heavily-updated Organization entity (that would
+     * risk OptimisticLockExceptions across many unrelated org-update paths).
      */
     @Transactional
     public StatusResult getStatus(AuthPrincipal principal, UUID orgId) {
@@ -312,17 +325,7 @@ public class StripeConnectService {
             return notStarted();
         }
 
-        // Lazy first-read: if we've never received a webhook for this account, fetch
-        // synchronously this one time so the FE doesn't see stale ONBOARDING forever.
-        //
-        // Multi-replica note: two replicas can both observe updatedAt==null and both run the
-        // sync. That's intentionally left unguarded — the projection in StripeConnectStatusMirror
-        // is deterministic, so the concurrent writes set identical columns (last-writer-wins with
-        // the same values). The only cost is a duplicate Stripe fetch on first read, which isn't
-        // worth an @Version optimistic lock on the heavily-updated Organization entity (that would
-        // risk OptimisticLockExceptions across many unrelated org-update paths). Steady-state
-        // reconciliation is the ShedLock-serialized StripeConnectStatusSweeper.
-        if (org.getStripeConnectStatusUpdatedAt() == null && mirror != null) {
+        if (mirror != null && shouldRefresh(org)) {
             mirror.syncFromStripe(org.getStripeAccountId());
             org = orgs.findById(orgId).orElse(org); // re-read for the updated columns
         }
@@ -331,13 +334,15 @@ public class StripeConnectService {
     }
 
     /**
-     * Authoritative readiness read for the money path (checkout). Unlike {@link #getStatus},
-     * this force-refreshes the mirror from Stripe whenever the cached state could be wrong —
-     * i.e. whenever the org is not already {@code ACTIVE-and-recently-synced} — so a freshly
-     * verified org isn't wrongly blocked from selling and a just-disabled org isn't wrongly
-     * allowed. Best-effort: a Stripe outage degrades to the last-known mirror value
+     * Authoritative readiness read for the money path (checkout). Shares the {@link #shouldRefresh}
+     * freshness gate with {@link #getStatus} — force-refreshes the mirror from Stripe whenever the
+     * cached state could be wrong (any non-{@code ACTIVE} state, or an {@code ACTIVE} mirror older
+     * than the window) — so a freshly verified org isn't wrongly blocked from selling and a
+     * just-disabled org isn't wrongly allowed. The only difference from {@link #getStatus} is that
+     * this skips the org-ownership check: it's an internal call by orgId, not an organizer request.
+     * Best-effort: a Stripe outage degrades to the last-known mirror value
      * ({@link StripeConnectStatusMirror#syncFromStripe} swallows upstream errors), so checkout
-     * never hard-fails just because Stripe is down. No ownership check — internal call by orgId.
+     * never hard-fails just because Stripe is down.
      */
     @Transactional
     public StatusResult getStatusLive(UUID orgId) {
