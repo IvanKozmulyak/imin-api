@@ -244,6 +244,8 @@ class PublicEventControllerTest {
                 "https://cdn.example.com/cover.jpg",
                 "EUR",
                 2500,
+                false,
+                true,
                 new PublicOrganizationDto("Acme Events", "acme-events"));
     }
 
@@ -340,7 +342,7 @@ class PublicEventControllerTest {
                 "id", "slug", "name", "status", "publishedAt",
                 "genre", "type", "startsAt", "endsAt", "timezone",
                 "venueCity", "venueCountry", "posterUrl", "currency",
-                "priceFromMinor", "organization"
+                "priceFromMinor", "soldOut", "lowStock", "organization"
         );
         assertThat(actualItemKeys)
                 .as("items[0] keys leaked or missing. " +

@@ -30,7 +30,7 @@ import static org.assertj.core.api.Assertions.*;
 
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import({PublicEventService.class, PublicEventServiceListTest.FixedClockConfig.class})
+@Import({PublicEventService.class, PublicListingConfig.class, PublicEventServiceListTest.FixedClockConfig.class})
 class PublicEventServiceListTest {
 
     /** Fixed "now" for all flag-computation tests: 2026-06-01T12:00:00Z */

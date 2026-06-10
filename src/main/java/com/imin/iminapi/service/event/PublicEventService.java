@@ -35,15 +35,18 @@ public class PublicEventService {
     private final EventRepository eventRepository;
     private final TicketTierRepository tierRepository;
     private final OrganizationRepository organizationRepository;
+    private final PublicListingProperties listingProperties;
     private final Clock clock;
 
     public PublicEventService(EventRepository eventRepository,
                                TicketTierRepository tierRepository,
                                OrganizationRepository organizationRepository,
+                               PublicListingProperties listingProperties,
                                Clock clock) {
         this.eventRepository = eventRepository;
         this.tierRepository = tierRepository;
         this.organizationRepository = organizationRepository;
+        this.listingProperties = listingProperties;
         this.clock = clock;
     }
 
@@ -127,13 +130,28 @@ public class PublicEventService {
                                 row -> (UUID) row[0],
                                 row -> ((Number) row[1]).intValue()));
 
+        // Per-event remaining rollup across enabled tiers (one batch query, no N+1).
+        // row[1] = SUM(remaining) -> total (clamped >=0, feeds lowStock);
+        // row[2] = MAX(remaining) -> kept signed so soldOut is MAX <= 0 (oversell-safe).
+        Map<UUID, long[]> remainingByEvent = eventIds.isEmpty()
+                ? Map.of()
+                : tierRepository.findEnabledRemainingByEventIds(eventIds).stream()
+                        .collect(Collectors.toMap(
+                                row -> (UUID) row[0],
+                                row -> new long[]{
+                                        Math.max(0L, ((Number) row[1]).longValue()),
+                                        ((Number) row[2]).longValue()
+                                }));
+
         Set<UUID> orgIds = result.getContent().stream().map(Event::getOrgId).collect(Collectors.toSet());
         Map<UUID, Organization> orgsById = orgIds.isEmpty()
                 ? Map.of()
                 : StreamSupport.stream(organizationRepository.findAllById(orgIds).spliterator(), false)
                         .collect(Collectors.toMap(Organization::getId, o -> o));
 
-        return PageResponse.from(result, e -> toListItem(e, priceByEvent.get(e.getId()), orgsById.get(e.getOrgId())));
+        return PageResponse.from(result, e -> toListItem(
+                e, priceByEvent.get(e.getId()), orgsById.get(e.getOrgId()),
+                remainingByEvent.get(e.getId()), listingProperties.getLowStockThreshold()));
     }
 
     @Transactional(readOnly = true)
@@ -149,13 +167,20 @@ public class PublicEventService {
         return eventRepository.findDistinctPublicGenres();
     }
 
-    private static PublicEventListItem toListItem(Event e, Integer priceFromMinor, Organization org) {
+    private static PublicEventListItem toListItem(Event e, Integer priceFromMinor, Organization org,
+                                                  long[] remaining, int lowStockThreshold) {
+        // remaining == null => event has no enabled tiers; cannot be "sold out".
+        // remaining[0] = total remaining (clamped >=0), remaining[1] = MAX single-tier remaining (signed).
+        // soldOut = every enabled tier empty => the largest per-tier remaining is <= 0.
+        boolean soldOut = remaining != null && remaining[1] <= 0L;
+        boolean lowStock = remaining != null && !soldOut
+                && remaining[0] <= lowStockThreshold;
         return new PublicEventListItem(
                 e.getId(), e.getSlug(), e.getName(), e.getStatus().wireValue(), e.getPublishedAt(),
                 e.getGenre(), e.getType(),
                 e.getStartsAt(), e.getEndsAt(), e.getTimezone(),
                 e.getVenueCity(), e.getVenueCountry(), e.getPosterUrl(), e.getCurrency(),
-                priceFromMinor,
+                priceFromMinor, soldOut, lowStock,
                 new PublicOrganizationDto(org.getName(), org.getSlug()));
     }
 
