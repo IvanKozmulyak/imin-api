@@ -33,6 +33,7 @@ import static org.mockito.Mockito.when;
 class RefundRequestServiceTest {
 
     OrderRepository orders = mock(OrderRepository.class);
+    com.imin.iminapi.repository.EventRepository events = mock(com.imin.iminapi.repository.EventRepository.class);
     OrderRecoveryAttemptRepository attempts = mock(OrderRecoveryAttemptRepository.class);
     RefundRequestTokenRepository tokens = mock(RefundRequestTokenRepository.class);
     RefundRequestRepository requests = mock(RefundRequestRepository.class);
@@ -55,7 +56,7 @@ class RefundRequestServiceTest {
         ticketProps.setRecoveryMaxPerHour(5);
         when(renderer.render(anyString(), any()))
             .thenReturn(new EmailTemplateRenderer.Rendered("<html/>", "txt"));
-        service = new RefundRequestService(orders, attempts, tokens, requests,
+        service = new RefundRequestService(orders, events, attempts, tokens, requests,
             email, renderer, emailProps, ticketProps, publisher,
             tickets, refundTickets, tiers, refundService);
     }
@@ -188,6 +189,13 @@ class RefundRequestServiceTest {
         void returns_form_data_for_valid_token() {
             when(tokens.findByTokenHash(anyString())).thenReturn(Optional.of(token));
             when(orders.findById(orderId)).thenReturn(Optional.of(o));
+            com.imin.iminapi.model.Event event = new com.imin.iminapi.model.Event();
+            event.setId(o.getEventId());
+            event.setName("Summer Fest 2026");
+            event.setStartsAt(Instant.parse("2026-07-15T18:00:00Z"));
+            event.setTimezone("Europe/Berlin");
+            event.setVenueName("Funkhaus");
+            when(events.findById(o.getEventId())).thenReturn(Optional.of(event));
             com.imin.iminapi.model.Ticket t = new com.imin.iminapi.model.Ticket();
             t.setId(UUID.randomUUID());
             t.setOrderId(orderId);
@@ -203,6 +211,10 @@ class RefundRequestServiceTest {
             assertThat(resp.estimatedRefundMinor()).isEqualTo(2000L);
             assertThat(resp.tickets()).hasSize(1);
             assertThat(resp.reasons()).contains("cant_attend", "other");
+            assertThat(resp.event().timezone()).isEqualTo("Europe/Berlin");
+            assertThat(resp.event().name()).isEqualTo("Summer Fest 2026");
+            assertThat(resp.event().startsAt()).isEqualTo(Instant.parse("2026-07-15T18:00:00Z"));
+            assertThat(resp.event().venueName()).isEqualTo("Funkhaus");
         }
     }
 

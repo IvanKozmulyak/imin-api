@@ -3,6 +3,7 @@ package com.imin.iminapi.refund;
 import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.email.EmailTemplateRenderer;
+import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.OrderRecoveryAttempt;
 import com.imin.iminapi.model.Ticket;
@@ -19,6 +20,7 @@ import com.imin.iminapi.refund.dto.RefundRequestSummaryResponse;
 import com.imin.iminapi.refund.event.RefundRequestRejectedEvent;
 import com.imin.iminapi.refund.event.RefundRequestSubmittedEvent;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRecoveryAttemptRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketRepository;
@@ -66,6 +68,7 @@ public class RefundRequestService {
     private static final SecureRandom RNG = new SecureRandom();
 
     private final OrderRepository orders;
+    private final EventRepository events;
     private final OrderRecoveryAttemptRepository attempts;
     private final RefundRequestTokenRepository tokens;
     private final RefundRequestRepository requests;
@@ -80,6 +83,7 @@ public class RefundRequestService {
     private final RefundService refundService;
 
     public RefundRequestService(OrderRepository orders,
+                                EventRepository events,
                                 OrderRecoveryAttemptRepository attempts,
                                 RefundRequestTokenRepository tokens,
                                 RefundRequestRepository requests,
@@ -93,6 +97,7 @@ public class RefundRequestService {
                                 TicketTierRepository tiers,
                                 RefundService refundService) {
         this.orders = orders;
+        this.events = events;
         this.attempts = attempts;
         this.tokens = tokens;
         this.requests = requests;
@@ -185,6 +190,8 @@ public class RefundRequestService {
                 ErrorCode.REFUND_TOKEN_EXPIRED_OR_CONSUMED,
                 "Refund link is no longer valid"));
 
+        Event event = events.findById(order.getEventId()).orElse(null);
+
         List<Ticket> refundable = refundableTicketsFor(order);
         if (refundable.isEmpty()) {
             throw new ApiException(
@@ -203,10 +210,12 @@ public class RefundRequestService {
 
         return new PublicRefundFormResponse(
             order.getId(),
-            // Event name lookup intentionally omitted here; FE can hit existing
-            // /api/v1/public/events/{eventId} for richer detail if needed.
             new PublicRefundFormResponse.EventSummary(
-                null, null, null, order.getCurrency()),
+                event == null ? null : event.getName(),
+                event == null ? null : event.getStartsAt(),
+                event == null ? null : event.getTimezone(),
+                event == null ? null : event.getVenueName(),
+                order.getCurrency()),
             refundable.stream()
                 .map(t -> new PublicRefundFormResponse.TicketLine(
                     t.getId(),
