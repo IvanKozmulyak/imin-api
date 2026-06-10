@@ -19,5 +19,7 @@ public record PublicEventListItem(
         String posterUrl,
         String currency,
         Integer priceFromMinor,
+        boolean soldOut,
+        boolean lowStock,
         PublicOrganizationDto organization
 ) {}

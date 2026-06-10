@@ -28,7 +28,7 @@ import static org.assertj.core.api.Assertions.*;
 
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import({PublicEventService.class, PublicEventServiceTest.FixedClockConfig.class})
+@Import({PublicEventService.class, PublicListingConfig.class, PublicEventServiceTest.FixedClockConfig.class})
 class PublicEventServiceTest {
 
     /** Fixed "now" for all flag-computation tests: 2026-06-01T12:00:00Z */
@@ -493,5 +493,130 @@ class PublicEventServiceTest {
         PublicEventResponse r = publicEventService.get(e.getId(), false);
 
         assertThat(r.tiers()).isEmpty();
+    }
+
+    // -----------------------------------------------------------------------
+    // includeOngoing — listing predicate (companion item 4)
+    // -----------------------------------------------------------------------
+
+    private com.imin.iminapi.service.event.PublicEventListQuery listQuery(
+            Instant from, boolean includeOngoing) {
+        return new com.imin.iminapi.service.event.PublicEventListQuery(
+                from, null, null, null, null, null, null, null,
+                false, includeOngoing, 1, 20);
+    }
+
+    @Test
+    void list_excludesOngoingEvent_whenIncludeOngoingFalse() {
+        // Event started 1h ago, ends 1h from now => doors-open. from = now.
+        Event e = publishedLiveEvent();
+        e.setStartsAt(NOW.minusSeconds(3600));
+        e.setEndsAt(NOW.plusSeconds(3600));
+        eventRepository.save(e);
+
+        var result = publicEventService.list(listQuery(NOW, false));
+
+        assertThat(result.items()).isEmpty();
+    }
+
+    @Test
+    void list_includesOngoingEvent_whenIncludeOngoingTrue() {
+        Event e = publishedLiveEvent();
+        e.setStartsAt(NOW.minusSeconds(3600));
+        e.setEndsAt(NOW.plusSeconds(3600));
+        eventRepository.save(e);
+
+        var result = publicEventService.list(listQuery(NOW, true));
+
+        assertThat(result.items()).hasSize(1);
+        assertThat(result.items().get(0).id()).isEqualTo(e.getId());
+    }
+
+    @Test
+    void list_dropsFinishedEvent_evenWhenIncludeOngoingTrue() {
+        // Started and ended in the past => truly finished, must drop in both modes.
+        Event e = publishedLiveEvent();
+        e.setStartsAt(NOW.minusSeconds(7200));
+        e.setEndsAt(NOW.minusSeconds(3600));
+        eventRepository.save(e);
+
+        assertThat(publicEventService.list(listQuery(NOW, true)).items()).isEmpty();
+        assertThat(publicEventService.list(listQuery(NOW, false)).items()).isEmpty();
+    }
+
+    // -----------------------------------------------------------------------
+    // soldOut / lowStock — listing availability flags (companion item 5)
+    // -----------------------------------------------------------------------
+
+    @Test
+    void list_soldOut_whenEveryEnabledTierRemainingIsZero() {
+        Event e = publishedLiveEvent();
+        e.setStartsAt(NOW.plusSeconds(86400));
+        e = eventRepository.save(e);
+        tier(e.getId(), "GA",  500, 50, 50, true, 0, null);  // remaining 0
+        tier(e.getId(), "VIP", 1500, 20, 20, true, 1, null); // remaining 0
+
+        var result = publicEventService.list(listQuery(null, false));
+
+        assertThat(result.items()).hasSize(1);
+        assertThat(result.items().get(0).soldOut()).isTrue();
+        assertThat(result.items().get(0).lowStock()).isFalse();
+    }
+
+    @Test
+    void list_lowStock_whenTotalRemainingBelowThresholdButNotSoldOut() {
+        // Default threshold = 10. Total remaining = 4 < 10, > 0 => lowStock.
+        Event e = publishedLiveEvent();
+        e.setStartsAt(NOW.plusSeconds(86400));
+        e = eventRepository.save(e);
+        tier(e.getId(), "GA",  500, 50, 48, true, 0, null);  // remaining 2
+        tier(e.getId(), "VIP", 1500, 20, 18, true, 1, null); // remaining 2
+
+        var result = publicEventService.list(listQuery(null, false));
+
+        assertThat(result.items().get(0).soldOut()).isFalse();
+        assertThat(result.items().get(0).lowStock()).isTrue();
+    }
+
+    @Test
+    void list_neitherFlag_whenAmpleRemaining() {
+        Event e = publishedLiveEvent();
+        e.setStartsAt(NOW.plusSeconds(86400));
+        e = eventRepository.save(e);
+        tier(e.getId(), "GA", 500, 100, 0, true, 0, null); // remaining 100
+
+        var result = publicEventService.list(listQuery(null, false));
+
+        assertThat(result.items().get(0).soldOut()).isFalse();
+        assertThat(result.items().get(0).lowStock()).isFalse();
+    }
+
+    @Test
+    void list_disabledTiersExcludedFromAvailability() {
+        // The only tier with remaining stock is disabled => event reads as sold out.
+        Event e = publishedLiveEvent();
+        e.setStartsAt(NOW.plusSeconds(86400));
+        e = eventRepository.save(e);
+        tier(e.getId(), "GA",       500, 50, 50,  true,  0, null); // enabled, remaining 0
+        tier(e.getId(), "Disabled", 500, 50, 0,   false, 1, null); // disabled, ignored
+
+        var result = publicEventService.list(listQuery(null, false));
+
+        assertThat(result.items().get(0).soldOut()).isTrue();
+        assertThat(result.items().get(0).lowStock()).isFalse();
+    }
+
+    @Test
+    void list_notSoldOut_whenEventHasNoEnabledTiers() {
+        // No enabled tiers => no inventory rows => neither flag set (cannot be "sold out").
+        Event e = publishedLiveEvent();
+        e.setStartsAt(NOW.plusSeconds(86400));
+        e = eventRepository.save(e);
+
+        var result = publicEventService.list(listQuery(null, false));
+
+        assertThat(result.items()).hasSize(1);
+        assertThat(result.items().get(0).soldOut()).isFalse();
+        assertThat(result.items().get(0).lowStock()).isFalse();
     }
 }

@@ -30,7 +30,7 @@ import static org.assertj.core.api.Assertions.*;
 
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import({PublicEventService.class, PublicEventServiceListTest.FixedClockConfig.class})
+@Import({PublicEventService.class, PublicListingConfig.class, PublicEventServiceListTest.FixedClockConfig.class})
 class PublicEventServiceListTest {
 
     /** Fixed "now" for all flag-computation tests: 2026-06-01T12:00:00Z */
@@ -106,12 +106,12 @@ class PublicEventServiceListTest {
 
     private PublicEventListQuery emptyQuery() {
         return new PublicEventListQuery(
-                null, null, null, null, null, null, null, null, false, 1, 20);
+                null, null, null, null, null, null, null, null, false, false, 1, 20);
     }
 
     private PublicEventListQuery onlyPage(int page, int pageSize) {
         return new PublicEventListQuery(
-                null, null, null, null, null, null, null, null, false, page, pageSize);
+                null, null, null, null, null, null, null, null, false, false, page, pageSize);
     }
 
     // -----------------------------------------------------------------------
@@ -176,7 +176,7 @@ class PublicEventServiceListTest {
         eventRepository.save(b);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, "techno", null, null, null, null, null, false, 1, 20));
+                null, null, "techno", null, null, null, null, null, false, false, 1, 20));
         assertThat(result.items()).hasSize(1);
         assertThat(result.items().get(0).genre()).isEqualTo("techno");
     }
@@ -191,7 +191,7 @@ class PublicEventServiceListTest {
         eventRepository.save(b);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, "festival", null, null, null, null, false, 1, 20));
+                null, null, null, "festival", null, null, null, null, false, false, 1, 20));
         assertThat(result.items()).hasSize(1);
         assertThat(result.items().get(0).type()).isEqualTo("festival");
     }
@@ -206,7 +206,7 @@ class PublicEventServiceListTest {
         eventRepository.save(b);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, "fr", null, null, false, 1, 20));
+                null, null, null, null, null, "fr", null, null, false, false, 1, 20));
         assertThat(result.items()).hasSize(1);
         assertThat(result.items().get(0).venueCountry()).isEqualTo("FR");
     }
@@ -221,7 +221,7 @@ class PublicEventServiceListTest {
         eventRepository.save(b);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, "berl", null, null, null, false, 1, 20));
+                null, null, null, null, "berl", null, null, null, false, false, 1, 20));
         assertThat(result.items()).hasSize(1);
         assertThat(result.items().get(0).venueCity()).isEqualTo("Berlin");
     }
@@ -236,7 +236,7 @@ class PublicEventServiceListTest {
         eventRepository.save(b);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, null, null, "festIVAL", false, 1, 20));
+                null, null, null, null, null, null, null, "festIVAL", false, false, 1, 20));
         assertThat(result.items()).hasSize(1);
         assertThat(result.items().get(0).name()).isEqualTo("Summer Festival");
     }
@@ -252,7 +252,7 @@ class PublicEventServiceListTest {
         eventRepository.save(a);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                start, null, null, null, null, null, null, null, false, 1, 20));
+                start, null, null, null, null, null, null, null, false, false, 1, 20));
         assertThat(result.items()).hasSize(1);
     }
 
@@ -265,7 +265,7 @@ class PublicEventServiceListTest {
 
         // to == startsAt means startsAt < to is false → excluded
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, start, null, null, null, null, null, null, false, 1, 20));
+                null, start, null, null, null, null, null, null, false, false, 1, 20));
         assertThat(result.items()).isEmpty();
     }
 
@@ -296,7 +296,7 @@ class PublicEventServiceListTest {
         eventRepository.save(b);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, null, other.getSlug(), null, false, 1, 20));
+                null, null, null, null, null, null, other.getSlug(), null, false, false, 1, 20));
         assertThat(result.items()).hasSize(1);
         assertThat(result.items().get(0).organization().slug()).isEqualTo(other.getSlug());
     }
@@ -306,7 +306,7 @@ class PublicEventServiceListTest {
         eventRepository.save(publishedLiveEvent());
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, null, "no-such-org", null, false, 1, 20));
+                null, null, null, null, null, null, "no-such-org", null, false, false, 1, 20));
         assertThat(result.items()).isEmpty();
         assertThat(result.total()).isZero();
         assertThat(result.page()).isEqualTo(1);
@@ -323,7 +323,7 @@ class PublicEventServiceListTest {
         eventRepository.save(a);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, null, null, null, true, 1, 20));
+                null, null, null, null, null, null, null, null, true, false, 1, 20));
         assertThat(result.items()).isEmpty();
     }
 
@@ -334,7 +334,7 @@ class PublicEventServiceListTest {
         eventRepository.save(a);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, null, null, null, true, 1, 20));
+                null, null, null, null, null, null, null, null, true, false, 1, 20));
         assertThat(result.items()).hasSize(1);
     }
 
@@ -346,7 +346,7 @@ class PublicEventServiceListTest {
         eventRepository.save(a);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, null, null, null, true, 1, 20));
+                null, null, null, null, null, null, null, null, true, false, 1, 20));
         assertThat(result.items()).isEmpty();
     }
 
@@ -475,7 +475,7 @@ class PublicEventServiceListTest {
     @Test
     void q_below_min_length_returns_400() {
         assertThatThrownBy(() -> publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, null, null, "a", false, 1, 20)))
+                null, null, null, null, null, null, null, "a", false, false, 1, 20)))
                 .isInstanceOf(ApiException.class)
                 .satisfies(ex -> {
                     ApiException apiEx = (ApiException) ex;
@@ -488,7 +488,7 @@ class PublicEventServiceListTest {
     @Test
     void country_wrong_length_returns_400() {
         assertThatThrownBy(() -> publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, "DEU", null, null, false, 1, 20)))
+                null, null, null, null, null, "DEU", null, null, false, false, 1, 20)))
                 .isInstanceOf(ApiException.class)
                 .satisfies(ex -> {
                     ApiException apiEx = (ApiException) ex;

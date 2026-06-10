@@ -14,7 +14,7 @@ public record PublicRefundFormResponse(
     String currency,
     List<String> reasons
 ) {
-    public record EventSummary(String name, Instant startsAt, String venueName, String currency) {}
+    public record EventSummary(String name, Instant startsAt, String timezone, String venueName, String currency) {}
     public record TicketLine(UUID id, String tierName, long faceMinor) {}
 
     public static List<String> defaultReasons() {

@@ -36,6 +36,29 @@ public interface TicketTierRepository extends JpaRepository<TicketTier, UUID> {
             @Param("eventIds") Collection<UUID> eventIds);
 
     /**
+     * Per-event inventory rollup across ENABLED tiers only, for the public listing's
+     * soldOut / lowStock flags. One batch round-trip per page (no N+1) — same pattern
+     * as {@link #findMinEnabledPriceByEventIds}.
+     *
+     * <p>Returns {@code (eventId, SUM(remaining), MAX(remaining))} where per-tier
+     * {@code remaining = quantity - reserved - sold}. {@code MAX(remaining) <= 0}
+     * means every enabled tier is empty ⇒ soldOut; {@code SUM} (clamped to >=0 in the
+     * service, matching {@code PublicTierDto.from}'s {@code Math.max(0, ...)}) feeds the
+     * lowStock total. Events with no enabled tiers simply do not appear in the result and
+     * the service treats that as "not sold out".
+     */
+    @Query("""
+        SELECT t.eventId,
+               SUM(t.quantity - t.reserved - t.sold),
+               MAX(t.quantity - t.reserved - t.sold)
+          FROM TicketTier t
+         WHERE t.enabled = true AND t.eventId IN :eventIds
+         GROUP BY t.eventId
+    """)
+    List<Object[]> findEnabledRemainingByEventIds(
+            @Param("eventIds") Collection<UUID> eventIds);
+
+    /**
      * Pessimistic row lock for inventory updates. Used by {@code InventoryService} to
      * serialize concurrent reserve / release / confirm flows so two buyers can't both
      * see the same {@code available} count and both succeed past the capacity check.

@@ -244,6 +244,8 @@ class PublicEventControllerTest {
                 "https://cdn.example.com/cover.jpg",
                 "EUR",
                 2500,
+                false,
+                true,
                 new PublicOrganizationDto("Acme Events", "acme-events"));
     }
 
@@ -340,7 +342,7 @@ class PublicEventControllerTest {
                 "id", "slug", "name", "status", "publishedAt",
                 "genre", "type", "startsAt", "endsAt", "timezone",
                 "venueCity", "venueCountry", "posterUrl", "currency",
-                "priceFromMinor", "organization"
+                "priceFromMinor", "soldOut", "lowStock", "organization"
         );
         assertThat(actualItemKeys)
                 .as("items[0] keys leaked or missing. " +
@@ -407,6 +409,32 @@ class PublicEventControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$").isArray())
                 .andExpect(jsonPath("$.length()").value(0));
+    }
+
+    @Test
+    void list_bindsIncludeOngoingIntoQueryObject() throws Exception {
+        when(publicEventService.list(any(PublicEventListQuery.class)))
+                .thenReturn(new PageResponse<>(List.of(), 0, 1, 20));
+
+        mvc.perform(get("/api/v1/public/events").param("includeOngoing", "true"))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<PublicEventListQuery> captor = ArgumentCaptor.forClass(PublicEventListQuery.class);
+        verify(publicEventService).list(captor.capture());
+        assertThat(captor.getValue().includeOngoing()).isTrue();
+    }
+
+    @Test
+    void list_includeOngoingDefaultsToFalse() throws Exception {
+        when(publicEventService.list(any(PublicEventListQuery.class)))
+                .thenReturn(new PageResponse<>(List.of(), 0, 1, 20));
+
+        mvc.perform(get("/api/v1/public/events"))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<PublicEventListQuery> captor = ArgumentCaptor.forClass(PublicEventListQuery.class);
+        verify(publicEventService).list(captor.capture());
+        assertThat(captor.getValue().includeOngoing()).isFalse();
     }
 
     // --- helpers ---
