@@ -115,7 +115,7 @@ public class PublicEventService {
                 query.from(), query.to(),
                 nullIfBlank(query.genre()), nullIfBlank(query.type()),
                 nullIfBlank(query.city()), country, nullIfBlank(query.q()),
-                orgId, query.onSaleOnly(), clock.instant(),
+                orgId, query.onSaleOnly(), query.includeOngoing(), clock.instant(),
                 PageRequest.of(page - 1, pageSize));
 
         // 4. Batch-load priceFromMinor + orgs

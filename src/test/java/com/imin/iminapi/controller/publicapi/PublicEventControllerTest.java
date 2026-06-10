@@ -409,6 +409,32 @@ class PublicEventControllerTest {
                 .andExpect(jsonPath("$.length()").value(0));
     }
 
+    @Test
+    void list_bindsIncludeOngoingIntoQueryObject() throws Exception {
+        when(publicEventService.list(any(PublicEventListQuery.class)))
+                .thenReturn(new PageResponse<>(List.of(), 0, 1, 20));
+
+        mvc.perform(get("/api/v1/public/events").param("includeOngoing", "true"))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<PublicEventListQuery> captor = ArgumentCaptor.forClass(PublicEventListQuery.class);
+        verify(publicEventService).list(captor.capture());
+        assertThat(captor.getValue().includeOngoing()).isTrue();
+    }
+
+    @Test
+    void list_includeOngoingDefaultsToFalse() throws Exception {
+        when(publicEventService.list(any(PublicEventListQuery.class)))
+                .thenReturn(new PageResponse<>(List.of(), 0, 1, 20));
+
+        mvc.perform(get("/api/v1/public/events"))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<PublicEventListQuery> captor = ArgumentCaptor.forClass(PublicEventListQuery.class);
+        verify(publicEventService).list(captor.capture());
+        assertThat(captor.getValue().includeOngoing()).isFalse();
+    }
+
     // --- helpers ---
 
     private static Set<String> fieldNames(JsonNode node) {

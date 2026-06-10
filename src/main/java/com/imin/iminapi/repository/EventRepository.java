@@ -94,7 +94,9 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
            AND e.visibility = com.imin.iminapi.model.EventVisibility.PUBLIC
            AND e.publishedAt IS NOT NULL
            AND e.status <> com.imin.iminapi.model.EventStatus.DRAFT
-           AND (CAST(:from AS timestamp) IS NULL OR e.startsAt >= :from)
+           AND (CAST(:from AS timestamp) IS NULL
+                OR e.startsAt >= :from
+                OR (:includeOngoing = true AND (e.endsAt IS NULL OR e.endsAt > :now)))
            AND (CAST(:to AS timestamp) IS NULL OR e.startsAt < :to)
            AND (CAST(:genre AS string) IS NULL OR e.genre = :genre)
            AND (CAST(:type AS string) IS NULL OR e.type = :type)
@@ -118,6 +120,7 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
             @Param("q") String q,
             @Param("orgId") UUID orgId,
             @Param("onSaleOnly") boolean onSaleOnly,
+            @Param("includeOngoing") boolean includeOngoing,
             @Param("now") Instant now,
             Pageable pageable);
 

@@ -12,6 +12,7 @@ public record PublicEventListQuery(
         String orgSlug,
         String q,
         boolean onSaleOnly,
+        boolean includeOngoing,
         int page,
         int pageSize
 ) {}
