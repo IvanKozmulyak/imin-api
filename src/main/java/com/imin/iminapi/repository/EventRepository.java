@@ -5,9 +5,11 @@ import com.imin.iminapi.model.EventStatus;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.data.rest.core.annotation.RepositoryRestResource;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
@@ -135,6 +137,36 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
          ORDER BY e.venueCity ASC, e.venueCountry ASC
 """)
     List<Object[]> findDistinctPublicCities();
+
+    /**
+     * Bulk transition: LIVE events whose {@code endsAt} is in the past become PAST.
+     * Events with {@code null endsAt} are excluded — no end date means the event has
+     * no defined closing time and must remain LIVE indefinitely.
+     *
+     * <p>The JPQL explicitly sets {@code e.updatedAt = :updatedAt} because bulk UPDATE
+     * bypasses JPA entity lifecycle callbacks ({@code @PreUpdate}) — without it,
+     * ETag/concurrency consumers reading the event after the sweep would see a stale
+     * timestamp and might incorrectly treat the record as unchanged.
+     *
+     * <p>{@code @Transactional} is on the repo method so the sweep tick (which has no
+     * surrounding transaction) gets a clean boundary here — matching the pattern used
+     * by {@code PromoCodeRepository.incrementUsedCount}.
+     *
+     * @param now       current instant used as the boundary for {@code endsAt < :now}
+     * @param updatedAt value written to {@code updated_at} on every transitioned row
+     * @return the number of rows updated
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("""
+        UPDATE Event e
+           SET e.status = com.imin.iminapi.model.EventStatus.PAST,
+               e.updatedAt = :updatedAt
+         WHERE e.status = com.imin.iminapi.model.EventStatus.LIVE
+           AND e.endsAt IS NOT NULL
+           AND e.endsAt < :now
+    """)
+    int markLivePast(@Param("now") Instant now, @Param("updatedAt") Instant updatedAt);
 
     @Query("""
         SELECT DISTINCT e.genre FROM Event e
