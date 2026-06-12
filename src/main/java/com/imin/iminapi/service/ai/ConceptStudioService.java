@@ -27,6 +27,8 @@ import com.imin.iminapi.service.poster.PosterImageStorage;
 import com.imin.iminapi.service.poster.PosterOrchestrator;
 import com.imin.iminapi.service.poster.PosterOrchestrator.OrchestrationResult;
 import com.imin.iminapi.service.poster.VibeLibrary;
+import io.sentry.Sentry;
+import io.sentry.SentryLevel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -125,10 +127,18 @@ public class ConceptStudioService {
         if (url == null || url.isBlank()) return null;
         try {
             byte[] bytes = posterStorage.download(url);
+            if (bytes == null || bytes.length == 0) {
+                throw new IllegalStateException("DJ photo download was empty: " + url);
+            }
             String mime = url.toLowerCase(Locale.ROOT).endsWith(".png") ? "image/png" : "image/jpeg";
             return new DjPhotoSnapshot(url, bytes, mime);
         } catch (Exception ex) {
-            log.warn("DJ photo download failed; generating without character reference: {}", ex.getMessage());
+            log.warn("DJ photo unavailable; generating without character reference: {}", ex.getMessage());
+            Sentry.withScope(scope -> {
+                scope.setLevel(SentryLevel.WARNING);
+                scope.setTag("subsystem", "dj-photo");
+                Sentry.captureException(ex);
+            });
             return null;
         }
     }

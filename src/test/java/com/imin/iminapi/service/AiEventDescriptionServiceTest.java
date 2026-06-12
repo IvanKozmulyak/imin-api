@@ -595,7 +595,7 @@ class AiEventDescriptionServiceTest {
     @Test
     void nonDjModeStillEnforcesTheCardPlan() {
         String error = service.validate(djConcept(), reqNoText("brutalist_techno"), CARD_MIXED_PLAN_RARE, false);
-        assertThat(error).isNotNull(); // variant[1] hero_type mismatch (expected "object", got "people")
+        assertThat(error).isNotNull().contains("hero_type"); // variant[1] hero_type mismatch (expected "object", got "people")
     }
 
     @Test
@@ -606,6 +606,7 @@ class AiEventDescriptionServiceTest {
         assertThat(brandIdx).isPositive();
         assertThat(djIdx).isGreaterThan(brandIdx);
         assertThat(prompt).contains("never facial features");
+        assertThat(prompt).contains("Brand colours must dominate");
     }
 
     @Test
@@ -613,6 +614,7 @@ class AiEventDescriptionServiceTest {
         String prompt = service.buildPrompt(brief(), BRUTALIST, sampledDjRun(), null, true);
         assertThat(prompt).doesNotContain("BRAND PALETTE");
         assertThat(prompt).contains("FEATURED DJ — MANDATORY");
+        assertThat(prompt).doesNotContain("Brand colours must dominate");
     }
 
     // ---- T9: defensive JSON parsing -------------------------------------------------------------

@@ -50,6 +50,10 @@ ideogram:
   remix:
     rendering-speed: ${IDEOGRAM_REMIX_RENDERING_SPEED:TURBO}
     image-weight: ${IDEOGRAM_REMIX_IMAGE_WEIGHT:70}
+  character:
+    color-palette: ${IDEOGRAM_CHARACTER_COLOR_PALETTE:false}
+    seed: ${IDEOGRAM_CHARACTER_SEED:false}
+    style-control: ${IDEOGRAM_CHARACTER_STYLE_CONTROL:false}
 
 poster:
   references:

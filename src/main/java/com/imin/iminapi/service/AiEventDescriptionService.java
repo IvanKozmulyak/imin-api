@@ -74,10 +74,12 @@ public class AiEventDescriptionService {
             describe pose, framing, lighting, scale, and wardrobe, never facial features, hair, \
             ethnicity, or age (the reference image controls the face). The DJ must be a single, \
             clearly visible human figure occupying the visual centre of gravity. The vibe \
-            contributes mood, texture, composition, and typography around the DJ. Brand colours \
-            must dominate the lighting, wardrobe accents, and background grade of every variant.
+            contributes mood, texture, composition, and typography around the DJ.
 
             """;
+
+    private static final String FEATURED_DJ_BRAND_SUFFIX =
+            "Brand colours must dominate the lighting, wardrobe accents, and background grade of every variant.\n\n";
 
     private static final String DJ_HUMAN_RULE =
             "- Render the featured DJ as one clear, dominant human figure — the attached character "
@@ -427,6 +429,9 @@ public class AiEventDescriptionService {
         // else directly after the VIBE block — in both cases before the per-variant directions.
         if (djMode) {
             sb.append(FEATURED_DJ_BLOCK);
+            if (notBlank(brandAccent)) {
+                sb.append(FEATURED_DJ_BRAND_SUFFIX);
+            }
         }
 
         sb.append("CREATIVE DIRECTIONS — one per variant, follow them precisely:\n\n");

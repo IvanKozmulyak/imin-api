@@ -9,9 +9,11 @@ import com.imin.iminapi.dto.PricingRecommendation;
 import com.imin.iminapi.dto.ai.ConceptOverview;
 import com.imin.iminapi.dto.ai.ConceptRequest;
 import com.imin.iminapi.dto.ai.ConceptResponse;
+import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.GeneratedEvent;
 import com.imin.iminapi.model.GeneratedEventStatus;
 import com.imin.iminapi.model.ImageProvider;
+import com.imin.iminapi.model.PosterGeneration;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.GeneratedEventRepository;
@@ -37,6 +39,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 class ConceptStudioServiceTest {
@@ -360,5 +364,64 @@ class ConceptStudioServiceTest {
                 ArgumentCaptor.forClass(com.imin.iminapi.service.poster.BrandSnapshot.class);
         verify(orchestrator).run(any(), any(), any(), anyLong(), any(), bcap.capture(), any());
         assertThat(bcap.getValue()).isNull();
+    }
+
+    // ---- DJ photo read-back on regenerate -------------------------------------------------------
+
+    @Test
+    void regenerate_readsDjPhotoUrlFromPriorGenerationRow_andPassesSnapshotToOrchestrator() {
+        AuthPrincipal p = owner();
+        UUID conceptId = UUID.randomUUID();
+        String djUrl = "https://cdn.example/events/x/dj-photo-abc.jpg";
+
+        GeneratedEvent existing = new GeneratedEvent();
+        existing.setId(conceptId); existing.setOrgId(p.orgId());
+        existing.setVibe("Old vibe text"); existing.setGenre("Techno"); existing.setCity("Berlin");
+        existing.setStatus(GeneratedEventStatus.COMPLETE);
+        when(repo.findByIdAndOrgId(conceptId, p.orgId())).thenReturn(java.util.Optional.of(existing));
+
+        PosterGeneration priorGen = new PosterGeneration();
+        priorGen.setDjPhotoUrl(djUrl);
+        when(generationRepo.findTopByGeneratedEventIdOrderByCreatedAtDesc(conceptId))
+                .thenReturn(java.util.Optional.of(priorGen));
+        when(posterStorage.download(djUrl)).thenReturn(new byte[]{1, 2, 3});
+
+        stubPipeline();
+
+        ConceptResponse r = sut.regenerate(p, conceptId, List.of());
+
+        // snapshot forwarded to orchestrator with the correct URL
+        verify(orchestrator).run(any(), any(), any(), anyLong(), any(), any(),
+                argThat(snap -> snap != null && djUrl.equals(snap.url())));
+        // descService called with djMode=true
+        verify(descService).generateConcept(any(), anyLong(), eq(true));
+        // response reflects DJ photo was used
+        assertThat(r.djPhotoUsed()).isTrue();
+    }
+
+    // ---- djPhotoUsed=true on create when event has a photo --------------------------------------
+
+    @Test
+    void create_withEventOwnerAndDjPhoto_setsDjPhotoUsedTrue() {
+        AuthPrincipal p = owner();
+        UUID eventId = UUID.randomUUID();
+        String djUrl = "https://cdn.example/events/x/dj-photo-abc.jpg";
+
+        Event event = new Event();
+        event.setOrgId(p.orgId());
+        event.setDjPhotoUrl(djUrl);
+        when(eventRepo.findActive(eventId)).thenReturn(java.util.Optional.of(event));
+        when(posterStorage.download(djUrl)).thenReturn(new byte[]{1, 2, 3});
+
+        stubPipeline();
+
+        ConceptResponse r = sut.create(p, new ConceptRequest(
+                "Moody warehouse techno brief here", "Techno", "Berlin", null, null,
+                null, null, null, null, null, null, null, eventId));
+
+        // descService called with djMode=true
+        verify(descService).generateConcept(any(), anyLong(), eq(true));
+        // response reflects DJ photo was used
+        assertThat(r.djPhotoUsed()).isTrue();
     }
 }
