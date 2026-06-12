@@ -261,6 +261,8 @@ public class PosterOrchestrator {
             boolean last = attempt == maxRegenerations;
             entity.setSeed(seed);
 
+            log.info("[ideogram call] path={} hero_type={} attempt={}/{} seed={}",
+                    attempt == 0 ? "generate" : "remix", variant.heroType(), attempt, maxRegenerations, seed);
             IdeogramV3Client.IdeogramResult render = (attempt == 0)
                     ? ideogramClient.generate(variant.ideogramPrompt(), seed, style.parts(), style.preset(),
                             brandPalette, characterRef)

@@ -155,7 +155,6 @@ public class AiEventDescriptionService {
         String lastError = "no concept produced";
         for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
             String prompt = buildPrompt(request, vibe, sampled, reinforcement, djMode);
-            log.info("[LLM concept] prompt sent (attempt {}/{}):\n{}", attempt, MAX_ATTEMPTS, prompt);
             PosterConcept concept = parseConcept(callLlm(prompt));
 
             String renderableError = validateRenderable(concept);

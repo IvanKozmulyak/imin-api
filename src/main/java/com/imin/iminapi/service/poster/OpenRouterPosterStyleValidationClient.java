@@ -59,7 +59,6 @@ public class OpenRouterPosterStyleValidationClient implements PosterStyleValidat
         String dataUri = "data:image/png;base64," + Base64.getEncoder().encodeToString(imageBytes);
 
         String promptText = validationPrompt(card, declaredHeroType);
-        log.info("[LLM style-validation] prompt sent (model={}):\n{}", model, promptText);
 
         Map<String, Object> textPart = new LinkedHashMap<>();
         textPart.put("type", "text");

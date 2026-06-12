@@ -44,7 +44,6 @@ public class ConceptOverviewLlm {
                         poster.subStyleTag(),
                         poster.colorPaletteDescription());
 
-        log.info("[LLM overview] prompt sent:\n{}", prompt);
         return chat.prompt().user(prompt).call().entity(ConceptOverview.class);
     }
 }

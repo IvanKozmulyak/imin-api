@@ -132,8 +132,6 @@ public class RecraftClient {
             modeLabel = hasStyle ? "trained:" + spec.styleId() : "trained:base/" + baseStyle;
         }
 
-        log.info("[Recraft image] prompt sent (model={}, size={}, mode={}):\n{}", model, size, modeLabel, prompt);
-
         Instant start = Instant.now();
         ImagesResponse resp = recraftRestClient.post()
                 .uri("/images/generations")
