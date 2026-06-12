@@ -28,17 +28,17 @@ class IdeogramV3ClientTest {
         RestClient.Builder builder = RestClient.builder().baseUrl("https://api.ideogram.ai");
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
         IdeogramV3Client client = new IdeogramV3Client(builder.build(), "QUALITY", "TURBO", true,
-                false, false, false);
+                false, false);
         return new Harness(client, server);
     }
 
-    private IdeogramV3Client clientWithFlags(boolean palette, boolean seed, boolean style) {
-        return new IdeogramV3Client(null, "QUALITY", "TURBO", true, palette, seed, style);
+    private IdeogramV3Client clientWithFlags(boolean seed, boolean style) {
+        return new IdeogramV3Client(null, "QUALITY", "TURBO", true, seed, style);
     }
 
     @Test
     void generateWithoutCharacterRefIsUnchangedBaseline() {
-        var parts = clientWithFlags(false, false, false)
+        var parts = clientWithFlags(false, false)
                 .buildGenerateParts("prompt", 42L, List.of(), "MONOCHROME", PALETTE, null);
         assertThat(parts.containsKey("character_reference_images")).isFalse();
         assertThat(parts.getFirst("seed")).isEqualTo("42");
@@ -48,7 +48,7 @@ class IdeogramV3ClientTest {
 
     @Test
     void characterRefOmitsGatedParamsWhenFlagsOff() {
-        var parts = clientWithFlags(false, false, false)
+        var parts = clientWithFlags(false, false)
                 .buildGenerateParts("prompt", 42L, List.of(), "MONOCHROME", PALETTE, CHAR_REF);
         assertThat(parts.containsKey("character_reference_images")).isTrue();
         assertThat(parts.containsKey("seed")).isFalse();
@@ -59,17 +59,28 @@ class IdeogramV3ClientTest {
 
     @Test
     void characterRefKeepsGatedParamsWhenFlagsOn() {
-        var parts = clientWithFlags(true, true, true)
+        var parts = clientWithFlags(true, true)
                 .buildGenerateParts("prompt", 42L, List.of(), "MONOCHROME", PALETTE, CHAR_REF);
         assertThat(parts.containsKey("character_reference_images")).isTrue();
         assertThat(parts.getFirst("seed")).isEqualTo("42");
-        assertThat(parts.containsKey("color_palette")).isTrue();
         assertThat(parts.getFirst("style_preset")).isEqualTo("MONOCHROME");
     }
 
     @Test
+    void characterRefNeverSendsColorPaletteEvenWithAllFlagsOn() {
+        // Ideogram hard-rejects the combination (prod 2026-06-12: 400 "Character reference
+        // cannot be used with color palette.") — there is deliberately no flag for it.
+        var parts = clientWithFlags(true, true)
+                .buildGenerateParts("prompt", 42L, List.of(), "MONOCHROME", PALETTE, CHAR_REF);
+        assertThat(parts.containsKey("color_palette")).isFalse();
+        var remixParts = clientWithFlags(true, true)
+                .buildRemixParts(new byte[]{9}, "fix", 70, 42L, List.of(), "MONOCHROME", PALETTE, CHAR_REF);
+        assertThat(remixParts.containsKey("color_palette")).isFalse();
+    }
+
+    @Test
     void remixCarriesCharacterRefToo() {
-        var parts = clientWithFlags(false, false, false)
+        var parts = clientWithFlags(false, false)
                 .buildRemixParts(new byte[]{9}, "fix", 70, 42L, List.of(), null, PALETTE, CHAR_REF);
         assertThat(parts.containsKey("character_reference_images")).isTrue();
         assertThat(parts.containsKey("image")).isTrue();
