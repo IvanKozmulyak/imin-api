@@ -11,10 +11,16 @@ import java.time.Clock;
 import java.time.Instant;
 
 /**
- * Periodically transitions LIVE events to PAST once their {@code endsAt} has
- * passed. This is the authoritative mechanism that closes out events whose end
- * time has been reached — without this sweeper, an event would remain LIVE in
- * API listings and on the public buyer site even after it has concluded.
+ * Transitions LIVE events to PAST once their {@code endsAt} has passed.
+ * This is the authoritative mechanism that closes out events — without this
+ * sweeper an event would remain LIVE in API listings and on the public buyer
+ * site even after it has concluded.
+ *
+ * <p>The sweeper runs <strong>twice per day</strong>: at 00:00 UTC (midnight)
+ * and at 12:00 UTC (noon). Consequently an ended event may remain LIVE for up
+ * to ~12 hours until the next tick. This cadence is intentional — the job is
+ * inexpensive and event-end times are not second-precise from the product
+ * owner's perspective.
  *
  * <p>Events with a {@code null endsAt} have no defined end time and are
  * intentionally left LIVE — the sweeper never touches them.
@@ -42,12 +48,12 @@ public class EventStatusSweeper {
     }
 
     /**
-     * One sweeper tick. {@code fixedDelay=60_000} schedules the next run 60 s
-     * AFTER the current one finishes; {@code initialDelay=30_000} gives the
-     * application 30 s after startup to warm up before the first sweep.
+     * One sweeper tick. Runs at 00:00 UTC and 12:00 UTC every day (cron
+     * {@code "0 0 0,12 * * *"}, server TZ = UTC on Railway). An ended event
+     * may stay LIVE for up to ~12 h until the next scheduled tick.
      */
-    @Scheduled(fixedDelay = 60_000, initialDelay = 30_000)
-    @SchedulerLock(name = "EventStatusSweeper.sweep", lockAtLeastFor = "PT10S", lockAtMostFor = "PT2M")
+    @Scheduled(cron = "0 0 0,12 * * *")
+    @SchedulerLock(name = "EventStatusSweeper.sweep", lockAtLeastFor = "PT10S", lockAtMostFor = "PT30M")
     public void sweep() {
         Instant now = clock.instant();
         int count = events.markLivePast(now, now);
