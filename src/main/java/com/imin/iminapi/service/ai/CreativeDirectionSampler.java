@@ -29,6 +29,11 @@ import java.util.Set;
  * at least three entries; smaller pools fall back to independent draws (repeats allowed).
  * {@code heroSubject} comes from the slot mode's pool, drawn without replacement when a mode repeats;
  * TYPOGRAPHIC has no pictorial subject ({@code null}).
+ *
+ * <p>In DJ mode ({@code djMode=true}) the card's variant plan is ignored: all three variants are
+ * {@link HeroType#PEOPLE} with a distinct DJ-hero subject drawn from the built-in
+ * {@link #DJ_HERO_SUBJECTS} list; composition, accent, palette twist, and type treatment still come
+ * from the card pools (or are null when the card is absent).
  */
 @Component
 public class CreativeDirectionSampler {
@@ -42,14 +47,62 @@ public class CreativeDirectionSampler {
      */
     public record SampledRun(List<CreativeDirection> directions, String examplePrompt) {}
 
+    /** DJ-hero framings, drawn 3-of-N without replacement so DJ runs still vary. */
+    static final List<String> DJ_HERO_SUBJECTS = List.of(
+            "the featured DJ mid-set behind the decks, hands on the mixer",
+            "a monumental close-up portrait of the featured DJ, head and shoulders dominating the frame",
+            "the featured DJ silhouetted against a packed crowd, arms raised",
+            "the featured DJ in sharp profile under a single hard spotlight",
+            "a low-angle hero shot of the featured DJ towering over the dancefloor",
+            "the featured DJ centered in a wide club tableau, the unmistakable focal point");
+
+    /**
+     * Sample a run of three creative directions for {@code card}, deterministic in {@code seed}.
+     *
+     * <p>Delegates to {@link #sample(StyleCard, long, boolean)} with {@code djMode=false}.
+     */
+    public SampledRun sample(StyleCard card, long seed) {
+        return sample(card, seed, false);
+    }
+
     /**
      * Sample a run of three creative directions for {@code card}, deterministic in {@code seed}.
      *
      * <p>Null- and empty-safe: a null card yields three directions with the right hero types and all
      * null fields and a null example prompt; any individually empty pool yields {@code null}/empty for
      * that field without throwing.
+     *
+     * @param djMode when true the run ignores the vibe's variant_plan: all three variants are
+     *               PEOPLE with a distinct DJ-hero subject (the attached character reference is
+     *               the face); composition/accent/palette/type still come from the card pools.
      */
-    public SampledRun sample(StyleCard card, long seed) {
+    public SampledRun sample(StyleCard card, long seed, boolean djMode) {
+        if (djMode) {
+            return sampleDj(card, seed);
+        }
+        return sampleStandard(card, seed);
+    }
+
+    /** DJ-mode sampling: all three variants are PEOPLE with distinct DJ-hero subjects. */
+    private SampledRun sampleDj(StyleCard card, long seed) {
+        Random random = new Random(seed);
+        int count = 3;
+        List<String> djSubjects = drawWithoutReplacement(DJ_HERO_SUBJECTS, count, random);
+        List<String> compositions = drawWithoutReplacement(card == null ? null : card.compositions(), count, random);
+        List<String> accents = drawWithoutReplacement(card == null ? null : card.accents(), count, random);
+        List<String> paletteTwists = drawWithoutReplacement(card == null ? null : card.paletteTwists(), count, random);
+        List<String> typeTreatments = drawWithoutReplacement(card == null ? null : card.typeTreatments(), count, random);
+        List<CreativeDirection> directions = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            directions.add(new CreativeDirection(HeroType.PEOPLE, djSubjects.get(i),
+                    compositions.get(i), accents.get(i), paletteTwists.get(i), typeTreatments.get(i)));
+        }
+        String examplePrompt = card == null ? null : pickOne(card.examplePrompts(), random);
+        return new SampledRun(List.copyOf(directions), examplePrompt);
+    }
+
+    /** Standard (non-DJ) sampling: hero modes follow the card's variant_plan. */
+    private SampledRun sampleStandard(StyleCard card, long seed) {
         Random random = new Random(seed);
         List<HeroType> plan = planModes(card);
         int count = plan.size();

@@ -169,6 +169,27 @@ class CreativeDirectionSamplerTest {
         }
     }
 
+    // ---- DJ mode tests --------------------------------------------------------------------------
+
+    @Test
+    void djModeForcesThreePeopleVariantsWithDistinctDjSubjects() {
+        CreativeDirectionSampler sampler = new CreativeDirectionSampler();
+        var run = sampler.sample(null, 42L, true); // even a null card yields the DJ plan
+        assertThat(run.directions()).hasSize(3);
+        assertThat(run.directions()).allMatch(d -> d.heroType() == HeroType.PEOPLE);
+        var subjects = run.directions().stream().map(CreativeDirection::heroSubject).toList();
+        assertThat(subjects).doesNotContainNull();
+        assertThat(subjects).allMatch(s -> s.contains("DJ"));
+        assertThat(new java.util.HashSet<>(subjects)).hasSize(3); // pairwise distinct
+    }
+
+    @Test
+    void djModeIsDeterministicInSeed() {
+        CreativeDirectionSampler sampler = new CreativeDirectionSampler();
+        assertThat(sampler.sample(null, 42L, true).directions())
+                .isEqualTo(sampler.sample(null, 42L, true).directions());
+    }
+
     @Test
     void emptyPoolsYieldNullFieldsWithoutThrowing() {
         StyleCard empty = new StyleCard(
