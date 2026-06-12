@@ -118,7 +118,7 @@ public class MediaUploadService {
     private static void validate(MediaKind kind, byte[] bytes, String contentType) {
         long size = bytes.length;
         switch (kind) {
-            case POSTER -> {
+            case POSTER, DJ_PHOTO -> {
                 if (size > 5 * MB) throw fieldErr("file", "must be ≤ 5 MB");
                 if (!IMAGE_TYPES.contains(contentType)) throw fieldErr("file", "must be JPG or PNG");
             }
@@ -126,18 +126,14 @@ public class MediaUploadService {
                 if (size > 50 * MB) throw fieldErr("file", "must be ≤ 50 MB");
                 if (!VIDEO_TYPES.contains(contentType)) throw fieldErr("file", "must be MP4");
             }
-            case DJ_PHOTO -> {
-                if (size > 5 * MB) throw fieldErr("file", "must be ≤ 5 MB");
-                if (!IMAGE_TYPES.contains(contentType)) throw fieldErr("file", "must be JPG or PNG");
-            }
         }
-        verifyMagicBytes(kind, bytes, contentType);
+        verifyMagicBytes(bytes, contentType);
         if (kind == MediaKind.DJ_PHOTO) {
             verifyDjPhotoDimensions(bytes);
         }
     }
 
-    private static void verifyMagicBytes(MediaKind kind, byte[] bytes, String contentType) {
+    private static void verifyMagicBytes(byte[] bytes, String contentType) {
         if (bytes.length < 8) {
             throw fieldErr("file", "content does not match declared type");
         }

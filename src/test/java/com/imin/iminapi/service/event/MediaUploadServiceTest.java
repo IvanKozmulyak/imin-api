@@ -11,6 +11,10 @@ import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.storage.InMemoryMediaStorage;
 import org.junit.jupiter.api.Test;
 
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -208,10 +212,10 @@ class MediaUploadServiceTest {
 
     // --- DJ photo kind ---
 
-    private static byte[] realPng(int w, int h) throws java.io.IOException {
-        java.awt.image.BufferedImage img = new java.awt.image.BufferedImage(w, h, java.awt.image.BufferedImage.TYPE_INT_RGB);
-        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
-        javax.imageio.ImageIO.write(img, "png", out);
+    private static byte[] realPng(int w, int h) throws IOException {
+        BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ImageIO.write(img, "png", out);
         return out.toByteArray();
     }
 
@@ -276,6 +280,7 @@ class MediaUploadServiceTest {
         sut.upload(owner(orgId), e.getId(), MediaKind.DJ_PHOTO, png, "image/png", "dj.png");
         sut.delete(owner(orgId), e.getId(), MediaKind.DJ_PHOTO);
         assertThat(e.getDjPhotoUrl()).isNull();
+        assertThat(storage.blobs()).isEmpty();
     }
 
     @Test
