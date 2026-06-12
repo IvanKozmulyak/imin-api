@@ -60,7 +60,6 @@ public class IdeogramV3Client {
     private final String generateSpeed;
     private final String remixSpeed;
     private final boolean copyrightDetection;
-    private final boolean characterColorPalette;
     private final boolean characterSeed;
     private final boolean characterStyleControl;
 
@@ -69,14 +68,12 @@ public class IdeogramV3Client {
             @Value("${ideogram.generate.rendering-speed:QUALITY}") String generateSpeed,
             @Value("${ideogram.remix.rendering-speed:TURBO}") String remixSpeed,
             @Value("${ideogram.copyright-detection:true}") boolean copyrightDetection,
-            @Value("${ideogram.character.color-palette:false}") boolean characterColorPalette,
             @Value("${ideogram.character.seed:false}") boolean characterSeed,
             @Value("${ideogram.character.style-control:false}") boolean characterStyleControl) {
         this.ideogramRestClient = ideogramRestClient;
         this.generateSpeed = (generateSpeed == null || generateSpeed.isBlank()) ? "QUALITY" : generateSpeed;
         this.remixSpeed = (remixSpeed == null || remixSpeed.isBlank()) ? "TURBO" : remixSpeed;
         this.copyrightDetection = copyrightDetection;
-        this.characterColorPalette = characterColorPalette;
         this.characterSeed = characterSeed;
         this.characterStyleControl = characterStyleControl;
     }
@@ -135,10 +132,12 @@ public class IdeogramV3Client {
     }
 
     /**
-     * The DJ-mode switch. Ideogram's product docs say Color Palette / Seed / Style Reference are
-     * unavailable with a character reference; the API reference doesn't confirm it, so each param
-     * is gated behind a probe-determined flag (see the 2026-06-12 probe results doc). Without a
-     * character ref this emits the exact baseline params.
+     * The DJ-mode switch. {@code color_palette} is NEVER sent with a character reference — the API
+     * rejects the combination outright (observed in production 2026-06-12: 400 "Character reference
+     * cannot be used with color palette."), so brand colours ride the prompt channel in DJ mode.
+     * Seed and style controls remain unverified at the API level and stay behind probe flags
+     * (see the 2026-06-12 probe results doc). Without a character ref this emits the exact
+     * baseline params.
      */
     private void applyConditional(MultiValueMap<String, Object> parts, long seed,
             List<StyleReferencePart> styleRefs, String stylePreset, List<String> paletteHexes,
@@ -152,7 +151,6 @@ public class IdeogramV3Client {
         parts.add("character_reference_images", filePart(characterRef));
         if (characterSeed) parts.add("seed", String.valueOf(seed));
         if (characterStyleControl) applyStyleControl(parts, styleRefs, stylePreset);
-        if (characterColorPalette) applyColorPalette(parts, paletteHexes);
     }
 
     /** Apply exactly one style control: reference images win; style_preset is the no-refs fallback. */
