@@ -70,6 +70,11 @@ poster:
     model: ${POSTER_TEXT_VALIDATION_MODEL:openai/gpt-4o}
     # Server-side tolerance for invented text items before the gate fails. 0 = reject any invented text.
     max-extra-text-items: ${POSTER_TEXT_VALIDATION_MAX_EXTRA_TEXT_ITEMS:0}
+    # Cap on the gate's response length. Bounds a runaway OCR transcription (texture-heavy posters can
+    # make the model enumerate garbled "text" until it overruns and truncates the verdict JSON mid-string).
+    # A legitimate verdict is a few short strings, well under this. An unusable verdict is treated as a
+    # non-acceptance (corrective remix / best-effort), never a fatal variant error.
+    max-tokens: ${POSTER_TEXT_VALIDATION_MAX_TOKENS:1500}
   style-validation:
     # Style-adherence (vision) gate — SOFT (hero present, medium/palette match). ENABLED for the
     # Ideogram V3 flow; a failure is accepted best-effort. Cheap model like the text gate.

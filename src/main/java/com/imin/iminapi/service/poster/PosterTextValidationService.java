@@ -1,6 +1,8 @@
 package com.imin.iminapi.service.poster;
 
 import com.imin.iminapi.dto.PosterTextSpec;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -8,6 +10,8 @@ import java.util.List;
 
 @Service
 public class PosterTextValidationService {
+    private static final Logger log = LoggerFactory.getLogger(PosterTextValidationService.class);
+
     private final PosterTextValidationClient client;
     private final boolean enabled;
     private final int maxExtraTextItems;
@@ -28,7 +32,19 @@ public class PosterTextValidationService {
             return ValidationDecision.pass();
         }
 
-        PosterTextValidationClient.ValidationResult result = client.validate(imageBytes, spec);
+        PosterTextValidationClient.ValidationResult result;
+        try {
+            result = client.validate(imageBytes, spec);
+        } catch (RuntimeException e) {
+            // A flaky/unusable verdict (truncated or malformed LLM JSON, transport error) must NOT abort
+            // the variant. Treat it as a non-acceptance so the orchestrator runs its corrective remix and,
+            // if the gate keeps failing, ships best-effort — the same path as any other gate rejection.
+            // Never fail-open: an unevaluated gate must not let invented text through.
+            log.warn("Text gate could not be evaluated; treating as not-accepted: {}", e.toString());
+            return new ValidationDecision(false,
+                    "text validation could not be evaluated: " + e.getMessage(),
+                    List.of(), List.of());
+        }
         List<String> missing = result.missingRequired() == null ? List.of() : result.missingRequired();
         List<String> extra = result.extraText() == null ? List.of() : result.extraText();
 

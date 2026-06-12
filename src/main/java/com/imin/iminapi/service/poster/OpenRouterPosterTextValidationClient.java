@@ -36,7 +36,10 @@ public class OpenRouterPosterTextValidationClient implements PosterTextValidatio
 
             STEP 3 — Report:
               - missingRequired: every Required line that does NOT appear in the image.
-              - extraText: every string you classified as invented (most prominent first).
+              - extraText: the DISTINCT invented strings you found (most prominent first), deduplicated.
+                Do not repeat the same string, and list at most 25 — once you have captured the clearly
+                invented text, stop. A dense decorative pattern is not text; do not transcribe it letter
+                by letter.
               - accepted: true ONLY IF missingRequired is empty AND extraText is empty.
 
             Ignore QR codes. Be strict: when unsure whether a string is real or invented,
@@ -46,13 +49,16 @@ public class OpenRouterPosterTextValidationClient implements PosterTextValidatio
     private final RestClient restClient;
     private final ObjectMapper objectMapper;
     private final String model;
+    private final int maxTokens;
 
     public OpenRouterPosterTextValidationClient(
             @Value("${openrouter.api-key}") String apiKey,
             @Value("${openrouter.base-url:https://openrouter.ai/api}") String baseUrl,
-            @Value("${poster.text-validation.model:openai/gpt-4o}") String model) {
+            @Value("${poster.text-validation.model:openai/gpt-4o}") String model,
+            @Value("${poster.text-validation.max-tokens:1500}") int maxTokens) {
         this.objectMapper = new ObjectMapper();
         this.model = model;
+        this.maxTokens = maxTokens;
         this.restClient = RestClient.builder()
                 .baseUrl(normalizeOpenRouterV1BaseUrl(baseUrl))
                 .requestInterceptor((request, body, execution) -> {
@@ -90,6 +96,12 @@ public class OpenRouterPosterTextValidationClient implements PosterTextValidatio
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", model);
         body.put("temperature", 0);
+        // Bound the response so a runaway OCR transcription (texture-heavy posters can make the model
+        // enumerate garbled "text" until it overruns and truncates the JSON mid-string) can't produce an
+        // unparseable verdict. A real verdict is a handful of short strings, far under this cap.
+        if (maxTokens > 0) {
+            body.put("max_tokens", maxTokens);
+        }
         body.put("response_format", Map.of("type", "json_object"));
         body.put("messages", List.of(userMessage));
 

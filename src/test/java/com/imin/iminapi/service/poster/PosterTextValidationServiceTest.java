@@ -139,6 +139,37 @@ class PosterTextValidationServiceTest {
     }
 
     @Test
+    void shipsAsReject_whenClientThrows() {
+        // The journal failure: the text-validation LLM returned truncated JSON (runaway OCR transcription
+        // on a texture-heavy poster), so the client threw IllegalStateException. That must NOT abort the
+        // variant — it becomes a non-acceptance, which the orchestrator handles via corrective remix /
+        // best-effort, exactly like any other gate rejection.
+        ThrowingValidationClient client = new ThrowingValidationClient(
+                new IllegalStateException("OpenRouter poster text validation returned malformed JSON"));
+        PosterTextValidationService service = new PosterTextValidationService(client, true, 0);
+        PosterTextSpec spec = new PosterTextSpec(
+                List.of("BIG NIGHT - BERLIN"), List.of("BIG NIGHT - BERLIN"), "prompt");
+
+        var decision = service.validateOrExplain(new byte[]{1}, spec);
+
+        assertThat(decision.accepted()).isFalse();
+        assertThat(decision.reason()).contains("could not be evaluated");
+        assertThat(decision.missingRequired()).isEmpty();
+        assertThat(decision.extraText()).isEmpty();
+    }
+
+    @Test
+    void disabledValidation_doesNotCallClient_evenIfClientWouldThrow() {
+        ThrowingValidationClient client = new ThrowingValidationClient(new IllegalStateException("boom"));
+        PosterTextValidationService service = new PosterTextValidationService(client, false, 0);
+        PosterTextSpec spec = new PosterTextSpec(List.of("A"), List.of("A"), "prompt");
+
+        var decision = service.validateOrExplain(new byte[]{1}, spec);
+
+        assertThat(decision.accepted()).isTrue();
+    }
+
+    @Test
     void acceptsWithoutCallingClient_whenNoTextContractAtAll() {
         FakeValidationClient client = new FakeValidationClient(
                 new PosterTextValidationClient.ValidationResult(false, List.of("A"), List.of()));
@@ -164,6 +195,19 @@ class PosterTextValidationServiceTest {
         public ValidationResult validate(byte[] imageBytes, PosterTextSpec spec) {
             calls++;
             return result;
+        }
+    }
+
+    private static final class ThrowingValidationClient implements PosterTextValidationClient {
+        private final RuntimeException toThrow;
+
+        private ThrowingValidationClient(RuntimeException toThrow) {
+            this.toThrow = toThrow;
+        }
+
+        @Override
+        public ValidationResult validate(byte[] imageBytes, PosterTextSpec spec) {
+            throw toThrow;
         }
     }
 }
