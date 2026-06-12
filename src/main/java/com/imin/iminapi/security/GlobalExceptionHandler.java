@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
@@ -61,6 +62,15 @@ public class GlobalExceptionHandler {
     ResponseEntity<ApiError> handleDenied(AccessDeniedException ex) {
         return ResponseEntity.status(HttpStatus.FORBIDDEN)
                 .body(ApiError.of(ErrorCode.FORBIDDEN, "Access denied"));
+    }
+
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    ResponseEntity<ApiError> handleMaxUpload(MaxUploadSizeExceededException ex) {
+        // Without this handler an oversize multipart body falls through to handleAny → 500 INTERNAL.
+        // Map it to 413 with the standard envelope so the FE can show a clean "file too large" error.
+        return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE)
+                .body(ApiError.of(ErrorCode.FIELD_INVALID, "Uploaded file is too large",
+                        java.util.Map.of("file", "exceeds the maximum allowed size")));
     }
 
     @ExceptionHandler(NoHandlerFoundException.class)
