@@ -11,4 +11,6 @@ public record ConceptResponse(
         List<String> palette,
         List<SuggestedTierDto> suggestedTiers,
         Integer suggestedCapacity,
-        Integer confidencePct) {}
+        Integer confidencePct,
+        /** True only when the Ideogram character reference was actually sent for this generation. */
+        boolean djPhotoUsed) {}

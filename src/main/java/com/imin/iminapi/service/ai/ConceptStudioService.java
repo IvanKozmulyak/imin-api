@@ -6,18 +6,24 @@ import com.imin.iminapi.dto.PosterConcept;
 import com.imin.iminapi.dto.PricingRecommendation;
 import com.imin.iminapi.dto.Vibe;
 import com.imin.iminapi.dto.ai.*;
+import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.GeneratedEvent;
 import com.imin.iminapi.model.GeneratedEventStatus;
 import com.imin.iminapi.model.ImageProvider;
+import com.imin.iminapi.model.PosterGeneration;
 import org.springframework.beans.factory.annotation.Value;
 import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.GeneratedEventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.repository.PosterGenerationRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.service.AiEventDescriptionService;
 import com.imin.iminapi.service.PricingService;
 import com.imin.iminapi.service.poster.BrandSnapshot;
+import com.imin.iminapi.service.poster.DjPhotoSnapshot;
+import com.imin.iminapi.service.poster.PosterImageStorage;
 import com.imin.iminapi.service.poster.PosterOrchestrator;
 import com.imin.iminapi.service.poster.PosterOrchestrator.OrchestrationResult;
 import com.imin.iminapi.service.poster.VibeLibrary;
@@ -29,6 +35,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 
 @Service
@@ -45,6 +52,9 @@ public class ConceptStudioService {
     private final GeneratedEventRepository repo;
     private final OrganizationRepository orgs;
     private final VibeLibrary vibeLibrary;
+    private final EventRepository eventRepo;
+    private final PosterImageStorage posterStorage;
+    private final PosterGenerationRepository generationRepo;
 
     // When true, the resolved vibe's model_route (vibes.yaml) selects the image provider.
     // Default false keeps the reference-first path on Recraft for every vibe.
@@ -57,7 +67,10 @@ public class ConceptStudioService {
                                 ConceptOverviewLlm overviewLlm,
                                 GeneratedEventRepository repo,
                                 OrganizationRepository orgs,
-                                VibeLibrary vibeLibrary) {
+                                VibeLibrary vibeLibrary,
+                                EventRepository eventRepo,
+                                PosterImageStorage posterStorage,
+                                PosterGenerationRepository generationRepo) {
         this.descService = descService;
         this.orchestrator = orchestrator;
         this.pricing = pricing;
@@ -65,28 +78,62 @@ public class ConceptStudioService {
         this.repo = repo;
         this.orgs = orgs;
         this.vibeLibrary = vibeLibrary;
+        this.eventRepo = eventRepo;
+        this.posterStorage = posterStorage;
+        this.generationRepo = generationRepo;
     }
 
     @Transactional
     public ConceptResponse create(AuthPrincipal p, ConceptRequest req) {
-        return run(p, req);
+        return run(p, req, resolveDjPhotoFromEvent(p, req.eventId()));
     }
 
     @Transactional
     public ConceptResponse regenerate(AuthPrincipal p, UUID conceptId, List<String> lock) {
         GeneratedEvent prior = repo.findByIdAndOrgId(conceptId, p.orgId())
                 .orElseThrow(() -> ApiException.notFound("Concept"));
+        // Snapshot read-back: use the DJ photo URL from the original generation row, not the live event.
+        // This means a photo swap between create and regenerate doesn't silently change the mode.
+        DjPhotoSnapshot djPhoto = generationRepo.findTopByGeneratedEventIdOrderByCreatedAtDesc(conceptId)
+                .map(PosterGeneration::getDjPhotoUrl)
+                .map(this::resolveDjPhotoFromUrl)
+                .orElse(null);
         ConceptRequest req = new ConceptRequest(
                 prior.getVibe() == null ? "rerun" : prior.getVibe(),
                 prior.getGenre(), prior.getCity(),
                 /* capacity */ null, /* vibeId */ null,
                 /* title */ null, /* eventDate */ null, /* venue */ null,
                 /* lineup */ null, /* address */ null, /* rsvpUrl */ null,
-                /* logoOnPosters: brand default applies on regenerate */ null);
-        return run(p, req);
+                /* logoOnPosters: brand default applies on regenerate */ null,
+                /* eventId */ null);
+        return run(p, req, djPhoto);
     }
 
-    private ConceptResponse run(AuthPrincipal p, ConceptRequest req) {
+    /**
+     * Resolve the DJ photo for a generation bound to an owned event. Null when: no eventId, the
+     * event has no photo, or the R2 download fails (the photo must never break generation — the
+     * response then reports djPhotoUsed=false). Cross-org access is NOT_FOUND, never FORBIDDEN.
+     */
+    DjPhotoSnapshot resolveDjPhotoFromEvent(AuthPrincipal p, UUID eventId) {
+        if (eventId == null) return null;
+        Event e = eventRepo.findActive(eventId).orElseThrow(() -> ApiException.notFound("Event"));
+        if (!e.getOrgId().equals(p.orgId())) throw ApiException.notFound("Event");
+        return resolveDjPhotoFromUrl(e.getDjPhotoUrl());
+    }
+
+    private DjPhotoSnapshot resolveDjPhotoFromUrl(String url) {
+        if (url == null || url.isBlank()) return null;
+        try {
+            byte[] bytes = posterStorage.download(url);
+            String mime = url.toLowerCase(Locale.ROOT).endsWith(".png") ? "image/png" : "image/jpeg";
+            return new DjPhotoSnapshot(url, bytes, mime);
+        } catch (Exception ex) {
+            log.warn("DJ photo download failed; generating without character reference: {}", ex.getMessage());
+            return null;
+        }
+    }
+
+    private ConceptResponse run(AuthPrincipal p, ConceptRequest req, DjPhotoSnapshot djPhoto) {
         if (req.vibeId() != null && !req.vibeId().isBlank() && !vibeLibrary.hasVibe(req.vibeId())) {
             throw new ApiException(org.springframework.http.HttpStatus.BAD_REQUEST,
                     com.imin.iminapi.security.ErrorCode.FIELD_INVALID,
@@ -105,13 +152,13 @@ public class ConceptStudioService {
         OrchestrationResult render;
         ConceptOverview overview;
         try {
-            AiEventDescriptionService.GeneratedConcept generated = descService.generateConcept(legacy, creativeSeed);
+            AiEventDescriptionService.GeneratedConcept generated = descService.generateConcept(legacy, creativeSeed, djPhoto != null);
             // Pin the resolved vibe (legacy.subStyleTag is the selected vibe, or one auto-suggested
             // from genre) as the concept's style tag, so the orchestrator resolves that vibe's curated
             // reference flyers (forTag) regardless of what the LLM echoed.
             poster = new PosterConcept(legacy.subStyleTag(),
                     generated.concept().colorPaletteDescription(), generated.concept().variants());
-            render = orchestrator.run(staging.getId(), legacy, poster, creativeSeed, generated.directions(), brand);
+            render = orchestrator.run(staging.getId(), legacy, poster, creativeSeed, generated.directions(), brand, djPhoto);
             overview = overviewLlm.generate(req, poster);
         } catch (Exception e) {
             staging.setStatus(GeneratedEventStatus.FAILED);
@@ -146,7 +193,8 @@ public class ConceptStudioService {
                 overview.paletteHexes(),
                 tiers,
                 overview.suggestedCapacity(),
-                overview.confidencePct());
+                overview.confidencePct(),
+                djPhoto != null);
     }
 
     /** Deterministic creative seed from the generation UUID (reproducible per run, varies across runs). */
