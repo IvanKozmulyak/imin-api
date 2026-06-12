@@ -37,6 +37,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  *
  * <p>The initial {@code generate} renders at the QUALITY tier; the corrective {@code remix} (which
  * only fixes baked text on a render we already liked) renders at the cheaper/faster TURBO tier.
+ *
+ * <p>When a non-null {@code characterRef} is supplied (DJ mode), the character reference image is
+ * attached and the three gated params — colour palette, seed, and style control — are each emitted
+ * only when their corresponding probe-determined flag is {@code true} (defaults: all false).
  */
 @Component
 public class IdeogramV3Client {
@@ -56,42 +60,69 @@ public class IdeogramV3Client {
     private final String generateSpeed;
     private final String remixSpeed;
     private final boolean copyrightDetection;
+    private final boolean characterColorPalette;
+    private final boolean characterSeed;
+    private final boolean characterStyleControl;
 
     public IdeogramV3Client(
             RestClient ideogramRestClient,
             @Value("${ideogram.generate.rendering-speed:QUALITY}") String generateSpeed,
             @Value("${ideogram.remix.rendering-speed:TURBO}") String remixSpeed,
-            @Value("${ideogram.copyright-detection:true}") boolean copyrightDetection) {
+            @Value("${ideogram.copyright-detection:true}") boolean copyrightDetection,
+            @Value("${ideogram.character.color-palette:false}") boolean characterColorPalette,
+            @Value("${ideogram.character.seed:false}") boolean characterSeed,
+            @Value("${ideogram.character.style-control:false}") boolean characterStyleControl) {
         this.ideogramRestClient = ideogramRestClient;
         this.generateSpeed = (generateSpeed == null || generateSpeed.isBlank()) ? "QUALITY" : generateSpeed;
         this.remixSpeed = (remixSpeed == null || remixSpeed.isBlank()) ? "TURBO" : remixSpeed;
         this.copyrightDetection = copyrightDetection;
+        this.characterColorPalette = characterColorPalette;
+        this.characterSeed = characterSeed;
+        this.characterStyleControl = characterStyleControl;
     }
 
     public record IdeogramResult(byte[] imageBytes, long seed) {}
 
-    /** Text-to-image generate (QUALITY tier). */
+    /** Text-to-image generate (QUALITY tier). {@code characterRef} non-null switches DJ mode. */
     public IdeogramResult generate(String prompt, long seed, List<StyleReferencePart> styleRefs,
-                                   String stylePreset, List<String> paletteHexes) {
+                                   String stylePreset, List<String> paletteHexes,
+                                   StyleReferencePart characterRef) {
+        MultiValueMap<String, Object> parts =
+                buildGenerateParts(prompt, seed, styleRefs, stylePreset, paletteHexes, characterRef);
+        log.info("[ideogram v3 generate] promptLen={} speed={} {} palette={} seed={} charRef={}",
+                prompt.length(), generateSpeed, styleLabel(styleRefs, stylePreset),
+                paletteHexes == null ? 0 : paletteHexes.size(), seed, characterRef != null);
+        return new IdeogramResult(post(GENERATE_PATH, parts), seed);
+    }
+
+    MultiValueMap<String, Object> buildGenerateParts(String prompt, long seed,
+            List<StyleReferencePart> styleRefs, String stylePreset, List<String> paletteHexes,
+            StyleReferencePart characterRef) {
         MultiValueMap<String, Object> parts = new LinkedMultiValueMap<>();
         parts.add("prompt", prompt);
         parts.add("aspect_ratio", ASPECT_RATIO);
         parts.add("rendering_speed", generateSpeed);
         parts.add("magic_prompt", MAGIC_PROMPT);
         parts.add("enable_copyright_detection", String.valueOf(copyrightDetection));
-        parts.add("seed", String.valueOf(seed));
-        applyStyleControl(parts, styleRefs, stylePreset);
-        applyColorPalette(parts, paletteHexes);
-        log.info("[ideogram v3 generate] promptLen={} speed={} {} palette={} seed={}",
-                prompt.length(), generateSpeed, styleLabel(styleRefs, stylePreset),
-                paletteHexes == null ? 0 : paletteHexes.size(), seed);
-        return new IdeogramResult(post(GENERATE_PATH, parts), seed);
+        applyConditional(parts, seed, styleRefs, stylePreset, paletteHexes, characterRef);
+        return parts;
     }
 
-    /** Image-conditioned remix (TURBO tier): feed a failing image back with a corrective prompt to fix the text. */
+    /** Image-conditioned remix (TURBO tier). {@code characterRef} keeps the DJ likeness through corrections. */
     public IdeogramResult remix(byte[] image, String prompt, int imageWeight, long seed,
                                 List<StyleReferencePart> styleRefs, String stylePreset,
-                                List<String> paletteHexes) {
+                                List<String> paletteHexes, StyleReferencePart characterRef) {
+        MultiValueMap<String, Object> parts =
+                buildRemixParts(image, prompt, imageWeight, seed, styleRefs, stylePreset, paletteHexes, characterRef);
+        log.info("[ideogram v3 remix] promptLen={} weight={} {} palette={} seed={} charRef={}",
+                prompt.length(), imageWeight, styleLabel(styleRefs, stylePreset),
+                paletteHexes == null ? 0 : paletteHexes.size(), seed, characterRef != null);
+        return new IdeogramResult(post(REMIX_PATH, parts), seed);
+    }
+
+    MultiValueMap<String, Object> buildRemixParts(byte[] image, String prompt, int imageWeight, long seed,
+            List<StyleReferencePart> styleRefs, String stylePreset, List<String> paletteHexes,
+            StyleReferencePart characterRef) {
         MultiValueMap<String, Object> parts = new LinkedMultiValueMap<>();
         parts.add("image", filePart(new StyleReferencePart(image, "source.png", "image/png")));
         parts.add("prompt", prompt);
@@ -99,13 +130,29 @@ public class IdeogramV3Client {
         parts.add("aspect_ratio", ASPECT_RATIO);
         parts.add("rendering_speed", remixSpeed);
         parts.add("magic_prompt", MAGIC_PROMPT);
-        parts.add("seed", String.valueOf(seed));
-        applyStyleControl(parts, styleRefs, stylePreset);
-        applyColorPalette(parts, paletteHexes);
-        log.info("[ideogram v3 remix] promptLen={} weight={} {} palette={} seed={}",
-                prompt.length(), imageWeight, styleLabel(styleRefs, stylePreset),
-                paletteHexes == null ? 0 : paletteHexes.size(), seed);
-        return new IdeogramResult(post(REMIX_PATH, parts), seed);
+        applyConditional(parts, seed, styleRefs, stylePreset, paletteHexes, characterRef);
+        return parts;
+    }
+
+    /**
+     * The DJ-mode switch. Ideogram's product docs say Color Palette / Seed / Style Reference are
+     * unavailable with a character reference; the API reference doesn't confirm it, so each param
+     * is gated behind a probe-determined flag (see the 2026-06-12 probe results doc). Without a
+     * character ref this emits the exact baseline params.
+     */
+    private void applyConditional(MultiValueMap<String, Object> parts, long seed,
+            List<StyleReferencePart> styleRefs, String stylePreset, List<String> paletteHexes,
+            StyleReferencePart characterRef) {
+        if (characterRef == null) {
+            parts.add("seed", String.valueOf(seed));
+            applyStyleControl(parts, styleRefs, stylePreset);
+            applyColorPalette(parts, paletteHexes);
+            return;
+        }
+        parts.add("character_reference_images", filePart(characterRef));
+        if (characterSeed) parts.add("seed", String.valueOf(seed));
+        if (characterStyleControl) applyStyleControl(parts, styleRefs, stylePreset);
+        if (characterColorPalette) applyColorPalette(parts, paletteHexes);
     }
 
     /** Apply exactly one style control: reference images win; style_preset is the no-refs fallback. */

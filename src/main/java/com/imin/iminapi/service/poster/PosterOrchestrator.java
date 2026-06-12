@@ -251,9 +251,9 @@ public class PosterOrchestrator {
 
             IdeogramV3Client.IdeogramResult render = (attempt == 0)
                     ? ideogramClient.generate(variant.ideogramPrompt(), seed, style.parts(), style.preset(),
-                            brandPalette)
+                            brandPalette, null)
                     : ideogramClient.remix(image, correction, remixImageWeight, seed, style.parts(), style.preset(),
-                            brandPalette);
+                            brandPalette, null);
             image = render.imageBytes();
             url = storage.writePng(image);
             entity.setRawUrl(url);

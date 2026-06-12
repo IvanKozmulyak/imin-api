@@ -111,7 +111,7 @@ class PosterOrchestratorTest {
 
     @Test
     void happyPath_generateOnce_textAndStylePass_acceptedVerdict() {
-        when(ideogram.generate(any(), anyLong(), any(), any(), any()))
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
                 .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 1L));
         when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
@@ -121,16 +121,16 @@ class PosterOrchestratorTest {
 
         assertThat(r.posters()).hasSize(3);
         assertThat(r.posters()).allSatisfy(p -> assertThat(p.status()).isEqualTo("COMPLETE"));
-        verify(ideogram, never()).remix(any(), any(), anyInt(), anyLong(), any(), any(), any());
+        verify(ideogram, never()).remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any());
     }
 
     @Test
     void textFails_thenRemixCorrects_remixPromptCarriesMissingText() {
         // generate yields {1} (text-fail), remix yields {2} (text-pass) — keyed on the image bytes so the
         // shared mock stays deterministic across the 3 parallel variant threads.
-        when(ideogram.generate(any(), anyLong(), any(), any(), any()))
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
                 .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{1}, 1L));
-        when(ideogram.remix(any(), any(), anyInt(), anyLong(), any(), any(), any()))
+        when(ideogram.remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any()))
                 .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 2L));
         when(textValidation.validateOrExplain(any(), any())).thenAnswer(inv -> {
             byte[] img = inv.getArgument(0);
@@ -142,17 +142,17 @@ class PosterOrchestratorTest {
                 orchestrator().run(UUID.randomUUID(), req(), concept());
 
         assertThat(r.posters()).allSatisfy(p -> assertThat(p.status()).isEqualTo("COMPLETE"));
-        verify(ideogram, times(3)).remix(any(), any(), eq(70), anyLong(), any(), any(), any());
+        verify(ideogram, times(3)).remix(any(), any(), eq(70), anyLong(), any(), any(), any(), any());
         ArgumentCaptor<String> prompt = ArgumentCaptor.forClass(String.class);
-        verify(ideogram, times(3)).remix(any(), prompt.capture(), anyInt(), anyLong(), any(), any(), any());
+        verify(ideogram, times(3)).remix(any(), prompt.capture(), anyInt(), anyLong(), any(), any(), any(), any());
         assertThat(prompt.getValue()).contains("CORRECTION").contains("TITLE");
     }
 
     @Test
     void textNeverPasses_acceptsBestEffortWithJournal() {
-        when(ideogram.generate(any(), anyLong(), any(), any(), any()))
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
                 .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{1}, 1L));
-        when(ideogram.remix(any(), any(), anyInt(), anyLong(), any(), any(), any()))
+        when(ideogram.remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any()))
                 .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{1}, 2L));
         when(textValidation.validateOrExplain(any(), any())).thenReturn(textFail());
 
@@ -160,7 +160,7 @@ class PosterOrchestratorTest {
                 orchestrator().run(UUID.randomUUID(), req(), concept());
 
         // 2 remixes (maxRegenerations=2) per variant, then best-effort COMPLETE
-        verify(ideogram, times(6)).remix(any(), any(), anyInt(), anyLong(), any(), any(), any());
+        verify(ideogram, times(6)).remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any());
         assertThat(r.posters()).allSatisfy(p -> assertThat(p.status()).isEqualTo("COMPLETE"));
         ArgumentCaptor<PosterGeneration> saved = ArgumentCaptor.forClass(PosterGeneration.class);
         verify(repo, atLeastOnce()).save(saved.capture());
@@ -171,7 +171,7 @@ class PosterOrchestratorTest {
 
     @Test
     void textPasses_styleSoftFails_acceptsBestEffort_noRemix() {
-        when(ideogram.generate(any(), anyLong(), any(), any(), any()))
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
                 .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 1L));
         when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleFail());
@@ -180,15 +180,15 @@ class PosterOrchestratorTest {
                 orchestrator().run(UUID.randomUUID(), req(), concept());
 
         assertThat(r.posters()).allSatisfy(p -> assertThat(p.status()).isEqualTo("COMPLETE"));
-        verify(ideogram, never()).remix(any(), any(), anyInt(), anyLong(), any(), any(), any());
+        verify(ideogram, never()).remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any());
     }
 
     @Test
     void brandColors_forwardedToIdeogramGenerateAndRemix() {
         // generate yields {1} (text-fail) so each variant also exercises the remix path.
-        when(ideogram.generate(any(), anyLong(), any(), any(), any()))
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
                 .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{1}, 1L));
-        when(ideogram.remix(any(), any(), anyInt(), anyLong(), any(), any(), any()))
+        when(ideogram.remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any()))
                 .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 2L));
         when(textValidation.validateOrExplain(any(), any())).thenAnswer(inv -> {
             byte[] img = inv.getArgument(0);
@@ -200,26 +200,26 @@ class PosterOrchestratorTest {
         orchestrator().run(UUID.randomUUID(), req(), concept(), 123L, List.of(), brand);
 
         verify(ideogram, times(3)).generate(any(), anyLong(), any(), any(),
-                eq(List.of("#ec4899", "#f6c04a")));
+                eq(List.of("#ec4899", "#f6c04a")), any());
         verify(ideogram, times(3)).remix(any(), any(), anyInt(), anyLong(), any(), any(),
-                eq(List.of("#ec4899", "#f6c04a")));
+                eq(List.of("#ec4899", "#f6c04a")), any());
     }
 
     @Test
     void noBrand_sendsEmptyPaletteToIdeogram() {
-        when(ideogram.generate(any(), anyLong(), any(), any(), any()))
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
                 .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 1L));
         when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
 
         orchestrator().run(UUID.randomUUID(), req(), concept());
 
-        verify(ideogram, times(3)).generate(any(), anyLong(), any(), any(), eq(List.of()));
+        verify(ideogram, times(3)).generate(any(), anyLong(), any(), any(), eq(List.of()), any());
     }
 
     @Test
     void noBrand_skipsComposite_finalEqualsRaw() {
-        when(ideogram.generate(any(), anyLong(), any(), any(), any()))
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
                 .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 1L));
         when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
@@ -234,7 +234,7 @@ class PosterOrchestratorTest {
 
     @Test
     void brandWithLogoOn_appliesComposite_finalDiffersFromRaw_andStatusApplied() {
-        when(ideogram.generate(any(), anyLong(), any(), any(), any()))
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
                 .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 1L));
         when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
@@ -270,7 +270,7 @@ class PosterOrchestratorTest {
 
     @Test
     void compositeThrows_isIsolated_finalFallsBackToRaw_statusFailed() {
-        when(ideogram.generate(any(), anyLong(), any(), any(), any()))
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
                 .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 1L));
         when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
