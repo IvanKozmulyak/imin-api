@@ -113,6 +113,8 @@ Composite wrapped in try/catch: logo URL 404, decode error, OOM → log + Sentry
 ## 5. Accent colours → generation
 
 ### Prompt injection only — `color_palette` is not used
+> **SUPERSEDED 2026-06-12.** Prompt-injection-only shipped, but brand colours did not survive to the rendered posters: the packed `accentColor` line was a passive hint outcompeted by the per-variant `Palette:` directions, and the curated reference images dominated the render's colours regardless. The official generate-v3/remix-v3 references document **no** incompatibility between `color_palette` and `style_reference_images` (only `style_codes` conflicts with refs), so the incompatibility concern below was unfounded. Current behavior: brand colours are sent as a structured `color_palette` (`{"members":[{color_hex,color_weight}]}`, lead weighted 1.0, halving down the list) on both generate and corrective remix, AND the art-director prompt carries a mandatory BRAND PALETTE block that replaces the sampled palette twists. Brandless generations are byte-identical to before.
+
 The vibe system's curated `style_reference_images` are the primary style control (`IdeogramV3Client.applyStyleControl`, refs-XOR-preset, `IdeogramV3Client.java:94-104`). Secondary sources report `color_palette` is incompatible with reference images (not confirmed on the generate-v3 reference page — evidence softened per the feasibility review), and Ideogram's docs frame palette control as creative direction, not precise matching. Prompt injection avoids the question entirely, requires zero Ideogram client change, and preserves vibe fidelity.
 
 ### Wiring — the smallest correct change
