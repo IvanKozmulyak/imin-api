@@ -73,6 +73,41 @@ class AiEventDescriptionServiceTest {
                 "brutalist_techno", null);
     }
 
+    private EventCreatorRequest briefWithBrand() {
+        return new EventCreatorRequest(
+                "warehouse rave", "energetic", "techno", "Berlin",
+                LocalDate.of(2026, 6, 7), List.of("INSTAGRAM"),
+                "DJ A, DJ B", "RSO", "BIG NIGHT - BERLIN",
+                "#ec4899 (lead); supporting: #f6c04a, #a78bfa",
+                "Schnellerstrasse 137", "https://imin.wtf/e/big-night",
+                "brutalist_techno", null);
+    }
+
+    // ---- brand palette mandate --------------------------------------------------------------------
+
+    @Test
+    void buildPrompt_withBrandColours_mandatesBrandPaletteOverVibe() {
+        String prompt = service.buildPrompt(briefWithBrand(), BRUTALIST, sampled(), null);
+
+        assertThat(prompt).contains("BRAND PALETTE");
+        assertThat(prompt).contains("#ec4899 (lead); supporting: #f6c04a, #a78bfa");
+        // brand replaces the sampled palette twists — colour direction comes from the brand alone
+        assertThat(prompt).doesNotContain("near-black with one acid-green accent");
+        assertThat(prompt).doesNotContain("black with vermilion accent");
+        assertThat(prompt).doesNotContain("monochrome with one signal accent");
+        // non-colour parts of each direction still apply
+        assertThat(prompt).contains("condensed all-caps, tight tracking");
+        assertThat(prompt).contains("lone dancer mid-motion under one cold spotlight");
+    }
+
+    @Test
+    void buildPrompt_withoutBrandColours_keepsVibePaletteAndOmitsBrandBlock() {
+        String prompt = service.buildPrompt(brief(), BRUTALIST, sampled(), null);
+
+        assertThat(prompt).doesNotContain("BRAND PALETTE");
+        assertThat(prompt).contains("near-black with one acid-green accent");
+    }
+
     // ---- T4: art-director template v2 ------------------------------------------------------------
 
     @Test

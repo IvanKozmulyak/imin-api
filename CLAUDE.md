@@ -67,7 +67,9 @@ ConceptController → ConceptStudioService
   → PosterOrchestrator            (3 variants in parallel, bounded by Semaphore)
       per variant:
         IdeogramV3Client.generate (native API, multipart, QUALITY, 4x5, magic_prompt OFF,
-                                   one style control: reference images | style_preset)
+                                   one style control: reference images | style_preset;
+                                   plus color_palette from the org brand colours when set —
+                                   a separate control that combines with reference images)
         → text gate (hard)  → on fail: IdeogramV3Client.remix(failing image + correction
                               prompt, TURBO) up to the regen budget, then best-effort
         → style gate (soft) → best-effort on fail

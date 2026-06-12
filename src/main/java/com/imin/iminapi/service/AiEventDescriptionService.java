@@ -375,9 +375,20 @@ public class AiEventDescriptionService {
         }
         sb.append("\n");
 
+        String brandAccent = request.accentColor();
+        if (notBlank(brandAccent)) {
+            sb.append("BRAND PALETTE — MANDATORY: this organizer has brand colours: ")
+              .append(brandAccent).append(".\n")
+              .append("Build every variant's colour story from these exact colours: the lead colour must ")
+              .append("visibly dominate each poster; supporting colours are secondary accents only. ")
+              .append("They REPLACE the vibe's usual palette — the vibe contributes mood, texture, ")
+              .append("composition, and typography, never its own colours. ")
+              .append("Name these exact hex values in the colors section of every ideogram_prompt.\n\n");
+        }
+
         sb.append("CREATIVE DIRECTIONS — one per variant, follow them precisely:\n\n");
         for (int i = 0; i < d.size(); i++) {
-            sb.append(variantBlock(i + 1, d.get(i), vibe));
+            sb.append(variantBlock(i + 1, d.get(i), vibe, brandAccent));
         }
         sb.append("\n");
 
@@ -436,7 +447,7 @@ public class AiEventDescriptionService {
         return sb.toString();
     }
 
-    private static String variantBlock(int n, CreativeDirection dir, Vibe vibe) {
+    private static String variantBlock(int n, CreativeDirection dir, Vibe vibe, String brandAccent) {
         HeroType mode = dir.heroType();
         boolean typographic = mode == HeroType.TYPOGRAPHIC;
         StringBuilder b = new StringBuilder();
@@ -449,7 +460,11 @@ public class AiEventDescriptionService {
             b.append("- Treatment: ").append(nv(dir.accent(), "in-keeping texture")).append("\n");
         }
         b.append("- Layout: ").append(nv(dir.composition(), vibe.composition())).append("\n");
-        b.append("- Palette: ").append(nv(dir.paletteTwist(), "the vibe palette")).append("; type: ")
+        // The sampled palette twist only applies brandless: brand colours (when set) own colour entirely.
+        String palette = notBlank(brandAccent)
+                ? "the organizer's brand colours, lead dominant (see BRAND PALETTE above)"
+                : nv(dir.paletteTwist(), "the vibe palette");
+        b.append("- Palette: ").append(palette).append("; type: ")
          .append(nv(dir.typeTreatment(), vibe.typography())).append("\n\n");
         return b.toString();
     }

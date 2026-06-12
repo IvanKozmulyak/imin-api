@@ -55,7 +55,7 @@ class IdeogramV3ClientTest {
         IdeogramV3Client.IdeogramResult r = h.client().generate(
                 "a \"VOID\" poster", 42L,
                 List.of(new StyleReferencePart(new byte[]{9, 9}, "ref0.png", "image/png")),
-                "HIGH_CONTRAST"); // preset present but refs win
+                "HIGH_CONTRAST", List.of()); // preset present but refs win
 
         assertThat(r.imageBytes()).containsExactly(1, 2, 3, 4);
         assertThat(r.seed()).isEqualTo(42L);
@@ -74,7 +74,7 @@ class IdeogramV3ClientTest {
         h.server().expect(requestTo("https://cdn.ideogram.ai/y.png"))
                 .andRespond(withSuccess(new byte[]{5, 6}, MediaType.IMAGE_PNG));
 
-        IdeogramV3Client.IdeogramResult r = h.client().generate("p", 7L, List.of(), "HIGH_CONTRAST");
+        IdeogramV3Client.IdeogramResult r = h.client().generate("p", 7L, List.of(), "HIGH_CONTRAST", List.of());
 
         assertThat(r.imageBytes()).containsExactly(5, 6);
         h.server().verify();
@@ -100,10 +100,79 @@ class IdeogramV3ClientTest {
                 .andRespond(withSuccess(new byte[]{7, 8}, MediaType.IMAGE_PNG));
 
         IdeogramV3Client.IdeogramResult r = h.client().remix(
-                new byte[]{1, 1, 1, 1}, "p\n\nCORRECTION — fix text", 70, 99L, List.of(), "HIGH_CONTRAST");
+                new byte[]{1, 1, 1, 1}, "p\n\nCORRECTION — fix text", 70, 99L, List.of(), "HIGH_CONTRAST", List.of());
 
         assertThat(r.imageBytes()).containsExactly(7, 8);
         assertThat(r.seed()).isEqualTo(99L);
+        h.server().verify();
+    }
+
+    @Test
+    void generate_withBrandColors_sendsColorPaletteAlongsideStyleRefs() {
+        Harness h = harness();
+        h.server().expect(requestTo("https://api.ideogram.ai/v1/ideogram-v3/generate"))
+                .andExpect(content().string(Matchers.containsString("name=\"color_palette\"")))
+                .andExpect(content().string(Matchers.containsString(
+                        "{\"members\":[{\"color_hex\":\"#ec4899\",\"color_weight\":1.0},"
+                        + "{\"color_hex\":\"#f6c04a\",\"color_weight\":0.5},"
+                        + "{\"color_hex\":\"#a78bfa\",\"color_weight\":0.25}]}")))
+                .andExpect(content().string(Matchers.containsString("name=\"style_reference_images\"")))
+                .andRespond(withSuccess("{\"data\":[{\"url\":\"https://cdn.ideogram.ai/c.png\"}]}",
+                        MediaType.APPLICATION_JSON));
+        h.server().expect(requestTo("https://cdn.ideogram.ai/c.png"))
+                .andRespond(withSuccess(new byte[]{1}, MediaType.IMAGE_PNG));
+
+        h.client().generate("p", 1L,
+                List.of(new StyleReferencePart(new byte[]{9}, "ref0.png", "image/png")), null,
+                List.of("#ec4899", "#f6c04a", "#a78bfa"));
+
+        h.server().verify();
+    }
+
+    @Test
+    void generate_withoutBrandColors_omitsColorPalette() {
+        Harness h = harness();
+        h.server().expect(requestTo("https://api.ideogram.ai/v1/ideogram-v3/generate"))
+                .andExpect(content().string(Matchers.not(Matchers.containsString("color_palette"))))
+                .andRespond(withSuccess("{\"data\":[{\"url\":\"https://cdn.ideogram.ai/d.png\"}]}",
+                        MediaType.APPLICATION_JSON));
+        h.server().expect(requestTo("https://cdn.ideogram.ai/d.png"))
+                .andRespond(withSuccess(new byte[]{1}, MediaType.IMAGE_PNG));
+
+        h.client().generate("p", 1L, List.of(), "HIGH_CONTRAST", null);
+
+        h.server().verify();
+    }
+
+    @Test
+    void generate_filtersMalformedHexes_omitsPaletteWhenNoneValid() {
+        Harness h = harness();
+        h.server().expect(requestTo("https://api.ideogram.ai/v1/ideogram-v3/generate"))
+                .andExpect(content().string(Matchers.not(Matchers.containsString("color_palette"))))
+                .andRespond(withSuccess("{\"data\":[{\"url\":\"https://cdn.ideogram.ai/e.png\"}]}",
+                        MediaType.APPLICATION_JSON));
+        h.server().expect(requestTo("https://cdn.ideogram.ai/e.png"))
+                .andRespond(withSuccess(new byte[]{1}, MediaType.IMAGE_PNG));
+
+        h.client().generate("p", 1L, List.of(), null, List.of("magenta", "#12345", ""));
+
+        h.server().verify();
+    }
+
+    @Test
+    void remix_withBrandColors_sendsColorPalette() {
+        Harness h = harness();
+        h.server().expect(requestTo("https://api.ideogram.ai/v1/ideogram-v3/remix"))
+                .andExpect(content().string(Matchers.containsString("name=\"color_palette\"")))
+                .andExpect(content().string(Matchers.containsString(
+                        "{\"members\":[{\"color_hex\":\"#ec4899\",\"color_weight\":1.0}]}")))
+                .andRespond(withSuccess("{\"data\":[{\"url\":\"https://cdn.ideogram.ai/f.png\"}]}",
+                        MediaType.APPLICATION_JSON));
+        h.server().expect(requestTo("https://cdn.ideogram.ai/f.png"))
+                .andRespond(withSuccess(new byte[]{1}, MediaType.IMAGE_PNG));
+
+        h.client().remix(new byte[]{1}, "p", 70, 1L, List.of(), null, List.of("#ec4899"));
+
         h.server().verify();
     }
 }

@@ -237,6 +237,7 @@ public class PosterOrchestrator {
         PosterTextSpec spec = textSpecFactory.from(request);
         HeroType heroType = HeroType.fromWire(variant.heroType());
         StyleControl style = ctx.style();
+        List<String> brandPalette = brand == null || brand.colors() == null ? List.of() : brand.colors();
         List<Map<String, Object>> attempts = new ArrayList<>();
 
         long seed = baseSeed;
@@ -249,8 +250,10 @@ public class PosterOrchestrator {
             entity.setSeed(seed);
 
             IdeogramV3Client.IdeogramResult render = (attempt == 0)
-                    ? ideogramClient.generate(variant.ideogramPrompt(), seed, style.parts(), style.preset())
-                    : ideogramClient.remix(image, correction, remixImageWeight, seed, style.parts(), style.preset());
+                    ? ideogramClient.generate(variant.ideogramPrompt(), seed, style.parts(), style.preset(),
+                            brandPalette)
+                    : ideogramClient.remix(image, correction, remixImageWeight, seed, style.parts(), style.preset(),
+                            brandPalette);
             image = render.imageBytes();
             url = storage.writePng(image);
             entity.setRawUrl(url);
