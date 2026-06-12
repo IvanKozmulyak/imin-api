@@ -42,11 +42,13 @@ class ConceptStudioServiceTest {
     PricingService pricing = mock(PricingService.class);
     ConceptOverviewLlm overviewLlm = mock(ConceptOverviewLlm.class);
     GeneratedEventRepository repo = mock(GeneratedEventRepository.class);
+    com.imin.iminapi.repository.OrganizationRepository orgs =
+            mock(com.imin.iminapi.repository.OrganizationRepository.class);
     com.imin.iminapi.service.poster.VibeLibrary vibeLibrary =
             mock(com.imin.iminapi.service.poster.VibeLibrary.class);
 
     ConceptStudioService sut = new ConceptStudioService(
-            descService, orchestrator, pricing, overviewLlm, repo, vibeLibrary);
+            descService, orchestrator, pricing, overviewLlm, repo, orgs, vibeLibrary);
 
     private AuthPrincipal owner() {
         return new AuthPrincipal(UUID.randomUUID(), UUID.randomUUID(), UserRole.OWNER, UUID.randomUUID());
@@ -74,7 +76,7 @@ class ConceptStudioServiceTest {
                         new GeneratedPoster(UUID.randomUUID(), "people", "https://cdn/raw1.png", "https://cdn/p1.png", 1L, "prompt", List.of(), Map.of(), "COMPLETE", null),
                         new GeneratedPoster(UUID.randomUUID(), "object",     "https://cdn/raw2.png", "https://cdn/p2.png", 2L, "prompt", List.of(), Map.of(), "COMPLETE", null),
                         new GeneratedPoster(UUID.randomUUID(), "typographic",     "https://cdn/raw3.png", "https://cdn/p3.png", 3L, "prompt", List.of(), Map.of(), "COMPLETE", null)));
-        when(orchestrator.run(any(), any(), any(), anyLong(), any())).thenReturn(result);
+        when(orchestrator.run(any(), any(), any(), anyLong(), any(), any())).thenReturn(result);
 
         when(pricing.recommend(any(), any(), any())).thenReturn(
                 new PricingRecommendation(new BigDecimal("12.00"), new BigDecimal("24.00"), "ok"));
@@ -83,9 +85,11 @@ class ConceptStudioServiceTest {
                 new ConceptOverview("ANTRUM", "Deep in a Berlin warehouse...",
                         List.of("#1a1a18", "#2d5cff", "#c03030", "#f2f1ec"), 250, 78));
 
+        when(orgs.findById(any())).thenReturn(java.util.Optional.empty());
+
         ConceptResponse r = sut.create(p, new ConceptRequest(
                 "Moody Berlin techno warehouse", "Techno", "Berlin", null, null,
-                null, null, null, null, null, null));
+                null, null, null, null, null, null, null));
 
         assertThat(r.conceptId()).isNotNull();
         assertThat(r.name()).isEqualTo("ANTRUM");
@@ -122,7 +126,7 @@ class ConceptStudioServiceTest {
                         new PosterVariant("minimal", "Large event prompt text here one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four twenty-five twenty-six twenty-seven twenty-eight twenty-nine thirty more words here", "4:5", "Design")));
         when(descService.generateConcept(any(), anyLong()))
                 .thenReturn(new AiEventDescriptionService.GeneratedConcept(concept, List.of()));
-        when(orchestrator.run(any(), any(), any(), anyLong(), any())).thenReturn(new OrchestrationResult(
+        when(orchestrator.run(any(), any(), any(), anyLong(), any(), any())).thenReturn(new OrchestrationResult(
                 UUID.randomUUID(), "flat_graphic",
                 List.of(new GeneratedPoster(UUID.randomUUID(), "people", "raw", "url1", 1L, "p", List.of(), Map.of(), "COMPLETE", null),
                         new GeneratedPoster(UUID.randomUUID(), "object",     "raw", "url2", 2L, "p", List.of(), Map.of(), "COMPLETE", null),
@@ -131,6 +135,7 @@ class ConceptStudioServiceTest {
                 new PricingRecommendation(new BigDecimal("10.00"), new BigDecimal("20.00"), "ok"));
         when(overviewLlm.generate(any(), any())).thenReturn(new ConceptOverview(
                 "NEW NAME", "new desc", List.of("#000"), 200, 80));
+        when(orgs.findById(any())).thenReturn(java.util.Optional.empty());
 
         ConceptResponse r = sut.regenerate(p, conceptId, java.util.List.of());
         assertThat(r.conceptId()).isNotEqualTo(conceptId); // a fresh row
@@ -158,21 +163,22 @@ class ConceptStudioServiceTest {
                                 new PosterVariant("object", body, "1:1", "Design"),
                                 new PosterVariant("typographic", body, "9:16", "Design"))),
                 List.of()));
-        when(orchestrator.run(any(), any(), any(), anyLong(), any())).thenReturn(new OrchestrationResult(
+        when(orchestrator.run(any(), any(), any(), anyLong(), any(), any())).thenReturn(new OrchestrationResult(
                 UUID.randomUUID(), "brutalist_techno",
                 List.of(new GeneratedPoster(UUID.randomUUID(), "people", "raw", "u1", 1L, "p", List.of(), Map.of(), "COMPLETE", null))));
         when(pricing.recommend(any(), any(), any())).thenReturn(
                 new PricingRecommendation(new BigDecimal("12.00"), new BigDecimal("24.00"), "ok"));
         when(overviewLlm.generate(any(), any())).thenReturn(
                 new ConceptOverview("N", "d", List.of("#000"), 100, 50));
+        when(orgs.findById(any())).thenReturn(java.util.Optional.empty());
 
         sut.create(p, new ConceptRequest(
                 "Brutalist warehouse rave brief", "Techno", "Berlin", null, "brutalist_techno",
-                null, null, null, null, null, null));
+                null, null, null, null, null, null, null));
 
         // The concept handed to the orchestrator carries the pinned vibe id, not the LLM's echo.
         ArgumentCaptor<PosterConcept> cap = ArgumentCaptor.forClass(PosterConcept.class);
-        verify(orchestrator).run(any(), any(), cap.capture(), anyLong(), any());
+        verify(orchestrator).run(any(), any(), cap.capture(), anyLong(), any(), any());
         assertThat(cap.getValue().subStyleTag()).isEqualTo("brutalist_techno");
     }
 
@@ -218,7 +224,7 @@ class ConceptStudioServiceTest {
 
         assertThatThrownBy(() -> sut.create(p,
                 new ConceptRequest("Some brief text long enough", null, null, null, "not_a_vibe",
-                        null, null, null, null, null, null)))
+                        null, null, null, null, null, null, null)))
                 .isInstanceOf(ApiException.class);
     }
 
@@ -229,7 +235,7 @@ class ConceptStudioServiceTest {
 
         sut.create(p, new ConceptRequest(
                 "Moody warehouse techno brief here", "Techno", "Metz", null, null,
-                null, null, null, null, null, null));
+                null, null, null, null, null, null, null));
 
         ArgumentCaptor<EventCreatorRequest> cap = ArgumentCaptor.forClass(EventCreatorRequest.class);
         verify(descService).generateConcept(cap.capture(), anyLong());
@@ -243,14 +249,14 @@ class ConceptStudioServiceTest {
 
         sut.create(p, new ConceptRequest(
                 "Moody warehouse techno brief here", "Techno", null, null, null,
-                null, null, null, null, null, null));
+                null, null, null, null, null, null, null));
 
         ArgumentCaptor<EventCreatorRequest> cap = ArgumentCaptor.forClass(EventCreatorRequest.class);
         verify(descService).generateConcept(cap.capture(), anyLong());
         assertThat(cap.getValue().city()).isNull();
     }
 
-    /** Common happy-path stubs (repo + concept LLM + orchestrator + pricing + overview). */
+    /** Common happy-path stubs (repo + concept LLM + orchestrator + pricing + overview + orgs). */
     private void stubPipeline() {
         when(repo.save(any(GeneratedEvent.class))).thenAnswer(inv -> {
             GeneratedEvent e = inv.getArgument(0);
@@ -265,12 +271,86 @@ class ConceptStudioServiceTest {
                                         new PosterVariant("object", body, "1:1", "Design"),
                                         new PosterVariant("typographic", body, "9:16", "Design"))),
                         List.of()));
-        when(orchestrator.run(any(), any(), any(), anyLong(), any())).thenReturn(new OrchestrationResult(
+        when(orchestrator.run(any(), any(), any(), anyLong(), any(), any())).thenReturn(new OrchestrationResult(
                 UUID.randomUUID(), "neon_underground",
                 List.of(new GeneratedPoster(UUID.randomUUID(), "people", "raw", "u1", 1L, "p", List.of(), Map.of(), "COMPLETE", null))));
         when(pricing.recommend(any(), any(), any())).thenReturn(
                 new PricingRecommendation(new BigDecimal("12.00"), new BigDecimal("24.00"), "ok"));
         when(overviewLlm.generate(any(), any())).thenReturn(
                 new ConceptOverview("N", "d", List.of("#000"), 100, 50));
+        when(orgs.findById(any())).thenReturn(java.util.Optional.empty());
+    }
+
+    @Test
+    void brandColours_packed_into_accentColor_lead_plus_supporting() {
+        AuthPrincipal p = owner();
+        stubPipeline();
+        com.imin.iminapi.model.Organization o = new com.imin.iminapi.model.Organization();
+        o.setBrandAccentColors(new java.util.ArrayList<>(List.of("#ec4899", "#f6c04a", "#a78bfa")));
+        o.setBrandLogoOnPosters(true);
+        when(orgs.findById(p.orgId())).thenReturn(java.util.Optional.of(o));
+
+        sut.create(p, new ConceptRequest(
+                "Moody warehouse techno brief here", "Techno", "Berlin", null, null,
+                null, null, null, null, null, null, null));
+
+        ArgumentCaptor<EventCreatorRequest> cap = ArgumentCaptor.forClass(EventCreatorRequest.class);
+        verify(descService).generateConcept(cap.capture(), anyLong());
+        assertThat(cap.getValue().accentColor())
+                .isEqualTo("#ec4899 (lead); supporting: #f6c04a, #a78bfa");
+    }
+
+    @Test
+    void emptyBrandBook_keeps_accentColor_null_regression_guard_for_line195() {
+        AuthPrincipal p = owner();
+        stubPipeline(); // orgs.findById → empty
+
+        sut.create(p, new ConceptRequest(
+                "Moody warehouse techno brief here", "Techno", "Berlin", null, null,
+                null, null, null, null, null, null, null));
+
+        ArgumentCaptor<EventCreatorRequest> cap = ArgumentCaptor.forClass(EventCreatorRequest.class);
+        verify(descService).generateConcept(cap.capture(), anyLong());
+        assertThat(cap.getValue().accentColor()).isNull();
+    }
+
+    @Test
+    void requestLogoOnPosters_overrides_org_default() {
+        AuthPrincipal p = owner();
+        stubPipeline();
+        com.imin.iminapi.model.Organization o = new com.imin.iminapi.model.Organization();
+        o.setBrandLogoUrl("https://cdn/logo.png");
+        o.setBrandLogoOnPosters(true); // org default ON
+        when(orgs.findById(p.orgId())).thenReturn(java.util.Optional.of(o));
+
+        // request explicitly turns it OFF
+        sut.create(p, new ConceptRequest(
+                "Moody warehouse techno brief here", "Techno", "Berlin", null, null,
+                null, null, null, null, null, null, Boolean.FALSE));
+
+        ArgumentCaptor<com.imin.iminapi.service.poster.BrandSnapshot> cap =
+                ArgumentCaptor.forClass(com.imin.iminapi.service.poster.BrandSnapshot.class);
+        verify(orchestrator).run(any(), any(), any(), anyLong(), any(), cap.capture());
+        assertThat(cap.getValue().logoOn()).isFalse();
+    }
+
+    @Test
+    void malformedBrandLookup_proceeds_brandless() {
+        AuthPrincipal p = owner();
+        stubPipeline();
+        when(orgs.findById(p.orgId())).thenThrow(new RuntimeException("db hiccup"));
+
+        // Must not throw — generation proceeds brandless.
+        sut.create(p, new ConceptRequest(
+                "Moody warehouse techno brief here", "Techno", "Berlin", null, null,
+                null, null, null, null, null, null, null));
+
+        ArgumentCaptor<EventCreatorRequest> cap = ArgumentCaptor.forClass(EventCreatorRequest.class);
+        verify(descService).generateConcept(cap.capture(), anyLong());
+        assertThat(cap.getValue().accentColor()).isNull();
+        ArgumentCaptor<com.imin.iminapi.service.poster.BrandSnapshot> bcap =
+                ArgumentCaptor.forClass(com.imin.iminapi.service.poster.BrandSnapshot.class);
+        verify(orchestrator).run(any(), any(), any(), anyLong(), any(), bcap.capture());
+        assertThat(bcap.getValue()).isNull();
     }
 }

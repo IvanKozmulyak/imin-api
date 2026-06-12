@@ -1,6 +1,5 @@
 package com.imin.iminapi.controller.event;
 
-import com.imin.iminapi.config.TestMediaStorageConfig;
 import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.dto.event.MediaUploadResponse;
 import com.imin.iminapi.model.MediaKind;
@@ -33,7 +32,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @SpringBootTest
 @AutoConfigureMockMvc
-@Import({TestRateLimitConfig.class, TestMediaStorageConfig.class})
+@Import(TestRateLimitConfig.class)
 class EventMediaControllerTest {
 
     @Autowired MockMvc mvc;

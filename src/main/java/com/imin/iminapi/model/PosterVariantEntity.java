@@ -64,4 +64,8 @@ public class PosterVariantEntity {
     /** Per-attempt validation journal as JSON: [{attempt,seed,mode,text,style}]. */
     @Column(name = "validation_attempts_json", columnDefinition = "TEXT")
     private String validationAttemptsJson;
+
+    /** Logo composite outcome, beside validation_verdict: NULL | 'APPLIED' | 'SKIPPED' | 'FAILED'. */
+    @Column(name = "logo_composite_status", length = 16)
+    private String logoCompositeStatus;
 }

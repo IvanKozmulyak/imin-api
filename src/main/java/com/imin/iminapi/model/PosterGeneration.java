@@ -41,6 +41,14 @@ public class PosterGeneration {
     @Column(name = "creative_seed")
     private Long creativeSeed;
 
+    /**
+     * Resolved brand stamped at creation: JSON {colors, logoUrl, logoOn} or NULL when brandless.
+     * The corrective remix path re-reads THIS snapshot, not live org state, so a poster remixed
+     * after a rebrand doesn't silently mix old prompt colours with a new logo.
+     */
+    @Column(name = "brand_snapshot", columnDefinition = "TEXT")
+    private String brandSnapshot;
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 
