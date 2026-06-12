@@ -16,6 +16,8 @@ import com.imin.iminapi.model.PosterVariantEntity;
 import com.imin.iminapi.model.PosterVariantStatus;
 import com.imin.iminapi.repository.PosterGenerationRepository;
 import com.imin.iminapi.service.ai.CreativeDirection;
+import io.sentry.Sentry;
+import io.sentry.SentryLevel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -64,6 +66,7 @@ public class PosterOrchestrator {
     private final PosterTextValidationService textValidation;
     private final PosterStyleValidationService styleValidation;
     private final PosterImageStorage storage;
+    private final BrandLogoCompositor logoCompositor;
     private final PosterGenerationRepository generationRepository;
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final int maxRegenerations;
@@ -81,6 +84,7 @@ public class PosterOrchestrator {
             PosterTextValidationService textValidation,
             PosterStyleValidationService styleValidation,
             PosterImageStorage storage,
+            BrandLogoCompositor logoCompositor,
             PosterGenerationRepository generationRepository,
             @Value("${poster.validation.max-regenerations:2}") int maxRegenerations,
             @Value("${ideogram.remix.image-weight:70}") int remixImageWeight,
@@ -94,6 +98,7 @@ public class PosterOrchestrator {
         this.textValidation = textValidation;
         this.styleValidation = styleValidation;
         this.storage = storage;
+        this.logoCompositor = logoCompositor;
         this.generationRepository = generationRepository;
         this.maxRegenerations = Math.max(0, maxRegenerations);
         this.remixImageWeight = remixImageWeight;
@@ -119,16 +124,24 @@ public class PosterOrchestrator {
     private record RenderContext(Vibe vibe, StyleCard card, StyleControl style) {}
 
     public OrchestrationResult run(UUID generatedEventId, EventCreatorRequest request, PosterConcept concept) {
-        return run(generatedEventId, request, concept, deriveSeed(generatedEventId), List.of());
+        return run(generatedEventId, request, concept, deriveSeed(generatedEventId), List.of(), null);
     }
 
     public OrchestrationResult run(UUID generatedEventId, EventCreatorRequest request, PosterConcept concept,
                                    long creativeSeed, List<CreativeDirection> directions) {
+        return run(generatedEventId, request, concept, creativeSeed, directions, null);
+    }
+
+    public OrchestrationResult run(UUID generatedEventId, EventCreatorRequest request, PosterConcept concept,
+                                   long creativeSeed, List<CreativeDirection> directions, BrandSnapshot brand) {
         PosterGeneration generation = new PosterGeneration();
         generation.setGeneratedEventId(generatedEventId);
         generation.setStatus(PosterGenerationStatus.PENDING);
         generation.setSubStyleTag(concept.subStyleTag());
         generation.setCreativeSeed(creativeSeed);
+        if (brand != null) {
+            generation.setBrandSnapshot(brand.toJson());
+        }
         generation = generationRepository.save(generation);
 
         String tag = concept.subStyleTag();
@@ -144,12 +157,13 @@ public class PosterOrchestrator {
 
         List<PosterVariant> variants = concept.variants();
         final PosterGeneration gen = generation;
+        final BrandSnapshot brandFinal = brand;
         List<Future<GeneratedPoster>> futures = new ArrayList<>(variants.size());
         for (int i = 0; i < variants.size(); i++) {
             final PosterVariant v = variants.get(i);
             final CreativeDirection dir = i < directions.size() ? directions.get(i) : null;
             final long seed = deriveSeed(creativeSeed, i);
-            futures.add(variantPool.submit(() -> generateOne(gen, v, dir, seed, request, ctx)));
+            futures.add(variantPool.submit(() -> generateOne(gen, v, dir, seed, request, ctx, brandFinal)));
         }
 
         List<GeneratedPoster> results = new ArrayList<>(variants.size());
@@ -183,7 +197,7 @@ public class PosterOrchestrator {
 
     private GeneratedPoster generateOne(
             PosterGeneration generation, PosterVariant variant, CreativeDirection direction,
-            long seed, EventCreatorRequest request, RenderContext ctx) {
+            long seed, EventCreatorRequest request, RenderContext ctx, BrandSnapshot brand) {
         PosterVariantEntity entity = new PosterVariantEntity();
         entity.setPosterGeneration(generation);
         entity.setVariantStyle(variant.heroType());
@@ -205,7 +219,7 @@ public class PosterOrchestrator {
             return toDto(entity);
         }
         try {
-            return renderWithValidation(entity, variant, seed, request, ctx);
+            return renderWithValidation(entity, variant, seed, request, ctx, brand);
         } catch (RuntimeException e) {
             log.error("Variant generation failed: hero_type={}, seed={}", variant.heroType(), seed, e);
             entity.setStatus(PosterVariantStatus.FAILED);
@@ -219,7 +233,7 @@ public class PosterOrchestrator {
     /** Generate → text gate (hard, corrective remix) → style gate (soft). */
     private GeneratedPoster renderWithValidation(
             PosterVariantEntity entity, PosterVariant variant, long baseSeed,
-            EventCreatorRequest request, RenderContext ctx) {
+            EventCreatorRequest request, RenderContext ctx, BrandSnapshot brand) {
         PosterTextSpec spec = textSpecFactory.from(request);
         HeroType heroType = HeroType.fromWire(variant.heroType());
         StyleControl style = ctx.style();
@@ -248,7 +262,7 @@ public class PosterOrchestrator {
                 if (last) {
                     log.warn("Text gate still failing after {} regenerations; accepting best-effort: {}",
                             maxRegenerations, text.reason());
-                    return accept(entity, url, VERDICT_BEST_EFFORT, attempts);
+                    return accept(entity, url, VERDICT_BEST_EFFORT, attempts, brand);
                 }
                 correction = buildCorrectionPrompt(variant.ideogramPrompt(), text);
                 seed = nextSeed(seed);
@@ -259,22 +273,53 @@ public class PosterOrchestrator {
                     styleValidation.validateOrExplain(image, ctx.card(), heroType);
             attempts.add(attemptJson(attempt, seed, attempt == 0 ? "generate" : "remix", text, styleDecision));
             if (styleDecision.accepted()) {
-                return accept(entity, url, VERDICT_ACCEPTED, attempts);
+                return accept(entity, url, VERDICT_ACCEPTED, attempts, brand);
             }
             // Text is correct; style is soft — accept best-effort without spending more renders.
             log.warn("Style gate soft-failed (text OK); accepting best-effort: {}", styleDecision.reason());
-            return accept(entity, url, VERDICT_BEST_EFFORT, attempts);
+            return accept(entity, url, VERDICT_BEST_EFFORT, attempts, brand);
         }
         throw new IllegalStateException("render-with-validation loop exhausted");
     }
 
-    /** No overlay: the downloaded image is final. */
-    private GeneratedPoster accept(PosterVariantEntity entity, String url, String verdict,
-                                   List<Map<String, Object>> attempts) {
-        entity.setFinalUrl(url);
+    /**
+     * The single funnel that sets final_url for every acceptance path. Composites the brand logo
+     * when the snapshot says to, as a SECOND storage write (final_url = composited URL; raw_url keeps
+     * the un-composited render). Failure isolation is absolute: any composite error → final_url =
+     * raw_url + Sentry warning + status FAILED. Generation never fails over the logo.
+     */
+    private GeneratedPoster accept(PosterVariantEntity entity, String rawUrl, String verdict,
+                                   List<Map<String, Object>> attempts, BrandSnapshot brand) {
         entity.setValidationVerdict(verdict);
         entity.setValidationAttemptsJson(serialize(attempts));
         entity.setStatus(PosterVariantStatus.COMPLETE);
+
+        String finalUrl = rawUrl;
+        String compositeStatus;
+        if (brand == null || !brand.logoOn() || brand.logoUrl() == null || brand.logoUrl().isBlank()) {
+            compositeStatus = "SKIPPED";
+        } else {
+            try {
+                byte[] rawBytes = storage.download(rawUrl);
+                byte[] composited = logoCompositor.composite(
+                        rawBytes,
+                        entity.getPosterGeneration().getGeneratedEventId().toString(),
+                        brand.logoUrl());
+                finalUrl = storage.writePng(composited); // SECOND write → distinct object/URL
+                compositeStatus = "APPLIED";
+            } catch (RuntimeException e) {
+                log.warn("Logo composite failed; shipping un-composited poster: {}", e.getMessage());
+                Sentry.withScope(scope -> {
+                    scope.setLevel(SentryLevel.WARNING);
+                    scope.setTag("subsystem", "brand-logo-composite");
+                    Sentry.captureException(e);
+                });
+                finalUrl = rawUrl;
+                compositeStatus = "FAILED";
+            }
+        }
+        entity.setFinalUrl(finalUrl);
+        entity.setLogoCompositeStatus(compositeStatus);
         return toDto(entity);
     }
 

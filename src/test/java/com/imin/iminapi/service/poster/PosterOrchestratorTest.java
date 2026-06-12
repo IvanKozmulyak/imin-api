@@ -42,6 +42,7 @@ class PosterOrchestratorTest {
     private PosterStyleValidationService styleValidation;
     private PosterImageStorage storage;
     private PosterGenerationRepository repo;
+    private BrandLogoCompositor logoCompositor;
 
     @BeforeEach
     void setUp() {
@@ -54,6 +55,7 @@ class PosterOrchestratorTest {
         styleValidation = mock(PosterStyleValidationService.class);
         storage = mock(PosterImageStorage.class);
         repo = mock(PosterGenerationRepository.class);
+        logoCompositor = mock(BrandLogoCompositor.class);
 
         when(repo.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(storage.writePng(any())).thenReturn("https://img/x.png");
@@ -68,7 +70,7 @@ class PosterOrchestratorTest {
 
     private PosterOrchestrator orchestrator() {
         return new PosterOrchestrator(ideogram, vibeLibrary, styleCardLibrary, referenceLibrary,
-                textSpecFactory, textValidation, styleValidation, storage, repo,
+                textSpecFactory, textValidation, styleValidation, storage, logoCompositor, repo,
                 /*maxRegenerations*/ 2, /*remixImageWeight*/ 70, /*maxReferences*/ 3, /*maxConcurrent*/ 6);
     }
 
@@ -179,5 +181,83 @@ class PosterOrchestratorTest {
 
         assertThat(r.posters()).allSatisfy(p -> assertThat(p.status()).isEqualTo("COMPLETE"));
         verify(ideogram, never()).remix(any(), any(), anyInt(), anyLong(), any(), any());
+    }
+
+    @Test
+    void noBrand_skipsComposite_finalEqualsRaw() {
+        when(ideogram.generate(any(), anyLong(), any(), any()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 1L));
+        when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
+        when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
+
+        PosterOrchestrator.OrchestrationResult r =
+                orchestrator().run(UUID.randomUUID(), req(), concept());
+
+        // No second writePng beyond the one raw write per variant; compositor never called.
+        verify(logoCompositor, never()).composite(any(), any(), any());
+        assertThat(r.posters()).allSatisfy(p -> assertThat(p.finalUrl()).isEqualTo(p.rawUrl()));
+    }
+
+    @Test
+    void brandWithLogoOn_appliesComposite_finalDiffersFromRaw_andStatusApplied() {
+        when(ideogram.generate(any(), anyLong(), any(), any()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 1L));
+        when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
+        when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
+        // CRITICAL: the 3 variants render in PARALLEL on variantPool, and the branded path calls
+        // writePng TWICE per variant (raw render bytes {2}, then the composite bytes {7}) — 6 calls
+        // across 3 threads. A sequential thenReturn(...) would draw non-deterministically, so key
+        // writePng on its byte[] argument (exactly as the existing remix test keys validateOrExplain
+        // on the image bytes for the same reason). Composite mock returns {7}; raw render is {2}.
+        when(storage.writePng(any())).thenAnswer(inv -> {
+            byte[] b = inv.getArgument(0);
+            return (b.length > 0 && b[0] == 7) ? "https://img/composited.png" : "https://img/raw.png";
+        });
+        when(storage.download("https://img/raw.png")).thenReturn(new byte[]{9});
+        when(logoCompositor.composite(any(), any(), eq("https://cdn/logo.png")))
+                .thenReturn(new byte[]{7});
+
+        BrandSnapshot brand = new BrandSnapshot(java.util.List.of("#ec4899"), "https://cdn/logo.png", true);
+        PosterOrchestrator.OrchestrationResult r = orchestrator().run(
+                UUID.randomUUID(), req(), concept(), 123L, java.util.List.of(), brand);
+
+        // Assert across ALL variants (not .get(0)) — placement among the 3 parallel results is not ordered.
+        assertThat(r.posters()).allSatisfy(p -> {
+            assertThat(p.finalUrl()).isEqualTo("https://img/composited.png");
+            assertThat(p.rawUrl()).isEqualTo("https://img/raw.png");
+        });
+
+        ArgumentCaptor<PosterGeneration> saved = ArgumentCaptor.forClass(PosterGeneration.class);
+        verify(repo, atLeastOnce()).save(saved.capture());
+        assertThat(saved.getValue().getBrandSnapshot()).contains("#ec4899");
+        assertThat(saved.getValue().getVariants())
+                .allSatisfy(v -> assertThat(v.getLogoCompositeStatus()).isEqualTo("APPLIED"));
+    }
+
+    @Test
+    void compositeThrows_isIsolated_finalFallsBackToRaw_statusFailed() {
+        when(ideogram.generate(any(), anyLong(), any(), any()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 1L));
+        when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
+        when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
+        when(storage.writePng(any())).thenReturn("https://img/raw.png");
+        when(storage.download("https://img/raw.png")).thenReturn(new byte[]{9});
+        when(logoCompositor.composite(any(), any(), any()))
+                .thenThrow(new RuntimeException("decode boom"));
+
+        BrandSnapshot brand = new BrandSnapshot(java.util.List.of("#ec4899"), "https://cdn/logo.png", true);
+        PosterOrchestrator.OrchestrationResult r = orchestrator().run(
+                UUID.randomUUID(), req(), concept(), 123L, java.util.List.of(), brand);
+
+        // Generation still succeeds; final_url falls back to raw_url; status FAILED for every variant.
+        assertThat(r.posters()).allSatisfy(p -> {
+            assertThat(p.status()).isEqualTo("COMPLETE");
+            assertThat(p.finalUrl()).isEqualTo("https://img/raw.png");
+            assertThat(p.rawUrl()).isEqualTo("https://img/raw.png");
+        });
+        ArgumentCaptor<PosterGeneration> saved = ArgumentCaptor.forClass(PosterGeneration.class);
+        verify(repo, atLeastOnce()).save(saved.capture());
+        assertThat(saved.getValue().getVariants())
+                .allSatisfy(v -> assertThat(v.getLogoCompositeStatus()).isEqualTo("FAILED"));
     }
 }
