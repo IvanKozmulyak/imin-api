@@ -301,10 +301,7 @@ public class PosterOrchestrator {
         } else {
             try {
                 byte[] rawBytes = storage.download(rawUrl);
-                byte[] composited = logoCompositor.composite(
-                        rawBytes,
-                        entity.getPosterGeneration().getGeneratedEventId().toString(),
-                        brand.logoUrl());
+                byte[] composited = logoCompositor.composite(rawBytes, brand.logoUrl());
                 finalUrl = storage.writePng(composited); // SECOND write → distinct object/URL
                 compositeStatus = "APPLIED";
             } catch (RuntimeException e) {

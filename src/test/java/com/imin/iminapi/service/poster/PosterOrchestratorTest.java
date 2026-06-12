@@ -194,7 +194,7 @@ class PosterOrchestratorTest {
                 orchestrator().run(UUID.randomUUID(), req(), concept());
 
         // No second writePng beyond the one raw write per variant; compositor never called.
-        verify(logoCompositor, never()).composite(any(), any(), any());
+        verify(logoCompositor, never()).composite(any(), any());
         assertThat(r.posters()).allSatisfy(p -> assertThat(p.finalUrl()).isEqualTo(p.rawUrl()));
     }
 
@@ -214,7 +214,7 @@ class PosterOrchestratorTest {
             return (b.length > 0 && b[0] == 7) ? "https://img/composited.png" : "https://img/raw.png";
         });
         when(storage.download("https://img/raw.png")).thenReturn(new byte[]{9});
-        when(logoCompositor.composite(any(), any(), eq("https://cdn/logo.png")))
+        when(logoCompositor.composite(any(), eq("https://cdn/logo.png")))
                 .thenReturn(new byte[]{7});
 
         BrandSnapshot brand = new BrandSnapshot(java.util.List.of("#ec4899"), "https://cdn/logo.png", true);
@@ -242,7 +242,7 @@ class PosterOrchestratorTest {
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
         when(storage.writePng(any())).thenReturn("https://img/raw.png");
         when(storage.download("https://img/raw.png")).thenReturn(new byte[]{9});
-        when(logoCompositor.composite(any(), any(), any()))
+        when(logoCompositor.composite(any(), any()))
                 .thenThrow(new RuntimeException("decode boom"));
 
         BrandSnapshot brand = new BrandSnapshot(java.util.List.of("#ec4899"), "https://cdn/logo.png", true);

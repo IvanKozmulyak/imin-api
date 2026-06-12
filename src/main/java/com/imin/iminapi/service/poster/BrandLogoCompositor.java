@@ -20,8 +20,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * dependency). Deterministic placement: bottom-right, margin 4% of poster width, logo scaled to
  * max 18% of poster width (aspect preserved). A luminance-sampled rounded scrim is drawn behind
  * the logo so a white mark on a light corner (or dark-on-dark) stays legible — Ideogram corners
- * are unpredictable per generation. The decoded logo is cached per org and invalidated on
- * upload/delete via {@link #invalidate(String)}.
+ * are unpredictable per generation. The decoded logo is cached by URL (content-addressed) and
+ * invalidated on upload/delete via {@link #invalidate(String)}.
  *
  * <p>This class does no error isolation itself — the caller ({@link PosterOrchestrator}) wraps it
  * in try/catch so any failure degrades to the un-composited poster. Generation never fails over
@@ -42,18 +42,18 @@ public class BrandLogoCompositor {
         this.storage = storage;
     }
 
-    /** Drop the cached decoded logo for an org (call on logo upload/delete). */
-    public void invalidate(String orgKey) {
-        logoCache.remove(orgKey);
+    /** Drop the cached decoded logo (call on logo upload/delete, keyed by URL). */
+    public void invalidate(String logoUrl) {
+        logoCache.remove(logoUrl);
     }
 
     /**
      * Returns a new PNG with the logo composited bottom-right. Throws on any failure (download,
      * decode, encode) — the caller isolates.
      */
-    public byte[] composite(byte[] posterPng, String orgKey, String logoUrl) {
+    public byte[] composite(byte[] posterPng, String logoUrl) {
         BufferedImage poster = decode(posterPng);
-        BufferedImage logo = logoCache.computeIfAbsent(orgKey, k -> decode(storage.download(logoUrl)));
+        BufferedImage logo = logoCache.computeIfAbsent(logoUrl, k -> decode(storage.download(logoUrl)));
 
         int pw = poster.getWidth();
         int ph = poster.getHeight();

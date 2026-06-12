@@ -6,6 +6,7 @@ import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.service.poster.BrandLogoCompositor;
 import com.imin.iminapi.storage.MediaStorage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -40,11 +41,14 @@ public class OrgMediaService {
     private final OrganizationRepository orgs;
     private final MediaStorage storage;
     private final OrgBrandService brandService;
+    private final BrandLogoCompositor logoCompositor;
 
-    public OrgMediaService(OrganizationRepository orgs, MediaStorage storage, OrgBrandService brandService) {
+    public OrgMediaService(OrganizationRepository orgs, MediaStorage storage, OrgBrandService brandService,
+                           BrandLogoCompositor logoCompositor) {
         this.orgs = orgs;
         this.storage = storage;
         this.brandService = brandService;
+        this.logoCompositor = logoCompositor;
     }
 
     public LogoUploadResponse uploadLogo(AuthPrincipal p, byte[] bytes, String contentType, String originalFilename) {
@@ -69,6 +73,8 @@ public class OrgMediaService {
                 catch (Exception e) { log.warn("Orphaned old brand logo {}: {}", oldKey, e.getMessage()); }
             }
         }
+        // Drop any cached decode of the previous logo so the next composite re-downloads.
+        if (oldUrl != null) logoCompositor.invalidate(oldUrl);
         return new LogoUploadResponse(url);
     }
 
@@ -82,6 +88,7 @@ public class OrgMediaService {
                 try { storage.delete(key); }
                 catch (Exception e) { log.warn("Best-effort brand-logo delete failed for {}: {}", key, e.getMessage()); }
             }
+            logoCompositor.invalidate(url);
         }
     }
 

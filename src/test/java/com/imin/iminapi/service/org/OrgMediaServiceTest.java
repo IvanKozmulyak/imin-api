@@ -26,7 +26,8 @@ class OrgMediaServiceTest {
     OrganizationRepository orgs = mock(OrganizationRepository.class);
     InMemoryMediaStorage storage = new InMemoryMediaStorage("https://media.test/");
     OrgBrandService brandService = mock(OrgBrandService.class);
-    OrgMediaService sut = new OrgMediaService(orgs, storage, brandService);
+    com.imin.iminapi.service.poster.BrandLogoCompositor logoCompositor = mock(com.imin.iminapi.service.poster.BrandLogoCompositor.class);
+    OrgMediaService sut = new OrgMediaService(orgs, storage, brandService, logoCompositor);
 
     private AuthPrincipal owner(UUID orgId) {
         return new AuthPrincipal(UUID.randomUUID(), orgId, UserRole.OWNER, UUID.randomUUID());
@@ -142,6 +143,19 @@ class OrgMediaServiceTest {
         assertThat(r1.logoUrl()).isNotEqualTo(r2.logoUrl());
         assertThat(storage.blobs()).hasSize(1);
         assertThat(storage.blobs().keySet()).containsExactly(storage.keyFor(r2.logoUrl()));
+    }
+
+    @Test
+    void reupload_invalidates_old_logo_in_compositor_cache() {
+        UUID id = UUID.randomUUID();
+        Organization o = org(id);
+        when(orgs.findById(id)).thenReturn(Optional.of(o));
+
+        LogoUploadResponse r1 = sut.uploadLogo(owner(id), png(256, 256), "image/png", "a.png");
+        o.setBrandLogoUrl(r1.logoUrl());
+        sut.uploadLogo(owner(id), png(300, 300), "image/png", "b.png");
+
+        verify(logoCompositor).invalidate(r1.logoUrl());
     }
 
     @Test

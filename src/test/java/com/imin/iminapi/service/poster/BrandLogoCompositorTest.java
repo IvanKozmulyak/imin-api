@@ -43,7 +43,7 @@ class BrandLogoCompositorTest {
         byte[] logo = solidPng(200, 200, Color.WHITE);              // opaque white mark
         when(storage.download("https://cdn/logo.png")).thenReturn(logo);
 
-        byte[] out = sut.composite(poster, "org-1", "https://cdn/logo.png");
+        byte[] out = sut.composite(poster, "https://cdn/logo.png");
         BufferedImage rawImg = decode(poster);
         BufferedImage outImg = decode(out);
 
@@ -65,7 +65,7 @@ class BrandLogoCompositorTest {
         byte[] logo = solidPng(200, 200, Color.WHITE);
         when(storage.download("https://cdn/logo.png")).thenReturn(logo);
 
-        byte[] out = sut.composite(poster, "org-2", "https://cdn/logo.png");
+        byte[] out = sut.composite(poster, "https://cdn/logo.png");
         BufferedImage outImg = decode(out);
 
         // Sample a pixel in the logo region's margin area where the scrim shows but the logo
@@ -84,10 +84,10 @@ class BrandLogoCompositorTest {
         byte[] logo = solidPng(200, 200, Color.WHITE);
         when(storage.download("https://cdn/logo.png")).thenReturn(logo);
 
-        sut.composite(poster, "org-3", "https://cdn/logo.png"); // download #1, cached
-        sut.composite(poster, "org-3", "https://cdn/logo.png"); // served from cache
-        sut.invalidate("org-3");
-        sut.composite(poster, "org-3", "https://cdn/logo.png"); // download #2
+        sut.composite(poster, "https://cdn/logo.png"); // download #1, cached
+        sut.composite(poster, "https://cdn/logo.png"); // served from cache
+        sut.invalidate("https://cdn/logo.png");
+        sut.composite(poster, "https://cdn/logo.png"); // download #2
 
         org.mockito.Mockito.verify(storage, org.mockito.Mockito.times(2)).download("https://cdn/logo.png");
     }
