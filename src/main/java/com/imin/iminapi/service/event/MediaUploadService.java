@@ -12,6 +12,10 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
@@ -61,10 +65,12 @@ public class MediaUploadService {
         String oldUrl = switch (kind) {
             case POSTER -> e.getPosterUrl();
             case VIDEO -> e.getVideoUrl();
+            case DJ_PHOTO -> e.getDjPhotoUrl();
         };
         switch (kind) {
             case POSTER -> e.setPosterUrl(url);
             case VIDEO -> e.setVideoUrl(url);
+            case DJ_PHOTO -> e.setDjPhotoUrl(url);
         }
         events.save(e);
         // Upload to remote storage — if this throws, the DB row already has the correct URL
@@ -88,6 +94,7 @@ public class MediaUploadService {
         String url = switch (kind) {
             case POSTER -> e.getPosterUrl();
             case VIDEO -> e.getVideoUrl();
+            case DJ_PHOTO -> e.getDjPhotoUrl();
         };
         if (url == null) return;
         String key = storage.keyFor(url);
@@ -97,6 +104,7 @@ public class MediaUploadService {
         switch (kind) {
             case POSTER -> e.setPosterUrl(null);
             case VIDEO -> e.setVideoUrl(null);
+            case DJ_PHOTO -> e.setDjPhotoUrl(null);
         }
         events.save(e);
     }
@@ -118,8 +126,15 @@ public class MediaUploadService {
                 if (size > 50 * MB) throw fieldErr("file", "must be ≤ 50 MB");
                 if (!VIDEO_TYPES.contains(contentType)) throw fieldErr("file", "must be MP4");
             }
+            case DJ_PHOTO -> {
+                if (size > 5 * MB) throw fieldErr("file", "must be ≤ 5 MB");
+                if (!IMAGE_TYPES.contains(contentType)) throw fieldErr("file", "must be JPG or PNG");
+            }
         }
         verifyMagicBytes(kind, bytes, contentType);
+        if (kind == MediaKind.DJ_PHOTO) {
+            verifyDjPhotoDimensions(bytes);
+        }
     }
 
     private static void verifyMagicBytes(MediaKind kind, byte[] bytes, String contentType) {
@@ -146,6 +161,20 @@ public class MediaUploadService {
                 }
             }
             default -> { /* no magic-byte check for unknown types */ }
+        }
+    }
+
+    /** A face needs resolution for the character reference: decodable, short side ≥ 256 px. */
+    private static void verifyDjPhotoDimensions(byte[] bytes) {
+        BufferedImage img;
+        try {
+            img = ImageIO.read(new ByteArrayInputStream(bytes));
+        } catch (IOException e) {
+            throw fieldErr("file", "could not decode image");
+        }
+        if (img == null) throw fieldErr("file", "could not decode image");
+        if (Math.min(img.getWidth(), img.getHeight()) < 256) {
+            throw fieldErr("file", "must be at least 256px on the short side");
         }
     }
 

@@ -205,4 +205,82 @@ class MediaUploadServiceTest {
         b[4] = 'f'; b[5] = 't'; b[6] = 'y'; b[7] = 'p';
         return b;
     }
+
+    // --- DJ photo kind ---
+
+    private static byte[] realPng(int w, int h) throws java.io.IOException {
+        java.awt.image.BufferedImage img = new java.awt.image.BufferedImage(w, h, java.awt.image.BufferedImage.TYPE_INT_RGB);
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        javax.imageio.ImageIO.write(img, "png", out);
+        return out.toByteArray();
+    }
+
+    @Test
+    void djPhotoUploadStoresUrlOnEvent() throws Exception {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        byte[] png = realPng(600, 800);
+        MediaUploadResponse res = sut.upload(owner(orgId), e.getId(), MediaKind.DJ_PHOTO, png, "image/png", "dj.png");
+        assertThat(res.url()).contains("/events/" + e.getId() + "/dj-photo-");
+        assertThat(e.getDjPhotoUrl()).isEqualTo(res.url());
+    }
+
+    @Test
+    void djPhotoRejectsTooSmallImage() throws Exception {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+
+        byte[] png = realPng(200, 800); // short side 200 < 256
+        assertThatThrownBy(() -> sut.upload(owner(orgId), e.getId(), MediaKind.DJ_PHOTO, png, "image/png", "dj.png"))
+                .isInstanceOf(ApiException.class)
+                .hasFieldOrPropertyWithValue("code", ErrorCode.FIELD_INVALID);
+    }
+
+    @Test
+    void djPhotoRejectsOversize() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+
+        byte[] big = new byte[(int) (5 * 1024 * 1024) + 1];
+        big[0] = (byte) 0x89; big[1] = 0x50; big[2] = 0x4E; big[3] = 0x47;
+        assertThatThrownBy(() -> sut.upload(owner(orgId), e.getId(), MediaKind.DJ_PHOTO, big, "image/png", "dj.png"))
+                .isInstanceOf(ApiException.class)
+                .hasFieldOrPropertyWithValue("code", ErrorCode.FIELD_INVALID);
+    }
+
+    @Test
+    void djPhotoRejectsNonImageContentType() throws Exception {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+
+        byte[] png = realPng(600, 800);
+        assertThatThrownBy(() -> sut.upload(owner(orgId), e.getId(), MediaKind.DJ_PHOTO, png, "image/webp", "dj.webp"))
+                .isInstanceOf(ApiException.class)
+                .hasFieldOrPropertyWithValue("code", ErrorCode.FIELD_INVALID);
+    }
+
+    @Test
+    void djPhotoDeleteClearsUrl() throws Exception {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        byte[] png = realPng(600, 800);
+        sut.upload(owner(orgId), e.getId(), MediaKind.DJ_PHOTO, png, "image/png", "dj.png");
+        sut.delete(owner(orgId), e.getId(), MediaKind.DJ_PHOTO);
+        assertThat(e.getDjPhotoUrl()).isNull();
+    }
+
+    @Test
+    void mediaKindWireRoundTrip() {
+        assertThat(MediaKind.fromWire("dj-photo")).isEqualTo(MediaKind.DJ_PHOTO);
+        assertThat(MediaKind.DJ_PHOTO.wireValue()).isEqualTo("dj-photo");
+    }
 }
