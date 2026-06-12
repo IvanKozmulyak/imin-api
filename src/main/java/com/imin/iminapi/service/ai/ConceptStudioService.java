@@ -10,11 +10,14 @@ import com.imin.iminapi.model.GeneratedEvent;
 import com.imin.iminapi.model.GeneratedEventStatus;
 import com.imin.iminapi.model.ImageProvider;
 import org.springframework.beans.factory.annotation.Value;
+import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.GeneratedEventRepository;
+import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.service.AiEventDescriptionService;
 import com.imin.iminapi.service.PricingService;
+import com.imin.iminapi.service.poster.BrandSnapshot;
 import com.imin.iminapi.service.poster.PosterOrchestrator;
 import com.imin.iminapi.service.poster.PosterOrchestrator.OrchestrationResult;
 import com.imin.iminapi.service.poster.VibeLibrary;
@@ -40,6 +43,7 @@ public class ConceptStudioService {
     private final PricingService pricing;
     private final ConceptOverviewLlm overviewLlm;
     private final GeneratedEventRepository repo;
+    private final OrganizationRepository orgs;
     private final VibeLibrary vibeLibrary;
 
     // When true, the resolved vibe's model_route (vibes.yaml) selects the image provider.
@@ -52,12 +56,14 @@ public class ConceptStudioService {
                                 PricingService pricing,
                                 ConceptOverviewLlm overviewLlm,
                                 GeneratedEventRepository repo,
+                                OrganizationRepository orgs,
                                 VibeLibrary vibeLibrary) {
         this.descService = descService;
         this.orchestrator = orchestrator;
         this.pricing = pricing;
         this.overviewLlm = overviewLlm;
         this.repo = repo;
+        this.orgs = orgs;
         this.vibeLibrary = vibeLibrary;
     }
 
@@ -75,7 +81,8 @@ public class ConceptStudioService {
                 prior.getGenre(), prior.getCity(),
                 /* capacity */ null, /* vibeId */ null,
                 /* title */ null, /* eventDate */ null, /* venue */ null,
-                /* lineup */ null, /* address */ null, /* rsvpUrl */ null);
+                /* lineup */ null, /* address */ null, /* rsvpUrl */ null,
+                /* logoOnPosters: brand default applies on regenerate */ null);
         return run(p, req);
     }
 
@@ -92,7 +99,8 @@ public class ConceptStudioService {
         // varies across runs (a regenerate creates a fresh row → fresh seed → fresh creative directions).
         long creativeSeed = seedFrom(staging.getId());
 
-        EventCreatorRequest legacy = toLegacyRequest(req);
+        BrandSnapshot brand = resolveBrand(p, req.logoOnPosters());
+        EventCreatorRequest legacy = toLegacyRequest(req, brand);
         PosterConcept poster;
         OrchestrationResult render;
         ConceptOverview overview;
@@ -103,7 +111,7 @@ public class ConceptStudioService {
             // reference flyers (forTag) regardless of what the LLM echoed.
             poster = new PosterConcept(legacy.subStyleTag(),
                     generated.concept().colorPaletteDescription(), generated.concept().variants());
-            render = orchestrator.run(staging.getId(), legacy, poster, creativeSeed, generated.directions());
+            render = orchestrator.run(staging.getId(), legacy, poster, creativeSeed, generated.directions(), brand);
             overview = overviewLlm.generate(req, poster);
         } catch (Exception e) {
             staging.setStatus(GeneratedEventStatus.FAILED);
@@ -178,10 +186,11 @@ public class ConceptStudioService {
         };
     }
 
-    private EventCreatorRequest toLegacyRequest(ConceptRequest req) {
+    private EventCreatorRequest toLegacyRequest(ConceptRequest req, BrandSnapshot brand) {
         Vibe vibe = resolveVibe(req);
         String djName = (req.lineup() == null || req.lineup().isEmpty())
                 ? null : String.join(", ", req.lineup());
+        String accentColor = brand == null ? null : brand.packedAccentColor();
         return new EventCreatorRequest(
                 req.vibe(),
                 DEFAULT_TONE,
@@ -192,12 +201,34 @@ public class ConceptStudioService {
                 /* djName  */ djName,
                 /* location*/ req.venue(),
                 /* title   */ req.title(),
-                /* accentColor */ null,
+                /* accentColor */ accentColor,
                 /* address */ req.address(),
                 /* rsvpUrl */ req.rsvpUrl(),
                 /* subStyleTag: the selected vibe, or one auto-suggested from genre (always set) */
                 vibe == null ? null : vibe.id(),
                 providerFor(vibe));
+    }
+
+    /**
+     * Resolve the org brand for this generation, failure-isolated: a malformed brand_accent_colors
+     * JSON, a missing org, or any DB hiccup logs and returns a brandless snapshot. Brand integration
+     * must never break the existing generation path.
+     *
+     * @param requestLogoOnPosters the per-call override (may be null)
+     */
+    private BrandSnapshot resolveBrand(AuthPrincipal p, Boolean requestLogoOnPosters) {
+        try {
+            Organization o = orgs.findById(p.orgId()).orElse(null);
+            if (o == null) return null;
+            List<String> colors = o.getBrandAccentColors() == null ? List.of() : o.getBrandAccentColors();
+            boolean logoOn = requestLogoOnPosters != null ? requestLogoOnPosters : o.isBrandLogoOnPosters();
+            boolean brandless = colors.isEmpty() && (o.getBrandLogoUrl() == null || o.getBrandLogoUrl().isBlank());
+            if (brandless) return null; // empty brand book → fully backward-compatible (accentColor stays null)
+            return new BrandSnapshot(colors, o.getBrandLogoUrl(), logoOn);
+        } catch (Exception e) {
+            log.warn("Brand lookup failed; generating brandless: {}", e.getMessage());
+            return null;
+        }
     }
 
     private static List<PosterDto> mapPosters(List<GeneratedPoster> posters, List<String> palette) {

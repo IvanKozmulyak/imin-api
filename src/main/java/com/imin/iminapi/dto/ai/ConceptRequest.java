@@ -22,4 +22,8 @@ public record ConceptRequest(
         String venue,
         List<String> lineup,
         String address,
-        String rsvpUrl) {}
+        String rsvpUrl,
+        // Per-call render directive (NOT brand identity): whether to composite the org logo on
+        // this generation. Resolution: request.logoOnPosters() ?? org default ?? true. Optional —
+        // a stale FE that omits it falls back to the org default; never an NPE.
+        Boolean logoOnPosters) {}
