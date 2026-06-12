@@ -26,6 +26,7 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.atLeastOnce;
@@ -75,7 +76,9 @@ class PosterOrchestratorTest {
     private PosterOrchestrator orchestrator() {
         return new PosterOrchestrator(ideogram, vibeLibrary, styleCardLibrary, referenceLibrary,
                 textSpecFactory, textValidation, styleValidation, storage, logoCompositor, repo,
-                /*maxRegenerations*/ 2, /*remixImageWeight*/ 70, /*maxReferences*/ 3, /*maxConcurrent*/ 6);
+                /*maxRegenerations*/ 2, /*remixImageWeight*/ 70,
+                /*paletteRegradeEnabled*/ true, /*paletteRegradeWeight*/ 85,
+                /*maxReferences*/ 3, /*maxConcurrent*/ 6);
     }
 
     private static Vibe brutalist() {
@@ -362,5 +365,90 @@ class PosterOrchestratorTest {
         orchestrator().run(UUID.randomUUID(), req(), concept(), 7L, List.of(), null, null);
 
         verify(ideogram, atLeastOnce()).generate(anyString(), anyLong(), anyList(), any(), anyList(), isNull());
+    }
+
+    // ── DJ-mode palette regrade ───────────────────────────────────────────────
+
+    @Test
+    void djModeWithBrand_runsPaletteRegrade_withoutCharRef_withPalette() {
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 1L));
+        // Only the regrade remix matches (charRef isNull); the corrective remix would carry the ref.
+        when(ideogram.remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), isNull()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{5}, 2L));
+        when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
+        when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
+        when(storage.writePng(any())).thenAnswer(inv -> {
+            byte[] b = inv.getArgument(0);
+            return (b.length > 0 && b[0] == 5) ? "https://img/regraded.png" : "https://img/raw.png";
+        });
+
+        BrandSnapshot brand = new BrandSnapshot(List.of("#ec4899", "#f6c04a"), null, false);
+        PosterOrchestrator.OrchestrationResult r =
+                orchestrator().run(UUID.randomUUID(), req(), concept(), 7L, List.of(), brand, DJ);
+
+        // One regrade per variant: no char ref, palette attached, NO style refs/preset, weight 85.
+        verify(ideogram, times(3)).remix(any(), contains("Re-grade"), eq(85), anyLong(),
+                eq(List.of()), isNull(), eq(List.of("#ec4899", "#f6c04a")), isNull());
+        assertThat(r.posters()).allSatisfy(p -> assertThat(p.rawUrl()).isEqualTo("https://img/regraded.png"));
+    }
+
+    @Test
+    void paletteRegradeTextBreak_fallsBackToPreRegradeRender() {
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 1L));
+        when(ideogram.remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), isNull()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{5}, 2L));
+        // The original render {2} passes the text gate; the regrade {5} breaks it.
+        when(textValidation.validateOrExplain(any(), any())).thenAnswer(inv -> {
+            byte[] img = inv.getArgument(0);
+            return (img.length > 0 && img[0] == 5) ? textFail() : textOk();
+        });
+        when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
+        when(storage.writePng(any())).thenAnswer(inv -> {
+            byte[] b = inv.getArgument(0);
+            return (b.length > 0 && b[0] == 5) ? "https://img/regraded.png" : "https://img/raw.png";
+        });
+
+        BrandSnapshot brand = new BrandSnapshot(List.of("#ec4899"), null, false);
+        PosterOrchestrator.OrchestrationResult r =
+                orchestrator().run(UUID.randomUUID(), req(), concept(), 7L, List.of(), brand, DJ);
+
+        assertThat(r.posters()).allSatisfy(p -> {
+            assertThat(p.status()).isEqualTo("COMPLETE");
+            assertThat(p.rawUrl()).isEqualTo("https://img/raw.png");
+        });
+    }
+
+    @Test
+    void paletteRegradeSkipped_withoutBrandColours_andInNonDjMode() {
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 1L));
+        when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
+        when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
+
+        // DJ mode without brand colours → nothing to regrade with.
+        orchestrator().run(UUID.randomUUID(), req(), concept(), 7L, List.of(), null, DJ);
+        // Non-DJ mode with brand colours → palette already rode the generate call structurally.
+        BrandSnapshot brand = new BrandSnapshot(List.of("#ec4899"), null, false);
+        orchestrator().run(UUID.randomUUID(), req(), concept(), 8L, List.of(), brand, null);
+
+        verify(ideogram, never()).remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any());
+    }
+
+    @Test
+    void paletteRegradeThrow_isIsolated_generationSucceeds() {
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 1L));
+        when(ideogram.remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), isNull()))
+                .thenThrow(new RuntimeException("ideogram 503"));
+        when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
+        when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
+
+        BrandSnapshot brand = new BrandSnapshot(List.of("#ec4899"), null, false);
+        PosterOrchestrator.OrchestrationResult r =
+                orchestrator().run(UUID.randomUUID(), req(), concept(), 7L, List.of(), brand, DJ);
+
+        assertThat(r.posters()).allSatisfy(p -> assertThat(p.status()).isEqualTo("COMPLETE"));
     }
 }

@@ -35,12 +35,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  * enforced structurally even when reference images carry a different palette.
  * The response carries a temporary image URL, which is downloaded immediately (the link expires).
  *
- * <p>The initial {@code generate} renders at the QUALITY tier; the corrective {@code remix} (which
- * only fixes baked text on a render we already liked) renders at the cheaper/faster TURBO tier.
+ * <p>Both {@code generate} and the corrective {@code remix} default to the TURBO tier (QUALITY
+ * costs 3x; the text gate + corrective remix are the quality net), env-overridable via
+ * {@code IDEOGRAM_GENERATE_RENDERING_SPEED} / {@code IDEOGRAM_REMIX_RENDERING_SPEED}.
  *
  * <p>When a non-null {@code characterRef} is supplied (DJ mode), the character reference image is
- * attached and the three gated params — colour palette, seed, and style control — are each emitted
- * only when their corresponding probe-determined flag is {@code true} (defaults: all false).
+ * attached; {@code color_palette} is then NEVER sent (the API rejects the combination), while seed
+ * and style control are emitted only when their probe flag is {@code true} (defaults: false).
  */
 @Component
 public class IdeogramV3Client {
@@ -65,13 +66,13 @@ public class IdeogramV3Client {
 
     public IdeogramV3Client(
             RestClient ideogramRestClient,
-            @Value("${ideogram.generate.rendering-speed:QUALITY}") String generateSpeed,
+            @Value("${ideogram.generate.rendering-speed:TURBO}") String generateSpeed,
             @Value("${ideogram.remix.rendering-speed:TURBO}") String remixSpeed,
             @Value("${ideogram.copyright-detection:true}") boolean copyrightDetection,
             @Value("${ideogram.character.seed:false}") boolean characterSeed,
             @Value("${ideogram.character.style-control:false}") boolean characterStyleControl) {
         this.ideogramRestClient = ideogramRestClient;
-        this.generateSpeed = (generateSpeed == null || generateSpeed.isBlank()) ? "QUALITY" : generateSpeed;
+        this.generateSpeed = (generateSpeed == null || generateSpeed.isBlank()) ? "TURBO" : generateSpeed;
         this.remixSpeed = (remixSpeed == null || remixSpeed.isBlank()) ? "TURBO" : remixSpeed;
         this.copyrightDetection = copyrightDetection;
         this.characterSeed = characterSeed;

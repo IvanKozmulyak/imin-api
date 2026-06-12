@@ -71,6 +71,8 @@ public class PosterOrchestrator {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final int maxRegenerations;
     private final int remixImageWeight;
+    private final boolean paletteRegradeEnabled;
+    private final int paletteRegradeWeight;
     private final int maxReferences;
     private final Semaphore renderCap;
     private final ExecutorService variantPool;
@@ -88,6 +90,8 @@ public class PosterOrchestrator {
             PosterGenerationRepository generationRepository,
             @Value("${poster.validation.max-regenerations:2}") int maxRegenerations,
             @Value("${ideogram.remix.image-weight:70}") int remixImageWeight,
+            @Value("${poster.palette-regrade.enabled:true}") boolean paletteRegradeEnabled,
+            @Value("${poster.palette-regrade.image-weight:85}") int paletteRegradeWeight,
             @Value("${ideogram.max-references:3}") int maxReferences,
             @Value("${poster.render.max-concurrent:${replicate.max-concurrent:6}}") int maxConcurrent) {
         this.ideogramClient = ideogramClient;
@@ -102,6 +106,8 @@ public class PosterOrchestrator {
         this.generationRepository = generationRepository;
         this.maxRegenerations = Math.max(0, maxRegenerations);
         this.remixImageWeight = remixImageWeight;
+        this.paletteRegradeEnabled = paletteRegradeEnabled;
+        this.paletteRegradeWeight = paletteRegradeWeight;
         this.maxReferences = Math.max(0, maxReferences);
         this.renderCap = new Semaphore(maxConcurrent, true);
         this.variantPool = Executors.newFixedThreadPool(
@@ -286,6 +292,18 @@ public class PosterOrchestrator {
                 continue;
             }
 
+            // DJ mode: the char-ref render couldn't carry color_palette (Ideogram rejects the
+            // combination), so apply the brand palette in a separate regrade pass BEFORE the
+            // style gate, so the gate judges the colours that actually ship.
+            if (characterRef != null && paletteRegradeEnabled && !brandPalette.isEmpty()) {
+                byte[] regraded = paletteRegrade(image, seed, brandPalette, spec, attempts);
+                if (regraded != image) {
+                    image = regraded;
+                    url = storage.writePng(image);
+                    entity.setRawUrl(url);
+                }
+            }
+
             PosterStyleValidationService.ValidationDecision styleDecision =
                     styleValidation.validateOrExplain(image, ctx.card(), heroType);
             attempts.add(attemptJson(attempt, seed, attempt == 0 ? "generate" : "remix", text, styleDecision));
@@ -297,6 +315,46 @@ public class PosterOrchestrator {
             return accept(entity, url, VERDICT_BEST_EFFORT, attempts, brand);
         }
         throw new IllegalStateException("render-with-validation loop exhausted");
+    }
+
+    /**
+     * DJ-mode palette pass: re-grade the text-accepted render in one extra TURBO remix WITHOUT
+     * the character reference but WITH the structural {@code color_palette} — the combination the
+     * generate call cannot carry — at high image weight so composition, the DJ, and the text stay
+     * put. No style refs/preset: the input image is the only style anchor. The text gate re-checks
+     * the regrade; if the colours came at the cost of the typography (or the call fails), the
+     * pre-regrade render ships instead — this pass can improve colour, never lose a poster.
+     */
+    private byte[] paletteRegrade(byte[] image, long seed, List<String> brandPalette,
+                                  PosterTextSpec spec, List<Map<String, Object>> attempts) {
+        long regradeSeed = nextSeed(seed);
+        try {
+            IdeogramV3Client.IdeogramResult regraded = ideogramClient.remix(
+                    image, buildPaletteRegradePrompt(brandPalette), paletteRegradeWeight, regradeSeed,
+                    List.of(), null, brandPalette, null);
+            PosterTextValidationService.ValidationDecision text =
+                    textValidation.validateOrExplain(regraded.imageBytes(), spec);
+            attempts.add(attemptJson(attempts.size(), regradeSeed, "palette-regrade", text, null));
+            if (text.accepted()) {
+                return regraded.imageBytes();
+            }
+            log.warn("Palette regrade broke the text; shipping the pre-regrade render: {}", text.reason());
+        } catch (RuntimeException e) {
+            log.warn("Palette regrade failed; shipping the pre-regrade render: {}", e.getMessage());
+        }
+        return image;
+    }
+
+    static String buildPaletteRegradePrompt(List<String> hexes) {
+        StringBuilder p = new StringBuilder("Re-grade this finished poster's colours only: make ")
+                .append(hexes.get(0)).append(" visibly dominate");
+        if (hexes.size() > 1) {
+            p.append(", with ").append(String.join(", ", hexes.subList(1, hexes.size())))
+             .append(" as secondary accents");
+        }
+        p.append(". Keep the composition, the featured person, every text element, and the layout ")
+         .append("identical — change nothing but the colour grading.");
+        return p.toString();
     }
 
     /**

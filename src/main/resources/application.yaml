@@ -46,7 +46,8 @@ ideogram:
   copyright-detection: ${IDEOGRAM_COPYRIGHT_DETECTION:true}
   max-references: ${IDEOGRAM_MAX_REFERENCES:3}
   generate:
-    rendering-speed: ${IDEOGRAM_GENERATE_RENDERING_SPEED:QUALITY}
+    # TURBO by default — QUALITY costs 3x and the text gate + corrective remix are the quality net.
+    rendering-speed: ${IDEOGRAM_GENERATE_RENDERING_SPEED:TURBO}
   remix:
     rendering-speed: ${IDEOGRAM_REMIX_RENDERING_SPEED:TURBO}
     image-weight: ${IDEOGRAM_REMIX_IMAGE_WEIGHT:70}
@@ -57,6 +58,12 @@ ideogram:
     style-control: ${IDEOGRAM_CHARACTER_STYLE_CONTROL:false}
 
 poster:
+  palette-regrade:
+    # DJ-mode only: the char-ref render can't carry color_palette, so the accepted image gets one
+    # extra TURBO remix (no char ref, WITH color_palette) to apply the brand colours. Text-gate
+    # re-checked; falls back to the pre-regrade render if the typography broke.
+    enabled: ${POSTER_PALETTE_REGRADE_ENABLED:true}
+    image-weight: ${POSTER_PALETTE_REGRADE_IMAGE_WEIGHT:85}
   references:
     # Curated reference flyers are loaded per-vibe from vibes.yaml (folders under
     # reference-images/). Cap how many flyers per vibe are sent to the image model.
