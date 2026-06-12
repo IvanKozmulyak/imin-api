@@ -56,7 +56,10 @@ class EventStatusSweeperRepositoryTest {
 
     @Test
     void markLivePast_transitionsOnlyLiveEndedEvent() {
-        Instant now = Instant.parse("2026-06-12T12:00:00Z");
+        // Wall-clock-relative, NOT a pinned literal: updatedAtBefore comes from @PrePersist
+        // (real wall clock), so a pinned "now" goes stale the moment real time passes it and
+        // the isAfterOrEqualTo(updatedAtBefore) assertion becomes a time bomb.
+        Instant now = Instant.now();
 
         // 1. LIVE event that ended 1 hour ago — should flip to PAST
         Event liveEnded = liveEvent("live-ended");
@@ -90,8 +93,11 @@ class EventStatusSweeperRepositoryTest {
         // Record updatedAt before the sweep to verify it advances
         Instant updatedAtBefore = events.findById(liveEndedId).orElseThrow().getUpdatedAt();
 
-        // Run the bulk update
-        int updated = events.markLivePast(now, now);
+        // Run the bulk update. The sweep clock is captured AFTER the fixtures persisted:
+        // @PrePersist stamped them with the real wall clock, so a sweep stamp taken any
+        // earlier would set updated_at backwards and fail the advance assertion below.
+        Instant sweepNow = Instant.now();
+        int updated = events.markLivePast(sweepNow, sweepNow);
 
         assertThat(updated).isEqualTo(1);
 
