@@ -2,6 +2,7 @@ package com.imin.iminapi.controller.event;
 
 import com.imin.iminapi.dto.event.MediaUploadResponse;
 import com.imin.iminapi.model.MediaKind;
+import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.CurrentUser;
 import com.imin.iminapi.service.event.MediaUploadService;
@@ -27,7 +28,7 @@ public class EventMediaController {
                                       @PathVariable UUID eventId,
                                       @PathVariable String kind,
                                       @RequestPart("file") MultipartFile file) throws IOException {
-        MediaKind k = MediaKind.fromWire(kind);
+        MediaKind k = kindOr404(kind);
         return uploadService.upload(p, eventId, k, file.getBytes(),
                 file.getContentType() == null ? "application/octet-stream" : file.getContentType(),
                 file.getOriginalFilename() == null ? "upload.bin" : file.getOriginalFilename());
@@ -38,6 +39,14 @@ public class EventMediaController {
     public void delete(@CurrentUser AuthPrincipal p,
                        @PathVariable UUID eventId,
                        @PathVariable String kind) {
-        uploadService.delete(p, eventId, MediaKind.fromWire(kind));
+        uploadService.delete(p, eventId, kindOr404(kind));
+    }
+
+    private static MediaKind kindOr404(String kind) {
+        try {
+            return MediaKind.fromWire(kind);
+        } catch (IllegalArgumentException e) {
+            throw ApiException.notFound("Media kind");
+        }
     }
 }

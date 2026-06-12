@@ -70,6 +70,9 @@ public class Event {
     @Column(name = "video_url", columnDefinition = "TEXT")
     private String videoUrl;
 
+    @Column(name = "dj_photo_url", columnDefinition = "TEXT")
+    private String djPhotoUrl;
+
     @Column(nullable = false)
     private int sold = 0;
 

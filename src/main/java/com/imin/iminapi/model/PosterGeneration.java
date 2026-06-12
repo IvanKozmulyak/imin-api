@@ -49,6 +49,10 @@ public class PosterGeneration {
     @Column(name = "brand_snapshot", columnDefinition = "TEXT")
     private String brandSnapshot;
 
+    /** The DJ photo URL this generation rendered with, or NULL. Regenerate reads THIS, not the live event. */
+    @Column(name = "dj_photo_url", columnDefinition = "TEXT")
+    private String djPhotoUrl;
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 

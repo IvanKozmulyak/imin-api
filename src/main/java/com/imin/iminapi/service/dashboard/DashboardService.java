@@ -135,7 +135,7 @@ public class DashboardService {
         return new EventDto(b.id(), b.orgId(), b.name(), b.slug(),
                 b.visibility(), b.status(), b.genre(), b.type(),
                 b.startsAt(), b.endsAt(), b.timezone(), b.venue(),
-                b.description(), b.posterUrl(), b.videoUrl(),
+                b.description(), b.posterUrl(), b.videoUrl(), b.djPhotoUrl(),
                 sold, revenueMinor, b.currency(),
                 b.onSaleAt(), b.saleClosesAt(),
                 b.createdBy(), b.createdAt(), b.updatedAt(),

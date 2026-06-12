@@ -37,7 +37,7 @@ Required env vars for running locally (app will log warnings / fail requests oth
 - `OPENROUTER_API_KEY` — LLM calls (art-director concept generation, reference image analysis, and the vision text/style gates via `openai/gpt-4o-mini`)
 - `IDEOGRAM_API_KEY` — native Ideogram V3 poster rendering (generate + remix). Required for poster generation.
 - `OPENAI_API_KEY` — required by the Spring AI starter even when OpenRouter is `@Primary` (any non-empty value works)
-- Optional: `IDEOGRAM_GENERATE_RENDERING_SPEED` (default `QUALITY`), `IDEOGRAM_REMIX_RENDERING_SPEED` (default `TURBO`), `IDEOGRAM_REMIX_IMAGE_WEIGHT` (default `70`), `IDEOGRAM_MAX_REFERENCES` (default `3`)
+- Optional: `IDEOGRAM_GENERATE_RENDERING_SPEED` (default `QUALITY`), `IDEOGRAM_REMIX_RENDERING_SPEED` (default `TURBO`), `IDEOGRAM_REMIX_IMAGE_WEIGHT` (default `70`), `IDEOGRAM_MAX_REFERENCES` (default `3`), `IDEOGRAM_CHARACTER_COLOR_PALETTE` (default `false`), `IDEOGRAM_CHARACTER_SEED` (default `false`), `IDEOGRAM_CHARACTER_STYLE_CONTROL` (default `false`) — whether colour palette / seed / style controls are sent alongside a DJ character reference (see docs/superpowers/plans/2026-06-12-dj-photo-probe-results.md)
 - `RESEND_API_KEY` — Resend API key (required to send any auth email; signup/verify/resend/forgot-password fail without it)
 - `IMIN_EMAIL_FROM_ADDRESS` — sender email address (default `noreply@imin.local` — must be a verified Resend sender in prod)
 - `IMIN_EMAIL_FROM_NAME` — sender display name (default `imin`)

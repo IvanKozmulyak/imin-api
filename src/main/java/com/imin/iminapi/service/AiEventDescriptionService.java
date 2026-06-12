@@ -66,6 +66,25 @@ public class AiEventDescriptionService {
     /** Three prompts must not be paraphrases: pairwise word-trigram Jaccard must stay below this. */
     private static final double DISTINCTNESS_THRESHOLD = 0.45;
 
+    private static final List<HeroType> DJ_PLAN = List.of(HeroType.PEOPLE, HeroType.PEOPLE, HeroType.PEOPLE);
+
+    private static final String FEATURED_DJ_BLOCK = """
+            FEATURED DJ — MANDATORY: a character reference photo of the headline DJ is attached.
+            Every variant's ideogram_prompt must make this DJ the dominant hero of the poster — \
+            describe pose, framing, lighting, scale, and wardrobe, never facial features, hair, \
+            ethnicity, or age (the reference image controls the face). The DJ must be a single, \
+            clearly visible human figure occupying the visual centre of gravity. The vibe \
+            contributes mood, texture, composition, and typography around the DJ.
+
+            """;
+
+    private static final String FEATURED_DJ_BRAND_SUFFIX =
+            "Brand colours must dominate the lighting, wardrobe accents, and background grade of every variant.\n\n";
+
+    private static final String DJ_HUMAN_RULE =
+            "- Render the featured DJ as one clear, dominant human figure — the attached character "
+            + "reference controls the face; never describe facial features, hair, ethnicity, or age";
+
     /** Person words the PEOPLE variant must contain — broad, because real heroes are described many ways. */
     static final List<String> HUMAN_NOUNS = List.of(
             "figure", "dancer", "crowd", "portrait", "silhouette", "face", "body", "person", "people",
@@ -123,22 +142,26 @@ public class AiEventDescriptionService {
     public record GeneratedConcept(PosterConcept concept, List<CreativeDirection> directions) {}
 
     public GeneratedConcept generateConcept(EventCreatorRequest request, long seed) {
+        return generateConcept(request, seed, false);
+    }
+
+    public GeneratedConcept generateConcept(EventCreatorRequest request, long seed, boolean djMode) {
         Vibe vibe = resolveVibe(request);
         StyleCard card = styleCardLibrary.get(vibe.id()).orElse(null);
-        SampledRun sampled = creativeDirectionSampler.sample(card, seed);
+        SampledRun sampled = creativeDirectionSampler.sample(card, seed, djMode);
 
         String reinforcement = null;
         PosterConcept lastRenderable = null;
         String lastError = "no concept produced";
         for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-            String prompt = buildPrompt(request, vibe, sampled, reinforcement);
+            String prompt = buildPrompt(request, vibe, sampled, reinforcement, djMode);
             log.info("[LLM concept] prompt sent (attempt {}/{}):\n{}", attempt, MAX_ATTEMPTS, prompt);
             PosterConcept concept = parseConcept(callLlm(prompt));
 
             String renderableError = validateRenderable(concept);
             if (renderableError == null) {
                 lastRenderable = concept;   // keep the most recent structurally-valid concept as a fallback
-                String validationError = validate(concept, request, card);
+                String validationError = validate(concept, request, card, djMode);
                 if (validationError == null) {
                     log.debug("Concept accepted on attempt {}: vibe={}, variants={}",
                             attempt, concept.subStyleTag(), concept.variants().size());
@@ -233,6 +256,10 @@ public class AiEventDescriptionService {
     }
 
     String validate(PosterConcept concept, StyleCard card) {
+        return validate(concept, card, false);
+    }
+
+    String validate(PosterConcept concept, StyleCard card, boolean djMode) {
         if (concept == null) return "null concept";
         if (concept.subStyleTag() == null || !vibeLibrary.hasVibe(concept.subStyleTag())) {
             return "sub_style_tag must be a known vibe id";
@@ -240,7 +267,8 @@ public class AiEventDescriptionService {
         List<PosterVariant> variants = concept.variants();
         if (variants == null || variants.size() != 3) return "exactly 3 variants required";
 
-        List<HeroType> plan = planModes(card);
+        // In DJ mode the effective plan is always three PEOPLE slots; the card's plan is ignored.
+        List<HeroType> plan = djMode ? DJ_PLAN : planModes(card);
         HumanPolicy policy = (card == null || card.humanPolicy() == null) ? HumanPolicy.REQUIRED : card.humanPolicy();
 
         for (int i = 0; i < variants.size(); i++) {
@@ -276,16 +304,19 @@ public class AiEventDescriptionService {
         }
 
         // Policy caps on human heroes across the whole run.
-        long humanHeroes = variants.stream().filter(v -> containsHumanHero(v.ideogramPrompt())).count();
-        if (policy == HumanPolicy.FORBIDDEN && humanHeroes > 0) {
-            return "this vibe forbids human heroes, but a person appears in a variant";
-        }
-        if (policy == HumanPolicy.RARE && humanHeroes > 1) {
-            return "this vibe allows at most one human-hero variant, but " + humanHeroes + " contain a person";
-        }
-        if (policy == HumanPolicy.REQUIRED
-                && variants.stream().noneMatch(v -> mentionsHumanSubject(v.ideogramPrompt()))) {
-            return "this vibe requires a human hero, but no variant contains a person";
+        // Skipped in DJ mode where three DJ-hero variants are the point and the reference controls rendering.
+        if (!djMode) {
+            long humanHeroes = variants.stream().filter(v -> containsHumanHero(v.ideogramPrompt())).count();
+            if (policy == HumanPolicy.FORBIDDEN && humanHeroes > 0) {
+                return "this vibe forbids human heroes, but a person appears in a variant";
+            }
+            if (policy == HumanPolicy.RARE && humanHeroes > 1) {
+                return "this vibe allows at most one human-hero variant, but " + humanHeroes + " contain a person";
+            }
+            if (policy == HumanPolicy.REQUIRED
+                    && variants.stream().noneMatch(v -> mentionsHumanSubject(v.ideogramPrompt()))) {
+                return "this vibe requires a human hero, but no variant contains a person";
+            }
         }
 
         // The three prompts must be visually distinct, not paraphrases of each other.
@@ -313,7 +344,11 @@ public class AiEventDescriptionService {
     }
 
     String validate(PosterConcept concept, EventCreatorRequest request, StyleCard card) {
-        String shapeError = validate(concept, card);
+        return validate(concept, request, card, false);
+    }
+
+    String validate(PosterConcept concept, EventCreatorRequest request, StyleCard card, boolean djMode) {
+        String shapeError = validate(concept, card, djMode);
         if (shapeError != null) return shapeError;
 
         PosterTextSpec textSpec = posterTextSpecFactory.from(request);
@@ -355,6 +390,10 @@ public class AiEventDescriptionService {
     }
 
     String buildPrompt(EventCreatorRequest request, Vibe vibe, SampledRun sampled, String reinforcement) {
+        return buildPrompt(request, vibe, sampled, reinforcement, false);
+    }
+
+    String buildPrompt(EventCreatorRequest request, Vibe vibe, SampledRun sampled, String reinforcement, boolean djMode) {
         PosterTextSpec textSpec = posterTextSpecFactory.from(request);
         List<CreativeDirection> d = sampled.directions();
         HumanStyle humanStyle = styleCardLibrary.get(vibe.id())
@@ -384,6 +423,15 @@ public class AiEventDescriptionService {
               .append("They REPLACE the vibe's usual palette — the vibe contributes mood, texture, ")
               .append("composition, and typography, never its own colours. ")
               .append("Name these exact hex values in the colors section of every ideogram_prompt.\n\n");
+        }
+
+        // FEATURED DJ block anchors immediately after the BRAND PALETTE block when present,
+        // else directly after the VIBE block — in both cases before the per-variant directions.
+        if (djMode) {
+            sb.append(FEATURED_DJ_BLOCK);
+            if (notBlank(brandAccent)) {
+                sb.append(FEATURED_DJ_BRAND_SUFFIX);
+            }
         }
 
         sb.append("CREATIVE DIRECTIONS — one per variant, follow them precisely:\n\n");
@@ -418,7 +466,7 @@ public class AiEventDescriptionService {
           .append("- An image-led poster where the hero dominates and the required text is integrated as bold native typography\n")
           .append("- The three prompts must not share opening words, sentence structure, or layout\n")
           .append("- Never open with \"Create a\", \"Design a\", or \"Craft a\" — start with the visual content itself\n")
-          .append(humanRule(humanStyle)).append("\n")
+          .append(djMode ? DJ_HUMAN_RULE : humanRule(humanStyle)).append("\n")
           .append("- ").append(notBlank(universalNegative()) ? universalNegative()
                   : "No watermarks, logos, signatures, stock-template flyer layouts, or invented words.").append("\n\n");
 

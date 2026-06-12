@@ -18,13 +18,63 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 
 class IdeogramV3ClientTest {
 
+    private static final StyleReferencePart CHAR_REF =
+            new StyleReferencePart(new byte[]{1, 2, 3}, "dj-photo.jpg", "image/jpeg");
+    private static final List<String> PALETTE = List.of("#ec4899", "#f6c04a");
+
     private record Harness(IdeogramV3Client client, MockRestServiceServer server) {}
 
     private Harness harness() {
         RestClient.Builder builder = RestClient.builder().baseUrl("https://api.ideogram.ai");
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
-        IdeogramV3Client client = new IdeogramV3Client(builder.build(), "QUALITY", "TURBO", true);
+        IdeogramV3Client client = new IdeogramV3Client(builder.build(), "QUALITY", "TURBO", true,
+                false, false, false);
         return new Harness(client, server);
+    }
+
+    private IdeogramV3Client clientWithFlags(boolean palette, boolean seed, boolean style) {
+        return new IdeogramV3Client(null, "QUALITY", "TURBO", true, palette, seed, style);
+    }
+
+    @Test
+    void generateWithoutCharacterRefIsUnchangedBaseline() {
+        var parts = clientWithFlags(false, false, false)
+                .buildGenerateParts("prompt", 42L, List.of(), "MONOCHROME", PALETTE, null);
+        assertThat(parts.containsKey("character_reference_images")).isFalse();
+        assertThat(parts.getFirst("seed")).isEqualTo("42");
+        assertThat(parts.containsKey("color_palette")).isTrue();
+        assertThat(parts.getFirst("style_preset")).isEqualTo("MONOCHROME");
+    }
+
+    @Test
+    void characterRefOmitsGatedParamsWhenFlagsOff() {
+        var parts = clientWithFlags(false, false, false)
+                .buildGenerateParts("prompt", 42L, List.of(), "MONOCHROME", PALETTE, CHAR_REF);
+        assertThat(parts.containsKey("character_reference_images")).isTrue();
+        assertThat(parts.containsKey("seed")).isFalse();
+        assertThat(parts.containsKey("color_palette")).isFalse();
+        assertThat(parts.containsKey("style_preset")).isFalse();
+        assertThat(parts.containsKey("style_reference_images")).isFalse();
+    }
+
+    @Test
+    void characterRefKeepsGatedParamsWhenFlagsOn() {
+        var parts = clientWithFlags(true, true, true)
+                .buildGenerateParts("prompt", 42L, List.of(), "MONOCHROME", PALETTE, CHAR_REF);
+        assertThat(parts.containsKey("character_reference_images")).isTrue();
+        assertThat(parts.getFirst("seed")).isEqualTo("42");
+        assertThat(parts.containsKey("color_palette")).isTrue();
+        assertThat(parts.getFirst("style_preset")).isEqualTo("MONOCHROME");
+    }
+
+    @Test
+    void remixCarriesCharacterRefToo() {
+        var parts = clientWithFlags(false, false, false)
+                .buildRemixParts(new byte[]{9}, "fix", 70, 42L, List.of(), null, PALETTE, CHAR_REF);
+        assertThat(parts.containsKey("character_reference_images")).isTrue();
+        assertThat(parts.containsKey("image")).isTrue();
+        assertThat(parts.containsKey("seed")).isFalse();
+        assertThat(parts.containsKey("color_palette")).isFalse();
     }
 
     @Test
@@ -55,7 +105,7 @@ class IdeogramV3ClientTest {
         IdeogramV3Client.IdeogramResult r = h.client().generate(
                 "a \"VOID\" poster", 42L,
                 List.of(new StyleReferencePart(new byte[]{9, 9}, "ref0.png", "image/png")),
-                "HIGH_CONTRAST", List.of()); // preset present but refs win
+                "HIGH_CONTRAST", List.of(), null); // preset present but refs win
 
         assertThat(r.imageBytes()).containsExactly(1, 2, 3, 4);
         assertThat(r.seed()).isEqualTo(42L);
@@ -74,7 +124,7 @@ class IdeogramV3ClientTest {
         h.server().expect(requestTo("https://cdn.ideogram.ai/y.png"))
                 .andRespond(withSuccess(new byte[]{5, 6}, MediaType.IMAGE_PNG));
 
-        IdeogramV3Client.IdeogramResult r = h.client().generate("p", 7L, List.of(), "HIGH_CONTRAST", List.of());
+        IdeogramV3Client.IdeogramResult r = h.client().generate("p", 7L, List.of(), "HIGH_CONTRAST", List.of(), null);
 
         assertThat(r.imageBytes()).containsExactly(5, 6);
         h.server().verify();
@@ -100,7 +150,7 @@ class IdeogramV3ClientTest {
                 .andRespond(withSuccess(new byte[]{7, 8}, MediaType.IMAGE_PNG));
 
         IdeogramV3Client.IdeogramResult r = h.client().remix(
-                new byte[]{1, 1, 1, 1}, "p\n\nCORRECTION — fix text", 70, 99L, List.of(), "HIGH_CONTRAST", List.of());
+                new byte[]{1, 1, 1, 1}, "p\n\nCORRECTION — fix text", 70, 99L, List.of(), "HIGH_CONTRAST", List.of(), null);
 
         assertThat(r.imageBytes()).containsExactly(7, 8);
         assertThat(r.seed()).isEqualTo(99L);
@@ -124,7 +174,7 @@ class IdeogramV3ClientTest {
 
         h.client().generate("p", 1L,
                 List.of(new StyleReferencePart(new byte[]{9}, "ref0.png", "image/png")), null,
-                List.of("#ec4899", "#f6c04a", "#a78bfa"));
+                List.of("#ec4899", "#f6c04a", "#a78bfa"), null);
 
         h.server().verify();
     }
@@ -139,7 +189,7 @@ class IdeogramV3ClientTest {
         h.server().expect(requestTo("https://cdn.ideogram.ai/d.png"))
                 .andRespond(withSuccess(new byte[]{1}, MediaType.IMAGE_PNG));
 
-        h.client().generate("p", 1L, List.of(), "HIGH_CONTRAST", null);
+        h.client().generate("p", 1L, List.of(), "HIGH_CONTRAST", null, null);
 
         h.server().verify();
     }
@@ -154,7 +204,7 @@ class IdeogramV3ClientTest {
         h.server().expect(requestTo("https://cdn.ideogram.ai/e.png"))
                 .andRespond(withSuccess(new byte[]{1}, MediaType.IMAGE_PNG));
 
-        h.client().generate("p", 1L, List.of(), null, List.of("magenta", "#12345", ""));
+        h.client().generate("p", 1L, List.of(), null, List.of("magenta", "#12345", ""), null);
 
         h.server().verify();
     }
@@ -171,7 +221,7 @@ class IdeogramV3ClientTest {
         h.server().expect(requestTo("https://cdn.ideogram.ai/f.png"))
                 .andRespond(withSuccess(new byte[]{1}, MediaType.IMAGE_PNG));
 
-        h.client().remix(new byte[]{1}, "p", 70, 1L, List.of(), null, List.of("#ec4899"));
+        h.client().remix(new byte[]{1}, "p", 70, 1L, List.of(), null, List.of("#ec4899"), null);
 
         h.server().verify();
     }

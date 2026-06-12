@@ -70,7 +70,7 @@ class ConceptControllerTest {
                 List.of(new SuggestedTierDto("Early Bird", 1200, 50),
                         new SuggestedTierDto("Standard", 1800, 150),
                         new SuggestedTierDto("Door", 2400, 50)),
-                250, 78);
+                250, 78, false);
     }
 
     @Test

@@ -1,14 +1,19 @@
 package com.imin.iminapi.model;
 
 public enum MediaKind {
-    POSTER, VIDEO;
+    POSTER("poster"), VIDEO("video"), DJ_PHOTO("dj-photo");
 
-    public String wireValue() { return name().toLowerCase(); }
+    private final String wire;
+
+    MediaKind(String wire) { this.wire = wire; }
+
+    public String wireValue() { return wire; }
 
     public static MediaKind fromWire(String s) {
         return switch (s) {
             case "poster" -> POSTER;
             case "video" -> VIDEO;
+            case "dj-photo" -> DJ_PHOTO;
             default -> throw new IllegalArgumentException("Unknown media kind: " + s);
         };
     }

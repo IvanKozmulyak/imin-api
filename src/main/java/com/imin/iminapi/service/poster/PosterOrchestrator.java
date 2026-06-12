@@ -134,6 +134,12 @@ public class PosterOrchestrator {
 
     public OrchestrationResult run(UUID generatedEventId, EventCreatorRequest request, PosterConcept concept,
                                    long creativeSeed, List<CreativeDirection> directions, BrandSnapshot brand) {
+        return run(generatedEventId, request, concept, creativeSeed, directions, brand, null);
+    }
+
+    public OrchestrationResult run(UUID generatedEventId, EventCreatorRequest request, PosterConcept concept,
+                                   long creativeSeed, List<CreativeDirection> directions, BrandSnapshot brand,
+                                   DjPhotoSnapshot djPhoto) {
         PosterGeneration generation = new PosterGeneration();
         generation.setGeneratedEventId(generatedEventId);
         generation.setStatus(PosterGenerationStatus.PENDING);
@@ -141,6 +147,9 @@ public class PosterOrchestrator {
         generation.setCreativeSeed(creativeSeed);
         if (brand != null) {
             generation.setBrandSnapshot(brand.toJson());
+        }
+        if (djPhoto != null) {
+            generation.setDjPhotoUrl(djPhoto.url());
         }
         generation = generationRepository.save(generation);
 
@@ -158,12 +167,13 @@ public class PosterOrchestrator {
         List<PosterVariant> variants = concept.variants();
         final PosterGeneration gen = generation;
         final BrandSnapshot brandFinal = brand;
+        final StyleReferencePart characterRef = djPhoto == null ? null : djPhoto.toPart();
         List<Future<GeneratedPoster>> futures = new ArrayList<>(variants.size());
         for (int i = 0; i < variants.size(); i++) {
             final PosterVariant v = variants.get(i);
             final CreativeDirection dir = i < directions.size() ? directions.get(i) : null;
             final long seed = deriveSeed(creativeSeed, i);
-            futures.add(variantPool.submit(() -> generateOne(gen, v, dir, seed, request, ctx, brandFinal)));
+            futures.add(variantPool.submit(() -> generateOne(gen, v, dir, seed, request, ctx, brandFinal, characterRef)));
         }
 
         List<GeneratedPoster> results = new ArrayList<>(variants.size());
@@ -197,7 +207,8 @@ public class PosterOrchestrator {
 
     private GeneratedPoster generateOne(
             PosterGeneration generation, PosterVariant variant, CreativeDirection direction,
-            long seed, EventCreatorRequest request, RenderContext ctx, BrandSnapshot brand) {
+            long seed, EventCreatorRequest request, RenderContext ctx, BrandSnapshot brand,
+            StyleReferencePart characterRef) {
         PosterVariantEntity entity = new PosterVariantEntity();
         entity.setPosterGeneration(generation);
         entity.setVariantStyle(variant.heroType());
@@ -219,7 +230,7 @@ public class PosterOrchestrator {
             return toDto(entity);
         }
         try {
-            return renderWithValidation(entity, variant, seed, request, ctx, brand);
+            return renderWithValidation(entity, variant, seed, request, ctx, brand, characterRef);
         } catch (RuntimeException e) {
             log.error("Variant generation failed: hero_type={}, seed={}", variant.heroType(), seed, e);
             entity.setStatus(PosterVariantStatus.FAILED);
@@ -233,7 +244,8 @@ public class PosterOrchestrator {
     /** Generate → text gate (hard, corrective remix) → style gate (soft). */
     private GeneratedPoster renderWithValidation(
             PosterVariantEntity entity, PosterVariant variant, long baseSeed,
-            EventCreatorRequest request, RenderContext ctx, BrandSnapshot brand) {
+            EventCreatorRequest request, RenderContext ctx, BrandSnapshot brand,
+            StyleReferencePart characterRef) {
         PosterTextSpec spec = textSpecFactory.from(request);
         HeroType heroType = HeroType.fromWire(variant.heroType());
         StyleControl style = ctx.style();
@@ -251,9 +263,9 @@ public class PosterOrchestrator {
 
             IdeogramV3Client.IdeogramResult render = (attempt == 0)
                     ? ideogramClient.generate(variant.ideogramPrompt(), seed, style.parts(), style.preset(),
-                            brandPalette)
+                            brandPalette, characterRef)
                     : ideogramClient.remix(image, correction, remixImageWeight, seed, style.parts(), style.preset(),
-                            brandPalette);
+                            brandPalette, characterRef);
             image = render.imageBytes();
             url = storage.writePng(image);
             entity.setRawUrl(url);

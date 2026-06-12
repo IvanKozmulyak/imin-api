@@ -40,6 +40,7 @@ class EventMediaControllerTest {
 
     static final UUID ORG = UUID.fromString("00000000-0000-0000-0000-000000000001");
     static final UUID USER = UUID.fromString("00000000-0000-0000-0000-000000000002");
+    static final UUID eventId = UUID.fromString("00000000-0000-0000-0000-000000000003");
 
     @Retention(RetentionPolicy.RUNTIME)
     @WithSecurityContext(factory = StubFactory.class)
@@ -81,6 +82,26 @@ class EventMediaControllerTest {
         mvc.perform(multipart("/api/v1/events/" + id + "/media/video").file(file))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.durationSec").value(12));
+    }
+
+    @Test
+    @WithStubUser
+    void uploadsDjPhotoKind() throws Exception {
+        when(uploadService.upload(any(), eq(eventId), eq(MediaKind.DJ_PHOTO), any(), eq("image/png"), eq("dj.png")))
+                .thenReturn(new MediaUploadResponse("https://cdn.example/dj.png", 123L, "image/png", null));
+        mvc.perform(multipart("/api/v1/events/" + eventId + "/media/dj-photo")
+                        .file(new MockMultipartFile("file", "dj.png", "image/png", new byte[]{(byte) 0x89, 0x50, 0x4E, 0x47})))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.url").value("https://cdn.example/dj.png"));
+    }
+
+    @Test
+    @WithStubUser
+    void unknownKindIsCleanNotFoundNot500() throws Exception {
+        mvc.perform(multipart("/api/v1/events/" + eventId + "/media/banner")
+                        .file(new MockMultipartFile("file", "x.png", "image/png", new byte[]{1})))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
     }
 
     @Test

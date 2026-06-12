@@ -520,6 +520,103 @@ class AiEventDescriptionServiceTest {
                 .contains("hero_type must be one of");
     }
 
+    // ---- DJ-mode validation and prompt -----------------------------------------------------------
+
+    /** A minimal request with no date/title/location so validate() skips the text-contract check. */
+    private EventCreatorRequest reqNoText(String pinnedVibeId) {
+        return new EventCreatorRequest(
+                "vibe", "tone", "techno", "city",
+                null, List.of("INSTAGRAM"),
+                null, null, null, null, null, null,
+                pinnedVibeId, null);
+    }
+
+    /** variant_plan [people, object, typographic], humanPolicy RARE — tests DJ bypass. */
+    private static final StyleCard CARD_MIXED_PLAN_RARE =
+            cardWith(HumanPolicy.RARE, List.of(
+                    new VariantSlot(HeroType.PEOPLE),
+                    new VariantSlot(HeroType.OBJECT),
+                    new VariantSlot(HeroType.TYPOGRAPHIC)));
+
+    /**
+     * Three DJ-hero people prompts, each 60-180 words, pairwise distinct, each mentioning a DJ
+     * and a human subject — the ONLY dimension under test is plan/policy, so every other
+     * validator invariant is satisfied.
+     */
+    private static String djPeoplePrompt1() {
+        return "The featured DJ mid-set behind the decks, hands resting on the mixer, bathed in a cold magenta wash "
+                + "that grades into near-black at the edges of the tall vertical poster. Shot as a grainy high-contrast "
+                + "photograph on real film, the DJ occupies the lower two-thirds while oversized condensed lettering "
+                + "stacks across the top margin and the date locks beneath it in a tracked-out acid-green line. "
+                + "Heavy photocopy grain eats into the shadow zones while a hard backlight rim separates the performer "
+                + "from the crowd dissolving into motion blur behind, the whole composition anchored to a brutalist "
+                + "concrete palette with one burning colour accent that bleeds through the headline band.";
+    }
+
+    private static String djPeoplePrompt2() {
+        return "A monumental close-up portrait of the featured DJ, head and shoulders dominating the frame against "
+                + "a crushed near-black field of marbled toner streaks, shot under a single overhead industrial lamp "
+                + "that carves razor-sharp highlights across one cheekbone and shoulder. Oversized all-caps grotesk "
+                + "letterforms occupy the lower third as bold reversed-out poster typography while the event date "
+                + "sits in a tight tracked row at the very foot of the sheet. Halftone dot screen degradation covers "
+                + "the entire vertical composition and acid-green accent lines slice between headline and body copy, "
+                + "the performer's silhouette bleeding into the deep photographic shadow filling every corner edge.";
+    }
+
+    private static String djPeoplePrompt3() {
+        return "The featured DJ silhouetted against a packed sweating crowd, arms raised above the decks inside "
+                + "a dark warehouse space where a single wide beam of ultraviolet light cuts through the smoke and "
+                + "catches the outline of the performer in electric violet against charcoal grey. Photographic medium "
+                + "with heavy film grain and chromatic aberration fringing the edges of every figure. The headline "
+                + "runs vertically up the right edge of this tall portrait format while the supporting date and venue "
+                + "text is locked in a condensed sans-serif baseline along the bottom, and the brand colour floods "
+                + "the background grade behind the silhouetted performer who stands at the visual centre of the poster.";
+    }
+
+    private PosterConcept djConcept() {
+        return new PosterConcept("brutalist_techno", "near-black with magenta", List.of(
+                new PosterVariant("people", djPeoplePrompt1(), "4:5", "Design"),
+                new PosterVariant("people", djPeoplePrompt2(), "4:5", "Design"),
+                new PosterVariant("people", djPeoplePrompt3(), "4:5", "Design")));
+    }
+
+    private SampledRun sampledDjRun() {
+        return new CreativeDirectionSampler().sample(null, 42L, true);
+    }
+
+    @Test
+    void djModeValidateAcceptsThreePeopleVariantsRegardlessOfCardPlanAndPolicy() {
+        // a concept whose 3 variants are all hero_type "people" with DJ-led prompts,
+        // against a card whose variant_plan is [people, object, typographic] and humanPolicy RARE
+        String error = service.validate(djConcept(), reqNoText("brutalist_techno"), CARD_MIXED_PLAN_RARE, true);
+        assertThat(error).isNull();
+    }
+
+    @Test
+    void nonDjModeStillEnforcesTheCardPlan() {
+        String error = service.validate(djConcept(), reqNoText("brutalist_techno"), CARD_MIXED_PLAN_RARE, false);
+        assertThat(error).isNotNull().contains("hero_type"); // variant[1] hero_type mismatch (expected "object", got "people")
+    }
+
+    @Test
+    void djModePromptContainsFeaturedDjBlockAfterBrandPalette() {
+        String prompt = service.buildPrompt(briefWithBrand(), BRUTALIST, sampledDjRun(), null, true);
+        int brandIdx = prompt.indexOf("BRAND PALETTE");
+        int djIdx = prompt.indexOf("FEATURED DJ — MANDATORY");
+        assertThat(brandIdx).isPositive();
+        assertThat(djIdx).isGreaterThan(brandIdx);
+        assertThat(prompt).contains("never facial features");
+        assertThat(prompt).contains("Brand colours must dominate");
+    }
+
+    @Test
+    void djModePromptWithoutBrandStillContainsFeaturedDjBlock() {
+        String prompt = service.buildPrompt(brief(), BRUTALIST, sampledDjRun(), null, true);
+        assertThat(prompt).doesNotContain("BRAND PALETTE");
+        assertThat(prompt).contains("FEATURED DJ — MANDATORY");
+        assertThat(prompt).doesNotContain("Brand colours must dominate");
+    }
+
     // ---- T9: defensive JSON parsing -------------------------------------------------------------
 
     @Test
