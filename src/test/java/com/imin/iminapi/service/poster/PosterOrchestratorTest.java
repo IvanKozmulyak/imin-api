@@ -22,8 +22,12 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -293,5 +297,70 @@ class PosterOrchestratorTest {
         verify(repo, atLeastOnce()).save(saved.capture());
         assertThat(saved.getValue().getVariants())
                 .allSatisfy(v -> assertThat(v.getLogoCompositeStatus()).isEqualTo("FAILED"));
+    }
+
+    // ── DJ photo tests ────────────────────────────────────────────────────────
+
+    private static final DjPhotoSnapshot DJ =
+            new DjPhotoSnapshot("https://cdn.example/dj.jpg", new byte[]{1, 2}, "image/jpeg");
+
+    @Test
+    void djModePassesCharacterRefToGenerate() {
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 1L));
+        when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
+        when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
+
+        orchestrator().run(UUID.randomUUID(), req(), concept(), 7L, List.of(), null, DJ);
+
+        ArgumentCaptor<StyleReferencePart> ref = ArgumentCaptor.forClass(StyleReferencePart.class);
+        verify(ideogram, atLeastOnce()).generate(anyString(), anyLong(), anyList(), any(), anyList(), ref.capture());
+        assertThat(ref.getValue()).isNotNull();
+        assertThat(ref.getValue().filename()).isEqualTo("dj-photo.jpg");
+    }
+
+    @Test
+    void djModeCorrectiveRemixCarriesCharacterRef() {
+        // text gate fails once (image {1}) then accepts (image {2})
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{1}, 1L));
+        when(ideogram.remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 2L));
+        when(textValidation.validateOrExplain(any(), any())).thenAnswer(inv -> {
+            byte[] img = inv.getArgument(0);
+            return (img.length > 0 && img[0] == 1) ? textFail() : textOk();
+        });
+        when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
+
+        orchestrator().run(UUID.randomUUID(), req(), concept(), 7L, List.of(), null, DJ);
+
+        verify(ideogram, atLeastOnce()).remix(any(), anyString(), anyInt(), anyLong(), anyList(), any(), anyList(),
+                argThat(r -> r != null && "dj-photo.jpg".equals(r.filename())));
+    }
+
+    @Test
+    void djPhotoUrlIsSnapshottedOnGeneration() {
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 1L));
+        when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
+        when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
+
+        orchestrator().run(UUID.randomUUID(), req(), concept(), 7L, List.of(), null, DJ);
+
+        ArgumentCaptor<PosterGeneration> saved = ArgumentCaptor.forClass(PosterGeneration.class);
+        verify(repo, atLeastOnce()).save(saved.capture());
+        assertThat(saved.getAllValues().get(0).getDjPhotoUrl()).isEqualTo("https://cdn.example/dj.jpg");
+    }
+
+    @Test
+    void nullDjPhotoKeepsBaselineNullCharacterRef() {
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 1L));
+        when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
+        when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
+
+        orchestrator().run(UUID.randomUUID(), req(), concept(), 7L, List.of(), null, null);
+
+        verify(ideogram, atLeastOnce()).generate(anyString(), anyLong(), anyList(), any(), anyList(), isNull());
     }
 }
