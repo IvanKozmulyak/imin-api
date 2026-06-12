@@ -45,6 +45,22 @@ public class Organization {
     @Column(nullable = false, length = 3)
     private String currency = "EUR";
 
+    // ----- Brand book (V38) -----
+
+    @Column(name = "brand_name", length = 120)
+    private String brandName;
+
+    @Column(name = "brand_logo_url", columnDefinition = "TEXT")
+    private String brandLogoUrl;
+
+    /** Up to 3 ordered accent colours, lowercase hex (#rrggbb). Index 0 = primary ("AI leads with the first"). */
+    @Convert(converter = StringListJsonConverter.class)
+    @Column(name = "brand_accent_colors", nullable = false, columnDefinition = "TEXT")
+    private List<String> brandAccentColors = new ArrayList<>();
+
+    @Column(name = "brand_logo_on_posters", nullable = false)
+    private boolean brandLogoOnPosters = true;
+
     /**
      * Stripe v2 connected account id (acct_...) — null until the org has called
      * `POST /api/v1/orgs/{orgId}/stripe/connect`. Populated once and never changed;
