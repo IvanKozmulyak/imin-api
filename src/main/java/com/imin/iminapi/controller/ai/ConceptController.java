@@ -3,9 +3,12 @@ package com.imin.iminapi.controller.ai;
 import com.imin.iminapi.dto.ai.ConceptRegenerateRequest;
 import com.imin.iminapi.dto.ai.ConceptRequest;
 import com.imin.iminapi.dto.ai.ConceptResponse;
+import com.imin.iminapi.dto.ai.ConceptSetRequest;
+import com.imin.iminapi.dto.ai.ConceptSetResponse;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.CurrentUser;
 import com.imin.iminapi.security.RateLimiter;
+import com.imin.iminapi.service.ai.ConceptSetService;
 import com.imin.iminapi.service.ai.ConceptStudioService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.*;
@@ -15,10 +18,13 @@ import org.springframework.web.bind.annotation.*;
 public class ConceptController {
 
     private final ConceptStudioService studio;
+    private final ConceptSetService conceptSet;
     private final RateLimiter rateLimiter;
 
-    public ConceptController(ConceptStudioService studio, RateLimiter rateLimiter) {
+    public ConceptController(ConceptStudioService studio, ConceptSetService conceptSet,
+                             RateLimiter rateLimiter) {
         this.studio = studio;
+        this.conceptSet = conceptSet;
         this.rateLimiter = rateLimiter;
     }
 
@@ -27,6 +33,13 @@ public class ConceptController {
                                   @Valid @RequestBody ConceptRequest body) {
         rateLimiter.consume("ai-concept", p.userId().toString());
         return studio.create(p, body);
+    }
+
+    @PostMapping("/concepts")
+    public ConceptSetResponse createSet(@CurrentUser AuthPrincipal p,
+                                        @Valid @RequestBody ConceptSetRequest body) {
+        rateLimiter.consume("ai-concept", p.userId().toString());
+        return conceptSet.create(p, body);
     }
 
     @PostMapping("/concept/regenerate")
