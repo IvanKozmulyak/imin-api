@@ -27,4 +27,13 @@ public class Concept {
 
     private String tagline;
     private int sortOrder;
+
+    @Column(name = "instagram_caption", columnDefinition = "TEXT")
+    private String instagramCaption;
+
+    @Column(name = "tiktok_caption", columnDefinition = "TEXT")
+    private String tiktokCaption;
+
+    @Column(name = "x_caption", columnDefinition = "TEXT")
+    private String xCaption;
 }
