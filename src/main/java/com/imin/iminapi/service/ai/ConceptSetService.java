@@ -38,6 +38,10 @@ public class ConceptSetService {
     private static final int WANT = 3;
     private static final int MAX_ATTEMPTS = 2;
 
+    /** Closed set of event types the wire contract permits (any other value normalizes to null). */
+    private static final java.util.Set<String> EVENT_TYPES =
+            java.util.Set.of("Festival", "Rave", "Club", "Concert", "Open Air");
+
     private final ChatClient chat;
     private final OrganizationRepository orgs;
     private final PricingService pricing;
@@ -91,10 +95,19 @@ public class ConceptSetService {
             entity.setXCaption(x);
             staging.getConcepts().add(entity);
 
-            List<SuggestedTierDto> tiers = buildTiers(prices, c.suggestedCapacity());
+            // Normalize the LLM's suggested type to the closed wire-contract set (case-insensitive),
+            // emitting the canonical casing when it matches, else null.
+            String rawType = c.suggestedType();
+            String type = rawType == null ? null
+                    : EVENT_TYPES.stream().filter(t -> t.equalsIgnoreCase(rawType)).findFirst().orElse(null);
+            // Clamp suggested capacity to [50, 2000] when present, before using it anywhere.
+            Integer cap = c.suggestedCapacity() == null ? null
+                    : Math.min(2000, Math.max(50, c.suggestedCapacity()));
+
+            List<SuggestedTierDto> tiers = buildTiers(prices, cap);
             cards.add(new ConceptCardDto(null, c.name(), c.description(),
                     new CaptionsDto(ig, tt, x),
-                    c.suggestedGenre(), c.suggestedType(), c.suggestedCapacity(), tiers));
+                    c.suggestedGenre(), type, cap, tiers));
             sort++;
         }
         staging.setStatus(GeneratedEventStatus.COMPLETE);
@@ -131,9 +144,19 @@ public class ConceptSetService {
                 log.warn("Concept-set generation attempt {} failed: {}", attempt, e.getMessage());
             }
         }
-        if (last != null && last.concepts() != null && !last.concepts().isEmpty()) {
-            log.warn("Concept-set returned fewer than {} valid concepts; best-effort.", WANT);
-            return last;
+        // Best-effort: keep only valid concepts (non-blank name AND description). The endpoint must
+        // never return fewer than 3 or a concept with a blank name, so anything short is a 502.
+        if (last != null && last.concepts() != null) {
+            List<ConceptSet.LlmConcept> valid = last.concepts().stream()
+                    .filter(c -> c != null
+                            && c.name() != null && !c.name().isBlank()
+                            && c.description() != null && !c.description().isBlank())
+                    .limit(WANT)
+                    .toList();
+            if (valid.size() >= WANT) {
+                log.warn("Concept-set best-effort: using first {} valid concepts of a partial response.", WANT);
+                return new ConceptSet(new ArrayList<>(valid));
+            }
         }
         throw new ApiException(HttpStatus.BAD_GATEWAY, ErrorCode.UPSTREAM_UNAVAILABLE,
                 "Concept generation service unavailable");
