@@ -1,4 +1,4 @@
-package com.imin.iminapi.controller.event;
+package com.imin.iminapi.controller.publicapi;
 
 import com.imin.iminapi.dto.event.TrackRequest;
 import com.imin.iminapi.service.event.FunnelTrackingService;

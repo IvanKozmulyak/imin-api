@@ -1,4 +1,4 @@
-package com.imin.iminapi.controller.event;
+package com.imin.iminapi.controller.publicapi;
 
 import com.imin.iminapi.config.TestRateLimitConfig;
 import org.junit.jupiter.api.Test;

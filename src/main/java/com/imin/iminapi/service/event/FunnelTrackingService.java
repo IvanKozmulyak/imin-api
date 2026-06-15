@@ -42,7 +42,8 @@ public class FunnelTrackingService {
         FunnelEvent row = new FunnelEvent();
         row.setEventId(eventId);
         row.setStage(req.stage());
-        row.setAnonId(req.anonId().trim().substring(0, Math.min(64, req.anonId().trim().length())));
+        String anon = req.anonId().trim();
+        row.setAnonId(anon.substring(0, Math.min(64, anon.length())));
         funnel.save(row);
     }
 }

@@ -95,4 +95,15 @@ class FunnelTrackingServiceTest {
         service.track(publicEvent.getId(), new TrackRequest("PAGE_VIEW", "  "));
         assertThat(funnel.findAll()).isEmpty();
     }
+
+    @Test
+    void checkout_start_is_recorded_with_anon_id_trimmed_and_capped_to_64() {
+        String noisy = "  " + "x".repeat(100) + "  ";
+        service.track(publicEvent.getId(), new TrackRequest("CHECKOUT_START", noisy));
+
+        var rows = funnel.findAll();
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).getStage()).isEqualTo(FunnelEvent.STAGE_CHECKOUT_START);
+        assertThat(rows.get(0).getAnonId()).isEqualTo("x".repeat(64));
+    }
 }
