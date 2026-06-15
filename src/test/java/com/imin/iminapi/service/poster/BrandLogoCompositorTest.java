@@ -32,6 +32,20 @@ class BrandLogoCompositorTest {
         } catch (Exception e) { throw new RuntimeException(e); }
     }
 
+    /** A PNG whose left half is opaque colour {@code c}; the right half stays fully transparent. */
+    private static byte[] halfTransparentPng(int w, int h, Color c) {
+        try {
+            BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+            Graphics2D g = img.createGraphics();
+            g.setColor(c);
+            g.fillRect(0, 0, w / 2, h); // left half opaque; right half left transparent
+            g.dispose();
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            ImageIO.write(img, "PNG", out);
+            return out.toByteArray();
+        } catch (Exception e) { throw new RuntimeException(e); }
+    }
+
     private static BufferedImage decode(byte[] png) {
         try { return ImageIO.read(new ByteArrayInputStream(png)); }
         catch (Exception e) { throw new RuntimeException(e); }
@@ -50,7 +64,7 @@ class BrandLogoCompositorTest {
         assertThat(outImg.getWidth()).isEqualTo(rawImg.getWidth());
         assertThat(outImg.getHeight()).isEqualTo(rawImg.getHeight());
 
-        // The bottom-right corner must differ from the raw poster (logo + scrim painted there).
+        // The bottom-right corner must differ from the raw poster (logo painted there).
         int x = (int) (rawImg.getWidth() * 0.92);
         int y = (int) (rawImg.getHeight() * 0.94);
         assertThat(outImg.getRGB(x, y)).isNotEqualTo(rawImg.getRGB(x, y));
@@ -60,22 +74,22 @@ class BrandLogoCompositorTest {
     }
 
     @Test
-    void opaque_logo_on_dark_corner_gets_a_lighter_scrim() {
-        byte[] poster = solidPng(800, 1000, new Color(10, 10, 10)); // very dark corner
-        byte[] logo = solidPng(200, 200, Color.WHITE);
+    void transparent_logo_pixels_leave_poster_untouched() {
+        // A logo that is opaque only in its left half; the right half is fully transparent.
+        byte[] poster = solidPng(800, 1000, new Color(10, 10, 10)); // very dark poster
+        byte[] logo = halfTransparentPng(200, 200, Color.WHITE);
         when(storage.download("https://cdn/logo.png")).thenReturn(logo);
 
         byte[] out = sut.composite(poster, "https://cdn/logo.png");
         BufferedImage outImg = decode(out);
 
-        // Sample a pixel in the logo region's margin area where the scrim shows but the logo
-        // hasn't fully covered it: just inside the logo box on a dark poster the result must be
-        // lighter than the original near-black corner (scrim is luminance-contrasting).
-        int x = (int) (outImg.getWidth() * 0.74);
-        int y = (int) (outImg.getHeight() * 0.86);
+        // No scrim plate: a pixel under the logo's transparent half must still read as the raw
+        // near-black poster (sum = 30), i.e. the logo composited straight onto the art.
+        int x = (int) (outImg.getWidth() * 0.95); // right portion of the bottom-right logo box
+        int y = (int) (outImg.getHeight() * 0.90);
         int rgb = outImg.getRGB(x, y);
         int lum = (rgb >> 16 & 0xFF) + (rgb >> 8 & 0xFF) + (rgb & 0xFF);
-        assertThat(lum).isGreaterThan(30); // brighter than the 10,10,10 background (sum=30)
+        assertThat(lum).isEqualTo(30);
     }
 
     @Test
