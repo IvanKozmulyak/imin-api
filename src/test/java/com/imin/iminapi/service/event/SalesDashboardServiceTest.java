@@ -139,12 +139,44 @@ class SalesDashboardServiceTest {
         tickets.save(t);
     }
 
+    private void newTicket(Order o, TicketTier tier, String state, String tierNameSnapshot) {
+        Ticket t = new Ticket();
+        t.setToken(UUID.randomUUID().toString().replace("-", ""));
+        t.setOrderId(o.getId());
+        t.setEventId(o.getEventId());
+        t.setTierId(tier.getId());
+        t.setTierName(tierNameSnapshot);
+        t.setPriceMinor(tier.getPriceMinor());
+        t.setState(state);
+        tickets.save(t);
+    }
+
     private void funnelRow(String stage, String anon) {
         FunnelEvent e = new FunnelEvent();
         e.setEventId(event.getId());
         e.setStage(stage);
         e.setAnonId(anon);
         funnel.save(e);
+    }
+
+    @Test
+    void renamed_tier_does_not_split_or_drop_sales() {
+        // tier `ga` (live name "GA") sold under two historical snapshot names.
+        Order o = newOrder(3000);
+        newTicket(o, ga, Ticket.STATE_ISSUED, "Early Bird"); // old snapshot name
+        newTicket(o, ga, Ticket.STATE_ISSUED, "GA");          // current name
+
+        SalesDashboardResponse r = service.dashboard(principal, event.getId());
+
+        // both tickets must count toward the single GA tier and the headline
+        assertThat(r.tiles().ticketsSold()).isEqualTo(2);
+        var gaRow = r.tiers().stream().filter(t -> t.tierId().equals(ga.getId().toString()))
+                .findFirst().orElseThrow();
+        assertThat(gaRow.sold()).isEqualTo(2);
+        assertThat(gaRow.grossRevenueMinor()).isEqualTo(3000L);
+        // reconciliation still holds
+        int tierSold = r.tiers().stream().mapToInt(SalesDashboardResponse.TierBreakdown::sold).sum();
+        assertThat(tierSold).isEqualTo(r.tiles().ticketsSold());
     }
 
     @Test

@@ -33,18 +33,22 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
      * Per-tier sold aggregates for an event, over the SOLD set
      * ({@code state NOT IN ('refunded','revoked')}). Tuple shape:
      * {@code [UUID tierId, String tierName, Long sold, Long grossRevenueMinor, Long redeemed]}.
-     * Summed across rows, these give the headline tiles — so the tier breakdown
-     * reconciles with the headline by construction.
+     * Grouped by {@code tierId} only, so each tier yields exactly ONE row even
+     * when its name changed mid-sale ({@code tier_name} is a purchase-time
+     * snapshot). {@code max(t.tierName)} is a representative display name, used
+     * only as a fallback for genuinely-deleted tiers — current tiers display
+     * their live name. Summed across rows, these give the headline tiles, so the
+     * tier breakdown reconciles with the headline by construction.
      */
     @Query("""
-            select t.tierId, t.tierName,
+            select t.tierId, max(t.tierName),
                    count(t),
                    coalesce(sum(t.priceMinor), 0),
                    coalesce(sum(case when t.state = 'redeemed' then 1 else 0 end), 0)
               from Ticket t
              where t.eventId = :eventId
                and t.state not in ('refunded', 'revoked')
-             group by t.tierId, t.tierName
+             group by t.tierId
             """)
     List<Object[]> tierAggregates(@Param("eventId") UUID eventId);
 

@@ -113,12 +113,17 @@ public class SalesDashboardService {
             seen.put(t.getId(), true);
         }
         // Deleted tiers that still have sold tickets — include so totals reconcile.
-        for (Map.Entry<UUID, long[]> en : agg.entrySet()) {
-            if (seen.containsKey(en.getKey())) continue;
-            long[] a = en.getValue();
-            out.add(toBreakdown(en.getKey().toString(), aggName.get(en.getKey()),
-                    (int) a[0], (int) a[2], a[1], 0));
-        }
+        // Deterministic order (HashMap iteration isn't): by display name, then tierId.
+        agg.entrySet().stream()
+                .filter(en -> !seen.containsKey(en.getKey()))
+                .sorted(Comparator
+                        .comparing((Map.Entry<UUID, long[]> en) -> aggName.getOrDefault(en.getKey(), ""))
+                        .thenComparing(en -> en.getKey().toString()))
+                .forEach(en -> {
+                    long[] a = en.getValue();
+                    out.add(toBreakdown(en.getKey().toString(), aggName.get(en.getKey()),
+                            (int) a[0], (int) a[2], a[1], 0));
+                });
         return out;
     }
 

@@ -32,6 +32,14 @@ public record SalesDashboardResponse(
             int quantity,
             double sellThroughPct) {}
 
+    /**
+     * The three stages are independently sourced, not strict subsets of one
+     * another: PAGE_VIEW and CHECKOUT_START are distinct-session beacon counts,
+     * while PAYMENTS_COMPLETED is the order count. They approximate one funnel.
+     * {@code dropOff.lostCount} is clamped at 0, so it can read 0 when a
+     * downstream stage's independent count meets or exceeds the upstream one
+     * (e.g. before the public beacons ship, when the two upper stages are 0).
+     */
     public record Funnel(List<Stage> stages, List<DropOff> dropOff) {
 
         public record Stage(String stage, long count) {}
