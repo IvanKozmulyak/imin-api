@@ -86,6 +86,8 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/v1/public/**").permitAll()
                         // Public buyer checkout — unauthenticated POST (validated server-side).
                         .requestMatchers(HttpMethod.POST, "/api/v1/public/events/*/checkout").permitAll()
+                        // Public funnel beacon — unauthenticated POST, always 204 (no-leak).
+                        .requestMatchers(HttpMethod.POST, "/api/v1/public/events/*/track").permitAll()
                         // Public "notify me when tickets release" subscription — unauthenticated POST.
                         .requestMatchers(HttpMethod.POST, "/api/v1/public/events/*/notify").permitAll()
                         // Public price-quote preview (promo validation, totals) — unauthenticated POST.
