@@ -4,7 +4,6 @@ import org.springframework.stereotype.Component;
 
 import javax.imageio.ImageIO;
 import java.awt.AlphaComposite;
-import java.awt.Color;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
@@ -18,10 +17,10 @@ import java.util.concurrent.ConcurrentHashMap;
  * Composites an org's logo onto a generated poster with pure Java2D (the same BufferedImage /
  * Graphics2D toolkit {@link com.imin.iminapi.service.ticket.QrImageRenderer} uses — no new
  * dependency). Deterministic placement: bottom-right, margin 4% of poster width, logo scaled to
- * max 18% of poster width (aspect preserved). A luminance-sampled rounded scrim is drawn behind
- * the logo so a white mark on a light corner (or dark-on-dark) stays legible — Ideogram corners
- * are unpredictable per generation. The decoded logo is cached by URL (content-addressed) and
- * invalidated on upload/delete via {@link #invalidate(String)}.
+ * max 18% of poster width (aspect preserved). The logo is drawn directly onto the poster with no
+ * backing plate — the uploaded mark is a transparent PNG, so it composites straight onto the art.
+ * The decoded logo is cached by URL (content-addressed) and invalidated on upload/delete via
+ * {@link #invalidate(String)}.
  *
  * <p>This class does no error isolation itself — the caller ({@link PosterOrchestrator}) wraps it
  * in try/catch so any failure degrades to the un-composited poster. Generation never fails over
@@ -32,8 +31,6 @@ public class BrandLogoCompositor {
 
     private static final double MARGIN_FRACTION = 0.04;     // 4% of poster width
     private static final double LOGO_MAX_FRACTION = 0.18;   // 18% of poster width
-    private static final double SCRIM_PAD_FRACTION = 0.25;  // scrim pad = 25% of logo box
-    private static final int SCRIM_ALPHA = 110;             // 0-255 translucency of the scrim
 
     private final PosterImageStorage storage;
     private final ConcurrentHashMap<String, BufferedImage> logoCache = new ConcurrentHashMap<>();
@@ -75,49 +72,12 @@ public class BrandLogoCompositor {
         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
         g.drawImage(poster, 0, 0, null);
 
-        // Legibility scrim: sample mean luminance of the destination region, draw a contrasting pill.
-        int pad = (int) Math.round(Math.max(logoW, logoH) * SCRIM_PAD_FRACTION);
-        int scrimX = logoX - pad;
-        int scrimY = logoY - pad;
-        int scrimW = logoW + 2 * pad;
-        int scrimH = logoH + 2 * pad;
-        Color scrim = scrimColor(poster, clamp(scrimX, 0, pw - 1), clamp(scrimY, 0, ph - 1),
-                Math.min(scrimW, pw), Math.min(scrimH, ph));
-        g.setColor(scrim);
-        int arc = Math.min(scrimW, scrimH) / 2;
-        g.fillRoundRect(scrimX, scrimY, scrimW, scrimH, arc, arc);
-
-        // Logo on top with SrcOver so transparency is honoured.
+        // Logo straight on top with SrcOver so the transparent PNG composites onto the art — no scrim.
         g.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, 1.0f));
         g.drawImage(logo, logoX, logoY, logoW, logoH, null);
         g.dispose();
 
         return encode(out);
-    }
-
-    /** A translucent scrim that contrasts the sampled region: dark scrim on light corners, light on dark. */
-    private static Color scrimColor(BufferedImage img, int x, int y, int w, int h) {
-        long sum = 0;
-        long n = 0;
-        int x2 = Math.min(x + w, img.getWidth());
-        int y2 = Math.min(y + h, img.getHeight());
-        for (int yy = y; yy < y2; yy += 4) {
-            for (int xx = x; xx < x2; xx += 4) {
-                int rgb = img.getRGB(xx, yy);
-                int r = rgb >> 16 & 0xFF, gg = rgb >> 8 & 0xFF, b = rgb & 0xFF;
-                // Rec. 601 luma
-                sum += Math.round(0.299 * r + 0.587 * gg + 0.114 * b);
-                n++;
-            }
-        }
-        double meanLuma = n == 0 ? 0 : (double) sum / n;
-        // Light corner → dark scrim; dark corner → light scrim.
-        int base = meanLuma > 127 ? 0 : 255;
-        return new Color(base, base, base, SCRIM_ALPHA);
-    }
-
-    private static int clamp(int v, int lo, int hi) {
-        return Math.max(lo, Math.min(hi, v));
     }
 
     private static BufferedImage decode(byte[] png) {
