@@ -1,0 +1,14 @@
+SALES MILESTONE · HALFWAY THERE · imin
+
+{{tierName}} is halfway sold out for {{eventName}}.
+
+Nice work — the {{tierName}} tier just crossed the halfway mark. The momentum is real; one more push and you're on track to sell it out.
+
+{{tierName}} · SELL-THROUGH
+{{percentSold}}% sold — {{soldCount}} of {{capacity}} {{tierName}} tickets sold.
+
+View sales & keep promoting: {{dashboardUrl}}
+
+You're getting this because {{tierName}} crossed {{percentSold}}% sold for {{eventName}}. Share your event link across your channels and watch the rest go — we'll nudge you again as the tier fills up.
+
+imin.wtf · sales milestone for {{eventName}}

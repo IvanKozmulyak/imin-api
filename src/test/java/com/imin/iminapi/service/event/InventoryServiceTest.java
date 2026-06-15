@@ -4,12 +4,14 @@ import com.imin.iminapi.model.ReservationStatus;
 import com.imin.iminapi.model.TicketReservation;
 import com.imin.iminapi.model.TicketTier;
 import com.imin.iminapi.repository.TicketReservationRepository;
+import com.imin.iminapi.repository.TicketTierMilestoneRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
 
 import java.time.Clock;
@@ -35,14 +37,17 @@ class InventoryServiceTest {
 
     private TicketTierRepository tiers;
     private TicketReservationRepository reservations;
+    private TicketTierMilestoneRepository milestones;
     private InventoryService svc;
 
     @BeforeEach
     void setUp() {
         tiers = mock(TicketTierRepository.class);
         reservations = mock(TicketReservationRepository.class);
+        milestones = mock(TicketTierMilestoneRepository.class);
+        ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
         Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
-        svc = new InventoryService(tiers, reservations, clock);
+        svc = new InventoryService(tiers, reservations, milestones, publisher, clock);
 
         // Default: persisting a reservation echoes it back with a generated id so
         // tests don't have to wire that up per test.

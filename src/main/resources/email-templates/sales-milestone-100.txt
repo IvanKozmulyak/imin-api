@@ -1,0 +1,19 @@
+SALES MILESTONE · SOLD OUT · imin
+
+{{tierName}} is sold out for {{eventName}}.
+
+Every last {{tierName}} ticket is gone. That's real demand — here's how to ride it.
+
+{{tierName}} · SELL-THROUGH
+{{percentSold}}% sold — {{soldCount}} of {{capacity}} {{tierName}} tickets. This tier is at capacity.
+
+KEEP THE MOMENTUM
+- Capture the overflow — your sold-out event page now shows a waitlist signup for late buyers.
+- Add capacity to {{tierName}} or release a new tier from the Tickets tab.
+- Announce the sell-out — scarcity drives the rest of your tiers.
+
+Manage this tier: {{dashboardUrl}}
+
+You're getting this because {{tierName}} reached a sales milestone for {{eventName}}. Manage these alerts under Settings → Notifications.
+
+imin.wtf · sales milestone for {{eventName}}

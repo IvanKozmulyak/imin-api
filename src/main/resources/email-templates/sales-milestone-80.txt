@@ -1,0 +1,19 @@
+SALES MILESTONE · ALMOST GONE · imin
+
+{{tierName}} is {{percentSold}}% sold for {{eventName}}.
+
+Only a few {{tierName}} tickets left. This is the moment to push — momentum is on your side and scarcity sells the rest.
+
+{{tierName}} · SELL-THROUGH
+{{percentSold}}% sold — {{soldCount}} of {{capacity}} {{tierName}} tickets gone.
+
+FINISH THE TIER
+- Share a final push — post an "almost gone" update from your Promote tab.
+- Reprice the last tickets — bump the price on the tier from the Tickets tab.
+- Add a promo code — a short-lived discount in the Promos tab can close the rest.
+
+Open your event dashboard: {{dashboardUrl}}
+
+You're getting this because {{tierName}} crossed {{percentSold}}% sold for {{eventName}}. We send these milestone alerts so you can act while demand is hot.
+
+imin.wtf · sales milestone for {{eventName}}

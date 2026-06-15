@@ -3,12 +3,15 @@ package com.imin.iminapi.service.event;
 import com.imin.iminapi.model.ReservationStatus;
 import com.imin.iminapi.model.TicketReservation;
 import com.imin.iminapi.model.TicketTier;
+import com.imin.iminapi.model.TicketTierMilestone;
 import com.imin.iminapi.repository.TicketReservationRepository;
+import com.imin.iminapi.repository.TicketTierMilestoneRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -43,13 +46,19 @@ public class InventoryService {
 
     private final TicketTierRepository tiers;
     private final TicketReservationRepository reservations;
+    private final TicketTierMilestoneRepository milestones;
+    private final ApplicationEventPublisher publisher;
     private final Clock clock;
 
     public InventoryService(TicketTierRepository tiers,
                             TicketReservationRepository reservations,
+                            TicketTierMilestoneRepository milestones,
+                            ApplicationEventPublisher publisher,
                             Clock clock) {
         this.tiers = tiers;
         this.reservations = reservations;
+        this.milestones = milestones;
+        this.publisher = publisher;
         this.clock = clock;
     }
 
@@ -191,6 +200,7 @@ public class InventoryService {
                 tier.setReserved(currentReserved - dec);
                 tier.setSold(tier.getSold() + r.getQty());
                 tiers.save(tier);
+                fireMilestones(tier);
                 log.info("Confirmed sold qty={} on tier {} from reservation {}",
                         r.getQty(), r.getTierId(), reservationId);
                 return;
@@ -214,11 +224,39 @@ public class InventoryService {
                     reservationId, r.getQty(), r.getTierId());
             tier.setSold(tier.getSold() + r.getQty());
             tiers.save(tier);
+            fireMilestones(tier);
             // Flip the row back to CONFIRMED so a Stripe retry of the success event
             // is idempotent and so forensics show this row landed a sale.
             r.setStatus(ReservationStatus.CONFIRMED);
             r.setConfirmedAt(clock.instant());
             reservations.save(r);
+        }
+    }
+
+    /**
+     * Record any newly-reached 50/80/100% sell-through milestones for the tier and
+     * publish a {@link SalesMilestoneReachedEvent} for the highest new one. Runs
+     * inside confirmSold's transaction under the tier row lock, so the
+     * exists-then-insert is race-free; the event only reaches
+     * {@link SalesMilestoneNotifier} after the transaction commits. A single big
+     * purchase that jumps past several thresholds records each (so none re-fire
+     * later) but notifies once, on the highest.
+     */
+    private void fireMilestones(TicketTier tier) {
+        int highest = 0;
+        for (int t : SalesMilestones.satisfied(tier.getSold(), tier.getQuantity())) {
+            if (!milestones.existsByTierIdAndThreshold(tier.getId(), t)) {
+                TicketTierMilestone row = new TicketTierMilestone();
+                row.setTierId(tier.getId());
+                row.setThreshold(t);
+                milestones.save(row);
+                highest = t;
+            }
+        }
+        if (highest > 0) {
+            publisher.publishEvent(new SalesMilestoneReachedEvent(tier.getId(), highest));
+            log.info("Sales milestone {}% reached for tier {} ({}/{} sold)",
+                    highest, tier.getId(), tier.getSold(), tier.getQuantity());
         }
     }
 
