@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.Locale;
 import java.util.UUID;
 
 /**
@@ -58,7 +59,7 @@ public class AttendeeExportService {
     }
 
     private static String formatMoney(int minor, String currency) {
-        return currency + " " + String.format("%.2f", minor / 100.0);
+        return currency + " " + String.format(Locale.ROOT, "%.2f", minor / 100.0);
     }
 
     /** RFC-4180 escaping: wrap in quotes and double any embedded quote when needed. */
