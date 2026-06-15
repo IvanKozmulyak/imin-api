@@ -1,0 +1,48 @@
+package com.imin.iminapi.service.event;
+
+import com.imin.iminapi.dto.event.TrackRequest;
+import com.imin.iminapi.model.Event;
+import com.imin.iminapi.model.EventVisibility;
+import com.imin.iminapi.model.FunnelEvent;
+import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.repository.FunnelEventRepository;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.Set;
+import java.util.UUID;
+
+/**
+ * Records public funnel beacons (PAGE_VIEW, CHECKOUT_START). All failure modes
+ * are silent no-ops so the public endpoint can always answer 204 with no
+ * information leak: unknown/non-public event, unknown stage, blank session id.
+ */
+@Service
+public class FunnelTrackingService {
+
+    private static final Set<String> ALLOWED_STAGES =
+            Set.of(FunnelEvent.STAGE_PAGE_VIEW, FunnelEvent.STAGE_CHECKOUT_START);
+
+    private final EventRepository events;
+    private final FunnelEventRepository funnel;
+
+    public FunnelTrackingService(EventRepository events, FunnelEventRepository funnel) {
+        this.events = events;
+        this.funnel = funnel;
+    }
+
+    @Transactional
+    public void track(UUID eventId, TrackRequest req) {
+        if (req == null || req.stage() == null || !ALLOWED_STAGES.contains(req.stage())) return;
+        if (req.anonId() == null || req.anonId().isBlank()) return;
+
+        Event e = events.findActive(eventId).orElse(null);
+        if (e == null || e.getVisibility() != EventVisibility.PUBLIC) return;
+
+        FunnelEvent row = new FunnelEvent();
+        row.setEventId(eventId);
+        row.setStage(req.stage());
+        row.setAnonId(req.anonId().trim().substring(0, Math.min(64, req.anonId().trim().length())));
+        funnel.save(row);
+    }
+}
