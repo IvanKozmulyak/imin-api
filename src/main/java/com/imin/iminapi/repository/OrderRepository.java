@@ -22,6 +22,9 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
 
     List<Order> findByEventIdOrderByCreatedAtDesc(UUID eventId, Pageable pageable);
 
+    /** Number of orders (= completed payments) for an event. Drives the funnel's PAYMENTS_COMPLETED stage. */
+    long countByEventId(UUID eventId);
+
     /** Gross revenue (sum of order totals) for an event, in minor units. Includes refunded amounts. */
     @Query("select coalesce(sum(o.totalMinor), 0) from Order o where o.eventId = :eventId")
     long sumTotalMinorByEventId(@Param("eventId") UUID eventId);

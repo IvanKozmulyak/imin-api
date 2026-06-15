@@ -29,6 +29,40 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
      */
     List<Ticket> findByOrderIdInOrderByOrderIdAscCreatedAtAsc(Collection<UUID> orderIds);
 
+    /**
+     * Per-tier sold aggregates for an event, over the SOLD set
+     * ({@code state NOT IN ('refunded','revoked')}). Tuple shape:
+     * {@code [UUID tierId, String tierName, Long sold, Long grossRevenueMinor, Long redeemed]}.
+     * Summed across rows, these give the headline tiles — so the tier breakdown
+     * reconciles with the headline by construction.
+     */
+    @Query("""
+            select t.tierId, t.tierName,
+                   count(t),
+                   coalesce(sum(t.priceMinor), 0),
+                   coalesce(sum(case when t.state = 'redeemed' then 1 else 0 end), 0)
+              from Ticket t
+             where t.eventId = :eventId
+               and t.state not in ('refunded', 'revoked')
+             group by t.tierId, t.tierName
+            """)
+    List<Object[]> tierAggregates(@Param("eventId") UUID eventId);
+
+    /**
+     * Every SOLD ticket for an event joined to its order, for the attendee CSV
+     * export. Tuple shape: {@code [Ticket ticket, String buyerEmail, String orderToken, Instant purchasedAt]}.
+     * Ordered oldest order first.
+     */
+    @Query("""
+            select t, o.email, o.token, o.createdAt
+              from Ticket t
+              join com.imin.iminapi.model.Order o on o.id = t.orderId
+             where t.eventId = :eventId
+               and t.state not in ('refunded', 'revoked')
+             order by o.createdAt asc, t.createdAt asc
+            """)
+    List<Object[]> attendeeRows(@Param("eventId") UUID eventId);
+
     List<Ticket> findByIdInAndOrderId(Collection<UUID> ids, UUID orderId);
 
     long countByOrderIdAndStateNot(UUID orderId, String state);
