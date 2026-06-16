@@ -41,6 +41,22 @@ public class FunnelEvent {
     @Column(name = "anon_id", nullable = false, length = 64)
     private String anonId;
 
+    // UTM attribution (V43). All nullable — old beacon callers omit them.
+    @Column(name = "utm_source", length = 128)
+    private String utmSource;
+
+    @Column(name = "utm_medium", length = 128)
+    private String utmMedium;
+
+    @Column(name = "utm_campaign", length = 128)
+    private String utmCampaign;
+
+    @Column(name = "utm_content", length = 128)
+    private String utmContent;
+
+    @Column(name = "referrer_host", length = 255)
+    private String referrerHost;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Times.nowMicros();
 }

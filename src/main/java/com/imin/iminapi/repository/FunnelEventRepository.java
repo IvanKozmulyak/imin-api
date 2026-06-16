@@ -23,4 +23,36 @@ public interface FunnelEventRepository extends JpaRepository<FunnelEvent, UUID> 
              group by e.stage
             """)
     List<Object[]> countDistinctAnonByStage(@Param("eventId") UUID eventId);
+
+    /**
+     * Visit count grouped by {@code utm_source} across all of an org's active
+     * events. Tuple shape: {@code [String utmSource (nullable), Long visits]}.
+     * A null source row is the "untagged" bucket. Joins the funnel log to
+     * {@code Event} so org-scoping is enforced by the event's owner.
+     */
+    @Query("""
+            select fe.utmSource, count(fe) from FunnelEvent fe, Event ev
+             where fe.eventId = ev.id
+               and ev.orgId = :orgId
+               and ev.deletedAt is null
+             group by fe.utmSource
+            """)
+    List<Object[]> countVisitsBySourceForOrg(@Param("orgId") UUID orgId);
+
+    /**
+     * Untagged (no {@code utm_source}) visits grouped by referrer host across an
+     * org's active events. Tuple shape:
+     * {@code [String referrerHost (nullable), Long visits]}. Ordered by visit
+     * count desc so the caller can take the top N.
+     */
+    @Query("""
+            select fe.referrerHost, count(fe) from FunnelEvent fe, Event ev
+             where fe.eventId = ev.id
+               and ev.orgId = :orgId
+               and ev.deletedAt is null
+               and fe.utmSource is null
+             group by fe.referrerHost
+             order by count(fe) desc
+            """)
+    List<Object[]> countUntaggedByReferrerHostForOrg(@Param("orgId") UUID orgId);
 }

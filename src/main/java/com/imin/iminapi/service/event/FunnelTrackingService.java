@@ -44,6 +44,20 @@ public class FunnelTrackingService {
         row.setStage(req.stage());
         String anon = req.anonId().trim();
         row.setAnonId(anon.substring(0, Math.min(64, anon.length())));
+        // UTM attribution tags (V43) — all optional, best-effort, capped to column width.
+        row.setUtmSource(cap(req.utmSource(), 128));
+        row.setUtmMedium(cap(req.utmMedium(), 128));
+        row.setUtmCampaign(cap(req.utmCampaign(), 128));
+        row.setUtmContent(cap(req.utmContent(), 128));
+        row.setReferrerHost(cap(req.referrerHost(), 255));
         funnel.save(row);
+    }
+
+    /** Trim, null-out blanks, and cap to the column width. */
+    private static String cap(String v, int max) {
+        if (v == null) return null;
+        String t = v.trim();
+        if (t.isEmpty()) return null;
+        return t.length() <= max ? t : t.substring(0, max);
     }
 }

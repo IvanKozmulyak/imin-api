@@ -79,6 +79,13 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
                                                    @Param("until") Instant until);
 
     /**
+     * Total gross revenue (sum of order totals, minor units) across all of an
+     * org's orders. Used as the attribution pool that UTM channels divide up.
+     */
+    @Query("select coalesce(sum(o.totalMinor), 0) from Order o where o.orgId = :orgId")
+    long sumTotalMinorByOrgId(@Param("orgId") UUID orgId);
+
+    /**
      * Distinct (lowercased) buyer emails with their order-count for an org since
      * a cutoff. Lets us compute repeat-rate in Java without a window function.
      */
