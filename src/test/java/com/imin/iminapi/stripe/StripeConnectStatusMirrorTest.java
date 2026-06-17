@@ -1,12 +1,26 @@
 package com.imin.iminapi.stripe;
 
 import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.repository.OrganizationRepository;
+import com.stripe.StripeClient;
+import com.stripe.exception.ApiException;
 import com.stripe.model.v2.core.Account;
+import com.stripe.param.v2.core.AccountRetrieveParams;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Mockito;
 
 import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class StripeConnectStatusMirrorTest {
 
@@ -111,6 +125,81 @@ class StripeConnectStatusMirrorTest {
 
         assertThat(org.isStripeDetailsSubmitted()).isTrue();
         assertThat(org.getStripeConnectState()).isEqualTo(StripeConnectState.RESTRICTED);
+    }
+
+    // ── syncFromStripe wiring: the ensureManual (Track B Phase 1) hook ──────────────
+    // The mirror flips the account to a MANUAL payout schedule exactly on the
+    // ACTIVE + payoutsEnabled transition, and a Stripe failure there must never disturb
+    // the just-persisted mirror projection (ensureManual runs in its own REQUIRES_NEW tx
+    // and swallows StripeException). These wire the live syncFromStripe path with the
+    // collaborators mocked.
+
+    @Test
+    void syncFromStripe_invokes_ensureManual_on_active_payouts_enabled_transition() throws Exception {
+        StripeClient stripe = mock(StripeClient.class, Mockito.RETURNS_DEEP_STUBS);
+        OrganizationRepository orgs = mock(OrganizationRepository.class);
+        StripePayoutScheduleService schedule = mock(StripePayoutScheduleService.class);
+
+        Organization org = newOrg();   // starts not-yet-manual (flag false)
+        when(orgs.findByStripeAccountId("acct_active")).thenReturn(Optional.of(org));
+        when(stripe.v2().core().accounts().retrieve(eq("acct_active"), any(AccountRetrieveParams.class)))
+                .thenReturn(StripeFixtures.accountActive("acct_active"));
+
+        new StripeConnectStatusMirror(stripe, orgs, schedule).syncFromStripe("acct_active");
+
+        // Mirror projection landed ACTIVE + payouts enabled...
+        ArgumentCaptor<Organization> saved = ArgumentCaptor.forClass(Organization.class);
+        verify(orgs).save(saved.capture());
+        assertThat(saved.getValue().getStripeConnectState()).isEqualTo(StripeConnectState.ACTIVE);
+        assertThat(saved.getValue().isStripePayoutsEnabled()).isTrue();
+        // ...and the manual-schedule flip fired for THIS org.
+        verify(schedule).ensureManual(org);
+    }
+
+    @Test
+    void syncFromStripe_does_not_invoke_ensureManual_when_payouts_not_enabled() throws Exception {
+        StripeClient stripe = mock(StripeClient.class, Mockito.RETURNS_DEEP_STUBS);
+        OrganizationRepository orgs = mock(OrganizationRepository.class);
+        StripePayoutScheduleService schedule = mock(StripePayoutScheduleService.class);
+
+        Organization org = newOrg();
+        when(orgs.findByStripeAccountId("acct_onb")).thenReturn(Optional.of(org));
+        when(stripe.v2().core().accounts().retrieve(eq("acct_onb"), any(AccountRetrieveParams.class)))
+                .thenReturn(StripeFixtures.accountOnboarding("acct_onb", List.of("individual.first_name")));
+
+        new StripeConnectStatusMirror(stripe, orgs, schedule).syncFromStripe("acct_onb");
+
+        verify(orgs).save(any());
+        assertThat(org.isStripePayoutsEnabled()).isFalse();
+        verify(schedule, never()).ensureManual(any());
+    }
+
+    @Test
+    void syncFromStripe_persists_mirror_even_if_ensureManual_throws() throws Exception {
+        StripeClient stripe = mock(StripeClient.class, Mockito.RETURNS_DEEP_STUBS);
+        OrganizationRepository orgs = mock(OrganizationRepository.class);
+        StripePayoutScheduleService schedule = mock(StripePayoutScheduleService.class);
+
+        Organization org = newOrg();
+        when(orgs.findByStripeAccountId("acct_active2")).thenReturn(Optional.of(org));
+        when(stripe.v2().core().accounts().retrieve(eq("acct_active2"), any(AccountRetrieveParams.class)))
+                .thenReturn(StripeFixtures.accountActive("acct_active2"));
+        // In prod ensureManual swallows StripeException internally; even if it somehow
+        // surfaced a RuntimeException, the mirror projection (already saved above) stands.
+        Mockito.doThrow(new RuntimeException("stripe down", new ApiException("boom", "req", "api_error", 500, null)))
+                .when(schedule).ensureManual(any());
+
+        try {
+            new StripeConnectStatusMirror(stripe, orgs, schedule).syncFromStripe("acct_active2");
+        } catch (RuntimeException ignored) {
+            // a surfaced failure from the hook must not have prevented the mirror save
+        }
+
+        ArgumentCaptor<Organization> saved = ArgumentCaptor.forClass(Organization.class);
+        verify(orgs).save(saved.capture());
+        assertThat(saved.getValue().getStripeConnectState()).isEqualTo(StripeConnectState.ACTIVE);
+        assertThat(saved.getValue().isStripePayoutsEnabled()).isTrue();
+        assertThat(saved.getValue().isStripeDetailsSubmitted()).isTrue();
     }
 
     private static Organization newOrg() {

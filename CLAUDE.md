@@ -127,6 +127,11 @@ V1 and V2 events ship in structurally different JSON payloads (Stripe's dashboar
    - `checkout.session.expired` — release the inventory hold when the buyer abandons the 30-minute session
    - `refund.updated` **and** `refund.failed` — refund status transitions (pending → succeeded/failed) for **all** refund types. These are the unified events (Acacia 2024-10-28); subscribe to both.
    - `charge.refund.updated` — legacy alias kept for "selected payment methods"; handled too (deduped). Subscribe alongside the `refund.*` events, do not rely on it alone.
+   - **Track A settlements read-model ingestion** (these mirror Stripe payout/transfer state into the `settlements` table — they move NO money; fulfilment + refund money flow stays on the events above). Enable **"Listen to events on Connected accounts"** for this endpoint in the Dashboard, otherwise the connected-account `transfer.*`/`payout.*` events never reach the platform endpoint:
+     - `transfer.created`, `transfer.reversed` — destination-charge transfers to the org's connected account (org resolved from `transfer.destination` / the event's `account`).
+     - `payout.created`, `payout.paid`, `payout.failed` — connected-account payouts (org resolved from the event's connected `account` — payouts batch many transfers and carry no destination-org field).
+     - `charge.refunded` — refund clawback mirrored onto the backing destination-charge transfer's settlement row.
+     - `charge.dispute.created`, `charge.dispute.closed`, `charge.dispute.funds_withdrawn`, `charge.dispute.funds_reinstated` — dispute lifecycle annotated onto the read-model (won/reinstated ⇒ settled, else funds-at-risk).
    - Do NOT subscribe to `checkout.session.completed`; fulfilment is driven by `payment_intent.succeeded` because the PI is what proves money moved. The handler intentionally no-ops on `completed`.
 
 2. **`POST /api/v1/stripe/webhook/v2`** — secret env `STRIPE_WEBHOOK_SECRET_V2`. Subscribe to (Stripe uses **bracket notation** in `event.type` — the literal strings below):

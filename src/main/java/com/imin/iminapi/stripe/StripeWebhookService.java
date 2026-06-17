@@ -37,7 +37,12 @@ import java.util.UUID;
  *   <li>{@link #handleV1Endpoint} — entry for {@code /api/v1/stripe/webhook/v1}.
  *       Parses V1 payloads via {@link Webhook#constructEvent} using
  *       {@code STRIPE_WEBHOOK_SECRET_V1}. Subscribes to {@code payment_intent.succeeded},
- *       {@code payment_intent.payment_failed}, {@code checkout.session.expired}.</li>
+ *       {@code payment_intent.payment_failed}, {@code checkout.session.expired},
+ *       {@code refund.updated}, {@code refund.failed}, {@code charge.refund.updated}, and the
+ *       Track A settlements-ingestion events {@code transfer.created}, {@code transfer.reversed},
+ *       {@code payout.created}, {@code payout.paid}, {@code payout.failed}, {@code charge.refunded},
+ *       and the {@code charge.dispute.*} family ({@code created}, {@code closed},
+ *       {@code funds_withdrawn}, {@code funds_reinstated}).</li>
  *   <li>{@link #handleV2Endpoint} — entry for {@code /api/v1/stripe/webhook/v2}.
  *       Parses V2 thin events via {@link StripeClient#parseEventNotification} using
  *       {@code STRIPE_WEBHOOK_SECRET_V2}. Subscribes to the bracket-notation account events
@@ -71,6 +76,7 @@ public class StripeWebhookService {
     private final WebhookEventDedupService dedup;
     private final PaidCheckoutService paidCheckoutService;
     private final RefundService refundService;
+    private final SettlementIngestService settlementIngest;
 
     /**
      * Proxied self-reference so {@link #handleV1Endpoint} can invoke
@@ -100,7 +106,8 @@ public class StripeWebhookService {
                                 InventoryService inventoryService,
                                 WebhookEventDedupService dedup,
                                 PaidCheckoutService paidCheckoutService,
-                                RefundService refundService) {
+                                RefundService refundService,
+                                SettlementIngestService settlementIngest) {
         this.stripeClient = stripeClient;
         this.props = props;
         this.promos = promos;
@@ -108,6 +115,7 @@ public class StripeWebhookService {
         this.dedup = dedup;
         this.paidCheckoutService = paidCheckoutService;
         this.refundService = refundService;
+        this.settlementIngest = settlementIngest;
     }
 
     @Autowired
@@ -189,6 +197,31 @@ public class StripeWebhookService {
             case "charge.refund.updated", "refund.updated", "refund.failed" -> {
                 log.info("[stripe-webhook] v1 dispatch → {} eventId={}", type, eventId);
                 onChargeRefundUpdated(event);
+            }
+            // ── Track A settlements read-model ingestion ──
+            // transfer.* / payout.* / charge.refunded / charge.dispute.* mirror Stripe's payout
+            // state into the `settlements` read-model so the /payouts endpoints can be served from
+            // our DB. These move NO money — fulfilment + refund money flow stays on the cases above.
+            case "transfer.created" -> {
+                log.info("[stripe-webhook] v1 dispatch → transfer.created eventId={}", eventId);
+                onTransfer(event, false);
+            }
+            case "transfer.reversed" -> {
+                log.info("[stripe-webhook] v1 dispatch → transfer.reversed eventId={}", eventId);
+                onTransfer(event, true);
+            }
+            case "payout.created", "payout.paid", "payout.failed" -> {
+                log.info("[stripe-webhook] v1 dispatch → {} eventId={}", type, eventId);
+                onPayout(event);
+            }
+            case "charge.refunded" -> {
+                log.info("[stripe-webhook] v1 dispatch → charge.refunded eventId={}", eventId);
+                onChargeRefunded(event);
+            }
+            case "charge.dispute.created", "charge.dispute.closed",
+                 "charge.dispute.funds_withdrawn", "charge.dispute.funds_reinstated" -> {
+                log.info("[stripe-webhook] v1 dispatch → {} eventId={}", type, eventId);
+                onDispute(event, type);
             }
             // checkout.session.completed is intentionally a no-op. Fulfilment moved
             // to payment_intent.succeeded because PI is what tells us the money
@@ -453,6 +486,113 @@ public class StripeWebhookService {
             newStatus,
             stripeRefund.getFailureReason(),
             stripeRefund.getFailureReason());   // Stripe Refund only exposes failure_reason
+    }
+
+    // ── Track A settlements ingestion handlers ──────────────────────────────────
+
+    /**
+     * Handle {@code transfer.created} / {@code transfer.reversed}: mirror the Stripe
+     * {@link com.stripe.model.Transfer} into the settlements read-model. Org is the transfer
+     * destination ({@code acct_...}); {@code event.getAccount()} is passed as the fallback for
+     * connected-account-scoped deliveries. Delegates to {@link SettlementIngestService}, which
+     * runs in this same transaction and upserts idempotently on the transfer id.
+     */
+    private void onTransfer(com.stripe.model.Event event, boolean reversed) {
+        com.stripe.model.Transfer transfer = extractTransfer(event,
+                reversed ? "transfer.reversed" : "transfer.created");
+        if (transfer == null) return;
+        settlementIngest.ingestTransfer(transfer, event.getAccount(), reversed);
+    }
+
+    /**
+     * Handle {@code payout.created} / {@code payout.paid} / {@code payout.failed}: mirror the
+     * Stripe {@link com.stripe.model.Payout} into the settlements read-model. Payouts settle ON
+     * the connected account, so the org is resolved from {@code event.getAccount()} — the payout
+     * itself carries no destination-org field.
+     */
+    private void onPayout(com.stripe.model.Event event) {
+        com.stripe.model.Payout payout = extractPayout(event, "payout.*");
+        if (payout == null) return;
+        settlementIngest.ingestPayout(payout, event.getAccount());
+    }
+
+    /**
+     * Handle {@code charge.refunded}: a refund clawed back funds that backed a destination-charge
+     * transfer. Mirror the reversal onto the backing transfer's settlement row so the read-model
+     * reflects it. Partial refunds fire this repeatedly; the upsert converges on one row.
+     */
+    private void onChargeRefunded(com.stripe.model.Event event) {
+        com.stripe.model.Charge charge = extractCharge(event, "charge.refunded");
+        if (charge == null) return;
+        settlementIngest.ingestChargeRefunded(charge, event.getAccount());
+    }
+
+    /**
+     * Handle the {@code charge.dispute.*} family: a dispute puts settled funds at risk (or
+     * reinstates them). Annotate the settlements read-model with the disputed amount + status.
+     * All four event types deliver a {@link com.stripe.model.Dispute} as {@code data.object}; the
+     * {@code eventType} string drives the won/lost/withdrawn/reinstated branch in the ingest service.
+     */
+    private void onDispute(com.stripe.model.Event event, String eventType) {
+        com.stripe.model.Dispute dispute = extractDispute(event, eventType);
+        if (dispute == null) return;
+        settlementIngest.ingestDispute(dispute, event.getAccount(), eventType);
+    }
+
+    private com.stripe.model.Transfer extractTransfer(com.stripe.model.Event event, String label) {
+        EventDataObjectDeserializer dod = event.getDataObjectDeserializer();
+        Optional<StripeObject> obj = dod.getObject();
+        if (obj.isEmpty()) {
+            log.warn("{} had no deserialized object — apiVersion={}", label, event.getApiVersion());
+            return null;
+        }
+        if (!(obj.get() instanceof com.stripe.model.Transfer transfer)) {
+            log.warn("{} deserialized to unexpected type: {}", label, obj.get().getClass().getName());
+            return null;
+        }
+        return transfer;
+    }
+
+    private com.stripe.model.Payout extractPayout(com.stripe.model.Event event, String label) {
+        EventDataObjectDeserializer dod = event.getDataObjectDeserializer();
+        Optional<StripeObject> obj = dod.getObject();
+        if (obj.isEmpty()) {
+            log.warn("{} had no deserialized object — apiVersion={}", label, event.getApiVersion());
+            return null;
+        }
+        if (!(obj.get() instanceof com.stripe.model.Payout payout)) {
+            log.warn("{} deserialized to unexpected type: {}", label, obj.get().getClass().getName());
+            return null;
+        }
+        return payout;
+    }
+
+    private com.stripe.model.Charge extractCharge(com.stripe.model.Event event, String label) {
+        EventDataObjectDeserializer dod = event.getDataObjectDeserializer();
+        Optional<StripeObject> obj = dod.getObject();
+        if (obj.isEmpty()) {
+            log.warn("{} had no deserialized object — apiVersion={}", label, event.getApiVersion());
+            return null;
+        }
+        if (!(obj.get() instanceof com.stripe.model.Charge charge)) {
+            log.warn("{} deserialized to unexpected type: {}", label, obj.get().getClass().getName());
+            return null;
+        }
+        return charge;
+    }
+
+    private com.stripe.model.Dispute extractDispute(com.stripe.model.Event event, String label) {
+        EventDataObjectDeserializer dod = event.getDataObjectDeserializer();
+        Optional<StripeObject> obj = dod.getObject();
+        if (obj.isEmpty()) {
+            log.warn("{} had no deserialized object — apiVersion={}", label, event.getApiVersion());
+            return null;
+        }
+        if (!(obj.get() instanceof com.stripe.model.Dispute dispute)) {
+            log.warn("{} deserialized to unexpected type: {}", label, obj.get().getClass().getName());
+            return null;
+        }
+        return dispute;
     }
 
     private PaymentIntent extractPaymentIntent(com.stripe.model.Event event, String label) {

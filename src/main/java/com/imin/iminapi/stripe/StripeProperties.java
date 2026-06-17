@@ -31,6 +31,17 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *       stays valid; mirrored into the TicketReservation.expires_at so the
  *       sweeper releases stale holds even if the session.expired webhook misses.
  *       Default 30 (Stripe's hard minimum).</li>
+ *   <li>{@code payout-schedule-manual} — STRIPE_PAYOUT_SCHEDULE_MANUAL. Master
+ *       kill-switch for Track B manual payouts (Phase 1/2). Default {@code false}:
+ *       when false NOTHING flips an account schedule and no payout is ever created
+ *       (the code is inert on deploy). Only enabled in prod AFTER the test-mode
+ *       spike passes.</li>
+ *   <li>{@code payout-buffer-days} — STRIPE_PAYOUT_BUFFER_DAYS. Days after
+ *       {@code event.endsAt} before the post-event payout job fires. Default 3
+ *       (covers most EU card availability lag).</li>
+ *   <li>{@code payout-zone} — STRIPE_PAYOUT_ZONE. Timezone for resolving the
+ *       payout buffer deadline (the business deadline, not the event's local
+ *       zone). Default {@code Europe/Amsterdam}.</li>
  * </ul>
  */
 @ConfigurationProperties(prefix = "imin.stripe")
@@ -44,6 +55,11 @@ public class StripeProperties {
     private String publicReturnUrlBase = "http://localhost:3000";
     private String returnUrlBase = "http://localhost:5173";
     private int checkoutSessionTtlMinutes = 30;
+
+    // ----- Track B manual payouts (Phase 1/2). DEFAULT FALSE => inert on deploy. -----
+    private boolean payoutScheduleManual = false;
+    private int payoutBufferDays = 3;
+    private String payoutZone = "Europe/Amsterdam";
 
     public String getSecretKey() { return secretKey; }
     public void setSecretKey(String secretKey) { this.secretKey = secretKey; }
@@ -72,4 +88,15 @@ public class StripeProperties {
     public void setCheckoutSessionTtlMinutes(int checkoutSessionTtlMinutes) {
         this.checkoutSessionTtlMinutes = checkoutSessionTtlMinutes;
     }
+
+    public boolean isPayoutScheduleManual() { return payoutScheduleManual; }
+    public void setPayoutScheduleManual(boolean payoutScheduleManual) {
+        this.payoutScheduleManual = payoutScheduleManual;
+    }
+
+    public int getPayoutBufferDays() { return payoutBufferDays; }
+    public void setPayoutBufferDays(int payoutBufferDays) { this.payoutBufferDays = payoutBufferDays; }
+
+    public String getPayoutZone() { return payoutZone; }
+    public void setPayoutZone(String payoutZone) { this.payoutZone = payoutZone; }
 }

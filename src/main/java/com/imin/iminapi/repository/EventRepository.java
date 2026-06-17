@@ -179,4 +179,110 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
          ORDER BY e.genre ASC
 """)
     List<String> findDistinctPublicGenres();
+
+    /**
+     * Track B (manual payouts) Phase 2 — candidate events for the daily
+     * {@code PostEventPayoutSweeper}. An event is due for a payout when:
+     * <ul>
+     *   <li>it has an {@code endsAt} that is more than the buffer in the past
+     *       ({@code endsAt < :cutoff}, where {@code cutoff = now − bufferDays}
+     *       resolved by the caller in the configured payout zone) — open-ended
+     *       events ({@code endsAt IS NULL}) never become candidates;</li>
+     *   <li>its org is payout-eligible: there is an {@code Organization} matched
+     *       by {@code e.orgId} with {@code stripePayoutsEnabled = true},
+     *       {@code stripePayoutScheduleManual = true} (the V44 column — the
+     *       auditable guarantee the account is on a MANUAL schedule), a
+     *       non-blank {@code stripeAccountId}, and {@code stripeConnectState =
+     *       ACTIVE} (so a just-disabled account is excluded);</li>
+     *   <li>there is no {@code PLANNED}/{@code SUBMITTED}/{@code PAID} payout run
+     *       for THIS event (per-event existence guard); and</li>
+     *   <li><b>(double-pay HARD RULE, §4.0)</b> there is no in-flight
+     *       ({@code PLANNED}/{@code SUBMITTED}) payout run for the SAME
+     *       {@code stripe_account_id} — a connected balance is one shared pool, so
+     *       at most one in-flight payout per org per tick.</li>
+     * </ul>
+     *
+     * <p>{@code Organization} has no JPA back-reference from {@code Event}, so the
+     * org join is expressed as a correlated {@code EXISTS} subquery on
+     * {@code e.orgId}; the two payout-run guards are correlated {@code NOT EXISTS}
+     * subqueries against the {@link com.imin.iminapi.payout.PayoutRun} entity. This
+     * candidate query is a coarse filter — the authoritative double-pay guard is
+     * re-checked INSIDE the per-event {@code REQUIRES_NEW} transaction (see
+     * {@code PostEventPayoutService}). Status literals are bound lowercase because
+     * {@code PayoutRunStatus} persists via its converter.
+     *
+     * @param cutoff {@code now − bufferDays} resolved in the payout zone; an event
+     *               qualifies only when {@code endsAt < cutoff}.
+     */
+    @Query("""
+        SELECT e FROM Event e
+         WHERE e.deletedAt IS NULL
+           AND e.endsAt IS NOT NULL
+           AND e.endsAt < :cutoff
+           AND EXISTS (
+                 SELECT 1 FROM Organization o
+                  WHERE o.id = e.orgId
+                    AND o.stripePayoutsEnabled = true
+                    AND o.stripePayoutScheduleManual = true
+                    AND o.stripeConnectState = com.imin.iminapi.stripe.StripeConnectState.ACTIVE
+                    AND o.stripeAccountId IS NOT NULL
+                    AND o.stripeAccountId <> ''
+                    AND NOT EXISTS (
+                          SELECT 1 FROM PayoutRun r2
+                           WHERE r2.stripeAccountId = o.stripeAccountId
+                             AND r2.status IN (com.imin.iminapi.payout.PayoutRunStatus.PLANNED,
+                                               com.imin.iminapi.payout.PayoutRunStatus.SUBMITTED))
+               )
+           AND NOT EXISTS (
+                 SELECT 1 FROM PayoutRun r1
+                  WHERE r1.eventId = e.id
+                    AND r1.status IN (com.imin.iminapi.payout.PayoutRunStatus.PLANNED,
+                                      com.imin.iminapi.payout.PayoutRunStatus.SUBMITTED,
+                                      com.imin.iminapi.payout.PayoutRunStatus.PAID))
+         ORDER BY e.endsAt ASC
+""")
+    List<Event> findPayoutCandidates(@Param("cutoff") Instant cutoff, Pageable pageable);
+
+    /**
+     * Track B Phase 2 retention monitor (plan §7) — events that ENDED before
+     * {@code retentionCutoff} (e.g. {@code now − 75 days}, a ~15-day margin under the
+     * common 90-day Stripe retention window) and still carry sold revenue
+     * ({@code revenueMinor > 0}) for a manual-schedule, payout-eligible
+     * {@code ACTIVE} org. These are orgs that may be holding un-disbursed funds past
+     * the safe bound — the monitor cross-checks each against a PAID payout run and
+     * alerts on the stragglers so ops can force a payout before Stripe's deadline.
+     *
+     * <p>Same org-eligibility join as {@link #findPayoutCandidates}, with a
+     * far older cutoff and a NOT EXISTS guard against an already-PAID payout run for the
+     * event (an event we've already disbursed is not a straggler).
+     *
+     * <p>// ponytail: {@code revenue_minor} is a denormalised, COARSE prefilter — it
+     * stays positive after a full refund, so it over-selects. It is only here to cheaply
+     * drop never-sold events; the payout job computes the authoritative net
+     * ({@code gross − refunds − net app fee}) and skips when that is {@code <= 0}. This
+     * monitor stays an APPROXIMATE alert by design — do not over-engineer the net into the
+     * query. The PAID-run NOT EXISTS removes the common false positive (already disbursed).
+     */
+    @Query("""
+        SELECT e FROM Event e
+         WHERE e.deletedAt IS NULL
+           AND e.endsAt IS NOT NULL
+           AND e.endsAt < :retentionCutoff
+           AND e.revenueMinor > 0
+           AND EXISTS (
+                 SELECT 1 FROM Organization o
+                  WHERE o.id = e.orgId
+                    AND o.stripePayoutsEnabled = true
+                    AND o.stripePayoutScheduleManual = true
+                    AND o.stripeConnectState = com.imin.iminapi.stripe.StripeConnectState.ACTIVE
+                    AND o.stripeAccountId IS NOT NULL
+                    AND o.stripeAccountId <> ''
+               )
+           AND NOT EXISTS (
+                 SELECT 1 FROM PayoutRun r
+                  WHERE r.eventId = e.id
+                    AND r.status = com.imin.iminapi.payout.PayoutRunStatus.PAID)
+         ORDER BY e.endsAt ASC
+""")
+    List<Event> findRetentionMonitorCandidates(@Param("retentionCutoff") Instant retentionCutoff, Pageable pageable);
 }

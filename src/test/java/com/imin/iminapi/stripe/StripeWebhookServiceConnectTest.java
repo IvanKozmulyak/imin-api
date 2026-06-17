@@ -121,7 +121,8 @@ class StripeWebhookServiceConnectTest {
                 mock(com.imin.iminapi.service.event.InventoryService.class),
                 mock(WebhookEventDedupService.class),
                 mock(com.imin.iminapi.service.ticket.PaidCheckoutService.class),
-                mock(com.imin.iminapi.refund.RefundService.class));
+                mock(com.imin.iminapi.refund.RefundService.class),
+                mock(SettlementIngestService.class));
         svc.setConnectMirror(mirror);
         return svc;
     }

@@ -77,6 +77,18 @@ public class Organization {
     @Column(name = "stripe_payouts_enabled", nullable = false)
     private boolean stripePayoutsEnabled = false;
 
+    /**
+     * Track B (manual payouts): true once the connected account's Stripe payout
+     * schedule has been flipped to MANUAL via the account-scoped Balance Settings
+     * API (V44 column). Written true ONLY on a successful Stripe update
+     * ({@code StripePayoutScheduleService.ensureManual}) — never on failure — so a
+     * failed flip is retried by the backfill / next ACTIVE transition. Gates both
+     * the onboarding hook and the backfill sweeper, and is the auditable guarantee
+     * the Phase 2 payout job trusts before moving money.
+     */
+    @Column(name = "stripe_payout_schedule_manual", nullable = false)
+    private boolean stripePayoutScheduleManual = false;
+
     @Column(name = "stripe_details_submitted", nullable = false)
     private boolean stripeDetailsSubmitted = false;
 

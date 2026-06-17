@@ -44,6 +44,7 @@ class StripeWebhookServiceTest {
     private WebhookEventDedupService dedup;
     private PaidCheckoutService paidCheckoutService;
     private com.imin.iminapi.refund.RefundService refundService;
+    private SettlementIngestService settlementIngest;
     private StripeWebhookService svc;
 
     /**
@@ -62,6 +63,7 @@ class StripeWebhookServiceTest {
         dedup = mock(WebhookEventDedupService.class);
         paidCheckoutService = mock(PaidCheckoutService.class);
         refundService = mock(com.imin.iminapi.refund.RefundService.class);
+        settlementIngest = mock(SettlementIngestService.class);
 
         // Default: issuance succeeds (first-time). Promo increment is now gated on this returning
         // true (so a duplicate delivery can't double-count); the "never increments" cases below
@@ -77,7 +79,7 @@ class StripeWebhookServiceTest {
         props = new StripeProperties();
         props.setWebhookSecretV1(SECRET);
         svc = new StripeWebhookService(stripeClient, props, promos, inventoryService, dedup,
-                paidCheckoutService, refundService);
+                paidCheckoutService, refundService, settlementIngest);
     }
 
     // ── helpers ────────────────────────────────────────────────────────────────

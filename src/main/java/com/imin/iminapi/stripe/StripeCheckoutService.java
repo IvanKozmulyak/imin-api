@@ -306,6 +306,12 @@ public class StripeCheckoutService {
                         .setTransferData(SessionCreateParams.PaymentIntentData.TransferData.builder()
                                 .setDestination(org.getStripeAccountId())
                                 .build())
+                        // Track B (Phase 3): group all PaymentIntents for this event under
+                        // transfer_group=<eventId> for reconciliation / future per-event
+                        // transfer queries. Additive only — destination/application_fee are
+                        // unchanged, and on_behalf_of is intentionally NOT set (recipient
+                        // accounts lack the card_payments capability it requires).
+                        .setTransferGroup(eventId.toString())
                         .putAllMetadata(metadata)
                         .build())
                 .setExpiresAt(expiresAtEpoch)

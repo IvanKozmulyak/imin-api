@@ -156,6 +156,16 @@ imin:
     # (anything shorter is rejected). Mirrored into TicketReservation.expires_at
     # so the ReservationSweeper releases stale holds even when webhooks miss.
     checkout-session-ttl-minutes: ${STRIPE_CHECKOUT_SESSION_TTL_MINUTES:30}
+    # Master kill-switch for Track-B manual payouts (Phase 1/2). DEFAULT FALSE:
+    # when false NOTHING flips an account schedule and no payout is ever created
+    # (code inert on deploy). Only enable in prod AFTER the test-mode spike passes.
+    payout-schedule-manual: ${STRIPE_PAYOUT_SCHEDULE_MANUAL:false}
+    # Days after event.endsAt before the post-event payout job fires (EU card
+    # availability lag). Default 3.
+    payout-buffer-days: ${STRIPE_PAYOUT_BUFFER_DAYS:3}
+    # Timezone for resolving the payout buffer deadline (the business deadline,
+    # not the event's local zone). Default Europe/Amsterdam.
+    payout-zone: ${STRIPE_PAYOUT_ZONE:Europe/Amsterdam}
   email:
     api-key: ${RESEND_API_KEY:}
     from-address: ${IMIN_EMAIL_FROM_ADDRESS:noreply@imin.local}

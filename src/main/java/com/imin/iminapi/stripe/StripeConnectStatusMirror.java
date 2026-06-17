@@ -36,10 +36,14 @@ public class StripeConnectStatusMirror {
 
     private final StripeClient stripeClient;
     private final OrganizationRepository orgs;
+    private final StripePayoutScheduleService payoutScheduleService;
 
-    public StripeConnectStatusMirror(StripeClient stripeClient, OrganizationRepository orgs) {
+    public StripeConnectStatusMirror(StripeClient stripeClient,
+                                     OrganizationRepository orgs,
+                                     StripePayoutScheduleService payoutScheduleService) {
         this.stripeClient = stripeClient;
         this.orgs = orgs;
+        this.payoutScheduleService = payoutScheduleService;
     }
 
     /** Webhook + lazy-backfill entry. Looks up org by stripeAccountId, fetches, persists. */
@@ -66,6 +70,15 @@ public class StripeConnectStatusMirror {
 
         applyTo(org, account);
         orgs.save(org);
+        // Track B Phase 1: the moment payouts go active, flip the account to a manual
+        // payout schedule (idempotent; inert when the kill-switch is off). ensureManual
+        // runs in its own REQUIRES_NEW tx, so a Stripe failure there cannot roll back the
+        // mirror projection just saved above. Stays out of the static applyTo(...) — that
+        // is a pure, Stripe-free projection. Fires once on the ACTIVE transition on both
+        // the webhook fast path and the StripeConnectStatusSweeper backstop.
+        if (org.isStripePayoutsEnabled() && !org.isStripePayoutScheduleManual()) {
+            payoutScheduleService.ensureManual(org);
+        }
         log.info("[stripe-mirror] persisted state={} payouts={} currentlyDue={} for {}",
                 org.getStripeConnectState(), org.isStripePayoutsEnabled(),
                 org.getStripeRequirementsCurrentlyDue().size(), stripeAccountId);

@@ -20,7 +20,12 @@ import org.springframework.web.bind.annotation.RestController;
  *       envelope with the full object embedded in {@code data.object}. Routed to
  *       {@link #receiveV1(HttpEntity)} at {@code /api/v1/stripe/webhook/v1}.
  *       Subscribe this endpoint to: {@code payment_intent.succeeded},
- *       {@code payment_intent.payment_failed}, {@code checkout.session.expired}.</li>
+ *       {@code payment_intent.payment_failed}, {@code checkout.session.expired},
+ *       {@code refund.updated}, {@code refund.failed}, {@code charge.refund.updated}, and the
+ *       Track A settlements events {@code transfer.created}, {@code transfer.reversed},
+ *       {@code payout.created}, {@code payout.paid}, {@code payout.failed}, {@code charge.refunded},
+ *       {@code charge.dispute.created}, {@code charge.dispute.closed},
+ *       {@code charge.dispute.funds_withdrawn}, {@code charge.dispute.funds_reinstated}.</li>
  *   <li><b>V2 thin events</b> — the new {@code object = "v2.core.event"} envelope
  *       that carries only the event id; the handler fetches the full payload via
  *       the v2 API. Routed to {@link #receiveV2(HttpEntity)} at
