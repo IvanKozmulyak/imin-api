@@ -50,6 +50,7 @@ public class StripeProperties {
     private String secretKey;
     private String webhookSecretV1;
     private String webhookSecretV2;
+    private String webhookSecretConnect;
     private int applicationFeeBps = 500;
     private int applicationFeeFixedMinor = 99;
     private String publicReturnUrlBase = "http://localhost:3000";
@@ -69,6 +70,17 @@ public class StripeProperties {
 
     public String getWebhookSecretV2() { return webhookSecretV2; }
     public void setWebhookSecretV2(String webhookSecretV2) { this.webhookSecretV2 = webhookSecretV2; }
+
+    /**
+     * {@code webhook-secret-connect} — STRIPE_WEBHOOK_SECRET_CONNECT (whsec_…). Signing
+     * secret for the SECOND Dashboard endpoint on the same {@code /webhook/v1} URL, scoped
+     * to "Connected accounts" (delivers {@code payout.*}, which fire on the connected
+     * account). The V1 handler verifies against this secret as a fallback after
+     * {@code webhook-secret-v1}. OPTIONAL — when blank, V1 verification is single-secret
+     * (unchanged) and {@code payout.*} reconciliation stays dark until it's set.
+     */
+    public String getWebhookSecretConnect() { return webhookSecretConnect; }
+    public void setWebhookSecretConnect(String webhookSecretConnect) { this.webhookSecretConnect = webhookSecretConnect; }
 
     public int getApplicationFeeBps() { return applicationFeeBps; }
     public void setApplicationFeeBps(int applicationFeeBps) { this.applicationFeeBps = applicationFeeBps; }

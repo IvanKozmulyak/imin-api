@@ -98,7 +98,8 @@ Per-org Stripe v2 connected accounts (one acct_... per `Organization`). Tickets 
 
 Required env vars:
 - `STRIPE_SECRET_KEY` — sk_test_... locally, sk_live_... in prod. App fails to start if missing.
-- `STRIPE_WEBHOOK_SECRET_V1` — whsec_... for the V1 payments webhook endpoint (`/api/v1/stripe/webhook/v1`).
+- `STRIPE_WEBHOOK_SECRET_V1` — whsec_... for the V1 payments webhook endpoint (`/api/v1/stripe/webhook/v1`, "Your account" scope).
+- `STRIPE_WEBHOOK_SECRET_CONNECT` — whsec_... for a second, "Connected accounts"-scoped endpoint on the SAME `/api/v1/stripe/webhook/v1` URL (delivers `payout.*`). Optional; the V1 handler tries it as a fallback secret. Blank ⇒ `payout.*` reconciliation is dark.
 - `STRIPE_WEBHOOK_SECRET_V2` — whsec_... for the V2 thin-events webhook endpoint (`/api/v1/stripe/webhook/v2`).
 - Optional: `STRIPE_APPLICATION_FEE_BPS` (default 500 = 5%), `STRIPE_PUBLIC_RETURN_URL_BASE` (default `http://localhost:3000`), `STRIPE_RETURN_URL_BASE` (default `http://localhost:5173`), `STRIPE_CHECKOUT_SESSION_TTL_MINUTES` (default 30, Stripe's documented minimum).
 
@@ -127,11 +128,11 @@ V1 and V2 events ship in structurally different JSON payloads (Stripe's dashboar
    - `checkout.session.expired` — release the inventory hold when the buyer abandons the 30-minute session
    - `refund.updated` **and** `refund.failed` — refund status transitions (pending → succeeded/failed) for **all** refund types. These are the unified events (Acacia 2024-10-28); subscribe to both.
    - `charge.refund.updated` — legacy alias kept for "selected payment methods"; handled too (deduped). Subscribe alongside the `refund.*` events, do not rely on it alone.
-   - **Track A settlements read-model ingestion** (these mirror Stripe payout/transfer state into the `settlements` table — they move NO money; fulfilment + refund money flow stays on the events above). Enable **"Listen to events on Connected accounts"** for this endpoint in the Dashboard, otherwise the connected-account `transfer.*`/`payout.*` events never reach the platform endpoint:
+   - **Track A settlements read-model ingestion** (these mirror Stripe payout/transfer state into the `settlements` table — they move NO money; fulfilment + refund money flow stays on the events above). These are **platform-account** events — subscribe them on THIS "Your account" endpoint:
      - `transfer.created`, `transfer.reversed` — destination-charge transfers to the org's connected account (org resolved from `transfer.destination` / the event's `account`).
-     - `payout.created`, `payout.paid`, `payout.failed` — connected-account payouts (org resolved from the event's connected `account` — payouts batch many transfers and carry no destination-org field).
      - `charge.refunded` — refund clawback mirrored onto the backing destination-charge transfer's settlement row.
      - `charge.dispute.created`, `charge.dispute.closed`, `charge.dispute.funds_withdrawn`, `charge.dispute.funds_reinstated` — dispute lifecycle annotated onto the read-model (won/reinstated ⇒ settled, else funds-at-risk).
+   - **`payout.created`, `payout.paid`, `payout.failed`** are **connected-account** events (org resolved from the event's connected `account`). Stripe Workbench sets the "Events from" scope at endpoint creation, so these need a SEPARATE **"Connected accounts"** endpoint pointed at the SAME `/webhook/v1` URL, with its own signing secret in env `STRIPE_WEBHOOK_SECRET_CONNECT`. `StripeWebhookService.constructV1Event` verifies V1 webhooks against `STRIPE_WEBHOOK_SECRET_V1` then falls back to `STRIPE_WEBHOOK_SECRET_CONNECT`, so one URL backs both endpoints. Until `STRIPE_WEBHOOK_SECRET_CONNECT` is set, `payout.*` fail signature verification and payout-arrival stays dark.
    - Do NOT subscribe to `checkout.session.completed`; fulfilment is driven by `payment_intent.succeeded` because the PI is what proves money moved. The handler intentionally no-ops on `completed`.
 
 2. **`POST /api/v1/stripe/webhook/v2`** — secret env `STRIPE_WEBHOOK_SECRET_V2`. Subscribe to (Stripe uses **bracket notation** in `event.type` — the literal strings below):

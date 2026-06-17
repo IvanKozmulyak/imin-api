@@ -144,6 +144,11 @@ imin:
     # v2.core.account.requirements.updated, v2.core.account.recipient.capability_status_updated).
     # Printed by `stripe listen` for the V2 endpoint.
     webhook-secret-v2: ${STRIPE_WEBHOOK_SECRET_V2:}
+    # Signing secret for the SECOND endpoint on the same /webhook/v1 URL, scoped to
+    # "Connected accounts" (delivers payout.* — they fire on the connected account).
+    # Tried as a fallback after webhook-secret-v1. OPTIONAL: blank => payout.* reconciliation
+    # is dark until a connect-scoped endpoint is added and its whsec set here.
+    webhook-secret-connect: ${STRIPE_WEBHOOK_SECRET_CONNECT:}
     # Platform's percentage cut, in basis points. 500 = 5%.
     application-fee-bps: ${STRIPE_APPLICATION_FEE_BPS:500}
     # Flat per-ticket platform fee in minor units (cents). 99 = €0.99.

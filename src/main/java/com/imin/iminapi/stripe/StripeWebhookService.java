@@ -144,6 +144,35 @@ public class StripeWebhookService {
     }
 
     /**
+     * Verify a V1 webhook against the account-scope secret first, then the optional
+     * Connect-scope secret. imin runs TWO Dashboard endpoints on this same {@code /webhook/v1}
+     * URL: a "Your account" endpoint ({@code STRIPE_WEBHOOK_SECRET_V1} — platform events incl.
+     * {@code transfer.*}/{@code charge.refunded}/{@code charge.dispute.*}) and a "Connected
+     * accounts" endpoint ({@code STRIPE_WEBHOOK_SECRET_CONNECT} — {@code payout.*}, which fire
+     * on the connected account). Each endpoint signs with its OWN secret, so we try both.
+     * The Connect secret is optional: when blank this is identical to single-secret verification.
+     */
+    private com.stripe.model.Event constructV1Event(String rawBody, String sigHeader, String primarySecret) {
+        try {
+            return Webhook.constructEvent(rawBody, sigHeader, primarySecret);
+        } catch (SignatureVerificationException primaryFail) {
+            String connectSecret = props.getWebhookSecretConnect();
+            boolean haveConnect = connectSecret != null && !connectSecret.isBlank();
+            if (haveConnect) {
+                try {
+                    return Webhook.constructEvent(rawBody, sigHeader, connectSecret);
+                } catch (SignatureVerificationException connectFail) {
+                    // both secrets failed — fall through to the error below
+                }
+            }
+            log.warn("Stripe v1 webhook signature verification failed (tried v1{}): {}",
+                    haveConnect ? "+connect" : "", primaryFail.getMessage());
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
+                    "Invalid Stripe signature");
+        }
+    }
+
+    /**
      * Dispatch a V1 webhook.
      *
      * <p>{@code Propagation.REQUIRED} keeps the dedup INSERT and any handler DB writes
@@ -153,14 +182,7 @@ public class StripeWebhookService {
      */
     @Transactional(propagation = Propagation.REQUIRED)
     public void handleV1Transactional(String rawBody, String sigHeader, String secret) {
-        com.stripe.model.Event event;
-        try {
-            event = Webhook.constructEvent(rawBody, sigHeader, secret);
-        } catch (SignatureVerificationException e) {
-            log.warn("Stripe v1 webhook signature verification failed: {}", e.getMessage());
-            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
-                    "Invalid Stripe signature");
-        }
+        com.stripe.model.Event event = constructV1Event(rawBody, sigHeader, secret);
 
         String type = event.getType();
         String eventId = event.getId();

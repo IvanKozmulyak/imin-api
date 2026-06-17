@@ -73,23 +73,35 @@ So organizers can't flip themselves back to automatic / change cadence:
 
 ---
 
-## 4. Webhooks — reuse the existing two endpoints
+## 4. Webhooks
 
-`imin-api/CLAUDE.md` is the source of truth. Two endpoints, two signing secrets:
+`imin-api/CLAUDE.md` is the source of truth. In **Stripe Workbench → Webhooks**
+(`dashboard.stripe.com/workbench/webhooks`), the **"Events from"** scope (`Your account`
+vs `Connected accounts`) is chosen **when you create an endpoint** and is NOT a toggle on an
+existing one. `payout.*` fire on the **connected** account, so they need a *Connected accounts*
+endpoint; `transfer.*` / `charge.*` are platform events. The V1 handler now verifies against
+**both** `STRIPE_WEBHOOK_SECRET_V1` **and** `STRIPE_WEBHOOK_SECRET_CONNECT`, so two endpoints
+can share the one `/webhook/v1` URL.
 
-- `POST /api/v1/stripe/webhook/v1` → `STRIPE_WEBHOOK_SECRET_V1`
-- `POST /api/v1/stripe/webhook/v2` → `STRIPE_WEBHOOK_SECRET_V2`
+**Endpoint A — existing "Your account" (`STRIPE_WEBHOOK_SECRET_V1`), URL `…/api/v1/stripe/webhook/v1`.**
+Keep its current events; ADD:
+- `transfer.created`, `transfer.reversed`
+- `charge.refunded`
+- `charge.dispute.created`, `charge.dispute.closed`, `charge.dispute.funds_withdrawn`, `charge.dispute.funds_reinstated`
 
-On the **V1** endpoint (Dashboard → Developers → Webhooks):
+**Endpoint B — NEW, "Events from" = Connected accounts, SAME URL `…/api/v1/stripe/webhook/v1`.**
+Subscribe ONLY:
+- `payout.created`, `payout.paid`, `payout.failed`
 
-1. Enable **"Listen to events on Connected accounts"** (else connected-account `transfer.*` / `payout.*` never arrive).
-2. Subscribe the **Track A** events:
-   - `transfer.created`, `transfer.reversed`
-   - `payout.created`, `payout.paid`, `payout.failed`
-   - `charge.refunded`
-   - `charge.dispute.created`, `charge.dispute.closed` (and other `charge.dispute.*`)
+Copy Endpoint B's signing secret into env `STRIPE_WEBHOOK_SECRET_CONNECT` (see §5), then redeploy.
+Until that secret is set, `payout.*` events fail signature verification and payout-arrival stays dark.
 
-(V2 endpoint events are already configured for the Connect mirror — no change here. See `CLAUDE.md`.)
+**Endpoint C — existing V2** (`POST /api/v1/stripe/webhook/v2`, `STRIPE_WEBHOOK_SECRET_V2`) — Connect
+mirror thin-events, no change. See `CLAUDE.md`.
+
+> Verify after: in Workbench, "Send test event" on Endpoint B for `payout.paid` returns 2xx (signature
+> OK). A real connected `payout.paid` then flips its `payout_runs` row to PAID. A fake/sample account id
+> is logged-and-skipped (no matching org) — that's expected; it only proves the signature path.
 
 ---
 
@@ -98,7 +110,8 @@ On the **V1** endpoint (Dashboard → Developers → Webhooks):
 | Var | Value |
 |---|---|
 | `STRIPE_SECRET_KEY` | `sk_live_...` (test: `sk_test_...`) — Connect + Balance + Payout write scopes |
-| `STRIPE_WEBHOOK_SECRET_V1` | `whsec_...` from the V1 endpoint |
+| `STRIPE_WEBHOOK_SECRET_V1` | `whsec_...` from Endpoint A (Your account, `/webhook/v1`) |
+| `STRIPE_WEBHOOK_SECRET_CONNECT` | `whsec_...` from Endpoint B (Connected accounts, same `/webhook/v1` URL) — required for `payout.*` |
 | `STRIPE_WEBHOOK_SECRET_V2` | `whsec_...` from the V2 endpoint |
 | payout buffer (app config) | days after `event_end` before payout trigger; default **3 days**, resolved **Europe/Amsterdam** |
 
