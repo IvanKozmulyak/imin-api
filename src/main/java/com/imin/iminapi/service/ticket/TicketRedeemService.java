@@ -2,6 +2,7 @@ package com.imin.iminapi.service.ticket;
 
 import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.repository.TicketRepository;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -16,6 +17,10 @@ import java.util.UUID;
  *
  * <p>Authorization (organizer is in the right org, event is theirs) is
  * enforced one level up in the controller.
+ *
+ * <p>M1: publishes {@link TicketRedeemedEvent}(orderId, eventId) on successful
+ * redemption. The audience projector listens AFTER_COMMIT + @Async. The
+ * redeemer principal may be a gate device (userId null) — do not assume human actor.
  */
 @Service
 public class TicketRedeemService {
@@ -26,10 +31,13 @@ public class TicketRedeemService {
 
     private final TicketRepository tickets;
     private final QrPayloadSigner signer;
+    private final ApplicationEventPublisher publisher;
 
-    public TicketRedeemService(TicketRepository tickets, QrPayloadSigner signer) {
+    public TicketRedeemService(TicketRepository tickets, QrPayloadSigner signer,
+                               ApplicationEventPublisher publisher) {
         this.tickets = tickets;
         this.signer = signer;
+        this.publisher = publisher;
     }
 
     @Transactional
@@ -56,6 +64,7 @@ public class TicketRedeemService {
         int rows = tickets.redeemAtomic(t.getToken(), userId, Instant.now());
         Ticket fresh = tickets.findByToken(t.getToken()).orElse(t);
         if (rows == 1) {
+            publisher.publishEvent(new TicketRedeemedEvent(fresh.getOrderId(), fresh.getEventId()));
             return new Result(Outcome.REDEEMED, fresh);
         }
         // 0 rows: refunded, revoked, or already redeemed between our SELECT and UPDATE.

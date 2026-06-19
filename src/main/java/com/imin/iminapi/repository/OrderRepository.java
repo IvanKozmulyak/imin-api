@@ -86,6 +86,14 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
     long sumTotalMinorByOrgId(@Param("orgId") UUID orgId);
 
     /**
+     * All orders for an org scoped to a buyer's normalized email.
+     * Used by the audience membership projector (S1 derive-from-source).
+     */
+    @Query("select o from Order o where o.orgId = :orgId and lower(o.email) = :normalizedEmail order by o.createdAt asc")
+    List<com.imin.iminapi.model.Order> findByOrgIdAndNormalizedEmail(@Param("orgId") UUID orgId,
+                                                                      @Param("normalizedEmail") String normalizedEmail);
+
+    /**
      * Distinct (lowercased) buyer emails with their order-count for an org since
      * a cutoff. Lets us compute repeat-rate in Java without a window function.
      */
@@ -97,4 +105,11 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
             """)
     List<Object[]> orderCountsByEmailSince(@Param("orgId") UUID orgId,
                                             @Param("since") Instant since);
+
+    /**
+     * Distinct (orgId, lower(email)) pairs for all paid orders.
+     * Used by {@link com.imin.iminapi.audience.service.AudienceBackfillJob}.
+     */
+    @Query("select distinct o.orgId, lower(o.email) from Order o where o.stripePaymentIntentId is not null")
+    List<Object[]> findDistinctOrgAndEmailPairs();
 }

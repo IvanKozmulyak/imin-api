@@ -21,4 +21,20 @@ public final class AuditActions {
     public static final String MEMBER_INVITED = "MEMBER_INVITED";
     public static final String MEMBER_REMOVED = "MEMBER_REMOVED";
     public static final String STRIPE_ONBOARDED = "STRIPE_ONBOARDED";
+
+    // ---- Audience / Consent / DSAR (Tier C) ----
+    public static final String AUDIENCE_TAG_ADDED       = "AUDIENCE_TAG_ADDED";
+    public static final String SEGMENT_CREATED          = "SEGMENT_CREATED";
+    public static final String SEGMENT_DELETED          = "SEGMENT_DELETED";
+    public static final String SEGMENT_SNAPSHOT         = "SEGMENT_SNAPSHOT";
+    public static final String CONSENT_CAPTURED         = "CONSENT_CAPTURED";
+    public static final String CONSENT_UNSUBSCRIBED     = "CONSENT_UNSUBSCRIBED";
+    public static final String SUPPRESSION_ADDED        = "SUPPRESSION_ADDED";
+    public static final String AUDIENCE_HANDOFF         = "AUDIENCE_HANDOFF";
+    public static final String DSAR_ACCESS              = "DSAR_ACCESS";
+    public static final String DSAR_EXPORT              = "DSAR_EXPORT";
+    public static final String DSAR_RECTIFY             = "DSAR_RECTIFY";
+    public static final String DSAR_OBJECT              = "DSAR_OBJECT";
+    public static final String DSAR_ERASE_REQUESTED     = "DSAR_ERASE_REQUESTED";
+    public static final String DSAR_ERASE_EXECUTED      = "DSAR_ERASE_EXECUTED";
 }
