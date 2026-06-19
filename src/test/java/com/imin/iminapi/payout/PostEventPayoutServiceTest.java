@@ -79,6 +79,8 @@ class PostEventPayoutServiceTest {
         final AtomicReference<String> lastPayoutId = new AtomicReference<>(null);
         /** When set, payouts().create throws balance_insufficient (race simulation). */
         volatile boolean failBalanceInsufficient = false;
+        /** When false, accounts().retrieve reports NO external bank account. */
+        volatile boolean hasBank = true;
 
         void reset() {
             availableMinor.set(0L);
@@ -86,6 +88,7 @@ class PostEventPayoutServiceTest {
             lastPayoutAmount.set(null);
             lastPayoutId.set(null);
             failBalanceInsufficient = false;
+            hasBank = true;
         }
 
         @SuppressWarnings("unchecked")
@@ -116,6 +119,14 @@ class PostEventPayoutServiceTest {
                     { "object": "payout", "id": "%s", "amount": %d, "currency": "eur", "status": "pending" }
                     """.formatted(poId, amount);
                 return (T) ApiResource.GSON.fromJson(json, Payout.class);
+            }
+            if (path != null && path.startsWith("/v1/accounts")) {
+                String data = hasBank
+                        ? "{ \"object\": \"bank_account\", \"id\": \"ba_test\", \"last4\": \"4242\", \"currency\": \"eur\" }"
+                        : "";
+                String json = "{ \"object\": \"account\", \"id\": \"acct_test\", "
+                        + "\"external_accounts\": { \"object\": \"list\", \"data\": [ " + data + " ] } }";
+                return (T) ApiResource.GSON.fromJson(json, com.stripe.model.Account.class);
             }
             throw new IllegalStateException("unexpected Stripe path in test: " + path);
         }
@@ -161,6 +172,7 @@ class PostEventPayoutServiceTest {
         }
         when(stripeClient.balance()).thenReturn(new BalanceService(rg));
         when(stripeClient.payouts()).thenReturn(new PayoutService(rg));
+        when(stripeClient.accounts()).thenReturn(new com.stripe.service.AccountService(rg));
 
         org = newEligibleOrg();
     }

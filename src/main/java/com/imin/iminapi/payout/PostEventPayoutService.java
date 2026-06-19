@@ -12,9 +12,11 @@ import com.imin.iminapi.stripe.StripeConnectState;
 import com.imin.iminapi.stripe.StripeProperties;
 import com.stripe.StripeClient;
 import com.stripe.exception.StripeException;
+import com.stripe.model.Account;
 import com.stripe.model.Balance;
 import com.stripe.model.Payout;
 import com.stripe.net.RequestOptions;
+import com.stripe.param.AccountRetrieveParams;
 import com.stripe.param.BalanceRetrieveParams;
 import com.stripe.param.PayoutCreateParams;
 import org.slf4j.Logger;
@@ -175,6 +177,18 @@ public class PostEventPayoutService {
             return;
         }
 
+        // ── step 2b — payout-destination guard: the account must have a bank attached ──
+        // Payout.create below targets the account's DEFAULT external account (no
+        // destination param); with none attached it would fail. Recipient onboarding
+        // normally collects one — skip + flag (don't even create a run) so the event
+        // retries once the organizer adds a payout bank account.
+        if (!hasExternalBankAccount(acct)) {
+            log.warn("[payout] skip event {} org {} — connected acct {} has NO external bank account; "
+                    + "organizer must add a payout bank account before this event can be paid out",
+                    eventId, org.getId(), acct);
+            return;
+        }
+
         // ── step 3 — live AVAILABLE balance ON the connected account, by currency ──
         // event.currency is UPPERCASE ('EUR'); Stripe balance/payout currency is
         // lowercase ('eur'). Match the available bucket on the lowercase form.
@@ -283,5 +297,25 @@ public class PostEventPayoutService {
      */
     private int nextAttempt(UUID eventId) {
         return payoutRuns.maxAttemptByEventId(eventId) + 1;
+    }
+
+    /**
+     * True iff the connected account has at least one external (bank/card) account
+     * attached — the destination for the no-destination {@link Payout}. Recipient
+     * onboarding normally collects one. A Stripe error degrades to FALSE (skip this
+     * tick) rather than risk firing a payout at a possibly-bankless account.
+     */
+    private boolean hasExternalBankAccount(String acct) {
+        try {
+            RequestOptions onAcct = RequestOptions.builder().setStripeAccount(acct).build();
+            Account a = stripeClient.accounts().retrieve(acct,
+                    AccountRetrieveParams.builder().addExpand("external_accounts").build(), onAcct);
+            return a.getExternalAccounts() != null
+                    && a.getExternalAccounts().getData() != null
+                    && !a.getExternalAccounts().getData().isEmpty();
+        } catch (StripeException e) {
+            log.warn("[payout] external-account check failed for acct {} — {} (skipping this tick)", acct, e.getCode());
+            return false;
+        }
     }
 }
