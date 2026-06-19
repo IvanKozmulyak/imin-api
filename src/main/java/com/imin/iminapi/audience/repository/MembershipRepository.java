@@ -40,20 +40,32 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
                                                    @Param("consumerId") UUID consumerId);
 
     // ---- keyset pagination (S2): sort by (created_at DESC, membership_id DESC) ----
+    // search is split into its own methods: a nullable String fed into concat()/lower()
+    // is bound by Hibernate as bytea when null, and Postgres rejects lower(bytea)
+    // (H2 tolerates it). The no-search methods bind no :search param at all.
 
     @Query("""
             select m from Membership m
              where m.orgId = :orgId
                and (:lifecycle is null or m.lifecycle = :lifecycle)
-               and (:search is null
-                    or lower(m.displayName) like lower(concat('%', :search, '%'))
-                    or lower(cast(m.membershipId as string)) like lower(concat('%', :search, '%')))
              order by m.createdAt desc, m.membershipId desc
             """)
     List<Membership> listByOrg(@Param("orgId") UUID orgId,
                                 @Param("lifecycle") String lifecycle,
-                                @Param("search") String search,
                                 Pageable pageable);
+
+    @Query("""
+            select m from Membership m
+             where m.orgId = :orgId
+               and (:lifecycle is null or m.lifecycle = :lifecycle)
+               and (lower(m.displayName) like lower(concat('%', :search, '%'))
+                    or lower(cast(m.membershipId as string)) like lower(concat('%', :search, '%')))
+             order by m.createdAt desc, m.membershipId desc
+            """)
+    List<Membership> searchByOrg(@Param("orgId") UUID orgId,
+                                  @Param("lifecycle") String lifecycle,
+                                  @Param("search") String search,
+                                  Pageable pageable);
 
     /**
      * Keyset page: rows with (createdAt, membershipId) strictly less than cursor values.
@@ -62,18 +74,32 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
             select m from Membership m
              where m.orgId = :orgId
                and (:lifecycle is null or m.lifecycle = :lifecycle)
-               and (:search is null
-                    or lower(m.displayName) like lower(concat('%', :search, '%')))
                and (m.createdAt < :cursorAt
                     or (m.createdAt = :cursorAt and m.membershipId < :cursorId))
              order by m.createdAt desc, m.membershipId desc
             """)
     List<Membership> listByOrgAfterCursor(@Param("orgId") UUID orgId,
                                            @Param("lifecycle") String lifecycle,
-                                           @Param("search") String search,
                                            @Param("cursorAt") Instant cursorAt,
                                            @Param("cursorId") UUID cursorId,
                                            Pageable pageable);
+
+    @Query("""
+            select m from Membership m
+             where m.orgId = :orgId
+               and (:lifecycle is null or m.lifecycle = :lifecycle)
+               and (lower(m.displayName) like lower(concat('%', :search, '%'))
+                    or lower(cast(m.membershipId as string)) like lower(concat('%', :search, '%')))
+               and (m.createdAt < :cursorAt
+                    or (m.createdAt = :cursorAt and m.membershipId < :cursorId))
+             order by m.createdAt desc, m.membershipId desc
+            """)
+    List<Membership> searchByOrgAfterCursor(@Param("orgId") UUID orgId,
+                                             @Param("lifecycle") String lifecycle,
+                                             @Param("search") String search,
+                                             @Param("cursorAt") Instant cursorAt,
+                                             @Param("cursorId") UUID cursorId,
+                                             Pageable pageable);
 
     // ---- segment resolution ----
 

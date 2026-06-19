@@ -45,13 +45,19 @@ public class AudienceService {
         int pageSize = Math.min(Math.max(limit, 1), 200);
         PageRequest page = PageRequest.of(0, pageSize + 1); // fetch one extra to detect next page
 
+        boolean hasSearch = search != null && !search.isBlank();
         List<Membership> rows;
         if (cursor == null || cursor.isBlank()) {
-            rows = membershipRepo.listByOrg(orgId, lifecycle, search, page);
+            rows = hasSearch
+                    ? membershipRepo.searchByOrg(orgId, lifecycle, search, page)
+                    : membershipRepo.listByOrg(orgId, lifecycle, page);
         } else {
             CursorValue cv = CursorValue.decode(cursor);
-            rows = membershipRepo.listByOrgAfterCursor(orgId, lifecycle, search,
-                    cv.createdAt(), cv.membershipId(), page);
+            rows = hasSearch
+                    ? membershipRepo.searchByOrgAfterCursor(orgId, lifecycle, search,
+                            cv.createdAt(), cv.membershipId(), page)
+                    : membershipRepo.listByOrgAfterCursor(orgId, lifecycle,
+                            cv.createdAt(), cv.membershipId(), page);
         }
 
         boolean hasMore = rows.size() > pageSize;
@@ -110,7 +116,10 @@ public class AudienceService {
     public List<MemberDto> exportMembersCsv(UUID orgId, String lifecycle, String search) {
         int cap = 100_000;
         PageRequest page = PageRequest.of(0, cap);
-        List<Membership> rows = membershipRepo.listByOrg(orgId, lifecycle, search, page);
+        boolean hasSearch = search != null && !search.isBlank();
+        List<Membership> rows = hasSearch
+                ? membershipRepo.searchByOrg(orgId, lifecycle, search, page)
+                : membershipRepo.listByOrg(orgId, lifecycle, page);
 
         List<UUID> consumerIds = rows.stream().map(Membership::getConsumerId).distinct().toList();
         Map<UUID, Consumer> consumerMap = consumerIds.isEmpty() ? Map.of()
