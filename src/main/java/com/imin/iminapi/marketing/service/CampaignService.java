@@ -1,11 +1,19 @@
 package com.imin.iminapi.marketing.service;
 
+import com.imin.iminapi.audience.model.Membership;
+import com.imin.iminapi.audience.model.Segment;
+import com.imin.iminapi.audience.service.SegmentService;
+import com.imin.iminapi.audience.service.SendGateService;
+import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.marketing.dto.CampaignDto;
 import com.imin.iminapi.marketing.dto.CampaignRequests.CreateCampaignRequest;
 import com.imin.iminapi.marketing.dto.CampaignRequests.PatchCampaignRequest;
 import com.imin.iminapi.marketing.dto.CampaignSummary;
+import com.imin.iminapi.marketing.dto.PreviewAudienceResponse;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
+import com.imin.iminapi.model.User;
+import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
@@ -33,10 +41,20 @@ public class CampaignService {
 
     private final CampaignRepository campaigns;
     private final AuditLogger audit;
+    private final SegmentService segments;
+    private final SendGateService sendGate;
+    private final EmailService email;
+    private final UserRepository users;
 
-    public CampaignService(CampaignRepository campaigns, AuditLogger audit) {
+    public CampaignService(CampaignRepository campaigns, AuditLogger audit,
+                           SegmentService segments, SendGateService sendGate,
+                           EmailService email, UserRepository users) {
         this.campaigns = campaigns;
         this.audit = audit;
+        this.segments = segments;
+        this.sendGate = sendGate;
+        this.email = email;
+        this.users = users;
     }
 
     @Transactional
@@ -119,6 +137,66 @@ public class CampaignService {
         audit.record(p, AuditActions.CAMPAIGN_DUPLICATED, "campaign", saved.getId(),
                 "Duplicated from " + src.getId());
         return CampaignDto.from(saved);
+    }
+
+    /** SendGate dry-run for the composer Audience step. No materialization, no send. */
+    @Transactional(readOnly = true)
+    public PreviewAudienceResponse previewAudience(AuthPrincipal p, UUID id) {
+        Campaign c = require(p.orgId(), id);
+        if (c.getSegmentId() == null) {
+            // no target yet: nothing sendable, nothing excluded
+            return new PreviewAudienceResponse(0,
+                    new PreviewAudienceResponse.Excluded(0, 0, 0, 0, 0));
+        }
+        Segment segment = segments.requireSegmentForOrg(p.orgId(), c.getSegmentId());
+        List<UUID> membershipIds = segments.resolveMembers(p.orgId(), segment).stream()
+                .map(Membership::getMembershipId).toList();
+        return sendGate.previewCounts(p.orgId(), membershipIds, c.getChannel());
+    }
+
+    /**
+     * Send a single test email of the draft to the authenticated organizer's own address.
+     * Restricted to the caller (spec §3/§7) — a requested address is only honored if it
+     * equals the caller's own; otherwise the caller's address is used unconditionally.
+     */
+    @Transactional(readOnly = true)
+    public void testSend(AuthPrincipal p, UUID id, String requestedEmail) {
+        Campaign c = require(p.orgId(), id);
+        if (!"email".equals(c.getChannel())) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_STATE,
+                    "Only email campaigns can be test-sent");
+        }
+        if (c.getSubject() == null || c.getSubject().isBlank()
+                || c.getBodyMd() == null || c.getBodyMd().isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID,
+                    "Subject and body are required to send a test");
+        }
+        String to = callerEmail(p);   // always the organizer — requestedEmail is advisory only
+        String html = renderTestHtml(c);
+        String text = c.getBodyMd();
+        email.send(to, "[TEST] " + c.getSubject(), html, text);
+        audit.record(p, "CAMPAIGN_TEST_SENT", "campaign", c.getId(),
+                "Test email sent to organizer");
+    }
+
+    private String renderTestHtml(Campaign c) {
+        // Phase-1 test-send preview: escape the body so the test send is never an injection
+        // vector (spec §3). Real branded-shell rendering ships in Phase 2's CampaignEmailProvider.
+        String safe = c.getBodyMd()
+                .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+        String pre = c.getPreheader() == null ? "" :
+                "<p style=\"color:#888\">" + c.getPreheader()
+                        .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") + "</p>";
+        return "<html><body>" + pre + "<pre style=\"font-family:inherit;white-space:pre-wrap\">"
+                + safe + "</pre></body></html>";
+    }
+
+    private String callerEmail(AuthPrincipal p) {
+        // AuthPrincipal carries no email (AuthPrincipal.java:28) — load the organizer's user row.
+        User u = users.findById(p.userId())
+                .orElseThrow(() -> new ApiException(HttpStatus.FORBIDDEN, ErrorCode.FORBIDDEN,
+                        "Caller has no user record"));
+        return u.getEmail();
     }
 
     // ---- helpers ----
