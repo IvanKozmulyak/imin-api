@@ -113,6 +113,20 @@ public class Membership {
     @Column(name = "consent_basis", length = 16)
     private String consentBasis;
 
+    // ---- denormalized SMS consent state (Phase 3 / §2.2 / §7) ----
+
+    /** Buyer phone in E.164, projected from orders.buyer_phone. NULL until an opt-in arrives. */
+    @Column(name = "phone_e164", length = 20)
+    private String phoneE164;
+
+    /** never | subscribed | unsubscribed — the SMS analogue of consentStatus. */
+    @Column(name = "sms_consent_status", nullable = false, length = 16)
+    private String smsConsentStatus = "never";
+
+    /** explicit | NULL — SMS accepts explicit ONLY (no soft opt-in, §7). */
+    @Column(name = "sms_consent_basis", length = 16)
+    private String smsConsentBasis;
+
     // ---- profile ----
 
     @Column(name = "nps")
