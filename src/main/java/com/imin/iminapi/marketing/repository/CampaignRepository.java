@@ -21,6 +21,10 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
     @Query("select c from Campaign c where c.id = :id and c.orgId = :orgId")
     Optional<Campaign> findByIdAndOrgId(@Param("id") UUID id, @Param("orgId") UUID orgId);
 
+    // TEST-SUPPORT ONLY: unscoped by-id load, used exclusively by CampaignService.forceStatusForTest.
+    @Query("select c from Campaign c where c.id = :id")
+    Optional<Campaign> findByIdForTest(@Param("id") UUID id);
+
     @Query("""
             select c from Campaign c
              where c.orgId = :orgId
