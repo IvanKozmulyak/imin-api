@@ -187,6 +187,15 @@ imin:
     refund-request-inbox: ${IMIN_REFUND_REQUEST_INBOX:}
     # Refund-request magic-link TTL in minutes. Default 60; bump via env in incident response.
     refund-request-token-ttl-minutes: ${IMIN_REFUND_REQUEST_TOKEN_TTL_MINUTES:60}
+  marketing:
+    # Bulk-email sending identity — a marketing subdomain (e.g. news.imin.wtf)
+    # with its OWN SPF/DKIM so bulk sends never touch the transactional auth-email
+    # reputation. In prod set IMIN_MARKETING_FROM_ADDRESS to a verified Resend sender.
+    from-address: ${IMIN_MARKETING_FROM_ADDRESS:noreply@news.imin.local}
+    from-name: ${IMIN_MARKETING_FROM_NAME:imin}
+    # Public host (imin-public) that serves the /optout confirmation page and hosts
+    # the RFC 8058 unsubscribe link. In prod: https://app.imin.wtf.
+    unsubscribe-base-url: ${IMIN_MARKETING_UNSUBSCRIBE_BASE_URL:http://localhost:3000}
   ticket:
     # HMAC-SHA256 secret used to tamper-evidence QR payloads. 32+ bytes of entropy.
     # Required at boot — QrPayloadSigner throws if blank.
