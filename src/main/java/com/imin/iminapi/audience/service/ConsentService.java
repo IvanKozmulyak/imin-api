@@ -40,18 +40,25 @@ public class ConsentService {
         this.auditLogger = auditLogger;
     }
 
-    /**
-     * Capture an explicit or soft-opt-in consent event.
-     * Appends an immutable proof row and updates the membership's denormalized state.
-     */
+    /** Back-compat: email channel (keeps existing callers compiling — spec §2.2). */
     @Transactional
     public void capture(UUID orgId, UUID membershipId, String basis, String source,
                         String proofText, AuthPrincipal principal) {
+        capture(orgId, membershipId, "email", basis, source, proofText, principal);
+    }
+
+    /**
+     * Capture an explicit or soft-opt-in consent event on a specific channel.
+     * Appends an immutable proof row and updates the membership's denormalized state.
+     */
+    @Transactional
+    public void capture(UUID orgId, UUID membershipId, String channel, String basis,
+                        String source, String proofText, AuthPrincipal principal) {
         Membership m = requireMembership(orgId, membershipId);
 
         ConsentRecord r = new ConsentRecord();
         r.setMembershipId(membershipId);
-        r.setChannel("email");
+        r.setChannel(channel);
         r.setStatus("subscribed");
         r.setLawfulBasis(basis);
         r.setSource(source);
@@ -64,20 +71,27 @@ public class ConsentService {
         membershipRepo.save(m);
 
         auditLogger.record(principal, AuditActions.CONSENT_CAPTURED, "membership",
-                membershipId, "Consent captured: basis=" + basis + " source=" + source);
+                membershipId, "Consent captured: channel=" + channel + " basis=" + basis + " source=" + source);
+    }
+
+    /** Back-compat: email channel (keeps DsarService.object + AudienceController compiling). */
+    @Transactional
+    public void unsubscribe(UUID orgId, UUID membershipId, String source, AuthPrincipal principal) {
+        unsubscribe(orgId, membershipId, "email", source, principal);
     }
 
     /**
-     * Unsubscribe — synchronous, always succeeds immediately (Art.21).
+     * Unsubscribe on a specific channel — synchronous, always succeeds immediately (Art.21).
      * Appends proof row, sets consent_status='unsubscribed', clears basis.
      */
     @Transactional
-    public void unsubscribe(UUID orgId, UUID membershipId, String source, AuthPrincipal principal) {
+    public void unsubscribe(UUID orgId, UUID membershipId, String channel, String source,
+                            AuthPrincipal principal) {
         Membership m = requireMembership(orgId, membershipId);
 
         ConsentRecord r = new ConsentRecord();
         r.setMembershipId(membershipId);
-        r.setChannel("email");
+        r.setChannel(channel);
         r.setStatus("unsubscribed");
         r.setLawfulBasis(null);
         r.setSource(source);
@@ -89,7 +103,7 @@ public class ConsentService {
         membershipRepo.save(m);
 
         auditLogger.record(principal, AuditActions.CONSENT_UNSUBSCRIBED, "membership",
-                membershipId, "Unsubscribed via " + source);
+                membershipId, "Unsubscribed via " + source + " on channel " + channel);
     }
 
     private Membership requireMembership(UUID orgId, UUID membershipId) {
