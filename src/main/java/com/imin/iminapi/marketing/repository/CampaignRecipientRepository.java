@@ -34,4 +34,17 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
         """, nativeQuery = true)
     List<CampaignRecipient> claimPendingBatch(@Param("campaignId") UUID campaignId,
                                               @Param("limit") int limit);
+
+    /**
+     * DSAR (spec §7): null the recipient PII (email/phone/rendered body) for every row belonging
+     * to an erased membership, keeping status/skip_reason as an anonymous audit aggregate. Called
+     * from {@code DsarService.executeErase} BEFORE the membership hard-delete; V53's
+     * {@code ON DELETE SET NULL} FK then nulls {@code membership_id} when the delete proceeds.
+     */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @org.springframework.data.jpa.repository.Query(
+        "UPDATE CampaignRecipient r SET r.email=null, r.phoneE164=null, r.renderedBody=null "
+        + "WHERE r.membershipId=:membershipId")
+    void redactPiiByMembershipId(@org.springframework.data.repository.query.Param("membershipId") UUID membershipId);
 }

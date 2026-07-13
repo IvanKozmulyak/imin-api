@@ -42,19 +42,22 @@ public class DsarService {
     private final SuppressionRepository suppressionRepo;
     private final ConsentService consentService;
     private final AuditLogger auditLogger;
+    private final com.imin.iminapi.marketing.repository.CampaignRecipientRepository campaignRecipientRepo;
 
     public DsarService(MembershipRepository membershipRepo,
                        ConsumerRepository consumerRepo,
                        ConsentRecordRepository consentRepo,
                        SuppressionRepository suppressionRepo,
                        ConsentService consentService,
-                       AuditLogger auditLogger) {
+                       AuditLogger auditLogger,
+                       com.imin.iminapi.marketing.repository.CampaignRecipientRepository campaignRecipientRepo) {
         this.membershipRepo = membershipRepo;
         this.consumerRepo = consumerRepo;
         this.consentRepo = consentRepo;
         this.suppressionRepo = suppressionRepo;
         this.consentService = consentService;
         this.auditLogger = auditLogger;
+        this.campaignRecipientRepo = campaignRecipientRepo;
     }
 
     /** Art.15 access — returns the membership (caller maps to DTO). Audited. */
@@ -129,6 +132,11 @@ public class DsarService {
 
         // 2. Marketing suppressions cascade via FK; also explicitly clean up
         suppressionRepo.deleteMarketingByOrgAndMembership(orgId, membershipId);
+
+        // Spec §7: null campaign_recipients PII BEFORE the membership hard-delete, keeping
+        // status/skip_reason as an anonymous audit record. V53's ON DELETE SET NULL then
+        // lets the membership delete proceed instead of blocking AudienceErasureJob forever.
+        campaignRecipientRepo.redactPiiByMembershipId(membershipId);
 
         // 3. Delete membership (consent_records cascade via FK ON DELETE CASCADE)
         membershipRepo.deleteByIdAndOrgId(membershipId, orgId);
