@@ -41,55 +41,86 @@ public class ConsentService {
     }
 
     /**
-     * Capture an explicit or soft-opt-in consent event.
-     * Appends an immutable proof row and updates the membership's denormalized state.
+     * Capture an explicit or soft-opt-in consent event on the EMAIL channel.
+     * Kept for existing callers; delegates to the channel-aware overload.
      */
     @Transactional
     public void capture(UUID orgId, UUID membershipId, String basis, String source,
                         String proofText, AuthPrincipal principal) {
+        capture(orgId, membershipId, basis, source, proofText, "email", principal);
+    }
+
+    /**
+     * Capture an explicit or soft-opt-in consent event on the given channel
+     * (email | sms). Appends an immutable proof row and updates the membership's
+     * denormalized per-channel state. SMS accepts 'explicit' only (§7); the SMS
+     * columns are separate from the email consent_status/consent_basis pair, so
+     * an SMS capture never touches email consent and vice-versa.
+     */
+    @Transactional
+    public void capture(UUID orgId, UUID membershipId, String basis, String source,
+                        String proofText, String channel, AuthPrincipal principal) {
         Membership m = requireMembership(orgId, membershipId);
 
         ConsentRecord r = new ConsentRecord();
         r.setMembershipId(membershipId);
-        r.setChannel("email");
+        r.setChannel(channel);
         r.setStatus("subscribed");
         r.setLawfulBasis(basis);
         r.setSource(source);
         r.setProofText(proofText);
         consentRepo.save(r);
 
-        // M3: denormalize current state onto membership
-        m.setConsentStatus("subscribed");
-        m.setConsentBasis(basis);
+        // M3: denormalize current state onto membership, per channel.
+        if ("sms".equals(channel)) {
+            m.setSmsConsentStatus("subscribed");
+            m.setSmsConsentBasis(basis);
+        } else {
+            m.setConsentStatus("subscribed");
+            m.setConsentBasis(basis);
+        }
         membershipRepo.save(m);
 
         auditLogger.record(principal, AuditActions.CONSENT_CAPTURED, "membership",
-                membershipId, "Consent captured: basis=" + basis + " source=" + source);
+                membershipId, "Consent captured: channel=" + channel + " basis=" + basis + " source=" + source);
     }
 
     /**
-     * Unsubscribe — synchronous, always succeeds immediately (Art.21).
-     * Appends proof row, sets consent_status='unsubscribed', clears basis.
+     * Unsubscribe on the EMAIL channel. Kept for existing callers; delegates.
      */
     @Transactional
     public void unsubscribe(UUID orgId, UUID membershipId, String source, AuthPrincipal principal) {
+        unsubscribe(orgId, membershipId, source, "email", principal);
+    }
+
+    /**
+     * Unsubscribe on the given channel — synchronous, always succeeds (Art.21).
+     * Appends a proof row and clears the per-channel denormalized state.
+     */
+    @Transactional
+    public void unsubscribe(UUID orgId, UUID membershipId, String source, String channel,
+                            AuthPrincipal principal) {
         Membership m = requireMembership(orgId, membershipId);
 
         ConsentRecord r = new ConsentRecord();
         r.setMembershipId(membershipId);
-        r.setChannel("email");
+        r.setChannel(channel);
         r.setStatus("unsubscribed");
         r.setLawfulBasis(null);
         r.setSource(source);
         consentRepo.save(r);
 
-        // M3: denormalize — gate reads this column directly
-        m.setConsentStatus("unsubscribed");
-        m.setConsentBasis(null);
+        if ("sms".equals(channel)) {
+            m.setSmsConsentStatus("unsubscribed");
+            m.setSmsConsentBasis(null);
+        } else {
+            m.setConsentStatus("unsubscribed");
+            m.setConsentBasis(null);
+        }
         membershipRepo.save(m);
 
         auditLogger.record(principal, AuditActions.CONSENT_UNSUBSCRIBED, "membership",
-                membershipId, "Unsubscribed via " + source);
+                membershipId, "Unsubscribed via " + source + " channel=" + channel);
     }
 
     private Membership requireMembership(UUID orgId, UUID membershipId) {
