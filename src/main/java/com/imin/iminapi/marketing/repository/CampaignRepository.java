@@ -36,6 +36,18 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
     @Query("select c from Campaign c where c.id = :id")
     Optional<Campaign> findByIdForTest(@Param("id") UUID id);
 
+    /**
+     * Spec §2.4: guarded draft→scheduled compare-and-set. Returns rows updated (0 or 1).
+     * 0 means the campaign was not in draft (concurrent/duplicate send) → the controller 409s.
+     */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query("UPDATE Campaign c SET c.status='scheduled', c.scheduledAt=:scheduledAt "
+           + "WHERE c.id=:id AND c.orgId=:orgId AND c.status='draft'")
+    int markScheduledIfDraft(@org.springframework.data.repository.query.Param("id") UUID id,
+                             @org.springframework.data.repository.query.Param("orgId") UUID orgId,
+                             @org.springframework.data.repository.query.Param("scheduledAt") java.time.Instant scheduledAt);
+
     @Query("""
             select c from Campaign c
              where c.orgId = :orgId

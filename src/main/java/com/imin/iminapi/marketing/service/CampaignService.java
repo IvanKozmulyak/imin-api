@@ -40,16 +40,20 @@ public class CampaignService {
     private static final int MAX_NAME = 120;
 
     private final CampaignRepository campaigns;
+    private final com.imin.iminapi.marketing.repository.CampaignRecipientRepository campaignRecipientRepository;
     private final AuditLogger audit;
     private final SegmentService segments;
     private final SendGateService sendGate;
     private final EmailService email;
     private final UserRepository users;
 
-    public CampaignService(CampaignRepository campaigns, AuditLogger audit,
+    public CampaignService(CampaignRepository campaigns,
+                           com.imin.iminapi.marketing.repository.CampaignRecipientRepository campaignRecipientRepository,
+                           AuditLogger audit,
                            SegmentService segments, SendGateService sendGate,
                            EmailService email, UserRepository users) {
         this.campaigns = campaigns;
+        this.campaignRecipientRepository = campaignRecipientRepository;
         this.audit = audit;
         this.segments = segments;
         this.sendGate = sendGate;
@@ -197,6 +201,49 @@ public class CampaignService {
                 .orElseThrow(() -> new ApiException(HttpStatus.FORBIDDEN, ErrorCode.FORBIDDEN,
                         "Caller has no user record"));
         return u.getEmail();
+    }
+
+    /**
+     * Spec §2.4: guarded draft→scheduled compare-and-set with a mandatory Idempotency-Key.
+     * The guarded transition IS the double-submit guard (imin-api scout §6: the shared
+     * idempotency_keys table was DROPPED in V11) — a replay finds status!='draft' and 409s
+     * INVALID_STATE, which the FE treats as success-idempotent. The dispatcher is the sole
+     * `sending` path; this method only flips draft→scheduled.
+     */
+    @Transactional
+    public void send(UUID campaignId, AuthPrincipal principal,
+                     String idempotencyKey, Instant scheduledAt) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.MISSING_IDEMPOTENCY_KEY,
+                    "Idempotency-Key header is required");
+        }
+        // Org-scope + existence check (404 leak-safe if not this org's campaign).
+        campaigns.findByIdAndOrgId(campaignId, principal.orgId())
+                .orElseThrow(() -> ApiException.notFound("Campaign"));
+        Instant when = scheduledAt != null ? scheduledAt : Instant.now();
+        int updated = campaigns.markScheduledIfDraft(campaignId, principal.orgId(), when);
+        if (updated == 0) {
+            // Not in draft — duplicate/concurrent send. 409; dispatcher is the sole `sending` path.
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                    "Campaign is not in draft");
+        }
+    }
+
+    @Transactional(readOnly = true)
+    public com.imin.iminapi.marketing.dto.RecipientPage listRecipients(
+            UUID campaignId, AuthPrincipal principal,
+            String status, int page, int size) {
+        campaigns.findByIdAndOrgId(campaignId, principal.orgId())
+                .orElseThrow(() -> ApiException.notFound("Campaign"));
+        org.springframework.data.domain.Pageable pageable =
+                org.springframework.data.domain.PageRequest.of(page, size);
+        List<com.imin.iminapi.marketing.model.CampaignRecipient> rows =
+                (status == null || status.isBlank())
+                        ? campaignRecipientRepository.findByCampaignId(campaignId, pageable)
+                        : campaignRecipientRepository.findByCampaignIdAndStatus(campaignId, status, pageable);
+        List<com.imin.iminapi.marketing.dto.RecipientDto> items =
+                rows.stream().map(com.imin.iminapi.marketing.dto.RecipientDto::from).toList();
+        return new com.imin.iminapi.marketing.dto.RecipientPage(items, page, size);
     }
 
     // ---- helpers ----

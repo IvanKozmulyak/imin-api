@@ -12,6 +12,10 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
 
     List<CampaignRecipient> findByCampaignIdAndStatus(UUID campaignId, String status);
 
+    java.util.List<CampaignRecipient> findByCampaignId(UUID campaignId, org.springframework.data.domain.Pageable pageable);
+
+    java.util.List<CampaignRecipient> findByCampaignIdAndStatus(UUID campaignId, String status, org.springframework.data.domain.Pageable pageable);
+
     long countByCampaignIdAndStatus(UUID campaignId, String status);
 
     long countByCampaignId(UUID campaignId);
