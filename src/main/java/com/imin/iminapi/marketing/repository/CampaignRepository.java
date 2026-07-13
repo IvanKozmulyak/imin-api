@@ -21,6 +21,17 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
     @Query("select c from Campaign c where c.id = :id and c.orgId = :orgId")
     Optional<Campaign> findByIdAndOrgId(@Param("id") UUID id, @Param("orgId") UUID orgId);
 
+    /**
+     * Heartbeat: bump updated_at so the dispatcher's stale-`sending` reclaim does not fire
+     * mid-send. Explicit @Modifying UPDATE that always issues an UPDATE regardless of
+     * Hibernate dirty-checking (spec §2.5).
+     */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query("UPDATE Campaign c SET c.updatedAt=:ts WHERE c.id=:id")
+    void touch(@org.springframework.data.repository.query.Param("id") java.util.UUID id,
+               @org.springframework.data.repository.query.Param("ts") java.time.Instant ts);
+
     // TEST-SUPPORT ONLY: unscoped by-id load, used exclusively by CampaignService.forceStatusForTest.
     @Query("select c from Campaign c where c.id = :id")
     Optional<Campaign> findByIdForTest(@Param("id") UUID id);
