@@ -57,4 +57,25 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
     long countByOrg(@Param("orgId") UUID orgId,
                     @Param("channel") String channel,
                     @Param("status") String status);
+
+    /**
+     * Spec §2.5: claim due campaigns — scheduled+due, retryable failed (attempts<3),
+     * or stale sending (heartbeat > 5 min old, orphaned by a mid-send crash). SKIP LOCKED
+     * so multiple dispatcher instances don't double-claim.
+     */
+    @Query(value = """
+        SELECT * FROM campaigns
+        WHERE channel = 'email'
+          AND (
+            (status = 'scheduled' AND scheduled_at <= :now)
+            OR (status = 'failed' AND attempts < 3)
+            OR (status = 'sending' AND updated_at < :staleBefore)
+          )
+        ORDER BY scheduled_at NULLS FIRST
+        LIMIT 10
+        FOR UPDATE SKIP LOCKED
+        """, nativeQuery = true)
+    java.util.List<com.imin.iminapi.marketing.model.Campaign> claimDue(
+            @org.springframework.data.repository.query.Param("now") java.time.Instant now,
+            @org.springframework.data.repository.query.Param("staleBefore") java.time.Instant staleBefore);
 }
