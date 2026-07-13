@@ -81,8 +81,13 @@ public class ConsentService {
         }
         membershipRepo.save(m);
 
-        auditLogger.record(principal, AuditActions.CONSENT_CAPTURED, "membership",
-                membershipId, "Consent captured: channel=" + channel + " basis=" + basis + " source=" + source);
+        // Public, unauthenticated captures (e.g. the SMS order-confirmation opt-in, §4)
+        // have no organizer actor; the audit row requires a non-null org/actor, so skip
+        // it. The consent proof row + membership state above are the authoritative record.
+        if (principal != null) {
+            auditLogger.record(principal, AuditActions.CONSENT_CAPTURED, "membership",
+                    membershipId, "Consent captured: channel=" + channel + " basis=" + basis + " source=" + source);
+        }
     }
 
     /**
@@ -119,8 +124,12 @@ public class ConsentService {
         }
         membershipRepo.save(m);
 
-        auditLogger.record(principal, AuditActions.CONSENT_UNSUBSCRIBED, "membership",
-                membershipId, "Unsubscribed via " + source + " channel=" + channel);
+        // As in capture(): skip the organizer-actor audit row when there is no
+        // authenticated principal (public/system-initiated unsubscribe).
+        if (principal != null) {
+            auditLogger.record(principal, AuditActions.CONSENT_UNSUBSCRIBED, "membership",
+                    membershipId, "Unsubscribed via " + source + " channel=" + channel);
+        }
     }
 
     private Membership requireMembership(UUID orgId, UUID membershipId) {

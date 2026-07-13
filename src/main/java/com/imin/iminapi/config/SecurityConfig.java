@@ -94,6 +94,8 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/v1/public/events/*/quote").permitAll()
                         // Lost-email recovery — unauthenticated POST, always 204, rate-limited.
                         .requestMatchers(HttpMethod.POST, "/api/v1/public/orders/recover").permitAll()
+                        // Post-purchase SMS marketing opt-in — unauthenticated POST (§4).
+                        .requestMatchers(HttpMethod.POST, "/api/v1/public/orders/*/sms-consent").permitAll()
                         // Buyer-initiated refund-request surface (link issuance + form submit).
                         .requestMatchers(HttpMethod.POST,
                                          "/api/v1/public/refund-requests",
