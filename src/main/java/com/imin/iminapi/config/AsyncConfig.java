@@ -26,4 +26,21 @@ public class AsyncConfig {
         exec.initialize();
         return exec;
     }
+
+    /**
+     * Dedicated pool for marketing campaign batch sends (spec §2.5). Kept SEPARATE
+     * from ticketEmailExecutor — that pool is corePool 2 / maxPool 4, purpose-built
+     * for transactional ticket bursts; sharing it would starve ticket delivery and
+     * risk deadlock under campaign batches.
+     */
+    @Bean(name = "campaignSendExecutor")
+    public Executor campaignSendExecutor() {
+        ThreadPoolTaskExecutor exec = new ThreadPoolTaskExecutor();
+        exec.setCorePoolSize(2);
+        exec.setMaxPoolSize(4);
+        exec.setQueueCapacity(32);
+        exec.setThreadNamePrefix("campaign-send-");
+        exec.initialize();
+        return exec;
+    }
 }
