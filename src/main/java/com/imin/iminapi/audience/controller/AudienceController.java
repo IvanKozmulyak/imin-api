@@ -195,14 +195,14 @@ public class AudienceController {
     public ResponseEntity<Void> captureConsent(@AuthenticationPrincipal AuthPrincipal principal,
                                                 @RequestBody ConsentRequest body) {
         consentService.capture(principal.orgId(), body.membershipId(), body.basis(),
-                body.source(), body.proofText(), principal);
+                body.source(), body.proofText(), "email", principal);
         return ResponseEntity.ok().build();
     }
 
     @PostMapping("/consent/unsubscribe")
     public ResponseEntity<Void> unsubscribe(@AuthenticationPrincipal AuthPrincipal principal,
                                              @RequestBody UnsubRequest body) {
-        consentService.unsubscribe(principal.orgId(), body.membershipId(), body.source(), principal);
+        consentService.unsubscribe(principal.orgId(), body.membershipId(), body.source(), "email", principal);
         return ResponseEntity.ok().build();
     }
 

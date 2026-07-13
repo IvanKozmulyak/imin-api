@@ -58,19 +58,36 @@ public class AudienceOrderProjector {
                 return;
             }
             String normalizedEmail = EmailNormalizer.normalize(order.getEmail());
-            upsertMembership(order.getOrgId(), normalizedEmail, order.getEmail());
+            upsertMembership(order.getOrgId(), normalizedEmail, order.getEmail(),
+                    order.getBuyerPhone(), order.isSmsMarketingOptIn());
         } catch (Exception e) {
             log.error("AudienceOrderProjector failed for order {}: {}", event.orderId(), e.getMessage(), e);
         }
     }
 
     /**
+     * Upsert Consumer then Membership, recompute projection — no phone/opt-in.
+     * Package-visible so the backfill job and redeem projector can call it directly.
+     * Delegates to the phone-aware form with no phone and no SMS opt-in.
+     */
+    public void upsertMembership(java.util.UUID orgId, String normalizedEmail, String displayName) {
+        upsertMembership(orgId, normalizedEmail, displayName, null, false);
+    }
+
+    /**
      * Upsert Consumer then Membership, recompute projection.
      * Package-visible so the backfill job can call it directly.
+     *
+     * <p>Phase 3 (§4): {@code phoneE164}/{@code smsOptIn} carry the order's SMS
+     * opt-in onto the membership. Phone is projected when present; SMS consent is
+     * flipped to subscribed/explicit only when the order opt-in flag is set. The
+     * authoritative consent proof is written at collection time by SmsConsentService;
+     * this projection is idempotent and never downgrades an existing subscription.
      */
     @Transactional
-    public void upsertMembership(java.util.UUID orgId, String normalizedEmail, String displayName) {
-        // 1. Upsert Consumer (INSERT-first, catch DuplicateKeyException — idempotent like WebhookEventDedupService)
+    public void upsertMembership(java.util.UUID orgId, String normalizedEmail, String displayName,
+                                 String phoneE164, boolean smsOptIn) {
+        // 1. Upsert Consumer (INSERT-first, catch DuplicateKeyException — idempotent)
         Consumer consumer = consumerRepo.findByNormalizedEmail(normalizedEmail).orElse(null);
         if (consumer == null) {
             Consumer newC = new Consumer();
@@ -79,7 +96,6 @@ public class AudienceOrderProjector {
             try {
                 consumer = consumerRepo.save(newC);
             } catch (DataIntegrityViolationException dup) {
-                // Race: another thread inserted first
                 consumer = consumerRepo.findByNormalizedEmail(normalizedEmail)
                         .orElseThrow(() -> new IllegalStateException("Consumer insert race but still not found: " + normalizedEmail));
             }
@@ -96,6 +112,15 @@ public class AudienceOrderProjector {
             m.setConsumerId(consumer.getConsumerId());
             m.setDisplayName(displayName);
             m.setFirstTouchSrc("organic"); // S3
+        }
+
+        // 2b. Project SMS phone + opt-in (§4). Never downgrade an existing subscription.
+        if (phoneE164 != null && !phoneE164.isBlank()) {
+            m.setPhoneE164(phoneE164);
+        }
+        if (smsOptIn && !"unsubscribed".equals(m.getSmsConsentStatus())) {
+            m.setSmsConsentStatus("subscribed");
+            m.setSmsConsentBasis("explicit");
         }
 
         // 3. Recompute aggregates from source (S1)

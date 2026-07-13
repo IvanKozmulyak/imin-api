@@ -67,6 +67,18 @@ public class Order {
     @Column(name = "stripe_payment_intent_id", length = 128)
     private String stripePaymentIntentId;
 
+    /** Buyer phone captured on the order-confirmation SMS opt-in (§4). E.164, nullable. */
+    @Column(name = "buyer_phone", length = 20)
+    private String buyerPhone;
+
+    /**
+     * True when the buyer ticked the unchecked-by-default SMS marketing opt-in
+     * on the order-confirmation page (§4). Consent proof lives on the membership's
+     * consent_records; this flag is the order-level snapshot the projector reads.
+     */
+    @Column(name = "sms_marketing_opt_in", nullable = false)
+    private boolean smsMarketingOptIn = false;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Times.nowMicros();
 

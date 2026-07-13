@@ -306,7 +306,7 @@ class AudienceControllerWebTest {
 
         verify(consentService).capture(
                 eq(ORG_A), eq(MEMBER_A), eq("explicit"),
-                eq("signup-form"), eq("checkbox checked"), any());
+                eq("signup-form"), eq("checkbox checked"), eq("email"), any());
     }
 
     @Test
@@ -322,7 +322,7 @@ class AudienceControllerWebTest {
                         .content(body))
                 .andExpect(status().isOk());
 
-        verify(consentService).unsubscribe(eq(ORG_A), eq(MEMBER_A), eq("unsubscribe-link"), any());
+        verify(consentService).unsubscribe(eq(ORG_A), eq(MEMBER_A), eq("unsubscribe-link"), eq("email"), any());
     }
 
     // ── DSAR endpoints — correct status codes ────────────────────────────────
@@ -636,7 +636,7 @@ class AudienceControllerWebTest {
         // The principal's orgId must be passed, not a body orgId
         ArgumentCaptor<UUID> orgCaptor = ArgumentCaptor.forClass(UUID.class);
         verify(consentService).capture(orgCaptor.capture(), eq(MEMBER_A),
-                eq("explicit"), eq("double-opt-in"), eq("link clicked"), any());
+                eq("explicit"), eq("double-opt-in"), eq("link clicked"), eq("email"), any());
         assertThat(orgCaptor.getValue()).isEqualTo(ORG_A);
     }
 

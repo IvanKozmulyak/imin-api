@@ -2,6 +2,9 @@ package com.imin.iminapi.controller.publicapi;
 
 import com.imin.iminapi.dto.publicapi.PublicOrderResponse;
 import com.imin.iminapi.dto.publicapi.PublicTicketResponse;
+import com.imin.iminapi.dto.publicapi.SmsConsentRequest;
+import com.imin.iminapi.dto.publicapi.SmsConsentResponse;
+import com.imin.iminapi.service.audience.SmsConsentService;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Ticket;
@@ -18,6 +21,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -42,19 +47,22 @@ public class PublicOrderController {
     private final QrPayloadSigner qrSigner;
     private final AppleWalletPassService wallet;
     private final TicketProperties ticketProps;
+    private final SmsConsentService smsConsentService;
 
     public PublicOrderController(OrderRepository orders,
                                   TicketRepository tickets,
                                   EventRepository events,
                                   QrPayloadSigner qrSigner,
                                   AppleWalletPassService wallet,
-                                  TicketProperties ticketProps) {
+                                  TicketProperties ticketProps,
+                                  SmsConsentService smsConsentService) {
         this.orders = orders;
         this.tickets = tickets;
         this.events = events;
         this.qrSigner = qrSigner;
         this.wallet = wallet;
         this.ticketProps = ticketProps;
+        this.smsConsentService = smsConsentService;
     }
 
     @GetMapping("/api/v1/public/orders/{token}")
@@ -113,6 +121,20 @@ public class PublicOrderController {
         return ResponseEntity.ok()
                 .header(HttpHeaders.CACHE_CONTROL, "private, no-store")
                 .body(body);
+    }
+
+    /**
+     * Post-purchase SMS marketing opt-in from the order-confirmation page (§4).
+     * Keyed by the order token. Explicit-only consent (§7); a ticked checkbox with
+     * a valid phone records a channel='sms' proof row. Unknown token → leak-safe 404.
+     */
+    @PostMapping("/api/v1/public/orders/{token}/sms-consent")
+    public ResponseEntity<SmsConsentResponse> smsConsent(@PathVariable String token,
+                                                         @RequestBody(required = false) SmsConsentRequest body) {
+        SmsConsentResponse response = smsConsentService.submit(token, body);
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CACHE_CONTROL, "private, no-store")
+                .body(response);
     }
 
     private static PublicOrderResponse.Event eventBlock(Event event) {
