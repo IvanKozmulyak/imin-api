@@ -37,4 +37,9 @@ public final class AuditActions {
     public static final String DSAR_OBJECT              = "DSAR_OBJECT";
     public static final String DSAR_ERASE_REQUESTED     = "DSAR_ERASE_REQUESTED";
     public static final String DSAR_ERASE_EXECUTED      = "DSAR_ERASE_EXECUTED";
+
+    // ---- Marketing campaigns (Phase 1) ----
+    public static final String CAMPAIGN_CREATED = "CAMPAIGN_CREATED";
+    public static final String CAMPAIGN_DUPLICATED = "CAMPAIGN_DUPLICATED";
+    public static final String CAMPAIGN_TEST_SENT = "CAMPAIGN_TEST_SENT";
 }

@@ -2,6 +2,7 @@ package com.imin.iminapi.audience.service;
 
 import com.imin.iminapi.audience.dto.ExclusionReason;
 import com.imin.iminapi.audience.dto.HandoffResponse;
+import com.imin.iminapi.marketing.dto.PreviewAudienceResponse;
 import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
@@ -117,6 +118,36 @@ public class SendGateService {
     }
 
     /**
+     * Channel-aware dry-run for the campaign composer Audience step (spec §2.4).
+     * Runs the same gate as evaluate() and returns bucketed exclusion counts.
+     * NOTHING is materialized or sent — the gate re-runs at send time (Phase 2/4).
+     * channel is accepted for forward-compatibility; the email gate is the four existing
+     * clauses. SMS adds a no-phone clause in Phase 3.
+     */
+    @Transactional(readOnly = true)
+    public PreviewAudienceResponse previewCounts(UUID orgId, Collection<UUID> membershipIds, String channel) {
+        return bucket(evaluate(orgId, membershipIds));
+    }
+
+    /** Group a flat GateResult into per-reason counts. Pure function — unit-testable. */
+    public static PreviewAudienceResponse bucket(GateResult result) {
+        int noBasis = 0, unsub = 0, mktSupp = 0, delivSupp = 0, noPhone = 0;
+        for (ExclusionReason r : result.excluded()) {
+            switch (r.reason()) {
+                case "no_lawful_basis" -> noBasis++;
+                case "marketing_unsubscribed" -> unsub++;
+                case "marketing_suppressed" -> mktSupp++;
+                case "deliverability_suppressed" -> delivSupp++;
+                case "no_phone" -> noPhone++;
+                default -> { /* unknown reason: ignore, never crash the preview */ }
+            }
+        }
+        return new PreviewAudienceResponse(
+                result.sendable().size(),
+                new PreviewAudienceResponse.Excluded(noBasis, unsub, mktSupp, delivSupp, noPhone));
+    }
+
+    /**
      * Execute handoff: run the gate and return a HandoffResponse. Audited.
      */
     @Transactional
@@ -131,7 +162,7 @@ public class SendGateService {
                 result.sendable().size(),
                 result.sendable().stream().map(UUID::toString).toList(),
                 result.excluded(),
-                "/campaigns"
+                "/marketing/campaigns/new"
         );
     }
 }
