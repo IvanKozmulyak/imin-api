@@ -103,6 +103,10 @@ public class SecurityConfig {
                         // Stripe webhooks — unauthenticated; signature-verified inside the handler.
                         // Two endpoints: /webhook/v1 (V1 payments) and /webhook/v2 (V2 thin events).
                         .requestMatchers(HttpMethod.POST, "/api/v1/stripe/webhook/**").permitAll()
+                        // Owned marketing opt-out (RFC 8058 one-click POST + confirm page) — unauthenticated,
+                        // signed-token-verified inside the handler.
+                        .requestMatchers(HttpMethod.GET, "/api/v1/public/unsubscribe/**").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/public/unsubscribe/**").permitAll()
                         // Everything else under /api/v1 requires a session
                         .requestMatchers("/api/v1/**").authenticated()
                         .anyRequest().permitAll()

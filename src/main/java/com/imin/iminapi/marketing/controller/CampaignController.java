@@ -80,4 +80,27 @@ public class CampaignController {
         service.testSend(principal, id, req == null ? null : req.email());
         return ResponseEntity.noContent().build();
     }
+
+    public record SendRequest(java.time.Instant scheduledAt) {}
+
+    @PostMapping("/{id}/send")
+    public ResponseEntity<Void> send(
+            @PathVariable UUID id,
+            @com.imin.iminapi.security.CurrentUser AuthPrincipal principal,
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
+            @RequestBody(required = false) SendRequest body) {
+        java.time.Instant scheduledAt = body == null ? null : body.scheduledAt();
+        service.send(id, principal, idempotencyKey, scheduledAt);
+        return ResponseEntity.status(HttpStatus.ACCEPTED).build();
+    }
+
+    @GetMapping("/{id}/recipients")
+    public com.imin.iminapi.marketing.dto.RecipientPage recipients(
+            @PathVariable UUID id,
+            @com.imin.iminapi.security.CurrentUser AuthPrincipal principal,
+            @RequestParam(required = false) String status,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "50") int size) {
+        return service.listRecipients(id, principal, status, page, size);
+    }
 }
