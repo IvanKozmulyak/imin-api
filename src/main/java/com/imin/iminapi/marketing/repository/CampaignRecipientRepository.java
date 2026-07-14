@@ -52,6 +52,21 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
                                        @Param("since") java.time.Instant since);
 
     /**
+     * Rolling-window org send count — backs the per-org daily cap in the dispatcher
+     * (spec §7). Joins recipients to their campaign by org, counting rows actually
+     * sent (or further along) with a send timestamp inside the window.
+     */
+    @Query("""
+            select count(r) from CampaignRecipient r, com.imin.iminapi.marketing.model.Campaign c
+             where r.campaignId = c.id
+               and c.orgId = :orgId
+               and r.status in ('sent','delivered','opened','clicked')
+               and r.lastEventAt >= :since
+            """)
+    long countRecentSendsForOrg(@Param("orgId") UUID orgId,
+                                @Param("since") java.time.Instant since);
+
+    /**
      * DSAR (spec §7): null the recipient PII (email/phone/rendered body) for every row belonging
      * to an erased membership, keeping status/skip_reason as an anonymous audit aggregate. Called
      * from {@code DsarService.executeErase} BEFORE the membership hard-delete; V53's

@@ -3,6 +3,8 @@ package com.imin.iminapi.marketing.send;
 import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
+import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.repository.OrganizationRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -10,6 +12,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.UUID;
 
@@ -23,13 +26,33 @@ class CampaignDispatcherTest {
 
     @Autowired CampaignDispatcher dispatcher;
     @Autowired CampaignRepository campaigns;
+    @Autowired OrganizationRepository orgs;
     @MockitoBean RecipientMaterializer materializer;
     @MockitoBean EmailChannelSender sender;
+
+    /**
+     * A real, non-paused org whose timezone puts local time near noon RIGHT NOW, so the
+     * dispatcher's quiet-hours gate (22:00–09:00 org-local) never drops these campaigns
+     * regardless of when the suite runs. The dispatcher now resolves the org per campaign,
+     * so a random non-existent org_id would be skipped as "org gone".
+     */
+    private Organization awakeOrg() {
+        int hourNowUtc = Instant.now().atZone(ZoneOffset.UTC).getHour();
+        // offset that shifts current UTC hour to ~12:00 local, clamped to valid ±18h range
+        int offset = 12 - hourNowUtc;
+        Organization o = new Organization();
+        o.setName("Disp Org");
+        o.setSlug("disp-" + UUID.randomUUID().toString().substring(0, 6));
+        o.setContactEmail("disp@test.com");
+        o.setCountry("DE");
+        o.setTimezone(ZoneOffset.ofHours(offset).getId()); // e.g. "+03:00"
+        return orgs.save(o);
+    }
 
     private Campaign scheduled(Instant at) {
         Campaign c = new Campaign();
         c.setId(UUID.randomUUID());
-        c.setOrgId(UUID.randomUUID());
+        c.setOrgId(awakeOrg().getId());
         c.setChannel("email");
         c.setName("Due");
         c.setStatus("scheduled");
