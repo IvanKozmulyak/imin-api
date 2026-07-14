@@ -38,6 +38,20 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
                                               @Param("limit") int limit);
 
     /**
+     * Count recent sends for a membership across all campaigns — backs the per-member
+     * frequency floor in {@link com.imin.iminapi.marketing.service.CampaignVolumeGuard}
+     * (spec §7). A member contacted within the floor window is skipped.
+     */
+    @Query("""
+            select count(r) from CampaignRecipient r
+             where r.membershipId = :membershipId
+               and r.status in ('sent','delivered','opened','clicked')
+               and r.lastEventAt >= :since
+            """)
+    long countRecentSendsForMembership(@Param("membershipId") UUID membershipId,
+                                       @Param("since") java.time.Instant since);
+
+    /**
      * DSAR (spec §7): null the recipient PII (email/phone/rendered body) for every row belonging
      * to an erased membership, keeping status/skip_reason as an anonymous audit aggregate. Called
      * from {@code DsarService.executeErase} BEFORE the membership hard-delete; V53's
