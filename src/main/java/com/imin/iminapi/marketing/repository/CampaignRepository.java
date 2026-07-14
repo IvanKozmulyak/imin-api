@@ -5,6 +5,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.Repository;
 import org.springframework.data.repository.query.Param;
+import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 
 import java.util.List;
 import java.util.Optional;
@@ -14,6 +15,10 @@ import java.util.UUID;
  * Tenant-scoped repository for {@link Campaign}.
  * Every read takes orgId. No unscoped finders are exposed (SPINE INVARIANT).
  */
+// Internal store — never exposed over Spring Data REST (auto-export both leaks
+// the table into the public OpenAPI and crashes springdoc on ambiguous
+// overloaded search mappings).
+@RepositoryRestResource(exported = false)
 public interface CampaignRepository extends Repository<Campaign, UUID> {
 
     Campaign save(Campaign campaign);

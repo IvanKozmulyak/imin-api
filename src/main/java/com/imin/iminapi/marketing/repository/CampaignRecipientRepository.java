@@ -2,12 +2,17 @@ package com.imin.iminapi.marketing.repository;
 
 import com.imin.iminapi.marketing.model.CampaignRecipient;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.util.List;
 import java.util.UUID;
 
+// Internal store — never exposed over Spring Data REST (auto-export both leaks
+// the table into the public OpenAPI and crashes springdoc on ambiguous
+// overloaded search mappings).
+@RepositoryRestResource(exported = false)
 public interface CampaignRecipientRepository extends JpaRepository<CampaignRecipient, UUID> {
 
     List<CampaignRecipient> findByCampaignIdAndStatus(UUID campaignId, String status);
