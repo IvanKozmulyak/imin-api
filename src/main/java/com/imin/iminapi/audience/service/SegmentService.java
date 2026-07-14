@@ -217,4 +217,25 @@ public class SegmentService {
             segmentRepo.save(s);
         }
     }
+
+    /** The org's prebuilt "Repeat" segment id (Momentum's v1 default target), or null if not provisioned. */
+    @Transactional(readOnly = true)
+    public UUID defaultTargetSegmentId(UUID orgId) {
+        return segmentRepo.findByOrgId(orgId).stream()
+                .filter(s -> "Repeat".equals(s.getName()))
+                .map(Segment::getId)
+                .findFirst()
+                .orElse(null);
+    }
+
+    /** Membership ids for a segment id; tolerant of a null/unknown id (returns empty). */
+    @Transactional(readOnly = true)
+    public List<UUID> resolveMembershipIds(UUID orgId, UUID segmentId) {
+        if (segmentId == null) return List.of();
+        return segmentRepo.findByIdAndOrgId(segmentId, orgId)
+                .map(seg -> resolveMembers(orgId, seg).stream()
+                        .map(Membership::getMembershipId)
+                        .toList())
+                .orElse(List.of());
+    }
 }

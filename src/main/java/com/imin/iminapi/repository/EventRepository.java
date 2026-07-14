@@ -36,6 +36,23 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
             Pageable pageable);
 
     /**
+     * Momentum Engine candidates (spec §6.1): every published, future, on-sale event
+     * across ALL orgs. Mirrors {@link #findUpcomingLive} (LIVE + not-deleted + future
+     * start) but drops the orgId filter and adds the FULL on-sale gate — matching the
+     * {@code findPublicListing} on-sale semantics (BOTH {@code onSaleAt <= now} AND
+     * {@code saleClosesAt > now}), so an event whose sales window has already CLOSED
+     * (but not yet started) is excluded: the organizer could not act on a suggestion
+     * with sales shut. Null {@code onSaleAt}/{@code saleClosesAt} mean "no bound".
+     */
+    @Query("SELECT e FROM Event e WHERE e.deletedAt IS NULL " +
+           "AND e.status = com.imin.iminapi.model.EventStatus.LIVE " +
+           "AND e.startsAt > :now " +
+           "AND (e.onSaleAt IS NULL OR e.onSaleAt <= :now) " +
+           "AND (e.saleClosesAt IS NULL OR e.saleClosesAt > :now) " +
+           "ORDER BY e.startsAt ASC")
+    List<Event> findMomentumCandidates(@Param("now") Instant now);
+
+    /**
      * Scannable events for the gate scanner: events for an org whose
      * {@code startsAt} is either in the future or within the last 24 hours
      * (so currently-running events remain visible until they clearly end).
