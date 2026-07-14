@@ -1,5 +1,6 @@
 package com.imin.iminapi.service.ticket;
 
+import com.imin.iminapi.marketing.service.MetaCapiOutboxWriter;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Ticket;
@@ -49,19 +50,22 @@ public class PaidCheckoutService {
     private final TicketTierRepository tiers;
     private final StripeClient stripeClient;
     private final ApplicationEventPublisher publisher;
+    private final MetaCapiOutboxWriter metaCapiOutboxWriter;
 
     public PaidCheckoutService(OrderRepository orders,
                                 TicketRepository tickets,
                                 EventRepository events,
                                 TicketTierRepository tiers,
                                 StripeClient stripeClient,
-                                ApplicationEventPublisher publisher) {
+                                ApplicationEventPublisher publisher,
+                                MetaCapiOutboxWriter metaCapiOutboxWriter) {
         this.orders = orders;
         this.tickets = tickets;
         this.events = events;
         this.tiers = tiers;
         this.stripeClient = stripeClient;
         this.publisher = publisher;
+        this.metaCapiOutboxWriter = metaCapiOutboxWriter;
     }
 
     /**
@@ -177,6 +181,7 @@ public class PaidCheckoutService {
         }
 
         publisher.publishEvent(new TicketsIssuedEvent(order.getId()));
+        metaCapiOutboxWriter.writeForOrder(order.getId());
         log.info("Issued {} ticket(s) for PI {} → order {}", qty, pi.getId(), order.getId());
         return true;
     }
