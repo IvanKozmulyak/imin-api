@@ -18,6 +18,14 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
 
     Campaign save(Campaign campaign);
 
+    /**
+     * Unscoped by-id load. Used by the webhook projector, which resolves org from the
+     * campaign for the complaint branch (recipient rows carry no org_id — spec §2.2 V53).
+     * The repo extends the bare {@code Repository<>} marker, so {@code findById} is NOT
+     * inherited and must be declared explicitly.
+     */
+    Optional<Campaign> findById(UUID id);
+
     @Query("select c from Campaign c where c.id = :id and c.orgId = :orgId")
     Optional<Campaign> findByIdAndOrgId(@Param("id") UUID id, @Param("orgId") UUID orgId);
 
