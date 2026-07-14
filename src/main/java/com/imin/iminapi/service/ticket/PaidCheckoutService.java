@@ -138,6 +138,11 @@ public class PaidCheckoutService {
         order.setPaymentMethod("stripe");
         order.setStripePaymentIntentId(pi.getId());
         order.setStripeSessionId(resolved.sessionId);
+        // Buyer's cookie-consent ads-consent decision (§7), stamped into the session/PI
+        // metadata at checkout by StripeCheckoutService. Snapshotted onto orders.ads_consent;
+        // gates the server-side Meta CAPI event (MetaCapiOutboxWriter). Absent/anything-but-
+        // "true" defaults false (V58 default), so historical/unconsented orders never emit.
+        order.setAdsConsent("true".equals(meta.get("ads_consent")));
         order.setApplicationFeeMinor(pi.getApplicationFeeAmount() == null ? 0L : pi.getApplicationFeeAmount());
 
         String promoIdRaw = meta.get("promo_id");

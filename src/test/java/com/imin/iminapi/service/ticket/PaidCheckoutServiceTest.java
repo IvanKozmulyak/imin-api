@@ -226,6 +226,44 @@ class PaidCheckoutServiceTest {
     }
 
     @Test
+    void persists_ads_consent_true_from_pi_metadata() throws Exception {
+        // §7: the buyer's cookie-consent ads-consent decision rides Stripe metadata
+        // (StripeCheckoutService stamps "ads_consent") and must land on orders.ads_consent
+        // so the server-side Meta CAPI event (MetaCapiOutboxWriter) is enabled.
+        PaymentIntent pi = pi("pi_test_ads_consent", 1500, "eur",
+                Map.of(
+                        "tier_id", tier.getId().toString(),
+                        "qty", "1",
+                        "event_id", event.getId().toString(),
+                        "ads_consent", "true"));
+        wireBuyerEmail(pi, "buyer@example.com");
+        wireSessionLookup(pi, "cs_test_ads_consent", null);
+
+        service.issuePaidOrder(pi);
+
+        Order order = orders.findByStripePaymentIntentId("pi_test_ads_consent").orElseThrow();
+        assertThat(order.isAdsConsent()).isTrue();
+    }
+
+    @Test
+    void defaults_ads_consent_false_when_metadata_absent() throws Exception {
+        // No ads_consent key in metadata → must stay false (V58 default), so unconsented
+        // orders never emit a server-side Meta event.
+        PaymentIntent pi = pi("pi_test_no_ads_consent", 1500, "eur",
+                Map.of(
+                        "tier_id", tier.getId().toString(),
+                        "qty", "1",
+                        "event_id", event.getId().toString()));
+        wireBuyerEmail(pi, "buyer@example.com");
+        wireSessionLookup(pi, "cs_test_no_ads_consent", null);
+
+        service.issuePaidOrder(pi);
+
+        Order order = orders.findByStripePaymentIntentId("pi_test_no_ads_consent").orElseThrow();
+        assertThat(order.isAdsConsent()).isFalse();
+    }
+
+    @Test
     void uses_session_email_when_charge_email_missing() throws Exception {
         PaymentIntent pi = pi("pi_test_session_email", 1500, "eur",
                 Map.of(

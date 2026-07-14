@@ -201,6 +201,35 @@ class StripeCheckoutServiceTest {
     }
 
     @Test
+    void createCheckoutSession_stampsAdsConsentTrueOntoSessionAndPiMetadata() throws Exception {
+        // The paid path has no Order to write until the webhook fires, so the buyer's
+        // ads-consent (§7) must ride Stripe session + PI metadata for PaidCheckoutService
+        // to snapshot onto orders.ads_consent.
+        svc.createCheckoutSession(eventId, tierId, 1, null, null, "buyer@example.com", true);
+
+        ArgumentCaptor<SessionCreateParams> captor = ArgumentCaptor.forClass(SessionCreateParams.class);
+        verify(sessionService).create(captor.capture());
+        SessionCreateParams sent = captor.getValue();
+
+        assertThat(sent.getMetadata()).containsEntry("ads_consent", "true");
+        assertThat(sent.getPaymentIntentData().getMetadata()).containsEntry("ads_consent", "true");
+    }
+
+    @Test
+    void createCheckoutSession_stampsAdsConsentFalse_whenBuyerDidNotConsent() throws Exception {
+        // Default (no consent) must persist the flag as "false", never omit it — the webhook
+        // read-back keys off exactly "true".
+        svc.createCheckoutSession(eventId, tierId, 1, null, null, "buyer@example.com", false);
+
+        ArgumentCaptor<SessionCreateParams> captor = ArgumentCaptor.forClass(SessionCreateParams.class);
+        verify(sessionService).create(captor.capture());
+
+        assertThat(captor.getValue().getMetadata()).containsEntry("ads_consent", "false");
+        assertThat(captor.getValue().getPaymentIntentData().getMetadata())
+                .containsEntry("ads_consent", "false");
+    }
+
+    @Test
     void createCheckoutSession_setsExpiresAtMatchingConfiguredTtl() throws Exception {
         // Stripe's documented minimum lifetime is 30 minutes — anything shorter rejects.
         // Mirrored onto TicketReservation.expires_at so the sweeper can self-heal.
@@ -308,7 +337,8 @@ class StripeCheckoutServiceTest {
         order.setId(UUID.randomUUID());
         order.setToken("ord_abc");
         when(freeCheckoutService.issueFreeOrder(any(), any(), eq(1), eq("free@example.com"),
-                org.mockito.ArgumentMatchers.isNull()))
+                org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.anyBoolean()))
                 .thenReturn(order);
         when(freeCheckoutService.findOrderTickets(order.getId())).thenReturn(java.util.List.of());
         when(freeCheckoutService.orderUrl(order)).thenReturn("http://localhost:3000/order/ord_abc");
@@ -317,7 +347,8 @@ class StripeCheckoutServiceTest {
 
         assertThat(url).isEqualTo("http://localhost:3000/order/ord_abc");
         verify(freeCheckoutService).issueFreeOrder(any(), any(), eq(1), eq("free@example.com"),
-                org.mockito.ArgumentMatchers.isNull());
+                org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.anyBoolean());
         verify(freeCheckoutService).sendConfirmation(eq(order), any(), any());
         // Stripe must NOT be called for free orders.
         verify(sessionService, never()).create(any(SessionCreateParams.class));
@@ -338,7 +369,8 @@ class StripeCheckoutServiceTest {
                 });
 
         verify(freeCheckoutService, never()).issueFreeOrder(any(), any(),
-                org.mockito.ArgumentMatchers.anyInt(), any(), any());
+                org.mockito.ArgumentMatchers.anyInt(), any(), any(),
+                org.mockito.ArgumentMatchers.anyBoolean());
     }
 
     @Test
@@ -348,7 +380,8 @@ class StripeCheckoutServiceTest {
         when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(freeTier));
 
         when(freeCheckoutService.issueFreeOrder(any(), any(),
-                org.mockito.ArgumentMatchers.anyInt(), any(), any()))
+                org.mockito.ArgumentMatchers.anyInt(), any(), any(),
+                org.mockito.ArgumentMatchers.anyBoolean()))
                 .thenThrow(new ApiException(HttpStatus.CONFLICT,
                         com.imin.iminapi.security.ErrorCode.INVALID_STATE,
                         "Not enough tickets available"));
@@ -375,7 +408,8 @@ class StripeCheckoutServiceTest {
         com.imin.iminapi.model.Order order = new com.imin.iminapi.model.Order();
         order.setId(UUID.randomUUID());
         order.setToken("ord_zeroed");
-        when(freeCheckoutService.issueFreeOrder(any(), any(), eq(1), eq("buyer@example.com"), eq(promo)))
+        when(freeCheckoutService.issueFreeOrder(any(), any(), eq(1), eq("buyer@example.com"), eq(promo),
+                org.mockito.ArgumentMatchers.anyBoolean()))
                 .thenReturn(order);
         when(freeCheckoutService.findOrderTickets(order.getId())).thenReturn(java.util.List.of());
         when(freeCheckoutService.orderUrl(order)).thenReturn("http://localhost:3000/order/ord_zeroed");
@@ -383,7 +417,8 @@ class StripeCheckoutServiceTest {
         String url = svc.createCheckoutSession(eventId, tierId, 1, "ALLFREE", 1000, "buyer@example.com");
 
         assertThat(url).isEqualTo("http://localhost:3000/order/ord_zeroed");
-        verify(freeCheckoutService).issueFreeOrder(any(), any(), eq(1), eq("buyer@example.com"), eq(promo));
+        verify(freeCheckoutService).issueFreeOrder(any(), any(), eq(1), eq("buyer@example.com"), eq(promo),
+                org.mockito.ArgumentMatchers.anyBoolean());
         verify(sessionService, never()).create(any(SessionCreateParams.class));
     }
 }

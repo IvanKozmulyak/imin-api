@@ -76,10 +76,13 @@ public class FreeCheckoutService {
      *                     promo's {@code used_count} is incremented atomically in the
      *                     same transaction so usage caps are enforced consistently
      *                     between the paid (webhook-driven) and free (inline) paths.
+     * @param adsConsent   the buyer's cookie-consent-derived ads-consent decision (§7).
+     *                     Snapshotted onto {@code orders.ads_consent}; the Meta CAPI
+     *                     outbox writer only emits a server-side event when it is true.
      */
     @Transactional
     public Order issueFreeOrder(Event event, TicketTier tier, int quantity,
-                                 String buyerEmail, PromoCode appliedPromo) {
+                                 String buyerEmail, PromoCode appliedPromo, boolean adsConsent) {
         // Reserve + confirm atomically in the same transaction. expires_at is a
         // short fallback that the sweeper would only see if the surrounding
         // transaction crashed between reserve() and confirmSold() — both calls
@@ -97,6 +100,7 @@ public class FreeCheckoutService {
         order.setTotalMinor(0L);
         order.setCurrency(event.getCurrency());
         order.setPaymentMethod("free");
+        order.setAdsConsent(adsConsent);
         if (appliedPromo != null) {
             order.setPromoCodeId(appliedPromo.getId());
         }
