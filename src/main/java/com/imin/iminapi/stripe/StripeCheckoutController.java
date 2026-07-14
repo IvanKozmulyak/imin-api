@@ -41,8 +41,11 @@ public class StripeCheckoutController {
         }
         int quantity = body.quantity() == null ? 1 : body.quantity();
         String promoCode = body.promoCode();
+        // Nullable; treat null as false. Rides the buyer's cookie-consent ads-consent (§7)
+        // into orders.ads_consent — the lawful basis gate for the server-side Meta CAPI event.
+        boolean adsConsent = Boolean.TRUE.equals(body.adsConsent());
         String url = checkout.createCheckoutSession(eventId, body.tierId(), quantity,
-                promoCode, body.expectedPriceMinor(), body.email());
+                promoCode, body.expectedPriceMinor(), body.email(), adsConsent);
         return new CheckoutResponse(url);
     }
 
@@ -57,7 +60,11 @@ public class StripeCheckoutController {
                                    // REQUIRED when the computed total is 0 (free flow);
                                    // the BE has no other place to collect it because Stripe
                                    // Checkout is skipped. Ignored on paid flow today.
-                                   String email) {}
+                                   String email,
+                                   // Buyer's cookie-consent ads-consent decision from the
+                                   // imin-public consent banner (§7). Nullable; null ⇒ false.
+                                   // Persisted to orders.ads_consent; gates the Meta CAPI event.
+                                   Boolean adsConsent) {}
 
     public record CheckoutResponse(String url) {}
 }

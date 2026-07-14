@@ -1,5 +1,6 @@
 package com.imin.iminapi.service.ticket;
 
+import com.imin.iminapi.marketing.service.MetaCapiOutboxWriter;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Ticket;
@@ -49,19 +50,22 @@ public class PaidCheckoutService {
     private final TicketTierRepository tiers;
     private final StripeClient stripeClient;
     private final ApplicationEventPublisher publisher;
+    private final MetaCapiOutboxWriter metaCapiOutboxWriter;
 
     public PaidCheckoutService(OrderRepository orders,
                                 TicketRepository tickets,
                                 EventRepository events,
                                 TicketTierRepository tiers,
                                 StripeClient stripeClient,
-                                ApplicationEventPublisher publisher) {
+                                ApplicationEventPublisher publisher,
+                                MetaCapiOutboxWriter metaCapiOutboxWriter) {
         this.orders = orders;
         this.tickets = tickets;
         this.events = events;
         this.tiers = tiers;
         this.stripeClient = stripeClient;
         this.publisher = publisher;
+        this.metaCapiOutboxWriter = metaCapiOutboxWriter;
     }
 
     /**
@@ -138,6 +142,11 @@ public class PaidCheckoutService {
         order.setPaymentMethod("stripe");
         order.setStripePaymentIntentId(pi.getId());
         order.setStripeSessionId(resolved.sessionId);
+        // Buyer's cookie-consent ads-consent decision (§7), stamped into the session/PI
+        // metadata at checkout by StripeCheckoutService. Snapshotted onto orders.ads_consent;
+        // gates the server-side Meta CAPI event (MetaCapiOutboxWriter). Absent/anything-but-
+        // "true" defaults false (V60 default), so historical/unconsented orders never emit.
+        order.setAdsConsent("true".equals(meta.get("ads_consent")));
         order.setApplicationFeeMinor(pi.getApplicationFeeAmount() == null ? 0L : pi.getApplicationFeeAmount());
 
         String promoIdRaw = meta.get("promo_id");
@@ -172,6 +181,7 @@ public class PaidCheckoutService {
         }
 
         publisher.publishEvent(new TicketsIssuedEvent(order.getId()));
+        metaCapiOutboxWriter.writeForOrder(order.getId());
         log.info("Issued {} ticket(s) for PI {} → order {}", qty, pi.getId(), order.getId());
         return true;
     }

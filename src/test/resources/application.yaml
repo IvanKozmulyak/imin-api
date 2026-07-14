@@ -60,6 +60,10 @@ imin:
     recovery-window-days: 90
     recovery-max-per-hour: 5
     api-public-base-url: http://localhost:8080
+  meta:
+    # Dummy AES-256 key (base64 of 32 bytes) — CapiTokenCipher fails fast without it.
+    # Any valid 32-byte base64 works; tests never persist a real CAPI token.
+    enc-key: AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=
   api:
     base-path: /api/v1
   auth:

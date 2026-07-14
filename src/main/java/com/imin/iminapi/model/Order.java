@@ -79,6 +79,14 @@ public class Order {
     @Column(name = "sms_marketing_opt_in", nullable = false)
     private boolean smsMarketingOptIn = false;
 
+    /**
+     * Cookie-consent-derived ads-consent snapshot captured at order creation (§7). Backs
+     * {@code orders.ads_consent} (V60, {@code DEFAULT false}); the Ads-CAPI lawful basis.
+     * {@code MetaCapiOutboxWriter} only emits a server-side Meta event when this is true.
+     */
+    @Column(name = "ads_consent", nullable = false)
+    private boolean adsConsent = false;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Times.nowMicros();
 

@@ -26,9 +26,10 @@ public record PublicEventResponse(
         Instant onSaleAt,
         Instant saleClosesAt,
         PublicOrganizationDto organization,
-        List<PublicTierDto> tiers
+        List<PublicTierDto> tiers,
+        String metaPixelId
 ) {
-    public static PublicEventResponse from(Event e, Organization org, List<PublicTierDto> tiers) {
+    public static PublicEventResponse from(Event e, Organization org, List<PublicTierDto> tiers, String metaPixelId) {
         return new PublicEventResponse(
                 e.getId(),
                 e.getSlug(),
@@ -53,6 +54,7 @@ public record PublicEventResponse(
                 e.getOnSaleAt(),
                 e.getSaleClosesAt(),
                 new PublicOrganizationDto(org.getName(), org.getSlug()),
-                tiers);
+                tiers,
+                metaPixelId);
     }
 }
