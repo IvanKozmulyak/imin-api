@@ -5,6 +5,7 @@ import com.imin.iminapi.dto.publicapi.PublicEventListItem;
 import com.imin.iminapi.dto.publicapi.PublicEventResponse;
 import com.imin.iminapi.dto.publicapi.PublicOrganizationDto;
 import com.imin.iminapi.dto.publicapi.PublicTierDto;
+import com.imin.iminapi.marketing.repository.MetaPixelConnectionRepository;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.EventRepository;
@@ -37,17 +38,20 @@ public class PublicEventService {
     private final OrganizationRepository organizationRepository;
     private final PublicListingProperties listingProperties;
     private final Clock clock;
+    private final MetaPixelConnectionRepository metaPixelConnections;
 
     public PublicEventService(EventRepository eventRepository,
                                TicketTierRepository tierRepository,
                                OrganizationRepository organizationRepository,
                                PublicListingProperties listingProperties,
-                               Clock clock) {
+                               Clock clock,
+                               MetaPixelConnectionRepository metaPixelConnections) {
         this.eventRepository = eventRepository;
         this.tierRepository = tierRepository;
         this.organizationRepository = organizationRepository;
         this.listingProperties = listingProperties;
         this.clock = clock;
+        this.metaPixelConnections = metaPixelConnections;
     }
 
     @Transactional(readOnly = true)
@@ -82,7 +86,16 @@ public class PublicEventService {
         }
         List<PublicTierDto> tiers = stream.toList();
 
-        return PublicEventResponse.from(event, org, tiers);
+        String metaPixelId = resolveMetaPixelId(event.getOrgId(), event.getId());
+        return PublicEventResponse.from(event, org, tiers, metaPixelId);
+    }
+
+    private String resolveMetaPixelId(java.util.UUID orgId, java.util.UUID eventId) {
+        return metaPixelConnections.findByOrgIdAndEventId(orgId, eventId)
+                .or(() -> metaPixelConnections.findByOrgIdAndEventIdIsNull(orgId))
+                .filter(c -> "active".equals(c.getStatus()))
+                .map(com.imin.iminapi.marketing.model.MetaPixelConnection::getPixelId)
+                .orElse(null);
     }
 
     @Transactional(readOnly = true)

@@ -77,7 +77,8 @@ class PublicEventControllerTest {
                 Instant.parse("2026-02-01T00:00:00Z"),
                 Instant.parse("2026-06-30T00:00:00Z"),
                 org,
-                List.of(tier)
+                List.of(tier),
+                null
         );
     }
 
@@ -147,7 +148,7 @@ class PublicEventControllerTest {
                 "genre", "type", "description", "startsAt", "endsAt",
                 "timezone", "venue", "posterUrl", "videoUrl",
                 "currency", "onSaleAt", "saleClosesAt",
-                "organization", "tiers"
+                "organization", "tiers", "metaPixelId"
         );
         assertThat(actualRootKeys)
                 .as("Top-level keys leaked or missing. " +
