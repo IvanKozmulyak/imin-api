@@ -11,6 +11,7 @@ import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
+import com.imin.iminapi.marketing.service.CampaignVolumeGuard;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -39,15 +40,18 @@ public class RecipientMaterializer {
     private final ConsumerRepository consumers;
     private final CampaignRecipientRepository recipients;
     private final CampaignRepository campaigns;
+    private final CampaignVolumeGuard volumeGuard;
 
     public RecipientMaterializer(SegmentService segmentService, SendGateService sendGate,
                                  ConsumerRepository consumers,
-                                 CampaignRecipientRepository recipients, CampaignRepository campaigns) {
+                                 CampaignRecipientRepository recipients, CampaignRepository campaigns,
+                                 CampaignVolumeGuard volumeGuard) {
         this.segmentService = segmentService;
         this.sendGate = sendGate;
         this.consumers = consumers;
         this.recipients = recipients;
         this.campaigns = campaigns;
+        this.volumeGuard = volumeGuard;
     }
 
     @Transactional
@@ -71,6 +75,10 @@ public class RecipientMaterializer {
         consumers.findAllByConsumerIdIn(byId.values().stream().map(Membership::getConsumerId).distinct().toList())
                 .forEach(cn -> emailByConsumer.put(cn.getConsumerId(), cn.getNormalizedEmail()));
 
+        Map<String, Integer> summary = new TreeMap<>();
+        Instant now = Instant.now();
+        int pending = 0;
+        int frequencySkipped = 0;
         for (UUID mid : gate.sendable()) {
             Membership m = byId.get(mid);
             CampaignRecipient r = new CampaignRecipient();
@@ -78,12 +86,21 @@ public class RecipientMaterializer {
             r.setCampaignId(c.getId());
             r.setMembershipId(mid);
             r.setEmail(m == null ? null : emailByConsumer.get(m.getConsumerId()));
-            r.setStatus("pending");
-            r.setLastEventAt(Instant.now());
+            r.setLastEventAt(now);
+            // Per-member frequency floor (spec §7): a member contacted within the floor
+            // window is diverted to a skipped row rather than sent again.
+            if (volumeGuard.isFrequencyCapped(mid, now)) {
+                r.setStatus("skipped");
+                r.setSkipReason("frequency_capped");
+                summary.merge("frequency_capped", 1, Integer::sum);
+                frequencySkipped++;
+            } else {
+                r.setStatus("pending");
+                pending++;
+            }
             recipients.save(r);
         }
 
-        Map<String, Integer> summary = new TreeMap<>();
         for (ExclusionReason ex : gate.excluded()) {
             Membership m = byId.get(ex.membershipId());
             CampaignRecipient r = new CampaignRecipient();
@@ -93,13 +110,13 @@ public class RecipientMaterializer {
             r.setEmail(m == null ? null : emailByConsumer.get(m.getConsumerId()));
             r.setStatus("skipped");
             r.setSkipReason(ex.reason());
-            r.setLastEventAt(Instant.now());
+            r.setLastEventAt(now);
             recipients.save(r);
             summary.merge(ex.reason(), 1, Integer::sum);
         }
 
-        c.setRecipientCount(gate.sendable().size());
-        c.setExcludedCount(gate.excluded().size());
+        c.setRecipientCount(pending);
+        c.setExcludedCount(gate.excluded().size() + frequencySkipped);
         c.setExclusionSummary(toJson(summary));
         campaigns.save(c);
     }

@@ -174,4 +174,55 @@ class CampaignServiceTest {
         assertThatThrownBy(() -> service.testSend(principal(ORG), d.id(), null))
                 .isInstanceOf(ApiException.class);
     }
+
+    // ---- Task 12: cancel / retry / detail-with-stats ----
+
+    @Test
+    void cancel_flips_a_scheduled_campaign_to_canceled() {
+        CampaignDto d = service.create(principal(ORG),
+                new CreateCampaignRequest("email", "Cancel me", null, null, null, null, null));
+        service.forceStatusForTest(d.id(), "scheduled");
+        service.cancel(principal(ORG), d.id());
+        assertThat(service.get(principal(ORG), d.id()).status()).isEqualTo("canceled");
+    }
+
+    @Test
+    void cancel_rejects_a_non_scheduled_campaign() {
+        CampaignDto d = service.create(principal(ORG),
+                new CreateCampaignRequest("email", "Sent already", null, null, null, null, null));
+        service.forceStatusForTest(d.id(), "sent");
+        assertThatThrownBy(() -> service.cancel(principal(ORG), d.id()))
+                .isInstanceOf(ApiException.class);
+    }
+
+    @Test
+    void retry_requeues_a_failed_campaign_to_scheduled() {
+        CampaignDto d = service.create(principal(ORG),
+                new CreateCampaignRequest("email", "Retry me", null, null, null, null, null));
+        service.forceStatusForTest(d.id(), "failed");
+        service.retry(principal(ORG), d.id());
+        CampaignDto after = service.get(principal(ORG), d.id());
+        assertThat(after.status()).isEqualTo("scheduled");
+        assertThat(after.scheduledAt()).isNotNull();
+    }
+
+    @Test
+    void retry_rejects_a_non_failed_campaign() {
+        CampaignDto d = service.create(principal(ORG),
+                new CreateCampaignRequest("email", "Draft still", null, null, null, null, null));
+        assertThatThrownBy(() -> service.retry(principal(ORG), d.id()))
+                .isInstanceOf(ApiException.class);
+    }
+
+    @Test
+    void detail_with_stats_returns_a_zeroed_stats_block_before_any_send() {
+        CampaignDto d = service.create(principal(ORG),
+                new CreateCampaignRequest("email", "Fresh", null, null, null, null, null));
+        var detail = service.detailWithStats(principal(ORG), d.id());
+        assertThat(detail.name()).isEqualTo("Fresh");
+        assertThat(detail.stats()).isNotNull();
+        assertThat(detail.stats().sent()).isZero();
+        assertThat(detail.stats().opened()).isZero();
+        assertThat(detail.stats().attributedPurchases()).isZero();
+    }
 }

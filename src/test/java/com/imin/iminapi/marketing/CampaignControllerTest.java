@@ -73,6 +73,14 @@ class CampaignControllerTest {
                 "Subj", "Pre", "body", now, now);
     }
 
+    private com.imin.iminapi.marketing.dto.CampaignDetailDto sampleDetailDto() {
+        Instant now = Instant.parse("2026-07-11T10:00:00Z");
+        var stats = new com.imin.iminapi.marketing.dto.CampaignStatsDto(10, 9, 3, 1, 0, 0, 0, 2);
+        return new com.imin.iminapi.marketing.dto.CampaignDetailDto(CAMP, ORG, "email", "Launch night", "draft",
+                null, null, "manual", null, null, null, null, null,
+                "Subj", "Pre", "body", now, now, stats);
+    }
+
     @Test
     @WithStubOrganizer
     void create_returns_201_with_the_draft() throws Exception {
@@ -88,10 +96,11 @@ class CampaignControllerTest {
     @Test
     @WithStubOrganizer
     void get_returns_the_detail() throws Exception {
-        when(service.get(any(), eq(CAMP))).thenReturn(sampleDto());
+        when(service.detailWithStats(any(), eq(CAMP))).thenReturn(sampleDetailDto());
         mvc.perform(get("/api/v1/marketing/campaigns/{id}", CAMP))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.name").value("Launch night"));
+                .andExpect(jsonPath("$.name").value("Launch night"))
+                .andExpect(jsonPath("$.stats.opened").value(3));
     }
 
     @Test

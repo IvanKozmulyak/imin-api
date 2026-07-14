@@ -55,4 +55,16 @@ public interface FunnelEventRepository extends JpaRepository<FunnelEvent, UUID> 
              order by count(fe) desc
             """)
     List<Object[]> countUntaggedByReferrerHostForOrg(@Param("orgId") UUID orgId);
+
+    /**
+     * Distinct converting sessions attributed to a campaign: count of distinct
+     * anon ids that hit CHECKOUT_START carrying this campaign's utm_campaign.
+     * Visit-based proxy (orders carry no utm today — see AttributionService).
+     */
+    @Query("""
+            select count(distinct fe.anonId) from FunnelEvent fe
+             where fe.utmCampaign = :campaign
+               and fe.stage = 'CHECKOUT_START'
+            """)
+    long countAttributedCheckoutSessions(@Param("campaign") String campaign);
 }

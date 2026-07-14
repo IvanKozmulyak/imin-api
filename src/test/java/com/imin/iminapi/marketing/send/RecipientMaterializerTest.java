@@ -106,4 +106,41 @@ class RecipientMaterializerTest {
         materializer.materialize(c);
         assertThat(recipients.countByCampaignId(c.getId())).isEqualTo(2L);
     }
+
+    @Test
+    void frequencyCappedSendableMemberIsMaterializedAsSkipped() {
+        UUID orgId = UUID.randomUUID();
+        UUID segmentId = UUID.randomUUID();
+        Membership member = persistMember(orgId, "freq-" + UUID.randomUUID() + "@example.com");
+
+        // Seed a recent send for this member on a PRIOR campaign so the frequency floor trips.
+        Campaign prior = persistedCampaign(orgId, segmentId);
+        com.imin.iminapi.marketing.model.CampaignRecipient recent =
+                new com.imin.iminapi.marketing.model.CampaignRecipient();
+        recent.setId(UUID.randomUUID());
+        recent.setCampaignId(prior.getId());
+        recent.setMembershipId(member.getMembershipId());
+        recent.setEmail("m@example.com");
+        recent.setStatus("sent");
+        recent.setLastEventAt(Instant.now().minus(1, java.time.temporal.ChronoUnit.HOURS));
+        recipients.save(recent);
+
+        Campaign c = persistedCampaign(orgId, segmentId);
+        Segment seg = new Segment();
+        seg.setOrgId(orgId);
+        when(segmentService.requireSegmentForOrg(any(), any())).thenReturn(seg);
+        when(segmentService.resolveMembers(any(), any())).thenReturn(List.of(member));
+        // SendGate says the member is sendable; the frequency floor is the materializer's own gate.
+        when(sendGate.evaluate(any(), anyCollection())).thenReturn(
+                new SendGateService.GateResult(List.of(member.getMembershipId()), List.of()));
+
+        materializer.materialize(c);
+
+        assertThat(recipients.countByCampaignIdAndStatus(c.getId(), "pending")).isEqualTo(0L);
+        assertThat(recipients.countByCampaignIdAndStatus(c.getId(), "skipped")).isEqualTo(1L);
+        Campaign reloaded = campaigns.findByIdAndOrgId(c.getId(), orgId).orElseThrow();
+        assertThat(reloaded.getRecipientCount()).isEqualTo(0);
+        assertThat(reloaded.getExcludedCount()).isEqualTo(1);
+        assertThat(reloaded.getExclusionSummary()).isEqualTo("{\"frequency_capped\":1}");
+    }
 }

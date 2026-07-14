@@ -30,6 +30,22 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
     @Query("delete from Membership m where m.membershipId = :id and m.orgId = :orgId")
     int deleteByIdAndOrgId(@Param("id") UUID id, @Param("orgId") UUID orgId);
 
+    // ---- webhook open/click projection (Phase 4 §2.5 step 5) ----
+    // The recipient (and its membershipId) is resolved upstream by provider_message_id,
+    // so these are id-keyed writes — no email-lookup query (Membership has no normalizedEmail).
+    // @Modifying + @Transactional so the update runs in a writable tx even when the caller
+    // reaches the repo without an outer transaction (repo extends the bare Repository<> marker).
+
+    @Modifying
+    @Transactional
+    @Query("update Membership m set m.lastEmailOpen = :ts where m.membershipId = :id")
+    void recordEmailOpen(@Param("id") UUID id, @Param("ts") Instant ts);
+
+    @Modifying
+    @Transactional
+    @Query("update Membership m set m.lastEmailClick = :ts where m.membershipId = :id")
+    void recordEmailClick(@Param("id") UUID id, @Param("ts") Instant ts);
+
     // ---- tenant-scoped reads ----
 
     @Query("select m from Membership m where m.membershipId = :id and m.orgId = :orgId")

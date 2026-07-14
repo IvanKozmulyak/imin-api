@@ -12,11 +12,19 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
 
     List<CampaignRecipient> findByCampaignIdAndStatus(UUID campaignId, String status);
 
+    java.util.Optional<CampaignRecipient> findByProviderMessageId(String providerMessageId);
+
     java.util.List<CampaignRecipient> findByCampaignId(UUID campaignId, org.springframework.data.domain.Pageable pageable);
 
     java.util.List<CampaignRecipient> findByCampaignIdAndStatus(UUID campaignId, String status, org.springframework.data.domain.Pageable pageable);
 
     long countByCampaignIdAndStatus(UUID campaignId, String status);
+
+    long countByCampaignIdAndStatusIn(UUID campaignId, java.util.Collection<String> statuses);
+
+    long countByCampaignIdAndOpenedAtNotNull(UUID campaignId);
+
+    long countByCampaignIdAndClickedAtNotNull(UUID campaignId);
 
     long countByCampaignId(UUID campaignId);
 
@@ -34,6 +42,35 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
         """, nativeQuery = true)
     List<CampaignRecipient> claimPendingBatch(@Param("campaignId") UUID campaignId,
                                               @Param("limit") int limit);
+
+    /**
+     * Count recent sends for a membership across all campaigns — backs the per-member
+     * frequency floor in {@link com.imin.iminapi.marketing.service.CampaignVolumeGuard}
+     * (spec §7). A member contacted within the floor window is skipped.
+     */
+    @Query("""
+            select count(r) from CampaignRecipient r
+             where r.membershipId = :membershipId
+               and r.status in ('sent','delivered','opened','clicked')
+               and r.lastEventAt >= :since
+            """)
+    long countRecentSendsForMembership(@Param("membershipId") UUID membershipId,
+                                       @Param("since") java.time.Instant since);
+
+    /**
+     * Rolling-window org send count — backs the per-org daily cap in the dispatcher
+     * (spec §7). Joins recipients to their campaign by org, counting rows actually
+     * sent (or further along) with a send timestamp inside the window.
+     */
+    @Query("""
+            select count(r) from CampaignRecipient r, com.imin.iminapi.marketing.model.Campaign c
+             where r.campaignId = c.id
+               and c.orgId = :orgId
+               and r.status in ('sent','delivered','opened','clicked')
+               and r.lastEventAt >= :since
+            """)
+    long countRecentSendsForOrg(@Param("orgId") UUID orgId,
+                                @Param("since") java.time.Instant since);
 
     /**
      * DSAR (spec §7): null the recipient PII (email/phone/rendered body) for every row belonging
