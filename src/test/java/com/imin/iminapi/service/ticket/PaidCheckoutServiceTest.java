@@ -247,7 +247,7 @@ class PaidCheckoutServiceTest {
 
     @Test
     void defaults_ads_consent_false_when_metadata_absent() throws Exception {
-        // No ads_consent key in metadata → must stay false (V58 default), so unconsented
+        // No ads_consent key in metadata → must stay false (V60 default), so unconsented
         // orders never emit a server-side Meta event.
         PaymentIntent pi = pi("pi_test_no_ads_consent", 1500, "eur",
                 Map.of(

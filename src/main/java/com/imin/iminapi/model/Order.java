@@ -81,7 +81,7 @@ public class Order {
 
     /**
      * Cookie-consent-derived ads-consent snapshot captured at order creation (§7). Backs
-     * {@code orders.ads_consent} (V58, {@code DEFAULT false}); the Ads-CAPI lawful basis.
+     * {@code orders.ads_consent} (V60, {@code DEFAULT false}); the Ads-CAPI lawful basis.
      * {@code MetaCapiOutboxWriter} only emits a server-side Meta event when this is true.
      */
     @Column(name = "ads_consent", nullable = false)

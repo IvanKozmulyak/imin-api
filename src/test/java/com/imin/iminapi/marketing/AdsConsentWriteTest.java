@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>The free order-creation path runs inline in
  * {@link FreeCheckoutService#issueFreeOrder}; this test asserts the ads-consent flag the
  * buyer's cookie-consent state carried through checkout is persisted onto the {@link Order},
- * and that the V58 {@code DEFAULT false} holds when consent is absent. The paid-path facets
+ * and that the V60 {@code DEFAULT false} holds when consent is absent. The paid-path facets
  * (Stripe session {@code metadata} put + webhook read-back) are covered by
  * {@code StripeCheckoutServiceTest} and {@code PaidCheckoutServiceTest} respectively.
  */

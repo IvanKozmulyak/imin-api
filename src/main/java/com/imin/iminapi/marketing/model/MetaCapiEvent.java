@@ -29,7 +29,7 @@ public class MetaCapiEvent {
     @Column(name = "order_id", nullable = false)
     private UUID orderId;
 
-    // orders.token — the shared browser<->CAPI dedup key (Meta event_id). See V58.
+    // orders.token — the shared browser<->CAPI dedup key (Meta event_id). See V60.
     @Column(name = "order_token", nullable = false)
     private String orderToken;
 
