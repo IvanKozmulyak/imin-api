@@ -34,8 +34,14 @@ class CapiTokenCipherTest {
     }
 
     @Test
-    void failsFastOnMissingKey() {
-        assertThatThrownBy(() -> new CapiTokenCipher(""))
+    void missingKeyFailsOnFirstUseNotAtBoot() {
+        // Lazy contract (2026-07-14): a missing key must never block application
+        // boot — construction succeeds, the first encrypt/decrypt throws.
+        CapiTokenCipher cipher = new CapiTokenCipher("");
+        assertThatThrownBy(() -> cipher.encrypt("tok"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("META_CAPI_ENC_KEY");
+        assertThatThrownBy(() -> cipher.decrypt("AAAA"))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("META_CAPI_ENC_KEY");
     }
