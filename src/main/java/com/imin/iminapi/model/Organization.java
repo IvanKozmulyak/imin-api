@@ -106,6 +106,15 @@ public class Organization {
     @Column(name = "stripe_connect_status_updated_at")
     private Instant stripeConnectStatusUpdatedAt;
 
+    /**
+     * Org-level marketing send pause (V57, spec §7 complaint-rate circuit breaker).
+     * Set by {@code ComplaintRateBreaker} when a campaign's complaint rate crosses
+     * the ~0.1% threshold above the minimum-volume floor. While non-null the
+     * dispatcher refuses to send any of the org's campaigns. NULL = not paused.
+     */
+    @Column(name = "marketing_paused_at")
+    private java.time.Instant marketingPausedAt;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Times.nowMicros();
 
