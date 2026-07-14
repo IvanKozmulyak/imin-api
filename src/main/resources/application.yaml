@@ -263,6 +263,16 @@ imin:
     access-key-id: ${R2_ACCESS_KEY_ID:}
     secret-access-key: ${R2_SECRET_ACCESS_KEY:}
     public-url-prefix: ${R2_PUBLIC_URL_PREFIX:}
+  meta:
+    # Meta Graph API version for the CAPI events endpoint. Parameterized so we never
+    # bake in a forced migration; v25.0 is current as of 2026-07 (spec §5).
+    graph-api-version: ${META_GRAPH_API_VERSION:v25.0}
+    base-url: ${META_GRAPH_BASE_URL:https://graph.facebook.com}
+    # base64 of a 32-byte AES-256 key for the write-only CAPI token.
+    enc-key: ${META_CAPI_ENC_KEY:}
+    # Poller batch size and backoff bounds (spec §5: 1m -> 12h, dead after 5).
+    poll-batch-size: ${META_CAPI_POLL_BATCH:50}
+    max-attempts: ${META_CAPI_MAX_ATTEMPTS:5}
 
 sentry:
   dsn: ${SENTRY_DSN:}
