@@ -46,12 +46,14 @@ public class CampaignService {
     private final SendGateService sendGate;
     private final EmailService email;
     private final UserRepository users;
+    private final CampaignAttributionService attribution;
 
     public CampaignService(CampaignRepository campaigns,
                            com.imin.iminapi.marketing.repository.CampaignRecipientRepository campaignRecipientRepository,
                            AuditLogger audit,
                            SegmentService segments, SendGateService sendGate,
-                           EmailService email, UserRepository users) {
+                           EmailService email, UserRepository users,
+                           CampaignAttributionService attribution) {
         this.campaigns = campaigns;
         this.campaignRecipientRepository = campaignRecipientRepository;
         this.audit = audit;
@@ -59,6 +61,7 @@ public class CampaignService {
         this.sendGate = sendGate;
         this.email = email;
         this.users = users;
+        this.attribution = attribution;
     }
 
     @Transactional
@@ -244,6 +247,71 @@ public class CampaignService {
         List<com.imin.iminapi.marketing.dto.RecipientDto> items =
                 rows.stream().map(com.imin.iminapi.marketing.dto.RecipientDto::from).toList();
         return new com.imin.iminapi.marketing.dto.RecipientPage(items, page, size);
+    }
+
+    /**
+     * Guarded {@code scheduled→canceled} (spec §2.4). Any other status is a 409 INVALID_STATE —
+     * a sending/sent/failed/draft campaign cannot be canceled through this endpoint.
+     */
+    @Transactional
+    public void cancel(AuthPrincipal principal, UUID campaignId) {
+        Campaign c = require(principal.orgId(), campaignId);
+        if (!"scheduled".equals(c.getStatus())) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                    "Only scheduled campaigns can be canceled");
+        }
+        c.setStatus("canceled");
+        c.setUpdatedAt(Instant.now());
+        campaigns.save(c);
+        audit.record(principal, "CAMPAIGN_CANCELED", "campaign", c.getId(), "Campaign canceled");
+    }
+
+    /**
+     * Guarded retry of a {@code failed} campaign (spec §2.4): flip back to {@code scheduled}
+     * with {@code scheduled_at=now} so the dispatcher re-claims it, only while attempts &lt; 3.
+     * Any other status — or an exhausted-attempts failed row — is a 409 INVALID_STATE.
+     */
+    @Transactional
+    public Campaign retry(AuthPrincipal principal, UUID campaignId) {
+        Campaign c = require(principal.orgId(), campaignId);
+        if (!"failed".equals(c.getStatus()) || c.getAttempts() >= 3) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                    "Campaign is not retryable");
+        }
+        c.setStatus("scheduled");
+        c.setScheduledAt(Instant.now());
+        c.setUpdatedAt(Instant.now());
+        Campaign saved = campaigns.save(c);
+        audit.record(principal, "CAMPAIGN_RETRIED", "campaign", c.getId(), "Campaign retry queued");
+        return saved;
+    }
+
+    /** Campaign detail + aggregate stats block (spec §2.4/§3). Org-scoped. */
+    @Transactional(readOnly = true)
+    public com.imin.iminapi.marketing.dto.CampaignDetailDto detailWithStats(AuthPrincipal p, UUID id) {
+        Campaign c = require(p.orgId(), id);
+        return com.imin.iminapi.marketing.dto.CampaignDetailDto.from(c, stats(id));
+    }
+
+    /**
+     * Aggregate send/engagement counts for a campaign (spec §3). {@code sent} is every row that
+     * left the queue (any lifecycle status past pending/failed/skipped); {@code opened}/{@code clicked}
+     * read the webhook-projected timestamps; {@code attributedPurchases} is the utm_campaign funnel count.
+     */
+    @Transactional(readOnly = true)
+    public com.imin.iminapi.marketing.dto.CampaignStatsDto stats(UUID campaignId) {
+        long sent = campaignRecipientRepository.countByCampaignIdAndStatusIn(campaignId,
+                java.util.List.of("sent", "delivered", "opened", "clicked",
+                        "bounced", "complained", "unsubscribed"));
+        long delivered = campaignRecipientRepository.countByCampaignIdAndStatus(campaignId, "delivered");
+        long opened = campaignRecipientRepository.countByCampaignIdAndOpenedAtNotNull(campaignId);
+        long clicked = campaignRecipientRepository.countByCampaignIdAndClickedAtNotNull(campaignId);
+        long bounced = campaignRecipientRepository.countByCampaignIdAndStatus(campaignId, "bounced");
+        long unsubscribed = campaignRecipientRepository.countByCampaignIdAndStatus(campaignId, "unsubscribed");
+        long complained = campaignRecipientRepository.countByCampaignIdAndStatus(campaignId, "complained");
+        long attributed = attribution.attributedPurchaseCount(campaignId);
+        return new com.imin.iminapi.marketing.dto.CampaignStatsDto(
+                sent, delivered, opened, clicked, bounced, unsubscribed, complained, attributed);
     }
 
     // ---- helpers ----

@@ -48,8 +48,9 @@ public class CampaignController {
     }
 
     @GetMapping("/{id}")
-    public CampaignDto get(@AuthenticationPrincipal AuthPrincipal principal, @PathVariable UUID id) {
-        return service.get(principal, id);
+    public com.imin.iminapi.marketing.dto.CampaignDetailDto get(
+            @AuthenticationPrincipal AuthPrincipal principal, @PathVariable UUID id) {
+        return service.detailWithStats(principal, id);
     }
 
     @PatchMapping("/{id}")
@@ -91,6 +92,26 @@ public class CampaignController {
             @RequestBody(required = false) SendRequest body) {
         java.time.Instant scheduledAt = body == null ? null : body.scheduledAt();
         service.send(id, principal, idempotencyKey, scheduledAt);
+        return ResponseEntity.status(HttpStatus.ACCEPTED).build();
+    }
+
+    /** Guarded scheduled→canceled (spec §2.4). 409 INVALID_STATE from any other status. */
+    @PostMapping("/{id}/cancel")
+    public ResponseEntity<Void> cancel(
+            @AuthenticationPrincipal AuthPrincipal principal, @PathVariable UUID id) {
+        service.cancel(principal, id);
+        return ResponseEntity.ok().build();
+    }
+
+    /**
+     * Retry a failed campaign (spec §2.4). Distinct from {@code /send} (which is the
+     * draft→scheduled path) — this re-queues a {@code failed} campaign while attempts &lt; 3.
+     * Returns 202 Accepted (the dispatcher re-claims it), matching {@code /send} semantics.
+     */
+    @PostMapping("/{id}/retry")
+    public ResponseEntity<Void> retry(
+            @AuthenticationPrincipal AuthPrincipal principal, @PathVariable UUID id) {
+        service.retry(principal, id);
         return ResponseEntity.status(HttpStatus.ACCEPTED).build();
     }
 

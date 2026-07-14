@@ -20,6 +20,12 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
 
     long countByCampaignIdAndStatus(UUID campaignId, String status);
 
+    long countByCampaignIdAndStatusIn(UUID campaignId, java.util.Collection<String> statuses);
+
+    long countByCampaignIdAndOpenedAtNotNull(UUID campaignId);
+
+    long countByCampaignIdAndClickedAtNotNull(UUID campaignId);
+
     long countByCampaignId(UUID campaignId);
 
     /**
