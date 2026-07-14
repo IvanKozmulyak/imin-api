@@ -287,6 +287,19 @@ imin:
     # Poller batch size and backoff bounds (spec §5: 1m -> 12h, dead after 5).
     poll-batch-size: ${META_CAPI_POLL_BATCH:50}
     max-attempts: ${META_CAPI_MAX_ATTEMPTS:5}
+  momentum:
+    # Momentum Engine trigger thresholds (spec §6.1 "initial thresholds, config-tunable").
+    # Every launch-tuning number lives here so tuning is a config change, not a code change.
+    min-audience-floor: 10
+    cooldown-days: 7
+    launch-after-hours: 48
+    launch-max-sell-through-pct: 15
+    slump-min-days-out: 14
+    slump-min-sell-through-pct: 15
+    slump-target-pct: 50
+    urgency-before-hours: 72
+    urgency-min-sell-through-pct: 30
+    urgency-max-sell-through-pct: 90
 
 sentry:
   dsn: ${SENTRY_DSN:}
