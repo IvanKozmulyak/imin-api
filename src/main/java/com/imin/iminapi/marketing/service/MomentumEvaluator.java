@@ -41,11 +41,13 @@ public class MomentumEvaluator {
     private final MomentumCopyGenerator copy;
     private final SendGateService sendGate;
     private final SegmentService segments;
+    private final MomentumNotifier notifier;
 
     public MomentumEvaluator(EventRepository events, OrderRepository orders,
                              TicketTierRepository tiers, MomentumSuggestionRepository suggestions,
                              MomentumThresholds thresholds, MomentumCopyGenerator copy,
-                             SendGateService sendGate, SegmentService segments) {
+                             SendGateService sendGate, SegmentService segments,
+                             MomentumNotifier notifier) {
         this.events = events;
         this.orders = orders;
         this.tiers = tiers;
@@ -54,6 +56,7 @@ public class MomentumEvaluator {
         this.copy = copy;
         this.sendGate = sendGate;
         this.segments = segments;
+        this.notifier = notifier;
     }
 
     @Scheduled(cron = "0 0 * * * *") // top of every hour
@@ -150,6 +153,9 @@ public class MomentumEvaluator {
         s.setDraftPayload(toDraftJson(draft));
         s.setSuggestedAt(now);
         suggestions.save(s);
+        // Best-effort in-app ping in its OWN (REQUIRES_NEW) transaction — a failure here
+        // cannot roll back the suggestion just persisted (see MomentumNotifier).
+        notifier.notifyOwner(e.getOrgId(), fired.wireValue(), draft.why());
     }
 
     /** First matching rule, evaluated most-urgent first (spec §6.1). */

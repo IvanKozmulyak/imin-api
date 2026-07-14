@@ -13,6 +13,7 @@ import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.security.AuthPrincipal;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -121,6 +122,14 @@ public class MomentumTestSupport {
     /** Org id backing a seeded event. */
     public UUID orgIdOf(UUID eventId) {
         return events.findById(eventId).orElseThrow().getOrgId();
+    }
+
+    /**
+     * Build a USER {@link AuthPrincipal} scoped to {@code orgId} (OWNER role), mirroring
+     * {@code @WithStubOrganizer}. Used by MomentumServiceTest for list/approve/dismiss calls.
+     */
+    public AuthPrincipal principalFor(UUID orgId) {
+        return new AuthPrincipal(UUID.randomUUID(), orgId, UserRole.OWNER, UUID.randomUUID());
     }
 
     /** Move the event's start into the past so the expiry sweep treats live suggestions as stale. */
