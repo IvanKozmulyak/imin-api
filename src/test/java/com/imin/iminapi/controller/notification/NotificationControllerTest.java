@@ -15,13 +15,18 @@ import org.springframework.security.test.context.support.WithSecurityContextFact
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
+import com.imin.iminapi.model.Notification;
+
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @SpringBootTest
@@ -66,5 +71,43 @@ class NotificationControllerTest {
         mvc.perform(get("/api/v1/notifications/unread-count"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.count").value(3));
+    }
+
+    private Notification make(String title) {
+        Notification n = new Notification();
+        n.setId(UUID.randomUUID());
+        n.setUserId(USER);
+        n.setKind("momentum_suggestion");
+        n.setTitle(title);
+        n.setBody("body of " + title);
+        n.setLink("/marketing?tab=momentum");
+        n.setCreatedAt(Instant.now());
+        return n;
+    }
+
+    @Test
+    @WithStubUser
+    void list_returns_user_notifications() throws Exception {
+        when(repo.findTop50ByUserIdOrderByCreatedAtDesc(USER))
+                .thenReturn(List.of(make("newer"), make("older")));
+        mvc.perform(get("/api/v1/notifications"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(2))
+                .andExpect(jsonPath("$[0].title").value("newer"))
+                .andExpect(jsonPath("$[0].kind").value("momentum_suggestion"))
+                .andExpect(jsonPath("$[0].link").value("/marketing?tab=momentum"))
+                .andExpect(jsonPath("$[0].readAt").isEmpty());
+    }
+
+    @Test
+    @WithStubUser
+    void read_all_marks_unread_and_returns_zero() throws Exception {
+        Notification unread = make("mine");
+        when(repo.findByUserIdAndReadAtIsNull(USER)).thenReturn(List.of(unread));
+        mvc.perform(post("/api/v1/notifications/read-all"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.count").value(0));
+        org.assertj.core.api.Assertions.assertThat(unread.getReadAt()).isNotNull();
+        verify(repo).saveAll(List.of(unread));
     }
 }
