@@ -84,6 +84,14 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
                     @Param("status") String status);
 
     /**
+     * Org's campaigns created since a cutoff — feeds the marketing hub 30-day
+     * attributed-purchases roll-up (summed per-campaign via CampaignAttributionService).
+     */
+    @Query("select c from Campaign c where c.orgId = :orgId and c.createdAt >= :since")
+    List<Campaign> findByOrgCreatedSince(@Param("orgId") UUID orgId,
+                                         @Param("since") java.time.Instant since);
+
+    /**
      * Spec §2.5: claim due campaigns — scheduled+due, retryable failed (attempts<3),
      * or stale sending (heartbeat > 5 min old, orphaned by a mid-send crash). SKIP LOCKED
      * so multiple dispatcher instances don't double-claim.

@@ -164,6 +164,23 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
     @Query("select count(m) from Membership m where m.orgId = :orgId and m.consentBasis = 'soft_opt_in'")
     long countSoftOptInByOrgId(@Param("orgId") UUID orgId);
 
+    /**
+     * SMS phones collected WITH consent: memberships that have opted in for SMS
+     * (sms_consent_status = 'subscribed') and carry a phone number. Feeds the
+     * marketing hub {@code smsPhones} tile.
+     */
+    @Query("""
+            select count(m) from Membership m
+             where m.orgId = :orgId
+               and m.smsConsentStatus = 'subscribed'
+               and m.phoneE164 is not null
+            """)
+    long countSmsSubscribedByOrgId(@Param("orgId") UUID orgId);
+
+    /** All membership ids for an org — feeds the hub Send-Gate evaluation over ALL members. */
+    @Query("select m.membershipId from Membership m where m.orgId = :orgId")
+    List<UUID> findAllMembershipIdsByOrgId(@Param("orgId") UUID orgId);
+
     /** List-growth: count of new memberships per week over 8 weeks */
     @Query("""
             select m from Membership m
