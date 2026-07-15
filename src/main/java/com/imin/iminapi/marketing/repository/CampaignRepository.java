@@ -35,6 +35,15 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
     Optional<Campaign> findByIdAndOrgId(@Param("id") UUID id, @Param("orgId") UUID orgId);
 
     /**
+     * Hard-delete a campaign row. The repo extends the bare {@code Repository<>} marker, so
+     * {@code delete} is NOT inherited and must be declared explicitly. Recipient rows are
+     * removed first (see {@link CampaignRecipientRepository#deleteByCampaignId}) — drafts
+     * should have none, but this keeps the delete order FK-safe regardless of the DB-level
+     * ON DELETE CASCADE.
+     */
+    void delete(Campaign campaign);
+
+    /**
      * Heartbeat: bump updated_at so the dispatcher's stale-`sending` reclaim does not fire
      * mid-send. Explicit @Modifying UPDATE that always issues an UPDATE regardless of
      * Hibernate dirty-checking (spec §2.5).

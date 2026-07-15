@@ -31,6 +31,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -151,5 +152,36 @@ class CampaignControllerTest {
                         .content("{}"))
                 .andExpect(status().isNoContent());
         verify(service).testSend(any(), eq(CAMP), eq(null));
+    }
+
+    @Test
+    @WithStubOrganizer
+    void delete_returns_204_and_delegates() throws Exception {
+        mvc.perform(delete("/api/v1/marketing/campaigns/{id}", CAMP))
+                .andExpect(status().isNoContent());
+        verify(service).delete(any(), eq(CAMP));
+    }
+
+    @Test
+    @WithStubOrganizer
+    void delete_other_orgs_or_missing_campaign_returns_404() throws Exception {
+        org.mockito.Mockito.doThrow(com.imin.iminapi.security.ApiException.notFound("Campaign"))
+                .when(service).delete(any(), eq(CAMP));
+        mvc.perform(delete("/api/v1/marketing/campaigns/{id}", CAMP))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
+    }
+
+    @Test
+    @WithStubOrganizer
+    void delete_non_draft_returns_409() throws Exception {
+        org.mockito.Mockito.doThrow(new com.imin.iminapi.security.ApiException(
+                        org.springframework.http.HttpStatus.CONFLICT,
+                        com.imin.iminapi.security.ErrorCode.INVALID_STATE,
+                        "Only draft campaigns can be deleted"))
+                .when(service).delete(any(), eq(CAMP));
+        mvc.perform(delete("/api/v1/marketing/campaigns/{id}", CAMP))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("INVALID_STATE"));
     }
 }
