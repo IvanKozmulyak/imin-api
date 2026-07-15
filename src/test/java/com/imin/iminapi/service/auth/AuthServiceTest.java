@@ -220,6 +220,44 @@ class AuthServiceTest {
     }
 
     @Test
+    void change_password_with_wrong_current_throws_AUTH_INVALID_CREDENTIALS() {
+        java.util.UUID userId = java.util.UUID.randomUUID();
+        User u = new User(); u.setId(userId); u.setOrgId(java.util.UUID.randomUUID());
+        u.setEmail("ada@example.com"); u.setRole(UserRole.OWNER);
+        u.setPasswordHash(hasher.hash("lovelace12"));
+        when(users.findById(userId)).thenReturn(java.util.Optional.of(u));
+
+        assertThatThrownBy(() -> sut.changePassword(
+                new com.imin.iminapi.security.AuthPrincipal(userId, u.getOrgId(), UserRole.OWNER, java.util.UUID.randomUUID()),
+                new com.imin.iminapi.dto.auth.ChangePasswordRequest("WRONG", "newpassword12")))
+                .isInstanceOf(ApiException.class)
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.AUTH_INVALID_CREDENTIALS);
+        verify(sessions, never()).revokeAllForUser(any(), any());
+    }
+
+    @Test
+    void change_password_rotates_hash_revokes_sessions_and_returns_fresh_token() {
+        java.util.UUID userId = java.util.UUID.randomUUID();
+        java.util.UUID orgId = java.util.UUID.randomUUID();
+        User u = new User(); u.setId(userId); u.setOrgId(orgId);
+        u.setEmail("ada@example.com"); u.setRole(UserRole.OWNER);
+        u.setPasswordHash(hasher.hash("lovelace12"));
+        Organization o = new Organization(); o.setId(orgId); o.setName("Ada Co"); o.setContactEmail("a@b.c"); o.setCountry("GB");
+        when(users.findById(userId)).thenReturn(java.util.Optional.of(u));
+        when(orgs.findById(orgId)).thenReturn(java.util.Optional.of(o));
+
+        AuthResponse r = sut.changePassword(
+                new com.imin.iminapi.security.AuthPrincipal(userId, orgId, UserRole.OWNER, java.util.UUID.randomUUID()),
+                new com.imin.iminapi.dto.auth.ChangePasswordRequest("lovelace12", "newpassword12"));
+
+        assertThat(r.token()).isNotBlank();
+        assertThat(hasher.verify("newpassword12", u.getPasswordHash())).isTrue();
+        verify(sessions).revokeAllForUser(eq(userId), any(Instant.class));
+        verify(sessions).save(any(AuthSession.class)); // the fresh session for this browser
+        verify(accountEmail).sendPasswordChangedNotification(u);
+    }
+
+    @Test
     void me_returns_user_and_org() {
         java.util.UUID userId = java.util.UUID.randomUUID();
         java.util.UUID orgId = java.util.UUID.randomUUID();

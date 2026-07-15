@@ -59,6 +59,13 @@ public class AuthController {
         authService.resetPassword(req);
     }
 
+    @PostMapping("/change-password")
+    public AuthResponse changePassword(@CurrentUser AuthPrincipal principal,
+                                       @Valid @RequestBody com.imin.iminapi.dto.auth.ChangePasswordRequest req) {
+        rateLimiter.consume("login", principal.userId().toString());
+        return authService.changePassword(principal, req);
+    }
+
     @PostMapping("/login")
     public AuthResponse login(@Valid @RequestBody LoginRequest req) {
         rateLimiter.consume("login", req.email().toLowerCase());

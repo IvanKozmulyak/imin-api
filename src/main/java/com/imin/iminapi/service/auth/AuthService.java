@@ -234,6 +234,34 @@ public class AuthService {
         }
     }
 
+    /**
+     * Authenticated password change. Verifies the current password, rotates the hash,
+     * revokes every session (including this one), then issues a fresh session so the
+     * calling browser stays logged in with the returned token. Wrong current password
+     * is 400 (not 401 — the FE treats 401 as session expiry and force-logs-out).
+     */
+    @Transactional
+    public AuthResponse changePassword(AuthPrincipal principal, com.imin.iminapi.dto.auth.ChangePasswordRequest req) {
+        User user = users.findById(principal.userId())
+                .orElseThrow(() -> ApiException.notFound("User"));
+        if (user.getPasswordHash() == null || !hasher.verify(req.currentPassword(), user.getPasswordHash())) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.AUTH_INVALID_CREDENTIALS,
+                    "Current password is incorrect");
+        }
+        user.setPasswordHash(hasher.hash(req.newPassword()));
+        users.save(user);
+        sessions.revokeAllForUser(user.getId(), Instant.now());
+        String token = issueSession(user);
+        try {
+            accountEmail.sendPasswordChangedNotification(user);
+        } catch (RuntimeException e) {
+            log.warn("Password-changed notification failed for {}: {}", user.getEmail(), e.getMessage());
+        }
+        Organization org = orgs.findById(user.getOrgId())
+                .orElseThrow(() -> new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, ErrorCode.INTERNAL, "Org missing"));
+        return new AuthResponse(token, UserDto.from(user), OrganizationDto.from(org));
+    }
+
     private String issueSession(User user) {
         TokenService.IssuedToken issued = tokens.issue();
         AuthSession s = new AuthSession();
