@@ -2,6 +2,7 @@ package com.imin.iminapi.marketing;
 
 import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.dto.CampaignDto;      // Phase 2
+import com.imin.iminapi.marketing.dto.MomentumEngineStateDto;
 import com.imin.iminapi.marketing.dto.MomentumSuggestionDto;
 import com.imin.iminapi.marketing.model.Campaign;        // Phase 2
 import com.imin.iminapi.marketing.service.MomentumService;
@@ -94,8 +95,35 @@ class MomentumControllerTest {
     }
 
     @Test
+    @WithStubOrganizer
+    void stateReturnsEngineShape() throws Exception {
+        when(service.state(any())).thenReturn(new MomentumEngineStateDto(
+                2, 1, 3, 1, 0L, 10, 7,
+                List.of(new MomentumEngineStateDto.LogEntry(
+                        "check", "green", "Approved — Neon Nights urgency 72h", "2 days ago"))));
+        mvc.perform(get("/api/v1/marketing/suggestions/state"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.watching").value(2))
+                .andExpect(jsonPath("$.waiting").value(1))
+                .andExpect(jsonPath("$.approved30d").value(3))
+                .andExpect(jsonPath("$.dismissed30d").value(1))
+                .andExpect(jsonPath("$.attributedMinor").value(0))
+                .andExpect(jsonPath("$.minAudienceFloor").value(10))
+                .andExpect(jsonPath("$.cooldownDays").value(7))
+                .andExpect(jsonPath("$.log[0].icon").value("check"))
+                .andExpect(jsonPath("$.log[0].tone").value("green"))
+                .andExpect(jsonPath("$.log[0].text").value("Approved — Neon Nights urgency 72h"))
+                .andExpect(jsonPath("$.log[0].sub").value("2 days ago"));
+    }
+
+    @Test
     void listRequiresAuth() throws Exception {
         mvc.perform(get("/api/v1/marketing/suggestions")).andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void stateRequiresAuth() throws Exception {
+        mvc.perform(get("/api/v1/marketing/suggestions/state")).andExpect(status().isUnauthorized());
     }
 
     // Build a real CampaignDto from a minimal Phase-2 Campaign entity via the same

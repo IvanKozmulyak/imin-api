@@ -42,4 +42,5 @@ public final class AuditActions {
     public static final String CAMPAIGN_CREATED = "CAMPAIGN_CREATED";
     public static final String CAMPAIGN_DUPLICATED = "CAMPAIGN_DUPLICATED";
     public static final String CAMPAIGN_TEST_SENT = "CAMPAIGN_TEST_SENT";
+    public static final String CAMPAIGN_DELETED = "CAMPAIGN_DELETED";
 }

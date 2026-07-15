@@ -34,6 +34,16 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
     long countByCampaignId(UUID campaignId);
 
     /**
+     * Bulk-delete every recipient row for a campaign. Called before the campaign row is
+     * hard-deleted (draft-delete, spec Task B3) so the FK order is safe regardless of the
+     * DB-level ON DELETE CASCADE. Drafts should have none — this is defensive.
+     */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query("DELETE FROM CampaignRecipient r WHERE r.campaignId = :campaignId")
+    void deleteByCampaignId(@Param("campaignId") UUID campaignId);
+
+    /**
      * Claim up to :limit pending, retryable (attempt_count < 3) rows for one campaign,
      * skipping rows another sender thread already holds (spec §2.5). Native so we can
      * use FOR UPDATE SKIP LOCKED, which Spring Data does not express portably.

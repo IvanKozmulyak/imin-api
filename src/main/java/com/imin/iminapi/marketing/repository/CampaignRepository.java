@@ -35,6 +35,15 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
     Optional<Campaign> findByIdAndOrgId(@Param("id") UUID id, @Param("orgId") UUID orgId);
 
     /**
+     * Hard-delete a campaign row. The repo extends the bare {@code Repository<>} marker, so
+     * {@code delete} is NOT inherited and must be declared explicitly. Recipient rows are
+     * removed first (see {@link CampaignRecipientRepository#deleteByCampaignId}) — drafts
+     * should have none, but this keeps the delete order FK-safe regardless of the DB-level
+     * ON DELETE CASCADE.
+     */
+    void delete(Campaign campaign);
+
+    /**
      * Heartbeat: bump updated_at so the dispatcher's stale-`sending` reclaim does not fire
      * mid-send. Explicit @Modifying UPDATE that always issues an UPDATE regardless of
      * Hibernate dirty-checking (spec §2.5).
@@ -82,6 +91,14 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
     long countByOrg(@Param("orgId") UUID orgId,
                     @Param("channel") String channel,
                     @Param("status") String status);
+
+    /**
+     * Org's campaigns created since a cutoff — feeds the marketing hub 30-day
+     * attributed-purchases roll-up (summed per-campaign via CampaignAttributionService).
+     */
+    @Query("select c from Campaign c where c.orgId = :orgId and c.createdAt >= :since")
+    List<Campaign> findByOrgCreatedSince(@Param("orgId") UUID orgId,
+                                         @Param("since") java.time.Instant since);
 
     /**
      * Spec §2.5: claim due campaigns — scheduled+due, retryable failed (attempts<3),

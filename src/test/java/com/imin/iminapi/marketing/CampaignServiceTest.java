@@ -214,6 +214,39 @@ class CampaignServiceTest {
                 .isInstanceOf(ApiException.class);
     }
 
+    // ---- Task B3: draft-only delete ----
+
+    @Test
+    void delete_removes_an_own_draft_and_it_is_gone() {
+        CampaignDto d = service.create(principal(ORG),
+                new CreateCampaignRequest("email", "Trash me", null, null, null, null, null));
+        service.delete(principal(ORG), d.id());
+        // The row is actually gone — a subsequent get 404s (org-scoped not-found).
+        assertThatThrownBy(() -> service.get(principal(ORG), d.id()))
+                .isInstanceOf(ApiException.class);
+    }
+
+    @Test
+    void delete_other_orgs_draft_is_not_found() {
+        CampaignDto d = service.create(principal(ORG),
+                new CreateCampaignRequest("email", "Mine to keep", null, null, null, null, null));
+        assertThatThrownBy(() -> service.delete(principal(OTHER_ORG), d.id()))
+                .isInstanceOf(ApiException.class);
+        // Still there for the real owner — cross-org delete must not touch it.
+        assertThat(service.get(principal(ORG), d.id()).name()).isEqualTo("Mine to keep");
+    }
+
+    @Test
+    void delete_rejects_a_non_draft_campaign() {
+        CampaignDto d = service.create(principal(ORG),
+                new CreateCampaignRequest("email", "Already sent", null, null, null, null, null));
+        service.forceStatusForTest(d.id(), "sent");
+        assertThatThrownBy(() -> service.delete(principal(ORG), d.id()))
+                .isInstanceOf(ApiException.class);
+        // A rejected delete leaves the campaign intact.
+        assertThat(service.get(principal(ORG), d.id()).status()).isEqualTo("sent");
+    }
+
     @Test
     void detail_with_stats_returns_a_zeroed_stats_block_before_any_send() {
         CampaignDto d = service.create(principal(ORG),

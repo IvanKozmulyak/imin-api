@@ -115,6 +115,17 @@ public class CampaignController {
         return ResponseEntity.status(HttpStatus.ACCEPTED).build();
     }
 
+    /**
+     * Draft-only delete (Task B3). 204 when the campaign is this org's draft and is removed;
+     * 404 (no-leak) when not found or another org's; 409 INVALID_STATE for any non-draft status.
+     */
+    @DeleteMapping("/{id}")
+    public ResponseEntity<Void> delete(
+            @AuthenticationPrincipal AuthPrincipal principal, @PathVariable UUID id) {
+        service.delete(principal, id);
+        return ResponseEntity.noContent().build();
+    }
+
     @GetMapping("/{id}/recipients")
     public com.imin.iminapi.marketing.dto.RecipientPage recipients(
             @PathVariable UUID id,

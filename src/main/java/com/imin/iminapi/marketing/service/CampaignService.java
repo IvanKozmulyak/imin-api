@@ -286,6 +286,26 @@ public class CampaignService {
         return saved;
     }
 
+    /**
+     * Draft-only hard delete (Task B3). 404 (no-leak) via {@link #require} when the campaign
+     * doesn't exist or belongs to another org; 409 INVALID_STATE for any non-draft status —
+     * mirroring the guard style in {@link #cancel} / {@link #patch}. Recipient rows are removed
+     * first to keep the FK order safe regardless of the DB-level ON DELETE CASCADE (drafts
+     * should have none — this is defensive).
+     */
+    @Transactional
+    public void delete(AuthPrincipal principal, UUID campaignId) {
+        Campaign c = require(principal.orgId(), campaignId);
+        if (!"draft".equals(c.getStatus())) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                    "Only draft campaigns can be deleted");
+        }
+        campaignRecipientRepository.deleteByCampaignId(campaignId);
+        campaigns.delete(c);
+        audit.record(principal, AuditActions.CAMPAIGN_DELETED, "campaign", campaignId,
+                "Draft campaign deleted");
+    }
+
     /** Campaign detail + aggregate stats block (spec §2.4/§3). Org-scoped. */
     @Transactional(readOnly = true)
     public com.imin.iminapi.marketing.dto.CampaignDetailDto detailWithStats(AuthPrincipal p, UUID id) {
