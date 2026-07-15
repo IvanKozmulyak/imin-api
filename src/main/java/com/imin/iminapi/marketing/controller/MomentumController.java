@@ -1,6 +1,7 @@
 package com.imin.iminapi.marketing.controller;
 
 import com.imin.iminapi.marketing.dto.CampaignDto;
+import com.imin.iminapi.marketing.dto.MomentumEngineStateDto;
 import com.imin.iminapi.marketing.dto.MomentumSuggestionDto;
 import com.imin.iminapi.marketing.service.MomentumService;
 import com.imin.iminapi.security.AuthPrincipal;
@@ -36,6 +37,16 @@ public class MomentumController {
             @AuthenticationPrincipal AuthPrincipal principal,
             @RequestParam(name = "status", required = false) String status) {
         return service.list(principal, status);
+    }
+
+    /**
+     * Real Momentum-engine state + activity log for the org's Momentum tab (spec §6.4).
+     * Registered on a literal {@code /state} segment BEFORE the {@code /{id}} routes so it
+     * is never captured as a UUID path variable. Org from the principal — no {orgId} path.
+     */
+    @GetMapping("/state")
+    public MomentumEngineStateDto state(@AuthenticationPrincipal AuthPrincipal principal) {
+        return service.state(principal);
     }
 
     @PostMapping("/{id}/approve")

@@ -124,6 +124,11 @@ public class MomentumTestSupport {
         return events.findById(eventId).orElseThrow().getOrgId();
     }
 
+    /** Display name of a seeded event (for Momentum activity-log text assertions). */
+    public String eventNameOf(UUID eventId) {
+        return events.findById(eventId).orElseThrow().getName();
+    }
+
     /**
      * Build a USER {@link AuthPrincipal} scoped to {@code orgId} (OWNER role), mirroring
      * {@code @WithStubOrganizer}. Used by MomentumServiceTest for list/approve/dismiss calls.
