@@ -92,6 +92,11 @@ class AttributionServiceTest {
     }
 
     private void order(String email, long totalMinor) {
+        order(email, totalMinor, null);
+    }
+
+    /** V62: orders now carry the landing utm_source, stamped at checkout. */
+    private void order(String email, long totalMinor, String utmSource) {
         Order o = new Order();
         o.setToken(UUID.randomUUID().toString().replace("-", ""));
         o.setEventId(event.getId());
@@ -101,9 +106,19 @@ class AttributionServiceTest {
         o.setCurrency("eur");
         o.setPaymentMethod("stripe");
         o.setStripePaymentIntentId("pi_" + UUID.randomUUID());
+        o.setUtmSource(utmSource);
         orders.save(o);
     }
 
+    /**
+     * V62: channel revenue is now a TRUE per-order sum joined on orders.utm_source, not the
+     * old tagged-visit-SHARE approximation.
+     *
+     * <p>The numbers here are deliberately chosen so the two models DISAGREE: by visit share
+     * instagram (3 of 4 tagged visits) would have received 7500 of a 10000 pool. The real
+     * per-order answer is 8000 — because that is what instagram-tagged buyers actually spent.
+     * Visits no longer decide revenue; orders do.
+     */
     @Test
     void attribution_shape_channels_untagged_pct_and_repeat_buyer() {
         // tagged visits: 3 instagram, 1 newsletter; untagged: 1 (no source)
@@ -113,14 +128,13 @@ class AttributionServiceTest {
         visit("s4", "newsletter", "mail.google.com");
         visit("s5", null, "blog.example.com");
 
-        // revenue pool = 10000; repeat buyer: a@ has 2 orders, b@ has 1 → 50%
-        order("a@example.com", 4000);
-        order("a@example.com", 4000);
-        order("b@example.com", 2000);
+        // repeat buyer: a@ has 2 orders, b@ has 1 → 50%
+        order("a@example.com", 4000, "instagram");
+        order("a@example.com", 4000, "instagram");
+        order("b@example.com", 2000, "newsletter");
 
         AttributionResponse r = service.attribution(principal);
 
-        // contract: total pool attributed across tagged channels, rounding-safe
         assertThat(r.attributedRevenueMinor()).isEqualTo(10000L);
         long channelSum = r.channels().stream().mapToLong(AttributionResponse.Channel::revenueMinor).sum();
         assertThat(channelSum).isEqualTo(10000L);
@@ -135,9 +149,48 @@ class AttributionServiceTest {
                 .containsExactly("instagram", "newsletter");
         assertThat(r.channels().get(0).visits()).isEqualTo(3);
         assertThat(r.channels().get(1).visits()).isEqualTo(1);
-        // proportional last-touch: 3/4 of 10000 = 7500, remainder 2500
-        assertThat(r.channels().get(0).revenueMinor()).isEqualTo(7500L);
-        assertThat(r.channels().get(1).revenueMinor()).isEqualTo(2500L);
+        // TRUE per-order last-touch — 8000/2000, NOT the visit-share 7500/2500.
+        assertThat(r.channels().get(0).revenueMinor()).isEqualTo(8000L);
+        assertThat(r.channels().get(1).revenueMinor()).isEqualTo(2000L);
+    }
+
+    /**
+     * A channel that drove visits but no paid orders now correctly reads 0 revenue. Under the
+     * old visit-share model it would have been handed a slice of unrelated revenue.
+     */
+    @Test
+    void channel_with_visits_but_no_orders_reads_zero_revenue() {
+        visit("s1", "instagram", "instagram.com");
+        visit("s2", "tiktok", "tiktok.com");
+        order("a@example.com", 5000, "instagram");
+
+        AttributionResponse r = service.attribution(principal);
+
+        assertThat(r.attributedRevenueMinor()).isEqualTo(5000L);
+        assertThat(r.channels()).extracting(AttributionResponse.Channel::source)
+                .containsExactlyInAnyOrder("instagram", "tiktok");
+        var tiktok = r.channels().stream().filter(c -> c.source().equals("tiktok")).findFirst().orElseThrow();
+        assertThat(tiktok.visits()).isEqualTo(1);
+        assertThat(tiktok.revenueMinor()).isZero();
+    }
+
+    /**
+     * Untagged (organic) revenue belongs to NO channel and is not attributed — including every
+     * order placed before V62, which carries no utm_source and cannot be back-filled. It is
+     * reported as unattributed rather than spread across channels on a guess.
+     */
+    @Test
+    void untagged_order_revenue_is_not_attributed_to_any_channel() {
+        visit("s1", "instagram", "instagram.com");
+        order("a@example.com", 4000);              // organic / pre-V62 — no utm_source
+        order("b@example.com", 1000, "instagram"); // tagged
+
+        AttributionResponse r = service.attribution(principal);
+
+        assertThat(r.attributedRevenueMinor()).isEqualTo(1000L);
+        assertThat(r.channels()).hasSize(1);
+        assertThat(r.channels().get(0).source()).isEqualTo("instagram");
+        assertThat(r.channels().get(0).revenueMinor()).isEqualTo(1000L);
     }
 
     @Test

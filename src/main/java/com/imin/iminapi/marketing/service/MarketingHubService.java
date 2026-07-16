@@ -83,14 +83,21 @@ public class MarketingHubService {
         // smsPhones: SMS opt-ins captured with a phone number.
         int smsPhones = (int) memberships.countSmsSubscribedByOrgId(orgId);
 
-        // attributedPurchases: sum the utm_campaign attribution over the org's campaigns
-        // from the last 30 days. attributedRevMinor has no per-campaign source today
-        // (orders carry no utm key — AttributionService), so it is 0, never faked.
+        // Attribution tiles, both scoped to the org's campaigns from the last 30 days.
+        //  - attributedPurchases: distinct checkout-start SESSIONS carrying each campaign's
+        //    utm_campaign (the /track funnel beacon).
+        //  - attributedRevMinor: a TRUE per-order sum of the revenue those campaigns drove,
+        //    joined on orders.utm_campaign = campaign id (V62). One batched query, not N.
+        // The two come from different sources on purpose (sessions vs money that moved), so
+        // they can legitimately disagree — see CampaignAttributionService.
+        List<Campaign> recent = campaigns.findByOrgCreatedSince(orgId, now.minus(ATTRIBUTION_WINDOW));
         int attributedPurchases = 0;
-        for (Campaign c : campaigns.findByOrgCreatedSince(orgId, now.minus(ATTRIBUTION_WINDOW))) {
+        for (Campaign c : recent) {
             attributedPurchases += (int) attribution.attributedPurchaseCount(c.getId());
         }
-        long attributedRevMinor = 0L;
+        long attributedRevMinor = attribution
+                .attributedRevenueMinorByCampaign(orgId, recent.stream().map(Campaign::getId).toList())
+                .values().stream().mapToLong(Long::longValue).sum();
 
         // Marketing sender identity + whether it is configured enough to send.
         String emailFrom = emailProps.getFromAddress() == null ? "" : emailProps.getFromAddress();

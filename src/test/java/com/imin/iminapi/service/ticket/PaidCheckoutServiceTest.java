@@ -264,6 +264,55 @@ class PaidCheckoutServiceTest {
     }
 
     @Test
+    void persists_utm_attribution_from_pi_metadata() throws Exception {
+        // V62: the landing utm_* + the /track beacon's anon_id ride Stripe metadata
+        // (StripeCheckoutService stamps them) and must land on orders.utm_* at
+        // webhook-driven fulfilment — this is what turns per-campaign revenue from a
+        // visit-share estimate into a true per-order sum.
+        String campaignId = UUID.randomUUID().toString();
+        PaymentIntent pi = pi("pi_test_utm", 1500, "eur",
+                Map.of(
+                        "tier_id", tier.getId().toString(),
+                        "qty", "1",
+                        "event_id", event.getId().toString(),
+                        "utm_source", "imin",
+                        "utm_medium", "email",
+                        "utm_campaign", campaignId,
+                        "anon_id", "anon-abc-123"));
+        wireBuyerEmail(pi, "buyer@example.com");
+        wireSessionLookup(pi, "cs_test_utm", null);
+
+        service.issuePaidOrder(pi);
+
+        Order order = orders.findByStripePaymentIntentId("pi_test_utm").orElseThrow();
+        assertThat(order.getUtmSource()).isEqualTo("imin");
+        assertThat(order.getUtmMedium()).isEqualTo("email");
+        assertThat(order.getUtmCampaign()).isEqualTo(campaignId);
+        assertThat(order.getAnonId()).isEqualTo("anon-abc-123");
+    }
+
+    @Test
+    void utm_attribution_is_null_when_metadata_absent() throws Exception {
+        // An organic buyer arrives with no tags — and sessions created before V62 that were
+        // still in flight at deploy carry no utm keys either. Both must yield null, never "".
+        PaymentIntent pi = pi("pi_test_no_utm", 1500, "eur",
+                Map.of(
+                        "tier_id", tier.getId().toString(),
+                        "qty", "1",
+                        "event_id", event.getId().toString()));
+        wireBuyerEmail(pi, "buyer@example.com");
+        wireSessionLookup(pi, "cs_test_no_utm", null);
+
+        service.issuePaidOrder(pi);
+
+        Order order = orders.findByStripePaymentIntentId("pi_test_no_utm").orElseThrow();
+        assertThat(order.getUtmSource()).isNull();
+        assertThat(order.getUtmMedium()).isNull();
+        assertThat(order.getUtmCampaign()).isNull();
+        assertThat(order.getAnonId()).isNull();
+    }
+
+    @Test
     void uses_session_email_when_charge_email_missing() throws Exception {
         PaymentIntent pi = pi("pi_test_session_email", 1500, "eur",
                 Map.of(

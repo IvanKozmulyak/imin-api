@@ -1,5 +1,6 @@
 package com.imin.iminapi.stripe;
 
+import com.imin.iminapi.model.CheckoutAttribution;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.PromoCode;
@@ -104,17 +105,28 @@ public class StripeCheckoutService {
      * @return the Stripe-hosted Checkout URL. Buyer is sent here directly; we never see the card.
      */
     public String createCheckoutSession(UUID eventId, UUID tierId, int quantity, String promoCode) {
-        return createCheckoutSession(eventId, tierId, quantity, promoCode, null, null, false, false);
+        return createCheckoutSession(eventId, tierId, quantity, promoCode, null, null, false, false,
+                CheckoutAttribution.NONE);
     }
 
     public String createCheckoutSession(UUID eventId, UUID tierId, int quantity,
                                          String promoCode, Integer expectedPriceMinor) {
-        return createCheckoutSession(eventId, tierId, quantity, promoCode, expectedPriceMinor, null, false, false);
+        return createCheckoutSession(eventId, tierId, quantity, promoCode, expectedPriceMinor, null, false, false,
+                CheckoutAttribution.NONE);
     }
 
     public String createCheckoutSession(UUID eventId, UUID tierId, int quantity,
                                          String promoCode, Integer expectedPriceMinor, String buyerEmail) {
-        return createCheckoutSession(eventId, tierId, quantity, promoCode, expectedPriceMinor, buyerEmail, false, false);
+        return createCheckoutSession(eventId, tierId, quantity, promoCode, expectedPriceMinor, buyerEmail, false, false,
+                CheckoutAttribution.NONE);
+    }
+
+    /** Pre-V62 form kept for existing callers — no last-touch attribution captured. */
+    public String createCheckoutSession(UUID eventId, UUID tierId, int quantity,
+                                         String promoCode, Integer expectedPriceMinor, String buyerEmail,
+                                         boolean adsConsent, boolean marketingOptIn) {
+        return createCheckoutSession(eventId, tierId, quantity, promoCode, expectedPriceMinor, buyerEmail,
+                adsConsent, marketingOptIn, CheckoutAttribution.NONE);
     }
 
     /**
@@ -129,7 +141,9 @@ public class StripeCheckoutService {
      */
     public String createCheckoutSession(UUID eventId, UUID tierId, int quantity,
                                          String promoCode, Integer expectedPriceMinor, String buyerEmail,
-                                         boolean adsConsent, boolean marketingOptIn) {
+                                         boolean adsConsent, boolean marketingOptIn,
+                                         CheckoutAttribution attribution) {
+        if (attribution == null) attribution = CheckoutAttribution.NONE;
         if (quantity < 1 || quantity > 10) {
             // 400, not 404 — quantity is a client bug, not an event-discovery question.
             throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
@@ -178,7 +192,8 @@ public class StripeCheckoutService {
             }
             Order order;
             try {
-                order = freeCheckoutService.issueFreeOrder(event, tier, quantity, email, promo, adsConsent, marketingOptIn);
+                order = freeCheckoutService.issueFreeOrder(event, tier, quantity, email, promo, adsConsent,
+                        marketingOptIn, attribution);
             } catch (ApiException e) {
                 // Inventory shortage → collapse to leak-safe 404 like the paid path.
                 if (e.status() == HttpStatus.CONFLICT) {
@@ -289,6 +304,11 @@ public class StripeCheckoutService {
         // webhook-driven order creation. Only "true" enables the server-side CAPI event.
         metadata.put("ads_consent", String.valueOf(adsConsent));
         metadata.put("marketing_opt_in", String.valueOf(marketingOptIn));
+        // Ride the landing utm_* + anon_id (V62) the same way so PaidCheckoutService can
+        // snapshot them onto orders.utm_* at webhook-driven order creation — that's what
+        // turns per-campaign revenue from a visit-share estimate into a true per-order sum.
+        // Absent fields are omitted rather than written as "null".
+        attribution.putInto(metadata);
 
         String couponId = null;
         if (promo != null) {

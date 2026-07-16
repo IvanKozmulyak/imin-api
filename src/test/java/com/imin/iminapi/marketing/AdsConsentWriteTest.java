@@ -111,7 +111,8 @@ class AdsConsentWriteTest {
     @Test
     void freeCheckout_withAdsConsent_persistsFlag() {
         Order created = freeCheckout.issueFreeOrder(
-                event, freeTier, 1, "buyer@example.com", null, /* adsConsent */ true, /* marketingOptIn */ false);
+                event, freeTier, 1, "buyer@example.com", null, /* adsConsent */ true, /* marketingOptIn */ false,
+                com.imin.iminapi.model.CheckoutAttribution.NONE);
 
         Order persisted = orders.findByToken(created.getToken()).orElseThrow();
         assertThat(persisted.isAdsConsent()).isTrue();
@@ -120,7 +121,8 @@ class AdsConsentWriteTest {
     @Test
     void freeCheckout_withoutAdsConsent_defaultsFalse() {
         Order created = freeCheckout.issueFreeOrder(
-                event, freeTier, 1, "buyer@example.com", null, /* adsConsent */ false, /* marketingOptIn */ false);
+                event, freeTier, 1, "buyer@example.com", null, /* adsConsent */ false, /* marketingOptIn */ false,
+                com.imin.iminapi.model.CheckoutAttribution.NONE);
 
         Order persisted = orders.findByToken(created.getToken()).orElseThrow();
         assertThat(persisted.isAdsConsent()).isFalse();

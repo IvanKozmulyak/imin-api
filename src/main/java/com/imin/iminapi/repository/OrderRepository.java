@@ -8,6 +8,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -79,11 +80,59 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
                                                    @Param("until") Instant until);
 
     /**
-     * Total gross revenue (sum of order totals, minor units) across all of an
-     * org's orders. Used as the attribution pool that UTM channels divide up.
+     * TRUE per-order last-touch revenue by campaign (V62): (utmCampaign, revenueMinor) for
+     * the given campaign keys within an org. Replaces the visit-share approximation for
+     * campaign revenue — each order's full total is counted once, against the campaign
+     * whose link the buyer last arrived through.
+     *
+     * <p>The key is the campaign UUID as a string: the sender rewrites campaign links with
+     * {@code utm_campaign=<campaign id>} ({@code UtmLinkRewriter} ← {@code EmailChannelSender}
+     * passes {@code campaign.getId().toString()}).
+     *
+     * <p>Grouped + batched so the campaign list and the hub tiles cost ONE round-trip
+     * rather than one per campaign. Campaigns with no attributed orders are simply absent
+     * from the result — callers default them to 0. Untagged (organic) revenue matches no
+     * key and is deliberately excluded rather than spread across campaigns.
+     *
+     * <p>Callers MUST skip this when {@code campaignKeys} is empty ({@code IN ()} is invalid SQL).
      */
-    @Query("select coalesce(sum(o.totalMinor), 0) from Order o where o.orgId = :orgId")
-    long sumTotalMinorByOrgId(@Param("orgId") UUID orgId);
+    @Query("""
+            select o.utmCampaign, coalesce(sum(o.totalMinor), 0) from Order o
+             where o.orgId = :orgId
+               and o.utmCampaign in :campaignKeys
+             group by o.utmCampaign
+            """)
+    List<Object[]> sumRevenueByUtmCampaignIn(@Param("orgId") UUID orgId,
+                                              @Param("campaignKeys") Collection<String> campaignKeys);
+
+    /**
+     * TRUE per-order last-touch revenue for ONE campaign (V62) — the {@code revMinor} on
+     * campaign list/detail. Not windowed: a campaign's lifetime attributed revenue.
+     * {@code utmCampaign} is the campaign UUID as a string (see
+     * {@link #sumRevenueByUtmCampaignSince}). Org-scoped so a guessed campaign id from
+     * another org can never sum a caller's revenue.
+     */
+    @Query("""
+            select coalesce(sum(o.totalMinor), 0) from Order o
+             where o.orgId = :orgId
+               and o.utmCampaign = :campaign
+            """)
+    long sumTotalMinorByOrgIdAndUtmCampaign(@Param("orgId") UUID orgId,
+                                             @Param("campaign") String campaign);
+
+    /**
+     * TRUE per-order last-touch revenue by channel (V62): (utmSource, revenueMinor) across
+     * all of an org's tagged orders. Backs the channel-level attribution read-model, which
+     * previously could only divide the org's whole revenue pool by tagged-visit SHARE.
+     * Untagged orders are excluded — they belong to no channel.
+     */
+    @Query("""
+            select o.utmSource, coalesce(sum(o.totalMinor), 0) from Order o
+             where o.orgId = :orgId
+               and o.utmSource is not null
+             group by o.utmSource
+            """)
+    List<Object[]> sumRevenueByUtmSource(@Param("orgId") UUID orgId);
 
     /**
      * All orders for an org scoped to a buyer's normalized email.

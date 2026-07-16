@@ -9,6 +9,7 @@ import com.imin.iminapi.marketing.repository.MomentumSuggestionRepository;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
+import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
@@ -36,6 +37,7 @@ public class MomentumEvaluator {
     private final EventRepository events;
     private final OrderRepository orders;
     private final TicketTierRepository tiers;
+    private final TicketRepository tickets;
     private final MomentumSuggestionRepository suggestions;
     private final MomentumThresholds thresholds;
     private final MomentumCopyGenerator copy;
@@ -44,13 +46,15 @@ public class MomentumEvaluator {
     private final MomentumNotifier notifier;
 
     public MomentumEvaluator(EventRepository events, OrderRepository orders,
-                             TicketTierRepository tiers, MomentumSuggestionRepository suggestions,
+                             TicketTierRepository tiers, TicketRepository tickets,
+                             MomentumSuggestionRepository suggestions,
                              MomentumThresholds thresholds, MomentumCopyGenerator copy,
                              SendGateService sendGate, SegmentService segments,
                              MomentumNotifier notifier) {
         this.events = events;
         this.orders = orders;
         this.tiers = tiers;
+        this.tickets = tickets;
         this.suggestions = suggestions;
         this.thresholds = thresholds;
         this.copy = copy;
@@ -97,8 +101,14 @@ public class MomentumEvaluator {
         int capacity = tiers.sumQuantityByEventId(e.getId());
         List<Object[]> last7d = orders.findCreatedAtAndTotalSince(
                 e.getId(), now.minus(Duration.ofDays(7)));
+        // Real per-day sold series for the card's chart: SOLD tickets from the tickets
+        // table, bucketed by UTC day in MomentumMetrics. Snapshotted with the rest of the
+        // evidence so the curve the organizer sees is the curve the engine fired on — and
+        // so it can never contradict the `sold` scalar printed next to it.
+        List<Instant> soldAt = tickets.findSoldCreatedAtSince(
+                e.getId(), now.minus(Duration.ofDays(MomentumMetrics.SPARK_DAYS)));
         MomentumMetrics m = MomentumMetrics.compute(
-                sold, capacity, last7d.size(), e.getOnSaleAt(), e.getStartsAt(), now);
+                sold, capacity, last7d.size(), e.getOnSaleAt(), e.getStartsAt(), now, soldAt);
 
         MomentumTriggerType fired = pickTrigger(m);
         log.info("Momentum eval event={} sold={} cap={} sellThrough={} daysOut={} vel7d={} required50={} -> {}",

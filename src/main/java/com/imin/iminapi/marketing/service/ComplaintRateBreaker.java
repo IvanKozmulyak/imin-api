@@ -23,8 +23,10 @@ import java.util.UUID;
 public class ComplaintRateBreaker {
 
     private static final Logger log = LoggerFactory.getLogger(ComplaintRateBreaker.class);
-    private static final double THRESHOLD = 0.001;   // 0.1%
-    private static final long MIN_VOLUME = 200;      // never trip on tiny samples
+    /** Complaint rate (complaints ÷ delivered) at or above which an org is auto-paused. 0.1%. */
+    public static final double THRESHOLD = 0.001;
+    /** Never trip on tiny samples: below this per-campaign volume the breaker does not evaluate. */
+    public static final long MIN_VOLUME = 200;
 
     private final ProviderEventRepository providerEvents;
     private final OrganizationRepository orgs;

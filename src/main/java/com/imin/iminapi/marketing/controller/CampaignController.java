@@ -126,13 +126,28 @@ public class CampaignController {
         return ResponseEntity.noContent().build();
     }
 
+    /**
+     * Recipient log for one campaign — org-scoped via the auth principal (404 no-leak for
+     * another org's campaign), unchanged from before.
+     *
+     * <p>Response is {@code items}/{@code page}/{@code size} (original shape) plus additive
+     * {@code total} (real aggregate over the active filter) and {@code counts} (real aggregates
+     * over the whole log, for the filter chips).
+     *
+     * @param status     lifecycle filter; comma-separated for multi-status chips, e.g.
+     *                   {@code bounced,failed,complained}. A single value behaves as before.
+     * @param engagement {@code opened} | {@code clicked} — an axis ORTHOGONAL to {@code status},
+     *                   read from {@code opened_at}/{@code clicked_at}. Combinable with
+     *                   {@code status}. Any other value is a 400 FIELD_INVALID.
+     */
     @GetMapping("/{id}/recipients")
     public com.imin.iminapi.marketing.dto.RecipientPage recipients(
             @PathVariable UUID id,
             @com.imin.iminapi.security.CurrentUser AuthPrincipal principal,
             @RequestParam(required = false) String status,
+            @RequestParam(required = false) String engagement,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "50") int size) {
-        return service.listRecipients(id, principal, status, page, size);
+        return service.listRecipients(id, principal, status, engagement, page, size);
     }
 }

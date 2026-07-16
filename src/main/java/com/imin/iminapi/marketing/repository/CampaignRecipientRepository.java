@@ -19,9 +19,34 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
 
     java.util.Optional<CampaignRecipient> findByProviderMessageId(String providerMessageId);
 
+    // ---- recipient log paging (GET /marketing/campaigns/{id}/recipients) ----
+    // Status and engagement are ORTHOGONAL axes — a row can be `delivered` AND opened — so the
+    // filter combinations are spelled out as distinct derived queries rather than one @Query with
+    // nullable :status / :engagement params. That is deliberate on two counts:
+    //   1. A nullable String param bound into a SQL function is the H2-vs-Postgres trap that bit
+    //      MembershipRepository: Hibernate binds null as bytea and Postgres rejects it, while H2
+    //      happily passes. Derived queries bind no param at all on the branches that don't need it.
+    //   2. Each method name below is UNIQUE — no new overloaded finders, and notably no paged
+    //      `findByCampaignIdAndStatus(id, status, Pageable)` twin of the finder above: the log's
+    //      status filter goes through findByCampaignIdAndStatusIn (a single value is just a
+    //      one-element list). Overloaded search mappings on THIS repository once crashed springdoc
+    //      and took /v3/api-docs down in prod.
+    // Callers must pass a Pageable with a deterministic Sort (CampaignService sorts by id) —
+    // Postgres gives no row order without an ORDER BY, so paging would otherwise skip/duplicate.
+
     java.util.List<CampaignRecipient> findByCampaignId(UUID campaignId, org.springframework.data.domain.Pageable pageable);
 
-    java.util.List<CampaignRecipient> findByCampaignIdAndStatus(UUID campaignId, String status, org.springframework.data.domain.Pageable pageable);
+    java.util.List<CampaignRecipient> findByCampaignIdAndOpenedAtNotNull(UUID campaignId, org.springframework.data.domain.Pageable pageable);
+
+    java.util.List<CampaignRecipient> findByCampaignIdAndClickedAtNotNull(UUID campaignId, org.springframework.data.domain.Pageable pageable);
+
+    java.util.List<CampaignRecipient> findByCampaignIdAndStatusIn(UUID campaignId, java.util.Collection<String> statuses, org.springframework.data.domain.Pageable pageable);
+
+    java.util.List<CampaignRecipient> findByCampaignIdAndStatusInAndOpenedAtNotNull(UUID campaignId, java.util.Collection<String> statuses, org.springframework.data.domain.Pageable pageable);
+
+    java.util.List<CampaignRecipient> findByCampaignIdAndStatusInAndClickedAtNotNull(UUID campaignId, java.util.Collection<String> statuses, org.springframework.data.domain.Pageable pageable);
+
+    // ---- `total` for the active filter: one real aggregate per find-branch above ----
 
     long countByCampaignIdAndStatus(UUID campaignId, String status);
 
@@ -31,7 +56,40 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
 
     long countByCampaignIdAndClickedAtNotNull(UUID campaignId);
 
+    long countByCampaignIdAndStatusInAndOpenedAtNotNull(UUID campaignId, java.util.Collection<String> statuses);
+
+    long countByCampaignIdAndStatusInAndClickedAtNotNull(UUID campaignId, java.util.Collection<String> statuses);
+
     long countByCampaignId(UUID campaignId);
+
+    /**
+     * Whole-log chip counts in ONE pass over the campaign's rows — conditional aggregation rather
+     * than a count query per chip, so a large campaign is scanned once instead of eight times.
+     * Served by the existing {@code ix_campaign_recipients_status (campaign_id, status)} index on
+     * its leading column; {@code opened_at}/{@code clicked_at} are read from the heap during the
+     * same scan, so no extra index is warranted.
+     *
+     * <p>{@code opened}/{@code clicked} come from the timestamps, NOT the status — engagement is
+     * orthogonal to lifecycle, and the {@code RecipientStatus} enum deliberately has no
+     * opened/clicked member. The buckets do not sum to {@code total}.
+     *
+     * <p>{@code coalesce(..., 0L)} guards the empty-campaign case, where {@code sum()} is NULL and
+     * would otherwise blow up unboxing into the record's primitive {@code long} fields.
+     */
+    @Query("""
+            select new com.imin.iminapi.marketing.dto.RecipientCounts(
+                       count(r),
+                       coalesce(sum(case when r.openedAt is not null then 1L else 0L end), 0L),
+                       coalesce(sum(case when r.clickedAt is not null then 1L else 0L end), 0L),
+                       coalesce(sum(case when r.status = 'skipped' then 1L else 0L end), 0L),
+                       coalesce(sum(case when r.status = 'bounced' then 1L else 0L end), 0L),
+                       coalesce(sum(case when r.status = 'failed' then 1L else 0L end), 0L),
+                       coalesce(sum(case when r.status = 'complained' then 1L else 0L end), 0L),
+                       coalesce(sum(case when r.status = 'unsubscribed' then 1L else 0L end), 0L))
+              from CampaignRecipient r
+             where r.campaignId = :campaignId
+            """)
+    com.imin.iminapi.marketing.dto.RecipientCounts chipCounts(@Param("campaignId") UUID campaignId);
 
     /**
      * Bulk-delete every recipient row for a campaign. Called before the campaign row is

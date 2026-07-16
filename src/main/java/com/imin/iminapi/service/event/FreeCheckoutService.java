@@ -2,6 +2,7 @@ package com.imin.iminapi.service.event;
 
 import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.email.EmailService;
+import com.imin.iminapi.model.CheckoutAttribution;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.PromoCode;
@@ -79,11 +80,15 @@ public class FreeCheckoutService {
      * @param adsConsent   the buyer's cookie-consent-derived ads-consent decision (§7).
      *                     Snapshotted onto {@code orders.ads_consent}; the Meta CAPI
      *                     outbox writer only emits a server-side event when it is true.
+     * @param attribution  the last-touch utm_* + anon_id the browser landed with (V62).
+     *                     Snapshotted onto {@code orders.utm_*}; the free path stamps it
+     *                     inline because it never round-trips through Stripe metadata.
+     *                     Never null — pass {@link CheckoutAttribution#NONE} for none.
      */
     @Transactional
     public Order issueFreeOrder(Event event, TicketTier tier, int quantity,
                                  String buyerEmail, PromoCode appliedPromo, boolean adsConsent,
-                                 boolean marketingOptIn) {
+                                 boolean marketingOptIn, CheckoutAttribution attribution) {
         // Reserve + confirm atomically in the same transaction. expires_at is a
         // short fallback that the sweeper would only see if the surrounding
         // transaction crashed between reserve() and confirmSold() — both calls
@@ -103,6 +108,7 @@ public class FreeCheckoutService {
         order.setPaymentMethod("free");
         order.setAdsConsent(adsConsent);
         order.setMarketingOptIn(marketingOptIn);
+        (attribution == null ? CheckoutAttribution.NONE : attribution).applyTo(order);
         if (appliedPromo != null) {
             order.setPromoCodeId(appliedPromo.getId());
         }
