@@ -36,15 +36,18 @@ public class AudienceOrderProjector {
     private final ConsumerRepository consumerRepo;
     private final MembershipRepository membershipRepo;
     private final MembershipProjector projector;
+    private final ConsentService consentService;
 
     public AudienceOrderProjector(OrderRepository orderRepo,
                                    ConsumerRepository consumerRepo,
                                    MembershipRepository membershipRepo,
-                                   MembershipProjector projector) {
+                                   MembershipProjector projector,
+                                   ConsentService consentService) {
         this.orderRepo = orderRepo;
         this.consumerRepo = consumerRepo;
         this.membershipRepo = membershipRepo;
         this.projector = projector;
+        this.consentService = consentService;
     }
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
@@ -59,7 +62,8 @@ public class AudienceOrderProjector {
             }
             String normalizedEmail = EmailNormalizer.normalize(order.getEmail());
             upsertMembership(order.getOrgId(), normalizedEmail, order.getEmail(),
-                    order.getBuyerPhone(), order.isSmsMarketingOptIn());
+                    order.getBuyerPhone(), order.isSmsMarketingOptIn(),
+                    order.isMarketingOptIn(), order.getId());
         } catch (Exception e) {
             log.error("AudienceOrderProjector failed for order {}: {}", event.orderId(), e.getMessage(), e);
         }
@@ -71,7 +75,13 @@ public class AudienceOrderProjector {
      * Delegates to the phone-aware form with no phone and no SMS opt-in.
      */
     public void upsertMembership(java.util.UUID orgId, String normalizedEmail, String displayName) {
-        upsertMembership(orgId, normalizedEmail, displayName, null, false);
+        upsertMembership(orgId, normalizedEmail, displayName, null, false, false, null);
+    }
+
+    /** Phase-3 form kept for existing callers — no email opt-in. */
+    public void upsertMembership(java.util.UUID orgId, String normalizedEmail, String displayName,
+                                 String phoneE164, boolean smsOptIn) {
+        upsertMembership(orgId, normalizedEmail, displayName, phoneE164, smsOptIn, false, null);
     }
 
     /**
@@ -86,7 +96,8 @@ public class AudienceOrderProjector {
      */
     @Transactional
     public void upsertMembership(java.util.UUID orgId, String normalizedEmail, String displayName,
-                                 String phoneE164, boolean smsOptIn) {
+                                 String phoneE164, boolean smsOptIn,
+                                 boolean emailOptIn, java.util.UUID orderIdForProof) {
         // 1. Upsert Consumer (INSERT-first, catch DuplicateKeyException — idempotent)
         Consumer consumer = consumerRepo.findByNormalizedEmail(normalizedEmail).orElse(null);
         if (consumer == null) {
@@ -127,5 +138,17 @@ public class AudienceOrderProjector {
         projector.recompute(m, normalizedEmail);
 
         membershipRepo.save(m);
+
+        // 4. Explicit email-marketing opt-in from checkout (V61): write the authoritative
+        // channel='email' consent proof row + membership state. Capture is
+        // subscribe-or-refresh only (ConsentService never downgrades to unsubscribed),
+        // but skip when the member already unsubscribed — a later ticket purchase is
+        // not a re-consent to marketing email.
+        if (emailOptIn && !"unsubscribed".equals(m.getConsentStatus())) {
+            consentService.capture(orgId, m.getMembershipId(), "explicit", "checkout",
+                    "Checked 'Email me about this organizer's events' at checkout"
+                            + (orderIdForProof != null ? ", order " + orderIdForProof : ""),
+                    "email", null);
+        }
     }
 }

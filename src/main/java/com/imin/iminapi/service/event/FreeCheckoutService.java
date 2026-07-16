@@ -82,7 +82,8 @@ public class FreeCheckoutService {
      */
     @Transactional
     public Order issueFreeOrder(Event event, TicketTier tier, int quantity,
-                                 String buyerEmail, PromoCode appliedPromo, boolean adsConsent) {
+                                 String buyerEmail, PromoCode appliedPromo, boolean adsConsent,
+                                 boolean marketingOptIn) {
         // Reserve + confirm atomically in the same transaction. expires_at is a
         // short fallback that the sweeper would only see if the surrounding
         // transaction crashed between reserve() and confirmSold() — both calls
@@ -101,6 +102,7 @@ public class FreeCheckoutService {
         order.setCurrency(event.getCurrency());
         order.setPaymentMethod("free");
         order.setAdsConsent(adsConsent);
+        order.setMarketingOptIn(marketingOptIn);
         if (appliedPromo != null) {
             order.setPromoCodeId(appliedPromo.getId());
         }

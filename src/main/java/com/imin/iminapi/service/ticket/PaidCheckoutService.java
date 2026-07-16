@@ -147,6 +147,9 @@ public class PaidCheckoutService {
         // gates the server-side Meta CAPI event (MetaCapiOutboxWriter). Absent/anything-but-
         // "true" defaults false (V60 default), so historical/unconsented orders never emit.
         order.setAdsConsent("true".equals(meta.get("ads_consent")));
+        // Explicit email-marketing opt-in from the buy page, stamped into metadata by
+        // StripeCheckoutService. The AudienceOrderProjector turns it into the consent row.
+        order.setMarketingOptIn("true".equals(meta.get("marketing_opt_in")));
         order.setApplicationFeeMinor(pi.getApplicationFeeAmount() == null ? 0L : pi.getApplicationFeeAmount());
 
         String promoIdRaw = meta.get("promo_id");

@@ -104,17 +104,17 @@ public class StripeCheckoutService {
      * @return the Stripe-hosted Checkout URL. Buyer is sent here directly; we never see the card.
      */
     public String createCheckoutSession(UUID eventId, UUID tierId, int quantity, String promoCode) {
-        return createCheckoutSession(eventId, tierId, quantity, promoCode, null, null, false);
+        return createCheckoutSession(eventId, tierId, quantity, promoCode, null, null, false, false);
     }
 
     public String createCheckoutSession(UUID eventId, UUID tierId, int quantity,
                                          String promoCode, Integer expectedPriceMinor) {
-        return createCheckoutSession(eventId, tierId, quantity, promoCode, expectedPriceMinor, null, false);
+        return createCheckoutSession(eventId, tierId, quantity, promoCode, expectedPriceMinor, null, false, false);
     }
 
     public String createCheckoutSession(UUID eventId, UUID tierId, int quantity,
                                          String promoCode, Integer expectedPriceMinor, String buyerEmail) {
-        return createCheckoutSession(eventId, tierId, quantity, promoCode, expectedPriceMinor, buyerEmail, false);
+        return createCheckoutSession(eventId, tierId, quantity, promoCode, expectedPriceMinor, buyerEmail, false, false);
     }
 
     /**
@@ -129,7 +129,7 @@ public class StripeCheckoutService {
      */
     public String createCheckoutSession(UUID eventId, UUID tierId, int quantity,
                                          String promoCode, Integer expectedPriceMinor, String buyerEmail,
-                                         boolean adsConsent) {
+                                         boolean adsConsent, boolean marketingOptIn) {
         if (quantity < 1 || quantity > 10) {
             // 400, not 404 — quantity is a client bug, not an event-discovery question.
             throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
@@ -178,7 +178,7 @@ public class StripeCheckoutService {
             }
             Order order;
             try {
-                order = freeCheckoutService.issueFreeOrder(event, tier, quantity, email, promo, adsConsent);
+                order = freeCheckoutService.issueFreeOrder(event, tier, quantity, email, promo, adsConsent, marketingOptIn);
             } catch (ApiException e) {
                 // Inventory shortage → collapse to leak-safe 404 like the paid path.
                 if (e.status() == HttpStatus.CONFLICT) {
@@ -288,6 +288,7 @@ public class StripeCheckoutService {
         // metadata so PaidCheckoutService can snapshot it onto orders.ads_consent at
         // webhook-driven order creation. Only "true" enables the server-side CAPI event.
         metadata.put("ads_consent", String.valueOf(adsConsent));
+        metadata.put("marketing_opt_in", String.valueOf(marketingOptIn));
 
         String couponId = null;
         if (promo != null) {

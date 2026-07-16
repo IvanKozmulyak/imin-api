@@ -44,8 +44,10 @@ public class StripeCheckoutController {
         // Nullable; treat null as false. Rides the buyer's cookie-consent ads-consent (§7)
         // into orders.ads_consent — the lawful basis gate for the server-side Meta CAPI event.
         boolean adsConsent = Boolean.TRUE.equals(body.adsConsent());
+        // Nullable; null => false. Explicit, unchecked-by-default email-marketing opt-in.
+        boolean marketingOptIn = Boolean.TRUE.equals(body.marketingOptIn());
         String url = checkout.createCheckoutSession(eventId, body.tierId(), quantity,
-                promoCode, body.expectedPriceMinor(), body.email(), adsConsent);
+                promoCode, body.expectedPriceMinor(), body.email(), adsConsent, marketingOptIn);
         return new CheckoutResponse(url);
     }
 
@@ -64,7 +66,12 @@ public class StripeCheckoutController {
                                    // Buyer's cookie-consent ads-consent decision from the
                                    // imin-public consent banner (§7). Nullable; null ⇒ false.
                                    // Persisted to orders.ads_consent; gates the Meta CAPI event.
-                                   Boolean adsConsent) {}
+                                   Boolean adsConsent,
+                                   // Buyer's explicit email-marketing opt-in from the buy page
+                                   // (unchecked by default). Nullable; null => false. Persisted to
+                                   // orders.marketing_opt_in; becomes the channel='email' consent
+                                   // proof row at fulfilment.
+                                   Boolean marketingOptIn) {}
 
     public record CheckoutResponse(String url) {}
 }

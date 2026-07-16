@@ -87,6 +87,14 @@ public class Order {
     @Column(name = "ads_consent", nullable = false)
     private boolean adsConsent = false;
 
+    /**
+     * True when the buyer ticked the unchecked-by-default email-marketing opt-in
+     * on the buy page (V61). Order-level snapshot; the AudienceOrderProjector reads
+     * it at fulfilment and writes the channel='email' consent proof row.
+     */
+    @Column(name = "marketing_opt_in", nullable = false)
+    private boolean marketingOptIn = false;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Times.nowMicros();
 
