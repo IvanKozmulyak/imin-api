@@ -47,13 +47,16 @@ public class CampaignService {
     private final EmailService email;
     private final UserRepository users;
     private final CampaignAttributionService attribution;
+    /** Read-only, org-scoped: resolves the recipient log's Person column display names. */
+    private final com.imin.iminapi.audience.repository.MembershipRepository memberships;
 
     public CampaignService(CampaignRepository campaigns,
                            com.imin.iminapi.marketing.repository.CampaignRecipientRepository campaignRecipientRepository,
                            AuditLogger audit,
                            SegmentService segments, SendGateService sendGate,
                            EmailService email, UserRepository users,
-                           CampaignAttributionService attribution) {
+                           CampaignAttributionService attribution,
+                           com.imin.iminapi.audience.repository.MembershipRepository memberships) {
         this.campaigns = campaigns;
         this.campaignRecipientRepository = campaignRecipientRepository;
         this.audit = audit;
@@ -62,6 +65,7 @@ public class CampaignService {
         this.email = email;
         this.users = users;
         this.attribution = attribution;
+        this.memberships = memberships;
     }
 
     @Transactional
@@ -92,14 +96,46 @@ public class CampaignService {
 
     @Transactional(readOnly = true)
     public CampaignDto get(AuthPrincipal p, UUID id) {
-        return CampaignDto.from(require(p.orgId(), id));
+        Campaign c = require(p.orgId(), id);
+        return CampaignDto.from(c, attributedRevenue(p.orgId(), c));
     }
 
     @Transactional(readOnly = true)
     public List<CampaignSummary> list(AuthPrincipal p, String channel, String status, int page, int size) {
         List<Campaign> rows = campaigns.listByOrg(p.orgId(),
                 blankToNull(channel), blankToNull(status), PageRequest.of(page, size));
-        return rows.stream().map(CampaignSummary::from).toList();
+        // Attributed revenue for the whole page in ONE query (V62) — never per row.
+        // Only sent campaigns can have any; drafts are left null (see CampaignSummary.revMinor).
+        List<UUID> sentIds = rows.stream().filter(CampaignService::hasSent).map(Campaign::getId).toList();
+        var revByCampaign = attribution.attributedRevenueMinorByCampaign(p.orgId(), sentIds);
+        return rows.stream()
+                .map(c -> CampaignSummary.from(c, hasSent(c) ? revByCampaign.getOrDefault(c.getId(), 0L) : null))
+                .toList();
+    }
+
+    /**
+     * Attributed revenue for one campaign, or null when the campaign has never sent.
+     * Null is not "unknown" — it is "not applicable": no link carrying this campaign's
+     * utm_campaign exists yet, so no order can be attributed to it. Reporting 0 there would
+     * assert the campaign earned nothing, which is a different (and false) claim.
+     */
+    private Long attributedRevenue(UUID orgId, Campaign c) {
+        return hasSent(c) ? attribution.attributedRevenueMinor(orgId, c.getId()) : null;
+    }
+
+    /**
+     * True once ANY of the campaign's links could be in a buyer's inbox — that is the moment
+     * attributed revenue becomes a real (possibly 0) answer rather than "not applicable".
+     *
+     * <p>Deliberately includes {@code sending}: EmailChannelSender delivers in batches while
+     * the status is still 'sending', and {@code sentAt} is only stamped when the whole send
+     * COMPLETES (CampaignSendUnit). Keying purely off {@code sentAt} would show an em-dash on
+     * a half-sent campaign that is already driving real orders.
+     */
+    private static boolean hasSent(Campaign c) {
+        return c.getSentAt() != null
+                || "sent".equals(c.getStatus())
+                || "sending".equals(c.getStatus());
     }
 
     @Transactional
@@ -232,21 +268,134 @@ public class CampaignService {
         }
     }
 
+    /** Engagement axis of the recipient log — derived from timestamps, NOT from the status enum. */
+    private enum Engagement { OPENED, CLICKED }
+
+    /**
+     * One page of a campaign's recipient log, plus honest counts (spec §2.4).
+     *
+     * <p>Two orthogonal filter axes:
+     * <ul>
+     *   <li>{@code status} — lifecycle. Comma-separated for multi-status chips ("Issues" =
+     *       {@code bounced,failed,complained}); a single value is just a one-element list, so the
+     *       pre-existing {@code ?status=skipped} call keeps working unchanged.</li>
+     *   <li>{@code engagement} — {@code opened} | {@code clicked}, read off
+     *       {@code opened_at}/{@code clicked_at}. Independent of status by design: a row can be
+     *       {@code delivered} AND opened, so these are NOT status values.</li>
+     * </ul>
+     *
+     * <p>{@code total} is a real aggregate over the ACTIVE filter (so the client pages the current
+     * subset honestly); {@code counts} is a real aggregate over the WHOLE log (so the chips are
+     * true no matter which page is loaded). Neither is derived from {@code items}.
+     *
+     * <p>The Pageable carries an explicit ascending id sort: Postgres guarantees no row order
+     * without an ORDER BY, so an unsorted offset page can silently skip or repeat rows — which
+     * would make the new {@code total} authoritative-looking over incoherent paging.
+     */
     @Transactional(readOnly = true)
     public com.imin.iminapi.marketing.dto.RecipientPage listRecipients(
             UUID campaignId, AuthPrincipal principal,
-            String status, int page, int size) {
+            String status, String engagement, int page, int size) {
         campaigns.findByIdAndOrgId(campaignId, principal.orgId())
                 .orElseThrow(() -> ApiException.notFound("Campaign"));
+
+        List<String> statuses = parseStatuses(status);
+        Engagement eng = parseEngagement(engagement);
+
         org.springframework.data.domain.Pageable pageable =
-                org.springframework.data.domain.PageRequest.of(page, size);
-        List<com.imin.iminapi.marketing.model.CampaignRecipient> rows =
-                (status == null || status.isBlank())
-                        ? campaignRecipientRepository.findByCampaignId(campaignId, pageable)
-                        : campaignRecipientRepository.findByCampaignIdAndStatus(campaignId, status, pageable);
-        List<com.imin.iminapi.marketing.dto.RecipientDto> items =
-                rows.stream().map(com.imin.iminapi.marketing.dto.RecipientDto::from).toList();
-        return new com.imin.iminapi.marketing.dto.RecipientPage(items, page, size);
+                org.springframework.data.domain.PageRequest.of(page, size,
+                        org.springframework.data.domain.Sort.by(
+                                org.springframework.data.domain.Sort.Direction.ASC, "id"));
+
+        List<com.imin.iminapi.marketing.model.CampaignRecipient> rows;
+        long total;
+        if (statuses == null) {
+            if (eng == Engagement.OPENED) {
+                rows = campaignRecipientRepository.findByCampaignIdAndOpenedAtNotNull(campaignId, pageable);
+                total = campaignRecipientRepository.countByCampaignIdAndOpenedAtNotNull(campaignId);
+            } else if (eng == Engagement.CLICKED) {
+                rows = campaignRecipientRepository.findByCampaignIdAndClickedAtNotNull(campaignId, pageable);
+                total = campaignRecipientRepository.countByCampaignIdAndClickedAtNotNull(campaignId);
+            } else {
+                rows = campaignRecipientRepository.findByCampaignId(campaignId, pageable);
+                total = campaignRecipientRepository.countByCampaignId(campaignId);
+            }
+        } else if (eng == Engagement.OPENED) {
+            rows = campaignRecipientRepository.findByCampaignIdAndStatusInAndOpenedAtNotNull(campaignId, statuses, pageable);
+            total = campaignRecipientRepository.countByCampaignIdAndStatusInAndOpenedAtNotNull(campaignId, statuses);
+        } else if (eng == Engagement.CLICKED) {
+            rows = campaignRecipientRepository.findByCampaignIdAndStatusInAndClickedAtNotNull(campaignId, statuses, pageable);
+            total = campaignRecipientRepository.countByCampaignIdAndStatusInAndClickedAtNotNull(campaignId, statuses);
+        } else {
+            rows = campaignRecipientRepository.findByCampaignIdAndStatusIn(campaignId, statuses, pageable);
+            total = campaignRecipientRepository.countByCampaignIdAndStatusIn(campaignId, statuses);
+        }
+
+        java.util.Map<UUID, String> names = displayNames(principal.orgId(), rows);
+        List<com.imin.iminapi.marketing.dto.RecipientDto> items = rows.stream()
+                .map(r -> com.imin.iminapi.marketing.dto.RecipientDto.from(r, displayName(names, r)))
+                .toList();
+
+        return new com.imin.iminapi.marketing.dto.RecipientPage(items, page, size, total,
+                campaignRecipientRepository.chipCounts(campaignId));
+    }
+
+    /**
+     * Name for one row, or null. The null-membership branch is EXPLICIT rather than leaning on
+     * {@code Map.get(null)} returning null: that holds for HashMap but {@code Map.of()} — which
+     * {@link #displayNames} returns when a page has no memberships at all — throws NPE on a null
+     * key. A DSAR-erased row must degrade to a null name, never take the page down with it.
+     */
+    private static String displayName(java.util.Map<UUID, String> names,
+                                      com.imin.iminapi.marketing.model.CampaignRecipient r) {
+        return r.getMembershipId() == null ? null : names.get(r.getMembershipId());
+    }
+
+    /**
+     * Batch-resolve display names for the loaded page — one org-scoped query, never N+1.
+     * A row degrades to a null name (never a placeholder, never an exception) when its
+     * membership was DSAR-erased ({@code membership_id} nulled by V53's ON DELETE SET NULL),
+     * when the membership carries no display name, or when the id resolves outside the
+     * caller's org.
+     */
+    private java.util.Map<UUID, String> displayNames(
+            UUID orgId, List<com.imin.iminapi.marketing.model.CampaignRecipient> rows) {
+        java.util.Set<UUID> ids = rows.stream()
+                .map(com.imin.iminapi.marketing.model.CampaignRecipient::getMembershipId)
+                .filter(java.util.Objects::nonNull)
+                .collect(java.util.stream.Collectors.toSet());
+        if (ids.isEmpty()) return java.util.Map.of();
+        return memberships.findByIdsAndOrgId(ids, orgId).stream()
+                // Collectors.toMap throws on a null value — a nameless membership must simply be absent.
+                .filter(m -> m.getDisplayName() != null)
+                .collect(java.util.stream.Collectors.toMap(
+                        Membership::getMembershipId, Membership::getDisplayName));
+    }
+
+    /** {@code null} when absent/blank; otherwise the CSV split, blanks dropped. */
+    private List<String> parseStatuses(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        List<String> out = java.util.Arrays.stream(raw.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .distinct()
+                .toList();
+        return out.isEmpty() ? null : out;
+    }
+
+    /**
+     * Strict: an unrecognised engagement value is a 400, not a silently ignored filter — a chip
+     * that quietly returned the unfiltered log would be exactly the authoritative-looking lie
+     * this endpoint exists to remove.
+     */
+    private Engagement parseEngagement(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        return switch (raw.trim().toLowerCase(java.util.Locale.ROOT)) {
+            case "opened" -> Engagement.OPENED;
+            case "clicked" -> Engagement.CLICKED;
+            default -> throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID,
+                    "engagement must be one of: opened, clicked");
+        };
     }
 
     /**

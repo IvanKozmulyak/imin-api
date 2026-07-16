@@ -1,6 +1,7 @@
 package com.imin.iminapi.service.ticket;
 
 import com.imin.iminapi.marketing.service.MetaCapiOutboxWriter;
+import com.imin.iminapi.model.CheckoutAttribution;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Ticket;
@@ -147,9 +148,15 @@ public class PaidCheckoutService {
         // gates the server-side Meta CAPI event (MetaCapiOutboxWriter). Absent/anything-but-
         // "true" defaults false (V60 default), so historical/unconsented orders never emit.
         order.setAdsConsent("true".equals(meta.get("ads_consent")));
-        // Explicit email-marketing opt-in from the buy page, stamped into metadata by
-        // StripeCheckoutService. The AudienceOrderProjector turns it into the consent row.
+        // Email-marketing soft opt-in from the buy page (pre-ticked, buyer left it ticked),
+        // stamped into metadata by StripeCheckoutService. The AudienceOrderProjector turns
+        // it into the basis='soft_opt_in' consent row.
         order.setMarketingOptIn("true".equals(meta.get("marketing_opt_in")));
+        // Last-touch utm_* + anon_id (V62) captured on landing and carried through the
+        // session/PI metadata. Missing keys → null: sessions created before V62 that were
+        // still in flight at deploy, and organic buyers who arrived with no tags at all.
+        // This is what makes per-campaign revenue a true per-order sum rather than an estimate.
+        CheckoutAttribution.fromMetadata(meta).applyTo(order);
         order.setApplicationFeeMinor(pi.getApplicationFeeAmount() == null ? 0L : pi.getApplicationFeeAmount());
 
         String promoIdRaw = meta.get("promo_id");

@@ -1,10 +1,14 @@
 package com.imin.iminapi.marketing.service;
 
+import com.imin.iminapi.audience.model.Segment;
+import com.imin.iminapi.audience.repository.MembershipRepository;
+import com.imin.iminapi.audience.repository.SegmentRepository;
 import com.imin.iminapi.marketing.dto.CampaignDto;      // Phase 2
 import com.imin.iminapi.marketing.dto.MomentumEngineStateDto;
 import com.imin.iminapi.marketing.dto.MomentumSuggestionDto;
 import com.imin.iminapi.marketing.model.Campaign;        // Phase 2
 import com.imin.iminapi.marketing.model.MomentumSuggestion;
+import com.imin.iminapi.marketing.model.MomentumTriggerType;
 import com.imin.iminapi.marketing.repository.CampaignRepository;   // Phase 2
 import com.imin.iminapi.marketing.repository.MomentumSuggestionRepository;
 import com.imin.iminapi.model.Event;
@@ -22,9 +26,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * Org-scoped read/approve/dismiss orchestration for Momentum suggestions (spec §6.4).
@@ -41,22 +50,139 @@ public class MomentumService {
     private final MomentumSuggestionRepository suggestions;
     private final CampaignRepository campaigns;
     private final EventRepository events;
+    private final SegmentRepository segmentRepo;
+    private final MembershipRepository memberships;
     private final MomentumThresholds thresholds;
     private final ObjectMapper json = new ObjectMapper();
 
     public MomentumService(MomentumSuggestionRepository suggestions, CampaignRepository campaigns,
-                           EventRepository events, MomentumThresholds thresholds) {
+                           EventRepository events, SegmentRepository segmentRepo,
+                           MembershipRepository memberships, MomentumThresholds thresholds) {
         this.suggestions = suggestions;
         this.campaigns = campaigns;
         this.events = events;
+        this.segmentRepo = segmentRepo;
+        this.memberships = memberships;
         this.thresholds = thresholds;
     }
 
+    /**
+     * The org's suggestions, enriched into the card read-model (spec §6.4).
+     *
+     * <p>Resolution strategy is per-field and deliberate — see the field-by-field rationale on
+     * {@link MomentumSuggestionDto}. In short: the METRICS stay frozen in {@code metrics_snapshot}
+     * (they are the evidence for why the engine fired and must not drift), the PROSE is derived
+     * from that frozen snapshot on read (pure function of a frozen input ⇒ same answer, but it
+     * also backfills pre-existing rows and keeps wording fixable), and IDENTITY/CAPABILITY
+     * ({@code eventName}, {@code segmentLabel}, {@code smsLocked}) is resolved LIVE so a rename
+     * or a fresh SMS opt-in is reflected instead of being stale prose.
+     *
+     * <p>All three live lookups are batched — one events query, one segments query, one phone
+     * count for the whole page — so enriching N suggestions stays 3 queries, not 3N.
+     */
     @Transactional(readOnly = true)
     public List<MomentumSuggestionDto> list(AuthPrincipal principal, String status) {
         String s = status == null || status.isBlank() ? "suggested" : status;
-        return suggestions.findByOrgIdAndStatusOrderBySuggestedAtDesc(principal.orgId(), s)
-                .stream().map(MomentumSuggestionDto::from).toList();
+        UUID orgId = principal.orgId();
+        List<MomentumSuggestion> rows =
+                suggestions.findByOrgIdAndStatusOrderBySuggestedAtDesc(orgId, s);
+        if (rows.isEmpty()) return List.of();
+
+        // Live #1: event names, one batch fetch keyed by id.
+        Set<UUID> eventIds = rows.stream().map(MomentumSuggestion::getEventId)
+                .filter(java.util.Objects::nonNull).collect(Collectors.toSet());
+        Map<UUID, String> eventNames = new HashMap<>();
+        for (Event e : events.findAllById(eventIds)) {
+            eventNames.put(e.getId(), e.getName());
+        }
+        // Live #2: segment names for the whole org (prebuilt + custom is a small set).
+        Map<UUID, String> segmentNames = new HashMap<>();
+        for (Segment seg : segmentRepo.findByOrgId(orgId)) {
+            segmentNames.put(seg.getId(), seg.getName());
+        }
+        // Live #3: SMS is locked when the org has zero opted-in phones to send to.
+        boolean smsLocked = memberships.countSmsSubscribedByOrgId(orgId) == 0;
+
+        return rows.stream()
+                .map(r -> toDto(r, eventNames, segmentNames, smsLocked))
+                .toList();
+    }
+
+    private MomentumSuggestionDto toDto(MomentumSuggestion s,
+                                        Map<UUID, String> eventNames,
+                                        Map<UUID, String> segmentNames,
+                                        boolean smsLocked) {
+        MomentumMetrics m = parseMetrics(s.getMetricsSnapshot());
+        MomentumTriggerType trigger = parseTrigger(s.getTriggerType());
+
+        // Null rather than a stand-in when the event is genuinely gone: the FE can say so.
+        String eventName = s.getEventId() == null ? null : eventNames.get(s.getEventId());
+        String segmentLabel = resolveSegmentLabel(s.getDraftPayload(), segmentNames);
+
+        // Prose only where the snapshot actually supports it. An unparseable/legacy snapshot
+        // yields nulls — the card degrades to its raw numbers instead of inventing a story.
+        String headline = m == null ? null : MomentumProse.headline(trigger, m);
+        String pace = m == null ? null : MomentumProse.pace(trigger, m);
+        String daysOutLabel = m == null ? null : MomentumProse.daysOutLabel(trigger, m);
+        List<Integer> spark = m == null || !m.hasSpark() ? null : m.spark();
+
+        return new MomentumSuggestionDto(
+                s.getId(), s.getEventId(), eventName, s.getTriggerType(), s.getStatus(),
+                s.getMetricsSnapshot(), s.getDraftPayload(), s.getCampaignId(), s.getSuggestedAt(),
+                headline, pace, daysOutLabel, spark, segmentLabel, smsLocked);
+    }
+
+    /** Human name of the draft's target segment, or null when unset/deleted (never guessed). */
+    private String resolveSegmentLabel(String draftPayload, Map<UUID, String> segmentNames) {
+        if (draftPayload == null || draftPayload.isBlank()) return null;
+        try {
+            JsonNode n = json.readTree(draftPayload);
+            String id = text(n, "segmentId", null);
+            if (id == null || id.isBlank()) return null;
+            return segmentNames.get(UUID.fromString(id));
+        } catch (Exception e) {
+            return null; // malformed draft or non-UUID segment id — unknown, so say nothing
+        }
+    }
+
+    /**
+     * Rehydrate the frozen metrics snapshot. Tolerant by design: rows written before a field
+     * existed simply lack it, and this must not 500 the whole list — the missing field becomes
+     * absent prose, not fabricated prose.
+     */
+    private MomentumMetrics parseMetrics(String snapshot) {
+        if (snapshot == null || snapshot.isBlank()) return null;
+        try {
+            JsonNode n = json.readTree(snapshot);
+            if (!n.isObject()) return null;
+            List<Integer> spark = new ArrayList<>();
+            JsonNode sparkNode = n.get("spark");
+            if (sparkNode != null && sparkNode.isArray()) {
+                for (JsonNode p : sparkNode) spark.add(p.asInt());
+            }
+            JsonNode startNode = n.get("sparkStartDate");
+            LocalDate sparkStart = startNode == null || startNode.isNull()
+                    ? null : LocalDate.parse(startNode.asText());
+            return new MomentumMetrics(
+                    n.path("sold").asInt(),
+                    n.path("capacity").asInt(),
+                    n.path("sellThroughPct").asInt(),
+                    n.path("daysOut").asInt(),
+                    n.path("hoursSinceOnSale").asLong(),
+                    n.path("velocity7d").asDouble(),
+                    n.path("hoursToStart").asLong(),
+                    List.copyOf(spark),
+                    sparkStart,
+                    n.path("ticketsPerDay7d").asDouble());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private MomentumTriggerType parseTrigger(String wire) {
+        if (wire == null) return null;
+        try { return MomentumTriggerType.fromWire(wire); }
+        catch (Exception e) { return null; }
     }
 
     /**

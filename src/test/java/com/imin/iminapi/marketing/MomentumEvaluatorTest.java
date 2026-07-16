@@ -106,6 +106,28 @@ class MomentumEvaluatorTest {
     }
 
     @Test
+    void snapshotsTheRealSoldPerDaySeriesAtEvaluation() {
+        // The spark is EVIDENCE, so the evaluator freezes it alongside the numbers it fired on
+        // — the organizer sees the curve the engine actually saw, and the chart can never
+        // contradict the `sold` scalar printed next to it.
+        // on-sale 10 days back (still >= the 48h launch_push gate) so the spark window is the
+        // full SPARK_DAYS regardless of what time of day the suite runs — a 50h on-sale would
+        // clamp the window to 3 or 4 points depending on which side of UTC midnight "now" fell.
+        UUID event = support.seedLiveEvent(
+                /*sold*/ 5, /*capacity*/ 100,
+                /*onSaleAt*/ Instant.now().minusSeconds(10L * 86400),
+                /*startsAt*/ Instant.now().plusSeconds(30L * 86400));
+        support.seedDailyTickets(event, 1, 3, 1); // real ticket rows on the last 3 days
+
+        evaluator.runOnce();
+
+        MomentumSuggestion made = suggestions.findByEventIdAndStatus(event, "suggested").stream()
+                .filter(s -> "launch_push".equals(s.getTriggerType())).findFirst().orElseThrow();
+        assertThat(made.getMetricsSnapshot()).contains("\"spark\":[0,0,0,0,0,0,0,1,3,1]");
+        assertThat(made.getMetricsSnapshot()).contains("\"ticketsPerDay7d\":");
+    }
+
+    @Test
     void doesNotFireBelowAudienceFloor() {
         when(sendGate.evaluate(any(), any()))
                 .thenReturn(new SendGateService.GateResult(

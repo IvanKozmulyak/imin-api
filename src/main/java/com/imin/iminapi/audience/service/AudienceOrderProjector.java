@@ -23,8 +23,12 @@ import java.util.Optional;
  * Listens for {@link TicketsIssuedEvent} AFTER_COMMIT and upserts the
  * Consumer + Membership rows, then recomputes all derived aggregates from source.
  *
- * <p>S3: first_touch_src = 'organic' unconditionally in Tier C (no anon_id on Order).
- * <p>S5: no marketing-consent row is written — gate ships CLOSED.
+ * <p>S3: first_touch_src = 'organic' unconditionally in Tier C. (Orders DO carry an anon_id
+ * and the landing utm_* since V62, but first-touch attribution is a separate read-model and
+ * is not wired here — this stays 'organic' rather than guessing.)
+ * <p>S5: a marketing-consent row is written ONLY from an order's own opt-in — see step 4 of
+ * {@link #upsertMembership}. Without one, the member has no lawful basis and the Send Gate
+ * excludes them.
  * <p>S1: aggregates are DERIVED from source rows (not incremented).
  */
 @Component
@@ -78,7 +82,7 @@ public class AudienceOrderProjector {
         upsertMembership(orgId, normalizedEmail, displayName, null, false, false, null);
     }
 
-    /** Phase-3 form kept for existing callers — no email opt-in. */
+    /** Phase-3 form kept for existing callers — no email opt-in captured. */
     public void upsertMembership(java.util.UUID orgId, String normalizedEmail, String displayName,
                                  String phoneE164, boolean smsOptIn) {
         upsertMembership(orgId, normalizedEmail, displayName, phoneE164, smsOptIn, false, null);
@@ -139,14 +143,30 @@ public class AudienceOrderProjector {
 
         membershipRepo.save(m);
 
-        // 4. Explicit email-marketing opt-in from checkout (V61): write the authoritative
-        // channel='email' consent proof row + membership state. Capture is
-        // subscribe-or-refresh only (ConsentService never downgrades to unsubscribed),
-        // but skip when the member already unsubscribed — a later ticket purchase is
-        // not a re-consent to marketing email.
+        // 4. Email-marketing opt-in from checkout (V61): write the authoritative
+        // channel='email' consent proof row + membership state.
+        //
+        // Basis is 'soft_opt_in', NOT 'explicit'. The checkout checkbox is PRE-TICKED
+        // (default on), so leaving it ticked is not an affirmative act — GDPR Recital 32
+        // names pre-ticked boxes as not constituting consent, and recording it as
+        // 'explicit' would be a false audit record on exactly the surface a regulator
+        // inspects. It IS a valid ePrivacy Art.13(2) soft opt-in: the buyer is an existing
+        // customer, offered an opt-out at the point of collection and in every email. The
+        // proof text below therefore states what actually happened (a pre-ticked box the
+        // buyer left ticked) and never claims the buyer took an action.
+        //
+        // soft_opt_in is a lawful basis for EMAIL only — SendGateService's clause 4 admits
+        // any non-null consent_basis. SMS is untouched here: it lives on the separate
+        // sms_consent_* columns and keeps requiring an explicit, unticked-by-default opt-in.
+        //
+        // Capture is subscribe-or-refresh only (ConsentService never downgrades to
+        // unsubscribed), but skip when the member already unsubscribed — a later ticket
+        // purchase is not a re-consent to marketing email, and a default-on box must never
+        // resurrect someone who opted out. Unsubscribed beats default-on, always.
         if (emailOptIn && !"unsubscribed".equals(m.getConsentStatus())) {
-            consentService.capture(orgId, m.getMembershipId(), "explicit", "checkout",
-                    "Checked 'Email me about this organizer's events' at checkout"
+            consentService.capture(orgId, m.getMembershipId(), "soft_opt_in", "checkout",
+                    "Left the pre-ticked 'We'll email you about similar events from this "
+                            + "organiser' box ticked at checkout"
                             + (orderIdForProof != null ? ", order " + orderIdForProof : ""),
                     "email", null);
         }

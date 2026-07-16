@@ -68,11 +68,22 @@ class MomentumControllerTest {
     @WithStubOrganizer
     void listsSuggestions() throws Exception {
         when(service.list(any(), any())).thenReturn(List.of(new MomentumSuggestionDto(
-                UUID.randomUUID(), UUID.randomUUID(), "launch_push", "suggested",
-                "{}", "{\"subject\":\"Hi\"}", null, Instant.now())));
+                UUID.randomUUID(), UUID.randomUUID(), "Subterrane // Vol. 09", "launch_push",
+                "suggested", "{}", "{\"subject\":\"Hi\"}", null, Instant.now(),
+                "TICKETS LIVE", "92 sold in the first 48 hours, 2% of the room",
+                "On-sale 2 days", List.of(0, 14, 22, 18), "Repeat", true)));
         mvc.perform(get("/api/v1/marketing/suggestions?status=suggested"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].triggerType").value("launch_push"));
+                .andExpect(jsonPath("$[0].triggerType").value("launch_push"))
+                // The enriched card fields must survive JSON serialization — the card is
+                // stripped of its evidence if any of these silently drop off the wire.
+                .andExpect(jsonPath("$[0].eventName").value("Subterrane // Vol. 09"))
+                .andExpect(jsonPath("$[0].headline").value("TICKETS LIVE"))
+                .andExpect(jsonPath("$[0].daysOutLabel").value("On-sale 2 days"))
+                .andExpect(jsonPath("$[0].segmentLabel").value("Repeat"))
+                .andExpect(jsonPath("$[0].smsLocked").value(true))
+                .andExpect(jsonPath("$[0].spark").isArray())
+                .andExpect(jsonPath("$[0].spark[1]").value(14));
     }
 
     @Test

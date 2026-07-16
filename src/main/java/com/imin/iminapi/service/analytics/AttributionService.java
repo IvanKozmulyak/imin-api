@@ -11,7 +11,9 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Builds the two organizer-facing UTM attribution read-models, both scoped to
@@ -53,27 +55,28 @@ public class AttributionService {
             }
         }
 
-        long pool = orders.sumTotalMinorByOrgId(p.orgId());
+        // TRUE per-order last-touch revenue by channel (V62): orders now carry the landing
+        // utm_source, stamped at checkout and snapshotted at fulfilment, so each order's full
+        // total is counted ONCE against the channel the buyer actually arrived through. This
+        // replaces the old tagged-visit-SHARE approximation, which had to divide the org's
+        // whole revenue pool across channels because orders carried no utm key to join on.
+        //
+        // Consequences of the switch, both deliberate:
+        //  - Revenue from orders placed BEFORE V62 has no utm_source and is no longer counted
+        //    for any channel. It cannot be back-filled — the tag was never captured — so it
+        //    reports as unattributed rather than being spread across channels on a guess.
+        //  - A channel with visits but no paid orders now correctly reads 0 revenue instead of
+        //    receiving a share of unrelated revenue.
+        Map<String, Long> revenueBySource = new HashMap<>();
+        for (Object[] r : orders.sumRevenueByUtmSource(p.orgId())) {
+            revenueBySource.put((String) r[0], ((Number) r[1]).longValue());
+        }
 
-        // ponytail: last-touch revenue is attributed by tagged-visit SHARE, not
-        // by a per-order utm_source join — orders carry no anon_id/utm today, so
-        // there is no key to join a paid order back to the visit that drove it.
-        // Upgrade path: stamp anon_id (and the landing utm_*) onto the checkout
-        // session metadata, copy it onto the Order at fulfilment, then GROUP the
-        // order revenue by Order.utmSource for a true per-order last-touch sum.
         List<AttributionResponse.Channel> channels = new ArrayList<>();
-        long assigned = 0;
         tagged.sort(Comparator.comparingLong(Bucket::visits).reversed()
                 .thenComparing(Bucket::source));
-        for (int i = 0; i < tagged.size(); i++) {
-            Bucket b = tagged.get(i);
-            long revenue;
-            if (i == tagged.size() - 1) {
-                revenue = pool - assigned;          // last channel absorbs rounding remainder
-            } else {
-                revenue = taggedVisits == 0 ? 0 : Math.round((double) pool * b.visits() / taggedVisits);
-                assigned += revenue;
-            }
+        for (Bucket b : tagged) {
+            long revenue = revenueBySource.getOrDefault(b.source(), 0L);
             channels.add(new AttributionResponse.Channel(b.source(), Math.max(0, revenue), (int) b.visits()));
         }
 
@@ -84,8 +87,11 @@ public class AttributionService {
         // (by email) who placed >1 order. Instant.EPOCH = all-time window.
         int repeatBuyerPct = repeatRatePct(orders.orderCountsByEmailSince(p.orgId(), Instant.EPOCH));
 
-        // No tagged visits ⇒ no channel divides the pool, so attributed = 0.
-        long attributedRevenueMinor = taggedVisits == 0 ? 0 : pool;
+        // Total attributed revenue = the sum actually assigned to channels above. A source
+        // with orders but no recorded visits still counts as attributed revenue, so sum the
+        // map rather than the (visit-derived) channel list.
+        long attributedRevenueMinor = revenueBySource.values().stream()
+                .mapToLong(Long::longValue).filter(v -> v > 0).sum();
 
         return new AttributionResponse(attributedRevenueMinor, untaggedPct, repeatBuyerPct, channels);
     }

@@ -15,8 +15,10 @@ import java.time.ZoneId;
 @Component
 public class QuietHours {
 
-    private static final LocalTime EMAIL_QUIET_START = LocalTime.of(22, 0); // inclusive
-    private static final LocalTime EMAIL_QUIET_END = LocalTime.of(9, 0);    // exclusive
+    /** Start of the org-local email quiet window — inclusive (22:00 sharp is quiet). */
+    public static final LocalTime EMAIL_QUIET_START = LocalTime.of(22, 0);
+    /** End of the org-local email quiet window — exclusive (09:00 sharp may send). */
+    public static final LocalTime EMAIL_QUIET_END = LocalTime.of(9, 0);
 
     public boolean isEmailQuiet(String timezone, Instant now) {
         ZoneId zone = resolveZone(timezone);

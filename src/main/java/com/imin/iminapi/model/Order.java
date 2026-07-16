@@ -95,6 +95,34 @@ public class Order {
     @Column(name = "marketing_opt_in", nullable = false)
     private boolean marketingOptIn = false;
 
+    /**
+     * Last-touch UTM attribution snapshot (V62): the utm_* the buyer's browser landed
+     * with, forwarded by imin-public on POST /checkout and carried through the Stripe
+     * session/PaymentIntent metadata to fulfilment. All nullable — an organic buyer
+     * arrives with no tags, and every pre-V62 order predates the columns.
+     *
+     * <p>{@code utmCampaign} is the join key for per-campaign revenue: the campaign
+     * sender rewrites every imin.wtf link to carry {@code utm_campaign=<campaign id>}
+     * (see {@code UtmLinkRewriter}), so this column holds the campaign UUID as a string.
+     */
+    @Column(name = "utm_source", length = 128)
+    private String utmSource;
+
+    @Column(name = "utm_medium", length = 128)
+    private String utmMedium;
+
+    @Column(name = "utm_campaign", length = 128)
+    private String utmCampaign;
+
+    /**
+     * The buyer's per-session anon id — the SAME value the /track funnel beacon mints in
+     * sessionStorage ('imin.anon'), reused rather than a second identifier, so an order
+     * can be joined back to the visit that drove it. Nullable (storage disabled, or a
+     * buyer who never hit the tracked page).
+     */
+    @Column(name = "anon_id", length = 64)
+    private String anonId;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Times.nowMicros();
 
