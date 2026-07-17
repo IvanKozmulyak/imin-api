@@ -1,6 +1,7 @@
 package com.imin.iminapi.marketing.controller;
 
 import com.imin.iminapi.marketing.dto.MetaConnectionDto;
+import com.imin.iminapi.marketing.dto.MetaFunnelDto;
 import com.imin.iminapi.marketing.dto.MetaStatsDto;
 import com.imin.iminapi.marketing.dto.MetaTestEventResult;
 import com.imin.iminapi.marketing.dto.PutMetaConnectionRequest;
@@ -56,5 +57,17 @@ public class MetaConnectionController {
     @GetMapping("/stats")
     public MetaStatsDto stats(@CurrentUser AuthPrincipal principal) {
         return service.stats(principal.orgId());
+    }
+
+    /**
+     * Org-wide 3-stage "signal health" funnel for the Channels tab's Meta card
+     * (spec §8) — the real sales funnel (PAGE_VIEW / CHECKOUT_START /
+     * PAYMENTS_COMPLETED) over the org's active events, mapped to Meta's event
+     * vocabulary, so a gap against what Meta received reveals silent signal loss.
+     * Org is resolved from the auth context — never in the path.
+     */
+    @GetMapping("/funnel")
+    public MetaFunnelDto funnel(@CurrentUser AuthPrincipal principal) {
+        return service.funnel(principal.orgId());
     }
 }

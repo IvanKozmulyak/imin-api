@@ -3,7 +3,10 @@ package com.imin.iminapi.marketing.service;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.marketing.dto.MarketingChannelsDto;
 import com.imin.iminapi.marketing.email.MarketingEmailProperties;
+import com.imin.iminapi.marketing.email.ResendDomainsClient;
+import com.imin.iminapi.marketing.email.SendingDomainDns;
 import com.imin.iminapi.marketing.model.ProviderEvent;
+import com.imin.iminapi.marketing.sms.MarketingSmsProperties;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.MarketingChannelStatsRepository;
 import com.imin.iminapi.model.Organization;
@@ -35,9 +38,18 @@ import java.util.UUID;
  * {@code CampaignRecipientRepository#countRecentSendsForOrg} for the rolling counts. Nothing
  * is duplicated or restated, so a displayed number cannot drift from the enforced one.
  *
- * <p>Fields that could not be sourced truthfully (SPF/DKIM/DMARC status, any reputation
- * score, SMS provider/region/sender-id/encoding/first-release cap) are ABSENT from the DTO
- * rather than guessed — see {@link MarketingChannelsDto} for the full rationale.
+ * <p>Two additions beyond the enforced-guardrail core, both kept honest:
+ * <ul>
+ *   <li>SPF/DKIM/DMARC ({@code email.dns}) are read live from Resend's domains API via
+ *       {@link ResendDomainsClient} and are ABSENT (null) whenever that read can't be made
+ *       truthfully — never a fabricated "verified".</li>
+ *   <li>The SMS metadata (sender-id/provider/region/cap/window/unlock-threshold) is INTENDED
+ *       first-release policy from {@link MarketingSmsProperties}, surfaced with
+ *       {@code sms.sendingEnabled=false} and {@code sendWindow.enforced=false} so it can never be
+ *       mistaken for a live guardrail — there is no SMS dispatcher.</li>
+ * </ul>
+ * Fields that still can't be sourced truthfully (any reputation score, bounce rate, SMS
+ * encoding) remain ABSENT — see {@link MarketingChannelsDto} for the full rationale.
  */
 @Service
 public class MarketingChannelsService {
@@ -47,23 +59,29 @@ public class MarketingChannelsService {
     private static final long SENT_WINDOW_DAYS = 30;
 
     private final MarketingEmailProperties emailProps;
+    private final MarketingSmsProperties smsProps;
     private final MarketingGuardProperties guardProps;
     private final QuietHours quietHours;
+    private final ResendDomainsClient domainsClient;
     private final OrganizationRepository orgs;
     private final CampaignRecipientRepository recipients;
     private final MarketingChannelStatsRepository providerStats;
     private final MembershipRepository memberships;
 
     public MarketingChannelsService(MarketingEmailProperties emailProps,
+                                    MarketingSmsProperties smsProps,
                                     MarketingGuardProperties guardProps,
                                     QuietHours quietHours,
+                                    ResendDomainsClient domainsClient,
                                     OrganizationRepository orgs,
                                     CampaignRecipientRepository recipients,
                                     MarketingChannelStatsRepository providerStats,
                                     MembershipRepository memberships) {
         this.emailProps = emailProps;
+        this.smsProps = smsProps;
         this.guardProps = guardProps;
         this.quietHours = quietHours;
+        this.domainsClient = domainsClient;
         this.orgs = orgs;
         this.recipients = recipients;
         this.providerStats = providerStats;
@@ -117,22 +135,39 @@ public class MarketingChannelsService {
                 true,   // CampaignDispatcher calls isEmailQuiet unconditionally — no flag, no override
                 quietHours.isEmailQuiet(org.getTimezone(), now));
 
+        // ---- DNS: SPF/DKIM/DMARC read live from Resend's domains API, cached; null when it
+        //      can't be read truthfully (no domains scope / unreachable / domain not registered) ----
+        SendingDomainDns dns = domainsClient.sendingDomainDns().orElse(null);
+
         MarketingChannelsDto.Email email = new MarketingChannelsDto.Email(
                 ProviderEvent.PROVIDER_RESEND,
                 fromAddress,
                 fromName,
                 emailProps.fromHeader(),
                 sendingDomain(fromAddress),
+                dns,
                 sendingEnabled,
                 true,   // RFC 8058 headers are attached to every campaign email, unconditionally
                 window,
                 guardrails,
                 sentLast30d);
 
-        // ---- SMS: opt-ins are real; sending is not built (no provider, dispatcher is email-only) ----
+        // ---- SMS: opt-ins are real; sending is not built (no provider, dispatcher is email-only).
+        //      The remaining fields are INTENDED first-release policy from MarketingSmsProperties,
+        //      not live guardrails — sendingEnabled=false and sendWindow.enforced=false say so. ----
+        MarketingChannelsDto.SmsSendWindow smsWindow = new MarketingChannelsDto.SmsSendWindow(
+                smsProps.getSendWindowStartLocal(),
+                smsProps.getSendWindowEndLocal(),
+                false);   // no SMS dispatcher exists — this window enforces nothing
         MarketingChannelsDto.Sms sms = new MarketingChannelsDto.Sms(
                 false,
-                memberships.countSmsSubscribedByOrgId(orgId));
+                memberships.countSmsSubscribedByOrgId(orgId),
+                smsProps.getSenderId(),
+                smsProps.getProvider(),
+                smsProps.getRegion(),
+                smsProps.getFirstReleaseRecipientCap(),
+                smsWindow,
+                smsProps.getUnlockThresholdPhones());
 
         return new MarketingChannelsDto(email, sms);
     }

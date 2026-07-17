@@ -5,6 +5,9 @@ import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.config.TestRateLimitConfig;
+import com.imin.iminapi.marketing.email.DnsRecordStatus;
+import com.imin.iminapi.marketing.email.ResendDomainsClient;
+import com.imin.iminapi.marketing.email.SendingDomainDns;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.model.ProviderEvent;
@@ -29,13 +32,16 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
+import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -67,6 +73,13 @@ class MarketingChannelsControllerTest {
     @Autowired ProviderEventRepository providerEvents;
     @Autowired JdbcTemplate jdbc;
 
+    /**
+     * Mocked so the channels read never hits the real Resend domains API. Default: absent DNS
+     * (the honest degrade), which the base test asserts renders as no {@code email.dns}. One test
+     * re-stubs it to assert a present DNS snapshot is surfaced.
+     */
+    @MockitoBean ResendDomainsClient domainsClient;
+
     private UUID orgA;
     private UUID orgB;
     private Authentication authA;
@@ -74,6 +87,9 @@ class MarketingChannelsControllerTest {
 
     @BeforeEach
     void seed() {
+        // Default: Resend domains API returns nothing usable → email.dns absent (honest degrade).
+        when(domainsClient.sendingDomainDns()).thenReturn(Optional.empty());
+
         orgA = newOrg("chan-a");
         orgB = newOrg("chan-b");
 
@@ -165,13 +181,22 @@ class MarketingChannelsControllerTest {
                 // ---- sms: opt-ins real; sending honestly not built ----
                 .andExpect(jsonPath("$.sms.sendingEnabled").value(false))
                 .andExpect(jsonPath("$.sms.optedInPhones").value(2))
+                // ---- sms: INTENDED first-release policy (config-sourced), NOT live guardrails.
+                //      sendingEnabled=false + sendWindow.enforced=false above/below flag them as such.
+                .andExpect(jsonPath("$.sms.senderId").value("IMIN"))
+                .andExpect(jsonPath("$.sms.provider").value("Bird"))
+                .andExpect(jsonPath("$.sms.region").value("+380"))
+                .andExpect(jsonPath("$.sms.firstReleaseRecipientCap").value(200))
+                .andExpect(jsonPath("$.sms.unlockThresholdPhones").value(500))
+                .andExpect(jsonPath("$.sms.sendWindow.startLocal").value("09:00"))
+                .andExpect(jsonPath("$.sms.sendWindow.endLocal").value("20:00"))
+                .andExpect(jsonPath("$.sms.sendWindow.enforced").value(false))
+                // ---- DNS absent when Resend can't be read truthfully (mock returns empty) ----
+                .andExpect(jsonPath("$.email.dns").doesNotExist())
                 // ---- fields we refuse to invent must not appear ----
-                .andExpect(jsonPath("$.email.spf").doesNotExist())
-                .andExpect(jsonPath("$.email.dkim").doesNotExist())
-                .andExpect(jsonPath("$.email.dmarc").doesNotExist())
                 .andExpect(jsonPath("$.email.reputation").doesNotExist())
-                .andExpect(jsonPath("$.sms.senderId").doesNotExist())
-                .andExpect(jsonPath("$.sms.provider").doesNotExist());
+                .andExpect(jsonPath("$.sms.reputation").doesNotExist())
+                .andExpect(jsonPath("$.sms.encoding").doesNotExist());
     }
 
     @Test
@@ -185,6 +210,28 @@ class MarketingChannelsControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.email.guardrails.paused").value(true))
                 .andExpect(jsonPath("$.email.guardrails.pausedAt").exists());
+    }
+
+    /**
+     * When the Resend domains API answers, the SPF/DKIM/DMARC snapshot is surfaced verbatim under
+     * {@code email.dns}. DMARC null (Resend provisioned none) stays absent — not defaulted.
+     */
+    @Test
+    void surfacesResendDnsSnapshotWhenAvailable() throws Exception {
+        when(domainsClient.sendingDomainDns()).thenReturn(Optional.of(new SendingDomainDns(
+                "imin.support",
+                DnsRecordStatus.VERIFIED,
+                DnsRecordStatus.VERIFIED,
+                null,                          // Resend reported no DMARC record
+                Instant.now())));
+
+        mvc.perform(get("/api/v1/marketing/channels").with(authentication(authA)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.email.dns.domain").value("imin.support"))
+                .andExpect(jsonPath("$.email.dns.spf").value("VERIFIED"))
+                .andExpect(jsonPath("$.email.dns.dkim").value("VERIFIED"))
+                .andExpect(jsonPath("$.email.dns.dmarc").doesNotExist())
+                .andExpect(jsonPath("$.email.dns.checkedAt").exists());
     }
 
     /**

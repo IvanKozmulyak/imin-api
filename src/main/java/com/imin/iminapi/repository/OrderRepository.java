@@ -26,6 +26,15 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
     /** Number of orders (= completed payments) for an event. Drives the funnel's PAYMENTS_COMPLETED stage. */
     long countByEventId(UUID eventId);
 
+    /**
+     * Org-wide order count (= completed payments) since a cutoff. Drives the
+     * PAYMENTS_COMPLETED stage of the org-wide Meta signal-health funnel (spec §8).
+     * Counts by {@code o.orgId} directly — the same org-wide aggregation convention
+     * as {@link #sumRevenueAndCountByOrgInWindow} — so it does not join events.
+     */
+    @Query("select count(o) from Order o where o.orgId = :orgId and o.createdAt >= :since")
+    long countByOrgIdSince(@Param("orgId") UUID orgId, @Param("since") Instant since);
+
     /** Gross revenue (sum of order totals) for an event, in minor units. Includes refunded amounts. */
     @Query("select coalesce(sum(o.totalMinor), 0) from Order o where o.eventId = :eventId")
     long sumTotalMinorByEventId(@Param("eventId") UUID eventId);
