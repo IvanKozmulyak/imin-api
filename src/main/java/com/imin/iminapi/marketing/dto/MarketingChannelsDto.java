@@ -1,5 +1,7 @@
 package com.imin.iminapi.marketing.dto;
 
+import com.imin.iminapi.marketing.email.SendingDomainDns;
+
 import java.time.Instant;
 
 /**
@@ -24,8 +26,14 @@ import java.time.Instant;
  *       {@code MarketingEmailProperties#fromHeader()} rendering, not a re-implementation.</li>
  *   <li>{@code sendingDomain} — the host part of the configured {@code fromAddress}
  *       ({@code contact@imin.support} ⇒ {@code imin.support}); empty when unset. This is the
- *       domain mail is sent FROM. It is <b>not</b> a verification status — see the
- *       "deliberately absent" note below.</li>
+ *       domain mail is sent FROM. It is <b>not</b> a verification status — {@code dns} carries that.</li>
+ *   <li>{@code dns} ({@link SendingDomainDns}) — SPF/DKIM/DMARC status of {@code sendingDomain},
+ *       read live from the Resend <b>domains</b> API ({@code GET /domains} → {@code GET /domains/{id}})
+ *       by {@code ResendDomainsClient} and cached ~45s. <b>Null (absent) whenever it cannot be read
+ *       truthfully</b> — Resend key without the {@code domains} scope, API unreachable, or the
+ *       from-domain not registered in the account. A per-record field is null when Resend reported
+ *       no record of that kind (DMARC is commonly null; Resend does not provision it by default).
+ *       Each present value is exactly what Resend returned — there is no hardcoded "verified".</li>
  *   <li>{@code sendingEnabled} — whether a from-address is configured at all (same test
  *       {@code MarketingHubService} applies). Blank from-address ⇒ nothing can send.</li>
  *   <li>{@code oneClickUnsubscribe} — {@code true}, unconditionally and truthfully: every
@@ -87,32 +95,40 @@ import java.time.Instant;
  * </ul>
  *
  * <h2>SMS ({@link Sms})</h2>
+ * <b>One field is live; the rest is INTENDED policy, not enforcement.</b>
  * <ul>
- *   <li>{@code optedInPhones} — real: memberships for the org with
+ *   <li>{@code optedInPhones} — <b>real</b>: memberships for the org with
  *       {@code sms_consent_status='subscribed'} AND a stored E.164 phone.</li>
  *   <li>{@code sendingEnabled} — {@code false}, and honestly so. {@code "sms"} is an accepted
  *       {@code campaigns.channel} value ({@code CampaignService.CHANNELS}), but no SMS provider,
  *       sender or client exists in the tree and {@code CampaignRepository.claimDue} filters
  *       {@code WHERE channel = 'email'} — so an SMS campaign is never dispatched. Consent is
  *       collected; sending is not built.</li>
+ *   <li>{@code senderId} ({@code IMIN}), {@code provider} ({@code Bird}), {@code region}
+ *       ({@code +380}), {@code firstReleaseRecipientCap} (200), {@code unlockThresholdPhones}
+ *       (~500), {@code sendWindow} (09:00–20:00) — all read from {@code MarketingSmsProperties}
+ *       (config prefix {@code imin.marketing.sms}). These describe the <b>intended first-release
+ *       SMS policy</b>. Because {@code sendingEnabled} is false and no dispatcher consumes them,
+ *       they are NOT active guardrails — they are what SMS <i>will</i> do, surfaced so the tab can
+ *       preview the policy without implying it runs. {@code sendWindow.enforced} is {@code false}
+ *       for exactly this reason (contrast email's quiet window, which is {@code enforced=true}).
+ *       The window is the ALLOWED send window (09:00–20:00), the inverse framing of email's
+ *       BLOCKED quiet window (22:00–09:00).</li>
  * </ul>
  *
  * <h2>Deliberately absent — unsourceable, so omitted rather than invented</h2>
  * <ul>
- *   <li><b>SPF / DKIM / DMARC status</b> — would require the Resend <i>domains</i> API. No client
- *       method and no configured credential for it exist ({@code ResendConfig} builds a single
- *       {@code Resend} bean used only for sending; the only SPF/DKIM mentions in the tree are
- *       prose comments). Reporting "SPF: ok" would be fabricated, so these fields do not exist.
- *       {@code sendingDomain} tells you WHICH domain to go check — it does not claim it passes.</li>
  *   <li><b>Reputation score / grade</b> — Resend exposes no such metric and nothing in the tree
  *       derives one. The honest neighbours ({@code complaintRate}, {@code complaintCount},
- *       {@code deliveredCount}) are published under their real names instead.</li>
+ *       {@code deliveredCount}) are published under their real names instead. (SPF/DKIM/DMARC are
+ *       NOT a reputation grade; they now live under {@code email.dns}, read from Resend — see the
+ *       Email section.)</li>
  *   <li><b>Bounce rate</b> — {@code ProviderEvent.TYPE_BOUNCED} is projected, but nothing
  *       enforces on it; it is omitted here to keep this surface to config + enforced counts.</li>
- *   <li><b>SMS provider / region / sender ID / encoding / per-campaign first-release recipient
- *       cap</b> — no SMS provider config, no sender-id config, no region config, no encoding
- *       handling and no first-release cap exist anywhere in the tree. All five would be invented
- *       data, so none of them is a field.</li>
+ *   <li><b>SMS message encoding</b> — no GSM-7/UCS-2 encoding handling exists anywhere in the
+ *       tree (there is no SMS send path at all), so an encoding field would be invented data and
+ *       is omitted. The intended SMS <i>policy</i> fields that ARE sourced from config live on
+ *       {@link Sms}.</li>
  * </ul>
  *
  * <p>No secret is reachable from this DTO: no API key, no webhook signing secret, no CAPI token.
@@ -126,6 +142,7 @@ public record MarketingChannelsDto(Email email, Sms sms) {
             String fromName,
             String fromHeader,
             String sendingDomain,
+            SendingDomainDns dns,
             boolean sendingEnabled,
             boolean oneClickUnsubscribe,
             QuietHoursWindow quietHours,
@@ -156,9 +173,29 @@ public record MarketingChannelsDto(Email email, Sms sms) {
             Instant pausedAt
     ) {}
 
-    /** SMS: consent is collected, sending is not built. */
+    /**
+     * SMS: {@code optedInPhones} is real and {@code sendingEnabled} is honestly {@code false}
+     * (no dispatcher). Everything else is the INTENDED first-release policy from
+     * {@code MarketingSmsProperties} — see the class javadoc.
+     */
     public record Sms(
             boolean sendingEnabled,
-            long optedInPhones
+            long optedInPhones,
+            String senderId,
+            String provider,
+            String region,
+            int firstReleaseRecipientCap,
+            SmsSendWindow sendWindow,
+            int unlockThresholdPhones
+    ) {}
+
+    /**
+     * Intended org-local SMS send window (allowed hours). {@code enforced} is {@code false}:
+     * nothing dispatches SMS, so this is planned policy, not an active block.
+     */
+    public record SmsSendWindow(
+            String startLocal,
+            String endLocal,
+            boolean enforced
     ) {}
 }

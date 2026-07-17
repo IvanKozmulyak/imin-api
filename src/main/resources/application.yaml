@@ -214,6 +214,19 @@ imin:
       # hours is skipped with skip_reason='frequency_capped'.
       # 2 days per spec §8/§10. Raising it skips MORE people (fewer sends).
       frequency-floor-hours: ${IMIN_MARKETING_FREQUENCY_FLOOR_HOURS:48}
+    sms:
+      # INTENDED first-release SMS policy (spec §8/§10). NOTE: imin does not send SMS —
+      # CampaignRepository.claimDue filters WHERE channel='email' and no SMS provider/client
+      # exists. Nothing here is enforced by a dispatcher; the Channels tab surfaces it (with
+      # sms.sendingEnabled=false) to PREVIEW the planned policy, not to claim it runs.
+      sender-id: ${IMIN_MARKETING_SMS_SENDER_ID:IMIN}       # alphanumeric SMS "from"
+      provider: ${IMIN_MARKETING_SMS_PROVIDER:Bird}         # planned downstream aggregator
+      region: ${IMIN_MARKETING_SMS_REGION:+380}             # primary launch region (E.164 code)
+      first-release-recipient-cap: ${IMIN_MARKETING_SMS_FIRST_RELEASE_CAP:200}
+      # Allowed org-local send window 09:00–20:00 (inverse framing of email's 22:00–09:00 block).
+      send-window-start-local: ${IMIN_MARKETING_SMS_WINDOW_START:09:00}
+      send-window-end-local: ${IMIN_MARKETING_SMS_WINDOW_END:20:00}
+      unlock-threshold-phones: ${IMIN_MARKETING_SMS_UNLOCK_THRESHOLD:500}
   ticket:
     # HMAC-SHA256 secret used to tamper-evidence QR payloads. 32+ bytes of entropy.
     # Required at boot — QrPayloadSigner throws if blank.
