@@ -11,6 +11,7 @@ public record PreviewAudienceResponse(int sendable, Excluded excluded) {
             int unsubscribed,
             int marketingSuppressed,
             int deliverabilitySuppressed,
-            int noPhone   // always 0 for email in Phase 1; populated for SMS in Phase 3
+            int noPhone,  // always 0 for email in Phase 1; populated for SMS in Phase 3
+            int noEmail   // spec §4 "no deliverable address" (email) — no address on file to send to
     ) {}
 }

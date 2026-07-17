@@ -107,6 +107,48 @@ class RecipientMaterializerTest {
         assertThat(recipients.countByCampaignId(c.getId())).isEqualTo(2L);
     }
 
+    /**
+     * Spec §4: "Excluded people become permanent skipped rows with their reason." A member the
+     * gate excluded as no_email must land as a skipped row CARRYING no_email — not vanish, and
+     * not reach the provider (the dispatcher claims status='pending' only). Its email column is
+     * null by construction, which is exactly why it must never have been sendable.
+     */
+    @Test
+    void noEmailExcludedMemberIsMaterializedAsSkippedRowCarryingTheReason() {
+        UUID orgId = UUID.randomUUID();
+        UUID segmentId = UUID.randomUUID();
+        Membership sendable = persistMember(orgId, "ok-" + UUID.randomUUID() + "@example.com");
+        // A membership whose consumer has no resolvable address: emailByConsumer misses it, so
+        // the materialized row's email is null. (Persisted with a consumer for FK reasons; the
+        // gate result is what drives the skip row.)
+        Membership noEmail = persistMember(orgId, "orphan-" + UUID.randomUUID() + "@example.com");
+        Campaign c = persistedCampaign(orgId, segmentId);
+
+        Segment seg = new Segment();
+        seg.setOrgId(orgId);
+        when(segmentService.requireSegmentForOrg(any(), any())).thenReturn(seg);
+        when(segmentService.resolveMembers(any(), any())).thenReturn(List.of(sendable, noEmail));
+        when(sendGate.evaluate(any(), anyCollection())).thenReturn(
+                new SendGateService.GateResult(List.of(sendable.getMembershipId()),
+                        List.of(new ExclusionReason(noEmail.getMembershipId(), "no_email"))));
+
+        materializer.materialize(c);
+
+        assertThat(recipients.countByCampaignIdAndStatus(c.getId(), "pending")).isEqualTo(1L);
+        assertThat(recipients.countByCampaignIdAndStatus(c.getId(), "skipped")).isEqualTo(1L);
+
+        // The skip row carries the reason verbatim — skip_reason is a free VARCHAR(32).
+        var skipped = recipients.findByCampaignIdAndStatus(c.getId(), "skipped");
+        assertThat(skipped).hasSize(1);
+        assertThat(skipped.get(0).getSkipReason()).isEqualTo("no_email");
+        assertThat(skipped.get(0).getMembershipId()).isEqualTo(noEmail.getMembershipId());
+
+        Campaign reloaded = campaigns.findByIdAndOrgId(c.getId(), orgId).orElseThrow();
+        assertThat(reloaded.getExclusionSummary()).isEqualTo("{\"no_email\":1}");
+        assertThat(reloaded.getExcludedCount()).isEqualTo(1);
+        assertThat(reloaded.getRecipientCount()).isEqualTo(1);
+    }
+
     @Test
     void frequencyCappedSendableMemberIsMaterializedAsSkipped() {
         UUID orgId = UUID.randomUUID();
