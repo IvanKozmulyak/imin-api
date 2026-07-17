@@ -19,13 +19,15 @@ class SendGatePreviewCountsTest {
     @Test
     void buckets_each_reason_into_its_own_count() {
         UUID a = UUID.randomUUID(), b = UUID.randomUUID(), c = UUID.randomUUID(),
-             d = UUID.randomUUID(), e = UUID.randomUUID(), f = UUID.randomUUID();
+             d = UUID.randomUUID(), e = UUID.randomUUID(), f = UUID.randomUUID(),
+             g = UUID.randomUUID();
         var gate = new SendGateService.GateResult(
                 List.of(a, b),                                   // 2 sendable
                 List.of(new ExclusionReason(c, "marketing_unsubscribed"),
                         new ExclusionReason(d, "marketing_suppressed"),
                         new ExclusionReason(e, "deliverability_suppressed"),
-                        new ExclusionReason(f, "no_lawful_basis")));
+                        new ExclusionReason(f, "no_lawful_basis"),
+                        new ExclusionReason(g, "no_email")));
 
         PreviewAudienceResponse r = SendGateService.bucket(gate);
 
@@ -34,6 +36,7 @@ class SendGatePreviewCountsTest {
         assertThat(r.excluded().marketingSuppressed()).isEqualTo(1);
         assertThat(r.excluded().deliverabilitySuppressed()).isEqualTo(1);
         assertThat(r.excluded().noBasis()).isEqualTo(1);
+        assertThat(r.excluded().noEmail()).isEqualTo(1);
         assertThat(r.excluded().noPhone()).isEqualTo(0);
     }
 
@@ -44,5 +47,6 @@ class SendGatePreviewCountsTest {
         assertThat(r.sendable()).isZero();
         assertThat(r.excluded().unsubscribed()).isZero();
         assertThat(r.excluded().noBasis()).isZero();
+        assertThat(r.excluded().noEmail()).isZero();
     }
 }

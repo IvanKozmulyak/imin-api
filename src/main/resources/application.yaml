@@ -206,10 +206,14 @@ imin:
     guard:
       # Max marketing sends per org per rolling 24h — the dispatcher stops
       # dispatching a batch once the org's rolling-24h count hits this cap.
-      daily-cap: ${IMIN_MARKETING_DAILY_CAP:5000}
+      # 10,000/org/day per the Marketing spec §8/§10. NOTE this guards a SHARED
+      # sending domain: raising it raises how much damage one org can do to
+      # everyone's reputation before the complaint breaker trips.
+      daily-cap: ${IMIN_MARKETING_DAILY_CAP:10000}
       # Per-member frequency floor: a membership contacted within this many
       # hours is skipped with skip_reason='frequency_capped'.
-      frequency-floor-hours: ${IMIN_MARKETING_FREQUENCY_FLOOR_HOURS:24}
+      # 2 days per spec §8/§10. Raising it skips MORE people (fewer sends).
+      frequency-floor-hours: ${IMIN_MARKETING_FREQUENCY_FLOOR_HOURS:48}
   ticket:
     # HMAC-SHA256 secret used to tamper-evidence QR payloads. 32+ bytes of entropy.
     # Required at boot — QrPayloadSigner throws if blank.

@@ -189,7 +189,7 @@ public class CampaignService {
         if (c.getSegmentId() == null) {
             // no target yet: nothing sendable, nothing excluded
             return new PreviewAudienceResponse(0,
-                    new PreviewAudienceResponse.Excluded(0, 0, 0, 0, 0));
+                    new PreviewAudienceResponse.Excluded(0, 0, 0, 0, 0, 0));
         }
         Segment segment = segments.requireSegmentForOrg(p.orgId(), c.getSegmentId());
         List<UUID> membershipIds = segments.resolveMembers(p.orgId(), segment).stream()

@@ -135,8 +135,11 @@ class MarketingChannelsControllerTest {
                 .andExpect(jsonPath("$.email.provider").value("resend"))
                 .andExpect(jsonPath("$.email.oneClickUnsubscribe").value(true))
                 // ---- guardrails: config-sourced, matching the values the send path enforces ----
-                .andExpect(jsonPath("$.email.guardrails.dailyCap").value(5000))
-                .andExpect(jsonPath("$.email.guardrails.frequencyFloorHours").value(24))
+                // Spec §8/§10: 10,000 sends per org per rolling 24h, 2-day frequency floor.
+                // These pin the configured DEFAULTS — if they fail, either the default moved
+                // or an env override leaked into the test profile. Both are worth knowing.
+                .andExpect(jsonPath("$.email.guardrails.dailyCap").value(10000))
+                .andExpect(jsonPath("$.email.guardrails.frequencyFloorHours").value(48))
                 .andExpect(jsonPath("$.email.guardrails.autoPauseThreshold")
                         .value(ComplaintRateBreaker.THRESHOLD))
                 .andExpect(jsonPath("$.email.guardrails.autoPauseMinVolume")

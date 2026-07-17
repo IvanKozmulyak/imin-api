@@ -58,8 +58,8 @@ import java.time.Instant;
  * <h2>Guardrails ({@link Guardrails})</h2>
  * <ul>
  *   <li>{@code dailyCap} — {@code MarketingGuardProperties#getDailyCap()} (config
- *       {@code imin.marketing.guard.daily-cap}, default 5000): max sends per org per
- *       <b>rolling 24h</b>, not per calendar day.</li>
+ *       {@code imin.marketing.guard.daily-cap}, default 10000 per spec §8/§10): max sends
+ *       per org per <b>rolling 24h</b>, not per calendar day.</li>
  *   <li>{@code sentLast24h} — the org's rolling-24h send count. This is the EXACT quantity the
  *       dispatcher compares against {@code dailyCap}, from the same query
  *       ({@code countRecentSendsForOrg}). Named for the rolling window rather than "today"

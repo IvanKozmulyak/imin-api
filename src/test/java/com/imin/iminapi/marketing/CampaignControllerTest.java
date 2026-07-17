@@ -138,12 +138,14 @@ class CampaignControllerTest {
     void preview_audience_returns_counts() throws Exception {
         when(service.previewAudience(any(), eq(CAMP)))
                 .thenReturn(new PreviewAudienceResponse(12,
-                        new PreviewAudienceResponse.Excluded(1, 2, 0, 3, 0)));
+                        new PreviewAudienceResponse.Excluded(1, 2, 0, 3, 0, 4)));
         mvc.perform(post("/api/v1/marketing/campaigns/{id}/preview-audience", CAMP))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.sendable").value(12))
                 .andExpect(jsonPath("$.excluded.unsubscribed").value(2))
-                .andExpect(jsonPath("$.excluded.deliverabilitySuppressed").value(3));
+                .andExpect(jsonPath("$.excluded.deliverabilitySuppressed").value(3))
+                // spec §4 sixth exclusion class — must reach the wire contract the FE reads
+                .andExpect(jsonPath("$.excluded.noEmail").value(4));
     }
 
     @Test
