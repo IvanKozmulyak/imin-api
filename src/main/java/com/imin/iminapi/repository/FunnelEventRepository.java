@@ -25,6 +25,29 @@ public interface FunnelEventRepository extends JpaRepository<FunnelEvent, UUID> 
     List<Object[]> countDistinctAnonByStage(@Param("eventId") UUID eventId);
 
     /**
+     * Org-wide distinct-session counts per stage over a rolling window. Tuple
+     * shape: {@code [String stage, Long distinctAnonCount]}. Generalizes
+     * {@link #countDistinctAnonByStage(UUID)} from one event to all of an org's
+     * active events by joining the funnel log to {@code Event} and filtering on
+     * the event's owning org. Stages with zero rows are absent — the caller
+     * defaults them to 0. Backs the org-wide Meta "signal health" funnel (spec §8).
+     *
+     * <p>Both bind params are non-null ({@code orgId}, {@code since}); no nullable
+     * String is threaded through a SQL function, so this avoids the H2-vs-Postgres
+     * {@code lower(bytea)} trap.
+     */
+    @Query("""
+            select fe.stage, count(distinct fe.anonId) from FunnelEvent fe, Event ev
+             where fe.eventId = ev.id
+               and ev.orgId = :orgId
+               and ev.deletedAt is null
+               and fe.createdAt >= :since
+             group by fe.stage
+            """)
+    List<Object[]> countDistinctAnonByStageForOrg(@Param("orgId") UUID orgId,
+                                                   @Param("since") java.time.Instant since);
+
+    /**
      * Visit count grouped by {@code utm_source} across all of an org's active
      * events. Tuple shape: {@code [String utmSource (nullable), Long visits]}.
      * A null source row is the "untagged" bucket. Joins the funnel log to
