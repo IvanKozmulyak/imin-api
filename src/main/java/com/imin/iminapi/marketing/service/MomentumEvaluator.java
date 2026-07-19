@@ -111,9 +111,9 @@ public class MomentumEvaluator {
                 sold, capacity, last7d.size(), e.getOnSaleAt(), e.getStartsAt(), now, soldAt);
 
         MomentumTriggerType fired = pickTrigger(m);
-        log.info("Momentum eval event={} sold={} cap={} sellThrough={} daysOut={} vel7d={} required50={} -> {}",
-                e.getId(), m.sold(), m.capacity(), m.sellThroughPct(), m.daysOut(),
-                String.format(java.util.Locale.ROOT, "%.2f", m.velocity7d()),
+        log.info("Momentum eval event={} sold={} cap={} sellThrough={} daysOut={} hoursToStart={} ticketsPerDay7d={} required50={} -> {}",
+                e.getId(), m.sold(), m.capacity(), m.sellThroughPct(), m.daysOut(), m.hoursToStart(),
+                String.format(java.util.Locale.ROOT, "%.2f", m.ticketsPerDay7d()),
                 String.format(java.util.Locale.ROOT, "%.2f", m.requiredVelocityToTarget(thresholds.getSlumpTargetPct())),
                 fired == null ? "no-trigger" : fired.wireValue());
 
@@ -174,7 +174,10 @@ public class MomentumEvaluator {
             return MomentumTriggerType.SOLD_OUT;
         }
         // Urgency: within 72h of start AND sell-through in [30,90].
-        long hoursToStart = m.daysOut() * 24L; // coarse; daysOut is floor of hours/24
+        // Uses the true hours-to-doors, not daysOut*24 — the coarse form fired the
+        // 72h window for anything up to ~95h out (daysOut=3 -> 72), because daysOut
+        // is floor(hours/24).
+        long hoursToStart = m.hoursToStart();
         if (hoursToStart <= thresholds.getUrgencyBeforeHours()
                 && m.sellThroughPct() >= thresholds.getUrgencyMinSellThroughPct()
                 && m.sellThroughPct() <= thresholds.getUrgencyMaxSellThroughPct()) {
@@ -186,10 +189,15 @@ public class MomentumEvaluator {
                 && m.sellThroughPct() < thresholds.getLaunchMaxSellThroughPct()) {
             return MomentumTriggerType.LAUNCH_PUSH;
         }
-        // Slump: >=14 days out AND >=15% sold AND velocity below required-to-50%.
+        // Slump: >=14 days out AND >=15% sold AND recent pace below required-to-50%.
+        // Both sides are TICKETS/day. Previously the left side was velocity7d
+        // (ORDERS/day = ordersLast7d/7) compared to a tickets/day threshold — since
+        // an order is >=1 ticket, orders/day understates the real pace, so slump
+        // fired more readily than it should. ticketsPerDay7d is the real tickets/day
+        // over the same recent-7-day window (from the sold-ticket spark).
         if (m.daysOut() >= thresholds.getSlumpMinDaysOut()
                 && m.sellThroughPct() >= thresholds.getSlumpMinSellThroughPct()
-                && m.velocity7d() < m.requiredVelocityToTarget(thresholds.getSlumpTargetPct())) {
+                && m.ticketsPerDay7d() < m.requiredVelocityToTarget(thresholds.getSlumpTargetPct())) {
             return MomentumTriggerType.SLUMP;
         }
         return null;
