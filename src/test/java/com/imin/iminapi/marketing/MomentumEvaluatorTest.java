@@ -165,6 +165,51 @@ class MomentumEvaluatorTest {
     }
 
     @Test
+    void urgencyUsesRealHoursNotDaysTimes24() {
+        // Regression: pickTrigger compared daysOut*24 against the 72h window. daysOut is
+        // floor(hours/24), so an event 80h out has daysOut=3 -> 72 -> fired URGENCY even
+        // though it's 8h past the real window. With the fix (m.hoursToStart()=80) it must
+        // NOT fire. 60% sold is inside the [30,90] urgency band, so ONLY the hours guard
+        // decides. Fails on the old code (urgency present), passes on the fix.
+        UUID event = support.seedLiveEvent(/*sold*/ 60, /*capacity*/ 100,
+                Instant.now().minusSeconds(15L * 86400),
+                Instant.now().plusSeconds(80L * 3600)); // 80h out -> daysOut=3
+        evaluator.runOnce();
+        assertThat(suggestions.findByEventIdAndStatus(event, "suggested"))
+                .extracting(MomentumSuggestion::getTriggerType)
+                .doesNotContain("urgency_72h");
+    }
+
+    @Test
+    void firesUrgencyInsideRealSeventyTwoHours() {
+        // Guard against over-tightening: an event genuinely inside 72h still fires.
+        UUID event = support.seedLiveEvent(/*sold*/ 60, /*capacity*/ 100,
+                Instant.now().minusSeconds(15L * 86400),
+                Instant.now().plusSeconds(70L * 3600)); // 70h out, really inside the window
+        evaluator.runOnce();
+        assertThat(suggestions.findByEventIdAndStatus(event, "suggested"))
+                .extracting(MomentumSuggestion::getTriggerType)
+                .contains("urgency_72h");
+    }
+
+    @Test
+    void slumpComparesTicketsPerDayNotOrdersPerDay() {
+        // Regression: the slump rule compared velocity7d (ORDERS/day) against a TICKETS/day
+        // threshold. seedLiveEvent seeds 3 orders -> velocity7d=0.43, and required-to-50% here
+        // is (50-21)/20=1.45, so the old code fired SLUMP. But the real recent pace is 3
+        // tickets/day (seeded below), which is ABOVE 1.45 — not a slump. With the fix (both
+        // sides tickets/day) it must NOT fire. Fails on the old code, passes on the fix.
+        UUID event = support.seedLiveEvent(/*sold*/ 21, /*capacity*/ 100,
+                Instant.now().minusSeconds(12L * 86400),   // full spark window, >48h on-sale
+                Instant.now().plusSeconds(20L * 86400));   // 20 days out (>= slump floor 14)
+        support.seedDailyTickets(event, 3, 3, 3, 3, 3, 3, 3); // 3 tickets/day for 7 days -> 3.0/day
+        evaluator.runOnce();
+        assertThat(suggestions.findByEventIdAndStatus(event, "suggested"))
+                .extracting(MomentumSuggestion::getTriggerType)
+                .doesNotContain("slump");
+    }
+
+    @Test
     void respectsSingleLiveSuggestionPerTrigger() {
         UUID event = support.seedLiveEvent(5, 100,
                 Instant.now().minusSeconds(50L * 3600),
