@@ -115,6 +115,13 @@ public class Organization {
     @Column(name = "marketing_paused_at")
     private java.time.Instant marketingPausedAt;
 
+    /**
+     * Anti-abuse escape hatch (V64): when true every user in the org bypasses the
+     * per-user daily AI poster-generation quota (never counted, never blocked).
+     */
+    @Column(name = "ai_unlimited", nullable = false)
+    private boolean aiUnlimited = false;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Times.nowMicros();
 

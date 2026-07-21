@@ -49,4 +49,11 @@ public class ApiException extends RuntimeException {
     public static ApiException rateLimited() {
         return new ApiException(HttpStatus.TOO_MANY_REQUESTS, ErrorCode.RATE_LIMITED, "Too many requests");
     }
+    public static ApiException aiQuotaExceeded(int limit, long used, java.time.Instant resetAt) {
+        return new ApiException(HttpStatus.TOO_MANY_REQUESTS, ErrorCode.AI_QUOTA_EXCEEDED,
+                "Daily AI generation limit reached",
+                Map.of("limit", String.valueOf(limit),
+                        "used", String.valueOf(used),
+                        "resetAt", resetAt.toString()));
+    }
 }

@@ -305,6 +305,11 @@ imin:
     # Gate-scanner bearer-token lifetime. Gate phones live at venues and reboot
     # rarely; default 30 days. Override with IMIN_GATE_TOKEN_TTL_DAYS.
     token-ttl-days: ${IMIN_GATE_TOKEN_TTL_DAYS:30}
+  ai-quota:
+    # Per-user rolling-24h ceiling on paid poster generations (POST /ai/events/concept +
+    # /concept/regenerate), layered on top of the ai-concept burst bucket below. Anti-abuse
+    # only — invisible to a normal organizer. An org flagged organizations.ai_unlimited bypasses it.
+    image-per-day: ${AI_QUOTA_IMAGE_PER_DAY:3}
   ratelimit:
     login:
       capacity: 5
