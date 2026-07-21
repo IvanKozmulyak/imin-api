@@ -43,6 +43,14 @@ public class User {
     @Column(name = "avatar_initials", nullable = false, length = 2)
     private String avatarInitials = "";
 
+    /**
+     * BCP-47 language subtag for the organizer dashboard UI ({@code en}/{@code es}/
+     * {@code fr}/{@code uk}), or {@code null} for "no preference" (client falls back
+     * to its localStorage cache, then English). Written via PATCH /api/v1/me/profile.
+     */
+    @Column(name = "locale", length = 8)
+    private String locale;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Times.nowMicros();
 

@@ -96,7 +96,7 @@ class MeControllerTest {
     @WithStubUser
     void patch_profile_returns_updated_me_response() throws Exception {
         UserDto user = new UserDto(USER, "ada@example.com", "Grace", "Hopper", "owner", "GH", ORG,
-                Instant.parse("2026-04-23T10:00:00Z"));
+                Instant.parse("2026-04-23T10:00:00Z"), "en");
         OrganizationDto org = new OrganizationDto(ORG, "Ada Co", "ada-co", "ada@example.com",
                 "GB", "UTC", "growth", 89, "EUR", Instant.parse("2026-04-23T10:00:00Z"));
         when(profileService.patch(any(AuthPrincipal.class), any())).thenReturn(new MeResponse(user, org));
@@ -111,5 +111,21 @@ class MeControllerTest {
                 .andExpect(jsonPath("$.user.lastName").value("Hopper"))
                 .andExpect(jsonPath("$.user.avatarInitials").value("GH"))
                 .andExpect(jsonPath("$.org.id").value(ORG.toString()));
+    }
+
+    @Test
+    @WithStubUser
+    void patch_profile_updates_locale() throws Exception {
+        UserDto user = new UserDto(USER, "ada@example.com", "Grace", "Hopper", "owner", "GH", ORG,
+                Instant.parse("2026-04-23T10:00:00Z"), "uk");
+        OrganizationDto org = new OrganizationDto(ORG, "Ada Co", "ada-co", "ada@example.com",
+                "GB", "UTC", "growth", 89, "EUR", Instant.parse("2026-04-23T10:00:00Z"));
+        when(profileService.patch(any(AuthPrincipal.class), any())).thenReturn(new MeResponse(user, org));
+
+        mvc.perform(patch("/api/v1/me/profile")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("locale", "uk"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.user.locale").value("uk"));
     }
 }
