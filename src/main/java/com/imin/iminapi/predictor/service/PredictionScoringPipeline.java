@@ -129,7 +129,7 @@ public class PredictionScoringPipeline {
      * {@code tierAMinDensity} with ≥ {@code tierAOwnMin} own events, B between.
      * Thresholds are config — honest guesses until the ledger tunes them.
      */
-    LanguageTier earnedTier(CorpusLine corpus) {
+    public LanguageTier earnedTier(CorpusLine corpus) {
         int density = corpus == null ? 0 : corpus.densityTotal();
         int own = corpus == null ? 0 : corpus.ownCount();
         if (density < props.getTierBMinDensity()) return LanguageTier.C;

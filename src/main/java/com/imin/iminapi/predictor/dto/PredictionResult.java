@@ -15,6 +15,7 @@ import java.util.List;
  * revenue are RANGES — there is nowhere to put a point estimate. {@code benchmarkOnly=true}
  * means no forward-looking numbers at all (corpus aggregates only) — the floor, not failure.
  */
+@com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
 public record PredictionResult(
         String surface,               // pre_publish | reforecast | actions
         int stage,                    // 0 | 1 | 2

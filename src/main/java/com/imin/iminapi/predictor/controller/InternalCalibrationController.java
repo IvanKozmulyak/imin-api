@@ -47,7 +47,9 @@ public class InternalCalibrationController {
         if (presented == null || !constantTimeEquals(secret, presented)) {
             throw ApiException.notFound("Resource"); // wrong/missing token is indistinguishable
         }
-        return ResponseEntity.ok().contentType(MediaType.TEXT_HTML).body(view.render());
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType("text/html;charset=UTF-8"))
+                .body(view.render());
     }
 
     private static String bearer(String authorization) {

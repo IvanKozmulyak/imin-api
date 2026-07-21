@@ -110,7 +110,7 @@ public class PredictionScoringJob {
     }
 
     /** (bandMidpoint/100 − sellOut)², or null when either side made/has no claim. */
-    static BigDecimal brierComponent(PredictionResult r, EventOutcome o) {
+    public static BigDecimal brierComponent(PredictionResult r, EventOutcome o) {
         if (r == null || r.selloutBand() == null || o.getSellOut() == null) return null;
         double p = (r.selloutBand().lowPct() + r.selloutBand().highPct()) / 2.0 / 100.0;
         double actual = Boolean.TRUE.equals(o.getSellOut()) ? 1.0 : 0.0;
@@ -118,7 +118,7 @@ public class PredictionScoringJob {
     }
 
     /** |attendance midpoint − actual| / actual, or null without a numeric claim / positive actual. */
-    static BigDecimal ape(PredictionResult r, EventOutcome o) {
+    public static BigDecimal ape(PredictionResult r, EventOutcome o) {
         if (r == null || r.attendanceRange() == null) return null;
         Integer actual = o.getAttendance();
         if (actual == null || actual <= 0) return null;
