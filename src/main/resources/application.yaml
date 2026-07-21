@@ -227,6 +227,21 @@ imin:
       send-window-start-local: ${IMIN_MARKETING_SMS_WINDOW_START:09:00}
       send-window-end-local: ${IMIN_MARKETING_SMS_WINDOW_END:20:00}
       unlock-threshold-phones: ${IMIN_MARKETING_SMS_UNLOCK_THRESHOLD:500}
+  sms:
+    # SMS provider CONNECTION (Bird / MessageBird). Separate from marketing.sms above,
+    # which is the display policy shown on the Channels tab — secrets never go there.
+    # enabled is DERIVED: blank api-key => SmsSender runs in DRY-RUN (logs the would-be
+    # message, never calls the provider). This is the default. SMS costs real money per
+    # segment and imin has no billing/metering yet — do NOT set this key in prod until a
+    # billing model + per-org spend cap exist (docs/research/sms-provider-decision.md).
+    api-key: ${IMIN_SMS_API_KEY:}
+    base-url: ${IMIN_SMS_BASE_URL:https://rest.messagebird.com}
+    # Alphanumeric originator actually sent (FR: registered per operator, <=11 chars).
+    sender-id: ${IMIN_SMS_SENDER_ID:IMIN}
+    # HMAC secret for POST /api/v1/public/webhooks/sms (inbound STOP + delivery receipts).
+    # Blank => every inbound webhook fails signature verification (fail closed).
+    webhook-secret: ${IMIN_SMS_WEBHOOK_SECRET:}
+    webhook-tolerance-seconds: 300
   ticket:
     # HMAC-SHA256 secret used to tamper-evidence QR payloads. 32+ bytes of entropy.
     # Required at boot — QrPayloadSigner throws if blank.
