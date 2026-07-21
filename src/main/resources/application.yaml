@@ -325,6 +325,16 @@ imin:
     # /concept/regenerate), layered on top of the ai-concept burst bucket below. Anti-abuse
     # only — invisible to a normal organizer. An org flagged organizations.ai_unlimited bypasses it.
     image-per-day: ${AI_QUOTA_IMAGE_PER_DAY:3}
+  predictor:
+    # AI Success Predictor — LEDGER phase (data foundation) operational knobs (spec §6).
+    # Days after an event's endsAt before EventOutcomeFinalizeJob records its outcome — lets
+    # late refunds settle before the result is frozen (mirrors the payout buffer). NOTE: the
+    # hard privacy invariants (≥5 comparable cluster; attendance→10 / revenue→€100 rounding)
+    # are compile-time constants in ComparableCorpusService, NOT config, so they can never be
+    # misconfigured below the legal floor (spec §5/§6.4, gate item 5).
+    finalize-grace-days: ${PREDICTOR_FINALIZE_GRACE_DAYS:3}
+    # Page size for the one-shot outcome/trajectory backfill scans.
+    backfill-page-size: ${PREDICTOR_BACKFILL_PAGE_SIZE:500}
   ratelimit:
     login:
       capacity: 5

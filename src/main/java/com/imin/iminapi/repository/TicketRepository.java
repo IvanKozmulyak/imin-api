@@ -103,6 +103,44 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
 
     long countByOrderIdAndStateNot(UUID orderId, String state);
 
+    /** Ticket count for an event in a given state. Predictor finalize uses it for refund_count ('refunded'). */
+    long countByEventIdAndState(UUID eventId, String state);
+
+    /**
+     * Latest {@code created_at} across an event's SOLD tickets ({@code state not in
+     * ('refunded','revoked')}), or NULL when the event has sold nothing. The predictor
+     * finalize job uses this as the "last seat sold" instant to derive time-to-sell-out
+     * (publish → this) — only meaningful when the event actually sold out.
+     */
+    @Query("""
+            select max(t.createdAt) from Ticket t
+             where t.eventId = :eventId
+               and t.state not in ('refunded', 'revoked')
+            """)
+    java.time.Instant findLastSoldCreatedAt(@Param("eventId") UUID eventId);
+
+    /** Distinct event ids that have at least one SOLD ticket. Drives the sales-trajectory materialization + backfill. */
+    @Query("""
+            select distinct t.eventId from Ticket t
+             where t.state not in ('refunded', 'revoked')
+            """)
+    List<UUID> findDistinctEventIdsWithSoldTickets();
+
+    /**
+     * (tierId, createdAt) for every SOLD ticket of an event, oldest first. The trajectory
+     * materialization buckets these by calendar day in the event's timezone IN JAVA — never
+     * a SQL {@code date(...)} (H2 and Postgres diverge on truncation; this repo has been
+     * bitten before). The SOLD predicate matches {@link #tierAggregates} so the daily series
+     * reconciles with the per-tier sold figures.
+     */
+    @Query("""
+            select t.tierId, t.createdAt from Ticket t
+             where t.eventId = :eventId
+               and t.state not in ('refunded', 'revoked')
+             order by t.createdAt asc
+            """)
+    List<Object[]> findSoldTierAndCreatedAt(@Param("eventId") UUID eventId);
+
     /**
      * Atomic single-use redemption. Returns the number of rows updated:
      * 1 → fresh redemption; 0 → either already redeemed, revoked, or token unknown.
