@@ -43,4 +43,20 @@ public class AsyncConfig {
         exec.initialize();
         return exec;
     }
+
+    /**
+     * Predictor Stage-0 scoring runs (spec §4.1: async, non-blocking; §7.3: existing job
+     * pattern, no new infra). Small on purpose — one LLM call per run, per-user throttled
+     * and quota-capped upstream, so depth beyond 2 threads would only mask an abuse pattern.
+     */
+    @Bean(name = "predictorScoreExecutor")
+    public Executor predictorScoreExecutor() {
+        ThreadPoolTaskExecutor exec = new ThreadPoolTaskExecutor();
+        exec.setCorePoolSize(1);
+        exec.setMaxPoolSize(2);
+        exec.setQueueCapacity(16);
+        exec.setThreadNamePrefix("predictor-score-");
+        exec.initialize();
+        return exec;
+    }
 }

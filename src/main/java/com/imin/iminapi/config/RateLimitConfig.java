@@ -45,6 +45,10 @@ public class RateLimitConfig {
     private int checkoutCapacity;
     @Value("${imin.ratelimit.checkout.window-minutes}")
     private int checkoutWindow;
+    @Value("${imin.ratelimit.predictor-rescore.capacity}")
+    private int predictorRescoreCapacity;
+    @Value("${imin.ratelimit.predictor-rescore.window-minutes}")
+    private int predictorRescoreWindow;
 
     @Bean
     public RedisClient redisClient(@Value("${spring.data.redis.url}") String url) {
@@ -79,6 +83,10 @@ public class RateLimitConfig {
                 .build());
         configs.put("checkout", BucketConfiguration.builder()
                 .addLimit(Bandwidth.simple(checkoutCapacity, Duration.ofMinutes(checkoutWindow)))
+                .build());
+        // Predictor manual re-score throttle (spec §4.1), keyed per user id.
+        configs.put("predictor-rescore", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(predictorRescoreCapacity, Duration.ofMinutes(predictorRescoreWindow)))
                 .build());
 
         return (bucketName, key) -> {
