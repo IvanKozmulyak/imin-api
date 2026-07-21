@@ -4,6 +4,7 @@ import com.imin.iminapi.predictor.model.EventOutcome;
 import com.imin.iminapi.predictor.model.PredictionLedger;
 import com.imin.iminapi.predictor.repository.EventOutcomeRepository;
 import com.imin.iminapi.predictor.repository.PredictionLedgerRepository;
+import com.imin.iminapi.predictor.repository.PredictorSegmentStatusRepository;
 import com.imin.iminapi.predictor.service.PredictionLedgerService;
 import com.imin.iminapi.predictor.service.PredictionScoringJob;
 import org.junit.jupiter.api.Test;
@@ -70,7 +71,7 @@ class PredictionScoringJobTest {
         when(outcomes.findById(pendingEvent)).thenReturn(Optional.of(notFinalized(pendingEvent)));
         when(outcomes.findById(noOutcomeEvent)).thenReturn(Optional.empty());
 
-        new PredictionScoringJob(ledger, outcomes, service, clock).run();
+        new PredictionScoringJob(ledger, outcomes, service, mock(PredictorSegmentStatusRepository.class), clock).run();
 
         verify(service, times(1)).joinOutcome(eq(rDone), eq(240), eq(198), eq(now), isNull(), isNull());
         verify(service, never()).joinOutcome(eq(rPending), any(), any(), any(), any(), any());
