@@ -263,6 +263,44 @@ imin:
     base-path: /api/v1
   auth:
     session-ttl-days: 30
+  oauth:
+    # Social sign-in (config-gated). A provider is enabled only when ALL its
+    # fields below are non-blank; otherwise its endpoints 404 and the FE hides
+    # the button. All secrets default blank so an unconfigured build still boots.
+    #
+    # Organizer dashboard origin the Apple return handler 302-redirects back to.
+    frontend-base-url: ${IMIN_OAUTH_FRONTEND_BASE_URL:https://dashboard.imin.wtf}
+    # HMAC key for the stateless CSRF `state` token. Optional — blank => an
+    # ephemeral per-instance key (fine for single-instance/dev; set in prod).
+    state-secret: ${IMIN_OAUTH_STATE_SECRET:}
+    # ISO-3166 alpha-2 assigned to an Organization auto-provisioned on first
+    # social sign-in (no country is collected in the OAuth flow; the organizer
+    # can change it later in settings).
+    default-country: ${IMIN_OAUTH_DEFAULT_COUNTRY:NL}
+    google:
+      # Google Cloud Console → APIs & Services → Credentials → OAuth client ID
+      # (type "Web application"). client-secret is that client's secret.
+      client-id: ${GOOGLE_OAUTH_CLIENT_ID:}
+      client-secret: ${GOOGLE_OAUTH_CLIENT_SECRET:}
+      # Authorized redirect URI — the FRONTEND callback the browser lands on,
+      # e.g. https://dashboard.imin.wtf/auth/callback/google. Register it in the
+      # Google client's "Authorized redirect URIs".
+      redirect-uri: ${GOOGLE_OAUTH_REDIRECT_URI:}
+    apple:
+      # Apple Developer → Certificates, IDs & Profiles → Identifiers → Services ID
+      # (the OAuth client_id / audience), e.g. wtf.imin.web.
+      client-id: ${APPLE_OAUTH_CLIENT_ID:}
+      # 10-char Apple Developer Team ID (top-right of the developer portal).
+      team-id: ${APPLE_OAUTH_TEAM_ID:}
+      # Key ID of the "Sign in with Apple" .p8 private key.
+      key-id: ${APPLE_OAUTH_KEY_ID:}
+      # base64 of the downloaded .p8 file contents (env vars can't carry raw PEM
+      # newlines): `base64 -i AuthKey_XXXX.p8`.
+      private-key-base64: ${APPLE_OAUTH_PRIVATE_KEY_BASE64:}
+      # Apple form_posts the auth code to THIS backend URL. Register it as the
+      # Services ID "Return URL", e.g.
+      # https://imin-api-production.up.railway.app/api/v1/auth/apple/return.
+      redirect-uri: ${APPLE_OAUTH_REDIRECT_URI:}
   gate:
     # Gate-scanner bearer-token lifetime. Gate phones live at venues and reboot
     # rarely; default 30 days. Override with IMIN_GATE_TOKEN_TTL_DAYS.
