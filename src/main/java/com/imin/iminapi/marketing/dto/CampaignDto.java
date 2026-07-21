@@ -24,6 +24,12 @@ public record CampaignDto(
         String subject,
         String preheader,
         String bodyMd,
+        /**
+         * The email template this campaign renders with (V66): a builtin key
+         * ('classic'|'midnight'|'poster'|'mono') or a saved org template's UUID string.
+         * Never null on the wire — the column defaults to 'classic'.
+         */
+        String templateKey,
         Instant createdAt,
         Instant updatedAt,
         /**
@@ -55,7 +61,7 @@ public record CampaignDto(
                 c.getId(), c.getOrgId(), c.getChannel(), c.getName(), c.getStatus(),
                 c.getSegmentId(), c.getEventId(), c.getOrigin(), c.getMomentumSuggestionId(),
                 c.getScheduledAt(), c.getSentAt(), c.getRecipientCount(), c.getExcludedCount(),
-                c.getSubject(), c.getPreheader(), c.getBodyMd(),
+                c.getSubject(), c.getPreheader(), c.getBodyMd(), c.getTemplateKey(),
                 c.getCreatedAt(), c.getUpdatedAt(), revMinor);
     }
 }

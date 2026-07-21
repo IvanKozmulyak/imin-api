@@ -7,7 +7,13 @@ import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.render.CampaignEmailRenderer;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
+import com.imin.iminapi.marketing.service.CampaignTemplateService;
+import com.imin.iminapi.marketing.template.ResolvedTemplate;
 import com.imin.iminapi.marketing.unsubscribe.UnsubscribeTokenService;
+import com.imin.iminapi.model.Event;
+import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.security.ApiException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,16 +42,24 @@ public class EmailChannelSender {
     private final CampaignEmailProvider provider;
     private final UnsubscribeTokenService tokens;
     private final MarketingEmailProperties props;
+    private final CampaignTemplateService templateService;
+    private final OrganizationRepository organizations;
+    private final EventRepository events;
 
     public EmailChannelSender(CampaignRecipientRepository recipients, CampaignRepository campaigns,
                               CampaignEmailRenderer renderer, CampaignEmailProvider provider,
-                              UnsubscribeTokenService tokens, MarketingEmailProperties props) {
+                              UnsubscribeTokenService tokens, MarketingEmailProperties props,
+                              CampaignTemplateService templateService,
+                              OrganizationRepository organizations, EventRepository events) {
         this.recipients = recipients;
         this.campaigns = campaigns;
         this.renderer = renderer;
         this.provider = provider;
         this.tokens = tokens;
         this.props = props;
+        this.templateService = templateService;
+        this.organizations = organizations;
+        this.events = events;
     }
 
     /** Sends one batch. Returns true if there are (likely) more pending rows to process. */
@@ -54,13 +68,20 @@ public class EmailChannelSender {
         List<CampaignRecipient> batch = recipients.claimPendingBatch(c.getId(), BATCH_SIZE);
         if (batch.isEmpty()) return false;
 
+        // Template, org brand name, and event poster are constant for the whole campaign —
+        // resolve them ONCE per batch, not per recipient. Only the unsubscribe URL varies.
+        ResolvedTemplate template = templateService.resolve(c.getOrgId(), c.getTemplateKey());
+        String brandName = brandName(c.getOrgId());
+        String posterUrl = posterUrl(c);
+
         List<CampaignEmailProvider.OutgoingEmail> outgoing = new ArrayList<>(batch.size());
         for (CampaignRecipient r : batch) {
             String unsubUrl = props.getUnsubscribeBaseUrl() + "/optout?token="
                     + tokens.sign(c.getOrgId(), r.getMembershipId(), c.getId(), "email");
             CampaignEmailRenderer.Rendered rendered = renderer.render(
                     c.getSubject(), c.getPreheader(), c.getBodyMd(),
-                    c.getId().toString(), "email", unsubUrl);
+                    c.getId().toString(), "email", unsubUrl,
+                    template, brandName, posterUrl);
             outgoing.add(new CampaignEmailProvider.OutgoingEmail(
                     props.fromHeader(), r.getEmail(), c.getSubject(),
                     rendered.html(), rendered.text(), unsubUrl));
@@ -93,5 +114,40 @@ public class EmailChannelSender {
         campaigns.touch(c.getId(), Instant.now());
 
         return recipients.countByCampaignIdAndStatus(c.getId(), "pending") > 0;
+    }
+
+    /**
+     * The organizer's header identity for the branded shell: brand name if set, else the org
+     * name. Failure-isolated — a lookup hiccup must not fail a live send, it just omits the
+     * header text (the template still renders).
+     */
+    private String brandName(java.util.UUID orgId) {
+        try {
+            Organization org = organizations.findById(orgId).orElse(null);
+            if (org == null) return null;
+            return org.getBrandName() != null && !org.getBrandName().isBlank()
+                    ? org.getBrandName() : org.getName();
+        } catch (Exception e) {
+            log.debug("[email-sender] brand-name lookup failed for org {}: {}", orgId, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * The linked event's poster URL, for the {@code posterHero} header. Null when the campaign
+     * has no event or the event has no poster — the renderer then degrades posterHero to a
+     * banner. Failure-isolated for the same reason as {@link #brandName}.
+     */
+    private String posterUrl(Campaign c) {
+        if (c.getEventId() == null) return null;
+        try {
+            return events.findActive(c.getEventId())
+                    .filter(e -> c.getOrgId().equals(e.getOrgId()))
+                    .map(Event::getPosterUrl)
+                    .orElse(null);
+        } catch (Exception e) {
+            log.debug("[email-sender] poster lookup failed for event {}: {}", c.getEventId(), e.getMessage());
+            return null;
+        }
     }
 }

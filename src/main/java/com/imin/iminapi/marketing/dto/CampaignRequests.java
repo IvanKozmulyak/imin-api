@@ -15,7 +15,9 @@ public final class CampaignRequests {
             UUID eventId,
             String subject,
             String preheader,
-            String bodyMd
+            String bodyMd,
+            /** Email template key (V66): builtin key or saved-template UUID. Null → 'classic'. */
+            String templateKey
     ) {}
 
     /** PATCH /campaigns/{id} — partial; only non-null fields are applied. Draft-only. */
@@ -25,7 +27,9 @@ public final class CampaignRequests {
             UUID eventId,
             String subject,
             String preheader,
-            String bodyMd
+            String bodyMd,
+            /** Email template key (V66) — applied only when non-null (draft-only, like the rest). */
+            String templateKey
     ) {}
 
     /** POST /campaigns/{id}/test-send. When email is null the caller's own address is used. */
