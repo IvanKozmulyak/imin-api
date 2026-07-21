@@ -238,4 +238,23 @@ public class SegmentService {
                         .toList())
                 .orElse(List.of());
     }
+
+    /**
+     * Preview the matched / mailable counts for a TRANSIENT (unsaved) set of custom JSON rules,
+     * evaluated directly against the org's memberships — WITHOUT persisting a segment and WITHOUT
+     * the prebuilt name-based routing in {@link #applyRules}. Used by the AI-draft preview so the
+     * organizer sees real counts before confirming a create. Mirrors {@link #resolve}'s math
+     * (an empty/blank {@code rulesJson} matches everyone, exactly like the engine).
+     */
+    @Transactional(readOnly = true)
+    public SegmentResolveDto previewRules(UUID orgId, String rulesJson) {
+        List<Membership> matched = applyJsonRules(orgId, rulesJson);
+        long avgLtv = matched.isEmpty() ? 0
+                : matched.stream().mapToLong(Membership::getSpendMinor).sum() / matched.size();
+        long mailable = matched.stream()
+                .filter(m -> "subscribed".equals(m.getConsentStatus()) && m.getConsentBasis() != null)
+                .count();
+        int excluded = matched.size() - (int) mailable;
+        return new SegmentResolveDto(matched.size(), (int) mailable, excluded, avgLtv);
+    }
 }
