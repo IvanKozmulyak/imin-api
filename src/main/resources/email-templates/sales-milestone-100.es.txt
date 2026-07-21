@@ -1,0 +1,19 @@
+HITO DE VENTAS · AGOTADO · imin
+
+{{tierName}} está agotado para {{eventName}}.
+
+No queda ni una entrada de {{tierName}}. Eso es demanda real; así puedes aprovecharla.
+
+{{tierName}} · VENTA
+{{percentSold}}% vendido — {{soldCount}} de {{capacity}} entradas {{tierName}}. Este nivel está al máximo de su capacidad.
+
+MANTÉN EL IMPULSO
+- Captura la demanda extra: tu página de evento agotado ya muestra un registro en lista de espera para compradores tardíos.
+- Amplía la capacidad de {{tierName}} o lanza un nuevo nivel desde la pestaña Entradas.
+- Anuncia el agotamiento: la escasez impulsa el resto de tus niveles.
+
+Gestiona este nivel: {{dashboardUrl}}
+
+Recibes esto porque {{tierName}} alcanzó un hito de ventas para {{eventName}}. Gestiona estas alertas en Ajustes → Notificaciones.
+
+imin.wtf · hito de ventas para {{eventName}}

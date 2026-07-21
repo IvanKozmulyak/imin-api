@@ -1,0 +1,14 @@
+HITO DE VENTAS · A MITAD DE CAMINO · imin
+
+{{tierName}} está vendido a mitad para {{eventName}}.
+
+Buen trabajo: el nivel {{tierName}} acaba de superar la mitad. El impulso es real; un empujón más y vas camino de agotarlo.
+
+{{tierName}} · VENTA
+{{percentSold}}% vendido — {{soldCount}} de {{capacity}} entradas {{tierName}} vendidas.
+
+Ver ventas y seguir promocionando: {{dashboardUrl}}
+
+Recibes esto porque {{tierName}} superó el {{percentSold}}% vendido para {{eventName}}. Comparte el enlace de tu evento en tus canales y observa cómo se agota el resto; te avisaremos de nuevo a medida que el nivel se llene.
+
+imin.wtf · hito de ventas para {{eventName}}
