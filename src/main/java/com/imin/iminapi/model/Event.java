@@ -103,6 +103,18 @@ public class Event {
     @Column(name = "deleted_at")
     private Instant deletedAt;
 
+    /**
+     * AI-provenance stamps (V71, predictor spec §6.1). Tri-state on purpose:
+     * TRUE = verified AI origin, FALSE = verified manual origin, NULL = unknown.
+     * NO-FABRICATION: absence of a provenance signal stays NULL — it is never
+     * collapsed to FALSE (see V71__event_ai_provenance.sql for the seam rules).
+     */
+    @Column(name = "concept_ai_generated")
+    private Boolean conceptAiGenerated;
+
+    @Column(name = "poster_ai_generated")
+    private Boolean posterAiGenerated;
+
     @PrePersist
     void onPersist() {
         createdAt = createdAt == null ? Times.nowMicros() : createdAt.truncatedTo(ChronoUnit.MICROS);

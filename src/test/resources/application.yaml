@@ -83,6 +83,9 @@ imin:
     password-reset:
       capacity: 1000
       window-minutes: 15
+    predictor-rescore:
+      capacity: 1000
+      window-minutes: 10
   media:
     enabled: false
     bucket: test

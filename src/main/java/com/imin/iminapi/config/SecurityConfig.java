@@ -93,6 +93,11 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/v1/gate/login").permitAll()
                         // Public reference data (country codes, etc.)
                         .requestMatchers(HttpMethod.GET, "/api/v1/reference/**").permitAll()
+                        // Founders-only predictor calibration view — guarded by a static bearer
+                        // secret INSIDE the controller (constant-time compare; blank secret = 404
+                        // dark). permitAll here so the organizer JWT chain never applies: the page
+                        // aggregates cross-org ledger data no organizer principal may see.
+                        .requestMatchers(HttpMethod.GET, "/api/v1/internal/predictor/calibration").permitAll()
                         // Public event endpoints (unauthenticated GET)
                         .requestMatchers(HttpMethod.GET, "/api/v1/public/**").permitAll()
                         // Public buyer checkout — unauthenticated POST (validated server-side).

@@ -68,7 +68,12 @@ public class MediaUploadService {
             case DJ_PHOTO -> e.getDjPhotoUrl();
         };
         switch (kind) {
-            case POSTER -> e.setPosterUrl(url);
+            case POSTER -> {
+                e.setPosterUrl(url);
+                // Provenance (V71): a multipart file upload is the organizer's own asset —
+                // the one poster path whose manual origin is verifiable server-side.
+                e.setPosterAiGenerated(false);
+            }
             case VIDEO -> e.setVideoUrl(url);
             case DJ_PHOTO -> e.setDjPhotoUrl(url);
         }
@@ -102,7 +107,10 @@ public class MediaUploadService {
             try { storage.delete(key); } catch (Exception ignored) {}
         }
         switch (kind) {
-            case POSTER -> e.setPosterUrl(null);
+            case POSTER -> {
+                e.setPosterUrl(null);
+                e.setPosterAiGenerated(null); // no poster → no provenance claim (V71)
+            }
             case VIDEO -> e.setVideoUrl(null);
             case DJ_PHOTO -> e.setDjPhotoUrl(null);
         }

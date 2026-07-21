@@ -49,13 +49,19 @@ public class EventService {
      */
     private final EventOutcomeService outcomeService;
 
+    /**
+     * Concept lookup for the V71 AI-provenance stamp. Optional (nullable in legacy test
+     * constructors); when absent, a supplied {@code sourceConceptId} is rejected as not found.
+     */
+    private final ConceptRepository concepts;
+
     /** Legacy 8-arg constructor used by existing unit tests that don't wire audit. */
     public EventService(EventRepository events, TicketTierRepository tiers,
                         PromoCodeRepository promos, PredictionRepository predictions,
                         EventValidator validator, IfMatchSupport ifMatch,
                         TicketTierService tierService,
                         StripeConnectService stripeConnect) {
-        this(events, tiers, promos, predictions, validator, ifMatch, tierService, stripeConnect, null, null);
+        this(events, tiers, promos, predictions, validator, ifMatch, tierService, stripeConnect, null, null, null);
     }
 
     /** 9-arg constructor used by tests that wire audit but not the predictor outcome writer. */
@@ -65,7 +71,19 @@ public class EventService {
                         TicketTierService tierService,
                         StripeConnectService stripeConnect,
                         AuditLogger auditLogger) {
-        this(events, tiers, promos, predictions, validator, ifMatch, tierService, stripeConnect, auditLogger, null);
+        this(events, tiers, promos, predictions, validator, ifMatch, tierService, stripeConnect, auditLogger, null, null);
+    }
+
+    /** 10-arg constructor (pre-V71) used by tests that don't wire the concept repo. */
+    public EventService(EventRepository events, TicketTierRepository tiers,
+                        PromoCodeRepository promos, PredictionRepository predictions,
+                        EventValidator validator, IfMatchSupport ifMatch,
+                        TicketTierService tierService,
+                        StripeConnectService stripeConnect,
+                        AuditLogger auditLogger,
+                        EventOutcomeService outcomeService) {
+        this(events, tiers, promos, predictions, validator, ifMatch, tierService, stripeConnect,
+                auditLogger, outcomeService, null);
     }
 
     /** Primary constructor — Spring picks this one in the running app. */
@@ -76,7 +94,8 @@ public class EventService {
                         TicketTierService tierService,
                         StripeConnectService stripeConnect,
                         AuditLogger auditLogger,
-                        EventOutcomeService outcomeService) {
+                        EventOutcomeService outcomeService,
+                        ConceptRepository concepts) {
         this.events = events;
         this.tiers = tiers;
         this.promos = promos;
@@ -87,6 +106,7 @@ public class EventService {
         this.tierService = tierService;
         this.auditLogger = auditLogger;
         this.outcomeService = outcomeService;
+        this.concepts = concepts;
     }
 
     private void audit(AuthPrincipal p, String action, String targetType, UUID targetId, String summary) {
@@ -106,6 +126,7 @@ public class EventService {
         e.setCreatedBy(p.userId());
         e.setSlug(generateSlug());
         applyPatch(e, body);
+        stampConceptProvenance(p, e, body);
         try {
             Event saved = events.save(e);
             audit(p, AuditActions.EVENT_CREATED, "event", saved.getId(),
@@ -266,12 +287,34 @@ public class EventService {
             changed = true;
         }
         if (b.description() != null) { e.setDescription(b.description()); changed = true; }
-        if (b.posterUrl() != null) { e.setPosterUrl(b.posterUrl()); changed = true; }
+        if (b.posterUrl() != null) {
+            // Provenance (V71): a PATCH that CHANGES the poster URL has unknown origin (could be
+            // an AI-studio poster or a pasted link) — reset the stamp to NULL rather than let a
+            // stale true/false claim ride along. The manual-upload path re-stamps false itself.
+            if (!b.posterUrl().equals(e.getPosterUrl())) e.setPosterAiGenerated(null);
+            e.setPosterUrl(b.posterUrl());
+            changed = true;
+        }
         if (b.videoUrl() != null) { e.setVideoUrl(b.videoUrl()); changed = true; }
         if (b.currency() != null) { e.setCurrency(b.currency()); changed = true; }
         if (b.onSaleAt() != null) { e.setOnSaleAt(b.onSaleAt()); changed = true; }
         if (b.saleClosesAt() != null) { e.setSaleClosesAt(b.saleClosesAt()); changed = true; }
         return changed;
+    }
+
+    /**
+     * V71 AI-provenance stamp, CREATE only. A verified {@code sourceConceptId} (a Concept
+     * belonging to the caller's org) stamps {@code concept_ai_generated = true}; an unknown
+     * or foreign id is a 404 (no cross-org probe). NO-FABRICATION: absence of the field
+     * leaves the stamp NULL — today's FE promote flow sends nothing, so absence does NOT
+     * mean "manual" and is never collapsed to false (V71 migration header has the full rule).
+     */
+    private void stampConceptProvenance(AuthPrincipal p, Event e, EventPatchRequest b) {
+        if (b == null || b.sourceConceptId() == null) return;
+        if (concepts == null || concepts.findByIdAndOrgId(b.sourceConceptId(), p.orgId()).isEmpty()) {
+            throw ApiException.notFound("Concept");
+        }
+        e.setConceptAiGenerated(true);
     }
 
     /**

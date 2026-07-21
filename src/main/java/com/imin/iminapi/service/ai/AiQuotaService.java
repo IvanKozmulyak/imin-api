@@ -31,6 +31,7 @@ public class AiQuotaService {
     private static final Logger log = LoggerFactory.getLogger(AiQuotaService.class);
     private static final Duration WINDOW = Duration.ofHours(24);
     private static final String KIND_IMAGE = "image";
+    private static final String KIND_SCORE = "score";
 
     private final AiGenerationUsageRepository usage;
     private final OrganizationRepository orgs;
@@ -49,23 +50,36 @@ public class AiQuotaService {
      * insert a usage row and allow.
      */
     public void checkAndRecordImage(AuthPrincipal p) {
+        checkAndRecord(p, KIND_IMAGE, props.getImagePerDay());
+    }
+
+    /**
+     * Enforce and record one predictor Stage-0 scoring run (kind=score, 86cav477c budget cap).
+     * Callers must consume this ONLY when a real LLM call is about to happen — cache hits and
+     * benchmark-only (kill-switch) renders are free. Same 429 {@code AI_QUOTA_EXCEEDED}
+     * envelope as the image quota.
+     */
+    public void checkAndRecordScore(AuthPrincipal p) {
+        checkAndRecord(p, KIND_SCORE, props.getScorePerDay());
+    }
+
+    private void checkAndRecord(AuthPrincipal p, String kind, int limit) {
         if (isUnlimited(p.orgId())) {
             return; // record nothing, allow
         }
         UUID userId = p.userId();
         Instant windowStart = Times.nowMicros().minus(WINDOW);
-        long used = usage.countByUserIdAndKindAndCreatedAtAfter(userId, KIND_IMAGE, windowStart);
-        int limit = props.getImagePerDay();
+        long used = usage.countByUserIdAndKindAndCreatedAtAfter(userId, kind, windowStart);
         if (used >= limit) {
-            Instant oldest = usage.findOldestCreatedAt(userId, KIND_IMAGE, windowStart);
+            Instant oldest = usage.findOldestCreatedAt(userId, kind, windowStart);
             Instant resetAt = (oldest == null ? Times.nowMicros() : oldest).plus(WINDOW);
-            log.warn("AI quota exceeded: userId={} kind={} used={} limit={}", userId, KIND_IMAGE, used, limit);
+            log.warn("AI quota exceeded: userId={} kind={} used={} limit={}", userId, kind, used, limit);
             throw ApiException.aiQuotaExceeded(limit, used, resetAt);
         }
         AiGenerationUsage row = new AiGenerationUsage();
         row.setUserId(userId);
         row.setOrgId(p.orgId());
-        row.setKind(KIND_IMAGE);
+        row.setKind(kind);
         usage.save(row);
     }
 

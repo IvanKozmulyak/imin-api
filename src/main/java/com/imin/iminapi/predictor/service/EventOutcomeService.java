@@ -152,10 +152,11 @@ public class EventOutcomeService {
         o.setTierStructureJson(writeJson(tierSnapshots(e.getId()), "[]"));
         o.setPromoConfigJson(writeJson(promoSnapshots(e.getId()), "[]"));
 
-        // AI provenance is UNKNOWN — there is no schema link from a published event back to a
-        // GeneratedEvent / PosterGeneration. Leave both NULL rather than fabricate a flag.
-        o.setConceptAiGenerated(null);
-        o.setPosterAiGenerated(null);
+        // AI provenance (V71): pass through the events-row stamps. Tri-state — TRUE (verified
+        // sourceConceptId at create / never for poster), FALSE (manual poster upload), NULL
+        // (unknown; today's FE promote flow sends no signal). Never invented here.
+        o.setConceptAiGenerated(e.getConceptAiGenerated());
+        o.setPosterAiGenerated(e.getPosterAiGenerated());
 
         orgs.findById(e.getOrgId()).ifPresent(org ->
                 o.setOrganizerTenureDays(organizerTenureDays(org, publishedAt)));

@@ -21,5 +21,12 @@ public interface PredictionLedgerRepository extends JpaRepository<PredictionLedg
     /** Renders not yet joined to their event's outcome. Drives the monthly scoring job. */
     List<PredictionLedger> findByOutcomeJoinedAtIsNull(Pageable pageable);
 
+    /**
+     * All outcome-joined renders — the scored evaluation set behind segment aggregation and
+     * the calibration view. Unpaged on purpose: early-platform volumes are small and the
+     * aggregation needs the whole set; revisit with a streaming scan if this ever grows hot.
+     */
+    List<PredictionLedger> findByOutcomeJoinedAtIsNotNull();
+
     long countByEventId(UUID eventId);
 }

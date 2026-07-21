@@ -325,6 +325,10 @@ imin:
     # /concept/regenerate), layered on top of the ai-concept burst bucket below. Anti-abuse
     # only — invisible to a normal organizer. An org flagged organizations.ai_unlimited bypasses it.
     image-per-day: ${AI_QUOTA_IMAGE_PER_DAY:3}
+    # Per-user rolling-24h ceiling on predictor Stage-0 scoring runs (kind=score). Generous —
+    # the input-hash cache makes real usage tiny; only a grinder hits this. Consumed ONLY on
+    # runs that actually call the LLM (cache hits and benchmark-only mode are free).
+    score-per-day: ${AI_QUOTA_SCORE_PER_DAY:50}
   predictor:
     # AI Success Predictor — LEDGER phase (data foundation) operational knobs (spec §6).
     # Days after an event's endsAt before EventOutcomeFinalizeJob records its outcome — lets
@@ -335,6 +339,19 @@ imin:
     finalize-grace-days: ${PREDICTOR_FINALIZE_GRACE_DAYS:3}
     # Page size for the one-shot outcome/trajectory backfill scans.
     backfill-page-size: ${PREDICTOR_BACKFILL_PAGE_SIZE:500}
+    # ---- SCORE phase (Stage 0) ----
+    # Model for the scoring call; empty = platform default (openrouter.model). Stamped on
+    # every ledger row.
+    model: ${PREDICTOR_MODEL:}
+    # GLOBAL KILL SWITCH: true = every scoring request returns benchmark-only (corpus stats,
+    # no forward numbers, no LLM call). Checked at request time (spec §5; pre-authorized §9.4).
+    benchmark-only: ${PREDICTOR_BENCHMARK_ONLY:false}
+    # Founders-only calibration view bearer secret. BLANK keeps the endpoint dark (404).
+    internal-token: ${PREDICTOR_INTERNAL_TOKEN:}
+    # Language-ladder thresholds (§5) — honest guesses, tuned against the ledger later.
+    tier-b-min-density: ${PREDICTOR_TIER_B_MIN_DENSITY:8}
+    tier-a-min-density: ${PREDICTOR_TIER_A_MIN_DENSITY:25}
+    tier-a-own-min: ${PREDICTOR_TIER_A_OWN_MIN:3}
   ratelimit:
     login:
       capacity: 5
@@ -354,6 +371,11 @@ imin:
       # while throttling a loop that would mint unbounded Stripe Coupons/Sessions and lock inventory.
       capacity: 20
       window-minutes: 5
+    predictor-rescore:
+      # Manual re-score burst throttle, per user (spec §4.1 "manual re-score throttled").
+      # Layered under the kind=score daily quota; cache hits don't reach either.
+      capacity: 6
+      window-minutes: 10
   media:
     enabled: ${MEDIA_ENABLED:true}
     bucket: ${R2_BUCKET:imin-media-dev}
