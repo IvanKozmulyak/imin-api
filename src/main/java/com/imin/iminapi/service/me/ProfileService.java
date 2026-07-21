@@ -16,12 +16,20 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Map;
+import java.util.Set;
 
 @Service
 public class ProfileService {
 
     /** Mirrors the DB column width of users.first_name / users.last_name (V14). */
     public static final int MAX_NAME_LENGTH = 255;
+
+    /**
+     * The dashboard UI languages we ship translations for. Mirrors the
+     * {@code users_locale_supported} CHECK constraint (V67) and the FE locale
+     * catalogue — keep all three in lockstep when adding a language.
+     */
+    public static final Set<String> SUPPORTED_LOCALES = Set.of("en", "es", "fr", "uk");
 
     private final UserRepository users;
     private final OrganizationRepository orgs;
@@ -56,8 +64,25 @@ public class ProfileService {
             }
         }
 
+        // Locale is validated and persisted independently of the name fields — a
+        // change here must not recompute avatar initials, so track it separately.
+        boolean localeChanged = false;
+        if (body.locale() != null) {
+            String locale = body.locale().trim().toLowerCase();
+            if (!SUPPORTED_LOCALES.contains(locale)) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID,
+                        "Validation failed", Map.of("locale", "must be one of " + SUPPORTED_LOCALES));
+            }
+            if (!locale.equals(user.getLocale())) {
+                user.setLocale(locale);
+                localeChanged = true;
+            }
+        }
+
         if (changed) {
             user.setAvatarInitials(deriveInitials(user.getFirstName(), user.getLastName()));
+        }
+        if (changed || localeChanged) {
             users.save(user);
         }
 

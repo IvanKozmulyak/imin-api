@@ -39,7 +39,7 @@ class AuthControllerTest {
 
     private UserDto sampleUser(UUID orgId) {
         return new UserDto(UUID.randomUUID(), "ada@example.com",
-                "Ada", "Lovelace", "owner", "AL", orgId, Instant.parse("2026-04-23T10:00:00Z"));
+                "Ada", "Lovelace", "owner", "AL", orgId, Instant.parse("2026-04-23T10:00:00Z"), "en");
     }
     private OrganizationDto sampleOrg(UUID orgId) {
         return new OrganizationDto(orgId, "Ada Co", "ada-co", "ada@example.com", "GB", "UTC", "growth", 89, "EUR",

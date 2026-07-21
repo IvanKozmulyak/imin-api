@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="x-apple-disable-message-reformatting" />
+  <meta name="color-scheme" content="light only" />
+  <meta name="supported-color-schemes" content="light" />
+  <title>{{tierName}} est complet pour {{eventName}}</title>
+
+  <!-- Brand fonts load on supporting clients (Apple Mail, iOS Mail); everything else falls back to the system stack below -->
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Mono:wght@700&display=swap" rel="stylesheet" />
+</head>
+<body style="margin:0; padding:0; background:#f4f2fa; font-family:'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color:#11091f; -webkit-font-smoothing:antialiased;">
+
+  <!-- preheader -->
+  <div style="display:none; max-height:0; overflow:hidden; opacity:0; mso-hide:all;">
+    {{tierName}} vient d&apos;afficher complet pour {{eventName}} &mdash; {{soldCount}} sur {{capacity}} écoulés. Le moment de capter la demande.
+  </div>
+
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f2fa; padding:32px 16px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="max-width:600px; width:100%; background:#ffffff; border:1px solid #d4cee6; border-radius:10px; overflow:hidden; box-shadow:0 6px 18px rgba(20,12,45,0.08);">
+
+          <!-- header -->
+          <tr>
+            <td style="padding:24px 32px 0; text-align:left;">
+              <span style="font-size:18px; font-weight:700; letter-spacing:-0.3px; color:#11091f;">imin</span><span style="font-size:18px; font-weight:700; color:#2d5cff;">.wtf</span>
+            </td>
+          </tr>
+
+          <!-- eyebrow -->
+          <tr>
+            <td style="padding:28px 32px 0;">
+              <div style="font-family:'Space Mono', ui-monospace, Menlo, Consolas, monospace; font-size:11px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:#0f7b5f;">JALON DE VENTES &middot; COMPLET</div>
+            </td>
+          </tr>
+
+          <!-- title -->
+          <tr>
+            <td style="padding:6px 32px 0;">
+              <h1 style="margin:0; font-size:24px; font-weight:700; letter-spacing:-0.4px; color:#11091f; line-height:1.2;">{{tierName}} est complet pour {{eventName}}</h1>
+            </td>
+          </tr>
+
+          <!-- subhead -->
+          <tr>
+            <td style="padding:10px 32px 0;">
+              <p style="margin:0; font-size:14px; line-height:1.6; color:#7a738f;">Il ne reste plus un seul billet <strong style="color:#11091f; font-weight:600;">{{tierName}}</strong>. Voilà une vraie demande &mdash; voici comment en profiter.</p>
+            </td>
+          </tr>
+
+          <!-- milestone stat tile -->
+          <tr>
+            <td style="padding:22px 32px 0;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td style="padding:16px 18px; background:rgba(15,123,95,0.10); border:1px solid rgba(15,123,95,0.30); border-radius:6px;">
+                    <div style="font-family:'Space Mono', ui-monospace, Menlo, Consolas, monospace; font-size:11px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:#0f7b5f;">{{tierName}} &middot; VENDU</div>
+                    <div style="margin-top:6px; font-size:32px; font-weight:700; letter-spacing:-0.6px; color:#11091f; line-height:1.1;">{{percentSold}}% vendu</div>
+                    <div style="margin-top:4px; font-size:13px; color:#11091f; line-height:1.5;">{{soldCount}} sur {{capacity}} billets {{tierName}} &middot; cette catégorie est complète.</div>
+
+                    <!-- email-safe progress bar (full) -->
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;">
+                      <tr>
+                        <td style="height:8px; background:#0f7b5f; border-radius:4px; font-size:0; line-height:0;">&nbsp;</td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- next steps -->
+          <tr>
+            <td style="padding:24px 32px 0;">
+              <div style="font-family:'Space Mono', ui-monospace, Menlo, Consolas, monospace; font-size:11px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:#7a738f;">GARDEZ L&apos;ÉLAN</div>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:10px;">
+                <tr>
+                  <td style="padding:4px 0; font-size:14px; line-height:1.6; color:#11091f;">&bull;&nbsp;&nbsp;<strong style="font-weight:600;">Captez le surplus</strong> &mdash; votre page d&apos;événement complet affiche désormais une inscription en liste d&apos;attente pour les acheteurs tardifs.</td>
+                </tr>
+                <tr>
+                  <td style="padding:4px 0; font-size:14px; line-height:1.6; color:#11091f;">&bull;&nbsp;&nbsp;<strong style="font-weight:600;">Ajoutez des places</strong> à {{tierName}} ou lancez une nouvelle catégorie depuis l&apos;onglet Billets.</td>
+                </tr>
+                <tr>
+                  <td style="padding:4px 0; font-size:14px; line-height:1.6; color:#11091f;">&bull;&nbsp;&nbsp;<strong style="font-weight:600;">Annoncez le complet</strong> &mdash; la rareté stimule le reste de vos catégories.</td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- primary CTA -->
+          <tr>
+            <td style="padding:24px 32px 0;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td style="background:#2d5cff; border-radius:6px;">
+                    <a href="{{dashboardUrl}}" style="display:inline-block; padding:11px 18px; font-size:13px; font-weight:600; color:#ffffff; text-decoration:none; letter-spacing:-0.1px;">
+                      Gérer cette catégorie &rarr;
+                    </a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- divider -->
+          <tr>
+            <td style="padding:28px 32px 0;">
+              <hr style="border:0; height:1px; background:#d4cee6; margin:0;" />
+            </td>
+          </tr>
+
+          <!-- footer note -->
+          <tr>
+            <td style="padding:18px 32px 32px;">
+              <p style="margin:0; font-size:12px; line-height:1.6; color:#7a738f;">
+                Vous recevez ce message parce que {{tierName}} a atteint un jalon de ventes pour {{eventName}}. Gérez ces alertes dans Paramètres &rarr; Notifications.
+              </p>
+            </td>
+          </tr>
+
+        </table>
+
+        <!-- outside footer -->
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="max-width:600px; width:100%; margin-top:14px;">
+          <tr>
+            <td align="center" style="padding:0 16px;">
+              <p style="margin:0; font-family:'Space Mono', ui-monospace, Menlo, Consolas, monospace; font-size:11px; letter-spacing:1.5px; text-transform:uppercase; color:#7a738f;">imin.wtf &middot; jalon de ventes pour {{eventName}}</p>
+            </td>
+          </tr>
+        </table>
+
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

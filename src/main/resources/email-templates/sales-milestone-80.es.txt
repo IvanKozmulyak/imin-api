@@ -1,0 +1,19 @@
+HITO DE VENTAS · CASI AGOTADO · imin
+
+{{tierName}} está {{percentSold}}% vendido para {{eventName}}.
+
+Quedan pocas entradas de {{tierName}}. Este es el momento de empujar: el impulso está de tu lado y la escasez vende el resto.
+
+{{tierName}} · VENTA
+{{percentSold}}% vendido — {{soldCount}} de {{capacity}} entradas {{tierName}} agotadas.
+
+TERMINA EL NIVEL
+- Comparte un último empujón: publica una novedad de «casi agotado» desde tu pestaña Promocionar.
+- Reajusta el precio de las últimas entradas: sube el precio del nivel desde la pestaña Entradas.
+- Añade un código promocional: un descuento breve en la pestaña Promos puede cerrar el resto.
+
+Abre el panel de tu evento: {{dashboardUrl}}
+
+Recibes esto porque {{tierName}} superó el {{percentSold}}% vendido para {{eventName}}. Enviamos estas alertas de hitos para que actúes mientras la demanda está caliente.
+
+imin.wtf · hito de ventas para {{eventName}}

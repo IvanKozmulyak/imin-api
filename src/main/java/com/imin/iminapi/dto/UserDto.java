@@ -13,12 +13,14 @@ public record UserDto(
         String role,
         String avatarInitials,
         UUID orgId,
-        Instant createdAt
+        Instant createdAt,
+        /** BCP-47 language subtag for the dashboard UI (en/es/fr/uk), or null for no preference. */
+        String locale
 ) {
     public static UserDto from(User u) {
         return new UserDto(u.getId(), u.getEmail(),
                 u.getFirstName(), u.getLastName(),
                 u.getRole().wireValue(), u.getAvatarInitials(),
-                u.getOrgId(), u.getCreatedAt());
+                u.getOrgId(), u.getCreatedAt(), u.getLocale());
     }
 }

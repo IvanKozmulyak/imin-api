@@ -1,0 +1,14 @@
+JALON DE VENTES · À MI-CHEMIN · imin
+
+{{tierName}} est vendu à moitié pour {{eventName}}.
+
+Beau travail : la catégorie {{tierName}} vient de franchir la moitié. L'élan est réel ; un dernier effort et vous êtes en bonne voie pour tout vendre.
+
+{{tierName}} · TAUX DE VENTE
+{{percentSold}} % vendu — {{soldCount}} sur {{capacity}} billets {{tierName}} vendus.
+
+Voir les ventes et continuer à promouvoir : {{dashboardUrl}}
+
+Vous recevez ceci car {{tierName}} a dépassé {{percentSold}} % de ventes pour {{eventName}}. Partagez le lien de votre événement sur vos canaux et regardez le reste partir — nous vous relancerons à mesure que la catégorie se remplit.
+
+imin.wtf · jalon de ventes pour {{eventName}}

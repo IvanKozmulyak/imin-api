@@ -1,0 +1,19 @@
+JALON DE VENTES · COMPLET · imin
+
+{{tierName}} est complet pour {{eventName}}.
+
+Il ne reste plus un seul billet {{tierName}}. C'est une vraie demande — voici comment en profiter.
+
+{{tierName}} · TAUX DE VENTE
+{{percentSold}} % vendu — {{soldCount}} sur {{capacity}} billets {{tierName}}. Cette catégorie est à pleine capacité.
+
+GARDEZ L'ÉLAN
+- Captez le surplus — votre page d'événement complet affiche désormais une inscription en liste d'attente pour les retardataires.
+- Ajoutez de la capacité à {{tierName}} ou lancez une nouvelle catégorie depuis l'onglet Billets.
+- Annoncez le complet — la rareté dynamise vos autres catégories.
+
+Gérez cette catégorie : {{dashboardUrl}}
+
+Vous recevez ceci car {{tierName}} a atteint un jalon de ventes pour {{eventName}}. Gérez ces alertes dans Paramètres → Notifications.
+
+imin.wtf · jalon de ventes pour {{eventName}}

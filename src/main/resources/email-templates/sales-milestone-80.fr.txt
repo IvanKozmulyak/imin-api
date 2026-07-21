@@ -1,0 +1,19 @@
+JALON DE VENTES · PRESQUE ÉPUISÉ · imin
+
+{{tierName}} est vendu à {{percentSold}} % pour {{eventName}}.
+
+Il ne reste que quelques billets {{tierName}}. C'est le moment de pousser — l'élan est de votre côté et la rareté vend le reste.
+
+{{tierName}} · TAUX DE VENTE
+{{percentSold}} % vendu — {{soldCount}} sur {{capacity}} billets {{tierName}} partis.
+
+TERMINEZ LA CATÉGORIE
+- Lancez un dernier effort — publiez une annonce « presque épuisé » depuis votre onglet Promouvoir.
+- Réajustez le prix des derniers billets — augmentez le prix de la catégorie depuis l'onglet Billets.
+- Ajoutez un code promo — une réduction éphémère dans l'onglet Promos peut écouler le reste.
+
+Ouvrez le tableau de bord de votre événement : {{dashboardUrl}}
+
+Vous recevez ceci car {{tierName}} a dépassé {{percentSold}} % de ventes pour {{eventName}}. Nous envoyons ces alertes de jalon pour que vous puissiez agir pendant que la demande est forte.
+
+imin.wtf · jalon de ventes pour {{eventName}}

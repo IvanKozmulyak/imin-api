@@ -62,6 +62,25 @@ class AccountEmailServiceTest {
     }
 
     @Test
+    void sends_welcome_in_users_locale_when_set() {
+        User fr = userWith("ada@example.com", "Ada");
+        fr.setLocale("fr");
+        User en = userWith("bob@example.com", "Bob"); // locale null → English
+
+        sut.sendWelcome(fr);
+        sut.sendWelcome(en);
+
+        RecordingEmailService.SentEmail frSent = email.sent().get(0);
+        RecordingEmailService.SentEmail enSent = email.sent().get(1);
+        // Subject is chosen by locale…
+        assertThat(frSent.subject()).isEqualTo("Bienvenue sur imin");
+        assertThat(enSent.subject()).isEqualTo("Welcome to imin");
+        // …and the French template body is used, not the English one.
+        assertThat(frSent.html()).isNotEqualTo(enSent.html());
+        assertThat(frSent.html()).doesNotContain("{{");
+    }
+
+    @Test
     void sends_password_reset_email() {
         sut.sendPasswordReset(
                 userWith("ada@example.com", "Ada"),

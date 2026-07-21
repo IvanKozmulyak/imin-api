@@ -1,0 +1,12 @@
+NUEVA SOLICITUD DE REEMBOLSO
+
+Un comprador ha solicitado un reembolso.
+
+Evento:    {{eventName}}
+Comprador: {{buyerEmail}}{{phoneLine}}
+Motivo:    {{reason}}
+
+Nota del comprador:
+{{explanation}}
+
+Abrir en el panel: {{dashboardUrl}}

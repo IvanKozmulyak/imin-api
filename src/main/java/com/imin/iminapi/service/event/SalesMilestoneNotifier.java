@@ -1,5 +1,6 @@
 package com.imin.iminapi.service.event;
 
+import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.email.EmailTemplateRenderer;
@@ -8,11 +9,13 @@ import com.imin.iminapi.model.Notification;
 import com.imin.iminapi.model.NotificationPreferences;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.TicketTier;
+import com.imin.iminapi.model.User;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.NotificationPreferencesRepository;
 import com.imin.iminapi.repository.NotificationRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
+import com.imin.iminapi.repository.UserRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Async;
@@ -51,6 +54,7 @@ public class SalesMilestoneNotifier {
     private final EmailService email;
     private final EmailTemplateRenderer renderer;
     private final EmailProperties emailProps;
+    private final UserRepository users;
 
     public SalesMilestoneNotifier(TicketTierRepository tiers,
                                   EventRepository events,
@@ -59,7 +63,8 @@ public class SalesMilestoneNotifier {
                                   NotificationPreferencesRepository prefs,
                                   EmailService email,
                                   EmailTemplateRenderer renderer,
-                                  EmailProperties emailProps) {
+                                  EmailProperties emailProps,
+                                  UserRepository users) {
         this.tiers = tiers;
         this.events = events;
         this.orgs = orgs;
@@ -68,6 +73,7 @@ public class SalesMilestoneNotifier {
         this.email = email;
         this.renderer = renderer;
         this.emailProps = emailProps;
+        this.users = users;
     }
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
@@ -127,6 +133,9 @@ public class SalesMilestoneNotifier {
             return;
         }
 
+        // Recipient locale: the organizer user who created the event (null → EN).
+        String locale = users.findById(organizerUserId).map(User::getLocale).orElse(null);
+
         Map<String, String> values = new LinkedHashMap<>();
         values.put("eventName", eventName);
         values.put("tierName", tierName);
@@ -135,8 +144,8 @@ public class SalesMilestoneNotifier {
         values.put("capacity", String.valueOf(tier.getQuantity()));
         values.put("dashboardUrl", dashboardUrl);
 
-        EmailTemplateRenderer.Rendered r = renderer.render("sales-milestone-" + threshold, values);
-        email.send(to, emailSubject(threshold, tierName), r.html(), r.text());
+        EmailTemplateRenderer.Rendered r = renderer.render("sales-milestone-" + threshold, locale, values);
+        email.send(to, emailSubject(threshold, tierName, locale), r.html(), r.text());
         log.info("[milestone] sent {}% notification for tier {} to {}", threshold, tier.getId(), to);
     }
 
@@ -149,11 +158,23 @@ public class SalesMilestoneNotifier {
         };
     }
 
-    private static String emailSubject(int t, String tier) {
+    private static String emailSubject(int t, String tier, String locale) {
         return switch (t) {
-            case 50 -> tier + " is halfway sold out 🎉";
-            case 80 -> "Only a few " + tier + " tickets left";
-            case 100 -> tier + " is SOLD OUT 🔥";
+            case 50 -> EmailLocale.choose(locale,
+                    tier + " is halfway sold out 🎉",
+                    tier + " ya está a mitad de venta 🎉",
+                    tier + " est à moitié vendu 🎉",
+                    tier + " продано наполовину 🎉");
+            case 80 -> EmailLocale.choose(locale,
+                    "Only a few " + tier + " tickets left",
+                    "Quedan pocas entradas de " + tier,
+                    "Il ne reste que quelques billets " + tier,
+                    "Залишилось лише кілька квитків " + tier);
+            case 100 -> EmailLocale.choose(locale,
+                    tier + " is SOLD OUT 🔥",
+                    tier + " está AGOTADO 🔥",
+                    tier + " est COMPLET 🔥",
+                    tier + " РОЗПРОДАНО 🔥");
             default -> tier + " hit " + t + "% sold";
         };
     }

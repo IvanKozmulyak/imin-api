@@ -1,0 +1,15 @@
+imin.wtf · code de vérification
+
+Vérifiez votre adresse e-mail
+─────────────────
+
+Saisissez ce code à 4 chiffres pour finaliser la création de votre compte imin :
+
+    {{code}}
+
+Expire dans {{expiresInMinutes}} minutes.
+
+Vous n'avez pas créé de compte imin ? Vous pouvez ignorer cet e-mail en toute sécurité — le code expire de lui-même.
+
+—
+imin.wtf · envoyé car une personne s'est inscrite avec cette adresse e-mail

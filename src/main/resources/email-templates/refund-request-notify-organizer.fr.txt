@@ -1,0 +1,12 @@
+NOUVELLE DEMANDE DE REMBOURSEMENT
+
+Un acheteur a demandé un remboursement.
+
+Événement : {{eventName}}
+Acheteur :  {{buyerEmail}}{{phoneLine}}
+Motif :     {{reason}}
+
+Note de l'acheteur :
+{{explanation}}
+
+Ouvrir dans le tableau de bord : {{dashboardUrl}}

@@ -64,7 +64,7 @@ class ProfileServiceTest {
         when(orgs.findById(orgId)).thenReturn(Optional.of(sampleOrg(orgId)));
 
         MeResponse resp = sut.patch(principal(userId, orgId),
-                new ProfilePatchRequest("Grace", "Hopper"));
+                new ProfilePatchRequest("Grace", "Hopper", null));
 
         assertThat(saved.get()).isNotNull();
         assertThat(saved.get().getFirstName()).isEqualTo("Grace");
@@ -86,7 +86,7 @@ class ProfileServiceTest {
         when(orgs.findById(orgId)).thenReturn(Optional.of(sampleOrg(orgId)));
 
         MeResponse resp = sut.patch(principal(userId, orgId),
-                new ProfilePatchRequest("Grace", null));
+                new ProfilePatchRequest("Grace", null, null));
 
         assertThat(saved.get().getFirstName()).isEqualTo("Grace");
         assertThat(saved.get().getLastName()).isEqualTo("Lovelace"); // untouched
@@ -105,7 +105,7 @@ class ProfileServiceTest {
         when(orgs.findById(orgId)).thenReturn(Optional.of(sampleOrg(orgId)));
 
         sut.patch(principal(userId, orgId),
-                new ProfilePatchRequest("  Grace  ", "\tHopper\n"));
+                new ProfilePatchRequest("  Grace  ", "\tHopper\n", null));
 
         assertThat(saved.get().getFirstName()).isEqualTo("Grace");
         assertThat(saved.get().getLastName()).isEqualTo("Hopper");
@@ -118,7 +118,7 @@ class ProfileServiceTest {
         when(users.findById(userId)).thenReturn(Optional.of(existingUser(userId, orgId, "Ada", "Lovelace", "AL")));
 
         assertThatThrownBy(() -> sut.patch(principal(userId, orgId),
-                new ProfilePatchRequest("   ", null)))
+                new ProfilePatchRequest("   ", null, null)))
                 .isInstanceOf(ApiException.class)
                 .hasFieldOrPropertyWithValue("code", ErrorCode.FIELD_INVALID);
         verify(users, never()).save(any(User.class));
@@ -132,7 +132,7 @@ class ProfileServiceTest {
         String tooLong = "x".repeat(ProfileService.MAX_NAME_LENGTH + 1);
 
         assertThatThrownBy(() -> sut.patch(principal(userId, orgId),
-                new ProfilePatchRequest(tooLong, null)))
+                new ProfilePatchRequest(tooLong, null, null)))
                 .isInstanceOf(ApiException.class)
                 .hasFieldOrPropertyWithValue("code", ErrorCode.FIELD_INVALID);
         verify(users, never()).save(any(User.class));
@@ -145,11 +145,11 @@ class ProfileServiceTest {
         when(users.findById(userId)).thenReturn(Optional.of(existingUser(userId, orgId, "Ada", "Lovelace", "AL")));
         when(orgs.findById(orgId)).thenReturn(Optional.of(sampleOrg(orgId)));
 
-        sut.patch(principal(userId, orgId), new ProfilePatchRequest(null, null));
+        sut.patch(principal(userId, orgId), new ProfilePatchRequest(null, null, null));
         verify(users, never()).save(any(User.class));
 
         // Same values as existing → also no save
-        sut.patch(principal(userId, orgId), new ProfilePatchRequest("Ada", "Lovelace"));
+        sut.patch(principal(userId, orgId), new ProfilePatchRequest("Ada", "Lovelace", null));
         verify(users, never()).save(any(User.class));
     }
 
@@ -159,8 +159,68 @@ class ProfileServiceTest {
         when(users.findById(userId)).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> sut.patch(principal(userId, UUID.randomUUID()),
-                new ProfilePatchRequest("Grace", "Hopper")))
+                new ProfilePatchRequest("Grace", "Hopper", null)))
                 .isInstanceOf(ApiException.class)
                 .hasFieldOrPropertyWithValue("code", ErrorCode.NOT_FOUND);
+    }
+
+    @Test
+    void patch_updates_locale_and_persists() {
+        UUID userId = UUID.randomUUID();
+        UUID orgId = UUID.randomUUID();
+        User u = existingUser(userId, orgId, "Ada", "Lovelace", "AL");
+        AtomicReference<User> saved = new AtomicReference<>();
+        when(users.findById(userId)).thenReturn(Optional.of(u));
+        when(users.save(any(User.class))).thenAnswer(inv -> { saved.set(inv.getArgument(0)); return inv.getArgument(0); });
+        when(orgs.findById(orgId)).thenReturn(Optional.of(sampleOrg(orgId)));
+
+        MeResponse resp = sut.patch(principal(userId, orgId),
+                new ProfilePatchRequest(null, null, "uk"));
+
+        assertThat(saved.get().getLocale()).isEqualTo("uk");
+        // Locale-only change must not touch the avatar initials.
+        assertThat(saved.get().getAvatarInitials()).isEqualTo("AL");
+        assertThat(resp.user().locale()).isEqualTo("uk");
+    }
+
+    @Test
+    void patch_locale_is_lowercased() {
+        UUID userId = UUID.randomUUID();
+        UUID orgId = UUID.randomUUID();
+        User u = existingUser(userId, orgId, "Ada", "Lovelace", "AL");
+        AtomicReference<User> saved = new AtomicReference<>();
+        when(users.findById(userId)).thenReturn(Optional.of(u));
+        when(users.save(any(User.class))).thenAnswer(inv -> { saved.set(inv.getArgument(0)); return inv.getArgument(0); });
+        when(orgs.findById(orgId)).thenReturn(Optional.of(sampleOrg(orgId)));
+
+        sut.patch(principal(userId, orgId), new ProfilePatchRequest(null, null, "FR"));
+
+        assertThat(saved.get().getLocale()).isEqualTo("fr");
+    }
+
+    @Test
+    void patch_unsupported_locale_throws_FIELD_INVALID() {
+        UUID userId = UUID.randomUUID();
+        UUID orgId = UUID.randomUUID();
+        when(users.findById(userId)).thenReturn(Optional.of(existingUser(userId, orgId, "Ada", "Lovelace", "AL")));
+
+        assertThatThrownBy(() -> sut.patch(principal(userId, orgId),
+                new ProfilePatchRequest(null, null, "de")))
+                .isInstanceOf(ApiException.class)
+                .hasFieldOrPropertyWithValue("code", ErrorCode.FIELD_INVALID);
+        verify(users, never()).save(any(User.class));
+    }
+
+    @Test
+    void patch_unchanged_locale_skips_save() {
+        UUID userId = UUID.randomUUID();
+        UUID orgId = UUID.randomUUID();
+        User u = existingUser(userId, orgId, "Ada", "Lovelace", "AL");
+        u.setLocale("es");
+        when(users.findById(userId)).thenReturn(Optional.of(u));
+        when(orgs.findById(orgId)).thenReturn(Optional.of(sampleOrg(orgId)));
+
+        sut.patch(principal(userId, orgId), new ProfilePatchRequest(null, null, "es"));
+        verify(users, never()).save(any(User.class));
     }
 }
