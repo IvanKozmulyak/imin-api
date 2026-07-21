@@ -146,7 +146,9 @@ class AiSegmentServiceTest {
 
         assertThat(res.createAllowed()).isTrue();
         assertThat(res.name()).isEqualTo("Big Spenders");
-        assertThat(res.rulesJson()).isEqualTo("[{\"field\":\"spend_minor\",\"operator\":\">=\",\"value\":\"10000\"}]");
+        // Compare as JSON — canonical key order is an implementation detail.
+        org.assertj.core.api.Assertions.assertThat(readTree(res.rulesJson()))
+                .isEqualTo(readTree("[{\"field\":\"spend_minor\",\"operator\":\">=\",\"value\":\"10000\"}]"));
         assertThat(res.rules()).hasSize(1);
         assertThat(res.explanationLines()).containsExactly("Spent at least €100 in total.");
         assertThat(res.explanation()).isEqualTo("Spent at least €100 in total.");
@@ -315,6 +317,14 @@ class AiSegmentServiceTest {
             if (!res.createAllowed()) {
                 assertThat(res.matchedCount()).isZero();
             }
+        }
+    }
+
+    private static com.fasterxml.jackson.databind.JsonNode readTree(String json) {
+        try {
+            return new com.fasterxml.jackson.databind.ObjectMapper().readTree(json);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
         }
     }
 }
