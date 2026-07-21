@@ -19,6 +19,27 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
 
     java.util.Optional<CampaignRecipient> findByProviderMessageId(String providerMessageId);
 
+    /**
+     * Number of recipients actually dispatched for an event's campaigns whose send fell
+     * inside a sales window — feeds the event outcome record's {@code campaign_sends}
+     * (predictor spec §6.1). Joins recipients to their campaign by id (CampaignRecipient
+     * carries only {@code campaignId}, no mapped relation), scopes to the event, requires
+     * the campaign's {@code sentAt} inside [from, to), and counts only recipients that
+     * left the building — status NOT in the pre-send / dead set
+     * ({@code pending|skipped|failed|bounced}). Both timestamps are non-null (trap-free).
+     */
+    @Query("""
+            select count(r) from CampaignRecipient r, com.imin.iminapi.marketing.model.Campaign c
+             where c.id = r.campaignId
+               and c.eventId = :eventId
+               and c.sentAt >= :from
+               and c.sentAt < :to
+               and r.status not in ('pending', 'skipped', 'failed', 'bounced')
+            """)
+    long countDispatchedForEventInWindow(@Param("eventId") UUID eventId,
+                                         @Param("from") java.time.Instant from,
+                                         @Param("to") java.time.Instant to);
+
     // ---- recipient log paging (GET /marketing/campaigns/{id}/recipients) ----
     // Status and engagement are ORTHOGONAL axes — a row can be `delivered` AND opened — so the
     // filter combinations are spelled out as distinct derived queries rather than one @Query with

@@ -7,6 +7,7 @@ import com.imin.iminapi.repository.*;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.predictor.service.EventOutcomeService;
 import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.service.audit.AuditLogger;
 import com.imin.iminapi.stripe.StripeConnectService;
@@ -41,6 +42,12 @@ public class EventService {
     private final StripeConnectService stripeConnect;
     /** Audit logger is optional so older 8-arg test constructors still work. */
     private final AuditLogger auditLogger;
+    /**
+     * Predictor outcome-record writer (spec §6.1). Optional so older test constructors
+     * that don't wire it still work; when present, {@link #publish} snapshots the frozen
+     * pre-event fields inside the publish transaction (every LIVE event gets a snapshot).
+     */
+    private final EventOutcomeService outcomeService;
 
     /** Legacy 8-arg constructor used by existing unit tests that don't wire audit. */
     public EventService(EventRepository events, TicketTierRepository tiers,
@@ -48,7 +55,17 @@ public class EventService {
                         EventValidator validator, IfMatchSupport ifMatch,
                         TicketTierService tierService,
                         StripeConnectService stripeConnect) {
-        this(events, tiers, promos, predictions, validator, ifMatch, tierService, stripeConnect, null);
+        this(events, tiers, promos, predictions, validator, ifMatch, tierService, stripeConnect, null, null);
+    }
+
+    /** 9-arg constructor used by tests that wire audit but not the predictor outcome writer. */
+    public EventService(EventRepository events, TicketTierRepository tiers,
+                        PromoCodeRepository promos, PredictionRepository predictions,
+                        EventValidator validator, IfMatchSupport ifMatch,
+                        TicketTierService tierService,
+                        StripeConnectService stripeConnect,
+                        AuditLogger auditLogger) {
+        this(events, tiers, promos, predictions, validator, ifMatch, tierService, stripeConnect, auditLogger, null);
     }
 
     /** Primary constructor — Spring picks this one in the running app. */
@@ -58,7 +75,8 @@ public class EventService {
                         EventValidator validator, IfMatchSupport ifMatch,
                         TicketTierService tierService,
                         StripeConnectService stripeConnect,
-                        AuditLogger auditLogger) {
+                        AuditLogger auditLogger,
+                        EventOutcomeService outcomeService) {
         this.events = events;
         this.tiers = tiers;
         this.promos = promos;
@@ -68,6 +86,7 @@ public class EventService {
         this.ifMatch = ifMatch;
         this.tierService = tierService;
         this.auditLogger = auditLogger;
+        this.outcomeService = outcomeService;
     }
 
     private void audit(AuthPrincipal p, String action, String targetType, UUID targetId, String summary) {
@@ -155,6 +174,12 @@ public class EventService {
         e.setPublishedAt(Instant.now());
         e.setUpdatedAt(Instant.now());
         events.save(e);
+        // Predictor data foundation (spec §6.1): snapshot the frozen pre-event fields the
+        // moment the event goes LIVE, inside this transaction — so every published event
+        // has an outcome record and the corpus never misses a comparable.
+        if (outcomeService != null) {
+            outcomeService.freezeOnPublish(e);
+        }
         audit(p, AuditActions.EVENT_PUBLISHED, "event", e.getId(),
                 "Published event \"" + eventLabel(e) + "\"");
         return detail(p, id);

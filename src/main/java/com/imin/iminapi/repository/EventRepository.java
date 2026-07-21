@@ -26,6 +26,15 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
     @Query("SELECT e FROM Event e WHERE e.id = :id AND e.deletedAt IS NULL")
     Optional<Event> findActive(@Param("id") UUID id);
 
+    /**
+     * Every published (publishedAt set), non-deleted event, oldest publish first. Drives the
+     * predictor's one-shot outcome retro-backfill (spec §6.1) — it pages through these and
+     * reconstructs a frozen snapshot for any event that has no {@code event_outcomes} row yet.
+     */
+    @Query("SELECT e FROM Event e WHERE e.deletedAt IS NULL AND e.publishedAt IS NOT NULL " +
+           "ORDER BY e.publishedAt ASC, e.id ASC")
+    List<Event> findAllPublished(Pageable pageable);
+
     @Query(
         "SELECT e FROM Event e WHERE e.orgId = :orgId AND e.deletedAt IS NULL " +
         "AND e.status = com.imin.iminapi.model.EventStatus.LIVE " +
