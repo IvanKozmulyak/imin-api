@@ -78,6 +78,17 @@ public class SecurityConfig {
                                          "/api/v1/auth/resend-verification",
                                          "/api/v1/auth/forgot-password",
                                          "/api/v1/auth/reset-password").permitAll()
+                        // Social sign-in (Google OIDC + Sign in with Apple) — all public.
+                        // The URL/providers reads are GET; Google callback + Apple form_post
+                        // + Apple server notifications are POST. Validated server-side.
+                        .requestMatchers(HttpMethod.GET,
+                                         "/api/v1/auth/providers",
+                                         "/api/v1/auth/google/url",
+                                         "/api/v1/auth/apple/url").permitAll()
+                        .requestMatchers(HttpMethod.POST,
+                                         "/api/v1/auth/google/callback",
+                                         "/api/v1/auth/apple/return",
+                                         "/api/v1/auth/apple/notifications").permitAll()
                         // Gate-scanner login — public (no token yet); validated server-side.
                         .requestMatchers(HttpMethod.POST, "/api/v1/gate/login").permitAll()
                         // Public reference data (country codes, etc.)

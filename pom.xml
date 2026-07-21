@@ -56,6 +56,14 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-security</artifactId>
         </dependency>
+        <!-- Nimbus JOSE + JWT: JWKS-backed OIDC ID-token validation and ES256
+             client-secret signing for social sign-in (Google / Apple). Does NOT
+             pull the session-based oauth2-client login flow (wrong fit for this
+             stateless SPA); we drive the code exchange ourselves with RestClient. -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-oauth2-jose</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-security-saml2</artifactId>
