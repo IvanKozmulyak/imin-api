@@ -8,10 +8,13 @@ import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.model.Segment;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.repository.SegmentRepository;
+import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.service.audit.AuditLogger;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -28,15 +31,27 @@ public class SegmentService {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final TypeReference<List<Map<String, String>>> RULES_TYPE = new TypeReference<>() {};
 
+    /** Numeric membership fields the rule engine (matchRule) compares with a parsed long. */
+    private static final Set<String> NUMERIC_FIELDS =
+            Set.of("events", "spend_minor", "recency", "no_show", "nps");
+    /** String membership fields the rule engine compares by equality. */
+    private static final Set<String> STRING_FIELDS =
+            Set.of("lifecycle", "consent_status", "consent_basis");
+    /** Comparison operators the rule engine understands. */
+    private static final Set<String> OPERATORS = Set.of(">=", "<=", ">", "<", "==");
+
     private final SegmentRepository segmentRepo;
     private final MembershipRepository membershipRepo;
+    private final OrganizationRepository orgRepo;
     private final AuditLogger auditLogger;
 
     public SegmentService(SegmentRepository segmentRepo,
                           MembershipRepository membershipRepo,
+                          OrganizationRepository orgRepo,
                           AuditLogger auditLogger) {
         this.segmentRepo = segmentRepo;
         this.membershipRepo = membershipRepo;
+        this.orgRepo = orgRepo;
         this.auditLogger = auditLogger;
     }
 
@@ -47,15 +62,69 @@ public class SegmentService {
 
     @Transactional
     public Segment createSegment(UUID orgId, String name, String kind, String rulesJson, AuthPrincipal principal) {
+        String trimmedName = name == null ? null : name.trim();
+        if (trimmedName == null || trimmedName.isEmpty()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID, "Validation failed",
+                    Map.of("name", "Segment name is required"));
+        }
+        validateRulesJson(rulesJson);
         Segment s = new Segment();
         s.setOrgId(orgId);
-        s.setName(name);
+        s.setName(trimmedName);
         s.setKind(kind);
         s.setRulesJson(rulesJson);
         Segment saved = segmentRepo.save(s);
         auditLogger.record(principal, AuditActions.SEGMENT_CREATED, "segment", saved.getId(),
-                "Segment created: " + name);
+                "Segment created: " + trimmedName);
         return saved;
+    }
+
+    /**
+     * Validate that {@code rulesJson} (when present) is a JSON array of {field, operator, value}
+     * rules the engine actually supports — see {@link #matchRule}. A null/blank value means
+     * "everyone" and is valid. Anything unparseable or referencing an unknown field/operator, or
+     * a non-numeric value on a numeric field, is rejected with a clean 400 rather than being
+     * silently coerced (the old engine matched such rules against nobody) or blowing up as a 500.
+     */
+    void validateRulesJson(String rulesJson) {
+        if (rulesJson == null || rulesJson.isBlank()) return;
+        List<Map<String, String>> rules;
+        try {
+            rules = MAPPER.readValue(rulesJson, RULES_TYPE);
+        } catch (Exception e) {
+            throw ruleError("must be a JSON array of {field, operator, value} rules");
+        }
+        for (int i = 0; i < rules.size(); i++) {
+            Map<String, String> rule = rules.get(i);
+            String field = rule.get("field");
+            String op = rule.get("operator");
+            String val = rule.get("value");
+            if (field == null || field.isBlank()) {
+                throw ruleError("rule " + (i + 1) + " is missing a field");
+            }
+            boolean numeric = NUMERIC_FIELDS.contains(field);
+            if (!numeric && !STRING_FIELDS.contains(field)) {
+                throw ruleError("rule " + (i + 1) + " uses an unknown field '" + field + "'");
+            }
+            if (op == null || !OPERATORS.contains(op)) {
+                throw ruleError("rule " + (i + 1) + " uses an unsupported operator '" + op + "'");
+            }
+            if (val == null || val.isBlank()) {
+                throw ruleError("rule " + (i + 1) + " is missing a value");
+            }
+            if (numeric) {
+                try {
+                    Long.parseLong(val.trim());
+                } catch (NumberFormatException nfe) {
+                    throw ruleError("rule " + (i + 1) + " on '" + field + "' needs a numeric value");
+                }
+            }
+        }
+    }
+
+    private ApiException ruleError(String message) {
+        return new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID, "Validation failed",
+                Map.of("rulesJson", message));
     }
 
     @Transactional
@@ -194,10 +263,20 @@ public class SegmentService {
                 .orElseThrow(() -> ApiException.notFound("Segment"));
     }
 
-    /** Provision the 7 prebuilt segments for a new org. Idempotent — skips if already present. */
+    /**
+     * Provision the 7 prebuilt segments for a new org. Idempotent AND concurrency-safe:
+     * the cheap existence check short-circuits the common case, and the first-time path takes
+     * a {@code FOR UPDATE} lock on the org row and re-checks under it, so two parallel first
+     * calls (e.g. two concurrent GET /segments) can never both insert the prebuilt set.
+     * If the org row is absent (some unit tests seed segments without an org), the lock is a
+     * no-op and the double-check still keeps single-threaded callers correct.
+     */
     @Transactional
     public void ensurePrebuiltSegments(UUID orgId) {
         if (segmentRepo.hasPrebuiltSegments(orgId)) return;
+        // Serialize concurrent first-time seeders for this org.
+        orgRepo.findByIdForUpdate(orgId);
+        if (segmentRepo.hasPrebuiltSegments(orgId)) return; // re-check under the lock
         List<String[]> prebuilt = List.of(
             new String[]{"Repeat",           "[{\"field\":\"events\",\"operator\":\">=\",\"value\":\"2\"}]"},
             new String[]{"VIP",              "[{\"field\":\"spend_minor\",\"operator\":\">=\",\"value\":\"20000\"},{\"field\":\"events\",\"operator\":\">=\",\"value\":\"4\"}]"},

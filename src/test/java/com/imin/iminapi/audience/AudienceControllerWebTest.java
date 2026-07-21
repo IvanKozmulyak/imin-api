@@ -432,6 +432,65 @@ class AudienceControllerWebTest {
 
     @Test
     @WithOrgA
+    void post_segments_blank_name_returns_400_field_error() throws Exception {
+        // @NotBlank on CreateSegmentRequest rejects before the controller body runs — the
+        // service is never called. Was a NOT NULL DB violation → 500.
+        String body = om.writeValueAsString(Map.of("name", "   ", "kind", "dynamic"));
+        mvc.perform(post("/api/v1/audience/segments")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
+                .andExpect(jsonPath("$.error.fields.name").exists());
+        verify(segmentService, never()).createSegment(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    @WithOrgA
+    void post_segments_unique_violation_maps_to_409_not_500() throws Exception {
+        // A DB unique_violation (SQLState 23505) surfacing from the service must become a clean
+        // 409, never a 500 (there was no DataIntegrityViolationException handler before).
+        when(segmentService.createSegment(any(), any(), any(), any(), any()))
+                .thenThrow(new org.springframework.dao.DataIntegrityViolationException(
+                        "duplicate key",
+                        new java.sql.SQLException("duplicate key value violates unique constraint", "23505")));
+
+        String body = om.writeValueAsString(Map.of("name", "Dup"));
+        mvc.perform(post("/api/v1/audience/segments")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("DUPLICATE"));
+    }
+
+    @Test
+    @WithOrgA
+    void post_segments_other_constraint_violation_maps_to_400_not_500() throws Exception {
+        when(segmentService.createSegment(any(), any(), any(), any(), any()))
+                .thenThrow(new org.springframework.dao.DataIntegrityViolationException("check constraint failed"));
+
+        String body = om.writeValueAsString(Map.of("name", "Bad"));
+        mvc.perform(post("/api/v1/audience/segments")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"));
+    }
+
+    @Test
+    @WithOrgA
+    void get_segments_triggers_prebuilt_seeding() throws Exception {
+        when(segmentService.listSegments(ORG_A)).thenReturn(List.of());
+
+        mvc.perform(get("/api/v1/audience/segments"))
+                .andExpect(status().isOk());
+
+        // The list endpoint must lazily provision prebuilts for the org before reading.
+        verify(segmentService).ensurePrebuiltSegments(ORG_A);
+    }
+
+    @Test
+    @WithOrgA
     void delete_segment_returns_204() throws Exception {
         UUID segId = UUID.randomUUID();
         doNothing().when(segmentService).deleteSegment(eq(ORG_A), eq(segId), any());

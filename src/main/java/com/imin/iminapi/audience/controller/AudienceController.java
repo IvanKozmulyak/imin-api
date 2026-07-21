@@ -11,6 +11,7 @@ import com.imin.iminapi.audience.service.*;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
+import jakarta.validation.Valid;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -100,6 +101,11 @@ public class AudienceController {
 
     @GetMapping("/segments")
     public List<SegmentDto> listSegments(@AuthenticationPrincipal AuthPrincipal principal) {
+        // Lazily provision the org's prebuilt segments on first read. Prebuilts used to be
+        // seeded only from tests, so production orgs could have zero segments forever — the
+        // "sometimes there are no segments" half of this bug. Idempotent + concurrency-safe
+        // (see SegmentService.ensurePrebuiltSegments).
+        segmentService.ensurePrebuiltSegments(principal.orgId());
         return segmentService.listSegments(principal.orgId()).stream()
                 .map(s -> {
                     int liveCount = segmentService.resolveMembers(principal.orgId(), s).size();
@@ -110,10 +116,10 @@ public class AudienceController {
     @PostMapping("/segments")
     public ResponseEntity<SegmentDto> createSegment(
             @AuthenticationPrincipal AuthPrincipal principal,
-            @RequestBody Map<String, String> body) {
+            @Valid @RequestBody CreateSegmentRequest body) {
         Segment s = segmentService.createSegment(principal.orgId(),
-                body.get("name"), body.getOrDefault("kind", "dynamic"),
-                body.get("rulesJson"), principal);
+                body.name(), body.kindOrDefault(),
+                body.rulesJsonAsString(), principal);
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(SegmentDto.from(s, 0));
     }

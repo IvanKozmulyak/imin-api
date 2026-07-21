@@ -3,6 +3,7 @@ package com.imin.iminapi.security;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.annotation.Order;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -49,6 +50,28 @@ public class GlobalExceptionHandler {
     ResponseEntity<ApiError> handleUnreadable(HttpMessageNotReadableException ex) {
         return ResponseEntity.badRequest()
                 .body(ApiError.of(ErrorCode.INVALID_REQUEST, "Malformed request body"));
+    }
+
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    ResponseEntity<ApiError> handleDataIntegrity(DataIntegrityViolationException ex) {
+        // A DB constraint violation is a client-data problem (or a duplicate), never a server
+        // fault — but without this handler it fell through to handleAny → 500. Map it to a clean
+        // 409 for a unique-key clash and 400 for every other constraint (not-null, check, FK…).
+        String sqlState = sqlStateOf(ex);
+        if ("23505".equals(sqlState)) {
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body(ApiError.of(ErrorCode.DUPLICATE, "This conflicts with an existing record"));
+        }
+        return ResponseEntity.badRequest()
+                .body(ApiError.of(ErrorCode.FIELD_INVALID, "Request violates a data constraint"));
+    }
+
+    /** Walk the cause chain for the underlying SQLState (e.g. 23505 = unique_violation). */
+    private static String sqlStateOf(Throwable ex) {
+        for (Throwable t = ex; t != null; t = t.getCause()) {
+            if (t instanceof java.sql.SQLException se) return se.getSQLState();
+        }
+        return null;
     }
 
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)
