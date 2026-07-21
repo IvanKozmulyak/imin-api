@@ -1,0 +1,28 @@
+imin.wtf · ya estás dentro
+
+Bienvenido, {{name}}.
+─────────────────
+
+Tu cuenta está verificada. Es hora de montar tu primer evento.
+
+imin está hecho para organizadores que quieren montar un evento listo para lanzar en 60 segundos — describe la vibra, deja que AI Studio haga el resto y luego itera desde ahí.
+
+→ Abre el panel: {{appBaseUrl}}/dashboard
+
+
+PRIMEROS 3 PASOS
+
+  1 · Suelta una vibra
+      Describe tu noche — AI Studio crea un concepto listo para lanzar.
+
+  2 · Organiza tus entradas por tipos
+      Early Bird → Standard → Late, con transiciones automáticas por fecha o % vendido.
+
+  3 · Publica
+      Entradas para grupos, automatización de marketing, escáner de acceso — todo activado por defecto.
+
+
+¿Necesitas ayuda? Responde a este correo — lo lee una persona de verdad.
+
+—
+imin.wtf · enviado porque acabas de verificar tu cuenta

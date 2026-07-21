@@ -65,6 +65,39 @@ class EmailTemplateRendererTest {
     }
 
     @Test
+    void renders_localized_variant_when_present() {
+        Map<String, String> vars = Map.of("name", "Ada", "appBaseUrl", "https://app.imin");
+        EmailTemplateRenderer.Rendered en = renderer.render("welcome", "en", vars);
+        EmailTemplateRenderer.Rendered fr = renderer.render("welcome", "fr", vars);
+        // The French variant exists and must actually be used (differs from EN).
+        assertThat(fr.text()).isNotEqualTo(en.text());
+        assertThat(fr.html()).isNotEqualTo(en.html());
+        assertThat(fr.html()).doesNotContain("{{");
+        assertThat(fr.text()).doesNotContain("{{");
+    }
+
+    @Test
+    void unsupported_locale_falls_back_to_english() {
+        Map<String, String> vars = Map.of("name", "Ada", "appBaseUrl", "https://app.imin");
+        EmailTemplateRenderer.Rendered de = renderer.render("welcome", "de", vars);
+        EmailTemplateRenderer.Rendered en = renderer.render("welcome", null, vars);
+        assertThat(de.html()).isEqualTo(en.html());
+        assertThat(de.text()).isEqualTo(en.text());
+    }
+
+    @Test
+    void missing_locale_variant_falls_back_to_english_without_throwing() {
+        // refund-request-rejected is a buyer email with no localized variants — a
+        // supported locale must fall back to the base EN file, never throw.
+        Map<String, String> vars = Map.of("decisionNote", "Past the 48-hour window.");
+        EmailTemplateRenderer.Rendered fr = renderer.render("refund-request-rejected", "fr", vars);
+        EmailTemplateRenderer.Rendered en = renderer.render("refund-request-rejected", null, vars);
+        assertThat(fr.html()).isEqualTo(en.html());
+        assertThat(fr.text()).isEqualTo(en.text());
+        assertThat(fr.html()).doesNotContain("{{");
+    }
+
+    @Test
     void text_template_does_not_escape_html_special_characters() {
         EmailTemplateRenderer.Rendered r = renderer.render(
                 "verification-code",

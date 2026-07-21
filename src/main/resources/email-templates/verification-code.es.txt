@@ -1,0 +1,15 @@
+imin.wtf · código de verificación
+
+Verifica tu correo
+─────────────────
+
+Introduce este código de 4 dígitos para terminar de crear tu cuenta de imin:
+
+    {{code}}
+
+Caduca en {{expiresInMinutes}} minutos.
+
+¿No te registraste en imin? Puedes ignorar este correo sin problema — el código caduca por sí solo.
+
+—
+imin.wtf · enviado porque alguien se registró con este correo

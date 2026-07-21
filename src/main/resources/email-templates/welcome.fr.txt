@@ -1,0 +1,28 @@
+imin.wtf · vous y êtes
+
+Bienvenue, {{name}}.
+─────────────────
+
+Votre compte est vérifié. Il est temps de créer votre premier événement.
+
+imin est conçu pour les organisateurs qui veulent lancer un événement prêt à être publié en 60 secondes — décrivez votre ambiance, laissez AI Studio faire le reste, puis peaufinez à partir de là.
+
+→ Ouvrir le tableau de bord : {{appBaseUrl}}/dashboard
+
+
+VOS 3 PREMIÈRES ACTIONS
+
+  1 · Donnez une ambiance
+      Décrivez votre soirée — AI Studio rédige un concept prêt à être publié.
+
+  2 · Créez vos catégories de billets
+      Early Bird → Standard → Late, avec des transitions automatiques selon la date ou le % vendu.
+
+  3 · Publiez
+      Billetterie en groupe, automatisation marketing, scanner à l'entrée — tout est activé par défaut.
+
+
+Besoin d'aide ? Répondez à cet e-mail — un vrai humain lit tout.
+
+—
+imin.wtf · envoyé car vous venez de vérifier votre compte

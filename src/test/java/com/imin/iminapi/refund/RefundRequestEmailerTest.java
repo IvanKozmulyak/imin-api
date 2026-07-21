@@ -10,6 +10,7 @@ import com.imin.iminapi.refund.event.RefundRequestRejectedEvent;
 import com.imin.iminapi.refund.event.RefundRequestSubmittedEvent;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.repository.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -31,6 +32,7 @@ class RefundRequestEmailerTest {
     RefundRequestRepository requests = mock(RefundRequestRepository.class);
     EventRepository events = mock(EventRepository.class);
     OrganizationRepository orgs = mock(OrganizationRepository.class);
+    UserRepository users = mock(UserRepository.class);
 
     RefundRequestEmailer emailer;
 
@@ -41,7 +43,10 @@ class RefundRequestEmailerTest {
         props.setRefundRequestInbox("support+refunds@test");
         when(renderer.render(anyString(), any()))
             .thenReturn(new EmailTemplateRenderer.Rendered("<html/>", "txt"));
-        emailer = new RefundRequestEmailer(emails, renderer, props, requests, events, orgs);
+        // The organizer-notify email uses the locale-aware 3-arg render overload.
+        when(renderer.render(anyString(), any(), any()))
+            .thenReturn(new EmailTemplateRenderer.Rendered("<html/>", "txt"));
+        emailer = new RefundRequestEmailer(emails, renderer, props, requests, events, orgs, users);
     }
 
     private RefundRequest seedRequest() {
