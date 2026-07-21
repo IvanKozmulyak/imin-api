@@ -68,6 +68,14 @@ public class Campaign {
     private String subject;
     private String preheader;
 
+    /**
+     * The email template this campaign renders with (V66): a builtin key
+     * ('classic'|'midnight'|'poster'|'mono') or a saved org template's UUID string.
+     * DB default 'classic' (never null) so legacy + minimal-input rows render branded.
+     */
+    @Column(name = "template_key")
+    private String templateKey = "classic";
+
     @Column(name = "body_md")
     private String bodyMd;
 

@@ -85,6 +85,7 @@ public class CampaignService {
         c.setSubject(req.subject());
         c.setPreheader(req.preheader());
         c.setBodyMd(req.bodyMd());
+        c.setTemplateKey(normalizeTemplateKey(req.templateKey()));
         c.setCreatedBy(p.userId());
         c.setCreatedAt(now);
         c.setUpdatedAt(now);
@@ -151,6 +152,7 @@ public class CampaignService {
         if (req.subject() != null) c.setSubject(req.subject());
         if (req.preheader() != null) c.setPreheader(req.preheader());
         if (req.bodyMd() != null) c.setBodyMd(req.bodyMd());
+        if (req.templateKey() != null) c.setTemplateKey(normalizeTemplateKey(req.templateKey()));
         c.setUpdatedAt(Instant.now());
         return CampaignDto.from(campaigns.save(c));
     }
@@ -171,6 +173,7 @@ public class CampaignService {
         copy.setSubject(src.getSubject());
         copy.setPreheader(src.getPreheader());
         copy.setBodyMd(src.getBodyMd());
+        copy.setTemplateKey(src.getTemplateKey());
         copy.setBodyTemplate(src.getBodyTemplate());
         copy.setSenderId(src.getSenderId());
         copy.setCreatedBy(p.userId());
@@ -512,6 +515,17 @@ public class CampaignService {
 
     private static String blankToNull(String s) {
         return (s == null || s.isBlank()) ? null : s;
+    }
+
+    /**
+     * A blank/absent template key becomes 'classic' (the default builtin). The value is NOT
+     * validated against the builtin/UUID set here on purpose — the renderer resolves an
+     * unknown key to the classic fallback (CampaignTemplateService#resolve), so a stale saved
+     * template that was later deleted still sends, just in the default shell. Keeping it lenient
+     * avoids a write-time coupling to org-template existence.
+     */
+    private static String normalizeTemplateKey(String raw) {
+        return (raw == null || raw.isBlank()) ? "classic" : raw.trim();
     }
 
     /**

@@ -72,7 +72,7 @@ class CampaignServiceTest {
     @Test
     void create_persists_a_draft_and_returns_detail() {
         CampaignDto d = service.create(principal(ORG),
-                new CreateCampaignRequest("email", "Launch night", null, null, null, null, null));
+                new CreateCampaignRequest("email", "Launch night", null, null, null, null, null, null));
         assertThat(d.status()).isEqualTo("draft");
         assertThat(d.channel()).isEqualTo("email");
         assertThat(d.name()).isEqualTo("Launch night");
@@ -82,21 +82,21 @@ class CampaignServiceTest {
     @Test
     void create_rejects_blank_name() {
         assertThatThrownBy(() -> service.create(principal(ORG),
-                new CreateCampaignRequest("email", "  ", null, null, null, null, null)))
+                new CreateCampaignRequest("email", "  ", null, null, null, null, null, null)))
                 .isInstanceOf(ApiException.class);
     }
 
     @Test
     void create_rejects_unknown_channel() {
         assertThatThrownBy(() -> service.create(principal(ORG),
-                new CreateCampaignRequest("carrier-pigeon", "x", null, null, null, null, null)))
+                new CreateCampaignRequest("carrier-pigeon", "x", null, null, null, null, null, null)))
                 .isInstanceOf(ApiException.class);
     }
 
     @Test
     void get_other_orgs_campaign_is_not_found() {
         CampaignDto d = service.create(principal(ORG),
-                new CreateCampaignRequest("email", "Mine", null, null, null, null, null));
+                new CreateCampaignRequest("email", "Mine", null, null, null, null, null, null));
         assertThatThrownBy(() -> service.get(principal(OTHER_ORG), d.id()))
                 .isInstanceOf(ApiException.class);
     }
@@ -104,9 +104,9 @@ class CampaignServiceTest {
     @Test
     void patch_applies_only_supplied_fields_on_a_draft() {
         CampaignDto d = service.create(principal(ORG),
-                new CreateCampaignRequest("email", "Launch", null, null, "Old subj", null, "body"));
+                new CreateCampaignRequest("email", "Launch", null, null, "Old subj", null, "body", null));
         CampaignDto patched = service.patch(principal(ORG), d.id(),
-                new PatchCampaignRequest(null, null, null, "New subj", null, null));
+                new PatchCampaignRequest(null, null, null, "New subj", null, null, null));
         assertThat(patched.subject()).isEqualTo("New subj");
         assertThat(patched.name()).isEqualTo("Launch");   // untouched
         assertThat(patched.bodyMd()).isEqualTo("body");    // untouched
@@ -115,19 +115,19 @@ class CampaignServiceTest {
     @Test
     void patch_rejects_non_draft() {
         CampaignDto d = service.create(principal(ORG),
-                new CreateCampaignRequest("email", "Launch", null, null, null, null, null));
+                new CreateCampaignRequest("email", "Launch", null, null, null, null, null, null));
         service.forceStatusForTest(d.id(), "sent");
         assertThatThrownBy(() -> service.patch(principal(ORG), d.id(),
-                new PatchCampaignRequest("x", null, null, null, null, null)))
+                new PatchCampaignRequest("x", null, null, null, null, null, null)))
                 .isInstanceOf(ApiException.class);
     }
 
     @Test
     void list_is_org_scoped_and_channel_filtered() {
         service.create(principal(ORG),
-                new CreateCampaignRequest("email", "E1", null, null, null, null, null));
+                new CreateCampaignRequest("email", "E1", null, null, null, null, null, null));
         service.create(principal(OTHER_ORG),
-                new CreateCampaignRequest("email", "Other", null, null, null, null, null));
+                new CreateCampaignRequest("email", "Other", null, null, null, null, null, null));
         List<CampaignSummary> mine = service.list(principal(ORG), "email", null, 0, 50);
         assertThat(mine).extracting(CampaignSummary::name).contains("E1").doesNotContain("Other");
     }
@@ -135,7 +135,7 @@ class CampaignServiceTest {
     @Test
     void duplicate_clones_into_a_new_draft() {
         CampaignDto d = service.create(principal(ORG),
-                new CreateCampaignRequest("email", "Repeat night", null, null, "Subj", "Pre", "body"));
+                new CreateCampaignRequest("email", "Repeat night", null, null, "Subj", "Pre", "body", null));
         service.forceStatusForTest(d.id(), "sent");
         CampaignDto copy = service.duplicate(principal(ORG), d.id());
         assertThat(copy.id()).isNotEqualTo(d.id());
@@ -148,7 +148,7 @@ class CampaignServiceTest {
     @Test
     void preview_audience_with_no_segment_is_all_zero() {
         CampaignDto d = service.create(principal(ORG),
-                new CreateCampaignRequest("email", "No segment", null, null, null, null, null));
+                new CreateCampaignRequest("email", "No segment", null, null, null, null, null, null));
         PreviewAudienceResponse r = service.previewAudience(principal(ORG), d.id());
         assertThat(r.sendable()).isZero();
         assertThat(r.excluded().noBasis()).isZero();
@@ -159,7 +159,7 @@ class CampaignServiceTest {
         // USER is resolved to its own address (seeded in @BeforeEach — see NOTE)
         CampaignDto d = service.create(principal(ORG),
                 new CreateCampaignRequest("email", "Test me", null, null,
-                        "Subject line", "Preheader", "Hello **there**"));
+                        "Subject line", "Preheader", "Hello **there**", null));
         service.testSend(principal(ORG), d.id(), null);
 
         ArgumentCaptor<String> to = ArgumentCaptor.forClass(String.class);
@@ -170,7 +170,7 @@ class CampaignServiceTest {
     @Test
     void test_send_rejects_a_non_email_campaign_with_empty_subject() {
         CampaignDto d = service.create(principal(ORG),
-                new CreateCampaignRequest("email", "Empty", null, null, null, null, null));
+                new CreateCampaignRequest("email", "Empty", null, null, null, null, null, null));
         assertThatThrownBy(() -> service.testSend(principal(ORG), d.id(), null))
                 .isInstanceOf(ApiException.class);
     }
@@ -180,7 +180,7 @@ class CampaignServiceTest {
     @Test
     void cancel_flips_a_scheduled_campaign_to_canceled() {
         CampaignDto d = service.create(principal(ORG),
-                new CreateCampaignRequest("email", "Cancel me", null, null, null, null, null));
+                new CreateCampaignRequest("email", "Cancel me", null, null, null, null, null, null));
         service.forceStatusForTest(d.id(), "scheduled");
         service.cancel(principal(ORG), d.id());
         assertThat(service.get(principal(ORG), d.id()).status()).isEqualTo("canceled");
@@ -189,7 +189,7 @@ class CampaignServiceTest {
     @Test
     void cancel_rejects_a_non_scheduled_campaign() {
         CampaignDto d = service.create(principal(ORG),
-                new CreateCampaignRequest("email", "Sent already", null, null, null, null, null));
+                new CreateCampaignRequest("email", "Sent already", null, null, null, null, null, null));
         service.forceStatusForTest(d.id(), "sent");
         assertThatThrownBy(() -> service.cancel(principal(ORG), d.id()))
                 .isInstanceOf(ApiException.class);
@@ -198,7 +198,7 @@ class CampaignServiceTest {
     @Test
     void retry_requeues_a_failed_campaign_to_scheduled() {
         CampaignDto d = service.create(principal(ORG),
-                new CreateCampaignRequest("email", "Retry me", null, null, null, null, null));
+                new CreateCampaignRequest("email", "Retry me", null, null, null, null, null, null));
         service.forceStatusForTest(d.id(), "failed");
         service.retry(principal(ORG), d.id());
         CampaignDto after = service.get(principal(ORG), d.id());
@@ -209,7 +209,7 @@ class CampaignServiceTest {
     @Test
     void retry_rejects_a_non_failed_campaign() {
         CampaignDto d = service.create(principal(ORG),
-                new CreateCampaignRequest("email", "Draft still", null, null, null, null, null));
+                new CreateCampaignRequest("email", "Draft still", null, null, null, null, null, null));
         assertThatThrownBy(() -> service.retry(principal(ORG), d.id()))
                 .isInstanceOf(ApiException.class);
     }
@@ -219,7 +219,7 @@ class CampaignServiceTest {
     @Test
     void delete_removes_an_own_draft_and_it_is_gone() {
         CampaignDto d = service.create(principal(ORG),
-                new CreateCampaignRequest("email", "Trash me", null, null, null, null, null));
+                new CreateCampaignRequest("email", "Trash me", null, null, null, null, null, null));
         service.delete(principal(ORG), d.id());
         // The row is actually gone — a subsequent get 404s (org-scoped not-found).
         assertThatThrownBy(() -> service.get(principal(ORG), d.id()))
@@ -229,7 +229,7 @@ class CampaignServiceTest {
     @Test
     void delete_other_orgs_draft_is_not_found() {
         CampaignDto d = service.create(principal(ORG),
-                new CreateCampaignRequest("email", "Mine to keep", null, null, null, null, null));
+                new CreateCampaignRequest("email", "Mine to keep", null, null, null, null, null, null));
         assertThatThrownBy(() -> service.delete(principal(OTHER_ORG), d.id()))
                 .isInstanceOf(ApiException.class);
         // Still there for the real owner — cross-org delete must not touch it.
@@ -239,7 +239,7 @@ class CampaignServiceTest {
     @Test
     void delete_rejects_a_non_draft_campaign() {
         CampaignDto d = service.create(principal(ORG),
-                new CreateCampaignRequest("email", "Already sent", null, null, null, null, null));
+                new CreateCampaignRequest("email", "Already sent", null, null, null, null, null, null));
         service.forceStatusForTest(d.id(), "sent");
         assertThatThrownBy(() -> service.delete(principal(ORG), d.id()))
                 .isInstanceOf(ApiException.class);
@@ -250,7 +250,7 @@ class CampaignServiceTest {
     @Test
     void detail_with_stats_returns_a_zeroed_stats_block_before_any_send() {
         CampaignDto d = service.create(principal(ORG),
-                new CreateCampaignRequest("email", "Fresh", null, null, null, null, null));
+                new CreateCampaignRequest("email", "Fresh", null, null, null, null, null, null));
         var detail = service.detailWithStats(principal(ORG), d.id());
         assertThat(detail.name()).isEqualTo("Fresh");
         assertThat(detail.stats()).isNotNull();

@@ -71,7 +71,7 @@ class CampaignControllerTest {
         Instant now = Instant.parse("2026-07-11T10:00:00Z");
         return new CampaignDto(CAMP, ORG, "email", "Launch night", "draft",
                 null, null, "manual", null, null, null, null, null,
-                "Subj", "Pre", "body", now, now,
+                "Subj", "Pre", "body", "classic", now, now,
                 // revMinor: null — a draft campaign has never sent, so no revenue is attributable.
                 null);
     }
@@ -81,7 +81,7 @@ class CampaignControllerTest {
         var stats = new com.imin.iminapi.marketing.dto.CampaignStatsDto(10, 9, 3, 1, 0, 0, 0, 2);
         return new com.imin.iminapi.marketing.dto.CampaignDetailDto(CAMP, ORG, "email", "Launch night", "draft",
                 null, null, "manual", null, null, null, null, null,
-                "Subj", "Pre", "body", now, now, stats);
+                "Subj", "Pre", "body", "classic", now, now, stats);
     }
 
     @Test

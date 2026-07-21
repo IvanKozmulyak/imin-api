@@ -29,6 +29,8 @@ public record CampaignDetailDto(
         String subject,
         String preheader,
         String bodyMd,
+        /** The email template this campaign renders with (V66). Never null (defaults 'classic'). */
+        String templateKey,
         Instant createdAt,
         Instant updatedAt,
         // §3 aggregate stats (null until first send)
@@ -39,7 +41,7 @@ public record CampaignDetailDto(
                 c.getId(), c.getOrgId(), c.getChannel(), c.getName(), c.getStatus(),
                 c.getSegmentId(), c.getEventId(), c.getOrigin(), c.getMomentumSuggestionId(),
                 c.getScheduledAt(), c.getSentAt(), c.getRecipientCount(), c.getExcludedCount(),
-                c.getSubject(), c.getPreheader(), c.getBodyMd(),
+                c.getSubject(), c.getPreheader(), c.getBodyMd(), c.getTemplateKey(),
                 c.getCreatedAt(), c.getUpdatedAt(), stats);
     }
 }
