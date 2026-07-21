@@ -196,6 +196,20 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
     @Query("select count(m) from Membership m where m.consumerId = :consumerId")
     long countByConsumerId(@Param("consumerId") UUID consumerId);
 
+    // ---- SMS: phone-keyed lookup (platform-wide, M4 exception) ----
+
+    /**
+     * All memberships carrying this E.164 phone, ACROSS ORGS. Intentionally
+     * unscoped: imin sends SMS from a single shared alphanumeric sender ID, so a
+     * consumer's SMS consent/opt-out is a property of the PHONE, not of one org's
+     * list. An inbound STOP must suppress every membership with that number, and
+     * the marketing gate must treat any unsubscribe on that number as global.
+     * Same M4 rationale as the shared Consumer / deliverability-suppression rows.
+     * Exact-equality only (no lower/like) — safe from the PG null-String bytea trap.
+     */
+    @Query("select m from Membership m where m.phoneE164 = :phone")
+    List<Membership> findAllByPhoneE164(@Param("phone") String phone);
+
     // ---- send gate (FR-SND-1) ----
 
     /**

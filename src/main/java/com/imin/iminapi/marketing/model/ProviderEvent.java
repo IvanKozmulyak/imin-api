@@ -23,6 +23,8 @@ import java.util.UUID;
 public class ProviderEvent {
 
     public static final String PROVIDER_RESEND = "resend";
+    /** Bird (MessageBird) SMS — inbound STOP replies + delivery receipts. */
+    public static final String PROVIDER_BIRD = "bird";
 
     // Resend event types we project on (spec §2.5 step 5).
     public static final String TYPE_DELIVERED = "email.delivered";

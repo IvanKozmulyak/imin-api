@@ -105,6 +105,9 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/v1/stripe/webhook/**").permitAll()
                         // Resend marketing webhook — unauthenticated; Svix-signature verified in the handler.
                         .requestMatchers(HttpMethod.POST, "/api/v1/public/webhooks/resend").permitAll()
+                        // Inbound SMS webhook (STOP replies + delivery receipts) — unauthenticated;
+                        // HMAC-signature verified in the handler (blank secret ⇒ every call 401s).
+                        .requestMatchers(HttpMethod.POST, "/api/v1/public/webhooks/sms").permitAll()
                         // Owned marketing opt-out (RFC 8058 one-click POST + confirm page) — unauthenticated,
                         // signed-token-verified inside the handler.
                         .requestMatchers(HttpMethod.GET, "/api/v1/public/unsubscribe/**").permitAll()
