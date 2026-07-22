@@ -126,6 +126,22 @@ public class SalesTrajectoryService {
         return new NormalizedCurve(eventId, finalTotal, points);
     }
 
+    /**
+     * Sales velocity — tickets/day averaged over the 7 calendar days ending {@code asOf}
+     * (inclusive), from the materialized daily rows (spec §4.2 velocity row; arithmetic only,
+     * never generated). Denominator is a fixed 7 so a quiet day reads as slower, not as missing.
+     */
+    @Transactional(readOnly = true)
+    public double velocityPerDayLast7(UUID eventId, LocalDate asOf) {
+        LocalDate from = asOf.minusDays(6);
+        int sum = 0;
+        for (EventSalesDaily r : daily.findByEventIdOrderBySalesDateAscTierIdAsc(eventId)) {
+            LocalDate d = r.getSalesDate();
+            if (!d.isBefore(from) && !d.isAfter(asOf)) sum += r.getDailySold();
+        }
+        return sum / 7.0;
+    }
+
     private LocalDate eventDay(Event e) {
         if (e == null || e.getStartsAt() == null) return null;
         return e.getStartsAt().atZone(resolveZone(e.getTimezone())).toLocalDate();
