@@ -22,8 +22,10 @@ class MarketingEmailPropertiesTest {
     }
 
     @Test
-    void unsubscribeBaseUrl_defaultsToLocalhost() {
+    void unsubscribeBaseUrl_defaultsToProdBuyerSite() {
+        // Prod-safe default (2026-07-22): unset env must never leak a localhost
+        // URL into buyer-facing campaign links. Dev overrides in application-dev.yaml.
         MarketingEmailProperties p = new MarketingEmailProperties();
-        assertThat(p.getUnsubscribeBaseUrl()).isEqualTo("http://localhost:3000");
+        assertThat(p.getUnsubscribeBaseUrl()).isEqualTo("https://app.imin.wtf");
     }
 }
