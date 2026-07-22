@@ -49,6 +49,10 @@ public class RateLimitConfig {
     private int predictorRescoreCapacity;
     @Value("${imin.ratelimit.predictor-rescore.window-minutes}")
     private int predictorRescoreWindow;
+    @Value("${imin.ratelimit.audience-import.capacity}")
+    private int audienceImportCapacity;
+    @Value("${imin.ratelimit.audience-import.window-minutes}")
+    private int audienceImportWindow;
 
     @Bean
     public RedisClient redisClient(@Value("${spring.data.redis.url}") String url) {
@@ -87,6 +91,10 @@ public class RateLimitConfig {
         // Predictor manual re-score throttle (spec §4.1), keyed per user id.
         configs.put("predictor-rescore", BucketConfiguration.builder()
                 .addLimit(Bandwidth.simple(predictorRescoreCapacity, Duration.ofMinutes(predictorRescoreWindow)))
+                .build());
+        // Audience CSV import throttle, keyed per org — imports are heavy + consent-sensitive.
+        configs.put("audience-import", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(audienceImportCapacity, Duration.ofMinutes(audienceImportWindow)))
                 .build());
 
         return (bucketName, key) -> {
