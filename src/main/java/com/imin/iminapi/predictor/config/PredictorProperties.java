@@ -56,6 +56,34 @@ public class PredictorProperties {
     /** Tier A additionally requires at least this many of the organizer's OWN completed events. */
     private int tierAOwnMin = 3;
 
+    // ---- FORECAST phase (Stage 1 pacing / live re-forecast) -------------------
+
+    /**
+     * Minimum number of completed comparable events a segment needs before its pacing curve
+     * (median + P25/P75 spread) is trusted for a live projection (spec §7 Stage 1: "~10–15
+     * events complete"). HONEST GUESS at the low end of that range — below this the
+     * re-forecast falls back to the EXPLICITLY-LABELLED Stage 0 interim rather than projecting
+     * off a curve built from too few shapes. Config so it can be tuned against the ledger.
+     */
+    private int minCurveEvents = 12;
+
+    /**
+     * Upper bound (in days-to-event) for the pacing-curve sample grid. Curves are sampled at
+     * every integer day-out from 0 up to the segment's own longest observed lead, capped here
+     * so a single very-early outlier can't blow up the persisted points JSON. 90 days spans
+     * the launch market's typical sell window.
+     */
+    private int pacingMaxDaysOut = 90;
+
+    /**
+     * Leading-edge debounce window (seconds) for milestone/tier/campaign re-forecast triggers:
+     * the FIRST trigger for an event fires immediately, further triggers inside the window are
+     * coalesced away so one sales burst does not recompute N times (spec §4.2 "recompute is
+     * idempotent" / task "dedup within a short window"). The daily cron and later triggers pick
+     * up any state the coalesced ones would have caught.
+     */
+    private int reforecastDebounceSeconds = 60;
+
     public int getFinalizeGraceDays() { return finalizeGraceDays; }
     public void setFinalizeGraceDays(int finalizeGraceDays) { this.finalizeGraceDays = finalizeGraceDays; }
 
@@ -79,4 +107,15 @@ public class PredictorProperties {
 
     public int getTierAOwnMin() { return tierAOwnMin; }
     public void setTierAOwnMin(int tierAOwnMin) { this.tierAOwnMin = tierAOwnMin; }
+
+    public int getMinCurveEvents() { return minCurveEvents; }
+    public void setMinCurveEvents(int minCurveEvents) { this.minCurveEvents = minCurveEvents; }
+
+    public int getPacingMaxDaysOut() { return pacingMaxDaysOut; }
+    public void setPacingMaxDaysOut(int pacingMaxDaysOut) { this.pacingMaxDaysOut = pacingMaxDaysOut; }
+
+    public int getReforecastDebounceSeconds() { return reforecastDebounceSeconds; }
+    public void setReforecastDebounceSeconds(int reforecastDebounceSeconds) {
+        this.reforecastDebounceSeconds = reforecastDebounceSeconds;
+    }
 }
