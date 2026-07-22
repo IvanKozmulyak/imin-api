@@ -168,6 +168,10 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
      * Distinct (orgId, lower(email)) pairs for all paid orders.
      * Used by {@link com.imin.iminapi.audience.service.AudienceBackfillJob}.
      */
-    @Query("select distinct o.orgId, lower(o.email) from Order o where o.stripePaymentIntentId is not null")
+    // Every Order row represents issued tickets (orders are only created on successful
+    // issuance), so no payment-intent filter: free (promo-zeroed / free-tier) orders
+    // must reach the audience too. The old "stripePaymentIntentId is not null" filter
+    // silently excluded them from the backfill.
+    @Query("select distinct o.orgId, lower(o.email) from Order o where o.email is not null")
     List<Object[]> findDistinctOrgAndEmailPairs();
 }

@@ -32,6 +32,22 @@ public class AudienceBackfillJob {
         this.projector = projector;
     }
 
+    /**
+     * Also runs once on startup so a deploy self-heals projection gaps (e.g. orders
+     * issued while an event-listener bug was live) without waiting for the nightly
+     * cron. Idempotent by design; cheap at current scale.
+     * ponytail: unguarded on multi-replica (Railway runs one instance); reuse the
+     * ShedLock lock here if replicas ever appear.
+     */
+    @org.springframework.context.event.EventListener(org.springframework.boot.context.event.ApplicationReadyEvent.class)
+    public void onStartup() {
+        try {
+            run();
+        } catch (Exception e) {
+            log.warn("AudienceBackfillJob startup run failed (nightly cron will retry): {}", e.getMessage());
+        }
+    }
+
     @Scheduled(cron = "0 0 3 * * *")
     @SchedulerLock(name = "audience_backfill", lockAtMostFor = "PT2H", lockAtLeastFor = "PT1M")
     public void run() {
