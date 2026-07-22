@@ -194,6 +194,27 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
     """)
     int markLivePast(@Param("now") Instant now, @Param("updatedAt") Instant updatedAt);
 
+    /**
+     * Competing-nights signal (predictor task scope A): other PLATFORM events in the same city
+     * whose start falls within [{@code from}, {@code to}] (the ±window around the subject event),
+     * excluding the subject itself and soft-deleted/draft events. Returns {@code (id, genre)} rows
+     * so the service can count them, flag genre overlap, and sum their capacity. Real internal
+     * data only — no external event calendar. City compared case-insensitively; a null/blank city
+     * binds no rows (the caller passes only a real city).
+     */
+    @Query("""
+        SELECT e.id, e.genre FROM Event e
+         WHERE e.deletedAt IS NULL
+           AND e.id <> :selfId
+           AND e.publishedAt IS NOT NULL
+           AND e.status <> com.imin.iminapi.model.EventStatus.DRAFT
+           AND e.startsAt IS NOT NULL
+           AND e.startsAt >= :from AND e.startsAt <= :to
+           AND LOWER(e.venueCity) = LOWER(:city)
+    """)
+    List<Object[]> findCompetingNights(@Param("selfId") UUID selfId, @Param("city") String city,
+                                       @Param("from") Instant from, @Param("to") Instant to);
+
     @Query("""
         SELECT DISTINCT e.genre FROM Event e
          WHERE e.deletedAt IS NULL

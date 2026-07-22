@@ -43,11 +43,17 @@ public class ReforecastNarrator {
         return (m == null || m.isBlank()) ? platformModel : m;
     }
 
-    /** Everything the narrator is allowed to know — all already computed. */
+    /**
+     * Everything the narrator is allowed to know — all already computed. The competing-nights and
+     * weather fields SEASON the narration only (they never enter the deterministic pacing math);
+     * weather is null beyond the forecast horizon and is listed to the model as unknown.
+     */
     public record Context(ProjectionBand newBand, ProjectionBand previousBand,
                           int projectedLow, int projectedHigh, int capacity,
                           int currentSold, int comparableEventsCount, String relaxation,
-                          boolean sellOutLikely) {}
+                          boolean sellOutLikely,
+                          int competingCount, int competingCapacity, boolean competingGenreOverlap,
+                          Integer weatherPrecipPct, Double weatherTempC) {}
 
     /**
      * One short sentence. Throws on transport failure — the caller swallows it to null so the
@@ -82,6 +88,24 @@ public class ReforecastNarrator {
         sb.append("Based on ").append(ctx.comparableEventsCount()).append(" comparable completed events (relaxation ")
                 .append(ctx.relaxation()).append(").\n");
         if (ctx.sellOutLikely()) sb.append("A sell-out is within the projected range.\n");
+
+        // Optional context signals — real platform + weather data, seasoning only.
+        if (ctx.competingCount() > 0) {
+            sb.append("Competing events on imin that night in the same city: ").append(ctx.competingCount())
+                    .append(" (total advertised capacity ").append(ctx.competingCapacity())
+                    .append(ctx.competingGenreOverlap() ? ", including the same genre" : "").append(").\n");
+        } else {
+            sb.append("No competing imin events that night in the same city.\n");
+        }
+        if (ctx.weatherPrecipPct() != null || ctx.weatherTempC() != null) {
+            sb.append("Weather for the date: ");
+            if (ctx.weatherPrecipPct() != null) sb.append(ctx.weatherPrecipPct()).append("% precipitation probability");
+            if (ctx.weatherTempC() != null) sb.append(ctx.weatherPrecipPct() != null ? ", " : "")
+                    .append("max ").append(Math.round(ctx.weatherTempC())).append("°C");
+            sb.append(".\n");
+        } else {
+            sb.append("Weather: UNKNOWN (beyond the reliable forecast horizon or unavailable) — do not guess it.\n");
+        }
         sb.append("\nReturn ONLY the sentence, no preamble.\n");
         return sb.toString();
     }

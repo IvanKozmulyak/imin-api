@@ -62,11 +62,13 @@ class ReforecastServiceTest {
     private final PredictionLedgerRepository ledgerRepo = mock(PredictionLedgerRepository.class);
     private final ReforecastNarrator narrator = mock(ReforecastNarrator.class);
     private final ReforecastAlertNotifier alertNotifier = mock(ReforecastAlertNotifier.class);
+    private final CompetingNightsService competingNights = mock(CompetingNightsService.class);
+    private final WeatherService weather = mock(WeatherService.class);
     private final PredictorProperties props = new PredictorProperties();
 
     private final ReforecastService sut = new ReforecastService(
             events, tiers, pacingCurves, engine, trajectories, ledgerService, ledgerRepo,
-            narrator, alertNotifier, props, clock);
+            narrator, alertNotifier, competingNights, weather, props, clock);
 
     private final UUID eventId = UUID.randomUUID();
     private final UUID orgId = UUID.randomUUID();
@@ -103,6 +105,8 @@ class ReforecastServiceTest {
 
         when(narrator.modelId()).thenReturn("test/model");
         when(narrator.narrate(any())).thenReturn("Pacing behind comparable events.");
+        when(competingNights.compute(any())).thenReturn(CompetingNightsService.CompetingNights.NONE);
+        when(weather.forecast(any(), any(), any(), org.mockito.ArgumentMatchers.anyInt())).thenReturn(null);
 
         // In-memory ledger: record() prepends a faithful row; the repo returns the live list.
         when(ledgerService.record(any())).thenAnswer(inv -> {

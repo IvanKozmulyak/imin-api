@@ -72,6 +72,8 @@ public class ReforecastService {
     private final PredictionLedgerRepository ledgerRepo;
     private final ReforecastNarrator narrator;
     private final ReforecastAlertNotifier alertNotifier;
+    private final CompetingNightsService competingNights;
+    private final WeatherService weather;
     private final PredictorProperties props;
     private final Clock clock;
 
@@ -79,7 +81,8 @@ public class ReforecastService {
                              PacingCurveService pacingCurves, PacingEngine engine,
                              SalesTrajectoryService trajectories, PredictionLedgerService ledgerService,
                              PredictionLedgerRepository ledgerRepo, ReforecastNarrator narrator,
-                             ReforecastAlertNotifier alertNotifier, PredictorProperties props, Clock clock) {
+                             ReforecastAlertNotifier alertNotifier, CompetingNightsService competingNights,
+                             WeatherService weather, PredictorProperties props, Clock clock) {
         this.events = events;
         this.tiers = tiers;
         this.pacingCurves = pacingCurves;
@@ -89,6 +92,8 @@ public class ReforecastService {
         this.ledgerRepo = ledgerRepo;
         this.narrator = narrator;
         this.alertNotifier = alertNotifier;
+        this.competingNights = competingNights;
+        this.weather = weather;
         this.props = props;
         this.clock = clock;
     }
@@ -171,10 +176,17 @@ public class ReforecastService {
         } else if (props.isBenchmarkOnly()) {
             narration = null;
         } else {
+            // Signals season the narration only (band changed), never the arithmetic above. Weather
+            // self-gates to <= horizon days out and fails safe to null (listed as unknown).
+            CompetingNightsService.CompetingNights cn = competingNights.compute(e);
+            LocalDate eventDate = startsAt.atZone(resolveZone(e.getTimezone())).toLocalDate();
+            WeatherService.Weather w = weather.forecast(e.getVenueCity(), e.getVenueCountry(), eventDate, daysOut);
             narration = safeNarrate(new ReforecastNarrator.Context(
                     newBand, prior == null ? null : prior.band(), p.finalLow(), p.finalHigh(), capacity,
                     currentSold, match.curve().eventsCount(), match.relaxation().name(),
-                    newBand == ProjectionBand.SELL_OUT_LIKELY));
+                    newBand == ProjectionBand.SELL_OUT_LIKELY,
+                    cn.count(), cn.totalCapacity(), cn.genreOverlap(),
+                    w == null ? null : w.precipProbabilityMaxPct(), w == null ? null : w.tempMaxC()));
         }
 
         ReforecastResult.Alert alert = alertFor(prior, newBand, p.finalLow(), p.finalHigh());

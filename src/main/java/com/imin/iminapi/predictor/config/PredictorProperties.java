@@ -84,6 +84,36 @@ public class PredictorProperties {
      */
     private int reforecastDebounceSeconds = 60;
 
+    /**
+     * ± window (days) around an event's date for the "competing nights on imin" signal — other
+     * same-city platform events near the date. Real platform data, not an external calendar.
+     */
+    private int competingNightsWindowDays = 1;
+
+    /**
+     * Weather signal toggle (founder override of spec §6.3 "weather explicitly out" — lean, live
+     * re-forecast only). Bound to {@code ${PREDICTOR_WEATHER_ENABLED:true}}.
+     */
+    private boolean weatherEnabled = true;
+
+    /**
+     * Horizon cap (days-to-event) for the weather signal: beyond this the forecast is not
+     * reliable, so weather is null (never fabricated). Open-Meteo's free forecast spans ~16 days.
+     */
+    private int weatherMaxHorizonDays = 14;
+
+    // ---- Organizer-action reactivity (system-initiated re-scores/re-forecasts, task scope B) ----
+
+    /** ± debounce window (seconds) coalescing autosave bursts of organizer edits into one recompute. */
+    private int actionDebounceSeconds = 120;
+
+    /**
+     * Daily cap on SYSTEM-initiated re-scores/re-forecasts per event (organizer-action triggers).
+     * These bypass the per-organizer LLM quota but are capped here so a pathological edit loop
+     * cannot burn budget; a WARN is logged when the cap is hit.
+     */
+    private int systemRescoresPerEventPerDay = 10;
+
     public int getFinalizeGraceDays() { return finalizeGraceDays; }
     public void setFinalizeGraceDays(int finalizeGraceDays) { this.finalizeGraceDays = finalizeGraceDays; }
 
@@ -117,5 +147,28 @@ public class PredictorProperties {
     public int getReforecastDebounceSeconds() { return reforecastDebounceSeconds; }
     public void setReforecastDebounceSeconds(int reforecastDebounceSeconds) {
         this.reforecastDebounceSeconds = reforecastDebounceSeconds;
+    }
+
+    public int getCompetingNightsWindowDays() { return competingNightsWindowDays; }
+    public void setCompetingNightsWindowDays(int competingNightsWindowDays) {
+        this.competingNightsWindowDays = competingNightsWindowDays;
+    }
+
+    public boolean isWeatherEnabled() { return weatherEnabled; }
+    public void setWeatherEnabled(boolean weatherEnabled) { this.weatherEnabled = weatherEnabled; }
+
+    public int getWeatherMaxHorizonDays() { return weatherMaxHorizonDays; }
+    public void setWeatherMaxHorizonDays(int weatherMaxHorizonDays) {
+        this.weatherMaxHorizonDays = weatherMaxHorizonDays;
+    }
+
+    public int getActionDebounceSeconds() { return actionDebounceSeconds; }
+    public void setActionDebounceSeconds(int actionDebounceSeconds) {
+        this.actionDebounceSeconds = actionDebounceSeconds;
+    }
+
+    public int getSystemRescoresPerEventPerDay() { return systemRescoresPerEventPerDay; }
+    public void setSystemRescoresPerEventPerDay(int systemRescoresPerEventPerDay) {
+        this.systemRescoresPerEventPerDay = systemRescoresPerEventPerDay;
     }
 }
