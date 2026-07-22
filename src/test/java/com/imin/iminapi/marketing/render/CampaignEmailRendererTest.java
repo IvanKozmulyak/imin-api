@@ -115,6 +115,45 @@ class CampaignEmailRendererTest {
         assertThat(r.html()).contains("color:#2d5cff");
     }
 
+    // ---- {{tickets_button}} CTA placeholder ----
+
+    private static final String TICKETS_URL = "https://app.imin.wtf/e/evt-123";
+
+    @Test
+    void ticketsButtonRendersAsTemplateColouredButtonWhenUrlPresent() {
+        CampaignEmailRenderer.Rendered r = renderer.render(
+                "S", "P", "Come along\n\n{{tickets_button}}", "camp-1", "email", UNSUB,
+                BuiltinTemplates.byKey("classic"), "Acme", null, TICKETS_URL);
+        // classic buttonBg #2d5cff / buttonText #ffffff, default "Get tickets" label, real <a> (not an image)
+        assertThat(r.html()).contains("background:#2d5cff");
+        assertThat(r.html()).contains(">Get tickets</a>");
+        assertThat(r.html()).doesNotContain("{{tickets_button}}");
+        // href is UTM-tagged exactly like body links
+        assertThat(r.html()).contains("utm_campaign=camp-1");
+        // and the plain-text part carries the URL
+        assertThat(r.text()).contains(TICKETS_URL);
+    }
+
+    @Test
+    void ticketsButtonIsDroppedWhenNoUrl() {
+        // No linked event ⇒ no ticketsUrl ⇒ the token renders nothing (never a fabricated link).
+        CampaignEmailRenderer.Rendered r = renderer.render(
+                "S", "P", "Come along\n\n{{tickets_button}}", "camp-1", "email", UNSUB,
+                BuiltinTemplates.byKey("classic"), "Acme", null, null);
+        assertThat(r.html()).doesNotContain("Get tickets");
+        assertThat(r.html()).doesNotContain("{{tickets_button}}");
+        assertThat(r.text()).doesNotContain("tickets_button");
+    }
+
+    @Test
+    void ticketsButtonHonoursACustomLabel() {
+        CampaignEmailRenderer.Rendered r = renderer.render(
+                "S", "P", "Come along\n\n{{tickets_button:Grab your spot}}", "camp-1", "email", UNSUB,
+                BuiltinTemplates.byKey("classic"), "Acme", null, TICKETS_URL);
+        assertThat(r.html()).contains(">Grab your spot</a>");
+        assertThat(r.html()).doesNotContain(">Get tickets</a>");
+    }
+
     @Test
     void unsubscribeLinkIsNotUtmTagged() {
         // The footer's optout link is itself an imin.wtf URL; UTM rewriting runs on the BODY

@@ -168,6 +168,41 @@ class CampaignServiceTest {
     }
 
     @Test
+    void test_send_renders_through_the_branded_template_shell_not_bare_text() {
+        // Regression: test-send used to ship a bare <pre> escape of the markdown (no template,
+        // no branded shell, no footer). It must now render through the SAME CampaignEmailRenderer
+        // path as the real batch send: branded HTML + rendered markdown + mandatory unsubscribe.
+        CampaignDto d = service.create(principal(ORG),
+                new CreateCampaignRequest("email", "Branded", null, null,
+                        "Subject line", "Preheader", "Hello **there**", "midnight"));
+        service.testSend(principal(ORG), d.id(), null);
+
+        ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<String> text = ArgumentCaptor.forClass(String.class);
+        verify(emailService).send(anyString(), anyString(), html.capture(), text.capture());
+        assertThat(html.getValue()).contains("<!DOCTYPE html>");
+        assertThat(html.getValue()).contains("<strong>there</strong>"); // markdown was rendered
+        assertThat(html.getValue()).contains("#0f0a1f");                 // midnight template applied
+        assertThat(html.getValue().toLowerCase()).contains("unsubscribe");
+        assertThat(text.getValue()).contains("Unsubscribe:");            // plain-text part carries the footer too
+    }
+
+    @Test
+    void test_send_falls_back_to_the_classic_template_when_key_is_absent() {
+        // A campaign created with no templateKey stores/render-resolves to the classic builtin —
+        // the test send is still a branded shell, never bare text.
+        CampaignDto d = service.create(principal(ORG),
+                new CreateCampaignRequest("email", "No template", null, null,
+                        "Subject", "Pre", "Body copy", null));
+        service.testSend(principal(ORG), d.id(), null);
+
+        ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
+        verify(emailService).send(anyString(), anyString(), html.capture(), anyString());
+        assertThat(html.getValue()).contains("<!DOCTYPE html>");
+        assertThat(html.getValue()).contains("#f4f2fa"); // classic page background
+    }
+
+    @Test
     void test_send_rejects_a_non_email_campaign_with_empty_subject() {
         CampaignDto d = service.create(principal(ORG),
                 new CreateCampaignRequest("email", "Empty", null, null, null, null, null, null));

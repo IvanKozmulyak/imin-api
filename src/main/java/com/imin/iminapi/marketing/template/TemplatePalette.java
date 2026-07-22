@@ -12,9 +12,10 @@ package com.imin.iminapi.marketing.template;
  *   <li>{@code text} — body copy colour</li>
  *   <li>{@code accent} — links, header band, small flourishes</li>
  *   <li>{@code muted} — footer / secondary text</li>
- *   <li>{@code buttonBg} / {@code buttonText} — CTA colours (used by the composer
- *       preview's sample CTA; markdown bodies carry no button, so the send path
- *       styles inline links with {@code accent} instead)</li>
+ *   <li>{@code buttonBg} / {@code buttonText} — CTA colours, used both by the
+ *       composer preview's sample CTA and by the {@code {{tickets_button}}}
+ *       placeholder the renderer turns into a real "Get tickets" button; plain
+ *       inline markdown links are still styled with {@code accent}</li>
  * </ul>
  */
 public record TemplatePalette(
