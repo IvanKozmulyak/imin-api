@@ -267,8 +267,18 @@ public class CampaignService {
         String posterUrl = event == null ? null : event.getPosterUrl();
         String ticketsUrl = event == null ? null : emailProps.getUnsubscribeBaseUrl() + "/e/" + event.getId();
         String unsubUrl = emailProps.getUnsubscribeBaseUrl() + "/optout?token=preview";
+        // A test send has no recipient, so resolve merge tags to a preview sample: the
+        // neutral first-name fallback and the real event URL — so the tester sees resolved
+        // text, not raw {{firstName}}/{{eventUrl}} tokens.
+        String eventUrl = ticketsUrl != null ? ticketsUrl : emailProps.getUnsubscribeBaseUrl();
+        String subject = com.imin.iminapi.marketing.render.MergeTags.apply(
+                c.getSubject(), com.imin.iminapi.marketing.render.MergeTags.FIRST_NAME_FALLBACK, eventUrl);
+        String bodyMd = com.imin.iminapi.marketing.render.MergeTags.apply(
+                c.getBodyMd(), com.imin.iminapi.marketing.render.MergeTags.FIRST_NAME_FALLBACK, eventUrl);
+        String preheader = com.imin.iminapi.marketing.render.MergeTags.apply(
+                c.getPreheader(), com.imin.iminapi.marketing.render.MergeTags.FIRST_NAME_FALLBACK, eventUrl);
         return renderer.render(
-                c.getSubject(), c.getPreheader(), c.getBodyMd(),
+                subject, preheader, bodyMd,
                 c.getId().toString(), "email", unsubUrl,
                 template, brandName, posterUrl, ticketsUrl);
     }

@@ -5,6 +5,11 @@ import com.imin.iminapi.marketing.email.MarketingEmailProperties;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.render.CampaignEmailRenderer;
+import com.imin.iminapi.marketing.render.MergeTags;
+import com.imin.iminapi.audience.model.Consumer;
+import com.imin.iminapi.audience.model.Membership;
+import com.imin.iminapi.audience.repository.ConsumerRepository;
+import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.marketing.service.CampaignTemplateService;
@@ -21,6 +26,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.UUID;
+import java.util.Map;
+import java.util.HashMap;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -45,12 +53,15 @@ public class EmailChannelSender {
     private final CampaignTemplateService templateService;
     private final OrganizationRepository organizations;
     private final EventRepository events;
+    private final MembershipRepository memberships;
+    private final ConsumerRepository consumers;
 
     public EmailChannelSender(CampaignRecipientRepository recipients, CampaignRepository campaigns,
                               CampaignEmailRenderer renderer, CampaignEmailProvider provider,
                               UnsubscribeTokenService tokens, MarketingEmailProperties props,
                               CampaignTemplateService templateService,
-                              OrganizationRepository organizations, EventRepository events) {
+                              OrganizationRepository organizations, EventRepository events,
+                              MembershipRepository memberships, ConsumerRepository consumers) {
         this.recipients = recipients;
         this.campaigns = campaigns;
         this.renderer = renderer;
@@ -60,6 +71,8 @@ public class EmailChannelSender {
         this.templateService = templateService;
         this.organizations = organizations;
         this.events = events;
+        this.memberships = memberships;
+        this.consumers = consumers;
     }
 
     /** Sends one batch. Returns true if there are (likely) more pending rows to process. */
@@ -75,17 +88,29 @@ public class EmailChannelSender {
         Event event = linkedEvent(c);
         String posterUrl = event == null ? null : event.getPosterUrl();
         String ticketsUrl = ticketsUrl(c, event);
+        // {{eventUrl}} resolves to the linked event's buyer page; with no linked event,
+        // to the buyer-site root rather than a broken/empty link.
+        String eventUrl = ticketsUrl != null ? ticketsUrl : props.getUnsubscribeBaseUrl();
+        // Per-recipient {{firstName}} — resolve display names for the whole batch in two
+        // batched queries (membership -> consumer -> display_name), not per row.
+        Map<UUID, String> firstNameByMembership = resolveFirstNames(c.getOrgId(), batch);
 
         List<CampaignEmailProvider.OutgoingEmail> outgoing = new ArrayList<>(batch.size());
         for (CampaignRecipient r : batch) {
             String unsubUrl = props.getUnsubscribeBaseUrl() + "/optout?token="
                     + tokens.sign(c.getOrgId(), r.getMembershipId(), c.getId(), "email");
+            String firstName = r.getMembershipId() == null
+                    ? MergeTags.FIRST_NAME_FALLBACK
+                    : firstNameByMembership.getOrDefault(r.getMembershipId(), MergeTags.FIRST_NAME_FALLBACK);
+            String subject = MergeTags.apply(c.getSubject(), firstName, eventUrl);
+            String bodyMd = MergeTags.apply(c.getBodyMd(), firstName, eventUrl);
+            String preheader = MergeTags.apply(c.getPreheader(), firstName, eventUrl);
             CampaignEmailRenderer.Rendered rendered = renderer.render(
-                    c.getSubject(), c.getPreheader(), c.getBodyMd(),
+                    subject, preheader, bodyMd,
                     c.getId().toString(), "email", unsubUrl,
                     template, brandName, posterUrl, ticketsUrl);
             outgoing.add(new CampaignEmailProvider.OutgoingEmail(
-                    props.fromHeader(), r.getEmail(), c.getSubject(),
+                    props.fromHeader(), r.getEmail(), subject,
                     rendered.html(), rendered.text(), unsubUrl));
         }
 
@@ -163,4 +188,33 @@ public class EmailChannelSender {
         if (event == null) return null;
         return props.getUnsubscribeBaseUrl() + "/e/" + event.getId();
     }
+
+    /**
+     * Batch-resolve first names for a claimed recipient batch: membership_id ->
+     * greetable first name (from consumers.display_name), falling back to the neutral
+     * greeting when a member has no usable name. Two batched queries, no per-row IO.
+     */
+    private Map<UUID, String> resolveFirstNames(UUID orgId, List<CampaignRecipient> batch) {
+        List<UUID> membershipIds = batch.stream()
+                .map(CampaignRecipient::getMembershipId)
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .toList();
+        if (membershipIds.isEmpty()) return Map.of();
+        List<Membership> mems = memberships.findByIdsAndOrgId(membershipIds, orgId);
+        List<UUID> consumerIds = mems.stream().map(Membership::getConsumerId).distinct().toList();
+        Map<UUID, String> nameByConsumer = new HashMap<>();
+        if (!consumerIds.isEmpty()) {
+            for (Consumer cn : consumers.findAllByConsumerIdIn(consumerIds)) {
+                nameByConsumer.put(cn.getConsumerId(), MergeTags.firstName(cn.getDisplayName()));
+            }
+        }
+        Map<UUID, String> out = new HashMap<>();
+        for (Membership m : mems) {
+            out.put(m.getMembershipId(),
+                    nameByConsumer.getOrDefault(m.getConsumerId(), MergeTags.FIRST_NAME_FALLBACK));
+        }
+        return out;
+    }
+
 }
