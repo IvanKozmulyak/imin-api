@@ -377,6 +377,120 @@ class EventServiceTest {
         verifyNoInteractions(stripeConnect);
     }
 
+    // ---- Timezone derivation (bug 86ca74h6c) --------------------------------------------------
+
+    private void stubSaveEchoWithId() {
+        when(events.save(any(Event.class))).thenAnswer(inv -> {
+            Event e = inv.getArgument(0);
+            if (e.getId() == null) e.setId(UUID.randomUUID());
+            return e;
+        });
+    }
+
+    private EventPatchRequest bodyWith(String timezone, VenueDto venue) {
+        return new EventPatchRequest(null, null, null, null, null, null, null, timezone, venue,
+                null, null, null, null, null, null, null, null);
+    }
+
+    private static VenueDto venue(String country) {
+        return new VenueDto("Le Club", "1 Rue", "Paris", "75001", country);
+    }
+
+    @Test
+    void create_draft_derives_timezone_from_venue_country() {
+        AuthPrincipal p = principal();
+        stubSaveEchoWithId();
+
+        EventDto dto = sut.createDraft(p, bodyWith(null, venue("FR")));
+
+        assertThat(dto.timezone()).isEqualTo("Europe/Paris");
+    }
+
+    @Test
+    void create_draft_without_venue_keeps_utc_default() {
+        AuthPrincipal p = principal();
+        stubSaveEchoWithId();
+
+        EventDto dto = sut.createDraft(p, bodyWith(null, null));
+
+        assertThat(dto.timezone()).isEqualTo("UTC");
+    }
+
+    @Test
+    void explicit_timezone_wins_over_venue_country() {
+        AuthPrincipal p = principal();
+        stubSaveEchoWithId();
+
+        EventDto dto = sut.createDraft(p, bodyWith("America/New_York", venue("FR")));
+
+        assertThat(dto.timezone()).isEqualTo("America/New_York");
+    }
+
+    @Test
+    void sent_utc_is_treated_as_unset_and_derived_from_country() {
+        // The current webapp autosave sends timezone:"UTC" on every save; the server must still
+        // derive the real zone from the venue country (deploy-ordering robustness).
+        AuthPrincipal p = principal();
+        stubSaveEchoWithId();
+
+        EventDto dto = sut.createDraft(p, bodyWith("UTC", venue("DE")));
+
+        assertThat(dto.timezone()).isEqualTo("Europe/Berlin");
+    }
+
+    @Test
+    void invalid_timezone_rejected_with_400() {
+        AuthPrincipal p = principal();
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                        sut.createDraft(p, bodyWith("Not/AZone", venue("FR"))))
+                .isInstanceOf(com.imin.iminapi.security.ApiException.class)
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.INVALID_REQUEST)
+                .hasFieldOrPropertyWithValue("status", org.springframework.http.HttpStatus.BAD_REQUEST);
+        verify(events, never()).save(any(Event.class));
+    }
+
+    @Test
+    void patch_derives_timezone_when_zone_still_default_and_country_set() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setName("X"); e.setSlug("x");
+        Instant updated = Instant.parse("2026-04-23T10:00:00Z");
+        e.setUpdatedAt(updated);
+        assertThat(e.getTimezone()).isEqualTo("UTC"); // entity default
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
+        when(promos.findByEventId(e.getId())).thenReturn(List.of());
+        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
+
+        EventDto dto = sut.patch(p, e.getId(), "\"" + updated + "\"", bodyWith(null, venue("NL")));
+
+        assertThat(dto.timezone()).isEqualTo("Europe/Amsterdam");
+    }
+
+    @Test
+    void patch_does_not_overwrite_previously_set_zone_on_later_venue_change() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setName("X"); e.setSlug("x");
+        e.setTimezone("America/New_York"); // an explicit, non-default choice already stored
+        Instant updated = Instant.parse("2026-04-23T10:00:00Z");
+        e.setUpdatedAt(updated);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
+        when(promos.findByEventId(e.getId())).thenReturn(List.of());
+        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
+
+        // Venue moves to FR, but the request carries no explicit timezone — the prior zone stays.
+        EventDto dto = sut.patch(p, e.getId(), "\"" + updated + "\"", bodyWith(null, venue("FR")));
+
+        assertThat(dto.timezone()).isEqualTo("America/New_York");
+    }
+
     @Test
     void publish_incomplete_event_throws_PUBLISH_VALIDATION_FAILED() {
         AuthPrincipal p = principal();

@@ -11,6 +11,7 @@ import com.imin.iminapi.predictor.service.EventOutcomeService;
 import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.service.audit.AuditLogger;
 import com.imin.iminapi.stripe.StripeConnectService;
+import com.imin.iminapi.util.CountryTimeZones;
 import com.imin.iminapi.web.IfMatchSupport;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -20,6 +21,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.time.ZoneId;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -312,7 +314,7 @@ public class EventService {
         if (b.type() != null) { e.setType(b.type()); changed = true; }
         if (b.startsAt() != null) { e.setStartsAt(b.startsAt()); changed = true; }
         if (b.endsAt() != null) { e.setEndsAt(b.endsAt()); changed = true; }
-        if (b.timezone() != null) { e.setTimezone(b.timezone()); changed = true; }
+        // Venue is applied BEFORE the timezone so a same-request country can seed the derived zone.
         if (b.venue() != null) {
             VenueDto v = b.venue();
             e.setVenueName(v.name());
@@ -322,6 +324,7 @@ public class EventService {
             e.setVenueCountry(v.country());
             changed = true;
         }
+        changed |= applyTimezone(e, b);
         if (b.description() != null) { e.setDescription(b.description()); changed = true; }
         if (b.posterUrl() != null) {
             // Provenance (V71): a PATCH that CHANGES the poster URL has unknown origin (could be
@@ -336,6 +339,44 @@ public class EventService {
         if (b.onSaleAt() != null) { e.setOnSaleAt(b.onSaleAt()); changed = true; }
         if (b.saleClosesAt() != null) { e.setSaleClosesAt(b.saleClosesAt()); changed = true; }
         return changed;
+    }
+
+    /**
+     * Resolves and sets the event timezone (bug 86ca74h6c).
+     *
+     * <p>An <b>explicit</b> non-UTC IANA zone on the request always wins and is validated against
+     * {@link ZoneId#getAvailableZoneIds()} (unknown ⇒ 400 INVALID_REQUEST). Otherwise — the field
+     * is absent, blank, or the literal {@code "UTC"} — we treat it as "not chosen" and derive the
+     * zone from the venue country via {@link CountryTimeZones}, but only while the event still
+     * carries the default/blank zone (so we never overwrite a previously derived or organizer-set
+     * value). On an FR/EU events platform a stored {@code "UTC"} is effectively the unset default,
+     * never a deliberate choice; this also makes the fix robust to deploy ordering, since the old
+     * webapp keeps sending {@code "UTC"} on every autosave.
+     *
+     * @return {@code true} when the request carried a timezone field (for audit "changed" semantics)
+     */
+    private boolean applyTimezone(Event e, EventPatchRequest b) {
+        String requested = b.timezone() == null ? null : b.timezone().trim();
+        boolean explicit = requested != null && !requested.isEmpty() && !"UTC".equalsIgnoreCase(requested);
+        if (explicit) {
+            if (!ZoneId.getAvailableZoneIds().contains(requested)) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
+                        "Unknown timezone",
+                        Map.of("timezone", "must be a valid IANA time-zone id"));
+            }
+            e.setTimezone(requested);
+            return true;
+        }
+        if (isDefaultZone(e.getTimezone())) {
+            CountryTimeZones.zoneFor(e.getVenueCountry()).ifPresent(e::setTimezone);
+        }
+        // A client that explicitly sent "UTC" still counts as a supplied field for audit purposes.
+        return requested != null && !requested.isEmpty();
+    }
+
+    /** True when the stored zone is null/blank or the plain {@code "UTC"} default (i.e. "not chosen"). */
+    private static boolean isDefaultZone(String tz) {
+        return tz == null || tz.isBlank() || "UTC".equalsIgnoreCase(tz.trim());
     }
 
     /**
