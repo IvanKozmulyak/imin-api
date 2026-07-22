@@ -31,6 +31,7 @@ public final class AuditActions {
     public static final String CONSENT_UNSUBSCRIBED     = "CONSENT_UNSUBSCRIBED";
     public static final String SUPPRESSION_ADDED        = "SUPPRESSION_ADDED";
     public static final String AUDIENCE_HANDOFF         = "AUDIENCE_HANDOFF";
+    public static final String AUDIENCE_IMPORTED        = "AUDIENCE_IMPORTED";
     public static final String DSAR_ACCESS              = "DSAR_ACCESS";
     public static final String DSAR_EXPORT              = "DSAR_EXPORT";
     public static final String DSAR_RECTIFY             = "DSAR_RECTIFY";

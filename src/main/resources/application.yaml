@@ -376,6 +376,11 @@ imin:
       # Layered under the kind=score daily quota; cache hits don't reach either.
       capacity: 6
       window-minutes: 10
+    audience-import:
+      # Contact CSV import, keyed per org. Imports are heavy (up to 10k rows) and
+      # consent-sensitive (auto-subscribe on organizer assertion), so keep it to a few/hour.
+      capacity: 5
+      window-minutes: 60
   media:
     enabled: ${MEDIA_ENABLED:true}
     bucket: ${R2_BUCKET:imin-media-dev}
