@@ -114,7 +114,9 @@ public class PredictorReactivityService {
         String hash = snap.sha256();
         if (hash.equals(latestPrePublishHash(e.getId()))) return; // no material change → no LLM call
         if (!underDailyCap(e.getId())) { warnCapped(e.getId()); return; }
-        pipeline.score(e, snap); // system-initiated: bypasses the per-organizer daily quota
+        // System-initiated (bypasses the per-organizer daily quota); "edit" is stamped into the
+        // ledger metadata so a reactive re-score is distinguishable from an organizer request.
+        pipeline.score(e, snap, "edit");
     }
 
     private void liveReforecast(UUID eventId) {

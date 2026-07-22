@@ -1,13 +1,16 @@
 package com.imin.iminapi.predictor;
 
 import com.imin.iminapi.model.Order;
+import com.imin.iminapi.model.TicketTier;
 import com.imin.iminapi.predictor.config.PredictorProperties;
 import com.imin.iminapi.predictor.model.ReforecastTrigger;
+import com.imin.iminapi.predictor.service.PredictorMarketingEvents;
 import com.imin.iminapi.predictor.service.ReforecastMilestones;
 import com.imin.iminapi.predictor.service.ReforecastService;
 import com.imin.iminapi.predictor.service.ReforecastTriggerService;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
+import com.imin.iminapi.service.event.SalesMilestoneReachedEvent;
 import com.imin.iminapi.service.ticket.TicketsIssuedEvent;
 import org.junit.jupiter.api.Test;
 
@@ -108,5 +111,39 @@ class ReforecastTriggerServiceTest {
 
         sut.onTicketsIssued(new TicketsIssuedEvent(orderId));
         verify(reforecast, never()).recompute(any(), any());
+    }
+
+    // ---- tier-transition hook (a tier hitting 100% sell-through) ----------------
+
+    @Test
+    void tierSelloutFiresTierTransitionRecompute() {
+        UUID tierId = UUID.randomUUID();
+        TicketTier tier = new TicketTier();
+        tier.setId(tierId);
+        tier.setEventId(eventId);
+        when(tiers.findById(tierId)).thenReturn(Optional.of(tier));
+
+        sut.onSalesMilestone(new SalesMilestoneReachedEvent(tierId, 100));
+        verify(reforecast, times(1)).recompute(eq(eventId), eq(ReforecastTrigger.TIER_TRANSITION));
+    }
+
+    @Test
+    void tierMilestoneBelow100IsNotATierTransition() {
+        sut.onSalesMilestone(new SalesMilestoneReachedEvent(UUID.randomUUID(), 80));
+        verify(reforecast, never()).recompute(any(), any());
+    }
+
+    // ---- campaign hooks --------------------------------------------------------
+
+    @Test
+    void campaignSentFiresCampaignSendRecompute() {
+        sut.onCampaignSent(new PredictorMarketingEvents.CampaignSent(eventId));
+        verify(reforecast, times(1)).recompute(eq(eventId), eq(ReforecastTrigger.CAMPAIGN_SEND));
+    }
+
+    @Test
+    void campaignScheduledFiresCampaignScheduledRecompute() {
+        sut.onCampaignScheduledEvent(new PredictorMarketingEvents.CampaignScheduled(eventId));
+        verify(reforecast, times(1)).recompute(eq(eventId), eq(ReforecastTrigger.CAMPAIGN_SCHEDULED));
     }
 }

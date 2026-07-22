@@ -49,18 +49,21 @@ public class PredictionScoringPipeline {
     private final PredictionInputSnapshotService snapshots;
     private final Stage0Scorer scorer;
     private final PredictionGuardrailValidator validator;
+    private final RecommendationEngine recommendations;
     private final PredictionLedgerService ledger;
     private final PredictorSegmentStatusRepository segmentStatus;
     private final PredictorProperties props;
     private final Clock clock;
 
     public PredictionScoringPipeline(PredictionInputSnapshotService snapshots, Stage0Scorer scorer,
-                                     PredictionGuardrailValidator validator, PredictionLedgerService ledger,
+                                     PredictionGuardrailValidator validator, RecommendationEngine recommendations,
+                                     PredictionLedgerService ledger,
                                      PredictorSegmentStatusRepository segmentStatus,
                                      PredictorProperties props, Clock clock) {
         this.snapshots = snapshots;
         this.scorer = scorer;
         this.validator = validator;
+        this.recommendations = recommendations;
         this.ledger = ledger;
         this.segmentStatus = segmentStatus;
         this.props = props;
@@ -77,13 +80,19 @@ public class PredictionScoringPipeline {
         return props.isBenchmarkOnly();
     }
 
+    /** Overload for callers that do not label the trigger (defaults to unlabeled). */
+    public Scored score(Event e, PredictionInputSnapshot snap) {
+        return score(e, snap, null);
+    }
+
     /**
      * Run one full Stage 0 score for a pre-built snapshot. The caller (request service) has
      * already handled cache short-circuit, quota and throttling — by the time we are here,
      * an LLM call is intended unless the kill switch or double validation failure says
-     * otherwise.
+     * otherwise. {@code trigger} (e.g. "manual", "edit") is stamped into the ledger row's
+     * metadata so system re-scores are distinguishable from organizer requests (§7.3).
      */
-    public Scored score(Event e, PredictionInputSnapshot snap) {
+    public Scored score(Event e, PredictionInputSnapshot snap, String trigger) {
         String hash = snap.sha256();
         PredictorSegmentStatus seg = segmentStatus
                 .findById(PredictorSegmentStatus.key(snap.genreFamily(), bandOf(snap))).orElse(null);
@@ -94,7 +103,7 @@ public class PredictionScoringPipeline {
         boolean qualitativeOverride = seg != null && seg.qualitativeOnly();
 
         if (killSwitchActive()) {
-            return ledgered(e, snap, hash, benchmarkOnly(snap, tier), "kill-switch");
+            return ledgered(e, snap, hash, benchmarkOnly(snap, tier), "kill-switch", trigger);
         }
 
         PredictionGuardrailValidator.Context ctx = context(snap);
@@ -111,15 +120,15 @@ public class PredictionScoringPipeline {
             }
             List<String> errors = validator.validate(out, ctx);
             if (errors.isEmpty()) {
-                PredictionResult result = assemble(out, snap, tier, qualitativeOverride);
-                return ledgered(e, snap, hash, result, null);
+                PredictionResult result = assemble(e, out, snap, tier, qualitativeOverride);
+                return ledgered(e, snap, hash, result, null, trigger);
             }
             log.warn("Guardrail validator rejected attempt {} for event {}: {}", attempt, e.getId(), errors);
             firstErrors = errors;
         }
 
         // Second failure → benchmark-only (the floor, not failure §5). STILL LEDGERED.
-        return ledgered(e, snap, hash, benchmarkOnly(snap, tier), "validator-double-failure");
+        return ledgered(e, snap, hash, benchmarkOnly(snap, tier), "validator-double-failure", trigger);
     }
 
     // ---- tier ladder (§5) ------------------------------------------------------
@@ -139,7 +148,7 @@ public class PredictionScoringPipeline {
 
     // ---- assembly ---------------------------------------------------------------
 
-    private PredictionResult assemble(Stage0Output out, PredictionInputSnapshot snap,
+    private PredictionResult assemble(Event e, Stage0Output out, PredictionInputSnapshot snap,
                                       LanguageTier tier, boolean qualitativeOverride) {
         return new PredictionResult(
                 PredictionSurface.PRE_PUBLISH.wire(),
@@ -149,7 +158,8 @@ public class PredictionScoringPipeline {
                 qualitativeOverride ? null : out.attendanceRange(),   // MAPE tripwire: numeric → qualitative
                 qualitativeOverride ? null : out.revenueRangeMinor(),
                 out.factors(),
-                out.recommendations() == null ? List.of() : out.recommendations(),
+                // Normalize raw candidates → impact-ranked, tier-resolved, momentum-linked, ≤3.
+                recommendations.finalizeForRender(e.getId(), out.recommendations()),
                 comparables(snap),
                 false,
                 scorer.modelId(),
@@ -229,11 +239,11 @@ public class PredictionScoringPipeline {
     // ---- ledger (write-before-render) -------------------------------------------
 
     private Scored ledgered(Event e, PredictionInputSnapshot snap, String hash,
-                            PredictionResult result, String degradeReason) {
+                            PredictionResult result, String degradeReason, String trigger) {
         if (degradeReason != null) {
             log.warn("Predictor degraded to benchmark-only for event {} ({})", e.getId(), degradeReason);
         }
-        String comparablesJson = comparablesLedgerJson(snap.comparables());
+        String comparablesJson = comparablesLedgerJson(snap.comparables(), trigger);
         String outputJson;
         try {
             outputJson = PredictorJson.MAPPER.writeValueAsString(result);
@@ -246,13 +256,19 @@ public class PredictionScoringPipeline {
         return new Scored(ledgerId, result, hash);
     }
 
-    /** Ledger comparables: own ids + cluster stats + relaxation. Foreign ids NEVER (privacy §6.4). */
-    private String comparablesLedgerJson(CorpusLine c) {
+    /**
+     * Ledger comparables: own ids + cluster stats + relaxation, plus the {@code trigger} that
+     * caused this render (task §4: system re-scores stamp "edit"/"manual" so they are
+     * distinguishable in the ledger, mirroring how the re-forecast ledger stamps its trigger).
+     * Foreign ids NEVER (privacy §6.4).
+     */
+    private String comparablesLedgerJson(CorpusLine c, String trigger) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("clusterSize", c.densityTotal());
         m.put("ownCount", c.ownCount());
         m.put("foreignCount", c.foreignCount());
         m.put("relaxation", c.relaxation());
+        if (trigger != null && !trigger.isBlank()) m.put("trigger", trigger);
         m.put("ownIds", c.ownEvents().stream().map(PredictionInputSnapshot.OwnComparableLine::eventId).toList());
         try {
             return PredictorJson.MAPPER.writeValueAsString(m);

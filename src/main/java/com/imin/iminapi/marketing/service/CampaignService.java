@@ -49,6 +49,7 @@ public class CampaignService {
     private final CampaignAttributionService attribution;
     /** Read-only, org-scoped: resolves the recipient log's Person column display names. */
     private final com.imin.iminapi.audience.repository.MembershipRepository memberships;
+    private final org.springframework.context.ApplicationEventPublisher eventPublisher;
 
     public CampaignService(CampaignRepository campaigns,
                            com.imin.iminapi.marketing.repository.CampaignRecipientRepository campaignRecipientRepository,
@@ -56,7 +57,8 @@ public class CampaignService {
                            SegmentService segments, SendGateService sendGate,
                            EmailService email, UserRepository users,
                            CampaignAttributionService attribution,
-                           com.imin.iminapi.audience.repository.MembershipRepository memberships) {
+                           com.imin.iminapi.audience.repository.MembershipRepository memberships,
+                           org.springframework.context.ApplicationEventPublisher eventPublisher) {
         this.campaigns = campaigns;
         this.campaignRecipientRepository = campaignRecipientRepository;
         this.audit = audit;
@@ -66,6 +68,7 @@ public class CampaignService {
         this.users = users;
         this.attribution = attribution;
         this.memberships = memberships;
+        this.eventPublisher = eventPublisher;
     }
 
     @Transactional
@@ -260,7 +263,7 @@ public class CampaignService {
                     "Idempotency-Key header is required");
         }
         // Org-scope + existence check (404 leak-safe if not this org's campaign).
-        campaigns.findByIdAndOrgId(campaignId, principal.orgId())
+        Campaign c = campaigns.findByIdAndOrgId(campaignId, principal.orgId())
                 .orElseThrow(() -> ApiException.notFound("Campaign"));
         Instant when = scheduledAt != null ? scheduledAt : Instant.now();
         int updated = campaigns.markScheduledIfDraft(campaignId, principal.orgId(), when);
@@ -268,6 +271,12 @@ public class CampaignService {
             // Not in draft — duplicate/concurrent send. 409; dispatcher is the sole `sending` path.
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
                     "Campaign is not in draft");
+        }
+        // Predictor trigger (task §4): a campaign scheduled for an event → re-forecast.
+        // AFTER_COMMIT + debounced in ReforecastTriggerService.
+        if (eventPublisher != null && c.getEventId() != null) {
+            eventPublisher.publishEvent(
+                    new com.imin.iminapi.predictor.service.PredictorMarketingEvents.CampaignScheduled(c.getEventId()));
         }
     }
 

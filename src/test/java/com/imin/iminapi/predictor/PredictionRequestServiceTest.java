@@ -2,9 +2,14 @@ package com.imin.iminapi.predictor;
 
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.UserRole;
+import com.imin.iminapi.predictor.dto.PredictionFeedbackRequest;
 import com.imin.iminapi.predictor.dto.PredictionResult;
+import com.imin.iminapi.predictor.dto.PredictionResult.ActionTarget;
+import com.imin.iminapi.predictor.dto.PredictionResult.Recommendation;
+import com.imin.iminapi.predictor.model.FeedbackType;
 import com.imin.iminapi.predictor.model.PredictionLedger;
 import com.imin.iminapi.predictor.model.PredictionSurface;
+import com.imin.iminapi.predictor.model.ReforecastTrigger;
 import com.imin.iminapi.predictor.repository.PredictionLedgerRepository;
 import com.imin.iminapi.predictor.service.PredictionInputSnapshot;
 import com.imin.iminapi.predictor.service.PredictionLedgerService;
@@ -47,11 +52,21 @@ class PredictionRequestServiceTest {
     private final PredictionLedgerRepository ledgerRepo = mock(PredictionLedgerRepository.class);
     private final PredictionLedgerService ledgerService = mock(PredictionLedgerService.class);
     private final PredictionScoringPipeline pipeline = mock(PredictionScoringPipeline.class);
+    // Real engine over mocked repos: applyDismissals short-circuits on empty recommendations,
+    // so no repo stubbing is needed for these ordering tests.
+    private final com.imin.iminapi.predictor.service.RecommendationEngine recommendations =
+            new com.imin.iminapi.predictor.service.RecommendationEngine(
+                    mock(com.imin.iminapi.repository.TicketTierRepository.class),
+                    mock(com.imin.iminapi.marketing.repository.MomentumSuggestionRepository.class),
+                    mock(com.imin.iminapi.predictor.repository.PredictionFeedbackRepository.class));
+    private final com.imin.iminapi.predictor.service.ReforecastTriggerService reforecastTrigger =
+            mock(com.imin.iminapi.predictor.service.ReforecastTriggerService.class);
     private final AiQuotaService quota = mock(AiQuotaService.class);
     private final RateLimiter limiter = mock(RateLimiter.class);
 
     private final PredictionRequestService sut = new PredictionRequestService(
-            events, ledgerRepo, ledgerService, pipeline, quota, limiter, Runnable::run);
+            events, ledgerRepo, ledgerService, pipeline, recommendations, reforecastTrigger,
+            quota, limiter, Runnable::run);
 
     private final UUID eventId = UUID.randomUUID();
     private final UUID orgId = UUID.randomUUID();
@@ -73,7 +88,7 @@ class PredictionRequestServiceTest {
                 null, null, "SUMMER", 30, "EUR", List.of(), List.of(), 10, 2, true, List.of(),
                 new PredictionInputSnapshot.CorpusLine("NONE", 0, 0, 0, List.of(), null));
         when(pipeline.snapshot(event)).thenReturn(snap);
-        when(pipeline.score(any(), any())).thenReturn(new PredictionScoringPipeline.Scored(
+        when(pipeline.score(any(), any(), any())).thenReturn(new PredictionScoringPipeline.Scored(
                 UUID.randomUUID(), benchmark(), snap.sha256()));
     }
 
@@ -98,7 +113,7 @@ class PredictionRequestServiceTest {
         assertThat(t.body().cached()).isTrue();
         verify(limiter, never()).consume(anyString(), anyString());
         verify(quota, never()).checkAndRecordScore(any());
-        verify(pipeline, never()).score(any(), any());
+        verify(pipeline, never()).score(any(), any(), any());
     }
 
     @Test
@@ -118,7 +133,7 @@ class PredictionRequestServiceTest {
         assertThat(t.httpStatus()).isEqualTo(202);
         verify(limiter).consume(eq("predictor-rescore"), anyString());
         verify(quota).checkAndRecordScore(principal);
-        verify(pipeline).score(eq(event), any());
+        verify(pipeline).score(eq(event), any(), any());
     }
 
     @Test
@@ -130,6 +145,46 @@ class PredictionRequestServiceTest {
         assertThat(t.httpStatus()).isEqualTo(202);
         verify(limiter).consume(eq("predictor-rescore"), anyString());
         verify(quota, never()).checkAndRecordScore(any()); // benchmark-only is free
-        verify(pipeline).score(eq(event), any());
+        verify(pipeline).score(eq(event), any(), any());
+    }
+
+    // ---- feedback: dismissal fingerprint + executed→reforecast loop (86cav47a5/86cav479w) ----
+
+    @Test
+    void executedFeedbackFiresActionExecutedReforecast() throws Exception {
+        stubLatestRenderWithRecommendation("rec1");
+
+        sut.feedback(principal, eventId, new PredictionFeedbackRequest("rec1", "executed"));
+
+        // executor is Runnable::run (synchronous) → the recompute is observable here.
+        verify(reforecastTrigger).requestRecompute(eq(eventId), eq(ReforecastTrigger.ACTION_EXECUTED));
+        // executed rows carry no fingerprint (an execution never suppresses).
+        verify(ledgerService).recordFeedback(any(), eq(eventId), eq("rec1"), eq(FeedbackType.EXECUTED), eq(null));
+    }
+
+    @Test
+    void dismissedFeedbackStampsFingerprintAndDoesNotReforecast() throws Exception {
+        stubLatestRenderWithRecommendation("rec1");
+
+        sut.feedback(principal, eventId, new PredictionFeedbackRequest("rec1", "dismissed"));
+
+        verify(ledgerService).recordFeedback(any(), eq(eventId), eq("rec1"), eq(FeedbackType.DISMISSED),
+                org.mockito.ArgumentMatchers.argThat(fp -> fp != null && fp.length() == 64));
+        verify(reforecastTrigger, never()).requestRecompute(any(), any());
+    }
+
+    /** A latest PRE_PUBLISH ledger row whose render carries one recommendation with the given id. */
+    private void stubLatestRenderWithRecommendation(String recId) throws Exception {
+        Recommendation rec = new Recommendation(recId, "Lower Early Bird", "priced above band",
+                "HIGH", "tier_edit", new ActionTarget(UUID.randomUUID(), 1500, null, null));
+        PredictionResult render = new PredictionResult("pre_publish", 0, "C", null, null, null,
+                List.of(), List.of(rec), null, false, "m", "1.1.0", Instant.now());
+        PredictionLedger row = new PredictionLedger();
+        row.setId(UUID.randomUUID());
+        row.setEventId(eventId);
+        row.setSurface(PredictionSurface.PRE_PUBLISH);
+        row.setInputSnapshotHash("h");
+        row.setOutputJson(PredictorJson.MAPPER.writeValueAsString(render));
+        when(ledgerRepo.findByEventIdOrderByCreatedAtDesc(eventId)).thenReturn(List.of(row));
     }
 }

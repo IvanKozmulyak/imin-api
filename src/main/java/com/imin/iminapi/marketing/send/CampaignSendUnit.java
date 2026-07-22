@@ -2,8 +2,10 @@ package com.imin.iminapi.marketing.send;
 
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
+import com.imin.iminapi.predictor.service.PredictorMarketingEvents;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -25,12 +27,14 @@ public class CampaignSendUnit {
     private final CampaignRepository campaigns;
     private final RecipientMaterializer materializer;
     private final EmailChannelSender emailSender;
+    private final ApplicationEventPublisher eventPublisher;
 
     public CampaignSendUnit(CampaignRepository campaigns, RecipientMaterializer materializer,
-                            EmailChannelSender emailSender) {
+                            EmailChannelSender emailSender, ApplicationEventPublisher eventPublisher) {
         this.campaigns = campaigns;
         this.materializer = materializer;
         this.emailSender = emailSender;
+        this.eventPublisher = eventPublisher;
     }
 
     @Transactional
@@ -48,6 +52,11 @@ public class CampaignSendUnit {
         c.setStatus("sent");
         c.setSentAt(Instant.now());
         campaigns.save(c);
+        // Predictor trigger (task §4): a completed send may have moved sales — re-forecast.
+        // AFTER_COMMIT + debounced in ReforecastTriggerService, so it never rides this send tx.
+        if (c.getEventId() != null) {
+            eventPublisher.publishEvent(new PredictorMarketingEvents.CampaignSent(c.getEventId()));
+        }
     }
 
     @Transactional

@@ -4,10 +4,12 @@ import com.imin.iminapi.model.Event;
 import com.imin.iminapi.predictor.dto.PredictionFeedbackRequest;
 import com.imin.iminapi.predictor.dto.PredictionResult;
 import com.imin.iminapi.predictor.dto.PredictionStatusResponse;
+import com.imin.iminapi.predictor.dto.PredictionResult.Recommendation;
 import com.imin.iminapi.predictor.dto.PredictionTriggerResponse;
 import com.imin.iminapi.predictor.model.FeedbackType;
 import com.imin.iminapi.predictor.model.PredictionLedger;
 import com.imin.iminapi.predictor.model.PredictionSurface;
+import com.imin.iminapi.predictor.model.ReforecastTrigger;
 import com.imin.iminapi.predictor.repository.PredictionLedgerRepository;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.security.ApiException;
@@ -60,18 +62,23 @@ public class PredictionRequestService {
     private final PredictionLedgerRepository ledgerRepo;
     private final PredictionLedgerService ledgerService;
     private final PredictionScoringPipeline pipeline;
+    private final RecommendationEngine recommendations;
+    private final ReforecastTriggerService reforecastTrigger;
     private final AiQuotaService quota;
     private final RateLimiter rateLimiter;
     private final Executor executor;
 
     public PredictionRequestService(EventRepository events, PredictionLedgerRepository ledgerRepo,
                                     PredictionLedgerService ledgerService, PredictionScoringPipeline pipeline,
+                                    RecommendationEngine recommendations, ReforecastTriggerService reforecastTrigger,
                                     AiQuotaService quota, RateLimiter rateLimiter,
                                     @Qualifier("predictorScoreExecutor") Executor executor) {
         this.events = events;
         this.ledgerRepo = ledgerRepo;
         this.ledgerService = ledgerService;
         this.pipeline = pipeline;
+        this.recommendations = recommendations;
+        this.reforecastTrigger = reforecastTrigger;
         this.quota = quota;
         this.rateLimiter = rateLimiter;
         this.executor = executor;
@@ -98,8 +105,11 @@ public class PredictionRequestService {
             PredictionResult cached = parseResult(latest);
             if (cached != null) {
                 // Unchanged input → the prior ledger row IS the answer. No LLM, no new row.
+                // Dismissal memory still applies at serve time (task 86cav47a5).
+                RecommendationEngine.Filtered f = recommendations.applyDismissals(eventId, cached.recommendations());
+                PredictionResult served = cached.withRecommendations(f.recommendations());
                 return new Trigger(200, new PredictionTriggerResponse(
-                        latest.getId(), PredictionStatusResponse.STATUS_READY, true, cached));
+                        latest.getId(), PredictionStatusResponse.STATUS_READY, true, served, f.dismissedCount()));
             }
         }
 
@@ -124,7 +134,7 @@ public class PredictionRequestService {
         try {
             // Ledger write happens INSIDE the pipeline before it returns (write-before-render);
             // only after that does the pending flag clear and GET flip to ready.
-            pipeline.score(e, snap);
+            pipeline.score(e, snap, "manual"); // organizer-requested re-score (ledger trigger stamp)
         } catch (Exception ex) {
             // Pipeline degrades LLM/validator failures to benchmark-only itself; landing here
             // means infrastructure failed (e.g. DB write). Status falls back to latest/none.
@@ -160,7 +170,12 @@ public class PredictionRequestService {
         String status = result.benchmarkOnly()
                 ? PredictionStatusResponse.STATUS_FAILED_BENCHMARK_ONLY
                 : PredictionStatusResponse.STATUS_READY;
-        return new PredictionStatusResponse(status, result, latest.getInputSnapshotHash(), latest.getCreatedAt());
+        // Serve-time dismissal memory (task 86cav47a5): filter recommendations, expose the
+        // suppressed count. ≤3 is re-asserted inside applyDismissals AFTER filtering.
+        RecommendationEngine.Filtered f = recommendations.applyDismissals(eventId, result.recommendations());
+        PredictionResult served = result.withRecommendations(f.recommendations());
+        return new PredictionStatusResponse(status, served, latest.getInputSnapshotHash(),
+                latest.getCreatedAt(), f.dismissedCount());
     }
 
     // ---- POST /events/{id}/prediction/feedback -----------------------------------
@@ -172,13 +187,40 @@ public class PredictionRequestService {
             type = FeedbackType.fromWire(req.type());
         } catch (IllegalArgumentException ex) {
             throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID,
-                    "type must be one of: dismissed, executed", Map.of("type", "invalid"));
+                    "type must be one of: dismissed, executed, restored", Map.of("type", "invalid"));
         }
         PredictionLedger latest = latestRow(eventId);
         if (latest == null) {
             throw ApiException.invalidState("No prediction exists for this event");
         }
-        ledgerService.recordFeedback(latest.getId(), eventId, req.recommendationId(), type);
+        // Dismissal memory (task 86cav47a5): stamp the fingerprint of the targeted recommendation
+        // on dismissed/restored rows (compute-on-write) so serve-time filtering is a pure compare.
+        // Executed rows carry no fingerprint (an execution never suppresses).
+        String fingerprint = (type == FeedbackType.EXECUTED)
+                ? null
+                : fingerprintOf(latest, req.recommendationId());
+        ledgerService.recordFeedback(latest.getId(), eventId, req.recommendationId(), type, fingerprint);
+
+        // Loop closes (spec §4.3, task 86cav479w): executing a recommendation triggers a
+        // re-forecast recompute so the organizer sees the forecast move. Off the request thread
+        // (debounced + idempotent inside the trigger service); the 204 does not wait on it.
+        if (type == FeedbackType.EXECUTED) {
+            executor.execute(() -> reforecastTrigger.requestRecompute(eventId, ReforecastTrigger.ACTION_EXECUTED));
+        }
+    }
+
+    /**
+     * The dismissal fingerprint of the recommendation with {@code recommendationId} in a ledger
+     * render, or null when it is not (or no longer) in that render — a fingerprint can only be
+     * derived from a real served recommendation, never invented.
+     */
+    private String fingerprintOf(PredictionLedger row, String recommendationId) {
+        PredictionResult render = parseResult(row);
+        if (render == null || render.recommendations() == null || recommendationId == null) return null;
+        for (Recommendation r : render.recommendations()) {
+            if (recommendationId.equals(r.id())) return RecommendationEngine.fingerprint(r);
+        }
+        return null;
     }
 
     // ---- helpers -----------------------------------------------------------------

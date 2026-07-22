@@ -14,6 +14,14 @@ import java.util.List;
  * <p>Trust rules baked into the shape (spec §5): probabilities are BANDS, attendance and
  * revenue are RANGES — there is nowhere to put a point estimate. {@code benchmarkOnly=true}
  * means no forward-looking numbers at all (corpus aggregates only) — the floor, not failure.
+ *
+ * <p><b>Recommendation contract amended (2026-07-22, task 86cav479z/86cav479w/86cav47a5):</b>
+ * a served {@link Recommendation} now carries an {@code impact} tag (HIGH|MED, list ordered
+ * impact-descending) and a STRUCTURED {@link ActionTarget} (resolved {@code tierId}, folded
+ * {@code suggestedPriceMinor}/{@code suggestedDateIso}, and a {@code momentumSuggestionId}
+ * deep-link for campaign actions) in place of the old free-text {@code actionTarget}. The raw
+ * LLM emits {@link com.imin.iminapi.predictor.service.Stage0Scorer.RecCandidate}; the
+ * {@code RecommendationEngine} normalizes it into this shape before ledger + serve.
  */
 @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
 public record PredictionResult(
@@ -32,6 +40,13 @@ public record PredictionResult(
         Instant generatedAt
 ) {
 
+    /** Copy with a filtered/re-ordered recommendation list (serve-time dismissal filtering). */
+    public PredictionResult withRecommendations(List<Recommendation> recs) {
+        return new PredictionResult(surface, stage, confidenceTier, selloutBand, attendanceRange,
+                revenueRangeMinor, factors, recs, comparables, benchmarkOnly, modelId, promptVersion,
+                generatedAt);
+    }
+
     /** Probability band in whole percent, e.g. 55–75. */
     public record Band(int lowPct, int highPct) {}
 
@@ -45,15 +60,36 @@ public record PredictionResult(
     public record Factor(String text, String direction, String evidence) {}
 
     /**
-     * One setup recommendation. {@code actionType}: adjust_price | adjust_capacity |
-     * change_date | add_tier | adjust_tiers | add_promo | other. {@code actionTarget} is the
-     * surface hint the FE deep-links with (e.g. "tiers", "schedule"). {@code priceMinor} /
-     * {@code dateIso} carry the concrete suggestion when the recommendation is numeric so the
-     * validator can bound it.
+     * One served setup recommendation (spec §4.3; tasks 86cav479w/86cav479z/86cav47a5).
+     *
+     * <p>{@code impact}: HIGH | MED — the recommendation list is ordered impact-descending
+     * (all HIGH before any MED), deterministic tiebreak by id.
+     *
+     * <p>{@code actionType}: the closed set the FE deep-links against — {@code campaign} (routes
+     * into the momentum surface), {@code tier_edit}, {@code tier_add}, {@code tier_transition},
+     * {@code promo_create}, {@code capacity}, {@code announce}. {@code actionTarget} is the
+     * structured deep-link payload; null when the model gave no resolvable target.
      */
+    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
     public record Recommendation(String id, String claim, String evidence,
-                                 String actionType, String actionTarget,
-                                 Integer priceMinor, String dateIso) {}
+                                 String impact, String actionType, ActionTarget actionTarget) {}
+
+    /**
+     * Structured deep-link payload for a recommendation (BE of task 86cav479z). Every field is
+     * nullable and omitted when absent (NON_NULL):
+     * <ul>
+     *   <li>{@code tierId} — a REAL tier of this event, fuzzy-matched from the model's tier
+     *       reference; null (never invented) when no tier matched.</li>
+     *   <li>{@code suggestedPriceMinor} / {@code suggestedDateIso} — the concrete numeric
+     *       suggestion the guardrail validator bounded (price 0.5×–2× current, date in future).</li>
+     *   <li>{@code momentumSuggestionId} — set for {@code campaign} actions when the marketing
+     *       momentum engine has a LIVE suggestion for this event, so the FE deep-links into the
+     *       exact momentum card; null → the FE falls back to the momentum surface generally.</li>
+     * </ul>
+     */
+    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+    public record ActionTarget(java.util.UUID tierId, Integer suggestedPriceMinor,
+                               String suggestedDateIso, java.util.UUID momentumSuggestionId) {}
 
     /**
      * What the estimate leaned on — cluster size, relaxation applied, filters, aggregates.

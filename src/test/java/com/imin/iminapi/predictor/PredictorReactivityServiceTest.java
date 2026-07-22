@@ -92,7 +92,7 @@ class PredictorReactivityServiceTest {
     void draftEditDoesNotScoreWhenNeverScored() {
         event(EventStatus.DRAFT); // no prediction seeded
         sut.onEventMutated(new PredictorReactivityEvents.EventMutated(eventId));
-        verify(pipeline, never()).score(any(), any());
+        verify(pipeline, never()).score(any(), any(), any());
     }
 
     @Test
@@ -100,7 +100,7 @@ class PredictorReactivityServiceTest {
         event(EventStatus.DRAFT);
         seedPrediction("HASH_OLD"); // differs from the new snapshot hash
         sut.onEventMutated(new PredictorReactivityEvents.EventMutated(eventId));
-        verify(pipeline, times(1)).score(any(), any());
+        verify(pipeline, times(1)).score(any(), any(), any());
     }
 
     @Test
@@ -108,7 +108,7 @@ class PredictorReactivityServiceTest {
         event(EventStatus.DRAFT);
         seedPrediction("HASH_NEW"); // equals the new snapshot hash → no-op
         sut.onEventMutated(new PredictorReactivityEvents.EventMutated(eventId));
-        verify(pipeline, never()).score(any(), any());
+        verify(pipeline, never()).score(any(), any(), any());
     }
 
     // ---- live re-forecast + debounce -------------------------------------------

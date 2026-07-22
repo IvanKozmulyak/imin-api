@@ -30,21 +30,37 @@ public class Stage0Scorer {
      * comparability across ledger rows dies silently (spec §7.3). Patch = wording tweak,
      * minor = new instruction/field, major = restructure.
      */
-    public static final String PROMPT_VERSION = "1.0.0";
+    public static final String PROMPT_VERSION = "1.1.0";
 
     /** Low temperature: numeric JSON stability over creativity (spec §7.2). */
     private static final double TEMPERATURE = 0.2;
 
     /**
      * The LLM-facing output shape. Kept separate from {@link PredictionResult} so the model
-     * only ever sees/produces the estimate fields — never tier, provenance or metadata.
+     * only ever sees/produces the estimate fields — never tier, provenance or metadata. Its
+     * {@link RecCandidate} recommendations are RAW: the {@code RecommendationEngine} resolves
+     * their tier reference to a real {@code tierId} and folds price/date into a structured
+     * {@link PredictionResult.ActionTarget} before render.
      */
     public record Stage0Output(
             PredictionResult.Band selloutBand,
             PredictionResult.Range attendanceRange,
             PredictionResult.LongRange revenueRangeMinor,
             List<PredictionResult.Factor> factors,
-            List<PredictionResult.Recommendation> recommendations) {}
+            List<RecCandidate> recommendations) {}
+
+    /**
+     * A raw recommendation as the model emits it (task 86cav479w/86cav479z). {@code impact}:
+     * HIGH | MED (the model ranks by expected impact and the list must be impact-descending).
+     * {@code actionType}: the closed set {campaign, tier_edit, tier_add, tier_transition,
+     * promo_create, capacity, announce}. {@code tierRef} is a free-text reference to the tier
+     * the recommendation concerns (e.g. "Early Bird") — the engine fuzzy-matches it to a real
+     * tier id. {@code priceMinor}/{@code dateIso} are the concrete numeric suggestion the
+     * guardrail validator bounds and the engine folds into the structured target.
+     */
+    public record RecCandidate(String id, String claim, String evidence, String impact,
+                               String actionType, String tierRef,
+                               Integer priceMinor, String dateIso) {}
 
     private final ChatClient chat;
     private final PredictorProperties props;
@@ -106,11 +122,21 @@ public class Stage0Scorer {
                   a calendar fact, a pricing fact — never vibes).
                 - 0 to 3 setup recommendations, ONLY where the draft deviates materially from what
                   the evidence supports. No evidence, no recommendation — an empty list is a valid
-                  answer. Each has: id (short slug), claim, evidence, actionType (one of:
-                  adjust_price | adjust_capacity | change_date | add_tier | adjust_tiers |
-                  add_promo | other), actionTarget (one of: tiers | schedule | promos | capacity |
-                  other). Recommended prices must stay within 0.5x-2x of current tier prices
-                  (set priceMinor). Recommended dates must be in the future (set dateIso, ISO-8601).
+                  answer. RANK them by expected impact and ORDER the list impact-descending: all
+                  HIGH-impact recommendations before any MED-impact one. Each has:
+                    id (short stable slug),
+                    claim, evidence,
+                    impact (exactly "HIGH" or "MED"),
+                    actionType (one of: campaign | tier_edit | tier_add | tier_transition |
+                      promo_create | capacity | announce),
+                    tierRef (the NAME of the specific tier this concerns, e.g. "Early Bird", or
+                      omit when it targets no single tier),
+                    priceMinor (a suggested price in minor units — set ONLY for tier_edit/tier_add
+                      price moves; must stay within 0.5x-2x of current tier prices),
+                    dateIso (a suggested future date, ISO-8601 — set ONLY for tier_transition /
+                      date moves).
+                  Use actionType "campaign" for "send/announce to your audience" opportunities —
+                  the platform routes these into its existing campaign momentum surface.
                 """);
 
         sb.append("\nLANGUAGE TIER (earned by data density, not negotiable): ").append(tier.name()).append('\n');

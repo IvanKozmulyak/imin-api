@@ -74,9 +74,17 @@ public class PredictionGuardrailValidator {
     static final int RECOMMENDATIONS_MAX = 3;
 
     private static final Set<String> DIRECTIONS = Set.of("supporting", "opposing");
-    private static final Set<String> ACTION_TYPES = Set.of(
-            "adjust_price", "adjust_capacity", "change_date", "add_tier", "adjust_tiers",
-            "add_promo", "other");
+
+    /**
+     * The closed action-type set the FE deep-links against (task 86cav479z). Any other value is
+     * rejected and fed back to the model. {@code campaign} routes into the momentum surface.
+     */
+    static final Set<String> ACTION_TYPES = Set.of(
+            "campaign", "tier_edit", "tier_add", "tier_transition", "promo_create",
+            "capacity", "announce");
+
+    /** Impact tags, ranked HIGH &gt; MED (task 86cav479w). The list must be impact-descending. */
+    static final Set<String> IMPACTS = Set.of("HIGH", "MED");
 
     /**
      * The §5 banned-phrase list: certainty language a range-based product must never emit,
@@ -175,19 +183,30 @@ public class PredictionGuardrailValidator {
             }
         }
 
-        // ---- P: recommendations ≤3, complete, priced within 0.5x-2x, dated in the future
-        List<PredictionResult.Recommendation> recs = out.recommendations() == null ? List.of() : out.recommendations();
+        // ---- P: recommendations ≤3, complete, impact-ranked+descending, priced 0.5x-2x, dated future
+        List<Stage0Scorer.RecCandidate> recs = out.recommendations() == null ? List.of() : out.recommendations();
         if (recs.size() > RECOMMENDATIONS_MAX) {
             errors.add("recommendations must contain at most " + RECOMMENDATIONS_MAX + ", got " + recs.size());
         }
         Set<String> seenIds = new HashSet<>();
+        boolean sawMed = false; // once a MED appears, no HIGH may follow (impact-descending, §4.3/86cav479w)
         for (int i = 0; i < recs.size(); i++) {
-            PredictionResult.Recommendation r = recs.get(i);
+            Stage0Scorer.RecCandidate r = recs.get(i);
             if (r == null) { errors.add("recommendations[" + i + "] is null"); continue; }
             if (isBlank(r.id())) errors.add("recommendations[" + i + "].id is empty");
             else if (!seenIds.add(r.id())) errors.add("recommendations[" + i + "].id duplicates another recommendation");
             if (isBlank(r.claim())) errors.add("recommendations[" + i + "].claim is empty");
             if (isBlank(r.evidence())) errors.add("recommendations[" + i + "].evidence is empty - no evidence, no recommendation");
+            String impact = r.impact() == null ? null : r.impact().toUpperCase(Locale.ROOT);
+            if (impact == null || !IMPACTS.contains(impact)) {
+                errors.add("recommendations[" + i + "].impact must be one of " + IMPACTS);
+            } else {
+                if ("MED".equals(impact)) sawMed = true;
+                else if (sawMed) { // a HIGH after a MED = list not impact-descending
+                    errors.add("recommendations must be ordered impact-descending (HIGH before MED): "
+                            + "recommendations[" + i + "] is HIGH but a MED-impact recommendation precedes it");
+                }
+            }
             if (r.actionType() == null || !ACTION_TYPES.contains(r.actionType().toLowerCase(Locale.ROOT))) {
                 errors.add("recommendations[" + i + "].actionType must be one of " + ACTION_TYPES);
             }
@@ -225,7 +244,7 @@ public class PredictionGuardrailValidator {
             }
         }
         for (int i = 0; i < recs.size(); i++) {
-            PredictionResult.Recommendation r = recs.get(i);
+            Stage0Scorer.RecCandidate r = recs.get(i);
             if (r == null) continue;
             bannedSweep(errors, "recommendations[" + i + "].claim", r.claim());
             bannedSweep(errors, "recommendations[" + i + "].evidence", r.evidence());
