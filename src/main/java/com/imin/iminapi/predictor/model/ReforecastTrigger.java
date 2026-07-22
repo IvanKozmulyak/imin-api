@@ -13,6 +13,10 @@ public enum ReforecastTrigger {
     TIER_TRANSITION,
     /** A marketing campaign send completed. */
     CAMPAIGN_SEND,
+    /** An organizer edited a live event (price/date/capacity/tier/promo). */
+    EDIT,
+    /** Baseline re-forecast fired the moment a previously-scored draft was published. */
+    PUBLISH,
     /** Organizer hit the throttled manual refresh. */
     MANUAL
 }

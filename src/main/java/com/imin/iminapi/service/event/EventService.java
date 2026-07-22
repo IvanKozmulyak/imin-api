@@ -55,6 +55,13 @@ public class EventService {
      */
     private final ConceptRepository concepts;
 
+    /**
+     * Optional predictor reactivity publisher (task scope B). Nullable in legacy test
+     * constructors; when present, {@link #patch} and {@link #publish} emit AFTER_COMMIT domain
+     * events so the predictor re-scores / re-forecasts in step with organizer edits.
+     */
+    private final org.springframework.context.ApplicationEventPublisher eventPublisher;
+
     /** Legacy 8-arg constructor used by existing unit tests that don't wire audit. */
     public EventService(EventRepository events, TicketTierRepository tiers,
                         PromoCodeRepository promos, PredictionRepository predictions,
@@ -86,6 +93,19 @@ public class EventService {
                 auditLogger, outcomeService, null);
     }
 
+    /** 11-arg constructor (pre-scope-B) used by tests that don't wire predictor reactivity. */
+    public EventService(EventRepository events, TicketTierRepository tiers,
+                        PromoCodeRepository promos, PredictionRepository predictions,
+                        EventValidator validator, IfMatchSupport ifMatch,
+                        TicketTierService tierService,
+                        StripeConnectService stripeConnect,
+                        AuditLogger auditLogger,
+                        EventOutcomeService outcomeService,
+                        ConceptRepository concepts) {
+        this(events, tiers, promos, predictions, validator, ifMatch, tierService, stripeConnect,
+                auditLogger, outcomeService, concepts, null);
+    }
+
     /** Primary constructor — Spring picks this one in the running app. */
     @org.springframework.beans.factory.annotation.Autowired
     public EventService(EventRepository events, TicketTierRepository tiers,
@@ -95,7 +115,8 @@ public class EventService {
                         StripeConnectService stripeConnect,
                         AuditLogger auditLogger,
                         EventOutcomeService outcomeService,
-                        ConceptRepository concepts) {
+                        ConceptRepository concepts,
+                        org.springframework.context.ApplicationEventPublisher eventPublisher) {
         this.events = events;
         this.tiers = tiers;
         this.promos = promos;
@@ -107,6 +128,7 @@ public class EventService {
         this.auditLogger = auditLogger;
         this.outcomeService = outcomeService;
         this.concepts = concepts;
+        this.eventPublisher = eventPublisher;
     }
 
     private void audit(AuthPrincipal p, String action, String targetType, UUID targetId, String summary) {
@@ -179,6 +201,15 @@ public class EventService {
             audit(p, AuditActions.EVENT_UPDATED, "event", e.getId(),
                     "Updated event \"" + eventLabel(e) + "\"");
         }
+        // Predictor reactivity (scope B): a material edit (event fields, tiers or promos) re-scores
+        // a scored draft / re-forecasts a live event. Published AFTER_COMMIT; the listener debounces
+        // autosave bursts and never scores an event the organizer has not already scored.
+        boolean touched = changed
+                || (body != null && body.tiers() != null)
+                || (body != null && body.promoCodes() != null);
+        if (touched && eventPublisher != null) {
+            eventPublisher.publishEvent(new com.imin.iminapi.predictor.service.PredictorReactivityEvents.EventMutated(e.getId()));
+        }
         return detail(p, id);
     }
 
@@ -203,6 +234,11 @@ public class EventService {
         }
         audit(p, AuditActions.EVENT_PUBLISHED, "event", e.getId(),
                 "Published event \"" + eventLabel(e) + "\"");
+        // Predictor reactivity (scope B): baseline re-forecast the moment a previously-scored draft
+        // goes live (the listener no-ops when the draft was never scored).
+        if (eventPublisher != null) {
+            eventPublisher.publishEvent(new com.imin.iminapi.predictor.service.PredictorReactivityEvents.EventPublished(e.getId()));
+        }
         return detail(p, id);
     }
 
