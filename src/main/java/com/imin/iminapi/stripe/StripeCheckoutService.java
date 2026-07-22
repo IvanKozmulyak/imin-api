@@ -202,8 +202,8 @@ public class StripeCheckoutService {
                 throw e;
             }
             // Best-effort confirmation email; failures are logged inside the service.
-            List<Ticket> issued = freeCheckoutService.findOrderTickets(order.getId());
-            freeCheckoutService.sendConfirmation(order, event, issued);
+            // Branded ticket-issued email now rides TicketsIssuedEvent (published inside
+            // issueFreeOrder) — same renderer/template as the paid path; no inline send.
             return freeCheckoutService.orderUrl(order);
         }
 

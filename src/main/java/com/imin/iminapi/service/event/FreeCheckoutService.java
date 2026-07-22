@@ -49,6 +49,7 @@ public class FreeCheckoutService {
     private final EmailService email;
     private final EmailProperties emailProps;
     private final Clock clock;
+    private final org.springframework.context.ApplicationEventPublisher publisher;
 
     public FreeCheckoutService(OrderRepository orders,
                                 TicketRepository tickets,
@@ -56,7 +57,8 @@ public class FreeCheckoutService {
                                 InventoryService inventory,
                                 EmailService email,
                                 EmailProperties emailProps,
-                                Clock clock) {
+                                Clock clock,
+                                org.springframework.context.ApplicationEventPublisher publisher) {
         this.orders = orders;
         this.tickets = tickets;
         this.promos = promos;
@@ -64,6 +66,7 @@ public class FreeCheckoutService {
         this.email = email;
         this.emailProps = emailProps;
         this.clock = clock;
+        this.publisher = publisher;
     }
 
     /**
@@ -130,6 +133,11 @@ public class FreeCheckoutService {
             t.setTierName(tier.getName());
             tickets.save(t);
         }
+        // Same post-issuance event as the paid path (PaidCheckoutService). AFTER_COMMIT
+        // listeners deliver the branded ticket-issued email (TicketIssuanceEmailer),
+        // audience membership projection, sales-milestone notifications, and the
+        // predictor reforecast trigger — the free path must not silently skip them.
+        publisher.publishEvent(new com.imin.iminapi.service.ticket.TicketsIssuedEvent(order.getId()));
         return order;
     }
 

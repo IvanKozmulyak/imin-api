@@ -351,7 +351,8 @@ class StripeCheckoutServiceTest {
                 org.mockito.ArgumentMatchers.isNull(),
                 org.mockito.ArgumentMatchers.anyBoolean(), org.mockito.ArgumentMatchers.anyBoolean(),
                 any());
-        verify(freeCheckoutService).sendConfirmation(eq(order), any(), any());
+        // Branded email + downstream side effects now ride TicketsIssuedEvent published
+        // inside issueFreeOrder — no inline confirmation call to verify here.
         // Stripe must NOT be called for free orders.
         verify(sessionService, never()).create(any(SessionCreateParams.class));
     }
