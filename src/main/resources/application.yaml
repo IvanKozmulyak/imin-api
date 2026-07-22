@@ -154,7 +154,7 @@ imin:
     # Flat per-ticket platform fee in minor units (cents). 99 = €0.99.
     application-fee-fixed-minor: ${STRIPE_APPLICATION_FEE_FIXED_MINOR:99}
     # Base URL for the buyer's success/cancel pages (imin-public).
-    public-return-url-base: ${STRIPE_PUBLIC_RETURN_URL_BASE:http://localhost:3000}
+    public-return-url-base: ${STRIPE_PUBLIC_RETURN_URL_BASE:https://app.imin.wtf}
     # Fallback base URL for the organizer's Connect onboarding return/refresh (imin-webapp).
     return-url-base: ${STRIPE_RETURN_URL_BASE:http://localhost:5173}
     # Stripe Checkout session TTL in minutes. Stripe's documented minimum is 30
@@ -178,10 +178,10 @@ imin:
     reply-to: ${IMIN_EMAIL_REPLY_TO:}
     # Organizer dashboard host (imin-webapp). Used in password-reset and
     # account-notification emails. In prod: https://dashboard.imin.wtf.
-    app-base-url: ${IMIN_APP_BASE_URL:http://localhost:3000}
+    app-base-url: ${IMIN_APP_BASE_URL:https://dashboard.imin.wtf}
     # Public buyer site host (imin-public). Used in ticket-issuance, free-flow
     # confirmation, and order-recovery emails. In prod: https://app.imin.wtf.
-    buyer-site-base-url: ${IMIN_BUYER_SITE_BASE_URL:http://localhost:3000}
+    buyer-site-base-url: ${IMIN_BUYER_SITE_BASE_URL:https://app.imin.wtf}
     # Imin's internal notification inbox for new refund requests. When blank,
     # falls back to reply-to, then from-address (see EmailProperties#resolveRefundRequestInbox).
     refund-request-inbox: ${IMIN_REFUND_REQUEST_INBOX:}
@@ -195,7 +195,7 @@ imin:
     from-name: ${IMIN_MARKETING_FROM_NAME:Alex}
     # Public host (imin-public) that serves the /optout confirmation page and hosts
     # the RFC 8058 unsubscribe link. In prod: https://app.imin.wtf.
-    unsubscribe-base-url: ${IMIN_MARKETING_UNSUBSCRIBE_BASE_URL:http://localhost:3000}
+    unsubscribe-base-url: ${IMIN_MARKETING_UNSUBSCRIBE_BASE_URL:https://app.imin.wtf}
     resend-webhook:
       # Svix signing secret from the Resend dashboard ("whsec_..."). Verifies the
       # inbound POST /api/v1/public/webhooks/resend delivery events. Blank => every

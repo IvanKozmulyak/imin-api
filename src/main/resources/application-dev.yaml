@@ -23,3 +23,11 @@ springdoc:
 
 server:
   port: ${SERVER_PORT:8085}
+
+# Buyer-site origin for campaign links (unsubscribe + tickets button) — localhost in dev,
+# prod-safe default (https://app.imin.wtf) in application.yaml.
+imin.marketing.unsubscribe-base-url: http://localhost:3000
+# Local-dev URL overrides (prod-safe defaults live in application.yaml)
+imin.stripe.public-return-url-base: http://localhost:3000
+imin.email.app-base-url: http://localhost:5173
+imin.email.buyer-site-base-url: http://localhost:3000

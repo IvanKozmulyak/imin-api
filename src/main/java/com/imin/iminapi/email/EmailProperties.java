@@ -10,13 +10,13 @@ public class EmailProperties {
     private String replyTo = "";
     // Organizer dashboard host (imin-webapp). Used to build password-reset and
     // account-notification links. In prod: https://dashboard.imin.wtf.
-    private String appBaseUrl = "http://localhost:3000";
+    private String appBaseUrl = "https://dashboard.imin.wtf";
     // Public buyer site host (imin-public). Used to build ticket / order /
     // recovery links in buyer-facing emails. In prod: https://app.imin.wtf.
     // Kept separate from appBaseUrl because the two SPAs live on different
     // subdomains and have disjoint routes — pointing a ticket link at the
     // dashboard 404s.
-    private String buyerSiteBaseUrl = "http://localhost:3000";
+    private String buyerSiteBaseUrl = "https://app.imin.wtf";
     // Imin's internal notification inbox for new refund requests. Falls back to
     // replyTo, then fromAddress, when blank — populated at read time, not on set.
     private String refundRequestInbox = "";

@@ -13,7 +13,7 @@ public class MarketingEmailProperties {
     private String fromName = "";
     // Public host used to build the RFC 8058 unsubscribe link in the footer +
     // List-Unsubscribe header. In prod: https://app.imin.wtf (imin-public).
-    private String unsubscribeBaseUrl = "http://localhost:3000";
+    private String unsubscribeBaseUrl = "https://app.imin.wtf";
 
     public String getFromAddress() { return fromAddress; }
     public void setFromAddress(String fromAddress) { this.fromAddress = fromAddress; }
