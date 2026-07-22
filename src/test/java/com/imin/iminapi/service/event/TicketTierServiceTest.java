@@ -154,6 +154,26 @@ class TicketTierServiceTest {
     // ── patch ──────────────────────────────────────────────────────────────────
 
     @Test
+    void standaloneTierPatch_publishesPredictorReactivityEvent() {
+        org.springframework.context.ApplicationEventPublisher publisher =
+                mock(org.springframework.context.ApplicationEventPublisher.class);
+        TicketTierService wired = new TicketTierService(tiers, events, validator, clock, null, null, publisher);
+
+        UUID tierId = UUID.randomUUID();
+        when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(existingTier(tierId, 0, 0)));
+
+        wired.patch(principal, eventId, tierId,
+                new TicketTierPatchRequest("VIP", 500, 50, null, null, null, null, 3, false));
+
+        ArgumentCaptor<Object> cap = ArgumentCaptor.forClass(Object.class);
+        verify(publisher).publishEvent(cap.capture());
+        assertThat(cap.getValue())
+                .isInstanceOf(com.imin.iminapi.predictor.service.PredictorReactivityEvents.EventMutated.class);
+        assertThat(((com.imin.iminapi.predictor.service.PredictorReactivityEvents.EventMutated) cap.getValue())
+                .eventId()).isEqualTo(eventId);
+    }
+
+    @Test
     void patch_updates_fields() {
         UUID tierId = UUID.randomUUID();
         TicketTier tier = existingTier(tierId, 0, 0);

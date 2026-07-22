@@ -9,10 +9,14 @@ public enum ReforecastTrigger {
     SCHEDULED,
     /** A 25/50/75% event-level sold crossing on the fulfilment path. */
     MILESTONE,
-    /** A ticket-tier transition activated. */
+    /** A ticket-tier transition activated (a tier reached 100% sell-through / closed). */
     TIER_TRANSITION,
     /** A marketing campaign send completed. */
     CAMPAIGN_SEND,
+    /** A marketing campaign was scheduled to send. */
+    CAMPAIGN_SCHEDULED,
+    /** The organizer executed a prescriptive recommendation (feedback type=executed) — closes the loop. */
+    ACTION_EXECUTED,
     /** An organizer edited a live event (price/date/capacity/tier/promo). */
     EDIT,
     /** Baseline re-forecast fired the moment a previously-scored draft was published. */

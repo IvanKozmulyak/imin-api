@@ -105,11 +105,23 @@ public class PredictionLedgerService {
      */
     @Transactional
     public UUID recordFeedback(UUID ledgerId, UUID eventId, String recommendationId, FeedbackType type) {
+        return recordFeedback(ledgerId, eventId, recommendationId, type, null);
+    }
+
+    /**
+     * As above, stamping the dismissal {@code fingerprint} (V74, task 86cav47a5) so serve-time
+     * filtering can suppress a re-surfaced recommendation without re-deriving history. Null for
+     * EXECUTED (fingerprint is meaningless — an execution never suppresses).
+     */
+    @Transactional
+    public UUID recordFeedback(UUID ledgerId, UUID eventId, String recommendationId, FeedbackType type,
+                               String fingerprint) {
         PredictionFeedback fb = new PredictionFeedback();
         fb.setLedgerId(ledgerId);
         fb.setEventId(eventId);
         fb.setRecommendationId(recommendationId);
         fb.setFeedbackType(type);
+        fb.setFingerprint(fingerprint);
         fb.setCreatedAt(Instant.now());
         return feedback.save(fb).getId();
     }

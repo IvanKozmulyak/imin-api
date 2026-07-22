@@ -1,10 +1,12 @@
 package com.imin.iminapi.predictor.service;
 
 import com.imin.iminapi.model.Order;
+import com.imin.iminapi.model.TicketTier;
 import com.imin.iminapi.predictor.config.PredictorProperties;
 import com.imin.iminapi.predictor.model.ReforecastTrigger;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
+import com.imin.iminapi.service.event.SalesMilestoneReachedEvent;
 import com.imin.iminapi.service.ticket.TicketsIssuedEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -111,7 +113,46 @@ public class ReforecastTriggerService {
         }
     }
 
-    // ---- other event hooks (wired by callers where seams exist) -----------------
+    // ---- tier-transition hook (a tier reaching 100% sell-through = it closes) ----
+
+    /**
+     * A ticket tier hitting 100% sell-through IS a tier transition (that tier closes; buyers move
+     * to the next). Rides the existing {@link SalesMilestoneReachedEvent} (published AFTER_COMMIT
+     * from {@code InventoryService.confirmSold}) so no new write path is needed. Only the 100%
+     * crossing is a transition — 50/80% are covered by the event-level milestone hook above.
+     */
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    @Async
+    public void onSalesMilestone(SalesMilestoneReachedEvent event) {
+        try {
+            if (event.threshold() != 100) return;
+            TicketTier tier = tiers.findById(event.tierId()).orElse(null);
+            if (tier == null || tier.getEventId() == null) return;
+            log.info("[reforecast-trigger] tier {} sold out (100%) — tier transition for event {}",
+                    tier.getId(), tier.getEventId());
+            onTierTransition(tier.getEventId());
+        } catch (Exception ex) {
+            log.warn("[reforecast-trigger] onSalesMilestone failed for tier {}: {}", event.tierId(), ex.getMessage());
+        }
+    }
+
+    // ---- campaign hooks (marketing send path, published AFTER_COMMIT) ------------
+
+    /** A campaign finished sending for an event → CAMPAIGN_SEND recompute. */
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    @Async
+    public void onCampaignSent(PredictorMarketingEvents.CampaignSent event) {
+        if (event.eventId() != null) onCampaignSend(event.eventId());
+    }
+
+    /** A campaign was scheduled for an event → CAMPAIGN_SCHEDULED recompute. */
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    @Async
+    public void onCampaignScheduledEvent(PredictorMarketingEvents.CampaignScheduled event) {
+        if (event.eventId() != null) onCampaignScheduled(event.eventId());
+    }
+
+    // ---- direct hooks (call sites / listeners route through these) ---------------
 
     /** A ticket-tier transition activated for a live event. */
     public void onTierTransition(UUID eventId) {
@@ -121,5 +162,10 @@ public class ReforecastTriggerService {
     /** A marketing campaign send completed for a live event. */
     public void onCampaignSend(UUID eventId) {
         requestRecompute(eventId, ReforecastTrigger.CAMPAIGN_SEND);
+    }
+
+    /** A marketing campaign was scheduled for a live event. */
+    public void onCampaignScheduled(UUID eventId) {
+        requestRecompute(eventId, ReforecastTrigger.CAMPAIGN_SCHEDULED);
     }
 }

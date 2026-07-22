@@ -48,9 +48,16 @@ class PredictionScoringPipelineTest {
     private final PredictionLedgerService ledger = mock(PredictionLedgerService.class);
     private final PredictorSegmentStatusRepository segments = mock(PredictorSegmentStatusRepository.class);
     private final PredictorProperties props = new PredictorProperties();
+    // Real engine over mocked repos; validOutput carries no recommendations, so finalizeForRender
+    // short-circuits without touching them.
+    private final com.imin.iminapi.predictor.service.RecommendationEngine recommendations =
+            new com.imin.iminapi.predictor.service.RecommendationEngine(
+                    mock(com.imin.iminapi.repository.TicketTierRepository.class),
+                    mock(com.imin.iminapi.marketing.repository.MomentumSuggestionRepository.class),
+                    mock(com.imin.iminapi.predictor.repository.PredictionFeedbackRepository.class));
 
     private final PredictionScoringPipeline sut = new PredictionScoringPipeline(
-            snapshots, scorer, new PredictionGuardrailValidator(), ledger, segments, props, clock);
+            snapshots, scorer, new PredictionGuardrailValidator(), recommendations, ledger, segments, props, clock);
 
     private final UUID eventId = UUID.randomUUID();
     private final UUID orgId = UUID.randomUUID();

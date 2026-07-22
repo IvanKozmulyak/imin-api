@@ -147,8 +147,8 @@ class PredictionControllerTest {
                 List.of(new PredictionResult.Factor("Saturday in summer", "supporting", "comparable Saturdays outperform"),
                         new PredictionResult.Factor("Prices inside band", "supporting", "tier prices within comparable range"),
                         new PredictionResult.Factor("Low own history", "opposing", "organizer has few completed events")),
-                List.of(new PredictionResult.Recommendation("earlybird-price", "Consider a lower Early Bird",
-                        "comparable early tiers priced lower", "adjust_price", "tiers", 1200, null)));
+                List.of(new Stage0Scorer.RecCandidate("earlybird-price", "Consider a lower Early Bird",
+                        "comparable early tiers priced lower", "HIGH", "tier_edit", "Early", 1200, null)));
     }
 
     private Authentication auth(User u, Organization o) {
@@ -263,6 +263,40 @@ class PredictionControllerTest {
         var fb = feedback.findAll().get(0);
         assertThat(fb.getRecommendationId()).isEqualTo("earlybird-price");
         assertThat(fb.getLedgerId()).isEqualTo(ledger.findAll().get(0).getId());
+    }
+
+    @Test
+    void dismissalMemoryFiltersRecommendationAtServeTimeAndRestoreBringsItBack() throws Exception {
+        Authentication a = auth(owner, org);
+        mvc.perform(post("/api/v1/events/" + event.getId() + "/prediction").with(authentication(a)))
+                .andExpect(status().isAccepted());
+        pollUntilNotPending(a, event.getId());
+
+        // Before dismissal: the recommendation is served.
+        mvc.perform(get("/api/v1/events/" + event.getId() + "/prediction").with(authentication(a)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.result.recommendations.length()").value(1))
+                .andExpect(jsonPath("$.result.recommendations[0].impact").value("HIGH"));
+
+        // Dismiss it → filtered out at serve time, dismissedCount surfaces the "remembered" row.
+        mvc.perform(post("/api/v1/events/" + event.getId() + "/prediction/feedback").with(authentication(a))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"recommendationId\":\"earlybird-price\",\"type\":\"dismissed\"}"))
+                .andExpect(status().isNoContent());
+        mvc.perform(get("/api/v1/events/" + event.getId() + "/prediction").with(authentication(a)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.result.recommendations.length()").value(0))
+                .andExpect(jsonPath("$.dismissedCount").value(1));
+
+        // Restore it → dismissal cleared, recommendation returns.
+        mvc.perform(post("/api/v1/events/" + event.getId() + "/prediction/feedback").with(authentication(a))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"recommendationId\":\"earlybird-price\",\"type\":\"restored\"}"))
+                .andExpect(status().isNoContent());
+        mvc.perform(get("/api/v1/events/" + event.getId() + "/prediction").with(authentication(a)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.result.recommendations.length()").value(1))
+                .andExpect(jsonPath("$.dismissedCount").value(0));
     }
 
     @Test

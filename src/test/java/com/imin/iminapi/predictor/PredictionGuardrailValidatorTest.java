@@ -2,6 +2,7 @@ package com.imin.iminapi.predictor;
 
 import com.imin.iminapi.predictor.dto.PredictionResult;
 import com.imin.iminapi.predictor.service.PredictionGuardrailValidator;
+import com.imin.iminapi.predictor.service.Stage0Scorer.RecCandidate;
 import com.imin.iminapi.predictor.service.Stage0Scorer.Stage0Output;
 import org.junit.jupiter.api.Test;
 
@@ -102,9 +103,9 @@ class PredictionGuardrailValidatorTest {
 
     @Test
     void recommendedPriceTenTimesTierPriceRejected() {
-        PredictionResult.Recommendation rec = new PredictionResult.Recommendation(
+        RecCandidate rec = new RecCandidate(
                 "raise-door", "Raise the door price", "comparable events priced higher",
-                "adjust_price", "tiers", 24_000, null); // 10x the 2400 max tier
+                "HIGH", "tier_edit", "Door", 24_000, null); // 10x the 2400 max tier
         Stage0Output out = new Stage0Output(new PredictionResult.Band(35, 60),
                 new PredictionResult.Range(120, 210), null, goodFactors(), List.of(rec));
         assertThat(sut.validate(out, ctx())).anyMatch(e -> e.startsWith("P1"));
@@ -112,12 +113,42 @@ class PredictionGuardrailValidatorTest {
 
     @Test
     void recommendedDateInThePastRejected() {
-        PredictionResult.Recommendation rec = new PredictionResult.Recommendation(
+        RecCandidate rec = new RecCandidate(
                 "move-date", "Move to a Saturday", "Saturdays outperform in the cluster",
-                "change_date", "schedule", null, "2026-05-01T20:00:00Z"); // before now
+                "HIGH", "tier_transition", "Early Bird", null, "2026-05-01T20:00:00Z"); // before now
         Stage0Output out = new Stage0Output(new PredictionResult.Band(35, 60),
                 new PredictionResult.Range(120, 210), null, goodFactors(), List.of(rec));
         assertThat(sut.validate(out, ctx())).anyMatch(e -> e.startsWith("P2"));
+    }
+
+    @Test
+    void invalidImpactTagRejected() {
+        RecCandidate rec = new RecCandidate("r1", "Add a VIP tier", "comparable events had VIP",
+                "MASSIVE", "tier_add", null, null, null); // not HIGH/MED
+        Stage0Output out = new Stage0Output(new PredictionResult.Band(35, 60),
+                new PredictionResult.Range(120, 210), null, goodFactors(), List.of(rec));
+        assertThat(sut.validate(out, ctx())).anyMatch(e -> e.contains("impact must be one of"));
+    }
+
+    @Test
+    void nonDescendingImpactOrderRejected() {
+        RecCandidate med = new RecCandidate("a-med", "Lower Early Bird", "priced above band",
+                "MED", "tier_edit", "Early Bird", 1400, null);
+        RecCandidate high = new RecCandidate("b-high", "Send a reminder", "audience is warm",
+                "HIGH", "campaign", null, null, null);
+        // MED before HIGH — the list is not impact-descending.
+        Stage0Output out = new Stage0Output(new PredictionResult.Band(35, 60),
+                new PredictionResult.Range(120, 210), null, goodFactors(), List.of(med, high));
+        assertThat(sut.validate(out, ctx())).anyMatch(e -> e.contains("impact-descending"));
+    }
+
+    @Test
+    void unknownActionTypeRejected() {
+        RecCandidate rec = new RecCandidate("r1", "Do a thing", "evidence",
+                "HIGH", "adjust_price", null, null, null); // legacy value no longer in the closed set
+        Stage0Output out = new Stage0Output(new PredictionResult.Band(35, 60),
+                new PredictionResult.Range(120, 210), null, goodFactors(), List.of(rec));
+        assertThat(sut.validate(out, ctx())).anyMatch(e -> e.contains("actionType must be one of"));
     }
 
     @Test
@@ -163,8 +194,7 @@ class PredictionGuardrailValidatorTest {
 
     @Test
     void fourthRecommendationRejected() {
-        PredictionResult.Recommendation r = new PredictionResult.Recommendation(
-                "r", "claim", "evidence", "other", "other", null, null);
+        RecCandidate r = new RecCandidate("r", "claim", "evidence", "MED", "campaign", null, null, null);
         Stage0Output out = new Stage0Output(new PredictionResult.Band(35, 60),
                 new PredictionResult.Range(120, 210), null, goodFactors(),
                 List.of(withId(r, "a"), withId(r, "b"), withId(r, "c"), withId(r, "d")));
@@ -180,8 +210,8 @@ class PredictionGuardrailValidatorTest {
         assertThat(sut.validate(out, noTiers)).anyMatch(e -> e.contains("no ticket tiers"));
     }
 
-    private static PredictionResult.Recommendation withId(PredictionResult.Recommendation r, String id) {
-        return new PredictionResult.Recommendation(id, r.claim(), r.evidence(), r.actionType(),
-                r.actionTarget(), r.priceMinor(), r.dateIso());
+    private static RecCandidate withId(RecCandidate r, String id) {
+        return new RecCandidate(id, r.claim(), r.evidence(), r.impact(), r.actionType(),
+                r.tierRef(), r.priceMinor(), r.dateIso());
     }
 }

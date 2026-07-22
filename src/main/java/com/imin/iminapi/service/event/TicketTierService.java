@@ -13,9 +13,11 @@ import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.predictor.service.PredictorReactivityEvents;
 import com.imin.iminapi.stripe.StripeProductService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -39,13 +41,20 @@ public class TicketTierService {
     private final StripeProductService stripeProductService;
     /** Optional audit logger — null in older test constructors. */
     private final AuditLogger auditLogger;
+    /**
+     * Optional predictor-reactivity publisher — null in older test constructors. When present,
+     * standalone tier mutations publish {@link PredictorReactivityEvents.EventMutated} (task §4)
+     * so a scored draft re-scores / a live event re-forecasts, matching the embedded-tier path
+     * in {@link EventService#patch}.
+     */
+    private final ApplicationEventPublisher eventPublisher;
 
     /** Legacy 4-arg constructor used by existing unit tests that don't need Stripe sync. */
     public TicketTierService(TicketTierRepository tiers,
                              EventRepository events,
                              TicketTierValidator validator,
                              Clock clock) {
-        this(tiers, events, validator, clock, null, null);
+        this(tiers, events, validator, clock, null, null, null);
     }
 
     /** Legacy 5-arg constructor (Stripe but no audit). */
@@ -54,7 +63,17 @@ public class TicketTierService {
                              TicketTierValidator validator,
                              Clock clock,
                              StripeProductService stripeProductService) {
-        this(tiers, events, validator, clock, stripeProductService, null);
+        this(tiers, events, validator, clock, stripeProductService, null, null);
+    }
+
+    /** Legacy 6-arg constructor (Stripe + audit, no predictor reactivity). */
+    public TicketTierService(TicketTierRepository tiers,
+                             EventRepository events,
+                             TicketTierValidator validator,
+                             Clock clock,
+                             StripeProductService stripeProductService,
+                             AuditLogger auditLogger) {
+        this(tiers, events, validator, clock, stripeProductService, auditLogger, null);
     }
 
     /** Primary constructor — Spring uses this one in the running app. */
@@ -64,17 +83,26 @@ public class TicketTierService {
                              TicketTierValidator validator,
                              Clock clock,
                              StripeProductService stripeProductService,
-                             AuditLogger auditLogger) {
+                             AuditLogger auditLogger,
+                             ApplicationEventPublisher eventPublisher) {
         this.tiers = tiers;
         this.events = events;
         this.validator = validator;
         this.clock = clock;
         this.stripeProductService = stripeProductService;
         this.auditLogger = auditLogger;
+        this.eventPublisher = eventPublisher;
     }
 
     private void audit(AuthPrincipal p, String action, String targetType, java.util.UUID targetId, String summary) {
         if (auditLogger != null && p != null) auditLogger.record(p, action, targetType, targetId, summary);
+    }
+
+    /** Predictor reactivity: a standalone tier mutation re-scores/re-forecasts the event (task §4). */
+    private void publishMutated(UUID eventId) {
+        if (eventPublisher != null) {
+            eventPublisher.publishEvent(new PredictorReactivityEvents.EventMutated(eventId));
+        }
     }
 
     private static String currencySymbol(String code) {
@@ -126,6 +154,7 @@ public class TicketTierService {
                 "Added ticket tier \"" + tier.getName() + "\" ("
                         + formatPrice(tier.getPriceMinor(), event.getCurrency())
                         + ", qty " + tier.getQuantity() + ") to event \"" + eventLabel(event) + "\"");
+        publishMutated(eventId);
         return TicketTierDto.from(tier);
     }
 
@@ -145,6 +174,7 @@ public class TicketTierService {
         syncStripeProduct(tier, event);
         audit(p, AuditActions.TIER_UPDATED, "tier", tier.getId(),
                 "Updated tier \"" + tier.getName() + "\" on event \"" + eventLabel(event) + "\"");
+        publishMutated(eventId);
         return TicketTierDto.from(tier);
     }
 
@@ -165,6 +195,7 @@ public class TicketTierService {
         bumpEventUpdatedAt(event);
         audit(p, AuditActions.TIER_DELETED, "tier", deletedId,
                 "Deleted tier \"" + name + "\" from event \"" + eventLabel(event) + "\"");
+        publishMutated(eventId);
     }
 
     /**

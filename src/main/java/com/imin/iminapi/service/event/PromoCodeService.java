@@ -10,9 +10,11 @@ import com.imin.iminapi.repository.PromoCodeRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.predictor.service.PredictorReactivityEvents;
 import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.service.audit.AuditLogger;
 import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -37,24 +39,44 @@ public class PromoCodeService {
     private final Clock clock;
     /** Optional audit logger — null in older test constructors. */
     private final AuditLogger auditLogger;
+    /**
+     * Optional predictor-reactivity publisher — null in older test constructors. When present,
+     * promo create/update/delete publishes {@link PredictorReactivityEvents.EventMutated}
+     * (task §4) so a scored draft re-scores / a live event re-forecasts.
+     */
+    private final ApplicationEventPublisher eventPublisher;
 
     /** Legacy 3-arg constructor used by existing tests that don't wire audit. */
     public PromoCodeService(PromoCodeRepository promos, EventRepository events, Clock clock) {
-        this(promos, events, clock, null);
+        this(promos, events, clock, null, null);
+    }
+
+    /** Legacy 4-arg constructor (audit, no predictor reactivity). */
+    public PromoCodeService(PromoCodeRepository promos, EventRepository events, Clock clock,
+                            AuditLogger auditLogger) {
+        this(promos, events, clock, auditLogger, null);
     }
 
     /** Primary constructor — Spring uses this one in the running app. */
     @org.springframework.beans.factory.annotation.Autowired
     public PromoCodeService(PromoCodeRepository promos, EventRepository events, Clock clock,
-                            AuditLogger auditLogger) {
+                            AuditLogger auditLogger, ApplicationEventPublisher eventPublisher) {
         this.promos = promos;
         this.events = events;
         this.clock = clock;
         this.auditLogger = auditLogger;
+        this.eventPublisher = eventPublisher;
     }
 
     private void audit(AuthPrincipal p, String action, String targetType, UUID targetId, String summary) {
         if (auditLogger != null) auditLogger.record(p, action, targetType, targetId, summary);
+    }
+
+    /** Predictor reactivity: a promo mutation re-scores/re-forecasts the event (task §4). */
+    private void publishMutated(UUID eventId) {
+        if (eventPublisher != null) {
+            eventPublisher.publishEvent(new PredictorReactivityEvents.EventMutated(eventId));
+        }
     }
 
     @Transactional
@@ -78,6 +100,7 @@ public class PromoCodeService {
         bumpEventUpdatedAt(event);
         audit(p, AuditActions.PROMO_CREATED, "promo", pc.getId(),
                 "Added promo code \"" + pc.getCode() + "\" (" + pc.getDiscountPct() + "% off)");
+        publishMutated(eventId);
         return PromoCodeDto.from(pc);
     }
 
@@ -109,6 +132,7 @@ public class PromoCodeService {
         bumpEventUpdatedAt(event);
         audit(p, AuditActions.PROMO_UPDATED, "promo", pc.getId(),
                 "Updated promo code \"" + pc.getCode() + "\" (" + pc.getDiscountPct() + "% off)");
+        publishMutated(eventId);
         return PromoCodeDto.from(pc);
     }
 
@@ -124,6 +148,7 @@ public class PromoCodeService {
         bumpEventUpdatedAt(event);
         audit(p, AuditActions.PROMO_DELETED, "promo", promoIdSaved,
                 "Deleted promo code \"" + code + "\" (" + discount + "% off)");
+        publishMutated(eventId);
     }
 
     // ── helpers ────────────────────────────────────────────────────────
