@@ -72,7 +72,9 @@ public class EmailChannelSender {
         // resolve them ONCE per batch, not per recipient. Only the unsubscribe URL varies.
         ResolvedTemplate template = templateService.resolve(c.getOrgId(), c.getTemplateKey());
         String brandName = brandName(c.getOrgId());
-        String posterUrl = posterUrl(c);
+        Event event = linkedEvent(c);
+        String posterUrl = event == null ? null : event.getPosterUrl();
+        String ticketsUrl = ticketsUrl(c, event);
 
         List<CampaignEmailProvider.OutgoingEmail> outgoing = new ArrayList<>(batch.size());
         for (CampaignRecipient r : batch) {
@@ -81,7 +83,7 @@ public class EmailChannelSender {
             CampaignEmailRenderer.Rendered rendered = renderer.render(
                     c.getSubject(), c.getPreheader(), c.getBodyMd(),
                     c.getId().toString(), "email", unsubUrl,
-                    template, brandName, posterUrl);
+                    template, brandName, posterUrl, ticketsUrl);
             outgoing.add(new CampaignEmailProvider.OutgoingEmail(
                     props.fromHeader(), r.getEmail(), c.getSubject(),
                     rendered.html(), rendered.text(), unsubUrl));
@@ -134,20 +136,31 @@ public class EmailChannelSender {
     }
 
     /**
-     * The linked event's poster URL, for the {@code posterHero} header. Null when the campaign
-     * has no event or the event has no poster — the renderer then degrades posterHero to a
-     * banner. Failure-isolated for the same reason as {@link #brandName}.
+     * The campaign's linked event, org-scoped and active. Null when the campaign has no event or
+     * it resolves outside this org / is soft-deleted. Failure-isolated: a lookup hiccup must not
+     * fail a live send — the render just skips the poster and tickets button. Resolved ONCE per
+     * batch and reused for both the poster header and the tickets-button URL.
      */
-    private String posterUrl(Campaign c) {
+    private Event linkedEvent(Campaign c) {
         if (c.getEventId() == null) return null;
         try {
             return events.findActive(c.getEventId())
                     .filter(e -> c.getOrgId().equals(e.getOrgId()))
-                    .map(Event::getPosterUrl)
                     .orElse(null);
         } catch (Exception e) {
-            log.debug("[email-sender] poster lookup failed for event {}: {}", c.getEventId(), e.getMessage());
+            log.debug("[email-sender] event lookup failed for {}: {}", c.getEventId(), e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * The linked event's PUBLIC buyer URL ({@code {base}/e/{eventId}} on imin-public), for the
+     * {@code {{tickets_button}}} CTA. Null when there is no linked event — the renderer then drops
+     * the token rather than link to a fabricated URL. The base is the same imin-public origin the
+     * unsubscribe footer already uses.
+     */
+    private String ticketsUrl(Campaign c, Event event) {
+        if (event == null) return null;
+        return props.getUnsubscribeBaseUrl() + "/e/" + event.getId();
     }
 }

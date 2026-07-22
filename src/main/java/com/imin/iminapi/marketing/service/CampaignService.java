@@ -10,9 +10,16 @@ import com.imin.iminapi.marketing.dto.CampaignRequests.CreateCampaignRequest;
 import com.imin.iminapi.marketing.dto.CampaignRequests.PatchCampaignRequest;
 import com.imin.iminapi.marketing.dto.CampaignSummary;
 import com.imin.iminapi.marketing.dto.PreviewAudienceResponse;
+import com.imin.iminapi.marketing.email.MarketingEmailProperties;
 import com.imin.iminapi.marketing.model.Campaign;
+import com.imin.iminapi.marketing.render.CampaignEmailRenderer;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
+import com.imin.iminapi.marketing.template.ResolvedTemplate;
+import com.imin.iminapi.model.Event;
+import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.User;
+import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
@@ -50,6 +57,13 @@ public class CampaignService {
     /** Read-only, org-scoped: resolves the recipient log's Person column display names. */
     private final com.imin.iminapi.audience.repository.MembershipRepository memberships;
     private final org.springframework.context.ApplicationEventPublisher eventPublisher;
+    // Test-send now renders through the SAME branded shell the real batch send uses
+    // (CampaignEmailRenderer + resolved template), so a preview matches the delivered mail.
+    private final CampaignEmailRenderer renderer;
+    private final CampaignTemplateService templateService;
+    private final OrganizationRepository organizations;
+    private final EventRepository events;
+    private final MarketingEmailProperties emailProps;
 
     public CampaignService(CampaignRepository campaigns,
                            com.imin.iminapi.marketing.repository.CampaignRecipientRepository campaignRecipientRepository,
@@ -58,7 +72,10 @@ public class CampaignService {
                            EmailService email, UserRepository users,
                            CampaignAttributionService attribution,
                            com.imin.iminapi.audience.repository.MembershipRepository memberships,
-                           org.springframework.context.ApplicationEventPublisher eventPublisher) {
+                           org.springframework.context.ApplicationEventPublisher eventPublisher,
+                           CampaignEmailRenderer renderer, CampaignTemplateService templateService,
+                           OrganizationRepository organizations, EventRepository events,
+                           MarketingEmailProperties emailProps) {
         this.campaigns = campaigns;
         this.campaignRecipientRepository = campaignRecipientRepository;
         this.audit = audit;
@@ -69,6 +86,11 @@ public class CampaignService {
         this.attribution = attribution;
         this.memberships = memberships;
         this.eventPublisher = eventPublisher;
+        this.renderer = renderer;
+        this.templateService = templateService;
+        this.organizations = organizations;
+        this.events = events;
+        this.emailProps = emailProps;
     }
 
     @Transactional
@@ -221,23 +243,58 @@ public class CampaignService {
                     "Subject and body are required to send a test");
         }
         String to = callerEmail(p);   // always the organizer — requestedEmail is advisory only
-        String html = renderTestHtml(c);
-        String text = c.getBodyMd();
-        email.send(to, "[TEST] " + c.getSubject(), html, text);
+        CampaignEmailRenderer.Rendered rendered = renderForTest(c);
+        // Send BOTH parts (html + text) through the same shape the real batch send uses, so a
+        // client shows the branded HTML — not a plain-text fallback.
+        email.send(to, "[TEST] " + c.getSubject(), rendered.html(), rendered.text());
         audit.record(p, "CAMPAIGN_TEST_SENT", "campaign", c.getId(),
                 "Test email sent to organizer");
     }
 
-    private String renderTestHtml(Campaign c) {
-        // Phase-1 test-send preview: escape the body so the test send is never an injection
-        // vector (spec §3). Real branded-shell rendering ships in Phase 2's CampaignEmailProvider.
-        String safe = c.getBodyMd()
-                .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
-        String pre = c.getPreheader() == null ? "" :
-                "<p style=\"color:#888\">" + c.getPreheader()
-                        .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") + "</p>";
-        return "<html><body>" + pre + "<pre style=\"font-family:inherit;white-space:pre-wrap\">"
-                + safe + "</pre></body></html>";
+    /**
+     * Render a test send through the EXACT same {@link CampaignEmailRenderer} path as the real
+     * batch send ({@code EmailChannelSender}): resolved template shell, brand header, poster hero,
+     * {@code {{tickets_button}}} CTA, and the mandatory unsubscribe footer. There is no recipient
+     * row for a self-test, so a preview unsubscribe token stands in for the per-recipient signed
+     * one — the footer is still present and honest, it just resolves to a preview optout.
+     */
+    private CampaignEmailRenderer.Rendered renderForTest(Campaign c) {
+        // resolve() coalesces null/blank/unknown template_key to the classic builtin, so a pre-V66
+        // or NULL row still renders inside the branded shell rather than as bare text.
+        ResolvedTemplate template = templateService.resolve(c.getOrgId(), c.getTemplateKey());
+        String brandName = brandName(c.getOrgId());
+        Event event = linkedEvent(c);
+        String posterUrl = event == null ? null : event.getPosterUrl();
+        String ticketsUrl = event == null ? null : emailProps.getUnsubscribeBaseUrl() + "/e/" + event.getId();
+        String unsubUrl = emailProps.getUnsubscribeBaseUrl() + "/optout?token=preview";
+        return renderer.render(
+                c.getSubject(), c.getPreheader(), c.getBodyMd(),
+                c.getId().toString(), "email", unsubUrl,
+                template, brandName, posterUrl, ticketsUrl);
+    }
+
+    /** Org brand/display name for the test header. Failure-isolated — a hiccup just omits it. */
+    private String brandName(UUID orgId) {
+        try {
+            Organization org = organizations.findById(orgId).orElse(null);
+            if (org == null) return null;
+            return org.getBrandName() != null && !org.getBrandName().isBlank()
+                    ? org.getBrandName() : org.getName();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** The campaign's linked, org-scoped, active event (or null). Failure-isolated. */
+    private Event linkedEvent(Campaign c) {
+        if (c.getEventId() == null) return null;
+        try {
+            return events.findActive(c.getEventId())
+                    .filter(e -> c.getOrgId().equals(e.getOrgId()))
+                    .orElse(null);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private String callerEmail(AuthPrincipal p) {

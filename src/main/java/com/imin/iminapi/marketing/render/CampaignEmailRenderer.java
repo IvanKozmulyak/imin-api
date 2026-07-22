@@ -10,6 +10,9 @@ import org.commonmark.parser.Parser;
 import org.commonmark.renderer.html.HtmlRenderer;
 import org.springframework.stereotype.Component;
 
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 /**
  * Renders a campaign's markdown body into a branded, template-driven HTML shell + a
  * plain-text variant, with the mandatory RFC 8058 unsubscribe footer and UTM link
@@ -34,6 +37,22 @@ public class CampaignEmailRenderer {
 
     public record Rendered(String html, String text) {}
 
+    /** Default CTA label baked into the {@code {{tickets_button}}} placeholder when none is given. */
+    private static final String DEFAULT_TICKETS_LABEL = "Get tickets";
+    /** Sanity cap on a custom button label ({@code {{tickets_button:Custom}}}). */
+    private static final int MAX_TICKETS_LABEL = 40;
+
+    /**
+     * A whole {@code <p>{{tickets_button[:label]}}</p>} paragraph — the documented "own line"
+     * placement. Matched first so the button replaces the paragraph rather than nesting a block
+     * element inside a {@code <p>}.
+     */
+    private static final Pattern TICKETS_TOKEN_BLOCK = Pattern.compile(
+            "<p>\\s*\\{\\{\\s*tickets_button(?::([^}]*))?\\s*\\}\\}\\s*</p>");
+    /** Any remaining inline {@code {{tickets_button[:label]}}} occurrence. */
+    private static final Pattern TICKETS_TOKEN_INLINE = Pattern.compile(
+            "\\{\\{\\s*tickets_button(?::([^}]*))?\\s*\\}\\}");
+
     private final Parser parser = Parser.builder().build();
     private final HtmlRenderer htmlRenderer = HtmlRenderer.builder().escapeHtml(true).build();
     private final UtmLinkRewriter utmRewriter;
@@ -53,15 +72,32 @@ public class CampaignEmailRenderer {
     }
 
     /**
+     * Back-compat overload without a tickets URL — any {@code {{tickets_button}}} token in the
+     * body is dropped (no linked event ⇒ no fabricated URL).
+     */
+    public Rendered render(String subject, String preheader, String bodyMd,
+                           String campaignId, String channel, String unsubscribeUrl,
+                           ResolvedTemplate template, String brandName, String posterUrl) {
+        return render(subject, preheader, bodyMd, campaignId, channel, unsubscribeUrl,
+                template, brandName, posterUrl, null);
+    }
+
+    /**
      * @param template   the resolved template whose tokens drive the shell
      * @param brandName  the organizer's brand/display name for the header (null → header text
      *                   falls back to the template's {@code header.title}, then to no text)
      * @param posterUrl  the linked event's poster URL, used ONLY by the {@code posterHero}
      *                   header; null/blank makes {@code posterHero} degrade to {@code banner}
+     * @param ticketsUrl the linked event's PUBLIC buyer URL for the {@code {{tickets_button}}}
+     *                   CTA placeholder. null/blank ⇒ the token is DROPPED (renders nothing) —
+     *                   a campaign with no linked event must never link to a fabricated URL. When
+     *                   present the button href is UTM-tagged through the same rewriter as body
+     *                   links, and coloured with the template's {@code buttonBg}/{@code buttonText}.
      */
     public Rendered render(String subject, String preheader, String bodyMd,
                            String campaignId, String channel, String unsubscribeUrl,
-                           ResolvedTemplate template, String brandName, String posterUrl) {
+                           ResolvedTemplate template, String brandName, String posterUrl,
+                           String ticketsUrl) {
         if (unsubscribeUrl == null || unsubscribeUrl.isBlank()) {
             throw new IllegalArgumentException(
                     "Cannot render campaign email without an unsubscribe URL (footer is mandatory)");
@@ -75,6 +111,10 @@ public class CampaignEmailRenderer {
         bodyHtml = utmRewriter.rewrite(bodyHtml, channel, campaignId);
         // Inline an accent colour onto body links so they read as links in every client.
         bodyHtml = styleBodyLinks(bodyHtml, pal.accent());
+        // Replace {{tickets_button}} AFTER styleBodyLinks so the CTA keeps its own button colours
+        // (styleBodyLinks would otherwise prepend the accent style to it). The button href is
+        // UTM-tagged inside this step, so it never double-tags with the body pass above.
+        bodyHtml = applyTicketsButton(bodyHtml, ticketsUrl, pal, channel, campaignId);
 
         String preheaderBlock = (preheader == null || preheader.isBlank()) ? ""
                 : "<div style=\"display:none;max-height:0;overflow:hidden;opacity:0;\">"
@@ -101,10 +141,81 @@ public class CampaignEmailRenderer {
                 + footerBlock(pal, unsubscribeUrl)
                 + "</table></td></tr></table></body></html>";
 
-        String text = (bodyMd == null ? "" : bodyMd)
+        String text = ticketsButtonText(bodyMd == null ? "" : bodyMd, ticketsUrl)
                 + "\n\n---\nUnsubscribe: " + unsubscribeUrl;
 
         return new Rendered(html, text);
+    }
+
+    /**
+     * Replace every {@code {{tickets_button[:label]}}} token in the rendered body HTML with a
+     * bulletproof, padding-based CTA button (an inline-block {@code <a>} — never an image),
+     * coloured with the template's {@code buttonBg}/{@code buttonText}. When {@code ticketsUrl}
+     * is null/blank the token is stripped (no linked event ⇒ no fabricated URL). The block form
+     * ({@code <p>{{tickets_button}}</p>}, the documented own-line placement) is replaced whole so
+     * the button is not nested inside a {@code <p>}; any inline occurrence is replaced in place.
+     */
+    private String applyTicketsButton(String bodyHtml, String ticketsUrl,
+                                      TemplatePalette pal, String channel, String campaignId) {
+        if (bodyHtml == null || bodyHtml.isEmpty()) return bodyHtml;
+        boolean hasUrl = ticketsUrl != null && !ticketsUrl.isBlank();
+        String url = hasUrl ? ticketsUrl.trim() : null;
+        bodyHtml = replaceToken(bodyHtml, TICKETS_TOKEN_BLOCK, hasUrl, url, pal, channel, campaignId, true);
+        bodyHtml = replaceToken(bodyHtml, TICKETS_TOKEN_INLINE, hasUrl, url, pal, channel, campaignId, false);
+        return bodyHtml;
+    }
+
+    private String replaceToken(String html, Pattern pattern, boolean hasUrl, String url,
+                                TemplatePalette pal, String channel, String campaignId, boolean block) {
+        Matcher m = pattern.matcher(html);
+        StringBuilder out = new StringBuilder();
+        while (m.find()) {
+            String replacement = hasUrl
+                    ? ticketsButtonHtml(url, m.group(1), pal, channel, campaignId, block)
+                    : ""; // no linked event → drop the token
+            m.appendReplacement(out, Matcher.quoteReplacement(replacement));
+        }
+        m.appendTail(out);
+        return out.toString();
+    }
+
+    /**
+     * One CTA button. The label is taken from the token ({@code {{tickets_button:Buy now}}}),
+     * clamped and defaulted to {@link #DEFAULT_TICKETS_LABEL}; it comes from post-commonmark HTML
+     * so it is already escaped. The href is UTM-tagged through {@link UtmLinkRewriter} exactly like
+     * body links.
+     */
+    private String ticketsButtonHtml(String url, String rawLabel, TemplatePalette pal,
+                                     String channel, String campaignId, boolean block) {
+        String label = (rawLabel == null || rawLabel.isBlank()) ? DEFAULT_TICKETS_LABEL : rawLabel.trim();
+        if (label.length() > MAX_TICKETS_LABEL) label = label.substring(0, MAX_TICKETS_LABEL).trim();
+        String anchor = "<a href=\"" + escape(url) + "\" "
+                + "style=\"display:inline-block;background:" + pal.buttonBg() + ";color:" + pal.buttonText()
+                + ";font-weight:700;font-size:15px;line-height:1;text-decoration:none;"
+                + "padding:13px 28px;border-radius:8px;\">" + label + "</a>";
+        // UTM-tag the button's imin.wtf href the same way body links are tagged.
+        anchor = utmRewriter.rewrite(anchor, channel, campaignId);
+        return block
+                ? "<div style=\"text-align:center;margin:24px 0;\">" + anchor + "</div>"
+                : anchor;
+    }
+
+    /**
+     * Plain-text counterpart of the button: the token becomes "{@code Label: <url>}" when a
+     * URL exists, or is stripped when it does not.
+     */
+    private static String ticketsButtonText(String bodyMd, String ticketsUrl) {
+        boolean hasUrl = ticketsUrl != null && !ticketsUrl.isBlank();
+        Matcher m = TICKETS_TOKEN_INLINE.matcher(bodyMd);
+        StringBuilder out = new StringBuilder();
+        while (m.find()) {
+            String label = (m.group(1) == null || m.group(1).isBlank())
+                    ? DEFAULT_TICKETS_LABEL : m.group(1).trim();
+            String replacement = hasUrl ? label + ": " + ticketsUrl.trim() : "";
+            m.appendReplacement(out, Matcher.quoteReplacement(replacement));
+        }
+        m.appendTail(out);
+        return out.toString();
     }
 
     /** The header row per {@code header.style}, with the posterHero→banner fallback. */

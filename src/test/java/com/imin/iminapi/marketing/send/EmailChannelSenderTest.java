@@ -10,6 +10,7 @@ import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
@@ -22,6 +23,7 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @SpringBootTest
@@ -81,6 +83,26 @@ class EmailChannelSenderTest {
         assertThat(recipients.findByCampaignIdAndStatus(c.getId(), "sent"))
                 .allSatisfy(r -> assertThat(r.getProviderMessageId()).isNotBlank());
         assertThat(more).isFalse();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void batchSendRendersThroughTheBrandedShellNotBareText() {
+        // Regression for the test-send bug's sibling path: the batch sender must render each
+        // recipient's email through CampaignEmailRenderer (branded HTML shell + mandatory
+        // unsubscribe footer), NOT ship raw markdown as text.
+        Campaign c = campaignWithPending(1);
+        when(provider.sendBatch(anyList())).thenReturn(List.of("id-a"));
+
+        sender.sendNextBatch(c);
+
+        ArgumentCaptor<List<CampaignEmailProvider.OutgoingEmail>> captor =
+                ArgumentCaptor.forClass(List.class);
+        verify(provider).sendBatch(captor.capture());
+        CampaignEmailProvider.OutgoingEmail sent = captor.getValue().get(0);
+        assertThat(sent.html()).contains("<!DOCTYPE html>");
+        assertThat(sent.html()).contains("<strong>there</strong>"); // markdown was rendered
+        assertThat(sent.html().toLowerCase()).contains("unsubscribe");
     }
 
     @Test
