@@ -176,6 +176,47 @@ class NotifySubscriptionControllerTest {
     }
 
     // -----------------------------------------------------------------------
+    // (c2) re-subscribing after a release notification RE-ARMS the row
+    // -----------------------------------------------------------------------
+    @Test
+    void subscribe_reArmsRow_whenAlreadyNotified() throws Exception {
+        Event e = publicLiveEvent();
+        String body = om.writeValueAsString(Map.of("email", "ada@example.com"));
+
+        mvc.perform(post("/api/v1/public/events/" + e.getId() + "/notify")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk());
+
+        // Simulate NotifyReleaseSender having already mailed this subscriber.
+        NotifySubscription row = subscriptionRepository.findAll().get(0);
+        row.setNotifiedAt(Instant.now());
+        subscriptionRepository.save(row);
+
+        // The buyer signs up again — they want to hear about the NEXT release, so the
+        // UNIQUE pre-check must not silently eat the request.
+        mvc.perform(post("/api/v1/public/events/" + e.getId() + "/notify")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.subscribed").value(true));
+
+        List<NotifySubscription> rows = subscriptionRepository.findAll();
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).getNotifiedAt()).isNull();
+    }
+
+    @Test
+    void subscribe_leavesNotifiedAtNull_onFirstCall() throws Exception {
+        Event e = publicLiveEvent();
+
+        mvc.perform(post("/api/v1/public/events/" + e.getId() + "/notify")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("email", "ada@example.com"))))
+                .andExpect(status().isOk());
+
+        assertThat(subscriptionRepository.findAll().get(0).getNotifiedAt()).isNull();
+    }
+
+    // -----------------------------------------------------------------------
     // (d) 400 INVALID_REQUEST on bad email — fields map populated, no row inserted
     // -----------------------------------------------------------------------
     @Test

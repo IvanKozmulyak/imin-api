@@ -6,14 +6,16 @@
 
 This document covers the public, unauthenticated endpoints that power the event detail page (e.g. `imin.wtf/e/<event-id>`) and the event listing/discovery page (e.g. `imin.wtf/events`). For organizer-facing endpoints (auth, event management, ticket tier CRUD, etc.) see `superpowers/API_CONTRACT.md`.
 
-Two endpoints:
+Endpoints:
 
 | Endpoint | Section |
 |---|---|
 | `GET /api/v1/public/events/{id}` — event detail | §1–§8 |
 | `GET /api/v1/public/events` — event listing with filters | §9 |
+| `GET /api/v1/public/events/cities` — distinct (city, country) values | §10 |
+| `POST /api/v1/public/events/{id}/notify` — notify me when tickets release | §11 |
 
-Both share the same eligibility predicate (§2), error envelope (§5), and security stance (no auth required).
+They share the same eligibility predicate (§2), error envelope (§5), and security stance (no auth required) — with one listing-only exception documented in §9 (cancelled events are excluded from the feed and facets).
 
 ---
 
@@ -286,7 +288,9 @@ The leak-guardrail test asserts the exact key set on:
 GET /api/v1/public/events
 ```
 
-Returns a paginated list of events matching the same eligibility predicate as the detail endpoint (§2). Supports filtering by date window, genre/type, location, organizer, and free-text query.
+Returns a paginated list of events matching the detail endpoint's eligibility predicate (§2) **plus one extra exclusion: `status = cancelled` events never appear in the feed.** A cancelled event stays reachable by direct link (the detail endpoint still serves it so the page can render the cancellation banner) but is dropped from the listing and from the `/cities` + `/genres` facets — a browse feed advertising a cancelled night is a bug, not a feature.
+
+Supports filtering by date window, genre/type, location, organizer, and free-text query.
 
 **No authentication required.** Same `Cache-Control: public, s-maxage=60, stale-while-revalidate=30` as the detail endpoint. CDN keys cache by the full query string.
 
@@ -337,6 +341,7 @@ Each item is a **leaner shape** than the detail endpoint — designed for cards/
   "startsAt": "2026-07-15T18:00:00Z",
   "endsAt": "2026-07-15T23:00:00Z",
   "timezone": "Europe/Berlin",
+  "venueName": "Funkhaus",
   "venueCity": "Berlin",
   "venueCountry": "DE",
   "coverUrl": "https://cdn.example/cover.jpg",
@@ -346,15 +351,22 @@ Each item is a **leaner shape** than the detail endpoint — designed for cards/
 }
 ```
 
-**Excluded vs the detail shape** (operator-irrelevant for cards): `description`, `posterUrl`, `videoUrl`, `tiers[]`, full `venue` (street/postalCode/name), `onSaleAt`, `saleClosesAt`, `squadsEnabled`, `minSquadSize`, `squadDiscountPct`. Click through to detail for those.
+**Excluded vs the detail shape** (operator-irrelevant for cards): `description`, `posterUrl`, `videoUrl`, `tiers[]`, full `venue` (street/postalCode), `onSaleAt`, `saleClosesAt`, `squadsEnabled`, `minSquadSize`, `squadDiscountPct`. Click through to detail for those.
+
+#### `venueName`
+
+The venue's display name (`Event.venueName`), or `null` when the organizer left it blank. Cards render `"{venueName} · {venueCity}"` when present and fall back to the city alone otherwise. The rest of the venue block (street, postal code) stays detail-only.
 
 #### `priceFromMinor`
 
-Minimum `priceMinor` across the event's **enabled** tiers — drives "From €25" UI. Notes:
+**The cheapest amount a buyer can actually pay for one ticket right now, booking fee included.** Drives the "FROM €26.74" card label.
 
-- Computed via SQL aggregation; one round-trip per page (no N+1).
-- `null` when the event has no enabled tiers.
-- **Sold-out tiers are NOT excluded** — a sold-out €25 tier still counts for "From €25". Detail page reveals sold-out state.
+- **Purchasable-aware.** The minimum is taken over tiers that are *buyable at request time* — exactly the `PublicTierDto.onSale` predicate (shared helper `TierAvailability.isPurchasable`): enabled, event not `past`/`cancelled`, both the event-level `onSaleAt` and the tier's `saleStartsAt` reached, neither `saleClosesAt` passed, and `remaining > 0`. Sold-out, not-yet-open and closed tiers are **excluded** — the card no longer advertises a price nobody can buy.
+- **Fee-inclusive.** The buyer booking fee for a single ticket is added on top: `p + round(p × 5%) + €0.99`. A €25.00 tier surfaces as `2674`. This is deliberate — the card number and the checkout total now agree.
+- **Free tiers stay `0`.** The fee is waived on €0, matching the quote endpoint. Render this as "Free", not "€0".
+- **`null` when nothing is purchasable** — no enabled tiers, everything sold out, sales not yet open, or sales ended. Pair it with `soldOut`: when `soldOut` is true and `priceFromMinor` is `null`, show the sold-out chip and **no** price placeholder.
+- **Detail-page tier prices remain face-value.** `tiers[].priceMinor` on the detail endpoint is the ticket price without the fee; the fee is broken out by `POST /quote` (`feeMinor`). Only this listing field is fee-inclusive.
+- Computed in Java from a single batch fetch of the page's enabled tiers (one round-trip per page, no N+1).
 
 ### 9.3 Errors
 
@@ -428,6 +440,7 @@ No query parameters in v1.
 - Different countries with the same city name (Paris/FR vs Paris/US) appear as separate entries — disambiguates duplicates.
 - `country` is ISO-3166 α-2.
 - Events with empty `venueCity` are excluded. (`venue_city` is `NOT NULL DEFAULT ''` at the schema level.)
+- Cancelled events are excluded, matching the listing feed (§9).
 - Empty database / no public events → `[]` (NOT 404).
 
 ### 10.2 Frontend integration notes
@@ -439,3 +452,42 @@ No query parameters in v1.
 ### 10.3 Errors
 
 This endpoint never returns 4xx or 5xx under normal operation. No request body, no params to validate.
+
+---
+
+## 11. Endpoint — notify me
+
+```
+POST /api/v1/public/events/{id}/notify
+```
+
+Captures a buyer's email so they can be told when tickets release. Powers the
+"Get notified when tickets release" form the detail page shows when nothing is
+currently purchasable. **No auth.** Body: `{ "email": "ada@example.com" }`;
+success is `200 { "subscribed": true }`.
+
+Uses the **detail** eligibility predicate (`findPublic`), so a cancelled or past
+event can still take subscriptions even though it never appears in the feed (§9).
+Bad/missing email → `400 INVALID_REQUEST` with `fields.email`; ineligible or
+unknown event → `404 NOT_FOUND` (leak-safe, do not branch UI on the reason).
+
+**The email actually gets sent.** `NotifyReleaseSender` sweeps every 60s
+(`@Scheduled` + ShedLock, same shape as `ReservationSweeper`) and, for every event
+that is publicly listable AND has at least one tier passing
+`TierAvailability.isPurchasable`, mails each pending subscriber and stamps
+`notify_subscriptions.notified_at`.
+
+- **One-shot.** A subscription is notified at most once; a stamped row is never
+  re-swept, so restock → sell-out → restock does not re-mail.
+- **At-least-once.** The send precedes the stamp, so a crash in that window yields a
+  duplicate on the next tick. Deliberate: a duplicate informational email beats a
+  silently dropped one. A send that throws leaves the row pending and is retried.
+- **Re-arm by re-subscribing.** POSTing the same (event, email) after a notification
+  resets `notified_at` to null, so the buyer hears about the next release. The
+  response is unchanged (`{ "subscribed": true }`) — the FE never sees the difference.
+- **Transactional, not marketing.** The buyer requested this exact email at the point
+  of collection, so no marketing-consent gate applies and there is no unsubscribe
+  stream. Platform **deliverability** suppression IS honoured: a suppressed address is
+  stamped and never mailed.
+- **EN only**, like every other buyer-facing email. Template:
+  `email-templates/notify-release.{html,txt}`.

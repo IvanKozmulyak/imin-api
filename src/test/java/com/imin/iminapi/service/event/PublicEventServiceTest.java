@@ -41,6 +41,12 @@ class PublicEventServiceTest {
         Clock fixedClock() {
             return Clock.fixed(NOW, ZoneOffset.UTC);
         }
+
+        /** PublicEventService now reads the buyer fee rates for the listing's priceFrom. */
+        @Bean
+        com.imin.iminapi.stripe.StripeProperties stripeProperties() {
+            return new com.imin.iminapi.stripe.StripeProperties();
+        }
     }
 
     @Autowired PublicEventService publicEventService;

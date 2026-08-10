@@ -14,6 +14,7 @@ public record PublicEventListItem(
         Instant startsAt,
         Instant endsAt,
         String timezone,
+        String venueName,
         String venueCity,
         String venueCountry,
         String posterUrl,

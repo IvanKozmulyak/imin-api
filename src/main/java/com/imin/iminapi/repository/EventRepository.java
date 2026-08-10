@@ -116,12 +116,19 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
 """)
     Optional<Event> findPublic(@Param("id") UUID id);
 
+    /**
+     * Public feed listing. CANCELLED events are excluded here (and from the city/genre
+     * facets) even though {@link #findPublic} still serves them: a cancelled event must
+     * stay reachable by share-link so the detail page can render the cancellation banner,
+     * but it has no business appearing in a browse feed.
+     */
     @Query("""
         SELECT e FROM Event e
          WHERE e.deletedAt IS NULL
            AND e.visibility = com.imin.iminapi.model.EventVisibility.PUBLIC
            AND e.publishedAt IS NOT NULL
            AND e.status <> com.imin.iminapi.model.EventStatus.DRAFT
+           AND e.status <> com.imin.iminapi.model.EventStatus.CANCELLED
            AND (CAST(:from AS timestamp) IS NULL
                 OR e.startsAt >= :from
                 OR (:includeOngoing = true AND (e.endsAt IS NULL OR e.endsAt > :now)))
@@ -158,6 +165,7 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
            AND e.visibility = com.imin.iminapi.model.EventVisibility.PUBLIC
            AND e.publishedAt IS NOT NULL
            AND e.status <> com.imin.iminapi.model.EventStatus.DRAFT
+           AND e.status <> com.imin.iminapi.model.EventStatus.CANCELLED
            AND e.venueCity IS NOT NULL
            AND e.venueCity <> ''
          ORDER BY e.venueCity ASC, e.venueCountry ASC
@@ -221,6 +229,7 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
            AND e.visibility = com.imin.iminapi.model.EventVisibility.PUBLIC
            AND e.publishedAt IS NOT NULL
            AND e.status <> com.imin.iminapi.model.EventStatus.DRAFT
+           AND e.status <> com.imin.iminapi.model.EventStatus.CANCELLED
            AND e.genre IS NOT NULL
            AND e.genre <> ''
          ORDER BY e.genre ASC

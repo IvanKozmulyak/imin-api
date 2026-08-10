@@ -26,37 +26,17 @@ public interface TicketTierRepository extends JpaRepository<TicketTier, UUID> {
     @Query("SELECT COALESCE(SUM(t.sold), 0) FROM TicketTier t WHERE t.eventId = :eventId")
     int sumSoldByEventId(@Param("eventId") UUID eventId);
 
-    @Query("""
-        SELECT t.eventId, MIN(t.priceMinor)
-          FROM TicketTier t
-         WHERE t.enabled = true AND t.eventId IN :eventIds
-         GROUP BY t.eventId
-    """)
-    List<Object[]> findMinEnabledPriceByEventIds(
-            @Param("eventIds") Collection<UUID> eventIds);
-
     /**
-     * Per-event inventory rollup across ENABLED tiers only, for the public listing's
-     * soldOut / lowStock flags. One batch round-trip per page (no N+1) — same pattern
-     * as {@link #findMinEnabledPriceByEventIds}.
+     * Every ENABLED tier for a page of events — one batch round-trip, no N+1.
      *
-     * <p>Returns {@code (eventId, SUM(remaining), MAX(remaining))} where per-tier
-     * {@code remaining = quantity - reserved - sold}. {@code MAX(remaining) <= 0}
-     * means every enabled tier is empty ⇒ soldOut; {@code SUM} (clamped to >=0 in the
-     * service, matching {@code PublicTierDto.from}'s {@code Math.max(0, ...)}) feeds the
-     * lowStock total. Events with no enabled tiers simply do not appear in the result and
-     * the service treats that as "not sold out".
+     * <p>Backs the public listing's {@code priceFromMinor}, {@code soldOut} and
+     * {@code lowStock}. These used to be two GROUP BY rollups, but {@code priceFrom}
+     * has to be the min over <em>purchasable</em> tiers and purchasability is a Java
+     * predicate ({@code TierAvailability.isPurchasable}) that also reads the event —
+     * so the rows come back whole and the service does the math. Page size is bounded
+     * (max 100) and the feed is CDN-cached, so the row volume is fine.
      */
-    @Query("""
-        SELECT t.eventId,
-               SUM(t.quantity - t.reserved - t.sold),
-               MAX(t.quantity - t.reserved - t.sold)
-          FROM TicketTier t
-         WHERE t.enabled = true AND t.eventId IN :eventIds
-         GROUP BY t.eventId
-    """)
-    List<Object[]> findEnabledRemainingByEventIds(
-            @Param("eventIds") Collection<UUID> eventIds);
+    List<TicketTier> findByEventIdInAndEnabledTrue(Collection<UUID> eventIds);
 
     /**
      * Pessimistic row lock for inventory updates. Used by {@code InventoryService} to

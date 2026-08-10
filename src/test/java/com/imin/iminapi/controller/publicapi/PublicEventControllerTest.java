@@ -240,6 +240,7 @@ class PublicEventControllerTest {
                 Instant.parse("2026-07-01T16:00:00Z"),
                 Instant.parse("2026-07-02T04:00:00Z"),
                 "Europe/Berlin",
+                "Funkhaus",
                 "Berlin",
                 "DE",
                 "https://cdn.example.com/cover.jpg",
@@ -342,7 +343,7 @@ class PublicEventControllerTest {
         Set<String> expectedItemKeys = Set.of(
                 "id", "slug", "name", "status", "publishedAt",
                 "genre", "type", "startsAt", "endsAt", "timezone",
-                "venueCity", "venueCountry", "posterUrl", "currency",
+                "venueName", "venueCity", "venueCountry", "posterUrl", "currency",
                 "priceFromMinor", "soldOut", "lowStock", "organization"
         );
         assertThat(actualItemKeys)

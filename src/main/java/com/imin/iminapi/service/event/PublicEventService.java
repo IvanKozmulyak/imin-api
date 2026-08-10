@@ -8,11 +8,13 @@ import com.imin.iminapi.dto.publicapi.PublicTierDto;
 import com.imin.iminapi.marketing.repository.MetaPixelConnectionRepository;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.model.TicketTier;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.stripe.StripeProperties;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
@@ -39,19 +41,22 @@ public class PublicEventService {
     private final PublicListingProperties listingProperties;
     private final Clock clock;
     private final MetaPixelConnectionRepository metaPixelConnections;
+    private final StripeProperties stripeProperties;
 
     public PublicEventService(EventRepository eventRepository,
                                TicketTierRepository tierRepository,
                                OrganizationRepository organizationRepository,
                                PublicListingProperties listingProperties,
                                Clock clock,
-                               MetaPixelConnectionRepository metaPixelConnections) {
+                               MetaPixelConnectionRepository metaPixelConnections,
+                               StripeProperties stripeProperties) {
         this.eventRepository = eventRepository;
         this.tierRepository = tierRepository;
         this.organizationRepository = organizationRepository;
         this.listingProperties = listingProperties;
         this.clock = clock;
         this.metaPixelConnections = metaPixelConnections;
+        this.stripeProperties = stripeProperties;
     }
 
     @Transactional(readOnly = true)
@@ -140,27 +145,14 @@ public class PublicEventService {
                 orgId, query.onSaleOnly(), query.includeOngoing(), clock.instant(),
                 PageRequest.of(page - 1, pageSize));
 
-        // 4. Batch-load priceFromMinor + orgs
+        // 4. Batch-load the page's enabled tiers + orgs. One tier query, no N+1:
+        //    priceFromMinor / soldOut / lowStock are all derived from these rows in Java
+        //    because purchasability depends on the event too (see TierAvailability).
         List<UUID> eventIds = result.getContent().stream().map(Event::getId).toList();
-        Map<UUID, Integer> priceByEvent = eventIds.isEmpty()
+        Map<UUID, List<TicketTier>> tiersByEvent = eventIds.isEmpty()
                 ? Map.of()
-                : tierRepository.findMinEnabledPriceByEventIds(eventIds).stream()
-                        .collect(Collectors.toMap(
-                                row -> (UUID) row[0],
-                                row -> ((Number) row[1]).intValue()));
-
-        // Per-event remaining rollup across enabled tiers (one batch query, no N+1).
-        // row[1] = SUM(remaining) -> total (clamped >=0, feeds lowStock);
-        // row[2] = MAX(remaining) -> kept signed so soldOut is MAX <= 0 (oversell-safe).
-        Map<UUID, long[]> remainingByEvent = eventIds.isEmpty()
-                ? Map.of()
-                : tierRepository.findEnabledRemainingByEventIds(eventIds).stream()
-                        .collect(Collectors.toMap(
-                                row -> (UUID) row[0],
-                                row -> new long[]{
-                                        Math.max(0L, ((Number) row[1]).longValue()),
-                                        ((Number) row[2]).longValue()
-                                }));
+                : tierRepository.findByEventIdInAndEnabledTrue(eventIds).stream()
+                        .collect(Collectors.groupingBy(TicketTier::getEventId));
 
         Set<UUID> orgIds = result.getContent().stream().map(Event::getOrgId).collect(Collectors.toSet());
         Map<UUID, Organization> orgsById = orgIds.isEmpty()
@@ -168,9 +160,12 @@ public class PublicEventService {
                 : StreamSupport.stream(organizationRepository.findAllById(orgIds).spliterator(), false)
                         .collect(Collectors.toMap(Organization::getId, o -> o));
 
+        Instant now = clock.instant();
         return PageResponse.from(result, e -> toListItem(
-                e, priceByEvent.get(e.getId()), orgsById.get(e.getOrgId()),
-                remainingByEvent.get(e.getId()), listingProperties.getLowStockThreshold()));
+                e, tiersByEvent.getOrDefault(e.getId(), List.of()), orgsById.get(e.getOrgId()),
+                now, listingProperties.getLowStockThreshold(),
+                stripeProperties.getApplicationFeeBps(),
+                stripeProperties.getApplicationFeeFixedMinor()));
     }
 
     @Transactional(readOnly = true)
@@ -186,19 +181,53 @@ public class PublicEventService {
         return eventRepository.findDistinctPublicGenres();
     }
 
-    private static PublicEventListItem toListItem(Event e, Integer priceFromMinor, Organization org,
-                                                  long[] remaining, int lowStockThreshold) {
-        // remaining == null => event has no enabled tiers; cannot be "sold out".
-        // remaining[0] = total remaining (clamped >=0), remaining[1] = MAX single-tier remaining (signed).
-        // soldOut = every enabled tier empty => the largest per-tier remaining is <= 0.
-        boolean soldOut = remaining != null && remaining[1] <= 0L;
-        boolean lowStock = remaining != null && !soldOut
-                && remaining[0] <= lowStockThreshold;
+    /**
+     * Builds one card. {@code enabledTiers} are ALL enabled tiers of the event (never null).
+     *
+     * <p>{@code soldOut}/{@code lowStock} keep their original rollup semantics: the
+     * per-tier remaining is left SIGNED so an oversold tier can't mask an empty one
+     * ({@code soldOut} = largest per-tier remaining {@code <= 0}), and the total is
+     * clamped at 0 only after summing.
+     *
+     * <p>{@code priceFromMinor} is the min price over <em>purchasable</em> tiers, made
+     * fee-inclusive for a single ticket, so the card's "FROM €x" is a number the buyer
+     * can actually pay. Free tiers stay 0 (the fee is waived on €0, matching QuoteService).
+     * Null when nothing is purchasable — sold out, not yet on sale, or sales ended.
+     */
+    private static PublicEventListItem toListItem(Event e, List<TicketTier> enabledTiers, Organization org,
+                                                  Instant now, int lowStockThreshold,
+                                                  int feeBps, int feeFixedMinor) {
+        long totalRemaining = 0L;
+        long maxRemaining = Long.MIN_VALUE;
+        int minPurchasablePrice = Integer.MAX_VALUE;
+        for (TicketTier t : enabledTiers) {
+            long r = (long) t.getQuantity() - t.getReserved() - t.getSold();
+            totalRemaining += r;
+            maxRemaining = Math.max(maxRemaining, r);
+            if (TierAvailability.isPurchasable(e, t, now)) {
+                minPurchasablePrice = Math.min(minPurchasablePrice, t.getPriceMinor());
+            }
+        }
+
+        // No enabled tiers => event cannot be "sold out".
+        boolean hasEnabledTiers = !enabledTiers.isEmpty();
+        boolean soldOut = hasEnabledTiers && maxRemaining <= 0L;
+        boolean lowStock = hasEnabledTiers && !soldOut
+                && Math.max(0L, totalRemaining) <= lowStockThreshold;
+
+        Integer priceFromMinor = null;
+        if (minPurchasablePrice != Integer.MAX_VALUE) {
+            priceFromMinor = minPurchasablePrice == 0
+                    ? 0
+                    : (int) (minPurchasablePrice
+                            + QuoteService.computeFee(minPurchasablePrice, 1, feeBps, feeFixedMinor));
+        }
+
         return new PublicEventListItem(
                 e.getId(), e.getSlug(), e.getName(), e.getStatus().wireValue(), e.getPublishedAt(),
                 e.getGenre(), e.getType(),
                 e.getStartsAt(), e.getEndsAt(), e.getTimezone(),
-                e.getVenueCity(), e.getVenueCountry(), e.getPosterUrl(), e.getCurrency(),
+                e.getVenueName(), e.getVenueCity(), e.getVenueCountry(), e.getPosterUrl(), e.getCurrency(),
                 priceFromMinor, soldOut, lowStock,
                 new PublicOrganizationDto(org.getName(), org.getSlug()));
     }
