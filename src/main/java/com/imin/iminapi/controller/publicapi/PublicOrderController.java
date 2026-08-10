@@ -13,6 +13,7 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.security.ApiException;
+import com.imin.iminapi.service.event.PublicEventService;
 import com.imin.iminapi.service.ticket.AppleWalletPassService;
 import com.imin.iminapi.service.ticket.QrPayloadSigner;
 import com.imin.iminapi.service.ticket.TicketProperties;
@@ -48,6 +49,7 @@ public class PublicOrderController {
     private final AppleWalletPassService wallet;
     private final TicketProperties ticketProps;
     private final SmsConsentService smsConsentService;
+    private final PublicEventService publicEventService;
 
     public PublicOrderController(OrderRepository orders,
                                   TicketRepository tickets,
@@ -55,7 +57,8 @@ public class PublicOrderController {
                                   QrPayloadSigner qrSigner,
                                   AppleWalletPassService wallet,
                                   TicketProperties ticketProps,
-                                  SmsConsentService smsConsentService) {
+                                  SmsConsentService smsConsentService,
+                                  PublicEventService publicEventService) {
         this.orders = orders;
         this.tickets = tickets;
         this.events = events;
@@ -63,6 +66,7 @@ public class PublicOrderController {
         this.wallet = wallet;
         this.ticketProps = ticketProps;
         this.smsConsentService = smsConsentService;
+        this.publicEventService = publicEventService;
     }
 
     @GetMapping("/api/v1/public/orders/{token}")
@@ -83,7 +87,8 @@ public class PublicOrderController {
                 eventBlock(event),
                 ticketRows.stream()
                         .map(t -> new PublicOrderResponse.Ticket(
-                                t.getToken(), t.getTierName(), normalizeState(t.getState())))
+                                t.getToken(), t.getTierName(), normalizeState(t.getState()),
+                                qrSigner.sign(t.getToken())))
                         .toList());
 
         return ResponseEntity.ok()
@@ -112,10 +117,11 @@ public class PublicOrderController {
                 qrUrl,
                 wallet.isConfigured(),
                 new PublicTicketResponse.Event(
-                        event.getName(), event.getSlug(),
-                        event.getStartsAt(), event.getTimezone(),
+                        event.getId(), event.getName(), event.getSlug(),
+                        event.getStartsAt(), event.getEndsAt(), event.getTimezone(),
                         event.getVenueName(), event.getVenueStreet(), event.getVenueCity(),
-                        event.getVenuePostalCode(), event.getVenueCountry()),
+                        event.getVenuePostalCode(), event.getVenueCountry(),
+                        event.getPosterUrl()),
                 new PublicTicketResponse.Order(order.getToken(), order.getEmail()));
 
         return ResponseEntity.ok()
@@ -137,12 +143,14 @@ public class PublicOrderController {
                 .body(response);
     }
 
-    private static PublicOrderResponse.Event eventBlock(Event event) {
+    private PublicOrderResponse.Event eventBlock(Event event) {
         return new PublicOrderResponse.Event(
-                event.getName(), event.getSlug(),
-                event.getStartsAt(), event.getTimezone(),
+                event.getId(), event.getName(), event.getSlug(),
+                event.getStartsAt(), event.getEndsAt(), event.getTimezone(),
                 event.getVenueName(), event.getVenueStreet(), event.getVenueCity(),
-                event.getVenuePostalCode(), event.getVenueCountry());
+                event.getVenuePostalCode(), event.getVenueCountry(),
+                event.getPosterUrl(),
+                publicEventService.resolveMetaPixelId(event.getOrgId(), event.getId()));
     }
 
     /**

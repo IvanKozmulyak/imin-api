@@ -1,6 +1,7 @@
 package com.imin.iminapi.dto.publicapi;
 
 import java.time.Instant;
+import java.util.UUID;
 
 /**
  * Public read-side of a single ticket, surfaced by
@@ -24,9 +25,15 @@ public record PublicTicketResponse(
         Event event,
         Order order) {
 
-    public record Event(String name, String slug, Instant startsAt, String timezone,
+    /**
+     * No {@code metaPixelId} here — the Purchase pixel is order-page-only; a web
+     * ticket is opened repeatedly at the door and must not re-fire a conversion.
+     */
+    public record Event(UUID eventId, String name, String slug, Instant startsAt, Instant endsAt,
+                        String timezone,
                         String venueName, String venueStreet, String venueCity,
-                        String venuePostalCode, String venueCountry) {}
+                        String venuePostalCode, String venueCountry,
+                        String posterUrl) {}
 
     /** Sibling info so the ticket page can link "back to order" without a second call. */
     public record Order(String token, String email) {}
