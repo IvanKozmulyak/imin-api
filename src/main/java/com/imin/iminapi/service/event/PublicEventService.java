@@ -90,7 +90,13 @@ public class PublicEventService {
         return PublicEventResponse.from(event, org, tiers, metaPixelId);
     }
 
-    private String resolveMetaPixelId(java.util.UUID orgId, java.util.UUID eventId) {
+    /**
+     * Resolves the pixel that the buyer-facing pages should fire: an event-scoped
+     * override first, then the org-wide default, and only if the connection is
+     * active. Public so {@code PublicOrderController} fires the Purchase pixel off
+     * exactly the same resolution as the event page's ViewContent.
+     */
+    public String resolveMetaPixelId(java.util.UUID orgId, java.util.UUID eventId) {
         return metaPixelConnections.findByOrgIdAndEventId(orgId, eventId)
                 .or(() -> metaPixelConnections.findByOrgIdAndEventIdIsNull(orgId))
                 .filter(c -> "active".equals(c.getStatus()))
