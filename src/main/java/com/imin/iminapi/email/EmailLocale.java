@@ -27,6 +27,26 @@ public final class EmailLocale {
     }
 
     /**
+     * Storage-oriented variant of {@link #normalize(String)}: returns {@code null}
+     * for null/blank/unsupported input instead of collapsing it to {@code en}.
+     *
+     * <p>Use this when persisting a buyer- or user-supplied locale, so the column
+     * distinguishes "explicitly English" from "no preference expressed". Rendering
+     * still goes through {@link #normalize(String)}, which treats both as English.
+     */
+    public static String normalizeOrNull(String locale) {
+        if (locale == null) {
+            return null;
+        }
+        String l = locale.trim().toLowerCase(java.util.Locale.ROOT);
+        // (Locale.ROOT keeps the mapping stable under a Turkish default locale.)
+        return switch (l) {
+            case "en", "es", "fr", "uk" -> l;
+            default -> null;
+        };
+    }
+
+    /**
      * Picks the localized string for the normalized locale, falling back to the
      * English value for {@code en}/unsupported input. Used for subject lines.
      */

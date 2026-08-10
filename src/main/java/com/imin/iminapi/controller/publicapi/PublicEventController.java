@@ -12,6 +12,7 @@ import com.imin.iminapi.service.event.NotifySubscriptionService;
 import com.imin.iminapi.service.event.PublicEventListQuery;
 import com.imin.iminapi.service.event.PublicEventService;
 import com.imin.iminapi.service.event.QuoteService;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -70,9 +71,28 @@ public class PublicEventController {
     @PostMapping("/{id}/notify")
     public ResponseEntity<NotifySubscriptionResponse> notify(
             @PathVariable UUID id,
-            @RequestBody(required = false) NotifySubscriptionRequest body) {
-        NotifySubscriptionResponse response = notifySubscriptionService.subscribe(id, body);
+            @RequestBody(required = false) NotifySubscriptionRequest body,
+            HttpServletRequest http) {
+        // Consent provenance (V77): who asked, from where, with which client. Captured
+        // here because the service has no HTTP context — same split as PublicRecoveryController.
+        NotifySubscriptionResponse response = notifySubscriptionService.subscribe(
+                id, body, clientIp(http), http.getHeader(HttpHeaders.USER_AGENT));
         return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Client IP for the proxied deployment (Railway/Vercel edge in front of us):
+     * {@code getRemoteAddr()} is the proxy, so the first hop of {@code X-Forwarded-For}
+     * is the buyer. The header is client-controllable, which is fine here — this is an
+     * evidence trail, not an authorization input.
+     */
+    private static String clientIp(HttpServletRequest http) {
+        String forwarded = http.getHeader("X-Forwarded-For");
+        if (forwarded != null && !forwarded.isBlank()) {
+            String first = forwarded.split(",")[0].trim();
+            if (!first.isEmpty()) return first;
+        }
+        return http.getRemoteAddr();
     }
 
     @PostMapping("/{id}/quote")

@@ -14,6 +14,7 @@ import com.imin.iminapi.repository.NotifySubscriptionRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.service.event.NotifySubscriptionService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -202,6 +203,114 @@ class NotifySubscriptionControllerTest {
         List<NotifySubscription> rows = subscriptionRepository.findAll();
         assertThat(rows).hasSize(1);
         assertThat(rows.get(0).getNotifiedAt()).isNull();
+    }
+
+    // -----------------------------------------------------------------------
+    // (c3) consent provenance (V77) — captured on first subscribe
+    // -----------------------------------------------------------------------
+    @Test
+    void subscribe_capturesConsentProvenance() throws Exception {
+        Event e = publicLiveEvent();
+
+        mvc.perform(post("/api/v1/public/events/" + e.getId() + "/notify")
+                        .header("X-Forwarded-For", "203.0.113.7, 70.41.3.18")
+                        .header("User-Agent", "Mozilla/5.0 (iPhone)")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of(
+                                "email", "ada@example.com", "locale", "ES"))))
+                .andExpect(status().isOk());
+
+        NotifySubscription row = subscriptionRepository.findAll().get(0);
+        // First XFF hop is the buyer; the rest are proxies.
+        assertThat(row.getSourceIp()).isEqualTo("203.0.113.7");
+        assertThat(row.getUserAgent()).isEqualTo("Mozilla/5.0 (iPhone)");
+        // Proof-of-consent is the exact wording the form shows.
+        assertThat(row.getConsentText()).isEqualTo(NotifySubscriptionService.CONSENT_TEXT);
+        assertThat(row.getConsentText()).isEqualTo("We'll email you if tickets release.");
+        // Locale is normalized (trimmed + lowercased), not stored raw.
+        assertThat(row.getLocale()).isEqualTo("es");
+    }
+
+    @Test
+    void subscribe_fallsBackToRemoteAddr_whenNoForwardedForHeader() throws Exception {
+        Event e = publicLiveEvent();
+
+        mvc.perform(post("/api/v1/public/events/" + e.getId() + "/notify")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("email", "ada@example.com"))))
+                .andExpect(status().isOk());
+
+        // MockMvc's default remote address.
+        assertThat(subscriptionRepository.findAll().get(0).getSourceIp()).isEqualTo("127.0.0.1");
+    }
+
+    @Test
+    void subscribe_truncatesOverlongUserAgent_ratherThanFailing() throws Exception {
+        Event e = publicLiveEvent();
+        String hostileUa = "U".repeat(4000);
+
+        mvc.perform(post("/api/v1/public/events/" + e.getId() + "/notify")
+                        .header("User-Agent", hostileUa)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("email", "ada@example.com"))))
+                .andExpect(status().isOk());
+
+        assertThat(subscriptionRepository.findAll().get(0).getUserAgent()).hasSize(255);
+    }
+
+    @Test
+    void subscribe_storesNullLocale_whenUnsupportedOrAbsent() throws Exception {
+        Event e = publicLiveEvent();
+
+        mvc.perform(post("/api/v1/public/events/" + e.getId() + "/notify")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of(
+                                "email", "junk@example.com", "locale", "kl"))))
+                .andExpect(status().isOk());
+        mvc.perform(post("/api/v1/public/events/" + e.getId() + "/notify")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("email", "absent@example.com"))))
+                .andExpect(status().isOk());
+
+        assertThat(subscriptionRepository.findAll())
+                .hasSize(2)
+                .allSatisfy(row -> assertThat(row.getLocale()).isNull());
+    }
+
+    @Test
+    void subscribe_refreshesProvenance_onReArm() throws Exception {
+        Event e = publicLiveEvent();
+
+        mvc.perform(post("/api/v1/public/events/" + e.getId() + "/notify")
+                        .header("X-Forwarded-For", "203.0.113.7")
+                        .header("User-Agent", "OldBrowser/1.0")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of(
+                                "email", "ada@example.com", "locale", "es"))))
+                .andExpect(status().isOk());
+
+        NotifySubscription row = subscriptionRepository.findAll().get(0);
+        row.setNotifiedAt(Instant.now());
+        subscriptionRepository.save(row);
+
+        // Same buyer, new device, new language, months later — the provenance must
+        // describe THIS act of consent, not the stale one.
+        mvc.perform(post("/api/v1/public/events/" + e.getId() + "/notify")
+                        .header("X-Forwarded-For", "198.51.100.22")
+                        .header("User-Agent", "NewBrowser/9.0")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of(
+                                "email", "ada@example.com", "locale", "uk"))))
+                .andExpect(status().isOk());
+
+        List<NotifySubscription> rows = subscriptionRepository.findAll();
+        assertThat(rows).hasSize(1);
+        NotifySubscription reArmed = rows.get(0);
+        assertThat(reArmed.getNotifiedAt()).isNull();
+        assertThat(reArmed.getSourceIp()).isEqualTo("198.51.100.22");
+        assertThat(reArmed.getUserAgent()).isEqualTo("NewBrowser/9.0");
+        assertThat(reArmed.getLocale()).isEqualTo("uk");
+        assertThat(reArmed.getConsentText()).isEqualTo(NotifySubscriptionService.CONSENT_TEXT);
     }
 
     @Test
