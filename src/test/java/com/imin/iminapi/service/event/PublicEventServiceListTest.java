@@ -9,6 +9,7 @@ import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.stripe.StripeProperties;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -43,6 +44,21 @@ class PublicEventServiceListTest {
         Clock fixedClock() {
             return Clock.fixed(NOW, ZoneOffset.UTC);
         }
+
+        /**
+         * priceFromMinor is fee-inclusive, so the slice needs the fee rates. Defaults
+         * (500 bps + 99 minor) are the production values — StripeConfig can't be
+         * imported here because it eagerly builds a Stripe client.
+         */
+        @Bean
+        StripeProperties stripeProperties() {
+            return new StripeProperties();
+        }
+    }
+
+    /** Fee added on top of a single ticket at price {@code p} (0 stays free). */
+    private static int withFee(int p) {
+        return p == 0 ? 0 : (int) (p + QuoteService.computeFee(p, 1, 500, 99));
     }
 
     @Autowired PublicEventService publicEventService;
@@ -101,6 +117,15 @@ class PublicEventServiceListTest {
         tier.setSold(sold);
         tier.setEnabled(enabled);
         tier.setSortOrder(sortOrder);
+        return ticketTierRepository.save(tier);
+    }
+
+    /** Enabled tier with an explicit sale window — drives the purchasable-tier cases. */
+    private TicketTier tierWithWindow(UUID eventId, String name, int priceMinor, int quantity, int sold,
+                                      int sortOrder, Instant saleStartsAt, Instant saleClosesAt) {
+        TicketTier tier = tier(eventId, name, priceMinor, quantity, sold, true, sortOrder);
+        tier.setSaleStartsAt(saleStartsAt);
+        tier.setSaleClosesAt(saleClosesAt);
         return ticketTierRepository.save(tier);
     }
 
@@ -436,10 +461,10 @@ class PublicEventServiceListTest {
     }
 
     // -----------------------------------------------------------------------
-    // priceFromMinor
+    // priceFromMinor — min over PURCHASABLE tiers, fee-inclusive for one ticket
     // -----------------------------------------------------------------------
     @Test
-    void priceFromMinor_uses_min_enabled_tier() {
+    void priceFromMinor_uses_min_purchasable_tier_fee_inclusive() {
         Event a = eventRepository.save(publishedLiveEvent());
         tier(a.getId(), "VIP", 5000, 100, 0, true, 0);
         tier(a.getId(), "GA", 2500, 100, 0, true, 1);
@@ -447,7 +472,8 @@ class PublicEventServiceListTest {
 
         PageResponse<PublicEventListItem> result = publicEventService.list(emptyQuery());
         assertThat(result.items()).hasSize(1);
-        assertThat(result.items().get(0).priceFromMinor()).isEqualTo(1500);
+        // 1500 + 5% (75) + €0.99 (99) = 1674
+        assertThat(result.items().get(0).priceFromMinor()).isEqualTo(withFee(1500)).isEqualTo(1674);
     }
 
     @Test
@@ -467,7 +493,136 @@ class PublicEventServiceListTest {
 
         PageResponse<PublicEventListItem> result = publicEventService.list(emptyQuery());
         assertThat(result.items()).hasSize(1);
-        assertThat(result.items().get(0).priceFromMinor()).isEqualTo(2000);
+        assertThat(result.items().get(0).priceFromMinor()).isEqualTo(withFee(2000));
+    }
+
+    @Test
+    void priceFromMinor_excludes_sold_out_tiers() {
+        Event a = eventRepository.save(publishedLiveEvent());
+        tier(a.getId(), "Cheap but gone", 1000, 50, 50, true, 0);
+        tier(a.getId(), "Still buyable", 3500, 100, 0, true, 1);
+
+        PageResponse<PublicEventListItem> result = publicEventService.list(emptyQuery());
+        assertThat(result.items().get(0).priceFromMinor()).isEqualTo(withFee(3500));
+    }
+
+    @Test
+    void priceFromMinor_excludes_tiers_not_yet_on_sale() {
+        Event a = eventRepository.save(publishedLiveEvent());
+        tierWithWindow(a.getId(), "Early bird, opens later", 1000, 100, 0, 0,
+                NOW.plusSeconds(3600), null);
+        tier(a.getId(), "On sale now", 3500, 100, 0, true, 1);
+
+        PageResponse<PublicEventListItem> result = publicEventService.list(emptyQuery());
+        assertThat(result.items().get(0).priceFromMinor()).isEqualTo(withFee(3500));
+    }
+
+    @Test
+    void priceFromMinor_excludes_tiers_whose_sale_closed() {
+        Event a = eventRepository.save(publishedLiveEvent());
+        tierWithWindow(a.getId(), "Presale, closed", 1000, 100, 0, 0,
+                null, NOW.minusSeconds(60));
+        tier(a.getId(), "Door price", 3500, 100, 0, true, 1);
+
+        PageResponse<PublicEventListItem> result = publicEventService.list(emptyQuery());
+        assertThat(result.items().get(0).priceFromMinor()).isEqualTo(withFee(3500));
+    }
+
+    @Test
+    void priceFromMinor_null_when_event_not_yet_on_sale() {
+        Event a = publishedLiveEvent();
+        a.setOnSaleAt(NOW.plusSeconds(3600)); // event-level gate still shut
+        a = eventRepository.save(a);
+        tier(a.getId(), "GA", 2500, 100, 0, true, 0);
+
+        // onSaleOnly=false, so the event is still listed — but nothing is buyable yet.
+        PageResponse<PublicEventListItem> result = publicEventService.list(emptyQuery());
+        assertThat(result.items()).hasSize(1);
+        assertThat(result.items().get(0).priceFromMinor()).isNull();
+    }
+
+    @Test
+    void priceFromMinor_null_when_every_tier_unpurchasable() {
+        Event a = eventRepository.save(publishedLiveEvent());
+        tier(a.getId(), "Sold out", 1000, 20, 20, true, 0);
+        tierWithWindow(a.getId(), "Closed", 2000, 100, 0, 1, null, NOW.minusSeconds(1));
+
+        PageResponse<PublicEventListItem> result = publicEventService.list(emptyQuery());
+        assertThat(result.items()).hasSize(1);
+        assertThat(result.items().get(0).priceFromMinor()).isNull();
+    }
+
+    @Test
+    void priceFromMinor_free_tier_stays_zero() {
+        Event a = eventRepository.save(publishedLiveEvent());
+        tier(a.getId(), "Free entry", 0, 100, 0, true, 0);
+        tier(a.getId(), "Supporter", 2000, 100, 0, true, 1);
+
+        PageResponse<PublicEventListItem> result = publicEventService.list(emptyQuery());
+        assertThat(result.items().get(0).priceFromMinor()).isZero();
+    }
+
+    // -----------------------------------------------------------------------
+    // soldOut / lowStock — unchanged semantics after the query swap
+    // -----------------------------------------------------------------------
+    @Test
+    void soldOut_true_when_every_enabled_tier_is_empty() {
+        Event a = eventRepository.save(publishedLiveEvent());
+        tier(a.getId(), "GA", 2000, 30, 30, true, 0);
+        tier(a.getId(), "VIP", 5000, 10, 10, true, 1);
+        tier(a.getId(), "Disabled with stock", 100, 500, 0, false, 2);
+
+        PublicEventListItem item = publicEventService.list(emptyQuery()).items().get(0);
+        assertThat(item.soldOut()).isTrue();
+        assertThat(item.lowStock()).isFalse();
+        assertThat(item.priceFromMinor()).isNull();
+    }
+
+    @Test
+    void soldOut_false_when_one_enabled_tier_still_has_stock() {
+        Event a = eventRepository.save(publishedLiveEvent());
+        tier(a.getId(), "GA", 2000, 30, 30, true, 0);
+        tier(a.getId(), "VIP", 5000, 100, 0, true, 1);
+
+        PublicEventListItem item = publicEventService.list(emptyQuery()).items().get(0);
+        assertThat(item.soldOut()).isFalse();
+        assertThat(item.lowStock()).isFalse();
+    }
+
+    @Test
+    void lowStock_true_when_total_remaining_at_or_below_threshold() {
+        // Default imin.public.low-stock-threshold = 10.
+        Event a = eventRepository.save(publishedLiveEvent());
+        tier(a.getId(), "GA", 2000, 100, 96, true, 0); // 4 left
+        tier(a.getId(), "VIP", 5000, 20, 14, true, 1); // 6 left → total 10
+
+        PublicEventListItem item = publicEventService.list(emptyQuery()).items().get(0);
+        assertThat(item.soldOut()).isFalse();
+        assertThat(item.lowStock()).isTrue();
+    }
+
+    @Test
+    void soldOut_and_lowStock_false_when_event_has_no_enabled_tiers() {
+        Event a = eventRepository.save(publishedLiveEvent());
+        tier(a.getId(), "Disabled", 2000, 100, 0, false, 0);
+
+        PublicEventListItem item = publicEventService.list(emptyQuery()).items().get(0);
+        assertThat(item.soldOut()).isFalse();
+        assertThat(item.lowStock()).isFalse();
+    }
+
+    // -----------------------------------------------------------------------
+    // venueName (W0.6)
+    // -----------------------------------------------------------------------
+    @Test
+    void listItem_carries_venueName() {
+        Event a = publishedLiveEvent();
+        a.setVenueName("Funkhaus");
+        eventRepository.save(a);
+
+        PublicEventListItem item = publicEventService.list(emptyQuery()).items().get(0);
+        assertThat(item.venueName()).isEqualTo("Funkhaus");
+        assertThat(item.venueCity()).isEqualTo("Berlin");
     }
 
     // -----------------------------------------------------------------------

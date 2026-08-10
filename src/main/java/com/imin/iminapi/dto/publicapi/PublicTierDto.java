@@ -1,8 +1,8 @@
 package com.imin.iminapi.dto.publicapi;
 
 import com.imin.iminapi.model.Event;
-import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.TicketTier;
+import com.imin.iminapi.service.event.TierAvailability;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -20,26 +20,21 @@ public record PublicTierDto(
         boolean soldOut,
         boolean closed
 ) {
-    /** Factory deriving all flags from the tier entity, its event, and the current instant. */
+    /**
+     * Factory deriving all flags from the tier entity, its event, and the current instant.
+     *
+     * <p>{@code onSale} delegates to {@link TierAvailability#isPurchasable} — that helper
+     * IS this predicate, lifted out so the listing's {@code priceFromMinor} and the
+     * notify-me release sender answer "buyable?" the same way.
+     */
     public static PublicTierDto from(TicketTier tier, Event e, Instant now) {
-        String currency = e.getCurrency();
-        boolean eventOver = e.getStatus() == EventStatus.PAST || e.getStatus() == EventStatus.CANCELLED;
-
-        int remaining = Math.max(0, tier.getQuantity() - tier.getReserved() - tier.getSold());
+        int remaining = TierAvailability.remaining(tier);
         boolean soldOut = remaining == 0;
+        boolean closed = TierAvailability.isClosed(e, tier, now);
+        boolean onSale = TierAvailability.isPurchasable(e, tier, now);
 
-        Instant tierSaleStartsAt = tier.getSaleStartsAt();
-        Instant tierSaleClosesAt = tier.getSaleClosesAt();
-        boolean tierClosed  = tierSaleClosesAt != null && !now.isBefore(tierSaleClosesAt);
-        boolean eventClosed = e.getSaleClosesAt() != null && !now.isBefore(e.getSaleClosesAt());
-        boolean closed = tierClosed || eventClosed;
-
-        boolean tierEventOpened = e.getOnSaleAt() == null || !now.isBefore(e.getOnSaleAt());
-        boolean tierStarted = tierSaleStartsAt == null || !now.isBefore(tierSaleStartsAt);
-        boolean tierOpened = tierEventOpened && tierStarted;
-        boolean onSale = !eventOver && tierOpened && !closed && !soldOut;
-
-        return new PublicTierDto(tier.getId(), tier.getName(), tier.getPriceMinor(), currency,
-                tierSaleStartsAt, tierSaleClosesAt, tier.getSortOrder(), remaining, onSale, soldOut, closed);
+        return new PublicTierDto(tier.getId(), tier.getName(), tier.getPriceMinor(), e.getCurrency(),
+                tier.getSaleStartsAt(), tier.getSaleClosesAt(), tier.getSortOrder(),
+                remaining, onSale, soldOut, closed);
     }
 }

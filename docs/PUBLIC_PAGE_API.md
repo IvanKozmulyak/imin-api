@@ -286,7 +286,9 @@ The leak-guardrail test asserts the exact key set on:
 GET /api/v1/public/events
 ```
 
-Returns a paginated list of events matching the same eligibility predicate as the detail endpoint (§2). Supports filtering by date window, genre/type, location, organizer, and free-text query.
+Returns a paginated list of events matching the detail endpoint's eligibility predicate (§2) **plus one extra exclusion: `status = cancelled` events never appear in the feed.** A cancelled event stays reachable by direct link (the detail endpoint still serves it so the page can render the cancellation banner) but is dropped from the listing and from the `/cities` + `/genres` facets — a browse feed advertising a cancelled night is a bug, not a feature.
+
+Supports filtering by date window, genre/type, location, organizer, and free-text query.
 
 **No authentication required.** Same `Cache-Control: public, s-maxage=60, stale-while-revalidate=30` as the detail endpoint. CDN keys cache by the full query string.
 
@@ -337,6 +339,7 @@ Each item is a **leaner shape** than the detail endpoint — designed for cards/
   "startsAt": "2026-07-15T18:00:00Z",
   "endsAt": "2026-07-15T23:00:00Z",
   "timezone": "Europe/Berlin",
+  "venueName": "Funkhaus",
   "venueCity": "Berlin",
   "venueCountry": "DE",
   "coverUrl": "https://cdn.example/cover.jpg",
@@ -346,15 +349,22 @@ Each item is a **leaner shape** than the detail endpoint — designed for cards/
 }
 ```
 
-**Excluded vs the detail shape** (operator-irrelevant for cards): `description`, `posterUrl`, `videoUrl`, `tiers[]`, full `venue` (street/postalCode/name), `onSaleAt`, `saleClosesAt`, `squadsEnabled`, `minSquadSize`, `squadDiscountPct`. Click through to detail for those.
+**Excluded vs the detail shape** (operator-irrelevant for cards): `description`, `posterUrl`, `videoUrl`, `tiers[]`, full `venue` (street/postalCode), `onSaleAt`, `saleClosesAt`, `squadsEnabled`, `minSquadSize`, `squadDiscountPct`. Click through to detail for those.
+
+#### `venueName`
+
+The venue's display name (`Event.venueName`), or `null` when the organizer left it blank. Cards render `"{venueName} · {venueCity}"` when present and fall back to the city alone otherwise. The rest of the venue block (street, postal code) stays detail-only.
 
 #### `priceFromMinor`
 
-Minimum `priceMinor` across the event's **enabled** tiers — drives "From €25" UI. Notes:
+**The cheapest amount a buyer can actually pay for one ticket right now, booking fee included.** Drives the "FROM €26.74" card label.
 
-- Computed via SQL aggregation; one round-trip per page (no N+1).
-- `null` when the event has no enabled tiers.
-- **Sold-out tiers are NOT excluded** — a sold-out €25 tier still counts for "From €25". Detail page reveals sold-out state.
+- **Purchasable-aware.** The minimum is taken over tiers that are *buyable at request time* — exactly the `PublicTierDto.onSale` predicate (shared helper `TierAvailability.isPurchasable`): enabled, event not `past`/`cancelled`, both the event-level `onSaleAt` and the tier's `saleStartsAt` reached, neither `saleClosesAt` passed, and `remaining > 0`. Sold-out, not-yet-open and closed tiers are **excluded** — the card no longer advertises a price nobody can buy.
+- **Fee-inclusive.** The buyer booking fee for a single ticket is added on top: `p + round(p × 5%) + €0.99`. A €25.00 tier surfaces as `2674`. This is deliberate — the card number and the checkout total now agree.
+- **Free tiers stay `0`.** The fee is waived on €0, matching the quote endpoint. Render this as "Free", not "€0".
+- **`null` when nothing is purchasable** — no enabled tiers, everything sold out, sales not yet open, or sales ended. Pair it with `soldOut`: when `soldOut` is true and `priceFromMinor` is `null`, show the sold-out chip and **no** price placeholder.
+- **Detail-page tier prices remain face-value.** `tiers[].priceMinor` on the detail endpoint is the ticket price without the fee; the fee is broken out by `POST /quote` (`feeMinor`). Only this listing field is fee-inclusive.
+- Computed in Java from a single batch fetch of the page's enabled tiers (one round-trip per page, no N+1).
 
 ### 9.3 Errors
 
@@ -428,6 +438,7 @@ No query parameters in v1.
 - Different countries with the same city name (Paris/FR vs Paris/US) appear as separate entries — disambiguates duplicates.
 - `country` is ISO-3166 α-2.
 - Events with empty `venueCity` are excluded. (`venue_city` is `NOT NULL DEFAULT ''` at the schema level.)
+- Cancelled events are excluded, matching the listing feed (§9).
 - Empty database / no public events → `[]` (NOT 404).
 
 ### 10.2 Frontend integration notes
