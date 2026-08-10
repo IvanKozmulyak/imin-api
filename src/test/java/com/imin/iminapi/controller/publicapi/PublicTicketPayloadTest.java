@@ -41,7 +41,7 @@ class PublicTicketPayloadTest {
 
     @Test
     void getTicket_emitsSignedQrPayloadAndWalletFlag() throws Exception {
-        Ticket t = persistIssuedTicket();
+        Ticket t = persistTicket("issued");
 
         mvc.perform(get("/api/v1/public/tickets/" + t.getToken()))
                 .andExpect(status().isOk())
@@ -54,7 +54,20 @@ class PublicTicketPayloadTest {
                 .andExpect(jsonPath("$.state").value("issued"));
     }
 
-    private Ticket persistIssuedTicket() {
+    /**
+     * THE W0.1 REGRESSION. {@code RefundService} writes {@code 'refunded'}; before
+     * TicketState mapped it, every read of a refunded ticket 500'd.
+     */
+    @Test
+    void getTicket_refunded_returns200WithRefundedState() throws Exception {
+        Ticket t = persistTicket(Ticket.STATE_REFUNDED);
+
+        mvc.perform(get("/api/v1/public/tickets/" + t.getToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.state").value("refunded"));
+    }
+
+    private Ticket persistTicket(String state) {
         Organization org = new Organization();
         org.setName("Payload Test Org");
         org.setSlug("payload-test-org-" + UUID.randomUUID().toString().substring(0, 8));
@@ -94,7 +107,7 @@ class PublicTicketPayloadTest {
         t.setEventId(ev.getId());
         t.setTierId(UUID.randomUUID());
         t.setTierName("GA");
-        t.setState("issued");
+        t.setState(state);
         return tickets.save(t);
     }
 }
