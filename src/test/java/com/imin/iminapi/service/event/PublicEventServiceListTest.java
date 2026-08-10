@@ -130,6 +130,20 @@ class PublicEventServiceListTest {
     }
 
     @Test
+    void excludes_cancelled_events() {
+        // Published + future + PUBLIC, but CANCELLED — passes every other clause of the
+        // eligibility predicate, so this pins the dedicated status guard. The detail
+        // endpoint still serves it (PublicEventServiceTest.returnsEvent_whenStatusCancelled).
+        Event e = publishedLiveEvent();
+        e.setStatus(EventStatus.CANCELLED);
+        eventRepository.save(e);
+
+        PageResponse<PublicEventListItem> result = publicEventService.list(emptyQuery());
+        assertThat(result.items()).isEmpty();
+        assertThat(result.total()).isZero();
+    }
+
+    @Test
     void excludes_private_events() {
         Event e = publishedLiveEvent();
         e.setVisibility(EventVisibility.PRIVATE);
@@ -593,6 +607,13 @@ class PublicEventServiceListTest {
         deleted.setVenueCountry("ZZ");
         eventRepository.save(deleted);
 
+        // Cancelled (excluded — the feed drops it, the detail page still serves it)
+        Event cancelled = publishedLiveEvent();
+        cancelled.setStatus(EventStatus.CANCELLED);
+        cancelled.setVenueCity("Cancelled City");
+        cancelled.setVenueCountry("ZZ");
+        eventRepository.save(cancelled);
+
         // Public + live (included)
         Event live = publishedLiveEvent();
         live.setVenueCity("Visible");
@@ -664,6 +685,11 @@ class PublicEventServiceListTest {
         deleted.setDeletedAt(NOW.minusSeconds(60));
         deleted.setGenre("deleted");
         eventRepository.save(deleted);
+
+        Event cancelled = publishedLiveEvent();
+        cancelled.setStatus(EventStatus.CANCELLED);
+        cancelled.setGenre("cancelled");
+        eventRepository.save(cancelled);
 
         Event live = publishedLiveEvent();
         live.setGenre("techno");
