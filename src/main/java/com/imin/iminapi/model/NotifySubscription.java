@@ -14,8 +14,13 @@ import java.util.UUID;
  *
  * Captured by {@code POST /api/v1/public/events/{id}/notify}. The (event_id, email)
  * pair is unique per subscription; email is lowercased server-side before insert so
- * case-variants of the same address don't double-subscribe. Email sending is not yet
- * wired — this table is the durable record for a later notification job.
+ * case-variants of the same address don't double-subscribe.
+ *
+ * <p>{@code notifiedAt} is the one-shot delivery marker consumed by
+ * {@code NotifyReleaseSender}: {@code null} means the buyer is still owed the
+ * "tickets are available" email, non-null means it has been sent (or deliberately
+ * suppressed) and must not be sent again. Re-subscribing after a notification resets
+ * it to {@code null}, re-arming the row for the next release.
  */
 @Entity
 @Table(name = "notify_subscriptions")
@@ -35,9 +40,14 @@ public class NotifySubscription {
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Times.nowMicros();
 
+    /** When the release email went out (or was suppressed). Null ⇒ still pending. */
+    @Column(name = "notified_at")
+    private Instant notifiedAt;
+
     @PrePersist
     @PreUpdate
     void truncateTimestamps() {
         createdAt = createdAt == null ? Times.nowMicros() : createdAt.truncatedTo(ChronoUnit.MICROS);
+        if (notifiedAt != null) notifiedAt = notifiedAt.truncatedTo(ChronoUnit.MICROS);
     }
 }

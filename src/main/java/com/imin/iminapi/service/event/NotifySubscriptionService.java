@@ -30,7 +30,9 @@ import java.util.UUID;
  * are swallowed at the database level and surfaced as a successful idempotent 200.
  *
  * <p>Email delivery is <strong>not</strong> wired here — the subscription is
- * persisted for a later notification job to consume.
+ * persisted for {@link NotifyReleaseSender} to consume. Re-subscribing an address
+ * that has already been notified re-arms the row ({@code notifiedAt} back to null)
+ * so the next release reaches it.
  */
 @Service
 public class NotifySubscriptionService {
@@ -63,7 +65,16 @@ public class NotifySubscriptionService {
         // Idempotency: a SELECT-then-INSERT race could still produce two parallel inserts,
         // so we rely on the UNIQUE constraint as the actual guarantee. The pre-check just
         // avoids generating obvious garbage in the unique-violation log.
-        if (subscriptionRepository.findByEventIdAndEmail(event.getId(), email).isPresent()) {
+        var existing = subscriptionRepository.findByEventIdAndEmail(event.getId(), email);
+        if (existing.isPresent()) {
+            // Re-arm: a buyer who was already notified about one release and comes back to
+            // subscribe again wants to hear about the NEXT one. Without this the UNIQUE
+            // pre-check would silently eat the request and we'd repeat the false promise.
+            NotifySubscription row = existing.get();
+            if (row.getNotifiedAt() != null) {
+                row.setNotifiedAt(null);
+                subscriptionRepository.save(row);
+            }
             return NotifySubscriptionResponse.ok();
         }
 

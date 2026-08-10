@@ -1,0 +1,15 @@
+TICKETS RELEASED · imin
+
+Tickets for {{eventName}} are available.
+
+You asked us to email you when tickets for {{eventName}} become available. This is a one-time notification.
+
+{{eventName}}
+{{eventWhen}}
+{{eventWhere}}
+
+Get your tickets: {{eventUrl}}
+
+Tickets sell in the order they're bought — this email doesn't hold any for you. You will not receive another email about this event unless you sign up again.
+
+imin.wtf · ticket release for {{eventName}}
