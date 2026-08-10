@@ -6,10 +6,17 @@ import com.fasterxml.jackson.annotation.JsonInclude;
  * Response of {@code POST /api/v1/public/events/{id}/quote}.
  *
  * <p>All monetary fields are in the smallest currency unit (cents for EUR, etc.).
- * {@code feeMinor} is always {@code 0} in the current platform — the application
- * fee Stripe routes to the platform comes out of the organizer's net, not as a
- * buyer-visible surcharge. Field kept in the contract so adding a buyer fee
- * later doesn't require a payload migration.
+ *
+ * <p>{@code feeMinor} is the <b>buyer-visible service fee</b>: {@code 5% of subtotal}
+ * plus {@code €0.99 per ticket} ({@link com.imin.iminapi.stripe.StripeProperties}
+ * {@code applicationFeeBps=500}, {@code applicationFeeFixedMinor=99}). It is computed on
+ * the <b>pre-discount</b> {@code subtotalMinor}, so a partial promo shrinks what the
+ * organizer nets, not the platform's cut. {@code totalMinor = subtotal - discount + fee}
+ * is what the buyer is actually charged.
+ *
+ * <p>The fee is <b>waived entirely when the net total is zero</b> — a free tier
+ * ({@code unitPriceMinor == 0}) or a 100%-off promo on a paid tier. Both quote
+ * {@code feeMinor=0, totalMinor=0} and take the free checkout path (no Stripe session).
  *
  * <p>{@code promo} is present only when the request carried a {@code promoCode}.
  * On a successfully applied code: {@code applied=true}, {@code reason=null}.

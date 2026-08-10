@@ -392,4 +392,25 @@ class QuoteServiceTest {
         assertThat(r.totalMinor()).isEqualTo(0L);
         assertThat(r.promo()).isNull();
     }
+
+    // A 100%-off promo on a PAID tier zeroes the net, so the fee is waived too —
+    // checkout routes this order down the no-Stripe free path (netTotal == 0), so a
+    // quoted fee would promise a charge that never happens (W0.2).
+    @Test
+    void quote_waivesFee_whenPromoZeroesPaidTier() {
+        Event e = publishedLiveEvent();
+        TicketTier t = tier(e.getId(), 2500);
+        promo(e.getId(), "COMP100", 100, 50, 0, true);
+
+        QuoteResponse r = quoteService.quote(e.getId(),
+                new QuoteRequest(t.getId(), 2, "COMP100", null));
+
+        assertThat(r.subtotalMinor()).isEqualTo(5000L);
+        assertThat(r.discountMinor()).isEqualTo(5000L);
+        assertThat(r.feeMinor()).isZero();
+        assertThat(r.totalMinor()).isZero();
+        assertThat(r.promo()).isNotNull();
+        assertThat(r.promo().applied()).isTrue();
+        assertThat(r.promo().discountPct()).isEqualTo(100);
+    }
 }

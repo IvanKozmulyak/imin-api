@@ -47,6 +47,11 @@ import java.util.UUID;
  * destination charge (so the platform keeps the fee while the organizer is paid the
  * net ticket revenue).
  *
+ * <p>The fee is <b>waived entirely when the net total is zero</b> — a free tier or a
+ * 100%-off promo on a paid tier. Those orders take the no-Stripe free path
+ * ({@code StripeCheckoutService} branches on {@code subtotal - discount == 0}), so
+ * there is no charge to attach a fee to.
+ *
  * <h2>Promo semantics</h2>
  * <ul>
  *   <li>No {@code promoCode} field → no {@code promo} block in the response.</li>
@@ -145,8 +150,12 @@ public class QuoteService {
             discount = eval.discountMinor();
         }
 
-        // Free tier (priceMinor == 0) stays truly free — no flat fee on €0 tickets.
-        long fee = unitPrice == 0
+        // Zero-net orders stay truly free — no flat fee on €0 tickets, and none on a
+        // 100%-off promo either. `StripeCheckoutService` routes any `subtotal - discount == 0`
+        // order down the no-Stripe free path, so quoting a fee here would promise a charge
+        // that never happens. Partial discounts keep the fee on the pre-discount subtotal
+        // (intentional — see StripeCheckoutService step 5).
+        long fee = (unitPrice == 0 || subtotal - discount <= 0)
                 ? 0L
                 : computeFee(subtotal, rawQty,
                         stripeProps.getApplicationFeeBps(),
