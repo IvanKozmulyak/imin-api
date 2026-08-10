@@ -381,6 +381,14 @@ imin:
       # consent-sensitive (auto-subscribe on organizer assertion), so keep it to a few/hour.
       capacity: 5
       window-minutes: 60
+    notify-subscribe:
+      # Public unauthenticated "notify me when tickets release", keyed per client IP
+      # (forward-headers-strategy=framework makes getRemoteAddr the real client IP in prod).
+      # A real buyer subscribes to a handful of events an hour at most; the cap stops a loop
+      # filling notify_subscriptions with fake addresses that NotifyReleaseSender would
+      # later actually mail from our sending domain.
+      capacity: 20
+      window-minutes: 60
   media:
     enabled: ${MEDIA_ENABLED:true}
     bucket: ${R2_BUCKET:imin-media-dev}

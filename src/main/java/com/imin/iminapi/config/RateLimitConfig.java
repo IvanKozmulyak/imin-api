@@ -53,6 +53,10 @@ public class RateLimitConfig {
     private int audienceImportCapacity;
     @Value("${imin.ratelimit.audience-import.window-minutes}")
     private int audienceImportWindow;
+    @Value("${imin.ratelimit.notify-subscribe.capacity}")
+    private int notifySubscribeCapacity;
+    @Value("${imin.ratelimit.notify-subscribe.window-minutes}")
+    private int notifySubscribeWindow;
 
     @Bean
     public RedisClient redisClient(@Value("${spring.data.redis.url}") String url) {
@@ -95,6 +99,12 @@ public class RateLimitConfig {
         // Audience CSV import throttle, keyed per org — imports are heavy + consent-sensitive.
         configs.put("audience-import", BucketConfiguration.builder()
                 .addLimit(Bandwidth.simple(audienceImportCapacity, Duration.ofMinutes(audienceImportWindow)))
+                .build());
+        // Public unauthenticated notify-me subscribe, keyed per client IP. Every stored row
+        // becomes a real outbound email once the event releases tickets, so an unthrottled
+        // route is a spam relay.
+        configs.put("notify-subscribe", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(notifySubscribeCapacity, Duration.ofMinutes(notifySubscribeWindow)))
                 .build());
 
         return (bucketName, key) -> {
