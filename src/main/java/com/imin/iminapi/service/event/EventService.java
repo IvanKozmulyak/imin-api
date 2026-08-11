@@ -12,6 +12,7 @@ import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.service.audit.AuditLogger;
 import com.imin.iminapi.stripe.StripeConnectService;
 import com.imin.iminapi.util.CountryTimeZones;
+import com.imin.iminapi.util.EventNormalization;
 import com.imin.iminapi.web.IfMatchSupport;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -155,6 +156,11 @@ public class EventService {
             Event saved = events.save(e);
             audit(p, AuditActions.EVENT_CREATED, "event", saved.getId(),
                     "Created event \"" + eventLabel(saved) + "\"");
+            // A draft created WITH an address geocodes straight away (V80). Empty
+            // address => nothing to resolve, no event published.
+            if (!EMPTY_VENUE_ADDRESS_KEY.equals(venueAddressKey(saved))) {
+                publishVenueAddressChanged(saved.getId());
+            }
             return EventDto.summary(saved);
         } catch (DataIntegrityViolationException ex) {
             throw ApiException.duplicate("slug", "Event slug already taken in this organization");
@@ -181,7 +187,9 @@ public class EventService {
     @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
     public EventDto patch(AuthPrincipal p, UUID id, String ifMatchHeader, EventPatchRequest body) {
         Event e = loadOwned(p, id);
+        String addressBefore = venueAddressKey(e);
         boolean changed = applyPatch(e, body);
+        String addressAfter = venueAddressKey(e);
         e.setUpdatedAt(Instant.now()); // ensure ETag changes even when @PreUpdate doesn't fire
         try {
             events.save(e);
@@ -212,7 +220,33 @@ public class EventService {
         if (touched && eventPublisher != null) {
             eventPublisher.publishEvent(new com.imin.iminapi.predictor.service.PredictorReactivityEvents.EventMutated(e.getId()));
         }
+        // Venue coordinates (V80): re-geocode only when an address STRING actually moved.
+        // Publishing on every patch would burn the Nominatim rate budget on autosaves.
+        if (!addressBefore.equals(addressAfter)) publishVenueAddressChanged(e.getId());
         return detail(p, id);
+    }
+
+    /**
+     * Identity of the venue address for change detection. Case-folded and trimmed so
+     * "Berlin " → "berlin" is not treated as a move; anything that survives that is a
+     * genuinely different address worth one geocoder call.
+     */
+    /** The key of an Event with no address at all — the "nothing to geocode" sentinel. */
+    private static final String EMPTY_VENUE_ADDRESS_KEY = venueAddressKey(new Event());
+
+    private static String venueAddressKey(Event e) {
+        return norm(e.getVenueStreet()) + "|" + norm(e.getVenueCity()) + "|"
+                + norm(e.getVenuePostalCode()) + "|" + norm(e.getVenueCountry());
+    }
+
+    private static String norm(String s) {
+        return s == null ? "" : s.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private void publishVenueAddressChanged(UUID eventId) {
+        if (eventPublisher != null) {
+            eventPublisher.publishEvent(new VenueAddressChangedEvent(eventId));
+        }
     }
 
     @Transactional
@@ -310,7 +344,12 @@ public class EventService {
         if (b.name() != null) { e.setName(b.name()); changed = true; }
         if (b.slug() != null) { e.setSlug(b.slug().toLowerCase(Locale.ROOT)); changed = true; }
         if (b.visibility() != null) { e.setVisibility(EventVisibility.fromWire(b.visibility())); changed = true; }
-        if (b.genre() != null) { e.setGenre(b.genre()); changed = true; }
+        // Genre keeps its typed case (V82) — only whitespace is cleaned, exactly like the city
+        // below. The case-insensitive merge that makes "Techno" and "techno" one facet chip and
+        // one ?genre= query happens on the derived genre_key, never on the display string: both
+        // frontends print this verbatim and the organizer wizard matches it against a closed
+        // Title-Case option list.
+        if (b.genre() != null) { e.setGenre(EventNormalization.genre(b.genre())); changed = true; }
         if (b.type() != null) { e.setType(b.type()); changed = true; }
         if (b.startsAt() != null) { e.setStartsAt(b.startsAt()); changed = true; }
         if (b.endsAt() != null) { e.setEndsAt(b.endsAt()); changed = true; }
@@ -319,9 +358,11 @@ public class EventService {
             VenueDto v = b.venue();
             e.setVenueName(v.name());
             if (v.street() != null) e.setVenueStreet(v.street());
-            if (v.city() != null) e.setVenueCity(v.city());
+            // City keeps its typed case (see EventNormalization) — only whitespace is cleaned.
+            // The case-insensitive merge happens on the derived venue_city_key.
+            if (v.city() != null) e.setVenueCity(EventNormalization.city(v.city()));
             if (v.postalCode() != null) e.setVenuePostalCode(v.postalCode());
-            e.setVenueCountry(v.country());
+            e.setVenueCountry(normalizedCountry(v.country()));
             changed = true;
         }
         changed |= applyTimezone(e, b);
@@ -339,6 +380,26 @@ public class EventService {
         if (b.onSaleAt() != null) { e.setOnSaleAt(b.onSaleAt()); changed = true; }
         if (b.saleClosesAt() != null) { e.setSaleClosesAt(b.saleClosesAt()); changed = true; }
         return changed;
+    }
+
+    /**
+     * Venue country on the way in (V82): upper-cased ISO-3166 alpha-2, or {@code NULL} —
+     * <b>never the empty string</b>. A blank country and a missing one are the same fact, and
+     * storing them as two different values ({@code ''} vs {@code NULL}) is what split one Metz
+     * into three chips on the buyer's cities page.
+     *
+     * <p>Anything non-blank that is not two letters is rejected with a 400 rather than silently
+     * dropped: {@code venue_country} is {@code varchar(2)}, so a longer value used to surface as
+     * a 500 from the driver, and nulling it out instead would quietly lose organizer input.
+     */
+    private static String normalizedCountry(String raw) {
+        String country = EventNormalization.country(raw);
+        if (country != null && !EventNormalization.isCountryCode(country)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
+                    "Invalid venue country",
+                    Map.of("venue.country", "must be an ISO-3166 alpha-2 code"));
+        }
+        return country;
     }
 
     /**

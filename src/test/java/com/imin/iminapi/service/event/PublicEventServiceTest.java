@@ -509,7 +509,7 @@ class PublicEventServiceTest {
             Instant from, boolean includeOngoing) {
         return new com.imin.iminapi.service.event.PublicEventListQuery(
                 from, null, null, null, null, null, null, null,
-                false, includeOngoing, 1, 20);
+                false, includeOngoing, false, 1, 20);
     }
 
     @Test
@@ -624,5 +624,42 @@ class PublicEventServiceTest {
         assertThat(result.items()).hasSize(1);
         assertThat(result.items().get(0).soldOut()).isFalse();
         assertThat(result.items().get(0).lowStock()).isFalse();
+    }
+
+    // -----------------------------------------------------------------------
+    // venue coordinates (V80)
+    // -----------------------------------------------------------------------
+
+    @Test
+    void venue_carries_coordinates_when_the_event_has_them() {
+        Event e = publishedLiveEvent();
+        e.setVenueName("Berghain");
+        e.setVenueStreet("Am Wriezener Bahnhof");
+        e.setVenueCity("Berlin");
+        e.setVenuePostalCode("10243");
+        e.setVenueCountry("DE");
+        e.setVenueLatitude(52.5111d);
+        e.setVenueLongitude(13.4432d);
+        e = eventRepository.save(e);
+
+        PublicEventResponse resp = publicEventService.get(e.getId());
+        assertThat(resp.venue().latitude()).isEqualTo(52.5111d);
+        assertThat(resp.venue().longitude()).isEqualTo(13.4432d);
+    }
+
+    @Test
+    void venue_coordinates_are_null_when_the_event_was_never_geocoded() {
+        // The default state: geocoding is off by default, so the buyer page must still
+        // render the address and its maps deep link off these strings alone.
+        Event e = publishedLiveEvent();
+        e.setVenueName("Some Club");
+        e.setVenueCity("Metz");
+        e.setVenueCountry("FR");
+        e = eventRepository.save(e);
+
+        PublicEventResponse resp = publicEventService.get(e.getId());
+        assertThat(resp.venue().latitude()).isNull();
+        assertThat(resp.venue().longitude()).isNull();
+        assertThat(resp.venue().city()).isEqualTo("Metz");
     }
 }

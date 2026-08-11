@@ -60,11 +60,30 @@ class RefundRequestControllerTest {
     void list_returns_rows_for_own_org() throws Exception {
         UUID orgId = UUID.randomUUID();
         AuthPrincipal me = principalFor(orgId);
-        when(service.listRequests(eq(orgId), any(), any(), anyInt()))
+        when(service.listRequests(eq(orgId), any(), any(), any(), anyInt()))
             .thenReturn(List.of());
         mvc.perform(get("/api/v1/orgs/{orgId}/refund-requests", orgId)
                 .with(authentication(auth(me))))
             .andExpect(status().isOk());
+
+        // No ?search= => null term => the unsearched query path.
+        org.mockito.Mockito.verify(service).listRequests(eq(orgId), any(), any(), eq(null), anyInt());
+    }
+
+    @Test
+    void list_passes_the_quoted_refund_reference_through_as_a_search_term() throws Exception {
+        UUID orgId = UUID.randomUUID();
+        AuthPrincipal me = principalFor(orgId);
+        when(service.listRequests(eq(orgId), any(), any(), any(), anyInt()))
+            .thenReturn(List.of());
+
+        mvc.perform(get("/api/v1/orgs/{orgId}/refund-requests", orgId)
+                .param("search", "REQ-8K2M-26")
+                .with(authentication(auth(me))))
+            .andExpect(status().isOk());
+
+        org.mockito.Mockito.verify(service)
+            .listRequests(eq(orgId), any(), any(), eq("REQ-8K2M-26"), anyInt());
     }
 
     @Test

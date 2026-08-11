@@ -126,10 +126,12 @@ public class PublicEventController {
             @RequestParam(required = false) String q,
             @RequestParam(defaultValue = "false") boolean onSaleOnly,
             @RequestParam(defaultValue = "false") boolean includeOngoing,
+            @RequestParam(defaultValue = "false") boolean freeOnly,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int pageSize) {
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                from, to, genre, type, city, country, orgSlug, q, onSaleOnly, includeOngoing, page, pageSize));
+                from, to, genre, type, city, country, orgSlug, q,
+                onSaleOnly, includeOngoing, freeOnly, page, pageSize));
         return ResponseEntity.ok()
                 .header(HttpHeaders.CACHE_CONTROL, "public, s-maxage=60, stale-while-revalidate=30")
                 .body(result);

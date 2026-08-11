@@ -125,6 +125,8 @@ class EventServiceTest {
                         null, null, null, null, null, null, null, null));
 
         assertThat(dto.name()).isEqualTo("New name");
+        // Genre keeps the organizer's casing (V82) — it is a display label both frontends
+        // print verbatim. Matching is done on the derived genre_key, not on this string.
         assertThat(dto.genre()).isEqualTo("Techno");
         assertThat(dto.tiers()).isNotNull();
         assertThat(dto.promoCodes()).isNotNull();
@@ -502,4 +504,159 @@ class EventServiceTest {
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> sut.publish(p, e.getId()))
                 .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.PUBLISH_VALIDATION_FAILED);
     }
+
+    // ---- Venue geocoding trigger (V80) ---------------------------------------------------------
+
+    /**
+     * A publisher-wired EventService — the 8-arg constructor used elsewhere in this class
+     * leaves the publisher null, which is fine for tests that don't care about events.
+     */
+    private EventService serviceWithPublisher(org.springframework.context.ApplicationEventPublisher pub) {
+        return new EventService(events, tiers, promos, predictions, validator, ifMatch, tierService,
+                stripeConnect, null, null, null, pub);
+    }
+
+    @Test
+    void create_draft_with_an_address_asks_for_a_geocode() {
+        AuthPrincipal p = principal();
+        stubSaveEchoWithId();
+        var pub = mock(org.springframework.context.ApplicationEventPublisher.class);
+
+        serviceWithPublisher(pub).createDraft(p, bodyWith(null, venue("FR")));
+
+        verify(pub).publishEvent(any(VenueAddressChangedEvent.class));
+    }
+
+    @Test
+    void create_draft_without_an_address_asks_for_nothing() {
+        AuthPrincipal p = principal();
+        stubSaveEchoWithId();
+        var pub = mock(org.springframework.context.ApplicationEventPublisher.class);
+
+        serviceWithPublisher(pub).createDraft(p, bodyWith(null, null));
+
+        verify(pub, never()).publishEvent(any(VenueAddressChangedEvent.class));
+    }
+
+    @Test
+    void patch_that_moves_the_venue_asks_for_a_geocode() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID());
+        e.setOrgId(p.orgId());
+        e.setVenueStreet("1 Rue");
+        e.setVenueCity("Paris");
+        e.setVenuePostalCode("75001");
+        e.setVenueCountry("FR");
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(tiers.findByEventIdOrderBySortOrderAsc(any())).thenReturn(List.of());
+        when(promos.findByEventId(any())).thenReturn(List.of());
+        when(predictions.findById(any())).thenReturn(Optional.empty());
+        stubSaveEchoWithId();
+        var pub = mock(org.springframework.context.ApplicationEventPublisher.class);
+
+        serviceWithPublisher(pub).patch(p, e.getId(), null, bodyWith(null,
+                new VenueDto("Le Club", "2 Rue", "Metz", "57000", "FR")));
+
+        verify(pub).publishEvent(any(VenueAddressChangedEvent.class));
+    }
+
+    @Test
+    void patch_that_only_retypes_the_same_address_does_not_burn_a_geocode_call() {
+        // Autosave resends the whole form on every keystroke pause. Re-geocoding an
+        // unchanged address would exhaust the provider's rate budget for nothing.
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID());
+        e.setOrgId(p.orgId());
+        e.setVenueStreet("1 Rue");
+        e.setVenueCity("Paris");
+        e.setVenuePostalCode("75001");
+        e.setVenueCountry("FR");
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(tiers.findByEventIdOrderBySortOrderAsc(any())).thenReturn(List.of());
+        when(promos.findByEventId(any())).thenReturn(List.of());
+        when(predictions.findById(any())).thenReturn(Optional.empty());
+        stubSaveEchoWithId();
+        var pub = mock(org.springframework.context.ApplicationEventPublisher.class);
+
+        // Same address, different casing/whitespace and a changed name (name is not an address).
+        serviceWithPublisher(pub).patch(p, e.getId(), null, bodyWith(null,
+                new VenueDto("Renamed Club", " 1 Rue ", "paris", "75001", "FR")));
+
+        verify(pub, never()).publishEvent(any(VenueAddressChangedEvent.class));
+    }
+
+    // ---- Facet normalisation on write (V82) ---------------------------------------------------
+
+    private EventPatchRequest facetBody(String genre, VenueDto venue) {
+        return new EventPatchRequest(null, null, null, genre, null, null, null, null, venue,
+                null, null, null, null, null, null, null, null);
+    }
+
+    private Event captureCreated(AuthPrincipal p, EventPatchRequest body) {
+        stubSaveEchoWithId();
+        sut.createDraft(p, body);
+        var captor = org.mockito.ArgumentCaptor.forClass(Event.class);
+        verify(events).save(captor.capture());
+        return captor.getValue();
+    }
+
+    @Test
+    void create_normalises_city_country_and_genre() {
+        Event saved = captureCreated(principal(), facetBody("  Techno   Classics ",
+                new VenueDto("Le Club", "1 Rue", "  Le   Mans ", "72000", " fr ")));
+
+        // City: whitespace tidied, case left exactly as typed — case-folding city names
+        // destroys real ones ('s-Hertogenbosch, L'Aquila).
+        assertThat(saved.getVenueCity()).isEqualTo("Le Mans");
+        assertThat(saved.getVenueCountry()).isEqualTo("FR");
+        // Genre gets the SAME treatment as the city: whitespace only, casing untouched.
+        assertThat(saved.getGenre()).isEqualTo("Techno Classics");
+    }
+
+    @Test
+    void patch_normalises_city_country_and_genre() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId()); e.setSlug("x");
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(tiers.findByEventIdOrderBySortOrderAsc(any())).thenReturn(List.of());
+        when(promos.findByEventId(any())).thenReturn(List.of());
+        when(predictions.findById(any())).thenReturn(Optional.empty());
+
+        sut.patch(p, e.getId(), null, facetBody("Techno",
+                new VenueDto("Le Club", "1 Rue", " METZ ", "57000", "fr")));
+
+        assertThat(e.getVenueCity()).isEqualTo("METZ");
+        assertThat(e.getVenueCountry()).isEqualTo("FR");
+        assertThat(e.getGenre()).isEqualTo("Techno");
+    }
+
+    @Test
+    void blank_country_is_stored_as_null_never_as_an_empty_string() {
+        // '' and NULL are the same fact — "we don't know the country" — but SQL GROUP BY
+        // treats them as two, which is exactly what split one Metz into three city chips.
+        Event fromBlank = captureCreated(principal(), facetBody(null,
+                new VenueDto("Le Club", "1 Rue", "Metz", "57000", "   ")));
+        assertThat(fromBlank.getVenueCountry()).isNull();
+    }
+
+    @Test
+    void a_country_that_is_not_two_letters_is_rejected_not_silently_dropped() {
+        // venue_country is varchar(2): this used to be a 500 from the driver. Nulling it out
+        // instead would quietly lose what the organizer typed, so it is a field error.
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                        sut.createDraft(principal(), facetBody(null,
+                                new VenueDto("Le Club", "1 Rue", "Metz", "57000", "France"))))
+                .isInstanceOf(com.imin.iminapi.security.ApiException.class)
+                .satisfies(ex -> {
+                    var api = (com.imin.iminapi.security.ApiException) ex;
+                    assertThat(api.status()).isEqualTo(org.springframework.http.HttpStatus.BAD_REQUEST);
+                    assertThat(api.fields()).containsKey("venue.country");
+                });
+        verify(events, never()).save(any(Event.class));
+    }
+
 }

@@ -38,6 +38,22 @@ public class Event {
     @Column(nullable = false)
     private String genre = "";
 
+    /**
+     * Derived merge key for the genre (V82) — {@code lower(collapse(trim(genre)))}, computed
+     * by {@link com.imin.iminapi.util.EventNormalization#genreKey(String)}.
+     *
+     * <p>DERIVED, NEVER AUTHORED — same contract as {@link #venueCityKey}. Recomputed from
+     * {@code genre} in {@link #onPersist()} and {@link #onUpdate()}, so it cannot drift
+     * whichever path wrote the row.
+     *
+     * <p>The buyer's genre facet groups on it and {@code ?genre=} matches it, so {@code Techno}
+     * and {@code techno} are one chip whose count equals its own result page. The display string
+     * stays as the organizer typed it: both frontends print {@code genre} verbatim, and the
+     * organizer wizard picks it out of a closed Title-Case list that a folded value cannot match.
+     */
+    @Column(name = "genre_key", nullable = false)
+    private String genreKey = "";
+
     @Column(nullable = false)
     private String type = "";
 
@@ -60,6 +76,36 @@ public class Event {
     private String venuePostalCode = "";
     @Column(name = "venue_country", length = 2)
     private String venueCountry;
+
+    /**
+     * Derived merge key for the city (V82) — {@code lower(collapse(trim(venueCity)))}, computed
+     * by {@link com.imin.iminapi.util.EventNormalization#cityKey(String)}.
+     *
+     * <p>DERIVED, NEVER AUTHORED. It is recomputed from {@code venueCity} in {@link #onPersist()}
+     * and {@link #onUpdate()}, so it cannot drift no matter which path wrote the row — service,
+     * repository, fixture. Setting it by hand is pointless; the callback overwrites it.
+     *
+     * <p>It exists because the buyer's city facet and the {@code ?city=} listing filter both group
+     * and match on it: {@code Metz}, {@code METZ} and {@code  metz } are one chip whose count is
+     * exactly what tapping it returns. The display string stays as the organizer typed it —
+     * case-folding city names destroys {@code 's-Hertogenbosch} and {@code L'Aquila}.
+     */
+    @Column(name = "venue_city_key", nullable = false)
+    private String venueCityKey = "";
+
+    /**
+     * Venue point (V80), nullable by design and always set as a PAIR.
+     *
+     * <p>Populated best-effort by {@code VenueGeocodingListener} after an address
+     * write; null whenever geocoding is disabled, the provider had no answer, or the
+     * address is too thin to resolve. Null is not an error state — the buyer page
+     * falls back to the maps deep link built from the address strings.
+     */
+    @Column(name = "venue_latitude")
+    private Double venueLatitude;
+
+    @Column(name = "venue_longitude")
+    private Double venueLongitude;
 
     @Column(nullable = false, columnDefinition = "TEXT")
     private String description = "";
@@ -117,6 +163,8 @@ public class Event {
 
     @PrePersist
     void onPersist() {
+        venueCityKey = com.imin.iminapi.util.EventNormalization.cityKey(venueCity);
+        genreKey = com.imin.iminapi.util.EventNormalization.genreKey(genre);
         createdAt = createdAt == null ? Times.nowMicros() : createdAt.truncatedTo(ChronoUnit.MICROS);
         updatedAt = updatedAt == null ? Times.nowMicros() : updatedAt.truncatedTo(ChronoUnit.MICROS);
         if (publishedAt != null) publishedAt = publishedAt.truncatedTo(ChronoUnit.MICROS);
@@ -125,6 +173,8 @@ public class Event {
 
     @PreUpdate
     void onUpdate() {
+        venueCityKey = com.imin.iminapi.util.EventNormalization.cityKey(venueCity);
+        genreKey = com.imin.iminapi.util.EventNormalization.genreKey(genre);
         updatedAt = Times.nowMicros();
         if (publishedAt != null) publishedAt = publishedAt.truncatedTo(ChronoUnit.MICROS);
         if (deletedAt != null) deletedAt = deletedAt.truncatedTo(ChronoUnit.MICROS);

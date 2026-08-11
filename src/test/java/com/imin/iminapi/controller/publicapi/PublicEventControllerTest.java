@@ -52,7 +52,7 @@ class PublicEventControllerTest {
     static final String CACHE_CONTROL_VALUE = "public, s-maxage=60, stale-while-revalidate=30";
 
     private PublicEventResponse sampleResponse() {
-        PublicVenueDto venue = new PublicVenueDto("Venue X", "123 Main St", "Berlin", "10115", "DE");
+        PublicVenueDto venue = new PublicVenueDto("Venue X", "123 Main St", "Berlin", "10115", "DE", 52.5200d, 13.4050d);
         PublicOrganizationDto org = new PublicOrganizationDto("Acme Events", "acme-events");
         PublicTierDto tier = new PublicTierDto(
                 TIER_ID, "General Admission", 2500, "EUR",
@@ -165,7 +165,8 @@ class PublicEventControllerTest {
                 .isEqualTo(expectedOrgKeys);
 
         Set<String> actualVenueKeys = fieldNames(root.get("venue"));
-        Set<String> expectedVenueKeys = Set.of("name", "street", "city", "postalCode", "country");
+        Set<String> expectedVenueKeys = Set.of(
+                "name", "street", "city", "postalCode", "country", "latitude", "longitude");
         assertThat(actualVenueKeys)
                 .as("venue keys leaked or missing. " +
                     "If this fails, you added a field to PublicVenueDto. " +
@@ -364,8 +365,8 @@ class PublicEventControllerTest {
     @Test
     void listCities_returns200WithBodyAndCacheControl() throws Exception {
         when(publicEventService.listCities()).thenReturn(List.of(
-                new PublicCityItem("Berlin", "DE"),
-                new PublicCityItem("Paris", "FR")));
+                new PublicCityItem("Berlin", "DE", 7L),
+                new PublicCityItem("Paris", "FR", 2L)));
 
         mvc.perform(get("/api/v1/public/events/cities"))
                 .andExpect(status().isOk())
@@ -374,7 +375,26 @@ class PublicEventControllerTest {
                 .andExpect(jsonPath("$.length()").value(2))
                 .andExpect(jsonPath("$[0].city").value("Berlin"))
                 .andExpect(jsonPath("$[0].country").value("DE"))
-                .andExpect(jsonPath("$[1].city").value("Paris"));
+                .andExpect(jsonPath("$[0].eventCount").value(7))
+                .andExpect(jsonPath("$[1].city").value("Paris"))
+                .andExpect(jsonPath("$[1].eventCount").value(2));
+    }
+
+    @Test
+    void listCities_itemHasOnlyAllowListedKeys() throws Exception {
+        // Leak guardrail for the /cities facet. eventCount was added deliberately (V-less,
+        // read-only aggregate); anything else appearing here needs the same scrutiny.
+        when(publicEventService.listCities()).thenReturn(List.of(new PublicCityItem("Berlin", "DE", 7L)));
+
+        MvcResult result = mvc.perform(get("/api/v1/public/events/cities"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode item0 = objectMapper.readTree(result.getResponse().getContentAsString()).get(0);
+        assertThat(fieldNames(item0))
+                .as("cities[0] keys leaked or missing. If this fails, you added a field to "
+                    + "PublicCityItem. Verify it is safe to expose, then update this allowlist.")
+                .isEqualTo(Set.of("city", "country", "eventCount"));
     }
 
     @Test
@@ -437,6 +457,32 @@ class PublicEventControllerTest {
         ArgumentCaptor<PublicEventListQuery> captor = ArgumentCaptor.forClass(PublicEventListQuery.class);
         verify(publicEventService).list(captor.capture());
         assertThat(captor.getValue().includeOngoing()).isFalse();
+    }
+
+    @Test
+    void list_bindsFreeOnlyIntoQueryObject() throws Exception {
+        when(publicEventService.list(any(PublicEventListQuery.class)))
+                .thenReturn(new PageResponse<>(List.of(), 0, 1, 20));
+
+        mvc.perform(get("/api/v1/public/events").param("freeOnly", "true"))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<PublicEventListQuery> captor = ArgumentCaptor.forClass(PublicEventListQuery.class);
+        verify(publicEventService).list(captor.capture());
+        assertThat(captor.getValue().freeOnly()).isTrue();
+    }
+
+    @Test
+    void list_freeOnlyDefaultsToFalse() throws Exception {
+        when(publicEventService.list(any(PublicEventListQuery.class)))
+                .thenReturn(new PageResponse<>(List.of(), 0, 1, 20));
+
+        mvc.perform(get("/api/v1/public/events"))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<PublicEventListQuery> captor = ArgumentCaptor.forClass(PublicEventListQuery.class);
+        verify(publicEventService).list(captor.capture());
+        assertThat(captor.getValue().freeOnly()).isFalse();
     }
 
     // --- helpers ---

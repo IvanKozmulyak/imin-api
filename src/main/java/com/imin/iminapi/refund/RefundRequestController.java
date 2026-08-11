@@ -44,10 +44,13 @@ public class RefundRequestController {
                                                    @CurrentUser AuthPrincipal principal,
                                                    @RequestParam(required = false) String status,
                                                    @RequestParam(required = false) UUID eventId,
+                                                   @RequestParam(required = false) String search,
                                                    @RequestParam(defaultValue = "25") int limit) {
         if (!orgId.equals(principal.orgId())) throw ApiException.notFound("Org");
         List<RefundRequestStatus> statuses = parseStatuses(status);
-        return service.listRequests(orgId, eventId, statuses, limit);
+        // `search` = the refund reference a customer quoted (REQ-8K2M-26 / 8K2M-26)
+        // or part of their email. Blank/absent behaves exactly as before.
+        return service.listRequests(orgId, eventId, statuses, search, limit);
     }
 
     @GetMapping("/{id}")

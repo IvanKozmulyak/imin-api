@@ -43,9 +43,11 @@ public class CompetingNightsService {
     /** Compute the signal for an event; {@link CompetingNights#NONE} when the event has no city/date. */
     @Transactional(readOnly = true)
     public CompetingNights compute(Event e) {
-        String city = e.getVenueCity();
+        // Same normalised key the buyer's city facet groups on (V82), so "Metz" and "METZ"
+        // count as the same night out rather than two separate cities.
+        String cityKey = com.imin.iminapi.util.EventNormalization.cityKey(e.getVenueCity());
         Instant startsAt = e.getStartsAt();
-        if (city == null || city.isBlank() || startsAt == null) return CompetingNights.NONE;
+        if (cityKey.isEmpty() || startsAt == null) return CompetingNights.NONE;
 
         long window = props.getCompetingNightsWindowDays();
         Instant from = startsAt.minus(window, ChronoUnit.DAYS);
@@ -55,7 +57,7 @@ public class CompetingNightsService {
         int count = 0;
         int totalCapacity = 0;
         boolean overlap = false;
-        for (Object[] row : events.findCompetingNights(e.getId(), city, from, to)) {
+        for (Object[] row : events.findCompetingNights(e.getId(), cityKey, from, to)) {
             count++;
             totalCapacity += tiers.sumQuantityByEventId((UUID) row[0]);
             if (!genre.isBlank() && genre.equalsIgnoreCase((String) row[1])) overlap = true;

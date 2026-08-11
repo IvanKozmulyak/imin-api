@@ -131,12 +131,12 @@ class PublicEventServiceListTest {
 
     private PublicEventListQuery emptyQuery() {
         return new PublicEventListQuery(
-                null, null, null, null, null, null, null, null, false, false, 1, 20);
+                null, null, null, null, null, null, null, null, false, false, false, 1, 20);
     }
 
     private PublicEventListQuery onlyPage(int page, int pageSize) {
         return new PublicEventListQuery(
-                null, null, null, null, null, null, null, null, false, false, page, pageSize);
+                null, null, null, null, null, null, null, null, false, false, false, page, pageSize);
     }
 
     // -----------------------------------------------------------------------
@@ -215,9 +215,39 @@ class PublicEventServiceListTest {
         eventRepository.save(b);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, "techno", null, null, null, null, null, false, false, 1, 20));
+                null, null, "techno", null, null, null, null, null, false, false, false, 1, 20));
         assertThat(result.items()).hasSize(1);
         assertThat(result.items().get(0).genre()).isEqualTo("techno");
+    }
+
+    @Test
+    void filter_by_genre_matches_the_normalised_key_so_casing_never_splits_a_chip() {
+        // Same contract as ?city= (V82): the filter runs on genre_key, the card still shows the
+        // organizer's spelling. "Techno" and "techno" used to be two exact-match queries over
+        // two disjoint slices of one genre — two identical-looking chips, neither complete.
+        Event typed = publishedLiveEvent();
+        typed.setGenre("Techno");
+        eventRepository.save(typed);
+        Event shouted = publishedLiveEvent();
+        shouted.setGenre("TECHNO");
+        eventRepository.save(shouted);
+        Event other = publishedLiveEvent();
+        other.setGenre("House");
+        eventRepository.save(other);
+
+        for (String probe : List.of("Techno", "techno", "  TECHNO ")) {
+            PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
+                    null, null, probe, null, null, null, null, null, false, false, false, 1, 20));
+            assertThat(result.items())
+                    .as("?genre=%s must find both spellings of one genre", probe)
+                    .extracting(PublicEventListItem::id)
+                    .containsExactlyInAnyOrder(typed.getId(), shouted.getId());
+        }
+
+        // The display string is never folded on the way out — the card prints what was typed.
+        PageResponse<PublicEventListItem> all = publicEventService.list(onlyPage(1, 20));
+        assertThat(all.items()).extracting(PublicEventListItem::genre)
+                .contains("Techno", "TECHNO", "House");
     }
 
     @Test
@@ -230,7 +260,7 @@ class PublicEventServiceListTest {
         eventRepository.save(b);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, "festival", null, null, null, null, false, false, 1, 20));
+                null, null, null, "festival", null, null, null, null, false, false, false, 1, 20));
         assertThat(result.items()).hasSize(1);
         assertThat(result.items().get(0).type()).isEqualTo("festival");
     }
@@ -245,13 +275,19 @@ class PublicEventServiceListTest {
         eventRepository.save(b);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, "fr", null, null, false, false, 1, 20));
+                null, null, null, null, null, "fr", null, null, false, false, false, 1, 20));
         assertThat(result.items()).hasSize(1);
         assertThat(result.items().get(0).venueCountry()).isEqualTo("FR");
     }
 
     @Test
-    void filter_by_city_case_insensitive_contains() {
+    void filter_by_city_matches_the_normalised_key_exactly_not_a_substring() {
+        // CONTRACT CHANGE (V82). `?city=` used to be a case-insensitive CONTAINS on the raw
+        // venue_city; it is now an exact match on the normalised venue_city_key. Case and
+        // stray whitespace still don't matter — that is what the key is for — but a prefix
+        // no longer matches. This is what lets a "Metz (3)" chip guarantee three results:
+        // a substring match could also drag in Metzingen, and a chip whose count disagrees
+        // with its own page is the bug this whole change exists to kill.
         Event a = publishedLiveEvent();
         a.setVenueCity("Berlin");
         eventRepository.save(a);
@@ -259,10 +295,33 @@ class PublicEventServiceListTest {
         b.setVenueCity("Paris");
         eventRepository.save(b);
 
+        PageResponse<PublicEventListItem> exact = publicEventService.list(new PublicEventListQuery(
+                null, null, null, null, "  BERLIN ", null, null, null, false, false, false, 1, 20));
+        assertThat(exact.items()).hasSize(1);
+        assertThat(exact.items().get(0).venueCity()).isEqualTo("Berlin");
+
+        PageResponse<PublicEventListItem> prefix = publicEventService.list(new PublicEventListQuery(
+                null, null, null, null, "berl", null, null, null, false, false, false, 1, 20));
+        assertThat(prefix.items()).isEmpty();
+    }
+
+    @Test
+    void filter_by_city_finds_every_case_variant_of_the_same_city() {
+        // The three spellings the live data actually holds. One filter, all three events —
+        // this is the count side of the merged chip.
+        Event typed = publishedLiveEvent();
+        typed.setVenueCity("Metz");
+        eventRepository.save(typed);
+        Event shouted = publishedLiveEvent();
+        shouted.setVenueCity("METZ");
+        eventRepository.save(shouted);
+        Event padded = publishedLiveEvent();
+        padded.setVenueCity("  Metz  ");
+        eventRepository.save(padded);
+
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, "berl", null, null, null, false, false, 1, 20));
-        assertThat(result.items()).hasSize(1);
-        assertThat(result.items().get(0).venueCity()).isEqualTo("Berlin");
+                null, null, null, null, "Metz", null, null, null, false, false, false, 1, 20));
+        assertThat(result.items()).hasSize(3);
     }
 
     @Test
@@ -275,7 +334,7 @@ class PublicEventServiceListTest {
         eventRepository.save(b);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, null, null, "festIVAL", false, false, 1, 20));
+                null, null, null, null, null, null, null, "festIVAL", false, false, false, 1, 20));
         assertThat(result.items()).hasSize(1);
         assertThat(result.items().get(0).name()).isEqualTo("Summer Festival");
     }
@@ -291,7 +350,7 @@ class PublicEventServiceListTest {
         eventRepository.save(a);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                start, null, null, null, null, null, null, null, false, false, 1, 20));
+                start, null, null, null, null, null, null, null, false, false, false, 1, 20));
         assertThat(result.items()).hasSize(1);
     }
 
@@ -304,7 +363,7 @@ class PublicEventServiceListTest {
 
         // to == startsAt means startsAt < to is false → excluded
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, start, null, null, null, null, null, null, false, false, 1, 20));
+                null, start, null, null, null, null, null, null, false, false, false, 1, 20));
         assertThat(result.items()).isEmpty();
     }
 
@@ -335,7 +394,7 @@ class PublicEventServiceListTest {
         eventRepository.save(b);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, null, other.getSlug(), null, false, false, 1, 20));
+                null, null, null, null, null, null, other.getSlug(), null, false, false, false, 1, 20));
         assertThat(result.items()).hasSize(1);
         assertThat(result.items().get(0).organization().slug()).isEqualTo(other.getSlug());
     }
@@ -345,7 +404,7 @@ class PublicEventServiceListTest {
         eventRepository.save(publishedLiveEvent());
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, null, "no-such-org", null, false, false, 1, 20));
+                null, null, null, null, null, null, "no-such-org", null, false, false, false, 1, 20));
         assertThat(result.items()).isEmpty();
         assertThat(result.total()).isZero();
         assertThat(result.page()).isEqualTo(1);
@@ -362,7 +421,7 @@ class PublicEventServiceListTest {
         eventRepository.save(a);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, null, null, null, true, false, 1, 20));
+                null, null, null, null, null, null, null, null, true, false, false, 1, 20));
         assertThat(result.items()).isEmpty();
     }
 
@@ -373,7 +432,7 @@ class PublicEventServiceListTest {
         eventRepository.save(a);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, null, null, null, true, false, 1, 20));
+                null, null, null, null, null, null, null, null, true, false, false, 1, 20));
         assertThat(result.items()).hasSize(1);
     }
 
@@ -385,7 +444,7 @@ class PublicEventServiceListTest {
         eventRepository.save(a);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, null, null, null, true, false, 1, 20));
+                null, null, null, null, null, null, null, null, true, false, false, 1, 20));
         assertThat(result.items()).isEmpty();
     }
 
@@ -644,7 +703,7 @@ class PublicEventServiceListTest {
     @Test
     void q_below_min_length_returns_400() {
         assertThatThrownBy(() -> publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, null, null, "a", false, false, 1, 20)))
+                null, null, null, null, null, null, null, "a", false, false, false, 1, 20)))
                 .isInstanceOf(ApiException.class)
                 .satisfies(ex -> {
                     ApiException apiEx = (ApiException) ex;
@@ -657,7 +716,7 @@ class PublicEventServiceListTest {
     @Test
     void country_wrong_length_returns_400() {
         assertThatThrownBy(() -> publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, "DEU", null, null, false, false, 1, 20)))
+                null, null, null, null, null, "DEU", null, null, false, false, false, 1, 20)))
                 .isInstanceOf(ApiException.class)
                 .satisfies(ex -> {
                     ApiException apiEx = (ApiException) ex;
@@ -809,6 +868,48 @@ class PublicEventServiceListTest {
     }
 
     @Test
+    void listGenres_merges_case_variants_into_one_chip_whose_count_the_listing_reproduces() {
+        // The genre twin of the Metz problem: "techno" and "Techno" were two chips, each
+        // holding a slice of one genre's nights. They are ONE genre. Merging is honest only
+        // because the facet and ?genre= key off the same derived column, so the second half
+        // taps the chip and asserts the listing returns every event the chip counted.
+        for (int i = 0; i < 2; i++) {
+            Event typed = publishedLiveEvent();
+            typed.setGenre("Techno");
+            eventRepository.save(typed);
+        }
+        Event shouted = publishedLiveEvent();
+        shouted.setGenre("TECHNO");
+        eventRepository.save(shouted);
+        Event spaced = publishedLiveEvent();
+        spaced.setGenre("techno");
+        eventRepository.save(spaced);
+
+        List<String> genres = publicEventService.listGenres();
+        // "Techno" (2 events) beats "TECHNO" and "techno" (1 each) as the label. Nothing
+        // title-cases or folds it — the label is a real stored spelling, never an invention.
+        assertThat(genres).containsExactly("Techno");
+
+        PageResponse<PublicEventListItem> tapped = publicEventService.list(new PublicEventListQuery(
+                null, null, genres.get(0), null, null, null, null, null, false, false, false, 1, 20));
+        assertThat(tapped.total()).isEqualTo(4L);
+    }
+
+    @Test
+    void listGenres_breaks_a_spelling_tie_toward_the_least_shouted_then_alphabetically() {
+        // One event each: the count cannot decide, so the deterministic tie-break must —
+        // otherwise the chip label flips with whatever order the planner returns rows in.
+        Event shouted = publishedLiveEvent();
+        shouted.setGenre("HOUSE");
+        eventRepository.save(shouted);
+        Event typed = publishedLiveEvent();
+        typed.setGenre("House");
+        eventRepository.save(typed);
+
+        assertThat(publicEventService.listGenres()).containsExactly("House");
+    }
+
+    @Test
     void listGenres_excludes_empty_genre() {
         // events.genre is NOT NULL DEFAULT '' at the schema level — only the empty-string
         // case is reachable. The query also tolerates NULL defensively.
@@ -856,5 +957,369 @@ class PublicEventServiceListTest {
     @Test
     void listGenres_returns_empty_when_no_eligible_events() {
         assertThat(publicEventService.listGenres()).isEmpty();
+    }
+    // -----------------------------------------------------------------------
+    // freeOnly
+    // -----------------------------------------------------------------------
+
+    private PublicEventListQuery freeOnlyQuery() {
+        return new PublicEventListQuery(
+                null, null, null, null, null, null, null, null, false, false, true, 1, 20);
+    }
+
+    @Test
+    void freeOnly_keeps_event_with_a_purchasable_zero_priced_tier() {
+        Event free = eventRepository.save(publishedLiveEvent());
+        tier(free.getId(), "Free entry", 0, 100, 0, true, 0);
+
+        PageResponse<PublicEventListItem> result = publicEventService.list(freeOnlyQuery());
+        assertThat(result.items()).extracting(PublicEventListItem::id).containsExactly(free.getId());
+        assertThat(result.items().get(0).priceFromMinor()).isZero();
+    }
+
+    @Test
+    void freeOnly_drops_event_whose_cheapest_tier_costs_money() {
+        Event paid = eventRepository.save(publishedLiveEvent());
+        tier(paid.getId(), "GA", 1500, 100, 0, true, 0);
+
+        assertThat(publicEventService.list(freeOnlyQuery()).items()).isEmpty();
+        // ...and the same event IS listed without the filter, so this is the filter's doing.
+        assertThat(publicEventService.list(emptyQuery()).items()).hasSize(1);
+    }
+
+    @Test
+    void freeOnly_keeps_mixed_event_because_its_cheapest_purchasable_tier_is_free() {
+        Event mixed = eventRepository.save(publishedLiveEvent());
+        tier(mixed.getId(), "Free entry", 0, 50, 0, true, 0);
+        tier(mixed.getId(), "VIP", 5000, 50, 0, true, 1);
+
+        PageResponse<PublicEventListItem> result = publicEventService.list(freeOnlyQuery());
+        assertThat(result.items()).extracting(PublicEventListItem::id).containsExactly(mixed.getId());
+        assertThat(result.items().get(0).priceFromMinor()).isZero();
+    }
+
+    @Test
+    void freeOnly_drops_event_whose_only_free_tier_is_sold_out() {
+        // Sold out is NOT free, it is unavailable — priceFromMinor is null, so a "free"
+        // chip on this card would be a promise the checkout can't keep.
+        Event soldOut = eventRepository.save(publishedLiveEvent());
+        tier(soldOut.getId(), "Free entry", 0, 10, 10, true, 0);
+
+        assertThat(publicEventService.list(freeOnlyQuery()).items()).isEmpty();
+        assertThat(publicEventService.list(emptyQuery()).items().get(0).priceFromMinor()).isNull();
+    }
+
+    @Test
+    void freeOnly_drops_event_whose_free_tier_has_not_opened_yet() {
+        Event later = eventRepository.save(publishedLiveEvent());
+        tierWithWindow(later.getId(), "Free entry", 0, 100, 0, 0, NOW.plusSeconds(3600), null);
+
+        assertThat(publicEventService.list(freeOnlyQuery()).items()).isEmpty();
+    }
+
+    @Test
+    void freeOnly_drops_event_whose_free_tier_sale_window_has_closed() {
+        Event closed = eventRepository.save(publishedLiveEvent());
+        tierWithWindow(closed.getId(), "Free entry", 0, 100, 0, 0, null, NOW.minusSeconds(60));
+
+        assertThat(publicEventService.list(freeOnlyQuery()).items()).isEmpty();
+    }
+
+    @Test
+    void freeOnly_drops_event_whose_free_tier_is_disabled() {
+        Event disabled = eventRepository.save(publishedLiveEvent());
+        tier(disabled.getId(), "Free entry", 0, 100, 0, false, 0);
+
+        assertThat(publicEventService.list(freeOnlyQuery()).items()).isEmpty();
+    }
+
+    @Test
+    void freeOnly_respects_the_event_level_on_sale_gate() {
+        Event notOpen = publishedLiveEvent();
+        notOpen.setOnSaleAt(NOW.plusSeconds(3600));
+        notOpen = eventRepository.save(notOpen);
+        tier(notOpen.getId(), "Free entry", 0, 100, 0, true, 0);
+
+        assertThat(publicEventService.list(freeOnlyQuery()).items()).isEmpty();
+    }
+
+    @Test
+    void freeOnly_drops_event_with_no_tiers_at_all() {
+        eventRepository.save(publishedLiveEvent());
+        assertThat(publicEventService.list(freeOnlyQuery()).items()).isEmpty();
+    }
+
+    @Test
+    void freeOnly_false_is_the_unfiltered_listing() {
+        Event free = eventRepository.save(publishedLiveEvent());
+        tier(free.getId(), "Free entry", 0, 100, 0, true, 0);
+        Event paid = eventRepository.save(publishedLiveEvent());
+        tier(paid.getId(), "GA", 1500, 100, 0, true, 0);
+
+        assertThat(publicEventService.list(emptyQuery()).items())
+                .extracting(PublicEventListItem::id)
+                .containsExactlyInAnyOrder(free.getId(), paid.getId());
+    }
+
+    @Test
+    void freeOnly_narrows_the_pagination_total_not_just_the_page() {
+        // The whole point of doing this server-side: `total` must count free events only,
+        // otherwise the FE's pager offers pages that come back empty.
+        for (int i = 0; i < 3; i++) {
+            Event free = eventRepository.save(publishedLiveEvent());
+            tier(free.getId(), "Free entry", 0, 100, 0, true, 0);
+        }
+        for (int i = 0; i < 5; i++) {
+            Event paid = eventRepository.save(publishedLiveEvent());
+            tier(paid.getId(), "GA", 2000, 100, 0, true, 0);
+        }
+
+        assertThat(publicEventService.list(emptyQuery()).total()).isEqualTo(8);
+        PageResponse<PublicEventListItem> free = publicEventService.list(freeOnlyQuery());
+        assertThat(free.total()).isEqualTo(3);
+        assertThat(free.items()).hasSize(3);
+    }
+
+    @Test
+    void freeOnly_agrees_with_priceFromMinor_across_the_whole_case_matrix() {
+        // THE CONTRACT. `freeOnly` is a SQL EXISTS, `priceFromMinor` is Java over
+        // TierAvailability — two expressions of one rule. This asserts they agree on every
+        // interesting shape, so a change to one that forgets the other fails here rather
+        // than shipping a "Free" chip onto a card that shows a price (or vice versa).
+        Event freeOpen = eventRepository.save(publishedLiveEvent());
+        tier(freeOpen.getId(), "Free", 0, 10, 0, true, 0);
+
+        Event freeAndPaid = eventRepository.save(publishedLiveEvent());
+        tier(freeAndPaid.getId(), "Free", 0, 10, 0, true, 0);
+        tier(freeAndPaid.getId(), "VIP", 9900, 10, 0, true, 1);
+
+        Event paidOnly = eventRepository.save(publishedLiveEvent());
+        tier(paidOnly.getId(), "GA", 1000, 10, 0, true, 0);
+
+        Event freeSoldOut = eventRepository.save(publishedLiveEvent());
+        tier(freeSoldOut.getId(), "Free", 0, 10, 10, true, 0);
+
+        Event freeSoldOutPaidLeft = eventRepository.save(publishedLiveEvent());
+        tier(freeSoldOutPaidLeft.getId(), "Free", 0, 10, 10, true, 0);
+        tier(freeSoldOutPaidLeft.getId(), "GA", 2500, 10, 0, true, 1);
+
+        Event freeNotOpen = eventRepository.save(publishedLiveEvent());
+        tierWithWindow(freeNotOpen.getId(), "Free", 0, 10, 0, 0, NOW.plusSeconds(600), null);
+
+        Event freeClosed = eventRepository.save(publishedLiveEvent());
+        tierWithWindow(freeClosed.getId(), "Free", 0, 10, 0, 0, null, NOW.minusSeconds(600));
+
+        Event freeDisabled = eventRepository.save(publishedLiveEvent());
+        tier(freeDisabled.getId(), "Free", 0, 10, 0, false, 0);
+
+        Event noTiers = eventRepository.save(publishedLiveEvent());
+
+        // The EXISTS has SIX clauses that are about the EVENT rather than the tier, and each
+        // one has to be pinned individually: delete any single unpinned clause and every test
+        // still passes while freeOnly=true starts returning cards whose priceFromMinor is null.
+        // The four tier-level clauses are covered above; these are the event-level ones.
+
+        // e.onSaleAt in the future — the event's sale has not opened yet.
+        Event eventNotOnSaleYet = publishedLiveEvent();
+        eventNotOnSaleYet.setOnSaleAt(NOW.plusSeconds(600));
+        eventNotOnSaleYet = eventRepository.save(eventNotOnSaleYet);
+        tier(eventNotOnSaleYet.getId(), "Free", 0, 10, 0, true, 0);
+
+        // e.saleClosesAt in the past — event-level sales have shut, tier windows notwithstanding.
+        Event eventSalesClosed = publishedLiveEvent();
+        eventSalesClosed.setSaleClosesAt(NOW.minusSeconds(600));
+        eventSalesClosed = eventRepository.save(eventSalesClosed);
+        tier(eventSalesClosed.getId(), "Free", 0, 10, 0, true, 0);
+
+        // EventStatus.PAST — the night is over; a free ticket to it is not purchasable.
+        Event pastEvent = publishedLiveEvent();
+        pastEvent.setStatus(EventStatus.PAST);
+        pastEvent.setStartsAt(NOW.minusSeconds(172_800));
+        pastEvent = eventRepository.save(pastEvent);
+        tier(pastEvent.getId(), "Free", 0, 10, 0, true, 0);
+
+        // EventStatus.CANCELLED is excluded by the listing itself, so it can never reach the
+        // EXISTS — pinned in listing_excludes_cancelled_events, not here.
+
+        List<UUID> zeroPricedCards = publicEventService.list(onlyPage(1, 100)).items().stream()
+                .filter(i -> i.priceFromMinor() != null && i.priceFromMinor() == 0)
+                .map(PublicEventListItem::id)
+                .toList();
+        List<UUID> freeOnlyIds = publicEventService.list(
+                new PublicEventListQuery(null, null, null, null, null, null, null, null,
+                        false, false, true, 1, 100)).items().stream()
+                .map(PublicEventListItem::id)
+                .toList();
+
+        assertThat(freeOnlyIds)
+                .as("freeOnly must return exactly the events whose card shows FROM €0")
+                .containsExactlyInAnyOrderElementsOf(zeroPricedCards);
+        assertThat(freeOnlyIds).containsExactlyInAnyOrder(freeOpen.getId(), freeAndPaid.getId());
+        assertThat(freeOnlyIds).doesNotContain(paidOnly.getId(), freeSoldOut.getId(),
+                freeSoldOutPaidLeft.getId(), freeNotOpen.getId(), freeClosed.getId(),
+                freeDisabled.getId(), noTiers.getId(),
+                eventNotOnSaleYet.getId(), eventSalesClosed.getId(), pastEvent.getId());
+
+        // Each event-level clause pinned on its own, so deleting exactly one from the EXISTS
+        // fails exactly one assertion with a name that says which.
+        assertThat(freeOnlyIds).as("e.onSaleAt in the future must exclude the event")
+                .doesNotContain(eventNotOnSaleYet.getId());
+        assertThat(freeOnlyIds).as("e.saleClosesAt in the past must exclude the event")
+                .doesNotContain(eventSalesClosed.getId());
+        assertThat(freeOnlyIds).as("EventStatus.PAST must exclude the event")
+                .doesNotContain(pastEvent.getId());
+    }
+
+    @Test
+    void freeOnly_composes_with_the_other_filters() {
+        Event berlinFree = publishedLiveEvent();
+        berlinFree.setVenueCity("Berlin");
+        berlinFree = eventRepository.save(berlinFree);
+        tier(berlinFree.getId(), "Free", 0, 10, 0, true, 0);
+
+        Event parisFree = publishedLiveEvent();
+        parisFree.setVenueCity("Paris");
+        parisFree = eventRepository.save(parisFree);
+        tier(parisFree.getId(), "Free", 0, 10, 0, true, 0);
+
+        PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
+                null, null, null, null, "berlin", null, null, null, false, false, true, 1, 20));
+        assertThat(result.items()).extracting(PublicEventListItem::id).containsExactly(berlinFree.getId());
+    }
+
+    // -----------------------------------------------------------------------
+    // listCities — per-city counts
+    // -----------------------------------------------------------------------
+
+    @Test
+    void listCities_counts_events_per_city() {
+        for (int i = 0; i < 3; i++) {
+            Event e = publishedLiveEvent();
+            e.setVenueCity("Berlin");
+            e.setVenueCountry("DE");
+            eventRepository.save(e);
+        }
+        Event paris = publishedLiveEvent();
+        paris.setVenueCity("Paris");
+        paris.setVenueCountry("FR");
+        eventRepository.save(paris);
+
+        List<com.imin.iminapi.dto.publicapi.PublicCityItem> cities = publicEventService.listCities();
+        assertThat(cities).extracting(
+                com.imin.iminapi.dto.publicapi.PublicCityItem::city,
+                com.imin.iminapi.dto.publicapi.PublicCityItem::eventCount)
+                .containsExactly(tuple("Berlin", 3L), tuple("Paris", 1L));
+    }
+
+    @Test
+    void listCities_count_excludes_events_the_listing_would_not_show() {
+        Event live = publishedLiveEvent();
+        live.setVenueCity("Berlin");
+        eventRepository.save(live);
+
+        Event cancelled = publishedLiveEvent();
+        cancelled.setVenueCity("Berlin");
+        cancelled.setStatus(EventStatus.CANCELLED);
+        eventRepository.save(cancelled);
+
+        Event draft = publishedLiveEvent();
+        draft.setVenueCity("Berlin");
+        draft.setStatus(EventStatus.DRAFT);
+        draft.setPublishedAt(null);
+        eventRepository.save(draft);
+
+        Event priv = publishedLiveEvent();
+        priv.setVenueCity("Berlin");
+        priv.setVisibility(EventVisibility.PRIVATE);
+        eventRepository.save(priv);
+
+        Event deleted = publishedLiveEvent();
+        deleted.setVenueCity("Berlin");
+        deleted.setDeletedAt(NOW.minusSeconds(60));
+        eventRepository.save(deleted);
+
+        assertThat(publicEventService.listCities())
+                .extracting(com.imin.iminapi.dto.publicapi.PublicCityItem::eventCount)
+                .containsExactly(1L);
+    }
+
+    @Test
+    void listCities_merges_case_and_missing_country_variants_into_one_chip_whose_count_the_listing_reproduces() {
+        // Mirrors the live Metz/FR + Metz/null + METZ/'' data problem, which used to surface as
+        // three identical-looking chips each holding a slice of the nights. They are ONE city.
+        //
+        // Merging is only honest because both sides now key off venue_city_key: the second half
+        // of this test taps the chip and asserts the listing returns exactly the number the chip
+        // promised. (Rows are written straight through the repository on purpose — this pins the
+        // READ side, independent of EventService's write-time normalisation and of V82.)
+        Event metzFr = publishedLiveEvent();
+        metzFr.setVenueCity("Metz");
+        metzFr.setVenueCountry("FR");
+        eventRepository.save(metzFr);
+
+        Event metzNull = publishedLiveEvent();
+        metzNull.setVenueCity("Metz");
+        metzNull.setVenueCountry(null);
+        eventRepository.save(metzNull);
+
+        Event metzUpper = publishedLiveEvent();
+        metzUpper.setVenueCity("METZ");
+        metzUpper.setVenueCountry("");
+        eventRepository.save(metzUpper);
+
+        List<com.imin.iminapi.dto.publicapi.PublicCityItem> cities = publicEventService.listCities();
+        assertThat(cities).hasSize(1);
+        // "Metz" (2 events) beats "METZ" (1) as the label; FR is the only country on offer and
+        // the country-less rows fold into it rather than inventing a second chip.
+        assertThat(cities.get(0).city()).isEqualTo("Metz");
+        assertThat(cities.get(0).country()).isEqualTo("FR");
+        assertThat(cities.get(0).eventCount()).isEqualTo(3L);
+
+        PageResponse<PublicEventListItem> tapped = publicEventService.list(new PublicEventListQuery(
+                null, null, null, null, cities.get(0).city(), null, null, null,
+                false, false, false, 1, 20));
+        assertThat(tapped.total()).isEqualTo(cities.get(0).eventCount());
+    }
+
+    @Test
+    void listCities_labels_a_key_with_its_most_common_spelling() {
+        for (int i = 0; i < 2; i++) {
+            Event shouted = publishedLiveEvent();
+            shouted.setVenueCity("SAINT-DENIS");
+            shouted.setVenueCountry("FR");
+            eventRepository.save(shouted);
+        }
+        Event typed = publishedLiveEvent();
+        typed.setVenueCity("Saint-Denis");
+        typed.setVenueCountry("FR");
+        eventRepository.save(typed);
+
+        // Most common wins even when it is the ugly one — the label is evidence, not taste.
+        // Nothing title-cases the city: doing so would wreck 's-Hertogenbosch and L'Aquila.
+        List<com.imin.iminapi.dto.publicapi.PublicCityItem> cities = publicEventService.listCities();
+        assertThat(cities).hasSize(1);
+        assertThat(cities.get(0).city()).isEqualTo("SAINT-DENIS");
+        assertThat(cities.get(0).eventCount()).isEqualTo(3L);
+    }
+
+    @Test
+    void listCities_keeps_two_countries_sharing_a_city_name_apart() {
+        // Paris/FR and Paris/US are two cities, not one spelling problem. Merging them on the
+        // key alone would be a fabricated fact, so the ambiguous key stays split.
+        Event parisFr = publishedLiveEvent();
+        parisFr.setVenueCity("Paris");
+        parisFr.setVenueCountry("FR");
+        eventRepository.save(parisFr);
+
+        Event parisUs = publishedLiveEvent();
+        parisUs.setVenueCity("PARIS");
+        parisUs.setVenueCountry("US");
+        eventRepository.save(parisUs);
+
+        List<com.imin.iminapi.dto.publicapi.PublicCityItem> cities = publicEventService.listCities();
+        assertThat(cities).hasSize(2);
+        assertThat(cities).extracting(com.imin.iminapi.dto.publicapi.PublicCityItem::country)
+                .containsExactly("FR", "US");
+        assertThat(cities).allSatisfy(c -> assertThat(c.eventCount()).isEqualTo(1L));
     }
 }

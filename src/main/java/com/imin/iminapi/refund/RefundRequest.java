@@ -18,6 +18,23 @@ public class RefundRequest {
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
 
+    /**
+     * Short, human-dictatable reference (V81) — {@code REQ-8K2M-26}. This is the id
+     * a buyer quotes to support; the UUID above is the machine id and is not readable
+     * out loud. UNIQUE at the DB level, assigned once at creation, never rewritten.
+     *
+     * <p>The mapping here is stricter than the database, on purpose. V81 ships the column
+     * NULLABLE so that a deploy overlap — Flyway running on the new container while the old
+     * one, which knows nothing about this field, still serves refund submits — cannot fail live
+     * traffic on a constraint the old code cannot satisfy. Until the follow-up migration
+     * contracts the column to NOT NULL, {@code @NotNull} is what guarantees no row written by
+     * THIS code lands without a reference; {@code nullable = false} alone would not, because
+     * Bean Validation on the classpath turns Hibernate's own nullability check off.
+     */
+    @jakarta.validation.constraints.NotNull
+    @Column(name = "reference", nullable = false, length = 16, updatable = false)
+    private String reference;
+
     @Column(name = "order_id", nullable = false)
     private UUID orderId;
 

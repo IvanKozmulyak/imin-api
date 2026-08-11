@@ -1,0 +1,94 @@
+-- Run against production (Railway, project patient-truth, env production) on 2026-08-11.
+-- Read-only: the report contains 0 mutating statements. Nothing was written.
+
+Null display is "(null)".
+
+===================================================================
+ V82 IMPACT REPORT  —  read-only dry run, nothing is written
+===================================================================
+
+--- §1  Scale: how many rows each rule touches -------------------
+ events_total | genre_rows_changed | city_rows_changed | country_rows_changed | country_blank_to_null | country_junk_to_null | rows_with_no_city 
+--------------+--------------------+-------------------+----------------------+-----------------------+----------------------+-------------------
+           43 |                  0 |                 0 |                   15 |                    15 |                    0 |                16
+(1 row)
+
+
+--- §2  Genre: every distinct value that changes -----------------
+ genre_before | genre_after | rows 
+--------------+-------------+------
+(0 rows)
+
+
+--- §3  Genre keys that MERGE: spellings folding into one chip — REVIEW
+        (empty = no genre merges; every row here must be one genre spelled two ways)
+ genre_key | distinct_spellings |    merged_from    | rows 
+-----------+--------------------+-------------------+------
+ techno    |                  2 | techno  |  Techno |    3
+(1 row)
+
+
+--- §4  City: every distinct display value that changes ----------
+        (whitespace only — casing is never altered)
+ city_before_bracketed | city_after_bracketed | rows 
+-----------------------+----------------------+------
+(0 rows)
+
+
+--- §5  City keys that MERGE: spellings/countries folding into one — REVIEW
+        (two spellings of one town = the point. Two different towns = stop.)
+ city_key | rows | spellings | spelling_list | known_countries | country_list  
+----------+------+-----------+---------------+-----------------+---------------
+ metz     |   14 |         2 | Metz  |  METZ |               1 | FR  |  (none)
+(1 row)
+
+
+--- §6  City keys with TWO OR MORE known countries — REVIEW ------
+        (not merged by the facet; frontend chips for these need &country=)
+ city_key | countries | rows 
+----------+-----------+------
+(0 rows)
+
+
+--- §7  Country: every distinct value that changes ---------------
+        (rows with country_after = (null) LOSE a stored value — check they are junk)
+ country_before_bracketed | country_after | rows 
+--------------------------+---------------+------
+ []                       | (null)        |   15
+(1 row)
+
+
+--- §8  Buyer city facet: chips BEFORE vs AFTER ------------------
+        (same eligibility as the feed: alive, PUBLIC, published, not DRAFT/CANCELLED)
+ chips_before | chips_after | genre_chips_before | genre_chips_after 
+--------------+-------------+--------------------+-------------------
+            4 |           2 |                  7 |                 6
+(1 row)
+
+
+--- §9  The city facet as the buyer will see it after V82 --------
+        (mirrors PublicEventService.listCities: label = most common spelling, ties to the
+         least-shouted then alphabetical; a key with 2+ known countries stays split)
+ chip_label | chip_country | event_count 
+------------+--------------+-------------
+ Metz       | FR           |          12
+ Paris      | FR           |           6
+(2 rows)
+
+
+--- §10 The genre facet as the buyer will see it after V82 -------
+        (mirrors PublicEventService.listGenres: label = most common spelling, ties to the
+         least-shouted then alphabetical. One chip per key — never a folded invention.)
+     chip_label     | event_count | spellings_merged 
+--------------------+-------------+------------------
+ Club / Open Format |           2 |                1
+ Hip-Hop & R&B      |           1 |                1
+ house              |           1 |                1
+ House & Techno     |          10 |                1
+ Pop                |           1 |                1
+ techno             |           3 |                2
+(6 rows)
+
+
+=== end of report — nothing was written ===========================
+

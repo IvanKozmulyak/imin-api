@@ -6,6 +6,7 @@ import java.util.UUID;
 
 public record RefundRequestDetailResponse(
     UUID id,
+    String reference,
     UUID orderId,
     UUID eventId,
     String eventName,

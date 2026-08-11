@@ -21,6 +21,7 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -46,6 +47,8 @@ class RefundRequestServiceTest {
     RefundTicketRepository refundTickets = mock(RefundTicketRepository.class);
     TicketTierRepository tiers = mock(TicketTierRepository.class);
     RefundService refundService = mock(RefundService.class);
+    RefundReferenceGenerator references = new RefundReferenceGenerator(
+        java.time.Clock.fixed(java.time.Instant.parse("2026-08-11T00:00:00Z"), java.time.ZoneOffset.UTC));
 
     RefundRequestService service;
 
@@ -58,7 +61,7 @@ class RefundRequestServiceTest {
             .thenReturn(new EmailTemplateRenderer.Rendered("<html/>", "txt"));
         service = new RefundRequestService(orders, events, attempts, tokens, requests,
             email, renderer, emailProps, ticketProps, publisher,
-            tickets, refundTickets, tiers, refundService);
+            tickets, refundTickets, tiers, refundService, references);
     }
 
     @Test
@@ -260,7 +263,7 @@ class RefundRequestServiceTest {
             when(tickets.findByOrderId(orderId)).thenReturn(List.of(t));
             when(refundTickets.findRefundedTicketIds(any())).thenReturn(Set.of());
             when(requests.existsByOrderIdAndStatus(orderId, RefundRequestStatus.PENDING)).thenReturn(false);
-            when(requests.save(any())).thenAnswer(inv -> {
+            when(requests.saveAndFlush(any())).thenAnswer(inv -> {
                 RefundRequest rr = inv.getArgument(0);
                 rr.setId(UUID.randomUUID());
                 return rr;
@@ -269,9 +272,81 @@ class RefundRequestServiceTest {
             var resp = service.submitByToken("raw", req());
 
             assertThat(resp.status()).isEqualTo("pending");
-            verify(requests).save(any(RefundRequest.class));
+            // The receipt code — this is what the buyer quotes to support, not the UUID.
+            assertThat(resp.reference()).matches("^REQ-[A-Z2-9]{4}-26$");
+            // saveAndFlush, not save: the INSERT must happen inside the try so a constraint
+            // violation can be classified rather than escaping at commit as an opaque 500.
+            verify(requests).saveAndFlush(org.mockito.ArgumentMatchers.argThat(
+                rr -> rr.getReference() != null && rr.getReference().equals(resp.reference())));
             verify(tokens).save(org.mockito.ArgumentMatchers.argThat(t2 -> t2.getConsumedAt() != null));
             verify(publisher).publishEvent(any(com.imin.iminapi.refund.event.RefundRequestSubmittedEvent.class));
+        }
+
+
+        /** Shared setup for the submit-path violation tests below. */
+        private void stubASubmittableOrder() {
+            when(tokens.findByTokenHash(anyString())).thenReturn(Optional.of(token));
+            when(orders.findById(orderId)).thenReturn(Optional.of(o));
+            com.imin.iminapi.model.Ticket t = new com.imin.iminapi.model.Ticket();
+            t.setId(UUID.randomUUID());
+            t.setOrderId(orderId);
+            t.setTierId(UUID.randomUUID());
+            t.setPriceMinor(2500);
+            t.setState(com.imin.iminapi.model.Ticket.STATE_ISSUED);
+            when(tickets.findByOrderId(orderId)).thenReturn(List.of(t));
+            when(refundTickets.findRefundedTicketIds(any())).thenReturn(Set.of());
+            when(requests.existsByOrderIdAndStatus(orderId, RefundRequestStatus.PENDING)).thenReturn(false);
+        }
+
+        private org.springframework.dao.DataIntegrityViolationException violationOf(String constraint) {
+            return new org.springframework.dao.DataIntegrityViolationException(
+                "could not execute statement",
+                new org.hibernate.exception.ConstraintViolationException(
+                    "duplicate key value violates unique constraint \"" + constraint + "\"",
+                    new java.sql.SQLException("duplicate key"), constraint));
+        }
+
+        @Test
+        void a_pending_marker_race_is_the_only_thing_that_reports_already_open() {
+            stubASubmittableOrder();
+            when(requests.saveAndFlush(any()))
+                .thenThrow(violationOf(RefundRequestService.PENDING_MARKER_CONSTRAINT));
+
+            com.imin.iminapi.security.ApiException ex = assertThrows(
+                com.imin.iminapi.security.ApiException.class,
+                () -> service.submitByToken("raw", req()));
+            assertThat(ex.code()).isEqualTo(com.imin.iminapi.security.ErrorCode.REFUND_REQUEST_ALREADY_OPEN);
+        }
+
+        @Test
+        void a_reference_collision_asks_for_a_retry_instead_of_blaming_the_order() {
+            // The generator mints ONE candidate and lets the UNIQUE index answer; the old
+            // pre-check loop existed only because a violation here used to be misreported as
+            // "a refund request is already open for this order", which was never true.
+            stubASubmittableOrder();
+            when(requests.saveAndFlush(any()))
+                .thenThrow(violationOf(RefundRequestService.REFERENCE_CONSTRAINT));
+
+            com.imin.iminapi.security.ApiException ex = assertThrows(
+                com.imin.iminapi.security.ApiException.class,
+                () -> service.submitByToken("raw", req()));
+            assertThat(ex.code()).isNotEqualTo(
+                com.imin.iminapi.security.ErrorCode.REFUND_REQUEST_ALREADY_OPEN);
+            assertThat(ex.status()).isEqualTo(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE);
+        }
+
+        @Test
+        void a_not_null_violation_from_a_deploy_overlap_is_not_reported_as_already_open() {
+            // Railway overlaps deploys, so the old container serves refund submits while the
+            // new one's Flyway run has already landed. Whatever that produces, telling the
+            // buyer they already have an open request is a lie about their own order.
+            stubASubmittableOrder();
+            when(requests.saveAndFlush(any())).thenThrow(
+                new org.springframework.dao.DataIntegrityViolationException(
+                    "null value in column \"reference\" violates not-null constraint"));
+
+            assertThatThrownBy(() -> service.submitByToken("raw", req()))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
         }
 
         @Test

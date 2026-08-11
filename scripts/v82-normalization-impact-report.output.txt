@@ -1,0 +1,208 @@
+V82 IMPACT REPORT — RENDERED OUTPUT
+===================================================================
+Produced by: scripts/v82-normalization-impact-report.sql (SELECT-only)
+Date:        2026-08-11
+Branch:      feat/buyer-api-additions
+
+NEITHER RUN TOUCHED PRODUCTION. No backfill was executed anywhere.
+For the numbers that matter, run the .sql against prod with a read-only
+role and read §5, §6, §3 and §7 before scheduling the migration.
+
+Re-rendered after the genre rework: genre now keeps the organizer's
+display casing (like the city) and merges on the derived genre_key, so
+§3 groups on the key and §10 shows the labels the buyer's genre chips
+will carry.
+
+
+###################################################################
+# RUN 1 — LOCAL DEV DATABASE (docker compose postgres, port 5433)  
+#          db=mydatabase, 1 event row (unpublished, so no facet).  
+#          Real schema, real (tiny) data: proves the report runs    
+#          clean and that this database needs no correction.        
+###################################################################
+
+--- §1  Scale: how many rows each rule touches -------------------
+ events_total | genre_rows_changed | city_rows_changed | country_rows_changed | country_blank_to_null | country_junk_to_null | rows_with_no_city 
+--------------+--------------------+-------------------+----------------------+-----------------------+----------------------+-------------------
+            1 |                  0 |                 0 |                    0 |                     0 |                    0 |                 0
+(1 row)
+
+
+--- §2  Genre: every distinct value that changes -----------------
+ genre_before | genre_after | rows 
+--------------+-------------+------
+(0 rows)
+
+
+--- §3  Genre keys that MERGE: spellings folding into one chip — REVIEW
+        (empty = no genre merges; every row here must be one genre spelled two ways)
+ genre_key | distinct_spellings | merged_from | rows 
+-----------+--------------------+-------------+------
+(0 rows)
+
+
+--- §4  City: every distinct display value that changes ----------
+        (whitespace only — casing is never altered)
+ city_before_bracketed | city_after_bracketed | rows 
+-----------------------+----------------------+------
+(0 rows)
+
+
+--- §5  City keys that MERGE: spellings/countries folding into one — REVIEW
+        (two spellings of one town = the point. Two different towns = stop.)
+ city_key | rows | spellings | spelling_list | known_countries | country_list 
+----------+------+-----------+---------------+-----------------+--------------
+(0 rows)
+
+
+--- §6  City keys with TWO OR MORE known countries — REVIEW ------
+        (not merged by the facet; frontend chips for these need &country=)
+ city_key | countries | rows 
+----------+-----------+------
+(0 rows)
+
+
+--- §7  Country: every distinct value that changes ---------------
+        (rows with country_after = (null) LOSE a stored value — check they are junk)
+ country_before_bracketed | country_after | rows 
+--------------------------+---------------+------
+(0 rows)
+
+
+--- §8  Buyer city facet: chips BEFORE vs AFTER ------------------
+        (same eligibility as the feed: alive, PUBLIC, published, not DRAFT/CANCELLED)
+ chips_before | chips_after | genre_chips_before | genre_chips_after 
+--------------+-------------+--------------------+-------------------
+            0 |           0 |                  0 |                 0
+(1 row)
+
+
+--- §9  The city facet as the buyer will see it after V82 --------
+        (mirrors PublicEventService.listCities: label = most common spelling, ties to the
+         least-shouted then alphabetical; a key with 2+ known countries stays split)
+ chip_label | chip_country | event_count 
+------------+--------------+-------------
+(0 rows)
+
+
+--- §10 The genre facet as the buyer will see it after V82 -------
+        (mirrors PublicEventService.listGenres: label = most common spelling, ties to the
+         least-shouted then alphabetical. One chip per key — never a folded invention.)
+ chip_label | event_count | spellings_merged 
+------------+-------------+------------------
+(0 rows)
+
+
+=== end of report — nothing was written ===========================
+
+
+###################################################################
+# RUN 2 — SEEDED FIXTURE (throwaway db v82_fixture, same container)
+#          23 synthetic rows reproducing the drift patterns reported
+#          from production: Metz/FR + Metz/null + METZ/'', techno/  
+#          Techno/TECHNO, a double-spaced city, a 1-char country,   
+#          names that must survive ('s-Hertogenbosch, L'Aquila),    
+#          and a deliberate Paris/FR + Paris/US collision to prove  
+#          §6 fires. COUNTS HERE ARE FIXTURE COUNTS, NOT PRODUCTION.
+###################################################################
+
+--- §1  Scale: how many rows each rule touches -------------------
+ events_total | genre_rows_changed | city_rows_changed | country_rows_changed | country_blank_to_null | country_junk_to_null | rows_with_no_city 
+--------------+--------------------+-------------------+----------------------+-----------------------+----------------------+-------------------
+           23 |                  1 |                 2 |                    3 |                     1 |                    1 |                 1
+(1 row)
+
+
+--- §2  Genre: every distinct value that changes -----------------
+   genre_before    | genre_after | rows 
+-------------------+-------------+------
+   Drum   &  Bass  | Drum & Bass |    1
+(1 row)
+
+
+--- §3  Genre keys that MERGE: spellings folding into one chip — REVIEW
+        (empty = no genre merges; every row here must be one genre spelled two ways)
+   genre_key    | distinct_spellings |            merged_from            | rows 
+----------------+--------------------+-----------------------------------+------
+ drum & bass    |                  2 | Drum & Bass  |  drum & bass       |    2
+ house & techno |                  2 | House & Techno  |  house & techno |    2
+ techno         |                  3 | TECHNO  |  Techno  |  techno      |   13
+(3 rows)
+
+
+--- §4  City: every distinct display value that changes ----------
+        (whitespace only — casing is never altered)
+ city_before_bracketed | city_after_bracketed | rows 
+-----------------------+----------------------+------
+ [ Le Mans ]           | [Le Mans]            |    1
+ [Le  Mans]            | [Le Mans]            |    1
+(2 rows)
+
+
+--- §5  City keys that MERGE: spellings/countries folding into one — REVIEW
+        (two spellings of one town = the point. Two different towns = stop.)
+ city_key | rows | spellings |  spelling_list  | known_countries | country_list  
+----------+------+-----------+-----------------+-----------------+---------------
+ metz     |    4 |         2 | METZ  |  Metz   |               1 | (none)  |  FR
+ paris    |    3 |         2 | PARIS  |  Paris |               2 | FR  |  US
+(2 rows)
+
+
+--- §6  City keys with TWO OR MORE known countries — REVIEW ------
+        (not merged by the facet; frontend chips for these need &country=)
+ city_key | countries | rows 
+----------+-----------+------
+ paris    | FR  |  US |    3
+(1 row)
+
+
+--- §7  Country: every distinct value that changes ---------------
+        (rows with country_after = (null) LOSE a stored value — check they are junk)
+ country_before_bracketed | country_after | rows 
+--------------------------+---------------+------
+ [F]                      | (null)        |    1
+ []                       | (null)        |    1
+ [fr]                     | FR            |    1
+(3 rows)
+
+
+--- §8  Buyer city facet: chips BEFORE vs AFTER ------------------
+        (same eligibility as the feed: alive, PUBLIC, published, not DRAFT/CANCELLED)
+ chips_before | chips_after | genre_chips_before | genre_chips_after 
+--------------+-------------+--------------------+-------------------
+           15 |           9 |                  9 |                 5
+(1 row)
+
+
+--- §9  The city facet as the buyer will see it after V82 --------
+        (mirrors PublicEventService.listCities: label = most common spelling, ties to the
+         least-shouted then alphabetical; a key with 2+ known countries stays split)
+    chip_label    | chip_country | event_count 
+------------------+--------------+-------------
+ 's-Hertogenbosch | NL           |           1
+ L'Aquila         | IT           |           1
+ Le Mans          | FR           |           2
+ Lille            | FR           |           2
+ Lyon             | FR           |           2
+ Metz             | FR           |           4
+ Nancy            | FR           |           2
+ Nice             | (null)       |           1
+ Paris            | FR           |           2
+ Paris            | US           |           1
+(10 rows)
+
+
+--- §10 The genre facet as the buyer will see it after V82 -------
+        (mirrors PublicEventService.listGenres: label = most common spelling, ties to the
+         least-shouted then alphabetical. One chip per key — never a folded invention.)
+   chip_label   | event_count | spellings_merged 
+----------------+-------------+------------------
+ drum & bass    |           2 |                2
+ hip-hop        |           1 |                1
+ house & techno |           2 |                2
+ pop            |           5 |                1
+ techno         |           9 |                3
+(5 rows)
+
+
+=== end of report — nothing was written ===========================

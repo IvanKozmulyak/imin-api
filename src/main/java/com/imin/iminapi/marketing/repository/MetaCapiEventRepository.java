@@ -1,5 +1,6 @@
 package com.imin.iminapi.marketing.repository;
 
+import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 import com.imin.iminapi.marketing.model.MetaCapiEvent;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -10,6 +11,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
+@RepositoryRestResource(exported = false)
 public interface MetaCapiEventRepository extends JpaRepository<MetaCapiEvent, UUID> {
 
     /** Due outbox rows (pending + next_attempt_at reached), oldest first. */

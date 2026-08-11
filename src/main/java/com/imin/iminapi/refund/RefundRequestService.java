@@ -81,6 +81,7 @@ public class RefundRequestService {
     private final RefundTicketRepository refundTickets;
     private final TicketTierRepository tiers;
     private final RefundService refundService;
+    private final RefundReferenceGenerator references;
 
     public RefundRequestService(OrderRepository orders,
                                 EventRepository events,
@@ -95,7 +96,8 @@ public class RefundRequestService {
                                 TicketRepository tickets,
                                 RefundTicketRepository refundTickets,
                                 TicketTierRepository tiers,
-                                RefundService refundService) {
+                                RefundService refundService,
+                                RefundReferenceGenerator references) {
         this.orders = orders;
         this.events = events;
         this.attempts = attempts;
@@ -110,6 +112,7 @@ public class RefundRequestService {
         this.refundTickets = refundTickets;
         this.tiers = tiers;
         this.refundService = refundService;
+        this.references = references;
     }
 
     @Transactional
@@ -224,7 +227,11 @@ public class RefundRequestService {
                 .toList(),
             estimated,
             order.getCurrency(),
-            PublicRefundFormResponse.defaultReasons()
+            PublicRefundFormResponse.defaultReasons(),
+            // Null unless this order ALREADY has an open request — see the DTO javadoc.
+            requests.findFirstByOrderIdAndStatus(order.getId(), RefundRequestStatus.PENDING)
+                .map(RefundRequest::getReference)
+                .orElse(null)
         );
     }
 
@@ -282,27 +289,90 @@ public class RefundRequestService {
         rr.setReason(body.reason());
         rr.setExplanation(body.explanation());
         rr.setStatus(RefundRequestStatus.PENDING);
+        rr.setReference(references.next());
         // pending_marker = order_id while PENDING; UNIQUE on this column
         // enforces "one open request per order" across both Postgres and H2.
         rr.setPendingMarker(order.getId());
 
         try {
-            rr = requests.save(rr);
-        } catch (DataIntegrityViolationException race) {
-            // UNIQUE(pending_marker) raced.
-            throw new ApiException(
-                HttpStatus.CONFLICT,
-                ErrorCode.REFUND_REQUEST_ALREADY_OPEN,
-                "A refund request is already open for this order");
+            // saveAndFlush, not save: the id is application-assigned (@GeneratedValue UUID), so
+            // a plain persist would defer the INSERT to commit and every constraint below would
+            // surface OUTSIDE this try — as an opaque 500 — instead of being classified here.
+            rr = requests.saveAndFlush(rr);
+        } catch (DataIntegrityViolationException violation) {
+            throw classifySubmitViolation(violation);
         }
 
         token.setConsumedAt(Times.nowMicros());
         tokens.save(token);
 
         publisher.publishEvent(new RefundRequestSubmittedEvent(rr.getId()));
-        log.info("[refund-request] issued requestId={} orderId={}", rr.getId(), order.getId());
+        log.info("[refund-request] issued requestId={} reference={} orderId={}",
+            rr.getId(), rr.getReference(), order.getId());
         return new PublicRefundSubmitResponse(
-            rr.getId(), rr.getStatus().name().toLowerCase(Locale.ROOT), rr.getCreatedAt());
+            rr.getId(), rr.getReference(),
+            rr.getStatus().name().toLowerCase(Locale.ROOT), rr.getCreatedAt());
+    }
+
+    /** {@code UNIQUE(pending_marker)} — "one open refund request per order" (V30). */
+    static final String PENDING_MARKER_CONSTRAINT = "uq_refund_requests_one_open_per_order";
+    /** {@code UNIQUE(reference)} — the buyer-facing code (V81). */
+    static final String REFERENCE_CONSTRAINT = "uq_refund_requests_reference";
+
+    /**
+     * Turns an integrity violation on submit into the truth about which rule was broken.
+     *
+     * <p>The old code assumed every violation here was the pending-marker race and answered
+     * {@code 409 REFUND_REQUEST_ALREADY_OPEN} unconditionally. That is a claim about the
+     * buyer's own order, and it was wrong for at least two reachable causes: a reference
+     * collision (rare, but the whole point of the UNIQUE index is that it happens), and — during
+     * a Railway deploy overlap, where the new container's Flyway run and the old container's
+     * traffic coexist — a NOT NULL the old code could not satisfy. Both told a buyer on the
+     * payments path that they already had a request open when they did not, which is the kind of
+     * message that ends in a chargeback rather than a retry.
+     *
+     * <p>Anything unrecognised is rethrown rather than guessed at: an unmapped 500 is honest,
+     * a confidently wrong 409 is not.
+     */
+    private static RuntimeException classifySubmitViolation(DataIntegrityViolationException violation) {
+        if (mentions(violation, PENDING_MARKER_CONSTRAINT)) {
+            return new ApiException(
+                HttpStatus.CONFLICT,
+                ErrorCode.REFUND_REQUEST_ALREADY_OPEN,
+                "A refund request is already open for this order");
+        }
+        if (mentions(violation, REFERENCE_CONSTRAINT)) {
+            // Two submits drew the same code. Nothing is wrong with the order — retrying
+            // in-transaction is impossible (the transaction is already doomed), so ask for a
+            // fresh attempt instead of blaming the buyer's order for it.
+            log.warn("[refund-request] reference collision on submit — buyer asked to retry");
+            return new ApiException(
+                HttpStatus.SERVICE_UNAVAILABLE,
+                ErrorCode.INTERNAL,
+                "Could not allocate a refund reference, please retry");
+        }
+        return violation;
+    }
+
+    /**
+     * Whether {@code name} appears anywhere in the exception chain — either as Hibernate's
+     * parsed constraint name or in a driver message. Both are checked because the two engines
+     * report it differently (Postgres lower-case and bare, H2 upper-case and schema-qualified)
+     * and because Hibernate cannot always parse a name out at all.
+     */
+    private static boolean mentions(Throwable t, String name) {
+        String needle = name.toLowerCase(Locale.ROOT);
+        for (Throwable c = t; c != null; c = (c.getCause() == c ? null : c.getCause())) {
+            if (c instanceof org.hibernate.exception.ConstraintViolationException cve) {
+                String constraint = cve.getConstraintName();
+                if (constraint != null && constraint.toLowerCase(Locale.ROOT).contains(needle)) {
+                    return true;
+                }
+            }
+            String message = c.getMessage();
+            if (message != null && message.toLowerCase(Locale.ROOT).contains(needle)) return true;
+        }
+        return false;
     }
 
     @Transactional(readOnly = true)
@@ -342,6 +412,7 @@ public class RefundRequestService {
 
         return new RefundRequestDetailResponse(
             rr.getId(),
+            rr.getReference(),
             order.getId(),
             order.getEventId(),
             null, // eventName left null for MVP
@@ -370,13 +441,46 @@ public class RefundRequestService {
             UUID eventId,
             List<RefundRequestStatus> statuses,
             int limit) {
+        return listRequests(orgId, eventId, statuses, null, limit);
+    }
+
+    /**
+     * Operator list, optionally narrowed by {@code search}: a refund reference the
+     * customer quoted ({@code REQ-8K2M-26}, or just {@code 8K2M-26}) or part of their
+     * email address.
+     *
+     * <p>Two repository methods rather than one nullable-parameter query — a null String
+     * flowing into {@code lower}/{@code like} type-infers to bytea on Postgres and 500s.
+     * See {@link RefundRequestRepository#pageSearch}.
+     */
+    @Transactional(readOnly = true)
+    public List<RefundRequestSummaryResponse> listRequests(
+            UUID orgId,
+            UUID eventId,
+            List<RefundRequestStatus> statuses,
+            String search,
+            int limit) {
 
         PageRequest pageReq = PageRequest.of(0, Math.min(100, Math.max(1, limit)));
         List<RefundRequestStatus> effectiveStatuses =
             (statuses == null || statuses.isEmpty())
                 ? List.of(RefundRequestStatus.values())
                 : statuses;
-        List<RefundRequest> rows = requests.page(orgId, eventId, effectiveStatuses, pageReq);
+
+        String term = (search == null || search.isBlank()) ? null : search.trim();
+        List<RefundRequest> rows;
+        if (term == null) {
+            rows = requests.page(orgId, eventId, effectiveStatuses, pageReq);
+        } else {
+            // Reference lookups are case/prefix forgiving, so the term is normalised for the
+            // reference comparison — but the EMAIL comparison always gets the term as typed.
+            // Sending only the normalised form lost the original whenever an email fragment
+            // happened to be reference-shaped: searching "mark-22" became "REQ-MARK-22" and
+            // stopped matching mark-22@example.com.
+            String normalizedRef = RefundReferenceGenerator.normalize(term);
+            rows = requests.pageSearch(orgId, eventId, effectiveStatuses,
+                normalizedRef != null ? normalizedRef : term, term, pageReq);
+        }
 
         return rows.stream().map(rr -> {
             // ticketCount and estimatedRefundMinor are best-effort live
@@ -398,7 +502,7 @@ public class RefundRequestService {
                 currency = order.getCurrency();
             }
             return new RefundRequestSummaryResponse(
-                rr.getId(), rr.getOrderId(), rr.getEventId(), null,
+                rr.getId(), rr.getReference(), rr.getOrderId(), rr.getEventId(), null,
                 rr.getBuyerEmail(),
                 rr.getStatus().name().toLowerCase(Locale.ROOT),
                 rr.getReason().toWire(),
