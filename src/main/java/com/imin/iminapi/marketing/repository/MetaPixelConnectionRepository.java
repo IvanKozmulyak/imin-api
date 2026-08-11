@@ -1,11 +1,13 @@
 package com.imin.iminapi.marketing.repository;
 
+import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 import com.imin.iminapi.marketing.model.MetaPixelConnection;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 import java.util.Optional;
 import java.util.UUID;
 
+@RepositoryRestResource(exported = false)
 public interface MetaPixelConnectionRepository extends JpaRepository<MetaPixelConnection, UUID> {
 
     /** The org-wide default connection (event_id IS NULL). */

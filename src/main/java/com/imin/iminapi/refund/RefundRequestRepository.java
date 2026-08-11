@@ -1,5 +1,6 @@
 package com.imin.iminapi.refund;
 
+import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
@@ -9,6 +10,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+@RepositoryRestResource(exported = false)
 public interface RefundRequestRepository extends JpaRepository<RefundRequest, UUID> {
 
     Optional<RefundRequest> findByIdAndOrgId(UUID id, UUID orgId);
