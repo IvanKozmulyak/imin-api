@@ -1,0 +1,8 @@
+DEMANDE REÇUE
+
+Merci — nous avons bien reçu votre demande de remboursement.
+
+L'organisateur va l'examiner et vous répondra par e-mail. Vous n'avez
+rien d'autre à faire pour l'instant.
+
+Référence : {{requestId}}

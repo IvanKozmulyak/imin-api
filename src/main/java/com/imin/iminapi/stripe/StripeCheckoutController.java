@@ -54,7 +54,7 @@ public class StripeCheckoutController {
                 body.utmSource(), body.utmMedium(), body.utmCampaign(), body.anonId());
         String url = checkout.createCheckoutSession(eventId, body.tierId(), quantity,
                 promoCode, body.expectedPriceMinor(), body.email(), adsConsent, marketingOptIn,
-                attribution);
+                attribution, body.locale());
         return new CheckoutResponse(url);
     }
 
@@ -93,7 +93,13 @@ public class StripeCheckoutController {
                                    // The /track beacon's per-session id (sessionStorage
                                    // 'imin.anon') — REUSED, not a second identifier — so an order
                                    // can be joined back to the visit that drove it.
-                                   String anonId) {}
+                                   String anonId,
+                                   // Buyer's UI language (en/es/fr/uk), read from the browser by
+                                   // imin-public. Normalized server-side; anything unsupported is
+                                   // stored as null ⇒ English email. Never a validation error.
+                                   // Snapshotted onto orders.buyer_locale (V78) — the buyer has no
+                                   // account, so the order is the only place it can live.
+                                   String locale) {}
 
     public record CheckoutResponse(String url) {}
 }

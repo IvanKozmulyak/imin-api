@@ -5,6 +5,7 @@ import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.email.EmailTemplateRenderer;
 import com.imin.iminapi.model.Event;
+import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.refund.RefundRequest;
@@ -12,6 +13,7 @@ import com.imin.iminapi.refund.RefundRequestRepository;
 import com.imin.iminapi.refund.event.RefundRequestRejectedEvent;
 import com.imin.iminapi.refund.event.RefundRequestSubmittedEvent;
 import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
 import org.slf4j.Logger;
@@ -50,6 +52,7 @@ public class RefundRequestEmailer {
     private final EmailProperties props;
     private final RefundRequestRepository requests;
     private final EventRepository events;
+    private final OrderRepository orders;
     private final OrganizationRepository orgs;
     private final UserRepository users;
 
@@ -58,6 +61,7 @@ public class RefundRequestEmailer {
                                 EmailProperties props,
                                 RefundRequestRepository requests,
                                 EventRepository events,
+                                OrderRepository orders,
                                 OrganizationRepository orgs,
                                 UserRepository users) {
         this.email = email;
@@ -65,6 +69,7 @@ public class RefundRequestEmailer {
         this.props = props;
         this.requests = requests;
         this.events = events;
+        this.orders = orders;
         this.orgs = orgs;
         this.users = users;
     }
@@ -94,13 +99,22 @@ public class RefundRequestEmailer {
         base.put("explanation", rr.getExplanation());
         base.put("dashboardUrl", dashboardUrl);
 
-        // 1. Buyer ack.
-        EmailTemplateRenderer.Rendered buyer = renderer.render("refund-request-received-buyer", base);
-        safeSend(rr.getBuyerEmail(), "We got your refund request · imin", buyer);
+        // 1. Buyer ack — in the language they bought in (V78, snapshotted on the order).
+        String buyerLocale = orders.findById(rr.getOrderId())
+            .map(Order::getBuyerLocale)
+            .orElse(null);
+        EmailTemplateRenderer.Rendered buyer =
+            renderer.render("refund-request-received-buyer", buyerLocale, base);
+        String buyerSubject = EmailLocale.choose(buyerLocale,
+            "We got your refund request · imin",
+            "Hemos recibido tu solicitud de reembolso · imin",
+            "Nous avons bien reçu votre demande de remboursement · imin",
+            "Ми отримали ваш запит на повернення коштів · imin");
+        safeSend(rr.getBuyerEmail(), buyerSubject, buyer);
 
-        // 2. Organizer notify — route to the org's contactEmail. This is the ONLY
-        // localized email in this class; buyer ack + imin inbox + reject stay EN.
-        // Locale comes from the org's earliest-created user (its de-facto owner).
+        // 2. Organizer notify — route to the org's contactEmail. Locale comes from the
+        // org's earliest-created user (its de-facto owner), NOT the buyer's: the two
+        // sides of a refund request can be reading in different languages.
         String organizerEmail = orgs.findById(rr.getOrgId())
             .map(Organization::getContactEmail)
             .orElse(null);

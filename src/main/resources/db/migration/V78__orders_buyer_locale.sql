@@ -1,0 +1,15 @@
+-- V78: the buyer's UI language, snapshotted onto the order at checkout.
+--
+-- Every buyer-facing email (ticket-issued, order-recovery, refund-confirmed,
+-- refund-request-received-buyer) was English-only regardless of the language the
+-- buyer bought in. The order is the only durable record of that buyer — they have
+-- no account, so there is nowhere else to hang the preference.
+--
+-- Nullable: "no preference expressed" (organic/legacy orders, or a locale we don't
+-- support) ⇒ English, which is exactly what EmailTemplateRenderer already does with
+-- a null locale. Historical rows are not back-fillable.
+--
+-- Free flow stamps it inline; paid flow carries it through the Stripe session +
+-- PaymentIntent metadata (metadata key `buyer_locale`) to webhook fulfilment, the
+-- same route ads_consent / marketing_opt_in / utm_* already take.
+ALTER TABLE orders ADD COLUMN buyer_locale VARCHAR(5) NULL;

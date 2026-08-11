@@ -1,0 +1,15 @@
+ENTRADAS A LA VENTA · imin
+
+Ya hay entradas para {{eventName}}.
+
+Nos pediste que te avisáramos cuando hubiera entradas para {{eventName}}. Este es un aviso único.
+
+{{eventName}}
+{{eventWhen}}
+{{eventWhere}}
+
+Consigue tus entradas: {{eventUrl}}
+
+Las entradas se venden por orden de compra — este correo no te reserva ninguna. No recibirás otro correo sobre este evento a menos que vuelvas a apuntarte.
+
+imin.wtf · entradas a la venta para {{eventName}}

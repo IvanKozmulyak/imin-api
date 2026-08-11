@@ -130,7 +130,7 @@ class MarketingOptInWriteTest {
     void freeCheckout_persistsMarketingOptInFlag() {
         Order created = freeCheckout.issueFreeOrder(
                 event, freeTier, 1, "optin-buyer@example.com", null, false,
-                /* marketingOptIn */ true, CheckoutAttribution.NONE);
+                /* marketingOptIn */ true, CheckoutAttribution.NONE, null);
         Order persisted = orders.findByToken(created.getToken()).orElseThrow();
         assertThat(persisted.isMarketingOptIn()).isTrue();
     }
@@ -145,7 +145,7 @@ class MarketingOptInWriteTest {
         String campaignId = UUID.randomUUID().toString();
         Order created = freeCheckout.issueFreeOrder(
                 event, freeTier, 1, "utm-buyer@example.com", null, false, true,
-                new CheckoutAttribution("imin", "email", campaignId, "anon-free-1"));
+                new CheckoutAttribution("imin", "email", campaignId, "anon-free-1"), null);
 
         Order persisted = orders.findByToken(created.getToken()).orElseThrow();
         assertThat(persisted.getUtmSource()).isEqualTo("imin");
@@ -154,12 +154,41 @@ class MarketingOptInWriteTest {
         assertThat(persisted.getAnonId()).isEqualTo("anon-free-1");
     }
 
+    /**
+     * W1.G/V78: the free path writes the Order inline, so it is the only place the
+     * buyer's language can be stamped. Normalized at the write site so a caller that
+     * skipped normalization can't put junk in the column.
+     */
+    @Test
+    void freeCheckout_persistsBuyerLocale_normalized() {
+        Order created = freeCheckout.issueFreeOrder(
+                event, freeTier, 1, "locale-buyer@example.com", null, false, true,
+                CheckoutAttribution.NONE, "  ES  ");
+
+        assertThat(orders.findByToken(created.getToken()).orElseThrow().getBuyerLocale())
+                .isEqualTo("es");
+    }
+
+    /** Unsupported/absent language ⇒ null, i.e. "no preference" ⇒ English emails. */
+    @Test
+    void freeCheckout_leavesBuyerLocaleNull_whenUnsupportedOrAbsent() {
+        Order junk = freeCheckout.issueFreeOrder(
+                event, freeTier, 1, "junk-locale@example.com", null, false, true,
+                CheckoutAttribution.NONE, "klingon");
+        Order none = freeCheckout.issueFreeOrder(
+                event, freeTier, 1, "no-locale@example.com", null, false, true,
+                CheckoutAttribution.NONE, null);
+
+        assertThat(orders.findByToken(junk.getToken()).orElseThrow().getBuyerLocale()).isNull();
+        assertThat(orders.findByToken(none.getToken()).orElseThrow().getBuyerLocale()).isNull();
+    }
+
     /** Untagged (organic) free order → null columns, never empty strings. */
     @Test
     void freeCheckout_withNoAttribution_leavesUtmNull() {
         Order created = freeCheckout.issueFreeOrder(
                 event, freeTier, 1, "organic@example.com", null, false, true,
-                CheckoutAttribution.NONE);
+                CheckoutAttribution.NONE, null);
 
         Order persisted = orders.findByToken(created.getToken()).orElseThrow();
         assertThat(persisted.getUtmSource()).isNull();
@@ -176,7 +205,7 @@ class MarketingOptInWriteTest {
     void freeCheckout_normalizesHostileAttributionInput() {
         Order created = freeCheckout.issueFreeOrder(
                 event, freeTier, 1, "hostile@example.com", null, false, true,
-                new CheckoutAttribution("   ", "  email  ", "x".repeat(500), "y".repeat(200)));
+                new CheckoutAttribution("   ", "  email  ", "x".repeat(500), "y".repeat(200)), null);
 
         Order persisted = orders.findByToken(created.getToken()).orElseThrow();
         assertThat(persisted.getUtmSource()).isNull();            // blank → null

@@ -1,5 +1,6 @@
 package com.imin.iminapi.service.ticket;
 
+import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.email.EmailTemplateRenderer;
@@ -113,13 +114,25 @@ public class TicketIssuanceEmailer {
         values.put("orderUrl", orderUrl);
         values.put("recoverUrl", recoverUrl);
 
-        EmailTemplateRenderer.Rendered r = renderer.render("ticket-issued", values);
+        // The buyer's language, snapshotted at checkout (V78). Null ⇒ English, which is
+        // exactly what the renderer does with a null locale.
+        String locale = order.getBuyerLocale();
+        EmailTemplateRenderer.Rendered r = renderer.render("ticket-issued", locale, values);
         String html = r.html().replace("__TICKETS_BLOCK_PLACEHOLDER__", htmlBlocks);
         String text = r.text().replace("__TICKETS_BLOCK_PLACEHOLDER__", textBlocks);
 
+        String name = nullSafe(event.getName());
         String subject = issued.size() == 1
-                ? "Your ticket for " + nullSafe(event.getName())
-                : "Your tickets for " + nullSafe(event.getName());
+                ? EmailLocale.choose(locale,
+                        "Your ticket for " + name,
+                        "Tu entrada para " + name,
+                        "Votre billet pour " + name,
+                        "Ваш квиток на " + name)
+                : EmailLocale.choose(locale,
+                        "Your tickets for " + name,
+                        "Tus entradas para " + name,
+                        "Vos billets pour " + name,
+                        "Ваші квитки на " + name);
 
         email.send(order.getEmail(), subject, html, text);
         log.info("Sent issuance email for order {} ({} ticket(s)) to {}",

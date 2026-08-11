@@ -1,0 +1,14 @@
+REEMBOLSO CONFIRMADO
+
+Tu reembolso de {{eventName}} se ha procesado.
+
+Se han reembolsado {{ticketCount}} entrada(s) del pedido #{{orderShortCode}}.
+
+Importe reembolsado: {{amountFormatted}}
+
+El reembolso aparecerá en tu método de pago original, normalmente en un
+plazo de 5 a 10 días hábiles. Tu banco puede tardar más según sus
+tiempos de procesamiento.
+
+¿Tienes dudas sobre este reembolso? Responde a este correo o escribe al
+organizador a {{organizerContact}}.

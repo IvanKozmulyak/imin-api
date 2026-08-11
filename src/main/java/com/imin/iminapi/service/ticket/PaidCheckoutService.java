@@ -1,5 +1,6 @@
 package com.imin.iminapi.service.ticket;
 
+import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.marketing.service.MetaCapiOutboxWriter;
 import com.imin.iminapi.model.CheckoutAttribution;
 import com.imin.iminapi.model.Event;
@@ -157,6 +158,10 @@ public class PaidCheckoutService {
         // still in flight at deploy, and organic buyers who arrived with no tags at all.
         // This is what makes per-campaign revenue a true per-order sum rather than an estimate.
         CheckoutAttribution.fromMetadata(meta).applyTo(order);
+        // Buyer's UI language (V78), stamped into the session/PI metadata at checkout.
+        // Absent key (pre-V78 sessions in flight at deploy, or a buyer whose language we
+        // don't support) → null ⇒ English emails, same as every historical order.
+        order.setBuyerLocale(EmailLocale.normalizeOrNull(meta.get("buyer_locale")));
         order.setApplicationFeeMinor(pi.getApplicationFeeAmount() == null ? 0L : pi.getApplicationFeeAmount());
 
         String promoIdRaw = meta.get("promo_id");

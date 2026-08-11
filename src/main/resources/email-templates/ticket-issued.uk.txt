@@ -1,0 +1,11 @@
+ВИ У СПИСКУ · imin
+
+Ви йдете на {{eventName}}.
+{{eventWhen}}{{eventWhereSeparator}}{{eventWhere}}
+
+ВАШІ КВИТКИ
+
+{{ticketBlocks}}
+Переглянути замовлення онлайн: {{orderUrl}}
+
+Загубили цей лист? Відновіть свої квитки: {{recoverUrl}}

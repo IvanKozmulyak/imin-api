@@ -86,7 +86,7 @@ class RefundConfirmationEmailerTest {
         when(refundTickets.findTicketIdsByRefundId(refundId))
             .thenReturn(List.of(UUID.randomUUID(), UUID.randomUUID()));
 
-        when(renderer.render(eq("refund-confirmed"), any()))
+        when(renderer.render(eq("refund-confirmed"), any(), any()))
             .thenReturn(new EmailTemplateRenderer.Rendered("<html>r</html>", "text"));
 
         emailer.send(refundId);
@@ -96,6 +96,73 @@ class RefundConfirmationEmailerTest {
         verify(emailService).send(toCap.capture(), subjCap.capture(), any(), any());
         assertThat(toCap.getValue()).isEqualTo("buyer@example.com");
         assertThat(subjCap.getValue()).contains("Saturn Night");
+    }
+
+    /**
+     * W1.G: the refund email follows the language the buyer bought in
+     * (orders.buyer_locale, V78) — both the template variant and the subject line.
+     */
+    @Test
+    void send_rendersWithTheBuyersLocale_andLocalizedSubject() {
+        seedRefundFor("fr");
+
+        when(renderer.render(eq("refund-confirmed"), eq("fr"), any()))
+            .thenReturn(new EmailTemplateRenderer.Rendered("<html>fr</html>", "fr"));
+
+        emailer.send(refundId);
+
+        verify(renderer).render(eq("refund-confirmed"), eq("fr"), any());
+        ArgumentCaptor<String> subj = ArgumentCaptor.forClass(String.class);
+        verify(emailService).send(eq("buyer@example.com"), subj.capture(), any(), any());
+        assertThat(subj.getValue()).isEqualTo("Remboursement confirmé pour Saturn Night");
+    }
+
+    /** No stored preference ⇒ null locale reaches the renderer, which means English. */
+    @Test
+    void send_passesNullLocale_whenOrderHasNone() {
+        seedRefundFor(null);
+
+        when(renderer.render(eq("refund-confirmed"), eq((String) null), any()))
+            .thenReturn(new EmailTemplateRenderer.Rendered("<html>en</html>", "en"));
+
+        emailer.send(refundId);
+
+        verify(renderer).render(eq("refund-confirmed"), eq((String) null), any());
+        ArgumentCaptor<String> subj = ArgumentCaptor.forClass(String.class);
+        verify(emailService).send(eq("buyer@example.com"), subj.capture(), any(), any());
+        assertThat(subj.getValue()).isEqualTo("Refund confirmed for Saturn Night");
+    }
+
+    /** Full happy-path fixture with a given buyer locale on the order. */
+    private void seedRefundFor(String buyerLocale) {
+        Refund r = new Refund();
+        r.setId(refundId);
+        r.setOrderId(orderId);
+        r.setAmountMinor(5000);
+        r.setCurrency("eur");
+        r.setStatus(RefundStatus.SUCCEEDED);
+        r.setReason(RefundReason.REQUESTED_BY_CUSTOMER);
+        when(refunds.findById(refundId)).thenReturn(Optional.of(r));
+
+        Order order = new Order();
+        order.setId(orderId);
+        order.setEmail("buyer@example.com");
+        order.setEventId(eventId);
+        order.setOrgId(orgId);
+        order.setBuyerLocale(buyerLocale);
+        when(orders.findById(orderId)).thenReturn(Optional.of(order));
+
+        Event event = new Event();
+        event.setId(eventId);
+        event.setName("Saturn Night");
+        when(events.findById(eventId)).thenReturn(Optional.of(event));
+
+        Organization org = new Organization();
+        org.setId(orgId);
+        org.setContactEmail("hello@organizer.example");
+        when(orgs.findById(orgId)).thenReturn(Optional.of(org));
+
+        when(refundTickets.findTicketIdsByRefundId(refundId)).thenReturn(List.of(UUID.randomUUID()));
     }
 
     @Test
