@@ -48,6 +48,9 @@ class AudienceDsarTest {
     @Autowired ConsentRecordRepository consentRepo;
     @Autowired SuppressionRepository suppressionRepo;
     @Autowired OrganizationRepository orgRepo;
+    @Autowired EventRepository eventRepo;
+    @Autowired UserRepository userRepo;
+    @Autowired NotifySubscriptionRepository notifyRepo;
     @Autowired AudienceOrderProjector orderProjector;
     @Autowired DsarService dsarService;
     @Autowired ConsentService consentService;
@@ -363,6 +366,53 @@ class AudienceDsarTest {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // Art.17: executeErase — notify_subscriptions cascade
+    //
+    // notify_subscriptions sits outside the consumer/membership graph (keyed by
+    // (event, raw email), no org column), so the cascade above never reached it and an
+    // erased buyer's address used to survive there — still queued for a release email.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Test
+    void execute_erase_deletes_the_orgs_notify_subscriptions_for_that_email() {
+        String email = "notifyerase@d.com";
+        UUID mid = seedMembership(orgA, email);
+        UUID subId = seedNotify(seedEvent(orgA).getId(), email);
+
+        dsarService.executeErase(orgA, mid, principalA);
+
+        assertThat(notifyRepo.findById(subId)).isEmpty();
+    }
+
+    @Test
+    void execute_erase_keeps_another_orgs_notify_subscription_for_the_same_email() {
+        String email = "sharednotify@d.com";
+        UUID midA = seedMembership(orgA, email);
+        UUID subA = seedNotify(seedEvent(orgA).getId(), email);
+        UUID subB = seedNotify(seedEvent(orgB).getId(), email);
+
+        dsarService.executeErase(orgA, midA, principalA);
+
+        // DSAR is org-scoped: orgB's subscription for the same address is orgB's data.
+        assertThat(notifyRepo.findById(subA)).isEmpty();
+        assertThat(notifyRepo.findById(subB)).isPresent();
+    }
+
+    @Test
+    void execute_erase_keeps_other_addresses_notify_subscriptions_in_the_same_org() {
+        String erased = "targetednotify@d.com";
+        UUID mid = seedMembership(orgA, erased);
+        UUID eventId = seedEvent(orgA).getId();
+        UUID subErased = seedNotify(eventId, erased);
+        UUID subBystander = seedNotify(eventId, "bystandernotify@d.com");
+
+        dsarService.executeErase(orgA, mid, principalA);
+
+        assertThat(notifyRepo.findById(subErased)).isEmpty();
+        assertThat(notifyRepo.findById(subBystander)).isPresent();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // Erasure job candidate selection
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -415,6 +465,35 @@ class AudienceDsarTest {
         return mid;
     }
 
+    /** A minimal public event owned by {@code orgId} — the org anchor for notify rows. */
+    private Event seedEvent(UUID orgId) {
+        User u = new User();
+        u.setOrgId(orgId);
+        String userEmail = "dsar-evt-" + UUID.randomUUID() + "@d.com";
+        u.setEmail(userEmail);
+        u.setEmailLower(userEmail);
+        u.setRole(UserRole.OWNER);
+        u = userRepo.save(u);
+
+        Event e = new Event();
+        e.setOrgId(orgId);
+        e.setName("DSAR Event");
+        e.setSlug("dsar-event-" + UUID.randomUUID().toString().substring(0, 8));
+        e.setVisibility(EventVisibility.PUBLIC);
+        e.setStatus(EventStatus.LIVE);
+        e.setPublishedAt(Instant.now().minus(1, ChronoUnit.HOURS));
+        e.setCreatedBy(u.getId());
+        e.setCurrency("EUR");
+        return eventRepo.save(e);
+    }
+
+    private UUID seedNotify(UUID eventId, String email) {
+        NotifySubscription s = new NotifySubscription();
+        s.setEventId(eventId);
+        s.setEmail(email);
+        return notifyRepo.save(s).getId();
+    }
+
     private Organization org(String name) {
         Organization o = new Organization();
         o.setName(name);
@@ -434,6 +513,7 @@ class AudienceDsarTest {
             s.execute("delete from consumers");
             s.execute("delete from tickets");
             s.execute("delete from orders");
+            s.execute("delete from notify_subscriptions");
             s.execute("delete from events");
             s.execute("delete from users");
             s.execute("delete from organizations");

@@ -5,6 +5,7 @@ import com.imin.iminapi.audience.repository.ConsentRecordRepository;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.repository.SuppressionRepository;
+import com.imin.iminapi.repository.NotifySubscriptionRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.service.audit.AuditActions;
@@ -43,6 +44,7 @@ public class DsarService {
     private final ConsentService consentService;
     private final AuditLogger auditLogger;
     private final com.imin.iminapi.marketing.repository.CampaignRecipientRepository campaignRecipientRepo;
+    private final NotifySubscriptionRepository notifySubscriptionRepo;
 
     public DsarService(MembershipRepository membershipRepo,
                        ConsumerRepository consumerRepo,
@@ -50,7 +52,8 @@ public class DsarService {
                        SuppressionRepository suppressionRepo,
                        ConsentService consentService,
                        AuditLogger auditLogger,
-                       com.imin.iminapi.marketing.repository.CampaignRecipientRepository campaignRecipientRepo) {
+                       com.imin.iminapi.marketing.repository.CampaignRecipientRepository campaignRecipientRepo,
+                       NotifySubscriptionRepository notifySubscriptionRepo) {
         this.membershipRepo = membershipRepo;
         this.consumerRepo = consumerRepo;
         this.consentRepo = consentRepo;
@@ -58,6 +61,7 @@ public class DsarService {
         this.consentService = consentService;
         this.auditLogger = auditLogger;
         this.campaignRecipientRepo = campaignRecipientRepo;
+        this.notifySubscriptionRepo = notifySubscriptionRepo;
     }
 
     /** Art.15 access — returns the membership (caller maps to DTO). Audited. */
@@ -120,9 +124,10 @@ public class DsarService {
      * Execute erasure (called by job after 30d). Destructive cascade:
      * 1. Delete consent_records (cascades via FK ON DELETE CASCADE on membership_id).
      * 2. Delete marketing suppression entries for this membership.
-     * 3. Delete the membership row itself.
-     * 4. Delete Consumer if no other memberships reference it.
-     * 5. Write tombstone to audit_logs.
+     * 3. Delete this org's notify_subscriptions rows for the erased address.
+     * 4. Delete the membership row itself.
+     * 5. Delete Consumer if no other memberships reference it.
+     * 6. Write tombstone to audit_logs.
      */
     @Transactional
     public void executeErase(UUID orgId, UUID membershipId, AuthPrincipal principal) {
@@ -138,16 +143,27 @@ public class DsarService {
         // lets the membership delete proceed instead of blocking AudienceErasureJob forever.
         campaignRecipientRepo.redactPiiByMembershipId(membershipId);
 
-        // 3. Delete membership (consent_records cascade via FK ON DELETE CASCADE)
+        // 3. Notify-me subscriptions. These live outside the consumer/membership graph —
+        // keyed by (event, raw email), no org column — so nothing above reaches them and an
+        // "erased" buyer's address used to survive here, still queued for a release email.
+        // Scope by the parent event's org: DSAR is org-scoped, so another org's subscription
+        // for the same address is that org's data and is left alone. Read the address BEFORE
+        // step 5 possibly deletes the consumer row it lives on.
+        consumerRepo.findByConsumerId(consumerId)
+                .map(c -> c.getNormalizedEmail())
+                .filter(email -> email != null && !email.isBlank())
+                .ifPresent(email -> notifySubscriptionRepo.deleteByOrgIdAndEmail(orgId, email));
+
+        // 4. Delete membership (consent_records cascade via FK ON DELETE CASCADE)
         membershipRepo.deleteByIdAndOrgId(membershipId, orgId);
 
-        // 4. Delete Consumer if no remaining memberships reference it
+        // 5. Delete Consumer if no remaining memberships reference it
         long remaining = consumerRepo.countMembershipsByConsumerId(consumerId);
         if (remaining == 0) {
             consumerRepo.deleteByConsumerId(consumerId);
         }
 
-        // 5. Tombstone in audit_logs (immutable, REQUIRES_NEW inside AuditLogger)
+        // 6. Tombstone in audit_logs (immutable, REQUIRES_NEW inside AuditLogger)
         auditLogger.record(principal, AuditActions.DSAR_ERASE_EXECUTED, "membership", membershipId,
                 "DSAR erase executed — org=" + orgId);
     }

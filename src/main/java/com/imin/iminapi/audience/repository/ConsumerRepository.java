@@ -20,6 +20,10 @@ public interface ConsumerRepository extends Repository<Consumer, UUID> {
 
     Optional<Consumer> findByNormalizedEmail(String normalizedEmail);
 
+    /** Resolve one consumer by id — used by DSAR erase to recover the normalized email. */
+    @Query("select c from Consumer c where c.consumerId = :consumerId")
+    Optional<Consumer> findByConsumerId(@Param("consumerId") UUID consumerId);
+
     Consumer save(Consumer consumer);
 
     /** Batch fetch by consumerIds — used by SendGateService for email resolution. */
