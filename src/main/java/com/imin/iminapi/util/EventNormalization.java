@@ -22,10 +22,11 @@ import java.util.regex.Pattern;
  *   <li><b>country</b> — trimmed and upper-cased, or {@code null}. Never the empty string:
  *       {@code ''} and {@code NULL} looked like two different countries to a {@code GROUP BY},
  *       which is exactly what split Metz in three.</li>
- *   <li><b>genre</b> — collapsed, trimmed and lower-cased. Genre is an internal facet token
- *       matched exactly by {@code ?genre=}, so one canonical casing is what makes the filter
- *       work at all. Both frontends must title-case it for display (they render it verbatim
- *       today).</li>
+ *   <li><b>genre</b> — whitespace runs collapsed to one space, then trimmed. Case is
+ *       <b>preserved</b>, exactly like the city: both frontends render the stored string
+ *       verbatim, and {@code imin-webapp}'s wizard picks it out of a closed Title-Case
+ *       {@code GENRES} list, so a case-folded value would render as an empty "Music style"
+ *       field on reopen. Merging the case variants is the job of {@link #genreKey(String)}.</li>
  * </ul>
  *
  * <p>The SQL in {@code V82__normalize_event_facets.sql} mirrors these rules exactly
@@ -75,12 +76,27 @@ public final class EventNormalization {
     }
 
     /**
-     * Canonical genre token: collapsed, trimmed, lower-cased. {@code null} in ⇒ {@code null} out
-     * so a caller can keep "field absent" distinct from "field cleared"; blank in ⇒ {@code ""},
-     * matching the {@code NOT NULL DEFAULT ''} column.
+     * Display spelling of a genre: internal whitespace collapsed, ends trimmed, case as typed.
+     * {@code null} in ⇒ {@code null} out so a caller can keep "field absent" distinct from
+     * "field cleared"; blank in ⇒ {@code ""}, matching the {@code NOT NULL DEFAULT ''} column.
+     *
+     * <p>Case is deliberately NOT folded. Both frontends print this string as-is
+     * ({@code imin-public}'s card/detail chips, {@code imin-webapp}'s event hero), and the
+     * webapp's create/edit wizard binds it to a closed Title-Case {@code GENRES} option list —
+     * a lower-cased value matches no option and the "Music style" field renders empty.
      */
     public static String genre(String raw) {
         if (raw == null) return null;
+        return collapse(raw);
+    }
+
+    /**
+     * Merge key for a genre — {@link #genre(String)} lower-cased. This is what the genre facet
+     * groups by and what {@code ?genre=} matches, so {@code Techno}, {@code techno} and
+     * {@code  TECHNO } are one chip whose result page is exactly what its label promises.
+     * Returns {@code ""} for null/blank (the "no genre" rows, which the facet drops).
+     */
+    public static String genreKey(String raw) {
         return collapse(raw).toLowerCase(Locale.ROOT);
     }
 

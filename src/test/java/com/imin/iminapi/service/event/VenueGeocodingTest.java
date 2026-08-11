@@ -41,9 +41,10 @@ class VenueGeocodingTest {
 
         new VenueGeocodingListener(events, geo).geocodeAndStore(e.getId());
 
-        assertThat(e.getVenueLatitude()).isEqualTo(52.5111d);
-        assertThat(e.getVenueLongitude()).isEqualTo(13.4432d);
-        verify(events).save(e);
+        // A targeted two-column UPDATE, never save()/merge — see the lost-update test in
+        // VenueGeocodingLostUpdateTest for what merge would cost.
+        verify(events).updateVenueCoordinates(e.getId(), 52.5111d, 13.4432d);
+        verify(events, never()).save(any(Event.class));
     }
 
     @Test
@@ -72,9 +73,8 @@ class VenueGeocodingTest {
 
         new VenueGeocodingListener(events, new NoOpGeocoder()).geocodeAndStore(e.getId());
 
-        assertThat(e.getVenueLatitude()).isNull();
-        assertThat(e.getVenueLongitude()).isNull();
-        verify(events).save(e);
+        verify(events).updateVenueCoordinates(e.getId(), null, null);
+        verify(events, never()).save(any(Event.class));
     }
 
     @Test
@@ -100,6 +100,33 @@ class VenueGeocodingTest {
         new VenueGeocodingListener(events, new NoOpGeocoder()).geocodeAndStore(gone);
 
         verify(events, never()).save(any(Event.class));
+        verify(events, never()).updateVenueCoordinates(any(), any(), any());
+    }
+
+    @Test
+    void a_backlogged_throttle_skips_the_lookup_rather_than_firing_early() {
+        // The reservation hands caller k the instant T+(k-1)*interval. The sleep used to be
+        // capped at interval*4, so from the 6th concurrent caller on everyone woke early and
+        // fired together — the exact burst OSM answers with an IP block. With a ceiling below
+        // one interval, the 2nd caller must now SKIP (Optional.empty, no HTTP) instead.
+        GeocodingProperties props = new GeocodingProperties();
+        props.setBaseUrl("http://127.0.0.1:1/never-reached");
+        props.setTimeoutSeconds(1);
+        props.setMinIntervalMillis(30_000);
+        props.setMaxThrottleWaitMillis(1);
+        NominatimGeocoder geocoder = new NominatimGeocoder(props);
+
+        // First call takes the free slot (and fails on the refused connection — irrelevant here,
+        // what matters is that it reserved now + 30s for whoever comes next).
+        geocoder.geocode(null, "Berlin", null, "DE");
+
+        long startedAt = System.nanoTime();
+        // Second call's slot is 30s out, over the 1ms ceiling: it gives up without calling out.
+        assertThat(geocoder.geocode(null, "Berlin", null, "DE")).isEmpty();
+        long elapsedMs = (System.nanoTime() - startedAt) / 1_000_000L;
+        assertThat(elapsedMs)
+                .as("the skip must neither sleep out the reserved slot nor issue a request")
+                .isLessThan(2_000L);
     }
 
     @Test

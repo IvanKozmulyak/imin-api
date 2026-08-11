@@ -51,12 +51,32 @@ class EventNormalizationTest {
     }
 
     @Test
-    void genre_is_a_lower_case_token_because_the_filter_matches_it_exactly() {
-        assertThat(EventNormalization.genre("Techno")).isEqualTo("techno");
-        assertThat(EventNormalization.genre("  House  &   Techno ")).isEqualTo("house & techno");
+    void genre_keeps_the_organizers_casing_because_both_frontends_print_it_verbatim() {
+        // Case-folding here is what broke the organizer wizard: imin-webapp binds the stored
+        // genre to a closed Title-Case GENRES list, so "house & techno" matches no option and
+        // the "Music style" field renders EMPTY when the event is reopened.
+        assertThat(EventNormalization.genre("Techno")).isEqualTo("Techno");
+        assertThat(EventNormalization.genre("  House  &   Techno ")).isEqualTo("House & Techno");
         // null means "field absent" and must survive as null; blank means "cleared" and the
         // column is NOT NULL DEFAULT ''.
         assertThat(EventNormalization.genre(null)).isNull();
         assertThat(EventNormalization.genre("  ")).isEmpty();
+    }
+
+    @Test
+    void genre_key_is_the_lower_cased_merge_key_the_facet_and_filter_share() {
+        assertThat(EventNormalization.genreKey("Techno")).isEqualTo("techno");
+        assertThat(EventNormalization.genreKey("TECHNO")).isEqualTo("techno");
+        assertThat(EventNormalization.genreKey("  House  &   Techno ")).isEqualTo("house & techno");
+        // Same null/blank contract as cityKey: no key, so the facet drops the row.
+        assertThat(EventNormalization.genreKey(null)).isEmpty();
+        assertThat(EventNormalization.genreKey("   ")).isEmpty();
+    }
+
+    @Test
+    void genre_and_its_key_are_derived_from_the_same_collapse_so_they_cannot_disagree() {
+        String raw = "  Drum   &  Bass ";
+        assertThat(EventNormalization.genreKey(raw))
+                .isEqualTo(EventNormalization.genre(raw).toLowerCase(java.util.Locale.ROOT));
     }
 }

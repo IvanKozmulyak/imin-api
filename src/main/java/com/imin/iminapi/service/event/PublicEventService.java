@@ -138,15 +138,18 @@ public class PublicEventService {
             orgId = maybe.get().getId();
         }
 
-        // 3. Query. The city filter runs on the normalised key (V82), so "?city=METZ",
-        //    "?city=metz" and "?city=%20Metz" are the same query — and the same query the
-        //    city facet counted. Exact match, not the old substring LIKE: a chip that says
-        //    "Metz (3)" must not open a page that also lists Metzingen.
+        // 3. Query. The city and genre filters both run on their normalised keys (V82), so
+        //    "?city=METZ", "?city=metz" and "?city=%20Metz" are the same query — as are
+        //    "?genre=Techno" and "?genre=techno" — and they are the same queries the facets
+        //    counted. Exact match, not the old substring LIKE: a chip that says "Metz (3)"
+        //    must not open a page that also lists Metzingen.
         String rawCity = nullIfBlank(query.city());
         String cityKey = rawCity == null ? null : nullIfBlank(EventNormalization.cityKey(rawCity));
+        String rawGenre = nullIfBlank(query.genre());
+        String genreKey = rawGenre == null ? null : nullIfBlank(EventNormalization.genreKey(rawGenre));
         Page<Event> result = eventRepository.findPublicListing(
                 query.from(), query.to(),
-                nullIfBlank(query.genre()), nullIfBlank(query.type()),
+                genreKey, nullIfBlank(query.type()),
                 cityKey, country, nullIfBlank(query.q()),
                 orgId, query.onSaleOnly(), query.includeOngoing(), query.freeOnly(), clock.instant(),
                 PageRequest.of(page - 1, pageSize));
@@ -246,23 +249,55 @@ public class PublicEventService {
             total += n;
             bySpelling.merge((String) r[1], n, Long::sum);
         }
-        String label = bySpelling.entrySet().stream()
+        return new com.imin.iminapi.dto.publicapi.PublicCityItem(label(bySpelling), country, total);
+    }
+
+    /**
+     * The label for a merged facet key: the spelling the most events actually use. Ties break
+     * toward the least-shouted spelling ("Metz" over "METZ", "Techno" over "TECHNO") and then
+     * alphabetically, so the label is deterministic instead of "whichever row the planner
+     * returned first". Shared by the city and genre facets — one rule, one implementation.
+     */
+    private static String label(Map<String, Long> bySpelling) {
+        return bySpelling.entrySet().stream()
                 .max(java.util.Comparator
                         .comparingLong(Map.Entry<String, Long>::getValue)
                         .thenComparing(e -> -capitals(e.getKey()))
                         .thenComparing(java.util.Map.Entry::getKey, java.util.Comparator.reverseOrder()))
                 .map(Map.Entry::getKey)
                 .orElse("");
-        return new com.imin.iminapi.dto.publicapi.PublicCityItem(label, country, total);
     }
 
     private static long capitals(String s) {
         return s.chars().filter(Character::isUpperCase).count();
     }
 
+    /**
+     * Genre facet — one label per {@code genre_key} (V82), which is the same column
+     * {@code ?genre=} filters on, so tapping a chip returns exactly the nights it counted.
+     *
+     * <p>{@code Techno} and {@code techno} used to be two identical-looking chips over two
+     * disjoint slices of one genre. They are now one, labelled with the <b>most common display
+     * spelling</b> (ties: fewest capitals, then alphabetical — the city rule, see
+     * {@link #label(Map)}). The label is a real stored spelling, never a case-folded or
+     * title-cased invention: both frontends print it verbatim, and {@code imin-webapp}'s wizard
+     * matches it against a closed Title-Case option list.
+     *
+     * <p>Sorted alphabetically ignoring case, so "Techno" and "afro house" interleave the way a
+     * reader expects rather than splitting into upper- and lower-case blocks.
+     */
     @Transactional(readOnly = true)
     public List<String> listGenres() {
-        return eventRepository.findDistinctPublicGenres();
+        // row = [genreKey, displaySpelling, count]
+        Map<String, Map<String, Long>> byKey = new LinkedHashMap<>();
+        for (Object[] row : eventRepository.findPublicGenreCounts()) {
+            byKey.computeIfAbsent((String) row[0], k -> new LinkedHashMap<>())
+                    .merge((String) row[1], ((Number) row[2]).longValue(), Long::sum);
+        }
+        return byKey.values().stream()
+                .map(PublicEventService::label)
+                .sorted(String.CASE_INSENSITIVE_ORDER.thenComparing(java.util.Comparator.naturalOrder()))
+                .toList();
     }
 
     /**

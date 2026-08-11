@@ -1,5 +1,5 @@
 -- V82__normalize_event_facets.sql
--- Canonical venue city / country / genre, plus the derived city merge key.
+-- Canonical venue city / country / genre, plus the derived city and genre merge keys.
 --
 -- WHY
 -- Nothing normalised these three columns on the way in, so production accumulated several
@@ -9,16 +9,22 @@
 --   * one genre as both `techno` and `Techno` — and `?genre=` is an exact, case-sensitive
 --     match, so those are two different queries and two identical-looking chips.
 -- `EventService` now normalises on write (EventNormalization); this migration applies the
--- same rules to the rows written before it and adds the derived key the read side groups on.
+-- same rules to the rows written before it and adds the derived keys the read side groups on.
 --
 -- THE RULES (identical to com.imin.iminapi.util.EventNormalization)
---   city    -> whitespace runs collapsed to one space, then trimmed. Case PRESERVED — title-
---              casing destroys 's-Hertogenbosch and L'Aquila, and upper/lower-casing is worse.
---   country -> trimmed + upper-cased, or NULL. NEVER ''. The `''` vs NULL split is precisely
---              what made one Metz look like two.
---   genre   -> collapsed, trimmed, lower-cased. It is an internal facet token, not a label;
---              both frontends must title-case it for display.
---   key     -> lower(city), stored in the new venue_city_key column.
+--   city      -> whitespace runs collapsed to one space, then trimmed. Case PRESERVED — title-
+--                casing destroys 's-Hertogenbosch and L'Aquila, and upper/lower-casing is worse.
+--   genre     -> collapsed and trimmed. Case PRESERVED for the SAME reason the city's is: both
+--                frontends render the stored string verbatim, and imin-webapp's wizard binds it
+--                to a closed Title-Case GENRES list — a folded value matches no option there and
+--                the "Music style" field renders empty when an organizer reopens the event.
+--   country   -> trimmed + upper-cased, or NULL. NEVER ''. The `''` vs NULL split is precisely
+--                what made one Metz look like two.
+--   city_key  -> lower(city),  stored in the new venue_city_key column.
+--   genre_key -> lower(genre), stored in the new genre_key column.
+-- The keys are what the facets GROUP BY and what `?city=` / `?genre=` match with `=`; the
+-- display columns are what the buyer reads. Every later write recomputes both keys in
+-- Event.@PrePersist/@PreUpdate, so they cannot drift from their display strings.
 --
 -- PORTABILITY
 -- `regexp_replace(x, '\s+', ' ', 'g')` behaves identically on PostgreSQL 17 (prod) and
@@ -32,10 +38,11 @@
 -- for a change no organizer made.
 
 ALTER TABLE events ADD COLUMN venue_city_key VARCHAR(255) NOT NULL DEFAULT '';
+ALTER TABLE events ADD COLUMN genre_key VARCHAR(255) NOT NULL DEFAULT '';
 
--- 1. Genre -> canonical lower-case token.
+-- 1. Genre -> collapsed + trimmed display string, case untouched.
 UPDATE events
-   SET genre = lower(trim(regexp_replace(genre, '\s+', ' ', 'g')))
+   SET genre = trim(regexp_replace(genre, '\s+', ' ', 'g'))
  WHERE genre IS NOT NULL;
 
 -- 2. City -> collapsed + trimmed, case untouched.
@@ -54,10 +61,12 @@ UPDATE events
                             ELSE NULL
                        END;
 
--- 4. Derived merge key. venue_city is already collapsed + trimmed by step 2, so this is just
---    the lower-casing. Every later write recomputes it in Event.@PrePersist/@PreUpdate.
+-- 4. Derived merge keys. venue_city and genre are already collapsed + trimmed by steps 1-2,
+--    so this is just the lower-casing.
 UPDATE events
-   SET venue_city_key = lower(coalesce(venue_city, ''));
+   SET venue_city_key = lower(coalesce(venue_city, '')),
+       genre_key      = lower(coalesce(genre, ''));
 
--- The city facet GROUPs BY this column and the public listing filters on it with `=`.
+-- The facets GROUP BY these columns and the public listing filters on them with `=`.
 CREATE INDEX idx_events_venue_city_key ON events (venue_city_key);
+CREATE INDEX idx_events_genre_key ON events (genre_key);

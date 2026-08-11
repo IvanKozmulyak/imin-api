@@ -33,6 +33,21 @@ public class GeocodingProperties {
     /** {@code IMIN_GEOCODING_MIN_INTERVAL_MILLIS} — client-side throttle, Nominatim's 1 req/s policy. */
     private long minIntervalMillis = 1100;
 
+    /**
+     * {@code IMIN_GEOCODING_MAX_THROTTLE_WAIT_MILLIS} — safety valve on the throttle.
+     *
+     * <p>When the queue of reserved slots pushes a caller's turn further out than this, that
+     * lookup is SKIPPED rather than fired early: no coordinates is a supported state everywhere
+     * downstream, an OSM IP block is not. Generous by design — the work runs on a
+     * single-threaded executor, so in normal operation a caller waits at most one interval and
+     * this never trips.
+     *
+     * <p>It is a ceiling on the BACKLOG, with no implicit floor: setting it below
+     * {@link #minIntervalMillis} means every queued lookup is skipped, which is a legitimate
+     * (if drastic) way to say "only geocode when the provider is immediately free".
+     */
+    private long maxThrottleWaitMillis = 60_000;
+
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
 
@@ -47,4 +62,9 @@ public class GeocodingProperties {
 
     public long getMinIntervalMillis() { return minIntervalMillis; }
     public void setMinIntervalMillis(long minIntervalMillis) { this.minIntervalMillis = minIntervalMillis; }
+
+    public long getMaxThrottleWaitMillis() { return maxThrottleWaitMillis; }
+    public void setMaxThrottleWaitMillis(long maxThrottleWaitMillis) {
+        this.maxThrottleWaitMillis = maxThrottleWaitMillis;
+    }
 }

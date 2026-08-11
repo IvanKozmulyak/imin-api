@@ -57,6 +57,35 @@ class RefundReferenceGeneratorTest {
     }
 
     @Test
+    void normalize_matches_its_own_output_in_every_year_including_past_2030() {
+        // The year suffix is plain decimal, but SHAPE was built from an alphabet that excludes
+        // 0 and 1 — so from 2030-01-01 the pattern stopped matching the codes this class had
+        // just minted. normalize() returned null, the case/prefix-forgiving reference lookup
+        // fell through to the buyer-email LIKE, and an operator searching a code the customer
+        // had just read out found nothing. Walk a century; every year must round-trip.
+        for (int year = 2026; year <= 2126; year++) {
+            Clock clock = Clock.fixed(Instant.parse(year + "-03-04T10:00:00Z"), ZoneOffset.UTC);
+            String ref = new RefundReferenceGenerator(clock).next();
+            assertThat(RefundReferenceGenerator.normalize(ref))
+                    .as("a %d code must survive its own normalize()", year)
+                    .isEqualTo(ref);
+            assertThat(RefundReferenceGenerator.normalize(ref.toLowerCase(java.util.Locale.ROOT)))
+                    .as("...including as the customer typed it", year)
+                    .isEqualTo(ref);
+        }
+    }
+
+    @Test
+    void the_two_families_of_code_stay_distinguishable() {
+        // Generated codes end in a 2-digit year, V81-backfilled ones in 4 alphabet symbols.
+        // Different lengths, so no generated code can ever collide with a legacy one.
+        assertThat(RefundReferenceGenerator.normalize("REQ-8K2M-30")).isEqualTo("REQ-8K2M-30");
+        assertThat(RefundReferenceGenerator.normalize("REQ-8K2M-4B7C")).isEqualTo("REQ-8K2M-4B7C");
+        // Three characters is neither shape.
+        assertThat(RefundReferenceGenerator.normalize("REQ-8K2M-4B7")).isNull();
+    }
+
+    @Test
     void normalize_rejects_anything_that_is_not_a_reference() {
         assertThat(RefundReferenceGenerator.normalize(null)).isNull();
         assertThat(RefundReferenceGenerator.normalize("   ")).isNull();

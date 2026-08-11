@@ -38,6 +38,22 @@ public class Event {
     @Column(nullable = false)
     private String genre = "";
 
+    /**
+     * Derived merge key for the genre (V82) — {@code lower(collapse(trim(genre)))}, computed
+     * by {@link com.imin.iminapi.util.EventNormalization#genreKey(String)}.
+     *
+     * <p>DERIVED, NEVER AUTHORED — same contract as {@link #venueCityKey}. Recomputed from
+     * {@code genre} in {@link #onPersist()} and {@link #onUpdate()}, so it cannot drift
+     * whichever path wrote the row.
+     *
+     * <p>The buyer's genre facet groups on it and {@code ?genre=} matches it, so {@code Techno}
+     * and {@code techno} are one chip whose count equals its own result page. The display string
+     * stays as the organizer typed it: both frontends print {@code genre} verbatim, and the
+     * organizer wizard picks it out of a closed Title-Case list that a folded value cannot match.
+     */
+    @Column(name = "genre_key", nullable = false)
+    private String genreKey = "";
+
     @Column(nullable = false)
     private String type = "";
 
@@ -148,6 +164,7 @@ public class Event {
     @PrePersist
     void onPersist() {
         venueCityKey = com.imin.iminapi.util.EventNormalization.cityKey(venueCity);
+        genreKey = com.imin.iminapi.util.EventNormalization.genreKey(genre);
         createdAt = createdAt == null ? Times.nowMicros() : createdAt.truncatedTo(ChronoUnit.MICROS);
         updatedAt = updatedAt == null ? Times.nowMicros() : updatedAt.truncatedTo(ChronoUnit.MICROS);
         if (publishedAt != null) publishedAt = publishedAt.truncatedTo(ChronoUnit.MICROS);
@@ -157,6 +174,7 @@ public class Event {
     @PreUpdate
     void onUpdate() {
         venueCityKey = com.imin.iminapi.util.EventNormalization.cityKey(venueCity);
+        genreKey = com.imin.iminapi.util.EventNormalization.genreKey(genre);
         updatedAt = Times.nowMicros();
         if (publishedAt != null) publishedAt = publishedAt.truncatedTo(ChronoUnit.MICROS);
         if (deletedAt != null) deletedAt = deletedAt.truncatedTo(ChronoUnit.MICROS);

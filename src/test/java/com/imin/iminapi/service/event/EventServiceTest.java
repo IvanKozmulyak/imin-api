@@ -125,9 +125,9 @@ class EventServiceTest {
                         null, null, null, null, null, null, null, null));
 
         assertThat(dto.name()).isEqualTo("New name");
-        // Genre is canonicalised to lower case on write (V82) — it is a facet token that
-        // `?genre=` matches exactly, not a display label.
-        assertThat(dto.genre()).isEqualTo("techno");
+        // Genre keeps the organizer's casing (V82) — it is a display label both frontends
+        // print verbatim. Matching is done on the derived genre_key, not on this string.
+        assertThat(dto.genre()).isEqualTo("Techno");
         assertThat(dto.tiers()).isNotNull();
         assertThat(dto.promoCodes()).isNotNull();
     }
@@ -611,7 +611,8 @@ class EventServiceTest {
         // destroys real ones ('s-Hertogenbosch, L'Aquila).
         assertThat(saved.getVenueCity()).isEqualTo("Le Mans");
         assertThat(saved.getVenueCountry()).isEqualTo("FR");
-        assertThat(saved.getGenre()).isEqualTo("techno classics");
+        // Genre gets the SAME treatment as the city: whitespace only, casing untouched.
+        assertThat(saved.getGenre()).isEqualTo("Techno Classics");
     }
 
     @Test
@@ -630,7 +631,7 @@ class EventServiceTest {
 
         assertThat(e.getVenueCity()).isEqualTo("METZ");
         assertThat(e.getVenueCountry()).isEqualTo("FR");
-        assertThat(e.getGenre()).isEqualTo("techno");
+        assertThat(e.getGenre()).isEqualTo("Techno");
     }
 
     @Test

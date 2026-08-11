@@ -344,9 +344,11 @@ public class EventService {
         if (b.name() != null) { e.setName(b.name()); changed = true; }
         if (b.slug() != null) { e.setSlug(b.slug().toLowerCase(Locale.ROOT)); changed = true; }
         if (b.visibility() != null) { e.setVisibility(EventVisibility.fromWire(b.visibility())); changed = true; }
-        // Genre is lower-cased (V82): it is an internal facet token that ?genre= matches
-        // EXACTLY, so "Techno" and "techno" were two filters over the same nights. Both
-        // frontends must title-case it back for display.
+        // Genre keeps its typed case (V82) — only whitespace is cleaned, exactly like the city
+        // below. The case-insensitive merge that makes "Techno" and "techno" one facet chip and
+        // one ?genre= query happens on the derived genre_key, never on the display string: both
+        // frontends print this verbatim and the organizer wizard matches it against a closed
+        // Title-Case option list.
         if (b.genre() != null) { e.setGenre(EventNormalization.genre(b.genre())); changed = true; }
         if (b.type() != null) { e.setType(b.type()); changed = true; }
         if (b.startsAt() != null) { e.setStartsAt(b.startsAt()); changed = true; }

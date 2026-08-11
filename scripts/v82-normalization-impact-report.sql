@@ -10,21 +10,23 @@
 --
 -- The normalisation expressions below are copied verbatim from the migration, which in turn
 -- mirrors com.imin.iminapi.util.EventNormalization:
---   genre   -> lower(trim(regexp_replace(genre,      '\s+', ' ', 'g')))
---   city    ->       trim(regexp_replace(venue_city, '\s+', ' ', 'g'))     -- case preserved
---   country -> upper(trim(venue_country)) when it is 2 characters, else NULL   -- never ''
---   key     -> lower(city)
+--   genre     ->       trim(regexp_replace(genre,      '\s+', ' ', 'g'))   -- case preserved
+--   city      ->       trim(regexp_replace(venue_city, '\s+', ' ', 'g'))   -- case preserved
+--   country   -> upper(trim(venue_country)) when it is 2 characters, else NULL   -- never ''
+--   city_key  -> lower(city)
+--   genre_key -> lower(genre)
 -- If you change one of the three, change all three.
 --
--- HOW TO READ IT — the two sections that can say "stop":
+-- HOW TO READ IT — the sections that can say "stop":
 --   §5  city keys that merge. Check every group: two spellings of one town is the point;
 --       two genuinely different towns landing on one key is a data problem, not a spelling one.
 --   §6  city keys carrying more than one country. These are NOT merged by the facet (Paris/FR
 --       and Paris/US stay two chips), but if this section is non-empty the frontend must send
 --       `&country=` on those chips or their counts will not match their result pages.
---   §3  genres that merge. Confirm each group really is one genre spelled two ways.
+--   §3  genre keys that merge. Confirm each group really is one genre spelled two ways.
 --   §7  country values being dropped to NULL. Anything that is not obvious junk needs a look
 --       before the migration runs.
+--   §10 the genre facet as the buyer will see it, with the label each merged key gets.
 
 \pset null '(null)'
 \echo ''
@@ -36,7 +38,7 @@
 \echo '--- §1  Scale: how many rows each rule touches -------------------'
 WITH n AS (
   SELECT genre                                                       AS genre_before,
-         lower(trim(regexp_replace(genre, '\s+', ' ', 'g')))         AS genre_after,
+         trim(regexp_replace(genre, '\s+', ' ', 'g'))         AS genre_after,
          venue_city                                                  AS city_before,
          trim(regexp_replace(venue_city, '\s+', ' ', 'g'))           AS city_after,
          venue_country                                               AS country_before,
@@ -59,7 +61,7 @@ SELECT count(*)                                                             AS e
 \echo '--- §2  Genre: every distinct value that changes -----------------'
 WITH n AS (
   SELECT genre AS genre_before,
-         lower(trim(regexp_replace(genre, '\s+', ' ', 'g'))) AS genre_after
+         trim(regexp_replace(genre, '\s+', ' ', 'g')) AS genre_after
     FROM events
 )
 SELECT genre_before, genre_after, count(*) AS rows
@@ -69,21 +71,21 @@ SELECT genre_before, genre_after, count(*) AS rows
  ORDER BY 2, 1;
 
 \echo ''
-\echo '--- §3  Genre merges: values that collapse together — REVIEW -----'
+\echo '--- §3  Genre keys that MERGE: spellings folding into one chip — REVIEW'
 \echo '        (empty = no genre merges; every row here must be one genre spelled two ways)'
 WITH n AS (
-  SELECT genre AS genre_before,
-         lower(trim(regexp_replace(genre, '\s+', ' ', 'g'))) AS genre_after
+  SELECT trim(regexp_replace(genre, '\s+', ' ', 'g'))        AS genre_after,
+         lower(trim(regexp_replace(genre, '\s+', ' ', 'g'))) AS genre_key
     FROM events
 )
-SELECT genre_after,
-       count(DISTINCT genre_before)                                  AS distinct_spellings,
-       string_agg(DISTINCT genre_before, '  |  ' ORDER BY genre_before) AS merged_from,
-       count(*)                                                      AS rows
+SELECT genre_key,
+       count(DISTINCT genre_after)                                  AS distinct_spellings,
+       string_agg(DISTINCT genre_after, '  |  ' ORDER BY genre_after) AS merged_from,
+       count(*)                                                     AS rows
   FROM n
- WHERE genre_after <> ''
+ WHERE genre_key <> ''
  GROUP BY 1
-HAVING count(DISTINCT genre_before) > 1
+HAVING count(DISTINCT genre_after) > 1
  ORDER BY 1;
 
 \echo ''
@@ -221,6 +223,34 @@ SELECT r.city_after                                       AS chip_label,
  WHERE r.rn = 1
  GROUP BY r.city_key, r.bucket, r.city_after
  ORDER BY 1, 2;
+
+\echo ''
+\echo '--- §10 The genre facet as the buyer will see it after V82 -------'
+\echo '        (mirrors PublicEventService.listGenres: label = most common spelling, ties to the'
+\echo '         least-shouted then alphabetical. One chip per key — never a folded invention.)'
+WITH eligible AS (
+  SELECT trim(regexp_replace(genre, '\s+', ' ', 'g'))        AS genre_after,
+         lower(trim(regexp_replace(genre, '\s+', ' ', 'g'))) AS genre_key
+    FROM events
+   WHERE deleted_at IS NULL AND visibility = 'PUBLIC' AND published_at IS NOT NULL
+     AND status NOT IN ('DRAFT', 'CANCELLED')
+     AND trim(regexp_replace(genre, '\s+', ' ', 'g')) <> ''
+), ranked AS (
+  SELECT genre_key, genre_after, count(*) AS rows,
+         row_number() OVER (PARTITION BY genre_key
+                            ORDER BY count(*) DESC,
+                                     length(regexp_replace(genre_after, '[^A-Z]', '', 'g')) ASC,
+                                     genre_after ASC) AS rn
+    FROM eligible GROUP BY 1, 2
+)
+SELECT r.genre_after                                      AS chip_label,
+       (SELECT count(*) FROM eligible e
+         WHERE e.genre_key = r.genre_key)                 AS event_count,
+       (SELECT count(DISTINCT e.genre_after) FROM eligible e
+         WHERE e.genre_key = r.genre_key)                 AS spellings_merged
+  FROM ranked r
+ WHERE r.rn = 1
+ ORDER BY lower(r.genre_after), r.genre_after;
 
 \echo ''
 \echo '=== end of report — nothing was written ==========================='

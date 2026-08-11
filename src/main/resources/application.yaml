@@ -273,7 +273,15 @@ imin:
     # Nominatim BLOCKS requests without a real identifying User-Agent — keep contact info in it.
     user-agent: ${IMIN_GEOCODING_USER_AGENT:imin-api/1.0 (+https://imin.wtf; ops@imin.wtf)}
     timeout-seconds: ${IMIN_GEOCODING_TIMEOUT_SECONDS:5}
+    # Client-side rate guard. Each caller reserves the next free slot and waits it out IN FULL;
+    # a caller whose turn is further out than max-throttle-wait-millis skips its lookup instead
+    # of firing early (no coordinates is a supported state, an OSM IP block is not). The guard
+    # is PER-JVM: the work runs on a single-threaded executor so one replica cannot exceed
+    # 1/min-interval-millis, but N replicas geocoding at once emit up to N times that between
+    # them. Fine while this is off by default and the workload is venue edits per day; a large
+    # fleet would need the reservation moved to shared state (advisory lock / ShedLock).
     min-interval-millis: ${IMIN_GEOCODING_MIN_INTERVAL_MILLIS:1100}
+    max-throttle-wait-millis: ${IMIN_GEOCODING_MAX_THROTTLE_WAIT_MILLIS:60000}
   apple-wallet:
     # Apple Pass Type ID, e.g. pass.com.imin.ticket. Required for /apple-wallet.pkpass
     # to serve a pass; when blank the endpoint returns 503 and the email template

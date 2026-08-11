@@ -24,7 +24,11 @@ import java.util.concurrent.atomic.AtomicLong;
  * anonymous clients at roughly one request per second and requires an identifying
  * User-Agent, so this client serialises calls behind {@code minIntervalMillis} and always
  * sends {@code GeocodingProperties.userAgent}. Venue writes are rare enough that the
- * throttle is invisible (the caller is already off the request thread).
+ * throttle is invisible (the caller is already off the request thread, on the
+ * single-threaded {@code venueGeocodingExecutor}).
+ *
+ * <p>The rate guard is per-JVM and holds for any burst size within one — see
+ * {@link #throttle()} for what it does and does not promise across replicas.
  *
  * <p>Failure is never propagated: a timeout, a 4xx/5xx, a blocked User-Agent, or an
  * address the provider doesn't know all return {@link Optional#empty()}, which leaves the
@@ -55,7 +59,8 @@ public class NominatimGeocoder implements Geocoder {
         if (query == null) return Optional.empty();
 
         try {
-            throttle();
+            // Skipping beats firing early: no coordinates is a supported state, an IP block is not.
+            if (!throttle()) return Optional.empty();
             String url = props.getBaseUrl()
                     + "?format=jsonv2&limit=1&addressdetails=0&q="
                     + URLEncoder.encode(query, StandardCharsets.UTF_8);
@@ -107,13 +112,45 @@ public class NominatimGeocoder implements Geocoder {
 
     private static boolean isBlank(String s) { return s == null || s.isBlank(); }
 
-    /** Sleeps just long enough to keep calls at most one per {@code minIntervalMillis}. */
-    private void throttle() throws InterruptedException {
+    /**
+     * Waits out this caller's reserved slot so calls leave at most one per
+     * {@code minIntervalMillis}. Returns false when the slot is further out than
+     * {@code maxThrottleWaitMillis}, in which case the caller must NOT call the provider.
+     *
+     * <p>The reservation ({@code getAndUpdate}) hands caller <i>k</i> of a burst the instant
+     * {@code T + (k-1)·interval} and is correct for any k. What used to be wrong was the sleep:
+     * it was capped at {@code interval * 4}, so from the 6th concurrent caller on, everyone woke
+     * early and fired at once — the exact burst the throttle exists to prevent, answered by
+     * OpenStreetMap with an IP block. The wait now honours the slot in full.
+     *
+     * <p>Giving up (rather than firing early) is the only safe overflow behaviour: a skipped
+     * geocode leaves the coordinates NULL, which is a supported state everywhere downstream,
+     * whereas an early call risks the block that takes the whole feature down. The reserved
+     * slot is deliberately NOT released — releasing it would let a later caller move up.
+     *
+     * <p><b>Per-JVM, not per-cluster.</b> {@code nextCallAtMillis} is process state, so N
+     * replicas geocoding at once emit up to N req/s between them. Two things keep that
+     * theoretical rather than real today: geocoding is off by default, and the work is bound
+     * to a single-threaded executor per replica (see {@code AsyncConfig.venueGeocodingExecutor}),
+     * so a replica's ceiling is 1/interval and the fleet's is N/interval on a workload measured
+     * in venue edits per day. If this is ever turned on with a large fleet, or pointed at a
+     * self-hosted Nominatim with a tighter budget, the reservation has to move to shared state
+     * (a Postgres advisory lock or the existing ShedLock table) — a comment cannot enforce it.
+     */
+    private boolean throttle() throws InterruptedException {
         long interval = Math.max(0, props.getMinIntervalMillis());
-        if (interval == 0) return;
+        if (interval == 0) return true;
         long now = System.currentTimeMillis();
         long slot = nextCallAtMillis.getAndUpdate(prev -> Math.max(prev, now) + interval);
         long waitMs = Math.max(slot, now) - now;
-        if (waitMs > 0) Thread.sleep(Math.min(waitMs, interval * 4));
+        if (waitMs <= 0) return true;
+        long maxWait = props.getMaxThrottleWaitMillis();
+        if (waitMs > maxWait) {
+            log.debug("[geocode] throttle backlog {}ms exceeds the {}ms ceiling — skipping this lookup",
+                    waitMs, maxWait);
+            return false;
+        }
+        Thread.sleep(waitMs);
+        return true;
     }
 }

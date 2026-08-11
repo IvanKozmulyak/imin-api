@@ -8,19 +8,18 @@ NEITHER RUN TOUCHED PRODUCTION. No backfill was executed anywhere.
 For the numbers that matter, run the .sql against prod with a read-only
 role and read §5, §6, §3 and §7 before scheduling the migration.
 
+Re-rendered after the genre rework: genre now keeps the organizer's
+display casing (like the city) and merges on the derived genre_key, so
+§3 groups on the key and §10 shows the labels the buyer's genre chips
+will carry.
+
 
 ###################################################################
 # RUN 1 — LOCAL DEV DATABASE (docker compose postgres, port 5433)  
-#          db=mydatabase, schema at V60, 1 event row.              
+#          db=mydatabase, 1 event row (unpublished, so no facet).  
 #          Real schema, real (tiny) data: proves the report runs    
 #          clean and that this database needs no correction.        
 ###################################################################
-
-Null display is "(null)".
-
-===================================================================
- V82 IMPACT REPORT  —  read-only dry run, nothing is written
-===================================================================
 
 --- §1  Scale: how many rows each rule touches -------------------
  events_total | genre_rows_changed | city_rows_changed | country_rows_changed | country_blank_to_null | country_junk_to_null | rows_with_no_city 
@@ -35,10 +34,10 @@ Null display is "(null)".
 (0 rows)
 
 
---- §3  Genre merges: values that collapse together — REVIEW -----
+--- §3  Genre keys that MERGE: spellings folding into one chip — REVIEW
         (empty = no genre merges; every row here must be one genre spelled two ways)
- genre_after | distinct_spellings | merged_from | rows 
--------------+--------------------+-------------+------
+ genre_key | distinct_spellings | merged_from | rows 
+-----------+--------------------+-------------+------
 (0 rows)
 
 
@@ -86,8 +85,15 @@ Null display is "(null)".
 (0 rows)
 
 
-=== end of report — nothing was written ===========================
+--- §10 The genre facet as the buyer will see it after V82 -------
+        (mirrors PublicEventService.listGenres: label = most common spelling, ties to the
+         least-shouted then alphabetical. One chip per key — never a folded invention.)
+ chip_label | event_count | spellings_merged 
+------------+-------------+------------------
+(0 rows)
 
+
+=== end of report — nothing was written ===========================
 
 
 ###################################################################
@@ -100,34 +106,25 @@ Null display is "(null)".
 #          §6 fires. COUNTS HERE ARE FIXTURE COUNTS, NOT PRODUCTION.
 ###################################################################
 
-Null display is "(null)".
-
-===================================================================
- V82 IMPACT REPORT  —  read-only dry run, nothing is written
-===================================================================
-
 --- §1  Scale: how many rows each rule touches -------------------
  events_total | genre_rows_changed | city_rows_changed | country_rows_changed | country_blank_to_null | country_junk_to_null | rows_with_no_city 
 --------------+--------------------+-------------------+----------------------+-----------------------+----------------------+-------------------
-           23 |                  9 |                 2 |                    3 |                     1 |                    1 |                 1
+           23 |                  1 |                 2 |                    3 |                     1 |                    1 |                 1
 (1 row)
 
 
 --- §2  Genre: every distinct value that changes -----------------
-   genre_before    |  genre_after   | rows 
--------------------+----------------+------
-   Drum   &  Bass  | drum & bass    |    1
- House & Techno    | house & techno |    1
- TECHNO            | techno         |    1
- Techno            | techno         |    6
-(4 rows)
+   genre_before    | genre_after | rows 
+-------------------+-------------+------
+   Drum   &  Bass  | Drum & Bass |    1
+(1 row)
 
 
---- §3  Genre merges: values that collapse together — REVIEW -----
+--- §3  Genre keys that MERGE: spellings folding into one chip — REVIEW
         (empty = no genre merges; every row here must be one genre spelled two ways)
-  genre_after   | distinct_spellings |            merged_from            | rows 
+   genre_key    | distinct_spellings |            merged_from            | rows 
 ----------------+--------------------+-----------------------------------+------
- drum & bass    |                  2 |   Drum   &  Bass   |  drum & bass |    2
+ drum & bass    |                  2 | Drum & Bass  |  drum & bass       |    2
  house & techno |                  2 | House & Techno  |  house & techno |    2
  techno         |                  3 | TECHNO  |  Techno  |  techno      |   13
 (3 rows)
@@ -195,5 +192,17 @@ Null display is "(null)".
 (10 rows)
 
 
-=== end of report — nothing was written ===========================
+--- §10 The genre facet as the buyer will see it after V82 -------
+        (mirrors PublicEventService.listGenres: label = most common spelling, ties to the
+         least-shouted then alphabetical. One chip per key — never a folded invention.)
+   chip_label   | event_count | spellings_merged 
+----------------+-------------+------------------
+ drum & bass    |           2 |                2
+ hip-hop        |           1 |                1
+ house & techno |           2 |                2
+ pop            |           5 |                1
+ techno         |           9 |                3
+(5 rows)
 
+
+=== end of report — nothing was written ===========================

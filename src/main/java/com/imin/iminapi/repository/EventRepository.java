@@ -137,6 +137,12 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
      * {@code Metzingen}. Callers normalise via {@code EventNormalization.cityKey}, so
      * {@code ?city=METZ}, {@code ?city=metz} and {@code ?city=%20Metz%20} are one query.
      *
+     * <p><b>{@code genreKey}</b> is the same idea for the genre: {@code lower(collapse(trim))},
+     * matched with {@code =} against the derived column the genre facet
+     * ({@link #findPublicGenreCounts()}) groups on. {@code ?genre=Techno} and
+     * {@code ?genre=techno} are one query over one set of nights. The display column
+     * {@code e.genre} keeps the organizer's casing and is never filtered on.
+     *
      * <p>The EXISTS body is the SQL mirror of {@link
      * com.imin.iminapi.service.event.TierAvailability#isPurchasable} — enabled tier,
      * event neither PAST nor CANCELLED, both sale windows open, stock remaining. Keeping
@@ -155,7 +161,7 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
                 OR e.startsAt >= :from
                 OR (:includeOngoing = true AND (e.endsAt IS NULL OR e.endsAt > :now)))
            AND (CAST(:to AS timestamp) IS NULL OR e.startsAt < :to)
-           AND (CAST(:genre AS string) IS NULL OR e.genre = :genre)
+           AND (CAST(:genreKey AS string) IS NULL OR e.genreKey = CAST(:genreKey AS string))
            AND (CAST(:type AS string) IS NULL OR e.type = :type)
            AND (CAST(:cityKey AS string) IS NULL OR e.venueCityKey = CAST(:cityKey AS string))
            AND (CAST(:country AS string) IS NULL OR e.venueCountry = :country)
@@ -183,7 +189,7 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
     Page<Event> findPublicListing(
             @Param("from") Instant from,
             @Param("to") Instant to,
-            @Param("genre") String genre,
+            @Param("genreKey") String genreKey,
             @Param("type") String type,
             @Param("cityKey") String cityKey,
             @Param("country") String country,
@@ -225,6 +231,41 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
          ORDER BY e.venueCityKey ASC
 """)
     List<Object[]> findPublicCityCounts();
+
+    /**
+     * Writes ONLY the two venue coordinate columns (V80). The geocoding listener's sole
+     * write path.
+     *
+     * <p><b>Why not {@code save(event)}.</b> The listener is deliberately non-transactional
+     * — a provider call of up to ~9.4s must not sit inside a transaction holding a pooled DB
+     * connection — so the entity it read is DETACHED by the time the answer comes back, and
+     * {@code save()} on a detached entity is {@code em.merge()}: it copies EVERY field of that
+     * now-stale snapshot over whatever the row has become. {@code Event} has no {@code @Version}
+     * to catch it. Inside that window an organizer's Publish is silently undone, a soft-delete
+     * is nulled (the event reappears in the public feed), {@code EventStatusSweeper}'s LIVE→PAST
+     * is reverted, and {@code sold}/{@code revenueMinor} regress. A targeted UPDATE cannot do
+     * any of that: the two columns it names are the only two it can touch, and they are ones no
+     * other writer sets.
+     *
+     * <p><b>{@code updated_at} is deliberately NOT bumped.</b> A geocode is a derived fill, not
+     * an organizer edit. The organizer PATCH path uses {@code updated_at} as its If-Match ETag,
+     * so bumping it here would 412 an organizer holding a perfectly good ETag for a change they
+     * did not make — the same reasoning V82's backfill records. (Bulk UPDATE bypasses
+     * {@code @PreUpdate} anyway, so this is a decision, not an accident.)
+     *
+     * @return rows updated — 0 when the event was hard-deleted during the geocode call
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("""
+        UPDATE Event e
+           SET e.venueLatitude = :latitude,
+               e.venueLongitude = :longitude
+         WHERE e.id = :id
+    """)
+    int updateVenueCoordinates(@Param("id") UUID id,
+                               @Param("latitude") Double latitude,
+                               @Param("longitude") Double longitude);
 
     /**
      * Bulk transition: LIVE events whose {@code endsAt} is in the past become PAST.
@@ -282,18 +323,31 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
     List<Object[]> findCompetingNights(@Param("selfId") UUID selfId, @Param("cityKey") String cityKey,
                                        @Param("from") Instant from, @Param("to") Instant to);
 
+    /**
+     * Raw material for the genre facet: {@code (genreKey, genre, count)}, one row per distinct
+     * spelling within a key.
+     *
+     * <p>Same shape and same reasoning as {@link #findPublicCityCounts()}. The WHERE clause is
+     * the listing's own eligibility predicate minus the user filters, so a chip's count is the
+     * number of events the buyer lands on when they tap it. Grouping is on the derived
+     * {@code genre_key} (V82) — the column {@link #findPublicListing} filters on — so
+     * {@code Techno} and {@code techno} are one group; the display spelling stays in the GROUP BY
+     * because the service picks the most common one as the chip label. That fold is Java, not
+     * SQL: "most common spelling" wants no window function and the facet is one row per genre.
+     */
     @Query("""
-        SELECT DISTINCT e.genre FROM Event e
+        SELECT e.genreKey, e.genre, COUNT(e) FROM Event e
          WHERE e.deletedAt IS NULL
            AND e.visibility = com.imin.iminapi.model.EventVisibility.PUBLIC
            AND e.publishedAt IS NOT NULL
            AND e.status <> com.imin.iminapi.model.EventStatus.DRAFT
            AND e.status <> com.imin.iminapi.model.EventStatus.CANCELLED
-           AND e.genre IS NOT NULL
-           AND e.genre <> ''
-         ORDER BY e.genre ASC
+           AND e.genreKey IS NOT NULL
+           AND e.genreKey <> ''
+         GROUP BY e.genreKey, e.genre
+         ORDER BY e.genreKey ASC
 """)
-    List<String> findDistinctPublicGenres();
+    List<Object[]> findPublicGenreCounts();
 
     /**
      * Track B (manual payouts) Phase 2 — candidate events for the daily

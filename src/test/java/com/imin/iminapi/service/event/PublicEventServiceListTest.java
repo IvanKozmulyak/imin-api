@@ -221,6 +221,36 @@ class PublicEventServiceListTest {
     }
 
     @Test
+    void filter_by_genre_matches_the_normalised_key_so_casing_never_splits_a_chip() {
+        // Same contract as ?city= (V82): the filter runs on genre_key, the card still shows the
+        // organizer's spelling. "Techno" and "techno" used to be two exact-match queries over
+        // two disjoint slices of one genre — two identical-looking chips, neither complete.
+        Event typed = publishedLiveEvent();
+        typed.setGenre("Techno");
+        eventRepository.save(typed);
+        Event shouted = publishedLiveEvent();
+        shouted.setGenre("TECHNO");
+        eventRepository.save(shouted);
+        Event other = publishedLiveEvent();
+        other.setGenre("House");
+        eventRepository.save(other);
+
+        for (String probe : List.of("Techno", "techno", "  TECHNO ")) {
+            PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
+                    null, null, probe, null, null, null, null, null, false, false, false, 1, 20));
+            assertThat(result.items())
+                    .as("?genre=%s must find both spellings of one genre", probe)
+                    .extracting(PublicEventListItem::id)
+                    .containsExactlyInAnyOrder(typed.getId(), shouted.getId());
+        }
+
+        // The display string is never folded on the way out — the card prints what was typed.
+        PageResponse<PublicEventListItem> all = publicEventService.list(onlyPage(1, 20));
+        assertThat(all.items()).extracting(PublicEventListItem::genre)
+                .contains("Techno", "TECHNO", "House");
+    }
+
+    @Test
     void filter_by_type() {
         Event a = publishedLiveEvent();
         a.setType("concert");
@@ -838,6 +868,48 @@ class PublicEventServiceListTest {
     }
 
     @Test
+    void listGenres_merges_case_variants_into_one_chip_whose_count_the_listing_reproduces() {
+        // The genre twin of the Metz problem: "techno" and "Techno" were two chips, each
+        // holding a slice of one genre's nights. They are ONE genre. Merging is honest only
+        // because the facet and ?genre= key off the same derived column, so the second half
+        // taps the chip and asserts the listing returns every event the chip counted.
+        for (int i = 0; i < 2; i++) {
+            Event typed = publishedLiveEvent();
+            typed.setGenre("Techno");
+            eventRepository.save(typed);
+        }
+        Event shouted = publishedLiveEvent();
+        shouted.setGenre("TECHNO");
+        eventRepository.save(shouted);
+        Event spaced = publishedLiveEvent();
+        spaced.setGenre("techno");
+        eventRepository.save(spaced);
+
+        List<String> genres = publicEventService.listGenres();
+        // "Techno" (2 events) beats "TECHNO" and "techno" (1 each) as the label. Nothing
+        // title-cases or folds it — the label is a real stored spelling, never an invention.
+        assertThat(genres).containsExactly("Techno");
+
+        PageResponse<PublicEventListItem> tapped = publicEventService.list(new PublicEventListQuery(
+                null, null, genres.get(0), null, null, null, null, null, false, false, false, 1, 20));
+        assertThat(tapped.total()).isEqualTo(4L);
+    }
+
+    @Test
+    void listGenres_breaks_a_spelling_tie_toward_the_least_shouted_then_alphabetically() {
+        // One event each: the count cannot decide, so the deterministic tie-break must —
+        // otherwise the chip label flips with whatever order the planner returns rows in.
+        Event shouted = publishedLiveEvent();
+        shouted.setGenre("HOUSE");
+        eventRepository.save(shouted);
+        Event typed = publishedLiveEvent();
+        typed.setGenre("House");
+        eventRepository.save(typed);
+
+        assertThat(publicEventService.listGenres()).containsExactly("House");
+    }
+
+    @Test
     void listGenres_excludes_empty_genre() {
         // events.genre is NOT NULL DEFAULT '' at the schema level — only the empty-string
         // case is reachable. The query also tolerates NULL defensively.
@@ -1042,6 +1114,33 @@ class PublicEventServiceListTest {
 
         Event noTiers = eventRepository.save(publishedLiveEvent());
 
+        // The EXISTS has SIX clauses that are about the EVENT rather than the tier, and each
+        // one has to be pinned individually: delete any single unpinned clause and every test
+        // still passes while freeOnly=true starts returning cards whose priceFromMinor is null.
+        // The four tier-level clauses are covered above; these are the event-level ones.
+
+        // e.onSaleAt in the future — the event's sale has not opened yet.
+        Event eventNotOnSaleYet = publishedLiveEvent();
+        eventNotOnSaleYet.setOnSaleAt(NOW.plusSeconds(600));
+        eventNotOnSaleYet = eventRepository.save(eventNotOnSaleYet);
+        tier(eventNotOnSaleYet.getId(), "Free", 0, 10, 0, true, 0);
+
+        // e.saleClosesAt in the past — event-level sales have shut, tier windows notwithstanding.
+        Event eventSalesClosed = publishedLiveEvent();
+        eventSalesClosed.setSaleClosesAt(NOW.minusSeconds(600));
+        eventSalesClosed = eventRepository.save(eventSalesClosed);
+        tier(eventSalesClosed.getId(), "Free", 0, 10, 0, true, 0);
+
+        // EventStatus.PAST — the night is over; a free ticket to it is not purchasable.
+        Event pastEvent = publishedLiveEvent();
+        pastEvent.setStatus(EventStatus.PAST);
+        pastEvent.setStartsAt(NOW.minusSeconds(172_800));
+        pastEvent = eventRepository.save(pastEvent);
+        tier(pastEvent.getId(), "Free", 0, 10, 0, true, 0);
+
+        // EventStatus.CANCELLED is excluded by the listing itself, so it can never reach the
+        // EXISTS — pinned in listing_excludes_cancelled_events, not here.
+
         List<UUID> zeroPricedCards = publicEventService.list(onlyPage(1, 100)).items().stream()
                 .filter(i -> i.priceFromMinor() != null && i.priceFromMinor() == 0)
                 .map(PublicEventListItem::id)
@@ -1058,7 +1157,17 @@ class PublicEventServiceListTest {
         assertThat(freeOnlyIds).containsExactlyInAnyOrder(freeOpen.getId(), freeAndPaid.getId());
         assertThat(freeOnlyIds).doesNotContain(paidOnly.getId(), freeSoldOut.getId(),
                 freeSoldOutPaidLeft.getId(), freeNotOpen.getId(), freeClosed.getId(),
-                freeDisabled.getId(), noTiers.getId());
+                freeDisabled.getId(), noTiers.getId(),
+                eventNotOnSaleYet.getId(), eventSalesClosed.getId(), pastEvent.getId());
+
+        // Each event-level clause pinned on its own, so deleting exactly one from the EXISTS
+        // fails exactly one assertion with a name that says which.
+        assertThat(freeOnlyIds).as("e.onSaleAt in the future must exclude the event")
+                .doesNotContain(eventNotOnSaleYet.getId());
+        assertThat(freeOnlyIds).as("e.saleClosesAt in the past must exclude the event")
+                .doesNotContain(eventSalesClosed.getId());
+        assertThat(freeOnlyIds).as("EventStatus.PAST must exclude the event")
+                .doesNotContain(pastEvent.getId());
     }
 
     @Test

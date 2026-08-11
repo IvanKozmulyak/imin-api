@@ -15,9 +15,12 @@ import java.util.regex.Pattern;
  * The year suffix scopes the collision space per year and lets support date a request
  * at a glance.
  *
- * <p>32^4 = 1,048,576 codes per year. Callers still pre-check the DB and retry (see
- * {@link RefundRequestService#submitByToken}); the UNIQUE index from V81 is the
- * authority.
+ * <p>32^4 = 1,048,576 codes per year. That is the size of the space, not the odds: what
+ * governs a collision is the birthday bound, so at the ~1,200 requests a year this table
+ * sees, the chance that SOME two codes in a year clash is already around 50%. The UNIQUE
+ * index from V81 is the authority and the only thing that has to be right — the caller
+ * mints one candidate and lets the constraint answer (see
+ * {@link RefundRequestService#submitByToken}).
  */
 @org.springframework.stereotype.Component
 public class RefundReferenceGenerator {
@@ -27,8 +30,21 @@ public class RefundReferenceGenerator {
     static final String PREFIX = "REQ-";
     private static final int BODY_LENGTH = 4;
 
-    /** Matches both freshly generated codes and the V81 UUID-derived legacy codes. */
-    public static final Pattern SHAPE = Pattern.compile("^REQ-[" + ALPHABET + "]{4}-[" + ALPHABET + "]{2,4}$");
+    /**
+     * Matches both families of code: {@code REQ-} + 4 alphabet symbols + {@code -} + either
+     * the two-digit year of a generated code or the four alphabet symbols of a V81
+     * backfilled one. They can never be confused for each other — the tails differ in length.
+     *
+     * <p><b>The year segment is plain decimal and must be matched as such.</b> Building it out
+     * of {@link #ALPHABET} (which excludes {@code 0} and {@code 1}) made this pattern unable to
+     * match its own generator's output for every year whose last two digits contain a 0 or a 1
+     * — the first being 2030. {@code normalize("REQ-8K2M-30")} would return null, the
+     * case/prefix-forgiving reference lookup would silently fall through to the buyer-email
+     * LIKE, and an operator searching a code a customer just quoted would find nothing. Tested
+     * against a clock past 2030 in {@code RefundReferenceGeneratorTest}.
+     */
+    public static final Pattern SHAPE =
+            Pattern.compile("^REQ-[" + ALPHABET + "]{4}-([0-9]{2}|[" + ALPHABET + "]{4})$");
 
     private final SecureRandom rng = new SecureRandom();
     private final Clock clock;
