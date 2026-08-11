@@ -502,4 +502,86 @@ class EventServiceTest {
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> sut.publish(p, e.getId()))
                 .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.PUBLISH_VALIDATION_FAILED);
     }
+
+    // ---- Venue geocoding trigger (V80) ---------------------------------------------------------
+
+    /**
+     * A publisher-wired EventService — the 8-arg constructor used elsewhere in this class
+     * leaves the publisher null, which is fine for tests that don't care about events.
+     */
+    private EventService serviceWithPublisher(org.springframework.context.ApplicationEventPublisher pub) {
+        return new EventService(events, tiers, promos, predictions, validator, ifMatch, tierService,
+                stripeConnect, null, null, null, pub);
+    }
+
+    @Test
+    void create_draft_with_an_address_asks_for_a_geocode() {
+        AuthPrincipal p = principal();
+        stubSaveEchoWithId();
+        var pub = mock(org.springframework.context.ApplicationEventPublisher.class);
+
+        serviceWithPublisher(pub).createDraft(p, bodyWith(null, venue("FR")));
+
+        verify(pub).publishEvent(any(VenueAddressChangedEvent.class));
+    }
+
+    @Test
+    void create_draft_without_an_address_asks_for_nothing() {
+        AuthPrincipal p = principal();
+        stubSaveEchoWithId();
+        var pub = mock(org.springframework.context.ApplicationEventPublisher.class);
+
+        serviceWithPublisher(pub).createDraft(p, bodyWith(null, null));
+
+        verify(pub, never()).publishEvent(any(VenueAddressChangedEvent.class));
+    }
+
+    @Test
+    void patch_that_moves_the_venue_asks_for_a_geocode() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID());
+        e.setOrgId(p.orgId());
+        e.setVenueStreet("1 Rue");
+        e.setVenueCity("Paris");
+        e.setVenuePostalCode("75001");
+        e.setVenueCountry("FR");
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(tiers.findByEventIdOrderBySortOrderAsc(any())).thenReturn(List.of());
+        when(promos.findByEventId(any())).thenReturn(List.of());
+        when(predictions.findById(any())).thenReturn(Optional.empty());
+        stubSaveEchoWithId();
+        var pub = mock(org.springframework.context.ApplicationEventPublisher.class);
+
+        serviceWithPublisher(pub).patch(p, e.getId(), null, bodyWith(null,
+                new VenueDto("Le Club", "2 Rue", "Metz", "57000", "FR")));
+
+        verify(pub).publishEvent(any(VenueAddressChangedEvent.class));
+    }
+
+    @Test
+    void patch_that_only_retypes_the_same_address_does_not_burn_a_geocode_call() {
+        // Autosave resends the whole form on every keystroke pause. Re-geocoding an
+        // unchanged address would exhaust the provider's rate budget for nothing.
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID());
+        e.setOrgId(p.orgId());
+        e.setVenueStreet("1 Rue");
+        e.setVenueCity("Paris");
+        e.setVenuePostalCode("75001");
+        e.setVenueCountry("FR");
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(tiers.findByEventIdOrderBySortOrderAsc(any())).thenReturn(List.of());
+        when(promos.findByEventId(any())).thenReturn(List.of());
+        when(predictions.findById(any())).thenReturn(Optional.empty());
+        stubSaveEchoWithId();
+        var pub = mock(org.springframework.context.ApplicationEventPublisher.class);
+
+        // Same address, different casing/whitespace and a changed name (name is not an address).
+        serviceWithPublisher(pub).patch(p, e.getId(), null, bodyWith(null,
+                new VenueDto("Renamed Club", " 1 Rue ", "paris", "75001", "FR")));
+
+        verify(pub, never()).publishEvent(any(VenueAddressChangedEvent.class));
+    }
 }

@@ -61,6 +61,20 @@ public class Event {
     @Column(name = "venue_country", length = 2)
     private String venueCountry;
 
+    /**
+     * Venue point (V80), nullable by design and always set as a PAIR.
+     *
+     * <p>Populated best-effort by {@code VenueGeocodingListener} after an address
+     * write; null whenever geocoding is disabled, the provider had no answer, or the
+     * address is too thin to resolve. Null is not an error state — the buyer page
+     * falls back to the maps deep link built from the address strings.
+     */
+    @Column(name = "venue_latitude")
+    private Double venueLatitude;
+
+    @Column(name = "venue_longitude")
+    private Double venueLongitude;
+
     @Column(nullable = false, columnDefinition = "TEXT")
     private String description = "";
 

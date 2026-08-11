@@ -155,6 +155,11 @@ public class EventService {
             Event saved = events.save(e);
             audit(p, AuditActions.EVENT_CREATED, "event", saved.getId(),
                     "Created event \"" + eventLabel(saved) + "\"");
+            // A draft created WITH an address geocodes straight away (V80). Empty
+            // address => nothing to resolve, no event published.
+            if (!EMPTY_VENUE_ADDRESS_KEY.equals(venueAddressKey(saved))) {
+                publishVenueAddressChanged(saved.getId());
+            }
             return EventDto.summary(saved);
         } catch (DataIntegrityViolationException ex) {
             throw ApiException.duplicate("slug", "Event slug already taken in this organization");
@@ -181,7 +186,9 @@ public class EventService {
     @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
     public EventDto patch(AuthPrincipal p, UUID id, String ifMatchHeader, EventPatchRequest body) {
         Event e = loadOwned(p, id);
+        String addressBefore = venueAddressKey(e);
         boolean changed = applyPatch(e, body);
+        String addressAfter = venueAddressKey(e);
         e.setUpdatedAt(Instant.now()); // ensure ETag changes even when @PreUpdate doesn't fire
         try {
             events.save(e);
@@ -212,7 +219,33 @@ public class EventService {
         if (touched && eventPublisher != null) {
             eventPublisher.publishEvent(new com.imin.iminapi.predictor.service.PredictorReactivityEvents.EventMutated(e.getId()));
         }
+        // Venue coordinates (V80): re-geocode only when an address STRING actually moved.
+        // Publishing on every patch would burn the Nominatim rate budget on autosaves.
+        if (!addressBefore.equals(addressAfter)) publishVenueAddressChanged(e.getId());
         return detail(p, id);
+    }
+
+    /**
+     * Identity of the venue address for change detection. Case-folded and trimmed so
+     * "Berlin " → "berlin" is not treated as a move; anything that survives that is a
+     * genuinely different address worth one geocoder call.
+     */
+    /** The key of an Event with no address at all — the "nothing to geocode" sentinel. */
+    private static final String EMPTY_VENUE_ADDRESS_KEY = venueAddressKey(new Event());
+
+    private static String venueAddressKey(Event e) {
+        return norm(e.getVenueStreet()) + "|" + norm(e.getVenueCity()) + "|"
+                + norm(e.getVenuePostalCode()) + "|" + norm(e.getVenueCountry());
+    }
+
+    private static String norm(String s) {
+        return s == null ? "" : s.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private void publishVenueAddressChanged(UUID eventId) {
+        if (eventPublisher != null) {
+            eventPublisher.publishEvent(new VenueAddressChangedEvent(eventId));
+        }
     }
 
     @Transactional

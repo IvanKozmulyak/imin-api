@@ -121,6 +121,20 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
      * facets) even though {@link #findPublic} still serves them: a cancelled event must
      * stay reachable by share-link so the detail page can render the cancellation banner,
      * but it has no business appearing in a browse feed.
+     *
+     * <p><b>{@code freeOnly}</b> keeps only events whose cheapest PURCHASABLE tier is
+     * €0. Because prices are non-negative, "min purchasable price == 0" is exactly
+     * "there EXISTS a purchasable tier priced 0", which is what the EXISTS below tests
+     * — so the filter and the card's {@code priceFromMinor} can never disagree. An event
+     * with no purchasable tier (sold out / not yet on sale / sales ended) is NOT free,
+     * it is unavailable, and drops out.
+     *
+     * <p>The EXISTS body is the SQL mirror of {@link
+     * com.imin.iminapi.service.event.TierAvailability#isPurchasable} — enabled tier,
+     * event neither PAST nor CANCELLED, both sale windows open, stock remaining. Keeping
+     * two expressions of one rule is a drift risk taken deliberately (a Java post-filter
+     * would break pagination); {@code PublicEventServiceListTest} pins them together with
+     * a case matrix asserted against {@code TierAvailability} itself.
      */
     @Query("""
         SELECT e FROM Event e
@@ -143,6 +157,19 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
                   (e.onSaleAt IS NULL OR e.onSaleAt <= :now)
                   AND (e.saleClosesAt IS NULL OR e.saleClosesAt > :now)
                 ))
+           AND (:freeOnly = false OR EXISTS (
+                  SELECT 1 FROM TicketTier t
+                   WHERE t.eventId = e.id
+                     AND t.enabled = true
+                     AND t.priceMinor = 0
+                     AND e.status <> com.imin.iminapi.model.EventStatus.PAST
+                     AND e.status <> com.imin.iminapi.model.EventStatus.CANCELLED
+                     AND (e.onSaleAt IS NULL OR e.onSaleAt <= :now)
+                     AND (t.saleStartsAt IS NULL OR t.saleStartsAt <= :now)
+                     AND (t.saleClosesAt IS NULL OR t.saleClosesAt > :now)
+                     AND (e.saleClosesAt IS NULL OR e.saleClosesAt > :now)
+                     AND (t.quantity - t.reserved - t.sold) > 0
+                ))
          ORDER BY e.startsAt ASC NULLS LAST, e.id ASC
 """)
     Page<Event> findPublicListing(
@@ -156,11 +183,27 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
             @Param("orgId") UUID orgId,
             @Param("onSaleOnly") boolean onSaleOnly,
             @Param("includeOngoing") boolean includeOngoing,
+            @Param("freeOnly") boolean freeOnly,
             @Param("now") Instant now,
             Pageable pageable);
 
+    /**
+     * City facet with its event count: {@code (venueCity, venueCountry, count)}.
+     *
+     * <p>The WHERE clause is the SAME eligibility predicate {@link #findPublicListing}
+     * uses (not deleted, PUBLIC, published, not DRAFT, not CANCELLED) minus the user
+     * filters, so the count a city chip shows is the number of events the buyer actually
+     * lands on when they tap it. GROUP BY replaces the old SELECT DISTINCT — the row set
+     * is identical, only the count is new.
+     *
+     * <p>Grouping is on the RAW stored strings, so {@code Metz/FR}, {@code Metz/null} and
+     * {@code METZ/''} stay three rows. That is deliberate: normalising here would invent a
+     * merge the listing filter can't reproduce (it matches {@code venue_city} with a LIKE),
+     * and a chip whose count doesn't match its own result page is worse than a duplicate
+     * chip. The fix belongs at write time — see the note in {@code PublicEventService.listCities}.
+     */
     @Query("""
-        SELECT DISTINCT e.venueCity, e.venueCountry FROM Event e
+        SELECT e.venueCity, e.venueCountry, COUNT(e) FROM Event e
          WHERE e.deletedAt IS NULL
            AND e.visibility = com.imin.iminapi.model.EventVisibility.PUBLIC
            AND e.publishedAt IS NOT NULL
@@ -168,9 +211,10 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
            AND e.status <> com.imin.iminapi.model.EventStatus.CANCELLED
            AND e.venueCity IS NOT NULL
            AND e.venueCity <> ''
+         GROUP BY e.venueCity, e.venueCountry
          ORDER BY e.venueCity ASC, e.venueCountry ASC
 """)
-    List<Object[]> findDistinctPublicCities();
+    List<Object[]> findPublicCityCounts();
 
     /**
      * Bulk transition: LIVE events whose {@code endsAt} is in the past become PAST.

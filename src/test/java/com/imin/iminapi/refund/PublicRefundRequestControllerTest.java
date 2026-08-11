@@ -54,7 +54,7 @@ class PublicRefundRequestControllerTest {
     @Test
     void submit_returns_201_on_success() throws Exception {
         PublicRefundSubmitResponse resp = new PublicRefundSubmitResponse(
-            UUID.randomUUID(), "pending", Instant.now());
+            UUID.randomUUID(), "REQ-8K2M-26", "pending", Instant.now());
         when(service.submitByToken(anyString(), any())).thenReturn(resp);
 
         String body = json.writeValueAsString(new PublicRefundSubmitRequest(
@@ -63,6 +63,8 @@ class PublicRefundRequestControllerTest {
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(body))
             .andExpect(status().isCreated())
-            .andExpect(jsonPath("$.status").value("pending"));
+            .andExpect(jsonPath("$.status").value("pending"))
+            // The buyer receipt quotes this, not the UUID.
+            .andExpect(jsonPath("$.reference").value("REQ-8K2M-26"));
     }
 }

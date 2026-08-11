@@ -142,7 +142,7 @@ public class PublicEventService {
                 query.from(), query.to(),
                 nullIfBlank(query.genre()), nullIfBlank(query.type()),
                 nullIfBlank(query.city()), country, nullIfBlank(query.q()),
-                orgId, query.onSaleOnly(), query.includeOngoing(), clock.instant(),
+                orgId, query.onSaleOnly(), query.includeOngoing(), query.freeOnly(), clock.instant(),
                 PageRequest.of(page - 1, pageSize));
 
         // 4. Batch-load the page's enabled tiers + orgs. One tier query, no N+1:
@@ -168,11 +168,22 @@ public class PublicEventService {
                 stripeProperties.getApplicationFeeFixedMinor()));
     }
 
+    /**
+     * City facets with per-city event counts, off the listing's own eligibility predicate.
+     *
+     * <p>Rows are returned exactly as stored. Live data currently holds {@code Metz/FR},
+     * {@code Metz/null} and {@code METZ/''} as three separate rows (and the genre column
+     * has both {@code techno} and {@code Techno}) because nothing normalises venue city /
+     * country / genre at write time. Collapsing them HERE would produce a chip whose count
+     * cannot be reproduced by the listing query behind it, so the read side stays honest and
+     * the FE dedupes defensively. The real fix is normalisation in {@code EventService}'s
+     * write path plus a one-off data migration — see this task's report.
+     */
     @Transactional(readOnly = true)
     public List<com.imin.iminapi.dto.publicapi.PublicCityItem> listCities() {
-        return eventRepository.findDistinctPublicCities().stream()
+        return eventRepository.findPublicCityCounts().stream()
                 .map(row -> new com.imin.iminapi.dto.publicapi.PublicCityItem(
-                        (String) row[0], (String) row[1]))
+                        (String) row[0], (String) row[1], ((Number) row[2]).longValue()))
                 .toList();
     }
 

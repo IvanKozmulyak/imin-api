@@ -18,6 +18,14 @@ public class RefundRequest {
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
 
+    /**
+     * Short, human-dictatable reference (V81) — {@code REQ-8K2M-26}. This is the id
+     * a buyer quotes to support; the UUID above is the machine id and is not readable
+     * out loud. UNIQUE at the DB level, assigned once at creation, never rewritten.
+     */
+    @Column(name = "reference", nullable = false, length = 16, updatable = false)
+    private String reference;
+
     @Column(name = "order_id", nullable = false)
     private UUID orderId;
 

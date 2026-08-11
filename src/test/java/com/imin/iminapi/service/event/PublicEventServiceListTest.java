@@ -131,12 +131,12 @@ class PublicEventServiceListTest {
 
     private PublicEventListQuery emptyQuery() {
         return new PublicEventListQuery(
-                null, null, null, null, null, null, null, null, false, false, 1, 20);
+                null, null, null, null, null, null, null, null, false, false, false, 1, 20);
     }
 
     private PublicEventListQuery onlyPage(int page, int pageSize) {
         return new PublicEventListQuery(
-                null, null, null, null, null, null, null, null, false, false, page, pageSize);
+                null, null, null, null, null, null, null, null, false, false, false, page, pageSize);
     }
 
     // -----------------------------------------------------------------------
@@ -215,7 +215,7 @@ class PublicEventServiceListTest {
         eventRepository.save(b);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, "techno", null, null, null, null, null, false, false, 1, 20));
+                null, null, "techno", null, null, null, null, null, false, false, false, 1, 20));
         assertThat(result.items()).hasSize(1);
         assertThat(result.items().get(0).genre()).isEqualTo("techno");
     }
@@ -230,7 +230,7 @@ class PublicEventServiceListTest {
         eventRepository.save(b);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, "festival", null, null, null, null, false, false, 1, 20));
+                null, null, null, "festival", null, null, null, null, false, false, false, 1, 20));
         assertThat(result.items()).hasSize(1);
         assertThat(result.items().get(0).type()).isEqualTo("festival");
     }
@@ -245,7 +245,7 @@ class PublicEventServiceListTest {
         eventRepository.save(b);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, "fr", null, null, false, false, 1, 20));
+                null, null, null, null, null, "fr", null, null, false, false, false, 1, 20));
         assertThat(result.items()).hasSize(1);
         assertThat(result.items().get(0).venueCountry()).isEqualTo("FR");
     }
@@ -260,7 +260,7 @@ class PublicEventServiceListTest {
         eventRepository.save(b);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, "berl", null, null, null, false, false, 1, 20));
+                null, null, null, null, "berl", null, null, null, false, false, false, 1, 20));
         assertThat(result.items()).hasSize(1);
         assertThat(result.items().get(0).venueCity()).isEqualTo("Berlin");
     }
@@ -275,7 +275,7 @@ class PublicEventServiceListTest {
         eventRepository.save(b);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, null, null, "festIVAL", false, false, 1, 20));
+                null, null, null, null, null, null, null, "festIVAL", false, false, false, 1, 20));
         assertThat(result.items()).hasSize(1);
         assertThat(result.items().get(0).name()).isEqualTo("Summer Festival");
     }
@@ -291,7 +291,7 @@ class PublicEventServiceListTest {
         eventRepository.save(a);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                start, null, null, null, null, null, null, null, false, false, 1, 20));
+                start, null, null, null, null, null, null, null, false, false, false, 1, 20));
         assertThat(result.items()).hasSize(1);
     }
 
@@ -304,7 +304,7 @@ class PublicEventServiceListTest {
 
         // to == startsAt means startsAt < to is false → excluded
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, start, null, null, null, null, null, null, false, false, 1, 20));
+                null, start, null, null, null, null, null, null, false, false, false, 1, 20));
         assertThat(result.items()).isEmpty();
     }
 
@@ -335,7 +335,7 @@ class PublicEventServiceListTest {
         eventRepository.save(b);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, null, other.getSlug(), null, false, false, 1, 20));
+                null, null, null, null, null, null, other.getSlug(), null, false, false, false, 1, 20));
         assertThat(result.items()).hasSize(1);
         assertThat(result.items().get(0).organization().slug()).isEqualTo(other.getSlug());
     }
@@ -345,7 +345,7 @@ class PublicEventServiceListTest {
         eventRepository.save(publishedLiveEvent());
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, null, "no-such-org", null, false, false, 1, 20));
+                null, null, null, null, null, null, "no-such-org", null, false, false, false, 1, 20));
         assertThat(result.items()).isEmpty();
         assertThat(result.total()).isZero();
         assertThat(result.page()).isEqualTo(1);
@@ -362,7 +362,7 @@ class PublicEventServiceListTest {
         eventRepository.save(a);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, null, null, null, true, false, 1, 20));
+                null, null, null, null, null, null, null, null, true, false, false, 1, 20));
         assertThat(result.items()).isEmpty();
     }
 
@@ -373,7 +373,7 @@ class PublicEventServiceListTest {
         eventRepository.save(a);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, null, null, null, true, false, 1, 20));
+                null, null, null, null, null, null, null, null, true, false, false, 1, 20));
         assertThat(result.items()).hasSize(1);
     }
 
@@ -385,7 +385,7 @@ class PublicEventServiceListTest {
         eventRepository.save(a);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, null, null, null, true, false, 1, 20));
+                null, null, null, null, null, null, null, null, true, false, false, 1, 20));
         assertThat(result.items()).isEmpty();
     }
 
@@ -644,7 +644,7 @@ class PublicEventServiceListTest {
     @Test
     void q_below_min_length_returns_400() {
         assertThatThrownBy(() -> publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, null, null, "a", false, false, 1, 20)))
+                null, null, null, null, null, null, null, "a", false, false, false, 1, 20)))
                 .isInstanceOf(ApiException.class)
                 .satisfies(ex -> {
                     ApiException apiEx = (ApiException) ex;
@@ -657,7 +657,7 @@ class PublicEventServiceListTest {
     @Test
     void country_wrong_length_returns_400() {
         assertThatThrownBy(() -> publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, "DEU", null, null, false, false, 1, 20)))
+                null, null, null, null, null, "DEU", null, null, false, false, false, 1, 20)))
                 .isInstanceOf(ApiException.class)
                 .satisfies(ex -> {
                     ApiException apiEx = (ApiException) ex;
@@ -856,5 +856,277 @@ class PublicEventServiceListTest {
     @Test
     void listGenres_returns_empty_when_no_eligible_events() {
         assertThat(publicEventService.listGenres()).isEmpty();
+    }
+    // -----------------------------------------------------------------------
+    // freeOnly
+    // -----------------------------------------------------------------------
+
+    private PublicEventListQuery freeOnlyQuery() {
+        return new PublicEventListQuery(
+                null, null, null, null, null, null, null, null, false, false, true, 1, 20);
+    }
+
+    @Test
+    void freeOnly_keeps_event_with_a_purchasable_zero_priced_tier() {
+        Event free = eventRepository.save(publishedLiveEvent());
+        tier(free.getId(), "Free entry", 0, 100, 0, true, 0);
+
+        PageResponse<PublicEventListItem> result = publicEventService.list(freeOnlyQuery());
+        assertThat(result.items()).extracting(PublicEventListItem::id).containsExactly(free.getId());
+        assertThat(result.items().get(0).priceFromMinor()).isZero();
+    }
+
+    @Test
+    void freeOnly_drops_event_whose_cheapest_tier_costs_money() {
+        Event paid = eventRepository.save(publishedLiveEvent());
+        tier(paid.getId(), "GA", 1500, 100, 0, true, 0);
+
+        assertThat(publicEventService.list(freeOnlyQuery()).items()).isEmpty();
+        // ...and the same event IS listed without the filter, so this is the filter's doing.
+        assertThat(publicEventService.list(emptyQuery()).items()).hasSize(1);
+    }
+
+    @Test
+    void freeOnly_keeps_mixed_event_because_its_cheapest_purchasable_tier_is_free() {
+        Event mixed = eventRepository.save(publishedLiveEvent());
+        tier(mixed.getId(), "Free entry", 0, 50, 0, true, 0);
+        tier(mixed.getId(), "VIP", 5000, 50, 0, true, 1);
+
+        PageResponse<PublicEventListItem> result = publicEventService.list(freeOnlyQuery());
+        assertThat(result.items()).extracting(PublicEventListItem::id).containsExactly(mixed.getId());
+        assertThat(result.items().get(0).priceFromMinor()).isZero();
+    }
+
+    @Test
+    void freeOnly_drops_event_whose_only_free_tier_is_sold_out() {
+        // Sold out is NOT free, it is unavailable — priceFromMinor is null, so a "free"
+        // chip on this card would be a promise the checkout can't keep.
+        Event soldOut = eventRepository.save(publishedLiveEvent());
+        tier(soldOut.getId(), "Free entry", 0, 10, 10, true, 0);
+
+        assertThat(publicEventService.list(freeOnlyQuery()).items()).isEmpty();
+        assertThat(publicEventService.list(emptyQuery()).items().get(0).priceFromMinor()).isNull();
+    }
+
+    @Test
+    void freeOnly_drops_event_whose_free_tier_has_not_opened_yet() {
+        Event later = eventRepository.save(publishedLiveEvent());
+        tierWithWindow(later.getId(), "Free entry", 0, 100, 0, 0, NOW.plusSeconds(3600), null);
+
+        assertThat(publicEventService.list(freeOnlyQuery()).items()).isEmpty();
+    }
+
+    @Test
+    void freeOnly_drops_event_whose_free_tier_sale_window_has_closed() {
+        Event closed = eventRepository.save(publishedLiveEvent());
+        tierWithWindow(closed.getId(), "Free entry", 0, 100, 0, 0, null, NOW.minusSeconds(60));
+
+        assertThat(publicEventService.list(freeOnlyQuery()).items()).isEmpty();
+    }
+
+    @Test
+    void freeOnly_drops_event_whose_free_tier_is_disabled() {
+        Event disabled = eventRepository.save(publishedLiveEvent());
+        tier(disabled.getId(), "Free entry", 0, 100, 0, false, 0);
+
+        assertThat(publicEventService.list(freeOnlyQuery()).items()).isEmpty();
+    }
+
+    @Test
+    void freeOnly_respects_the_event_level_on_sale_gate() {
+        Event notOpen = publishedLiveEvent();
+        notOpen.setOnSaleAt(NOW.plusSeconds(3600));
+        notOpen = eventRepository.save(notOpen);
+        tier(notOpen.getId(), "Free entry", 0, 100, 0, true, 0);
+
+        assertThat(publicEventService.list(freeOnlyQuery()).items()).isEmpty();
+    }
+
+    @Test
+    void freeOnly_drops_event_with_no_tiers_at_all() {
+        eventRepository.save(publishedLiveEvent());
+        assertThat(publicEventService.list(freeOnlyQuery()).items()).isEmpty();
+    }
+
+    @Test
+    void freeOnly_false_is_the_unfiltered_listing() {
+        Event free = eventRepository.save(publishedLiveEvent());
+        tier(free.getId(), "Free entry", 0, 100, 0, true, 0);
+        Event paid = eventRepository.save(publishedLiveEvent());
+        tier(paid.getId(), "GA", 1500, 100, 0, true, 0);
+
+        assertThat(publicEventService.list(emptyQuery()).items())
+                .extracting(PublicEventListItem::id)
+                .containsExactlyInAnyOrder(free.getId(), paid.getId());
+    }
+
+    @Test
+    void freeOnly_narrows_the_pagination_total_not_just_the_page() {
+        // The whole point of doing this server-side: `total` must count free events only,
+        // otherwise the FE's pager offers pages that come back empty.
+        for (int i = 0; i < 3; i++) {
+            Event free = eventRepository.save(publishedLiveEvent());
+            tier(free.getId(), "Free entry", 0, 100, 0, true, 0);
+        }
+        for (int i = 0; i < 5; i++) {
+            Event paid = eventRepository.save(publishedLiveEvent());
+            tier(paid.getId(), "GA", 2000, 100, 0, true, 0);
+        }
+
+        assertThat(publicEventService.list(emptyQuery()).total()).isEqualTo(8);
+        PageResponse<PublicEventListItem> free = publicEventService.list(freeOnlyQuery());
+        assertThat(free.total()).isEqualTo(3);
+        assertThat(free.items()).hasSize(3);
+    }
+
+    @Test
+    void freeOnly_agrees_with_priceFromMinor_across_the_whole_case_matrix() {
+        // THE CONTRACT. `freeOnly` is a SQL EXISTS, `priceFromMinor` is Java over
+        // TierAvailability — two expressions of one rule. This asserts they agree on every
+        // interesting shape, so a change to one that forgets the other fails here rather
+        // than shipping a "Free" chip onto a card that shows a price (or vice versa).
+        Event freeOpen = eventRepository.save(publishedLiveEvent());
+        tier(freeOpen.getId(), "Free", 0, 10, 0, true, 0);
+
+        Event freeAndPaid = eventRepository.save(publishedLiveEvent());
+        tier(freeAndPaid.getId(), "Free", 0, 10, 0, true, 0);
+        tier(freeAndPaid.getId(), "VIP", 9900, 10, 0, true, 1);
+
+        Event paidOnly = eventRepository.save(publishedLiveEvent());
+        tier(paidOnly.getId(), "GA", 1000, 10, 0, true, 0);
+
+        Event freeSoldOut = eventRepository.save(publishedLiveEvent());
+        tier(freeSoldOut.getId(), "Free", 0, 10, 10, true, 0);
+
+        Event freeSoldOutPaidLeft = eventRepository.save(publishedLiveEvent());
+        tier(freeSoldOutPaidLeft.getId(), "Free", 0, 10, 10, true, 0);
+        tier(freeSoldOutPaidLeft.getId(), "GA", 2500, 10, 0, true, 1);
+
+        Event freeNotOpen = eventRepository.save(publishedLiveEvent());
+        tierWithWindow(freeNotOpen.getId(), "Free", 0, 10, 0, 0, NOW.plusSeconds(600), null);
+
+        Event freeClosed = eventRepository.save(publishedLiveEvent());
+        tierWithWindow(freeClosed.getId(), "Free", 0, 10, 0, 0, null, NOW.minusSeconds(600));
+
+        Event freeDisabled = eventRepository.save(publishedLiveEvent());
+        tier(freeDisabled.getId(), "Free", 0, 10, 0, false, 0);
+
+        Event noTiers = eventRepository.save(publishedLiveEvent());
+
+        List<UUID> zeroPricedCards = publicEventService.list(onlyPage(1, 100)).items().stream()
+                .filter(i -> i.priceFromMinor() != null && i.priceFromMinor() == 0)
+                .map(PublicEventListItem::id)
+                .toList();
+        List<UUID> freeOnlyIds = publicEventService.list(
+                new PublicEventListQuery(null, null, null, null, null, null, null, null,
+                        false, false, true, 1, 100)).items().stream()
+                .map(PublicEventListItem::id)
+                .toList();
+
+        assertThat(freeOnlyIds)
+                .as("freeOnly must return exactly the events whose card shows FROM €0")
+                .containsExactlyInAnyOrderElementsOf(zeroPricedCards);
+        assertThat(freeOnlyIds).containsExactlyInAnyOrder(freeOpen.getId(), freeAndPaid.getId());
+        assertThat(freeOnlyIds).doesNotContain(paidOnly.getId(), freeSoldOut.getId(),
+                freeSoldOutPaidLeft.getId(), freeNotOpen.getId(), freeClosed.getId(),
+                freeDisabled.getId(), noTiers.getId());
+    }
+
+    @Test
+    void freeOnly_composes_with_the_other_filters() {
+        Event berlinFree = publishedLiveEvent();
+        berlinFree.setVenueCity("Berlin");
+        berlinFree = eventRepository.save(berlinFree);
+        tier(berlinFree.getId(), "Free", 0, 10, 0, true, 0);
+
+        Event parisFree = publishedLiveEvent();
+        parisFree.setVenueCity("Paris");
+        parisFree = eventRepository.save(parisFree);
+        tier(parisFree.getId(), "Free", 0, 10, 0, true, 0);
+
+        PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
+                null, null, null, null, "berlin", null, null, null, false, false, true, 1, 20));
+        assertThat(result.items()).extracting(PublicEventListItem::id).containsExactly(berlinFree.getId());
+    }
+
+    // -----------------------------------------------------------------------
+    // listCities — per-city counts
+    // -----------------------------------------------------------------------
+
+    @Test
+    void listCities_counts_events_per_city() {
+        for (int i = 0; i < 3; i++) {
+            Event e = publishedLiveEvent();
+            e.setVenueCity("Berlin");
+            e.setVenueCountry("DE");
+            eventRepository.save(e);
+        }
+        Event paris = publishedLiveEvent();
+        paris.setVenueCity("Paris");
+        paris.setVenueCountry("FR");
+        eventRepository.save(paris);
+
+        List<com.imin.iminapi.dto.publicapi.PublicCityItem> cities = publicEventService.listCities();
+        assertThat(cities).extracting(
+                com.imin.iminapi.dto.publicapi.PublicCityItem::city,
+                com.imin.iminapi.dto.publicapi.PublicCityItem::eventCount)
+                .containsExactly(tuple("Berlin", 3L), tuple("Paris", 1L));
+    }
+
+    @Test
+    void listCities_count_excludes_events_the_listing_would_not_show() {
+        Event live = publishedLiveEvent();
+        live.setVenueCity("Berlin");
+        eventRepository.save(live);
+
+        Event cancelled = publishedLiveEvent();
+        cancelled.setVenueCity("Berlin");
+        cancelled.setStatus(EventStatus.CANCELLED);
+        eventRepository.save(cancelled);
+
+        Event draft = publishedLiveEvent();
+        draft.setVenueCity("Berlin");
+        draft.setStatus(EventStatus.DRAFT);
+        draft.setPublishedAt(null);
+        eventRepository.save(draft);
+
+        Event priv = publishedLiveEvent();
+        priv.setVenueCity("Berlin");
+        priv.setVisibility(EventVisibility.PRIVATE);
+        eventRepository.save(priv);
+
+        Event deleted = publishedLiveEvent();
+        deleted.setVenueCity("Berlin");
+        deleted.setDeletedAt(NOW.minusSeconds(60));
+        eventRepository.save(deleted);
+
+        assertThat(publicEventService.listCities())
+                .extracting(com.imin.iminapi.dto.publicapi.PublicCityItem::eventCount)
+                .containsExactly(1L);
+    }
+
+    @Test
+    void listCities_does_not_merge_case_or_country_variants_of_the_same_city() {
+        // Mirrors the live Metz/FR + Metz/null + METZ/'' data problem. The read side keeps
+        // them apart on purpose: each row's count must match what tapping that chip returns.
+        // Fixing this belongs at write time — see PublicEventService.listCities javadoc.
+        Event metzFr = publishedLiveEvent();
+        metzFr.setVenueCity("Metz");
+        metzFr.setVenueCountry("FR");
+        eventRepository.save(metzFr);
+
+        Event metzNull = publishedLiveEvent();
+        metzNull.setVenueCity("Metz");
+        metzNull.setVenueCountry(null);
+        eventRepository.save(metzNull);
+
+        Event metzUpper = publishedLiveEvent();
+        metzUpper.setVenueCity("METZ");
+        metzUpper.setVenueCountry("");
+        eventRepository.save(metzUpper);
+
+        List<com.imin.iminapi.dto.publicapi.PublicCityItem> cities = publicEventService.listCities();
+        assertThat(cities).hasSize(3);
+        assertThat(cities).allSatisfy(c -> assertThat(c.eventCount()).isEqualTo(1L));
     }
 }

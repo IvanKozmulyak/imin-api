@@ -46,6 +46,8 @@ class RefundRequestServiceTest {
     RefundTicketRepository refundTickets = mock(RefundTicketRepository.class);
     TicketTierRepository tiers = mock(TicketTierRepository.class);
     RefundService refundService = mock(RefundService.class);
+    RefundReferenceGenerator references = new RefundReferenceGenerator(
+        java.time.Clock.fixed(java.time.Instant.parse("2026-08-11T00:00:00Z"), java.time.ZoneOffset.UTC));
 
     RefundRequestService service;
 
@@ -58,7 +60,7 @@ class RefundRequestServiceTest {
             .thenReturn(new EmailTemplateRenderer.Rendered("<html/>", "txt"));
         service = new RefundRequestService(orders, events, attempts, tokens, requests,
             email, renderer, emailProps, ticketProps, publisher,
-            tickets, refundTickets, tiers, refundService);
+            tickets, refundTickets, tiers, refundService, references);
     }
 
     @Test
@@ -269,9 +271,44 @@ class RefundRequestServiceTest {
             var resp = service.submitByToken("raw", req());
 
             assertThat(resp.status()).isEqualTo("pending");
+            // The receipt code — this is what the buyer quotes to support, not the UUID.
+            assertThat(resp.reference()).matches("^REQ-[A-Z2-9]{4}-26$");
+            verify(requests).save(org.mockito.ArgumentMatchers.argThat(
+                rr -> rr.getReference() != null && rr.getReference().equals(resp.reference())));
             verify(requests).save(any(RefundRequest.class));
             verify(tokens).save(org.mockito.ArgumentMatchers.argThat(t2 -> t2.getConsumedAt() != null));
             verify(publisher).publishEvent(any(com.imin.iminapi.refund.event.RefundRequestSubmittedEvent.class));
+        }
+
+
+        @Test
+        void retries_until_the_reference_is_free() {
+            // The UNIQUE index is the authority, but a violation inside this transaction
+            // could not be retried and would surface as a misleading "already open" 409 —
+            // so a taken code must be rejected BEFORE the insert.
+            when(tokens.findByTokenHash(anyString())).thenReturn(Optional.of(token));
+            when(orders.findById(orderId)).thenReturn(Optional.of(o));
+            com.imin.iminapi.model.Ticket t = new com.imin.iminapi.model.Ticket();
+            t.setId(UUID.randomUUID());
+            t.setOrderId(orderId);
+            t.setTierId(UUID.randomUUID());
+            t.setPriceMinor(2500);
+            t.setState(com.imin.iminapi.model.Ticket.STATE_ISSUED);
+            when(tickets.findByOrderId(orderId)).thenReturn(List.of(t));
+            when(refundTickets.findRefundedTicketIds(any())).thenReturn(Set.of());
+            when(requests.existsByOrderIdAndStatus(orderId, RefundRequestStatus.PENDING)).thenReturn(false);
+            // First two candidates are taken, the third is free.
+            when(requests.existsByReference(anyString())).thenReturn(true, true, false);
+            when(requests.save(any())).thenAnswer(inv -> {
+                RefundRequest rr = inv.getArgument(0);
+                rr.setId(UUID.randomUUID());
+                return rr;
+            });
+
+            var resp = service.submitByToken("raw", req());
+
+            assertThat(resp.reference()).matches("^REQ-[A-Z2-9]{4}-26$");
+            verify(requests, org.mockito.Mockito.times(3)).existsByReference(anyString());
         }
 
         @Test

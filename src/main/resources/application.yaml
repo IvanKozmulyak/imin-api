@@ -260,6 +260,20 @@ imin:
     # not-sold-out event is flagged lowStock on GET /api/v1/public/events,
     # so the buyer site can show an "Almost gone" badge. 0 disables the badge.
     low-stock-threshold: ${IMIN_PUBLIC_LOW_STOCK_THRESHOLD:10}
+  geocoding:
+    # Venue coordinates (V80) for the buyer event page's map tile.
+    # OFF BY DEFAULT: false binds NoOpGeocoder, events.venue_latitude/longitude stay
+    # NULL, and the buyer page keeps its address + maps deep link. Setting this true
+    # opts into Nominatim (OpenStreetMap) — no API key, but its usage policy requires
+    # an identifying User-Agent and caps anonymous clients near 1 request/second, both
+    # honoured below. Geocoding runs AFTER_COMMIT + @Async and fails soft, so enabling
+    # or disabling it can never break an organizer write or a buyer page.
+    enabled: ${IMIN_GEOCODING_ENABLED:false}
+    base-url: ${IMIN_GEOCODING_BASE_URL:https://nominatim.openstreetmap.org/search}
+    # Nominatim BLOCKS requests without a real identifying User-Agent — keep contact info in it.
+    user-agent: ${IMIN_GEOCODING_USER_AGENT:imin-api/1.0 (+https://imin.wtf; ops@imin.wtf)}
+    timeout-seconds: ${IMIN_GEOCODING_TIMEOUT_SECONDS:5}
+    min-interval-millis: ${IMIN_GEOCODING_MIN_INTERVAL_MILLIS:1100}
   apple-wallet:
     # Apple Pass Type ID, e.g. pass.com.imin.ticket. Required for /apple-wallet.pkpass
     # to serve a pass; when blank the endpoint returns 503 and the email template

@@ -13,6 +13,8 @@ public record PublicEventListQuery(
         String q,
         boolean onSaleOnly,
         boolean includeOngoing,
+        /** Keep only events whose cheapest purchasable tier is €0 (see EventRepository.findPublicListing). */
+        boolean freeOnly,
         int page,
         int pageSize
 ) {}
