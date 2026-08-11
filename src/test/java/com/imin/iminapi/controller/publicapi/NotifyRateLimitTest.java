@@ -51,14 +51,14 @@ class NotifyRateLimitTest {
 
     @Test
     void consumesNotifySubscribeBucketKeyedByClientIpThenDelegates() {
-        NotifySubscriptionRequest body = new NotifySubscriptionRequest("ada@example.com");
-        when(notifyService.subscribe(eq(eventId), eq(body))).thenReturn(NotifySubscriptionResponse.ok());
+        NotifySubscriptionRequest body = new NotifySubscriptionRequest("ada@example.com", null);
+        when(notifyService.subscribe(eq(eventId), eq(body), any(), any())).thenReturn(NotifySubscriptionResponse.ok());
 
         var res = controller.notify(eventId, body, requestFrom("203.0.113.7"));
 
         assertThat(res.getStatusCode()).isEqualTo(HttpStatus.OK);
         verify(rateLimiter).consume("notify-subscribe", "ip:203.0.113.7");
-        verify(notifyService).subscribe(eventId, body);
+        verify(notifyService).subscribe(eq(eventId), eq(body), any(), any());
     }
 
     @Test
@@ -67,22 +67,22 @@ class NotifyRateLimitTest {
                 .when(rateLimiter).consume(eq("notify-subscribe"), eq("ip:203.0.113.7"));
 
         assertThatThrownBy(() -> controller.notify(
-                eventId, new NotifySubscriptionRequest("ada@example.com"), requestFrom("203.0.113.7")))
+                eventId, new NotifySubscriptionRequest("ada@example.com", null), requestFrom("203.0.113.7")))
                 .isInstanceOf(ApiException.class)
                 .satisfies(ex -> {
                     assertThat(((ApiException) ex).status()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
                     assertThat(((ApiException) ex).code()).isEqualTo(ErrorCode.RATE_LIMITED);
                 });
 
-        verify(notifyService, never()).subscribe(any(), any());
+        verify(notifyService, never()).subscribe(any(), any(), any(), any());
     }
 
     @Test
     void limitIsPerIpSoOneSpammerDoesNotBlockOtherBuyers() {
         doThrow(ApiException.rateLimited())
                 .when(rateLimiter).consume(eq("notify-subscribe"), eq("ip:203.0.113.7"));
-        NotifySubscriptionRequest body = new NotifySubscriptionRequest("bob@example.com");
-        when(notifyService.subscribe(eq(eventId), eq(body))).thenReturn(NotifySubscriptionResponse.ok());
+        NotifySubscriptionRequest body = new NotifySubscriptionRequest("bob@example.com", null);
+        when(notifyService.subscribe(eq(eventId), eq(body), any(), any())).thenReturn(NotifySubscriptionResponse.ok());
 
         // A different client IP is a different bucket key and still gets through.
         var res = controller.notify(eventId, body, requestFrom("198.51.100.42"));
@@ -96,7 +96,7 @@ class NotifyRateLimitTest {
         // The limiter runs before validation on purpose: a loop posting garbage bodies is
         // exactly the traffic we want to shed, and refunding those attempts would let it
         // probe for free.
-        when(notifyService.subscribe(eq(eventId), eq(null)))
+        when(notifyService.subscribe(eq(eventId), eq(null), any(), any()))
                 .thenThrow(new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST, "Invalid request body"));
 
         assertThatThrownBy(() -> controller.notify(eventId, null, requestFrom("203.0.113.9")))
