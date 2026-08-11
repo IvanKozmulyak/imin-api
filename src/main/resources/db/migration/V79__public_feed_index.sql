@@ -1,0 +1,23 @@
+-- Supporting index for the public event feed (W1): GET /api/v1/public/events.
+--
+-- EventRepository.findPublicListing filters
+--   deleted_at IS NULL
+--   AND visibility = 'PUBLIC'
+--   AND published_at IS NOT NULL
+--   AND status NOT IN ('DRAFT', 'CANCELLED')
+--   AND a starts_at window
+-- and sorts by starts_at ASC. Until now it had NO supporting index at all — the only
+-- shield was the 60s CDN cache in front of the route, so every cache miss was a full
+-- scan of events.
+--
+-- Shape: leading equality column (visibility) + the range/sort column (starts_at).
+-- That lets Postgres seek straight to the PUBLIC slice and read it already ordered by
+-- starts_at, so the window filter is a range scan and the ORDER BY needs no sort.
+--
+-- The remaining predicates (deleted_at IS NULL, published_at IS NOT NULL, status) are
+-- POST-FILTERED off the heap. A Postgres partial index
+--   (... (visibility, starts_at) WHERE deleted_at IS NULL AND published_at IS NOT NULL)
+-- would be tighter, but H2 — which backs the test suite — has no partial indexes (the
+-- same constraint already documented in V50/V58/V76), so a plain composite it is. The
+-- public slice is a small fraction of events and the post-filter is cheap.
+CREATE INDEX idx_events_public_feed ON events (visibility, starts_at);
