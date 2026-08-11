@@ -1,0 +1,11 @@
+YA ESTÁS DENTRO · imin
+
+Ya tienes tu entrada para {{eventName}}.
+{{eventWhen}}{{eventWhereSeparator}}{{eventWhere}}
+
+TUS ENTRADAS
+
+{{ticketBlocks}}
+Ver tu pedido online: {{orderUrl}}
+
+¿Has perdido este correo? Recupera tus entradas: {{recoverUrl}}

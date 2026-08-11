@@ -2,6 +2,7 @@ package com.imin.iminapi.service.event;
 
 import com.imin.iminapi.dto.publicapi.NotifySubscriptionRequest;
 import com.imin.iminapi.dto.publicapi.NotifySubscriptionResponse;
+import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.NotifySubscription;
 import com.imin.iminapi.repository.EventRepository;
@@ -40,6 +41,18 @@ public class NotifySubscriptionService {
     /** Email field length cap; matches the DB column (RFC 5321 effective limit). */
     private static final int EMAIL_MAX_LENGTH = 254;
 
+    /**
+     * The verbatim promise the buyer is shown next to the notify-me form on the public
+     * event page ({@code imin-public} event-detail). Stored on every subscription as
+     * proof-of-consent: if the copy changes later, existing rows keep the text their
+     * owner actually agreed to. Keep this string byte-identical to the UI.
+     */
+    public static final String CONSENT_TEXT = "We'll email you if tickets release.";
+
+    /** Column widths from V77 — untrusted header input is truncated, never rejected. */
+    private static final int SOURCE_IP_MAX_LENGTH = 45;
+    private static final int USER_AGENT_MAX_LENGTH = 255;
+
     private final EventRepository eventRepository;
     private final NotifySubscriptionRepository subscriptionRepository;
     private final Validator validator;
@@ -53,9 +66,25 @@ public class NotifySubscriptionService {
         this.validator = Validation.buildDefaultValidatorFactory().getValidator();
     }
 
+    /** Pre-V77 form — no provenance captured. Kept for callers with no HTTP context. */
     @Transactional
     public NotifySubscriptionResponse subscribe(UUID eventId, NotifySubscriptionRequest request) {
+        return subscribe(eventId, request, null, null);
+    }
+
+    /**
+     * @param sourceIp  client IP resolved by the controller (X-Forwarded-For aware).
+     * @param userAgent raw {@code User-Agent} header. Both are untrusted and truncated
+     *                  to the V77 column widths rather than rejected — a hostile header
+     *                  must never cost a real buyer their subscription.
+     */
+    @Transactional
+    public NotifySubscriptionResponse subscribe(UUID eventId, NotifySubscriptionRequest request,
+                                                String sourceIp, String userAgent) {
         String email = normalizeAndValidate(request);
+        // Locale is deliberately outside normalizeAndValidate: a bad locale is not a
+        // request error, it just means "no preference" (⇒ English email).
+        String locale = EmailLocale.normalizeOrNull(request == null ? null : request.locale());
 
         // Reuse the existing public-eligibility predicate so draft / private / deleted
         // events 404 with the same leak-safe envelope as the detail endpoint.
@@ -71,16 +100,22 @@ public class NotifySubscriptionService {
             // subscribe again wants to hear about the NEXT one. Without this the UNIQUE
             // pre-check would silently eat the request and we'd repeat the false promise.
             NotifySubscription row = existing.get();
-            if (row.getNotifiedAt() != null) {
+            boolean wasNotified = row.getNotifiedAt() != null;
+            if (wasNotified) {
                 row.setNotifiedAt(null);
-                subscriptionRepository.save(row);
             }
+            // Provenance describes the LATEST act of consent, so refresh it on every
+            // re-subscribe — including the plain-duplicate case. The row we would be
+            // mailing next was authorized here, now, from this client.
+            applyProvenance(row, sourceIp, userAgent, locale);
+            subscriptionRepository.save(row);
             return NotifySubscriptionResponse.ok();
         }
 
         NotifySubscription sub = new NotifySubscription();
         sub.setEventId(event.getId());
         sub.setEmail(email);
+        applyProvenance(sub, sourceIp, userAgent, locale);
         try {
             subscriptionRepository.save(sub);
         } catch (DataIntegrityViolationException dupe) {
@@ -88,6 +123,26 @@ public class NotifySubscriptionService {
             return NotifySubscriptionResponse.ok();
         }
         return NotifySubscriptionResponse.ok();
+    }
+
+    /**
+     * Stamps the V77 consent-provenance columns. {@code consentText} is always the
+     * current {@link #CONSENT_TEXT} constant — the exact wording shown at collection.
+     */
+    private static void applyProvenance(NotifySubscription row, String sourceIp,
+                                        String userAgent, String locale) {
+        row.setSourceIp(truncate(sourceIp, SOURCE_IP_MAX_LENGTH));
+        row.setUserAgent(truncate(userAgent, USER_AGENT_MAX_LENGTH));
+        row.setConsentText(CONSENT_TEXT);
+        row.setLocale(locale);
+    }
+
+    /** Trims, caps to {@code max}, and normalizes blank to null. */
+    private static String truncate(String value, int max) {
+        if (value == null) return null;
+        String trimmed = value.trim();
+        if (trimmed.isEmpty()) return null;
+        return trimmed.length() <= max ? trimmed : trimmed.substring(0, max);
     }
 
     /**

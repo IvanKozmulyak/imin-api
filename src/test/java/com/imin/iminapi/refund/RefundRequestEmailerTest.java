@@ -8,7 +8,9 @@ import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.refund.email.RefundRequestEmailer;
 import com.imin.iminapi.refund.event.RefundRequestRejectedEvent;
 import com.imin.iminapi.refund.event.RefundRequestSubmittedEvent;
+import com.imin.iminapi.model.Order;
 import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -21,7 +23,9 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class RefundRequestEmailerTest {
@@ -31,6 +35,7 @@ class RefundRequestEmailerTest {
     EmailProperties props = new EmailProperties();
     RefundRequestRepository requests = mock(RefundRequestRepository.class);
     EventRepository events = mock(EventRepository.class);
+    OrderRepository orders = mock(OrderRepository.class);
     OrganizationRepository orgs = mock(OrganizationRepository.class);
     UserRepository users = mock(UserRepository.class);
 
@@ -46,7 +51,7 @@ class RefundRequestEmailerTest {
         // The organizer-notify email uses the locale-aware 3-arg render overload.
         when(renderer.render(anyString(), any(), any()))
             .thenReturn(new EmailTemplateRenderer.Rendered("<html/>", "txt"));
-        emailer = new RefundRequestEmailer(emails, renderer, props, requests, events, orgs, users);
+        emailer = new RefundRequestEmailer(emails, renderer, props, requests, events, orders, orgs, users);
     }
 
     private RefundRequest seedRequest() {
@@ -82,6 +87,49 @@ class RefundRequestEmailerTest {
                 "buyer@example.com",
                 "organizer@example.com",
                 "support+refunds@test");
+    }
+
+    /**
+     * W1.G: the buyer acknowledgement follows the language on the order
+     * (orders.buyer_locale, V78) — independently of the organizer notification, which
+     * follows the ORGANIZER's language. A Spanish buyer and a French organizer each get
+     * their own.
+     */
+    @Test
+    void on_submitted_sends_buyer_ack_in_the_buyers_locale() {
+        RefundRequest rr = seedRequest();
+        when(requests.findById(rr.getId())).thenReturn(Optional.of(rr));
+        Order order = new Order();
+        order.setId(rr.getOrderId());
+        order.setBuyerLocale("es");
+        when(orders.findById(rr.getOrderId())).thenReturn(Optional.of(order));
+        when(events.findById(rr.getEventId())).thenReturn(Optional.empty());
+        when(orgs.findById(rr.getOrgId())).thenReturn(Optional.empty());
+
+        emailer.onSubmitted(new RefundRequestSubmittedEvent(rr.getId()));
+
+        verify(renderer).render(eq("refund-request-received-buyer"), eq("es"), any());
+        assertThat(emails.sent().stream()
+                .filter(s -> s.to().equals("buyer@example.com"))
+                .map(RecordingEmailService.SentEmail::subject))
+            .containsExactly("Hemos recibido tu solicitud de reembolso · imin");
+    }
+
+    /** Unknown order (or no stored preference) ⇒ null locale ⇒ the English ack. */
+    @Test
+    void on_submitted_buyer_ack_falls_back_to_english_without_an_order_locale() {
+        RefundRequest rr = seedRequest();
+        when(requests.findById(rr.getId())).thenReturn(Optional.of(rr));
+        when(orders.findById(rr.getOrderId())).thenReturn(Optional.empty());
+        when(events.findById(rr.getEventId())).thenReturn(Optional.empty());
+        when(orgs.findById(rr.getOrgId())).thenReturn(Optional.empty());
+
+        emailer.onSubmitted(new RefundRequestSubmittedEvent(rr.getId()));
+
+        assertThat(emails.sent().stream()
+                .filter(s -> s.to().equals("buyer@example.com"))
+                .map(RecordingEmailService.SentEmail::subject))
+            .containsExactly("We got your refund request · imin");
     }
 
     @Test

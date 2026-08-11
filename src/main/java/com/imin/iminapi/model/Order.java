@@ -123,6 +123,15 @@ public class Order {
     @Column(name = "anon_id", length = 64)
     private String anonId;
 
+    /**
+     * The buyer's UI language at checkout (V78) — one of en/es/fr/uk, or null when they
+     * never expressed one. Picks the localized variant for every buyer-facing email tied
+     * to this order (ticket-issued, order-recovery, refund-confirmed, refund-request ack).
+     * The buyer has no account, so the order is the only place this can live.
+     */
+    @Column(name = "buyer_locale", length = 5)
+    private String buyerLocale;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Times.nowMicros();
 

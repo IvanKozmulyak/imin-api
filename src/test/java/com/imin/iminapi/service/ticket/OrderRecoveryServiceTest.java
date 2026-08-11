@@ -7,11 +7,13 @@ import com.imin.iminapi.model.Order;
 import com.imin.iminapi.repository.OrderRecoveryAttemptRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
@@ -92,6 +94,66 @@ class OrderRecoveryServiceTest {
         verify(orders, never()).findRecentForRecovery(any(), any(), any());
         verify(email, never()).send(any(), any(), any(), any());
         verify(attempts).save(any()); // still logged
+    }
+
+    /**
+     * W1.G: recovery mail follows the buyer's language. One mail can span several orders,
+     * so there is no single "the" locale — findRecentForRecovery is newest-first, so the
+     * most recent order's preference wins (it's the buyer's latest expressed choice).
+     */
+    @Test
+    void uses_the_most_recent_orders_locale_when_orders_disagree() {
+        OrderRepository orders = mock(OrderRepository.class);
+        EmailService email = mock(EmailService.class);
+        OrderRecoveryAttemptRepository attempts = mock(OrderRecoveryAttemptRepository.class);
+        when(attempts.countByEmailAndAttemptedAtAfter(anyString(), any())).thenReturn(0L);
+        when(attempts.countByIpHashAndAttemptedAtAfter(anyString(), any())).thenReturn(0L);
+
+        Order newest = order("NEWEST", "fr");
+        Order older = order("OLDER", "es");
+        when(orders.findRecentForRecovery(eq("buyer@example.com"), isNull(), any()))
+                .thenReturn(List.of(newest, older));
+
+        build(orders, email, attempts).requestRecovery("buyer@example.com", null, "1.2.3.4");
+
+        ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
+        verify(email).send(eq("buyer@example.com"), subject.capture(), html.capture(), anyString());
+        assertThat(subject.getValue()).isEqualTo("Récupérez vos billets · imin");
+        assertThat(html.getValue()).contains("<html lang=\"fr\">");
+        // Order links are injected post-render — the localized file must keep the slot.
+        assertThat(html.getValue()).contains("/order/NEWEST").contains("/order/OLDER");
+    }
+
+    /** No stored preference on the newest order ⇒ the English mail, unchanged. */
+    @Test
+    void falls_back_to_english_when_the_order_has_no_locale() {
+        OrderRepository orders = mock(OrderRepository.class);
+        EmailService email = mock(EmailService.class);
+        OrderRecoveryAttemptRepository attempts = mock(OrderRecoveryAttemptRepository.class);
+        when(attempts.countByEmailAndAttemptedAtAfter(anyString(), any())).thenReturn(0L);
+        when(attempts.countByIpHashAndAttemptedAtAfter(anyString(), any())).thenReturn(0L);
+        when(orders.findRecentForRecovery(eq("buyer@example.com"), isNull(), any()))
+                .thenReturn(List.of(order("TOK", null)));
+
+        build(orders, email, attempts).requestRecovery("buyer@example.com", null, "1.2.3.4");
+
+        ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
+        verify(email).send(eq("buyer@example.com"), subject.capture(), html.capture(), anyString());
+        assertThat(subject.getValue()).isEqualTo("Recover your tickets · imin");
+        assertThat(html.getValue()).contains("<html lang=\"en\">");
+    }
+
+    private static Order order(String token, String locale) {
+        Order o = new Order();
+        o.setId(UUID.randomUUID());
+        o.setToken(token);
+        o.setEmail("buyer@example.com");
+        o.setEventId(UUID.randomUUID());
+        o.setCreatedAt(Instant.now());
+        o.setBuyerLocale(locale);
+        return o;
     }
 
     @Test

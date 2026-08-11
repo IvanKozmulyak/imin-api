@@ -1,0 +1,15 @@
+BILLETS EN VENTE · imin
+
+Des billets sont disponibles pour {{eventName}}.
+
+Vous nous avez demandé de vous prévenir dès que des billets seraient disponibles pour {{eventName}}. Ceci est une notification unique.
+
+{{eventName}}
+{{eventWhen}}
+{{eventWhere}}
+
+Obtenez vos billets : {{eventUrl}}
+
+Les billets partent dans l'ordre des achats — cet e-mail n'en réserve aucun pour vous. Vous ne recevrez pas d'autre e-mail à propos de cet événement sauf si vous vous réinscrivez.
+
+imin.wtf · mise en vente des billets pour {{eventName}}

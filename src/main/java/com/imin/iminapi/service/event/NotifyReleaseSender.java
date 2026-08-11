@@ -1,6 +1,7 @@
 package com.imin.iminapi.service.event;
 
 import com.imin.iminapi.audience.repository.SuppressionRepository;
+import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.email.EmailTemplateRenderer;
@@ -21,6 +22,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -130,8 +132,10 @@ public class NotifyReleaseSender {
         Set<String> suppressed = new HashSet<>(suppressions.findDeliverabilityEmailsIn(
                 pending.stream().map(s -> normalize(s.getEmail())).toList()));
 
-        EmailTemplateRenderer.Rendered rendered = render(event);
-        String subject = "Tickets are available for " + eventName(event);
+        // The event body is identical for every subscriber, but the language is not (V77
+        // stores the locale the buyer signed up in). Render once PER LOCALE and reuse —
+        // a sold-out headliner can have thousands of pending rows and at most four bodies.
+        Map<String, EmailTemplateRenderer.Rendered> byLocale = new HashMap<>();
 
         int sent = 0;
         int skipped = 0;
@@ -145,6 +149,10 @@ public class NotifyReleaseSender {
                             event.getId());
                     continue;
                 }
+                String locale = EmailLocale.normalize(sub.getLocale());
+                EmailTemplateRenderer.Rendered rendered =
+                        byLocale.computeIfAbsent(locale, l -> render(event, l));
+                String subject = subject(event, locale);
                 email.send(sub.getEmail(), subject, rendered.html(), rendered.text());
                 mark(sub);
                 sent++;
@@ -163,13 +171,22 @@ public class NotifyReleaseSender {
         subscriptions.save(sub);
     }
 
-    private EmailTemplateRenderer.Rendered render(Event event) {
+    private EmailTemplateRenderer.Rendered render(Event event, String locale) {
         Map<String, String> values = new LinkedHashMap<>();
         values.put("eventName", eventName(event));
         values.put("eventWhen", formatWhen(event));
         values.put("eventWhere", formatWhere(event));
         values.put("eventUrl", buyerSiteBase() + "/e/" + event.getId());
-        return renderer.render("notify-release", values);
+        return renderer.render("notify-release", locale, values);
+    }
+
+    private static String subject(Event event, String locale) {
+        String name = eventName(event);
+        return EmailLocale.choose(locale,
+                "Tickets are available for " + name,
+                "Ya hay entradas disponibles para " + name,
+                "Des billets sont disponibles pour " + name,
+                "Квитки на " + name + " уже доступні");
     }
 
     private String buyerSiteBase() {

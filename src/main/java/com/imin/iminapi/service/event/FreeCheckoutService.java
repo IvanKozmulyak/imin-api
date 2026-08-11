@@ -1,5 +1,6 @@
 package com.imin.iminapi.service.event;
 
+import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.model.CheckoutAttribution;
@@ -87,11 +88,16 @@ public class FreeCheckoutService {
      *                     Snapshotted onto {@code orders.utm_*}; the free path stamps it
      *                     inline because it never round-trips through Stripe metadata.
      *                     Never null — pass {@link CheckoutAttribution#NONE} for none.
+     * @param buyerLocale  the buyer's UI language (V78), snapshotted onto
+     *                     {@code orders.buyer_locale} so their emails come back in it.
+     *                     Null ⇒ no preference ⇒ English. Re-normalized here so a caller
+     *                     that skipped normalization can't write junk into the column.
      */
     @Transactional
     public Order issueFreeOrder(Event event, TicketTier tier, int quantity,
                                  String buyerEmail, PromoCode appliedPromo, boolean adsConsent,
-                                 boolean marketingOptIn, CheckoutAttribution attribution) {
+                                 boolean marketingOptIn, CheckoutAttribution attribution,
+                                 String buyerLocale) {
         // Reserve + confirm atomically in the same transaction. expires_at is a
         // short fallback that the sweeper would only see if the surrounding
         // transaction crashed between reserve() and confirmSold() — both calls
@@ -111,6 +117,7 @@ public class FreeCheckoutService {
         order.setPaymentMethod("free");
         order.setAdsConsent(adsConsent);
         order.setMarketingOptIn(marketingOptIn);
+        order.setBuyerLocale(EmailLocale.normalizeOrNull(buyerLocale));
         (attribution == null ? CheckoutAttribution.NONE : attribution).applyTo(order);
         if (appliedPromo != null) {
             order.setPromoCodeId(appliedPromo.getId());

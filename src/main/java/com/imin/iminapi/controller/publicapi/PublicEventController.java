@@ -81,9 +81,29 @@ public class PublicEventController {
         // public checkout limiter. Without it a loop can fill notify_subscriptions with fake
         // addresses, and every one of those rows later earns a real send from
         // NotifyReleaseSender — a free spam relay pointed at our sending domain.
+        // Keyed on getRemoteAddr() (proxy-resolved via forward-headers-strategy), NOT the
+        // client-controllable X-Forwarded-For that clientIp() reads for the evidence trail.
         rateLimiter.consume("notify-subscribe", "ip:" + http.getRemoteAddr());
-        NotifySubscriptionResponse response = notifySubscriptionService.subscribe(id, body);
+        // Consent provenance (V77): who asked, from where, with which client. Captured
+        // here because the service has no HTTP context — same split as PublicRecoveryController.
+        NotifySubscriptionResponse response = notifySubscriptionService.subscribe(
+                id, body, clientIp(http), http.getHeader(HttpHeaders.USER_AGENT));
         return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Client IP for the proxied deployment (Railway/Vercel edge in front of us):
+     * {@code getRemoteAddr()} is the proxy, so the first hop of {@code X-Forwarded-For}
+     * is the buyer. The header is client-controllable, which is fine here — this is an
+     * evidence trail, not an authorization input.
+     */
+    private static String clientIp(HttpServletRequest http) {
+        String forwarded = http.getHeader("X-Forwarded-For");
+        if (forwarded != null && !forwarded.isBlank()) {
+            String first = forwarded.split(",")[0].trim();
+            if (!first.isEmpty()) return first;
+        }
+        return http.getRemoteAddr();
     }
 
     @PostMapping("/{id}/quote")

@@ -1,0 +1,11 @@
+C'EST CONFIRMÉ · imin
+
+C'est confirmé pour {{eventName}}.
+{{eventWhen}}{{eventWhereSeparator}}{{eventWhere}}
+
+VOS BILLETS
+
+{{ticketBlocks}}
+Voir votre commande en ligne : {{orderUrl}}
+
+Vous avez perdu cet e-mail ? Récupérez vos billets : {{recoverUrl}}

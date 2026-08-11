@@ -1,5 +1,6 @@
 package com.imin.iminapi.service.ticket;
 
+import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.email.EmailTemplateRenderer;
@@ -96,15 +97,26 @@ public class OrderRecoveryService {
             linksText.append("- ").append(url).append('\n');
         }
 
+        // One mail can span several orders in different languages; there is no "the"
+        // locale. Use the most recent order's — findRecentForRecovery is newest-first, so
+        // that is the buyer's latest expressed preference. Null ⇒ English.
+        String locale = found.get(0).getBuyerLocale();
+
         // Renderer escapes by default; sidestep with placeholder + post-render replace.
         Map<String, String> values = new LinkedHashMap<>();
         values.put("links", "__LINKS_PLACEHOLDER__");
-        EmailTemplateRenderer.Rendered r = renderer.render("order-recovery", values);
+        EmailTemplateRenderer.Rendered r = renderer.render("order-recovery", locale, values);
         String html = r.html().replace("__LINKS_PLACEHOLDER__", linksHtml.toString());
         String text = r.text().replace("__LINKS_PLACEHOLDER__", linksText.toString());
 
+        String subject = EmailLocale.choose(locale,
+                "Recover your tickets · imin",
+                "Recupera tus entradas · imin",
+                "Récupérez vos billets · imin",
+                "Відновлення ваших квитків · imin");
+
         try {
-            email.send(normalized, "Recover your tickets · imin", html, text);
+            email.send(normalized, subject, html, text);
             log.info("Recovery: sent {} order link(s) to {}", found.size(), normalized);
         } catch (Exception e) {
             log.warn("Recovery email failed for {}: {}", normalized, e.getMessage());

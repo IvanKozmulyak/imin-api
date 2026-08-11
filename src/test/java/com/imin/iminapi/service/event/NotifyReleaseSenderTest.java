@@ -132,9 +132,14 @@ class NotifyReleaseSenderTest {
     }
 
     private NotifySubscription subscribe(UUID eventId, String email) {
+        return subscribe(eventId, email, null);
+    }
+
+    private NotifySubscription subscribe(UUID eventId, String email, String locale) {
         NotifySubscription s = new NotifySubscription();
         s.setEventId(eventId);
         s.setEmail(email);
+        s.setLocale(locale);
         return subscriptions.save(s);
     }
 
@@ -158,6 +163,56 @@ class NotifyReleaseSenderTest {
                 contains("Release Night"),
                 contains("one-time notification"),
                 contains("one-time notification"));
+        assertThat(notifiedAtOf(sub)).isEqualTo(NOW);
+    }
+
+    /**
+     * W1.G: the release email follows the language each subscriber signed up in (V77).
+     * Subscribers on the SAME event can disagree, so the sweep must render per locale
+     * rather than once per event — this is the test that would catch a regression to a
+     * single shared body.
+     */
+    @Test
+    void mailsEachSubscriberInTheLocaleTheySignedUpWith() {
+        Event e = liveEvent();
+        tier(e.getId(), 100, 0);
+        subscribe(e.getId(), "es@example.com", "es");
+        subscribe(e.getId(), "uk@example.com", "uk");
+        subscribe(e.getId(), "none@example.com", null);
+
+        sender.sweep();
+
+        verify(emailService).send(
+                eq("es@example.com"),
+                eq("Ya hay entradas disponibles para Release Night"),
+                contains("<html lang=\"es\">"),
+                contains("ENTRADAS A LA VENTA"));
+        verify(emailService).send(
+                eq("uk@example.com"),
+                eq("Квитки на Release Night уже доступні"),
+                contains("<html lang=\"uk\">"),
+                contains("КВИТКИ У ПРОДАЖУ"));
+        verify(emailService).send(
+                eq("none@example.com"),
+                eq("Tickets are available for Release Night"),
+                contains("<html lang=\"en\">"),
+                contains("one-time notification"));
+    }
+
+    /** An unsupported tag stored on the row must degrade to English, not blow up the sweep. */
+    @Test
+    void unsupportedSubscriptionLocale_fallsBackToEnglish() {
+        Event e = liveEvent();
+        tier(e.getId(), 100, 0);
+        NotifySubscription sub = subscribe(e.getId(), "de@example.com", "de");
+
+        sender.sweep();
+
+        verify(emailService).send(
+                eq("de@example.com"),
+                eq("Tickets are available for Release Night"),
+                contains("<html lang=\"en\">"),
+                anyString());
         assertThat(notifiedAtOf(sub)).isEqualTo(NOW);
     }
 

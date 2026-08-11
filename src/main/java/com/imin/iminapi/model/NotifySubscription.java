@@ -44,6 +44,25 @@ public class NotifySubscription {
     @Column(name = "notified_at")
     private Instant notifiedAt;
 
+    /**
+     * Consent provenance (V77), captured at subscribe time and refreshed on re-arm.
+     * All nullable — rows written before V77 have none, and a request can arrive with
+     * no User-Agent. {@code consentText} is the verbatim promise the buyer was shown,
+     * stored per row so a later copy change can't rewrite what they agreed to.
+     */
+    @Column(name = "source_ip", length = 45)
+    private String sourceIp;
+
+    @Column(name = "user_agent", length = 255)
+    private String userAgent;
+
+    @Column(name = "consent_text", length = 255)
+    private String consentText;
+
+    /** Buyer's UI language (en/es/fr/uk) — picks the notify-release email variant. Null ⇒ English. */
+    @Column(length = 5)
+    private String locale;
+
     @PrePersist
     @PreUpdate
     void truncateTimestamps() {

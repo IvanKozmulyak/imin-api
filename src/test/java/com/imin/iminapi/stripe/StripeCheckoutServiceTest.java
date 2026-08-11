@@ -200,6 +200,41 @@ class StripeCheckoutServiceTest {
         assertThat(pid.getMetadata()).containsEntry("event_id", eventId.toString());
     }
 
+    /**
+     * W1.G/V78: the paid path has no Order until the webhook fires, so the buyer's UI
+     * language has to ride the Stripe metadata on BOTH the Session and the PaymentIntent
+     * (fulfilment reads the PI). Normalized on the way in — the stored tag is lowercase.
+     */
+    @Test
+    void createCheckoutSession_stampsBuyerLocaleOntoSessionAndPiMetadata() throws Exception {
+        svc.createCheckoutSession(eventId, tierId, 1, null, null, "buyer@example.com",
+                false, false, com.imin.iminapi.model.CheckoutAttribution.NONE, "ES");
+
+        ArgumentCaptor<SessionCreateParams> captor = ArgumentCaptor.forClass(SessionCreateParams.class);
+        verify(sessionService).create(captor.capture());
+
+        assertThat(captor.getValue().getMetadata()).containsEntry("buyer_locale", "es");
+        assertThat(captor.getValue().getPaymentIntentData().getMetadata())
+                .containsEntry("buyer_locale", "es");
+    }
+
+    /**
+     * An unsupported tag is dropped rather than stored: a missing key means "no
+     * preference", which is a different thing from "the buyer chose English".
+     */
+    @Test
+    void createCheckoutSession_omitsBuyerLocaleMetadata_whenUnsupportedOrAbsent() throws Exception {
+        svc.createCheckoutSession(eventId, tierId, 1, null, null, "buyer@example.com",
+                false, false, com.imin.iminapi.model.CheckoutAttribution.NONE, "kl");
+
+        ArgumentCaptor<SessionCreateParams> captor = ArgumentCaptor.forClass(SessionCreateParams.class);
+        verify(sessionService).create(captor.capture());
+
+        assertThat(captor.getValue().getMetadata()).doesNotContainKey("buyer_locale");
+        assertThat(captor.getValue().getPaymentIntentData().getMetadata())
+                .doesNotContainKey("buyer_locale");
+    }
+
     @Test
     void createCheckoutSession_stampsAdsConsentTrueOntoSessionAndPiMetadata() throws Exception {
         // The paid path has no Order to write until the webhook fires, so the buyer's
@@ -339,7 +374,7 @@ class StripeCheckoutServiceTest {
         when(freeCheckoutService.issueFreeOrder(any(), any(), eq(1), eq("free@example.com"),
                 org.mockito.ArgumentMatchers.isNull(),
                 org.mockito.ArgumentMatchers.anyBoolean(), org.mockito.ArgumentMatchers.anyBoolean(),
-                any()))
+                any(), nullable(String.class)))
                 .thenReturn(order);
         when(freeCheckoutService.findOrderTickets(order.getId())).thenReturn(java.util.List.of());
         when(freeCheckoutService.orderUrl(order)).thenReturn("http://localhost:3000/order/ord_abc");
@@ -350,11 +385,66 @@ class StripeCheckoutServiceTest {
         verify(freeCheckoutService).issueFreeOrder(any(), any(), eq(1), eq("free@example.com"),
                 org.mockito.ArgumentMatchers.isNull(),
                 org.mockito.ArgumentMatchers.anyBoolean(), org.mockito.ArgumentMatchers.anyBoolean(),
-                any());
+                any(), nullable(String.class));
         // Branded email + downstream side effects now ride TicketsIssuedEvent published
         // inside issueFreeOrder — no inline confirmation call to verify here.
         // Stripe must NOT be called for free orders.
         verify(sessionService, never()).create(any(SessionCreateParams.class));
+    }
+
+    /**
+     * W1.G/V78: the free path writes the Order inline, so the normalized locale must reach
+     * FreeCheckoutService — there is no Stripe metadata hop to carry it.
+     */
+    @Test
+    void createCheckoutSession_passesNormalizedLocaleToFreeFlow() throws Exception {
+        TicketTier freeTier = tier();
+        freeTier.setPriceMinor(0);
+        when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(freeTier));
+
+        com.imin.iminapi.model.Order order = new com.imin.iminapi.model.Order();
+        order.setId(UUID.randomUUID());
+        order.setToken("ord_fr");
+        when(freeCheckoutService.issueFreeOrder(any(), any(), eq(1), eq("free@example.com"),
+                org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.anyBoolean(), org.mockito.ArgumentMatchers.anyBoolean(),
+                any(), nullable(String.class)))
+                .thenReturn(order);
+        when(freeCheckoutService.orderUrl(order)).thenReturn("http://localhost:3000/order/ord_fr");
+
+        svc.createCheckoutSession(eventId, tierId, 1, null, 0, "free@example.com",
+                false, false, com.imin.iminapi.model.CheckoutAttribution.NONE, "  FR  ");
+
+        verify(freeCheckoutService).issueFreeOrder(any(), any(), eq(1), eq("free@example.com"),
+                org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.anyBoolean(), org.mockito.ArgumentMatchers.anyBoolean(),
+                any(), eq("fr"));
+    }
+
+    /** Junk locale never reaches the column — it collapses to null ("no preference"). */
+    @Test
+    void createCheckoutSession_passesNullLocaleToFreeFlow_whenUnsupported() throws Exception {
+        TicketTier freeTier = tier();
+        freeTier.setPriceMinor(0);
+        when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(freeTier));
+
+        com.imin.iminapi.model.Order order = new com.imin.iminapi.model.Order();
+        order.setId(UUID.randomUUID());
+        order.setToken("ord_junk");
+        when(freeCheckoutService.issueFreeOrder(any(), any(), eq(1), eq("free@example.com"),
+                org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.anyBoolean(), org.mockito.ArgumentMatchers.anyBoolean(),
+                any(), nullable(String.class)))
+                .thenReturn(order);
+        when(freeCheckoutService.orderUrl(order)).thenReturn("http://localhost:3000/order/ord_junk");
+
+        svc.createCheckoutSession(eventId, tierId, 1, null, 0, "free@example.com",
+                false, false, com.imin.iminapi.model.CheckoutAttribution.NONE, "klingon");
+
+        verify(freeCheckoutService).issueFreeOrder(any(), any(), eq(1), eq("free@example.com"),
+                org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.anyBoolean(), org.mockito.ArgumentMatchers.anyBoolean(),
+                any(), isNull());
     }
 
     @Test
@@ -374,7 +464,7 @@ class StripeCheckoutServiceTest {
         verify(freeCheckoutService, never()).issueFreeOrder(any(), any(),
                 org.mockito.ArgumentMatchers.anyInt(), any(), any(),
                 org.mockito.ArgumentMatchers.anyBoolean(), org.mockito.ArgumentMatchers.anyBoolean(),
-                any());
+                any(), nullable(String.class));
     }
 
     @Test
@@ -386,7 +476,7 @@ class StripeCheckoutServiceTest {
         when(freeCheckoutService.issueFreeOrder(any(), any(),
                 org.mockito.ArgumentMatchers.anyInt(), any(), any(),
                 org.mockito.ArgumentMatchers.anyBoolean(), org.mockito.ArgumentMatchers.anyBoolean(),
-                any()))
+                any(), nullable(String.class)))
                 .thenThrow(new ApiException(HttpStatus.CONFLICT,
                         com.imin.iminapi.security.ErrorCode.INVALID_STATE,
                         "Not enough tickets available"));
@@ -415,7 +505,7 @@ class StripeCheckoutServiceTest {
         order.setToken("ord_zeroed");
         when(freeCheckoutService.issueFreeOrder(any(), any(), eq(1), eq("buyer@example.com"), eq(promo),
                 org.mockito.ArgumentMatchers.anyBoolean(), org.mockito.ArgumentMatchers.anyBoolean(),
-                any()))
+                any(), nullable(String.class)))
                 .thenReturn(order);
         when(freeCheckoutService.findOrderTickets(order.getId())).thenReturn(java.util.List.of());
         when(freeCheckoutService.orderUrl(order)).thenReturn("http://localhost:3000/order/ord_zeroed");
@@ -425,7 +515,7 @@ class StripeCheckoutServiceTest {
         assertThat(url).isEqualTo("http://localhost:3000/order/ord_zeroed");
         verify(freeCheckoutService).issueFreeOrder(any(), any(), eq(1), eq("buyer@example.com"), eq(promo),
                 org.mockito.ArgumentMatchers.anyBoolean(), org.mockito.ArgumentMatchers.anyBoolean(),
-                any());
+                any(), nullable(String.class));
         verify(sessionService, never()).create(any(SessionCreateParams.class));
     }
 }

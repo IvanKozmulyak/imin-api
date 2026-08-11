@@ -1,5 +1,6 @@
 package com.imin.iminapi.refund.email;
 
+import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.email.EmailTemplateRenderer;
 import com.imin.iminapi.model.Event;
@@ -100,8 +101,14 @@ public class RefundConfirmationEmailer {
         values.put("amountFormatted", MoneyFormat.format(refund.getAmountMinor(), refund.getCurrency()));
         values.put("organizerContact", organizerContact);
 
-        EmailTemplateRenderer.Rendered r = renderer.render("refund-confirmed", values);
-        String subject = "Refund confirmed for " + eventName;
+        // Buyer's language, snapshotted on the order at checkout (V78). Null ⇒ English.
+        String locale = order.getBuyerLocale();
+        EmailTemplateRenderer.Rendered r = renderer.render("refund-confirmed", locale, values);
+        String subject = EmailLocale.choose(locale,
+            "Refund confirmed for " + eventName,
+            "Reembolso confirmado para " + eventName,
+            "Remboursement confirmé pour " + eventName,
+            "Повернення коштів підтверджено · " + eventName);
         email.send(order.getEmail(), subject, r.html(), r.text());
         log.info("[refund-email] sent for refund {} to {}", refundId, order.getEmail());
     }

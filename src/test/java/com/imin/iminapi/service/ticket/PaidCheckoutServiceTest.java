@@ -312,6 +312,59 @@ class PaidCheckoutServiceTest {
         assertThat(order.getAnonId()).isNull();
     }
 
+    /**
+     * W1.G/V78: the buyer's UI language is stamped into the Session/PI metadata at
+     * checkout because the Order does not exist until this webhook runs. Read it back —
+     * without this, a Spanish buyer's paid order gets an English ticket email.
+     */
+    @Test
+    void persists_buyer_locale_from_pi_metadata() throws Exception {
+        PaymentIntent pi = pi("pi_test_locale", 1500, "eur",
+                Map.of(
+                        "tier_id", tier.getId().toString(),
+                        "qty", "1",
+                        "event_id", event.getId().toString(),
+                        "buyer_locale", "es"));
+        wireBuyerEmail(pi, "buyer@example.com");
+        wireSessionLookup(pi, "cs_test_locale", null);
+
+        service.issuePaidOrder(pi);
+
+        assertThat(orders.findByStripePaymentIntentId("pi_test_locale").orElseThrow()
+                .getBuyerLocale()).isEqualTo("es");
+    }
+
+    /**
+     * Absent key (pre-V78 session in flight at deploy) or an unsupported tag → null, i.e.
+     * "no preference" ⇒ English, exactly like every historical order.
+     */
+    @Test
+    void buyer_locale_is_null_when_metadata_absent_or_unsupported() throws Exception {
+        PaymentIntent absent = pi("pi_test_no_locale", 1500, "eur",
+                Map.of(
+                        "tier_id", tier.getId().toString(),
+                        "qty", "1",
+                        "event_id", event.getId().toString()));
+        wireBuyerEmail(absent, "buyer@example.com");
+        wireSessionLookup(absent, "cs_test_no_locale", null);
+        service.issuePaidOrder(absent);
+
+        PaymentIntent junk = pi("pi_test_junk_locale", 1500, "eur",
+                Map.of(
+                        "tier_id", tier.getId().toString(),
+                        "qty", "1",
+                        "event_id", event.getId().toString(),
+                        "buyer_locale", "klingon"));
+        wireBuyerEmail(junk, "buyer2@example.com");
+        wireSessionLookup(junk, "cs_test_junk_locale", null);
+        service.issuePaidOrder(junk);
+
+        assertThat(orders.findByStripePaymentIntentId("pi_test_no_locale").orElseThrow()
+                .getBuyerLocale()).isNull();
+        assertThat(orders.findByStripePaymentIntentId("pi_test_junk_locale").orElseThrow()
+                .getBuyerLocale()).isNull();
+    }
+
     @Test
     void uses_session_email_when_charge_email_missing() throws Exception {
         PaymentIntent pi = pi("pi_test_session_email", 1500, "eur",

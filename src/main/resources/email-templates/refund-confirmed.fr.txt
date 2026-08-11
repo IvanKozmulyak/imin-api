@@ -1,0 +1,14 @@
+REMBOURSEMENT CONFIRMÉ
+
+Votre remboursement pour {{eventName}} a été traité.
+
+{{ticketCount}} billet(s) de la commande #{{orderShortCode}} ont été remboursés.
+
+Montant remboursé : {{amountFormatted}}
+
+Le remboursement apparaîtra sur votre moyen de paiement d'origine,
+généralement sous 5 à 10 jours ouvrés. Votre banque peut prendre plus de
+temps selon ses délais de traitement.
+
+Des questions sur ce remboursement ? Répondez à cet e-mail ou contactez
+l'organisateur à {{organizerContact}}.

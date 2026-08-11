@@ -1,5 +1,6 @@
 package com.imin.iminapi.stripe;
 
+import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.model.CheckoutAttribution;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Organization;
@@ -129,6 +130,15 @@ public class StripeCheckoutService {
                 adsConsent, marketingOptIn, CheckoutAttribution.NONE);
     }
 
+    /** Pre-V78 form kept for existing callers — buyer locale unknown ⇒ English emails. */
+    public String createCheckoutSession(UUID eventId, UUID tierId, int quantity,
+                                         String promoCode, Integer expectedPriceMinor, String buyerEmail,
+                                         boolean adsConsent, boolean marketingOptIn,
+                                         CheckoutAttribution attribution) {
+        return createCheckoutSession(eventId, tierId, quantity, promoCode, expectedPriceMinor, buyerEmail,
+                adsConsent, marketingOptIn, attribution, null);
+    }
+
     /**
      * Deliberately NOT {@code @Transactional}. Each DB mutation here goes through an
      * independently-transactional {@link InventoryService} / {@link FreeCheckoutService} method,
@@ -142,8 +152,11 @@ public class StripeCheckoutService {
     public String createCheckoutSession(UUID eventId, UUID tierId, int quantity,
                                          String promoCode, Integer expectedPriceMinor, String buyerEmail,
                                          boolean adsConsent, boolean marketingOptIn,
-                                         CheckoutAttribution attribution) {
+                                         CheckoutAttribution attribution, String rawLocale) {
         if (attribution == null) attribution = CheckoutAttribution.NONE;
+        // Normalize once, here, so neither the free path nor the Stripe metadata can ever
+        // carry an unsupported tag. null = "no preference" ⇒ English emails (V78).
+        String buyerLocale = EmailLocale.normalizeOrNull(rawLocale);
         if (quantity < 1 || quantity > 10) {
             // 400, not 404 — quantity is a client bug, not an event-discovery question.
             throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
@@ -193,7 +206,7 @@ public class StripeCheckoutService {
             Order order;
             try {
                 order = freeCheckoutService.issueFreeOrder(event, tier, quantity, email, promo, adsConsent,
-                        marketingOptIn, attribution);
+                        marketingOptIn, attribution, buyerLocale);
             } catch (ApiException e) {
                 // Inventory shortage → collapse to leak-safe 404 like the paid path.
                 if (e.status() == HttpStatus.CONFLICT) {
@@ -309,6 +322,13 @@ public class StripeCheckoutService {
         // turns per-campaign revenue from a visit-share estimate into a true per-order sum.
         // Absent fields are omitted rather than written as "null".
         attribution.putInto(metadata);
+        // Buyer's UI language (V78). The Order is only created at webhook fulfilment, so
+        // the locale has to survive the Stripe round-trip like every other checkout-time
+        // fact; PaidCheckoutService reads it back onto orders.buyer_locale. Omitted when
+        // unknown, so a missing key means "no preference", not "English was chosen".
+        if (buyerLocale != null) {
+            metadata.put("buyer_locale", buyerLocale);
+        }
 
         String couponId = null;
         if (promo != null) {
