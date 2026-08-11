@@ -12,6 +12,7 @@ import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.service.audit.AuditLogger;
 import com.imin.iminapi.stripe.StripeConnectService;
 import com.imin.iminapi.util.CountryTimeZones;
+import com.imin.iminapi.util.EventNormalization;
 import com.imin.iminapi.web.IfMatchSupport;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -343,7 +344,10 @@ public class EventService {
         if (b.name() != null) { e.setName(b.name()); changed = true; }
         if (b.slug() != null) { e.setSlug(b.slug().toLowerCase(Locale.ROOT)); changed = true; }
         if (b.visibility() != null) { e.setVisibility(EventVisibility.fromWire(b.visibility())); changed = true; }
-        if (b.genre() != null) { e.setGenre(b.genre()); changed = true; }
+        // Genre is lower-cased (V82): it is an internal facet token that ?genre= matches
+        // EXACTLY, so "Techno" and "techno" were two filters over the same nights. Both
+        // frontends must title-case it back for display.
+        if (b.genre() != null) { e.setGenre(EventNormalization.genre(b.genre())); changed = true; }
         if (b.type() != null) { e.setType(b.type()); changed = true; }
         if (b.startsAt() != null) { e.setStartsAt(b.startsAt()); changed = true; }
         if (b.endsAt() != null) { e.setEndsAt(b.endsAt()); changed = true; }
@@ -352,9 +356,11 @@ public class EventService {
             VenueDto v = b.venue();
             e.setVenueName(v.name());
             if (v.street() != null) e.setVenueStreet(v.street());
-            if (v.city() != null) e.setVenueCity(v.city());
+            // City keeps its typed case (see EventNormalization) — only whitespace is cleaned.
+            // The case-insensitive merge happens on the derived venue_city_key.
+            if (v.city() != null) e.setVenueCity(EventNormalization.city(v.city()));
             if (v.postalCode() != null) e.setVenuePostalCode(v.postalCode());
-            e.setVenueCountry(v.country());
+            e.setVenueCountry(normalizedCountry(v.country()));
             changed = true;
         }
         changed |= applyTimezone(e, b);
@@ -372,6 +378,26 @@ public class EventService {
         if (b.onSaleAt() != null) { e.setOnSaleAt(b.onSaleAt()); changed = true; }
         if (b.saleClosesAt() != null) { e.setSaleClosesAt(b.saleClosesAt()); changed = true; }
         return changed;
+    }
+
+    /**
+     * Venue country on the way in (V82): upper-cased ISO-3166 alpha-2, or {@code NULL} —
+     * <b>never the empty string</b>. A blank country and a missing one are the same fact, and
+     * storing them as two different values ({@code ''} vs {@code NULL}) is what split one Metz
+     * into three chips on the buyer's cities page.
+     *
+     * <p>Anything non-blank that is not two letters is rejected with a 400 rather than silently
+     * dropped: {@code venue_country} is {@code varchar(2)}, so a longer value used to surface as
+     * a 500 from the driver, and nulling it out instead would quietly lose organizer input.
+     */
+    private static String normalizedCountry(String raw) {
+        String country = EventNormalization.country(raw);
+        if (country != null && !EventNormalization.isCountryCode(country)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
+                    "Invalid venue country",
+                    Map.of("venue.country", "must be an ISO-3166 alpha-2 code"));
+        }
+        return country;
     }
 
     /**

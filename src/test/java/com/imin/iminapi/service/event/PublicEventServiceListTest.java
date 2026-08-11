@@ -251,7 +251,13 @@ class PublicEventServiceListTest {
     }
 
     @Test
-    void filter_by_city_case_insensitive_contains() {
+    void filter_by_city_matches_the_normalised_key_exactly_not_a_substring() {
+        // CONTRACT CHANGE (V82). `?city=` used to be a case-insensitive CONTAINS on the raw
+        // venue_city; it is now an exact match on the normalised venue_city_key. Case and
+        // stray whitespace still don't matter — that is what the key is for — but a prefix
+        // no longer matches. This is what lets a "Metz (3)" chip guarantee three results:
+        // a substring match could also drag in Metzingen, and a chip whose count disagrees
+        // with its own page is the bug this whole change exists to kill.
         Event a = publishedLiveEvent();
         a.setVenueCity("Berlin");
         eventRepository.save(a);
@@ -259,10 +265,33 @@ class PublicEventServiceListTest {
         b.setVenueCity("Paris");
         eventRepository.save(b);
 
-        PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
+        PageResponse<PublicEventListItem> exact = publicEventService.list(new PublicEventListQuery(
+                null, null, null, null, "  BERLIN ", null, null, null, false, false, false, 1, 20));
+        assertThat(exact.items()).hasSize(1);
+        assertThat(exact.items().get(0).venueCity()).isEqualTo("Berlin");
+
+        PageResponse<PublicEventListItem> prefix = publicEventService.list(new PublicEventListQuery(
                 null, null, null, null, "berl", null, null, null, false, false, false, 1, 20));
-        assertThat(result.items()).hasSize(1);
-        assertThat(result.items().get(0).venueCity()).isEqualTo("Berlin");
+        assertThat(prefix.items()).isEmpty();
+    }
+
+    @Test
+    void filter_by_city_finds_every_case_variant_of_the_same_city() {
+        // The three spellings the live data actually holds. One filter, all three events —
+        // this is the count side of the merged chip.
+        Event typed = publishedLiveEvent();
+        typed.setVenueCity("Metz");
+        eventRepository.save(typed);
+        Event shouted = publishedLiveEvent();
+        shouted.setVenueCity("METZ");
+        eventRepository.save(shouted);
+        Event padded = publishedLiveEvent();
+        padded.setVenueCity("  Metz  ");
+        eventRepository.save(padded);
+
+        PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
+                null, null, null, null, "Metz", null, null, null, false, false, false, 1, 20));
+        assertThat(result.items()).hasSize(3);
     }
 
     @Test
@@ -1106,10 +1135,14 @@ class PublicEventServiceListTest {
     }
 
     @Test
-    void listCities_does_not_merge_case_or_country_variants_of_the_same_city() {
-        // Mirrors the live Metz/FR + Metz/null + METZ/'' data problem. The read side keeps
-        // them apart on purpose: each row's count must match what tapping that chip returns.
-        // Fixing this belongs at write time — see PublicEventService.listCities javadoc.
+    void listCities_merges_case_and_missing_country_variants_into_one_chip_whose_count_the_listing_reproduces() {
+        // Mirrors the live Metz/FR + Metz/null + METZ/'' data problem, which used to surface as
+        // three identical-looking chips each holding a slice of the nights. They are ONE city.
+        //
+        // Merging is only honest because both sides now key off venue_city_key: the second half
+        // of this test taps the chip and asserts the listing returns exactly the number the chip
+        // promised. (Rows are written straight through the repository on purpose — this pins the
+        // READ side, independent of EventService's write-time normalisation and of V82.)
         Event metzFr = publishedLiveEvent();
         metzFr.setVenueCity("Metz");
         metzFr.setVenueCountry("FR");
@@ -1126,7 +1159,58 @@ class PublicEventServiceListTest {
         eventRepository.save(metzUpper);
 
         List<com.imin.iminapi.dto.publicapi.PublicCityItem> cities = publicEventService.listCities();
-        assertThat(cities).hasSize(3);
+        assertThat(cities).hasSize(1);
+        // "Metz" (2 events) beats "METZ" (1) as the label; FR is the only country on offer and
+        // the country-less rows fold into it rather than inventing a second chip.
+        assertThat(cities.get(0).city()).isEqualTo("Metz");
+        assertThat(cities.get(0).country()).isEqualTo("FR");
+        assertThat(cities.get(0).eventCount()).isEqualTo(3L);
+
+        PageResponse<PublicEventListItem> tapped = publicEventService.list(new PublicEventListQuery(
+                null, null, null, null, cities.get(0).city(), null, null, null,
+                false, false, false, 1, 20));
+        assertThat(tapped.total()).isEqualTo(cities.get(0).eventCount());
+    }
+
+    @Test
+    void listCities_labels_a_key_with_its_most_common_spelling() {
+        for (int i = 0; i < 2; i++) {
+            Event shouted = publishedLiveEvent();
+            shouted.setVenueCity("SAINT-DENIS");
+            shouted.setVenueCountry("FR");
+            eventRepository.save(shouted);
+        }
+        Event typed = publishedLiveEvent();
+        typed.setVenueCity("Saint-Denis");
+        typed.setVenueCountry("FR");
+        eventRepository.save(typed);
+
+        // Most common wins even when it is the ugly one — the label is evidence, not taste.
+        // Nothing title-cases the city: doing so would wreck 's-Hertogenbosch and L'Aquila.
+        List<com.imin.iminapi.dto.publicapi.PublicCityItem> cities = publicEventService.listCities();
+        assertThat(cities).hasSize(1);
+        assertThat(cities.get(0).city()).isEqualTo("SAINT-DENIS");
+        assertThat(cities.get(0).eventCount()).isEqualTo(3L);
+    }
+
+    @Test
+    void listCities_keeps_two_countries_sharing_a_city_name_apart() {
+        // Paris/FR and Paris/US are two cities, not one spelling problem. Merging them on the
+        // key alone would be a fabricated fact, so the ambiguous key stays split.
+        Event parisFr = publishedLiveEvent();
+        parisFr.setVenueCity("Paris");
+        parisFr.setVenueCountry("FR");
+        eventRepository.save(parisFr);
+
+        Event parisUs = publishedLiveEvent();
+        parisUs.setVenueCity("PARIS");
+        parisUs.setVenueCountry("US");
+        eventRepository.save(parisUs);
+
+        List<com.imin.iminapi.dto.publicapi.PublicCityItem> cities = publicEventService.listCities();
+        assertThat(cities).hasSize(2);
+        assertThat(cities).extracting(com.imin.iminapi.dto.publicapi.PublicCityItem::country)
+                .containsExactly("FR", "US");
         assertThat(cities).allSatisfy(c -> assertThat(c.eventCount()).isEqualTo(1L));
     }
 }

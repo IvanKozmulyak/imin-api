@@ -125,7 +125,9 @@ class EventServiceTest {
                         null, null, null, null, null, null, null, null));
 
         assertThat(dto.name()).isEqualTo("New name");
-        assertThat(dto.genre()).isEqualTo("Techno");
+        // Genre is canonicalised to lower case on write (V82) — it is a facet token that
+        // `?genre=` matches exactly, not a display label.
+        assertThat(dto.genre()).isEqualTo("techno");
         assertThat(dto.tiers()).isNotNull();
         assertThat(dto.promoCodes()).isNotNull();
     }
@@ -584,4 +586,76 @@ class EventServiceTest {
 
         verify(pub, never()).publishEvent(any(VenueAddressChangedEvent.class));
     }
+
+    // ---- Facet normalisation on write (V82) ---------------------------------------------------
+
+    private EventPatchRequest facetBody(String genre, VenueDto venue) {
+        return new EventPatchRequest(null, null, null, genre, null, null, null, null, venue,
+                null, null, null, null, null, null, null, null);
+    }
+
+    private Event captureCreated(AuthPrincipal p, EventPatchRequest body) {
+        stubSaveEchoWithId();
+        sut.createDraft(p, body);
+        var captor = org.mockito.ArgumentCaptor.forClass(Event.class);
+        verify(events).save(captor.capture());
+        return captor.getValue();
+    }
+
+    @Test
+    void create_normalises_city_country_and_genre() {
+        Event saved = captureCreated(principal(), facetBody("  Techno   Classics ",
+                new VenueDto("Le Club", "1 Rue", "  Le   Mans ", "72000", " fr ")));
+
+        // City: whitespace tidied, case left exactly as typed — case-folding city names
+        // destroys real ones ('s-Hertogenbosch, L'Aquila).
+        assertThat(saved.getVenueCity()).isEqualTo("Le Mans");
+        assertThat(saved.getVenueCountry()).isEqualTo("FR");
+        assertThat(saved.getGenre()).isEqualTo("techno classics");
+    }
+
+    @Test
+    void patch_normalises_city_country_and_genre() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId()); e.setSlug("x");
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(tiers.findByEventIdOrderBySortOrderAsc(any())).thenReturn(List.of());
+        when(promos.findByEventId(any())).thenReturn(List.of());
+        when(predictions.findById(any())).thenReturn(Optional.empty());
+
+        sut.patch(p, e.getId(), null, facetBody("Techno",
+                new VenueDto("Le Club", "1 Rue", " METZ ", "57000", "fr")));
+
+        assertThat(e.getVenueCity()).isEqualTo("METZ");
+        assertThat(e.getVenueCountry()).isEqualTo("FR");
+        assertThat(e.getGenre()).isEqualTo("techno");
+    }
+
+    @Test
+    void blank_country_is_stored_as_null_never_as_an_empty_string() {
+        // '' and NULL are the same fact — "we don't know the country" — but SQL GROUP BY
+        // treats them as two, which is exactly what split one Metz into three city chips.
+        Event fromBlank = captureCreated(principal(), facetBody(null,
+                new VenueDto("Le Club", "1 Rue", "Metz", "57000", "   ")));
+        assertThat(fromBlank.getVenueCountry()).isNull();
+    }
+
+    @Test
+    void a_country_that_is_not_two_letters_is_rejected_not_silently_dropped() {
+        // venue_country is varchar(2): this used to be a 500 from the driver. Nulling it out
+        // instead would quietly lose what the organizer typed, so it is a field error.
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                        sut.createDraft(principal(), facetBody(null,
+                                new VenueDto("Le Club", "1 Rue", "Metz", "57000", "France"))))
+                .isInstanceOf(com.imin.iminapi.security.ApiException.class)
+                .satisfies(ex -> {
+                    var api = (com.imin.iminapi.security.ApiException) ex;
+                    assertThat(api.status()).isEqualTo(org.springframework.http.HttpStatus.BAD_REQUEST);
+                    assertThat(api.fields()).containsKey("venue.country");
+                });
+        verify(events, never()).save(any(Event.class));
+    }
+
 }

@@ -129,6 +129,14 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
      * with no purchasable tier (sold out / not yet on sale / sales ended) is NOT free,
      * it is unavailable, and drops out.
      *
+     * <p><b>{@code cityKey}</b> is the normalised {@code lower(collapse(trim(city)))} key, not the
+     * raw string, and it is matched with {@code =} rather than the old case-insensitive
+     * {@code LIKE '%…%'}. That is what makes a city chip's count reproducible: the facet
+     * ({@link #findPublicCityCounts()}) groups on the same column with the same equality, so
+     * "Metz (3)" returns exactly three events — where the substring match could also drag in a
+     * {@code Metzingen}. Callers normalise via {@code EventNormalization.cityKey}, so
+     * {@code ?city=METZ}, {@code ?city=metz} and {@code ?city=%20Metz%20} are one query.
+     *
      * <p>The EXISTS body is the SQL mirror of {@link
      * com.imin.iminapi.service.event.TierAvailability#isPurchasable} — enabled tier,
      * event neither PAST nor CANCELLED, both sale windows open, stock remaining. Keeping
@@ -149,7 +157,7 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
            AND (CAST(:to AS timestamp) IS NULL OR e.startsAt < :to)
            AND (CAST(:genre AS string) IS NULL OR e.genre = :genre)
            AND (CAST(:type AS string) IS NULL OR e.type = :type)
-           AND (CAST(:city AS string) IS NULL OR LOWER(e.venueCity) LIKE LOWER(CONCAT('%', CAST(:city AS string), '%')))
+           AND (CAST(:cityKey AS string) IS NULL OR e.venueCityKey = CAST(:cityKey AS string))
            AND (CAST(:country AS string) IS NULL OR e.venueCountry = :country)
            AND (CAST(:q AS string) IS NULL OR LOWER(e.name) LIKE LOWER(CONCAT('%', CAST(:q AS string), '%')))
            AND (CAST(:orgId AS java.util.UUID) IS NULL OR e.orgId = :orgId)
@@ -177,7 +185,7 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
             @Param("to") Instant to,
             @Param("genre") String genre,
             @Param("type") String type,
-            @Param("city") String city,
+            @Param("cityKey") String cityKey,
             @Param("country") String country,
             @Param("q") String q,
             @Param("orgId") UUID orgId,
@@ -188,31 +196,33 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
             Pageable pageable);
 
     /**
-     * City facet with its event count: {@code (venueCity, venueCountry, count)}.
+     * Raw material for the city facet: {@code (venueCityKey, venueCity, venueCountry, count)},
+     * one row per distinct spelling/country combination within a key.
      *
      * <p>The WHERE clause is the SAME eligibility predicate {@link #findPublicListing}
      * uses (not deleted, PUBLIC, published, not DRAFT, not CANCELLED) minus the user
      * filters, so the count a city chip shows is the number of events the buyer actually
-     * lands on when they tap it. GROUP BY replaces the old SELECT DISTINCT — the row set
-     * is identical, only the count is new.
+     * lands on when they tap it.
      *
-     * <p>Grouping is on the RAW stored strings, so {@code Metz/FR}, {@code Metz/null} and
-     * {@code METZ/''} stay three rows. That is deliberate: normalising here would invent a
-     * merge the listing filter can't reproduce (it matches {@code venue_city} with a LIKE),
-     * and a chip whose count doesn't match its own result page is worse than a duplicate
-     * chip. The fix belongs at write time — see the note in {@code PublicEventService.listCities}.
+     * <p>Grouping is on the derived {@code venue_city_key} (V82) — the same column
+     * {@link #findPublicListing} now filters on — so {@code Metz} and {@code METZ} are one
+     * group and a merged chip's count is reproducible by its own result page. The display
+     * spelling and country stay in the GROUP BY because the service still needs them: it picks
+     * the most common spelling as the chip label and decides whether the key's countries agree.
+     * That fold is Java, not SQL, because "most common spelling" wants no window function and
+     * the facet is small (one row per city, not per event).
      */
     @Query("""
-        SELECT e.venueCity, e.venueCountry, COUNT(e) FROM Event e
+        SELECT e.venueCityKey, e.venueCity, e.venueCountry, COUNT(e) FROM Event e
          WHERE e.deletedAt IS NULL
            AND e.visibility = com.imin.iminapi.model.EventVisibility.PUBLIC
            AND e.publishedAt IS NOT NULL
            AND e.status <> com.imin.iminapi.model.EventStatus.DRAFT
            AND e.status <> com.imin.iminapi.model.EventStatus.CANCELLED
-           AND e.venueCity IS NOT NULL
-           AND e.venueCity <> ''
-         GROUP BY e.venueCity, e.venueCountry
-         ORDER BY e.venueCity ASC, e.venueCountry ASC
+           AND e.venueCityKey IS NOT NULL
+           AND e.venueCityKey <> ''
+         GROUP BY e.venueCityKey, e.venueCity, e.venueCountry
+         ORDER BY e.venueCityKey ASC
 """)
     List<Object[]> findPublicCityCounts();
 
@@ -251,8 +261,13 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
      * whose start falls within [{@code from}, {@code to}] (the ±window around the subject event),
      * excluding the subject itself and soft-deleted/draft events. Returns {@code (id, genre)} rows
      * so the service can count them, flag genre overlap, and sum their capacity. Real internal
-     * data only — no external event calendar. City compared case-insensitively; a null/blank city
-     * binds no rows (the caller passes only a real city).
+     * data only — no external event calendar.
+     *
+     * <p>Matches on the derived {@code venue_city_key} (V82). Besides merging the case variants
+     * of one city, this removes a latent production bug: the previous {@code LOWER(:city)} on a
+     * nullable String parameter passes on H2 but throws {@code function lower(bytea) does not
+     * exist} on PostgreSQL the first time a null is bound. The caller normalises with
+     * {@code EventNormalization.cityKey} and a blank key binds no rows.
      */
     @Query("""
         SELECT e.id, e.genre FROM Event e
@@ -262,9 +277,9 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
            AND e.status <> com.imin.iminapi.model.EventStatus.DRAFT
            AND e.startsAt IS NOT NULL
            AND e.startsAt >= :from AND e.startsAt <= :to
-           AND LOWER(e.venueCity) = LOWER(:city)
+           AND e.venueCityKey = CAST(:cityKey AS string)
     """)
-    List<Object[]> findCompetingNights(@Param("selfId") UUID selfId, @Param("city") String city,
+    List<Object[]> findCompetingNights(@Param("selfId") UUID selfId, @Param("cityKey") String cityKey,
                                        @Param("from") Instant from, @Param("to") Instant to);
 
     @Query("""

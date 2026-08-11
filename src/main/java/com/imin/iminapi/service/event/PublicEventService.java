@@ -15,6 +15,7 @@ import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.stripe.StripeProperties;
+import com.imin.iminapi.util.EventNormalization;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
@@ -137,11 +138,16 @@ public class PublicEventService {
             orgId = maybe.get().getId();
         }
 
-        // 3. Query
+        // 3. Query. The city filter runs on the normalised key (V82), so "?city=METZ",
+        //    "?city=metz" and "?city=%20Metz" are the same query — and the same query the
+        //    city facet counted. Exact match, not the old substring LIKE: a chip that says
+        //    "Metz (3)" must not open a page that also lists Metzingen.
+        String rawCity = nullIfBlank(query.city());
+        String cityKey = rawCity == null ? null : nullIfBlank(EventNormalization.cityKey(rawCity));
         Page<Event> result = eventRepository.findPublicListing(
                 query.from(), query.to(),
                 nullIfBlank(query.genre()), nullIfBlank(query.type()),
-                nullIfBlank(query.city()), country, nullIfBlank(query.q()),
+                cityKey, country, nullIfBlank(query.q()),
                 orgId, query.onSaleOnly(), query.includeOngoing(), query.freeOnly(), clock.instant(),
                 PageRequest.of(page - 1, pageSize));
 
@@ -171,20 +177,87 @@ public class PublicEventService {
     /**
      * City facets with per-city event counts, off the listing's own eligibility predicate.
      *
-     * <p>Rows are returned exactly as stored. Live data currently holds {@code Metz/FR},
-     * {@code Metz/null} and {@code METZ/''} as three separate rows (and the genre column
-     * has both {@code techno} and {@code Techno}) because nothing normalises venue city /
-     * country / genre at write time. Collapsing them HERE would produce a chip whose count
-     * cannot be reproduced by the listing query behind it, so the read side stays honest and
-     * the FE dedupes defensively. The real fix is normalisation in {@code EventService}'s
-     * write path plus a one-off data migration — see this task's report.
+     * <p>One chip per {@code venue_city_key} (V82), which is the same column {@code ?city=}
+     * filters on — so a chip's count is exactly what tapping it returns. {@code Metz/FR},
+     * {@code Metz/null} and {@code METZ/''} were three chips for one place; they are now one,
+     * labelled with the <b>most common display spelling</b> (ties: fewest capitals, then
+     * alphabetical — "Metz" over "METZ") and carrying the one country its events agree on.
+     *
+     * <p><b>Ambiguous keys are NOT merged.</b> If a key carries two or more different known
+     * countries — Paris/FR and Paris/US — those are two cities that happen to share a name, and
+     * collapsing them would be a lie. Such a key keeps one chip per stored country value,
+     * including an unknown-country chip if some of its events have no country at all; the
+     * frontend must add {@code &country=} to those chips' links for their counts to hold.
+     * No country is ever inferred from a sibling row — an unknown country stays {@code null}.
      */
     @Transactional(readOnly = true)
     public List<com.imin.iminapi.dto.publicapi.PublicCityItem> listCities() {
-        return eventRepository.findPublicCityCounts().stream()
-                .map(row -> new com.imin.iminapi.dto.publicapi.PublicCityItem(
-                        (String) row[0], (String) row[1], ((Number) row[2]).longValue()))
-                .toList();
+        // row = [cityKey, displaySpelling, country, count]
+        Map<String, List<Object[]>> byKey = new LinkedHashMap<>();
+        for (Object[] row : eventRepository.findPublicCityCounts()) {
+            byKey.computeIfAbsent((String) row[0], k -> new java.util.ArrayList<>()).add(row);
+        }
+
+        List<com.imin.iminapi.dto.publicapi.PublicCityItem> out = new java.util.ArrayList<>();
+        for (List<Object[]> rows : byKey.values()) {
+            Set<String> countries = rows.stream()
+                    .map(r -> countryOf(r))
+                    .filter(java.util.Objects::nonNull)
+                    .collect(Collectors.toCollection(java.util.TreeSet::new));
+            if (countries.size() <= 1) {
+                out.add(chip(rows, countries.isEmpty() ? null : countries.iterator().next()));
+            } else {
+                // Same name, genuinely different countries: keep them apart, unknown included.
+                Map<String, List<Object[]>> byCountry = new LinkedHashMap<>();
+                for (Object[] r : rows) {
+                    String c = countryOf(r);
+                    byCountry.computeIfAbsent(c == null ? "" : c, k -> new java.util.ArrayList<>()).add(r);
+                }
+                byCountry.forEach((c, bucket) -> out.add(chip(bucket, c.isEmpty() ? null : c)));
+            }
+        }
+
+        // Alphabetical by label, ignoring case so "METZ" doesn't sort into a separate block;
+        // then by country (unknown last) so an ambiguous key's chips have a stable order.
+        out.sort(java.util.Comparator
+                .comparing(com.imin.iminapi.dto.publicapi.PublicCityItem::city, String.CASE_INSENSITIVE_ORDER)
+                .thenComparing(com.imin.iminapi.dto.publicapi.PublicCityItem::country,
+                        java.util.Comparator.nullsLast(java.util.Comparator.naturalOrder()))
+                .thenComparing(com.imin.iminapi.dto.publicapi.PublicCityItem::city));
+        return List.copyOf(out);
+    }
+
+    /** Country of a facet row, blank folded to {@code null} and upper-cased — {@code ''} is not a country. */
+    private static String countryOf(Object[] row) {
+        String raw = (String) row[2];
+        return raw == null || raw.isBlank() ? null : raw.trim().toUpperCase(Locale.ROOT);
+    }
+
+    /**
+     * One chip out of the rows sharing a key: count is their sum, label is the spelling the most
+     * events actually use. Ties break toward the least-shouted spelling and then alphabetically,
+     * so the label is deterministic instead of "whichever row the planner returned first".
+     */
+    private static com.imin.iminapi.dto.publicapi.PublicCityItem chip(List<Object[]> rows, String country) {
+        Map<String, Long> bySpelling = new LinkedHashMap<>();
+        long total = 0;
+        for (Object[] r : rows) {
+            long n = ((Number) r[3]).longValue();
+            total += n;
+            bySpelling.merge((String) r[1], n, Long::sum);
+        }
+        String label = bySpelling.entrySet().stream()
+                .max(java.util.Comparator
+                        .comparingLong(Map.Entry<String, Long>::getValue)
+                        .thenComparing(e -> -capitals(e.getKey()))
+                        .thenComparing(java.util.Map.Entry::getKey, java.util.Comparator.reverseOrder()))
+                .map(Map.Entry::getKey)
+                .orElse("");
+        return new com.imin.iminapi.dto.publicapi.PublicCityItem(label, country, total);
+    }
+
+    private static long capitals(String s) {
+        return s.chars().filter(Character::isUpperCase).count();
     }
 
     @Transactional(readOnly = true)

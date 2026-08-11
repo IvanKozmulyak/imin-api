@@ -62,6 +62,22 @@ public class Event {
     private String venueCountry;
 
     /**
+     * Derived merge key for the city (V82) — {@code lower(collapse(trim(venueCity)))}, computed
+     * by {@link com.imin.iminapi.util.EventNormalization#cityKey(String)}.
+     *
+     * <p>DERIVED, NEVER AUTHORED. It is recomputed from {@code venueCity} in {@link #onPersist()}
+     * and {@link #onUpdate()}, so it cannot drift no matter which path wrote the row — service,
+     * repository, fixture. Setting it by hand is pointless; the callback overwrites it.
+     *
+     * <p>It exists because the buyer's city facet and the {@code ?city=} listing filter both group
+     * and match on it: {@code Metz}, {@code METZ} and {@code  metz } are one chip whose count is
+     * exactly what tapping it returns. The display string stays as the organizer typed it —
+     * case-folding city names destroys {@code 's-Hertogenbosch} and {@code L'Aquila}.
+     */
+    @Column(name = "venue_city_key", nullable = false)
+    private String venueCityKey = "";
+
+    /**
      * Venue point (V80), nullable by design and always set as a PAIR.
      *
      * <p>Populated best-effort by {@code VenueGeocodingListener} after an address
@@ -131,6 +147,7 @@ public class Event {
 
     @PrePersist
     void onPersist() {
+        venueCityKey = com.imin.iminapi.util.EventNormalization.cityKey(venueCity);
         createdAt = createdAt == null ? Times.nowMicros() : createdAt.truncatedTo(ChronoUnit.MICROS);
         updatedAt = updatedAt == null ? Times.nowMicros() : updatedAt.truncatedTo(ChronoUnit.MICROS);
         if (publishedAt != null) publishedAt = publishedAt.truncatedTo(ChronoUnit.MICROS);
@@ -139,6 +156,7 @@ public class Event {
 
     @PreUpdate
     void onUpdate() {
+        venueCityKey = com.imin.iminapi.util.EventNormalization.cityKey(venueCity);
         updatedAt = Times.nowMicros();
         if (publishedAt != null) publishedAt = publishedAt.truncatedTo(ChronoUnit.MICROS);
         if (deletedAt != null) deletedAt = deletedAt.truncatedTo(ChronoUnit.MICROS);
