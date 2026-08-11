@@ -8,10 +8,12 @@ import com.imin.iminapi.dto.publicapi.PublicEventListItem;
 import com.imin.iminapi.dto.publicapi.PublicEventResponse;
 import com.imin.iminapi.dto.publicapi.QuoteRequest;
 import com.imin.iminapi.dto.publicapi.QuoteResponse;
+import com.imin.iminapi.security.RateLimiter;
 import com.imin.iminapi.service.event.NotifySubscriptionService;
 import com.imin.iminapi.service.event.PublicEventListQuery;
 import com.imin.iminapi.service.event.PublicEventService;
 import com.imin.iminapi.service.event.QuoteService;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -33,13 +35,16 @@ public class PublicEventController {
     private final PublicEventService publicEventService;
     private final NotifySubscriptionService notifySubscriptionService;
     private final QuoteService quoteService;
+    private final RateLimiter rateLimiter;
 
     public PublicEventController(PublicEventService publicEventService,
                                  NotifySubscriptionService notifySubscriptionService,
-                                 QuoteService quoteService) {
+                                 QuoteService quoteService,
+                                 RateLimiter rateLimiter) {
         this.publicEventService = publicEventService;
         this.notifySubscriptionService = notifySubscriptionService;
         this.quoteService = quoteService;
+        this.rateLimiter = rateLimiter;
     }
 
     @GetMapping("/cities")
@@ -70,7 +75,13 @@ public class PublicEventController {
     @PostMapping("/{id}/notify")
     public ResponseEntity<NotifySubscriptionResponse> notify(
             @PathVariable UUID id,
-            @RequestBody(required = false) NotifySubscriptionRequest body) {
+            @RequestBody(required = false) NotifySubscriptionRequest body,
+            HttpServletRequest http) {
+        // Throttle the unauthenticated notify-me subscribe per client IP, same shape as the
+        // public checkout limiter. Without it a loop can fill notify_subscriptions with fake
+        // addresses, and every one of those rows later earns a real send from
+        // NotifyReleaseSender — a free spam relay pointed at our sending domain.
+        rateLimiter.consume("notify-subscribe", "ip:" + http.getRemoteAddr());
         NotifySubscriptionResponse response = notifySubscriptionService.subscribe(id, body);
         return ResponseEntity.ok(response);
     }
