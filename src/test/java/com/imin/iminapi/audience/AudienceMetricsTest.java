@@ -279,7 +279,7 @@ class AudienceMetricsTest {
         AuthPrincipal p = new com.imin.iminapi.security.AuthPrincipal(
                 UUID.randomUUID(), orgA, UserRole.OWNER, UUID.randomUUID());
         consentService.capture(orgA, mid, "explicit", "test", "proof", p);
-        consentService.unsubscribe(orgA, mid, "own-request", p);
+        consentService.unsubscribe(orgA, mid, "own-request", ConsentOrigin.OPERATOR, p);
 
         AudienceMetricsDto dto = metricsService.compute(orgA);
         // There's 1 unsub record; unsub pct should be > 0

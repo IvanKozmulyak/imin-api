@@ -10,6 +10,7 @@ import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.repository.SuppressionRepository;
 import com.imin.iminapi.audience.service.AudienceImportService;
+import com.imin.iminapi.audience.service.ConsentOrigin;
 import com.imin.iminapi.audience.service.ConsentService;
 import com.imin.iminapi.audience.service.CsvContactParser;
 import com.imin.iminapi.config.TestRateLimitConfig;
@@ -127,7 +128,8 @@ class AudienceImportServiceTest {
         // (b) marketing-suppressed EXISTING member (org-scoped) → stays as-is
         Membership existing = seedMember("marketing-suppressed@example.com");
         // move it to a clean 'never'/unsub baseline: unsubscribe it, then org-suppress it
-        consentService.unsubscribe(orgId, existing.getMembershipId(), "test", "email", null);
+        consentService.unsubscribe(orgId, existing.getMembershipId(), "test", "email",
+                ConsentOrigin.OPERATOR, null);
         SuppressionEntry mkt = new SuppressionEntry();
         mkt.setScope(SuppressionEntry.SCOPE_MARKETING);
         mkt.setOrgId(orgId);
@@ -159,7 +161,8 @@ class AudienceImportServiceTest {
     @Test
     void unsubscribed_member_is_not_resubscribed() {
         Membership m = seedMember("optout@example.com");
-        consentService.unsubscribe(orgId, m.getMembershipId(), "test", "email", null);
+        consentService.unsubscribe(orgId, m.getMembershipId(), "test", "email",
+                ConsentOrigin.OPERATOR, null);
         assertThat(membershipFor("optout@example.com").getConsentStatus()).isEqualTo("unsubscribed");
 
         ImportResultResponse r = importService.importContacts(rows("optout@example.com"), false, principal);

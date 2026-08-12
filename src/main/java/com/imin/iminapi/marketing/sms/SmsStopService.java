@@ -2,6 +2,7 @@ package com.imin.iminapi.marketing.sms;
 
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.MembershipRepository;
+import com.imin.iminapi.audience.service.ConsentOrigin;
 import com.imin.iminapi.audience.service.ConsentService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -43,7 +44,12 @@ public class SmsStopService {
         List<Membership> onNumber = memberships.findAllByPhoneE164(phoneE164);
         for (Membership m : onNumber) {
             // channel="sms", principal=null (system-initiated, no organizer actor).
-            consentService.unsubscribe(m.getOrgId(), m.getMembershipId(), source, "sms", null);
+            // DATA_SUBJECT: the person texted STOP. `source` here is passed through from
+            // the inbound webhook and is exactly why stickiness cannot be inferred from
+            // it — an allow-list over source strings would silently drop this legally
+            // mandated path (§16 / ConsentOrigin).
+            consentService.unsubscribe(m.getOrgId(), m.getMembershipId(), source, "sms",
+                    ConsentOrigin.DATA_SUBJECT, null);
         }
         log.info("[sms-stop] source={} suppressed {} membership(s)", source, onNumber.size());
         return onNumber.size();

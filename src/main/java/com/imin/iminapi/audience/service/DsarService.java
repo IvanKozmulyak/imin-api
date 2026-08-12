@@ -100,7 +100,7 @@ public class DsarService {
     @Transactional
     public void object(UUID orgId, UUID membershipId, AuthPrincipal principal) {
         require(orgId, membershipId); // verify exists + belongs to org
-        consentService.unsubscribe(orgId, membershipId, "dsar_object", "email", principal);
+        consentService.unsubscribe(orgId, membershipId, "dsar_object", "email", ConsentOrigin.DATA_SUBJECT, principal);
         auditLogger.record(principal, AuditActions.DSAR_OBJECT, "membership", membershipId,
                 "DSAR object (Art.21) — unsubscribed immediately");
     }

@@ -322,7 +322,12 @@ class AudienceControllerWebTest {
                         .content(body))
                 .andExpect(status().isOk());
 
-        verify(consentService).unsubscribe(eq(ORG_A), eq(MEMBER_A), eq("unsubscribe-link"), eq("email"), any());
+        // OPERATOR, not DATA_SUBJECT (§16): this is the organizer's own list-tidying
+        // endpoint and `source` is arbitrary request-body text. The origin is chosen by
+        // the endpoint, so no `source` an organizer can POST writes a sticky
+        // marketing_optouts row that would bar the buyer from ever opting back in.
+        verify(consentService).unsubscribe(eq(ORG_A), eq(MEMBER_A), eq("unsubscribe-link"), eq("email"),
+                eq(ConsentOrigin.OPERATOR), any());
     }
 
     // ── DSAR endpoints — correct status codes ────────────────────────────────

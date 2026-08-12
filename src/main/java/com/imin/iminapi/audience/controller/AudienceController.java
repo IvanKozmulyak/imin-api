@@ -208,7 +208,13 @@ public class AudienceController {
     @PostMapping("/consent/unsubscribe")
     public ResponseEntity<Void> unsubscribe(@AuthenticationPrincipal AuthPrincipal principal,
                                              @RequestBody UnsubRequest body) {
-        consentService.unsubscribe(principal.orgId(), body.membershipId(), body.source(), "email", principal);
+        // OPERATOR, always. This is an organizer removing someone from their own list,
+        // and `body.source()` is arbitrary unvalidated request-body text — the whole
+        // reason origin is a parameter the endpoint chooses rather than something
+        // inferred from the string (§16 / ConsentOrigin). No sticky row: an organizer
+        // tidying their audience must not bar that buyer from ever opting back in.
+        consentService.unsubscribe(principal.orgId(), body.membershipId(), body.source(), "email",
+                ConsentOrigin.OPERATOR, principal);
         return ResponseEntity.ok().build();
     }
 

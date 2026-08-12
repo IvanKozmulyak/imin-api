@@ -1,13 +1,18 @@
 package com.imin.iminapi.audience.service;
 
 import com.imin.iminapi.audience.model.ConsentRecord;
+import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsentRecordRepository;
+import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.service.audit.AuditLogger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -28,15 +33,23 @@ import java.util.UUID;
 @Service
 public class ConsentService {
 
+    private static final Logger log = LoggerFactory.getLogger(ConsentService.class);
+
     private final MembershipRepository membershipRepo;
     private final ConsentRecordRepository consentRepo;
+    private final ConsumerRepository consumerRepo;
+    private final MarketingOptOutRecorder optOutRecorder;
     private final AuditLogger auditLogger;
 
     public ConsentService(MembershipRepository membershipRepo,
                           ConsentRecordRepository consentRepo,
+                          ConsumerRepository consumerRepo,
+                          MarketingOptOutRecorder optOutRecorder,
                           AuditLogger auditLogger) {
         this.membershipRepo = membershipRepo;
         this.consentRepo = consentRepo;
+        this.consumerRepo = consumerRepo;
+        this.optOutRecorder = optOutRecorder;
         this.auditLogger = auditLogger;
     }
 
@@ -94,17 +107,28 @@ public class ConsentService {
      * Unsubscribe on the EMAIL channel. Kept for existing callers; delegates.
      */
     @Transactional
-    public void unsubscribe(UUID orgId, UUID membershipId, String source, AuthPrincipal principal) {
-        unsubscribe(orgId, membershipId, source, "email", principal);
+    public void unsubscribe(UUID orgId, UUID membershipId, String source,
+                            ConsentOrigin origin, AuthPrincipal principal) {
+        unsubscribe(orgId, membershipId, source, "email", origin, principal);
     }
 
     /**
      * Unsubscribe on the given channel — synchronous, always succeeds (Art.21).
      * Appends a proof row and clears the per-channel denormalized state.
+     *
+     * <p>{@code origin} says who is really acting and is the sole input to the sticky
+     * {@code marketing_optouts} write (§6.3) — see {@link ConsentOrigin} for why that
+     * cannot be inferred from {@code source}. {@code source} is unchanged: it stays the
+     * human-readable audit string on {@code consent_records}.
+     *
+     * <p>Anything other than {@link ConsentOrigin#DATA_SUBJECT}, {@code null} included,
+     * writes no sticky row. That is the safe direction to fail in: a missing sticky row
+     * costs a re-subscribe the buyer can undo, while a spurious one silently bars them
+     * from ever hearing from that organizer again.
      */
     @Transactional
     public void unsubscribe(UUID orgId, UUID membershipId, String source, String channel,
-                            AuthPrincipal principal) {
+                            ConsentOrigin origin, AuthPrincipal principal) {
         Membership m = requireMembership(orgId, membershipId);
 
         ConsentRecord r = new ConsentRecord();
@@ -124,11 +148,58 @@ public class ConsentService {
         }
         membershipRepo.save(m);
 
+        if (origin == ConsentOrigin.DATA_SUBJECT) {
+            recordStickyOptOut(m, orgId, channel, source);
+        }
+
         // As in capture(): skip the organizer-actor audit row when there is no
         // authenticated principal (public/system-initiated unsubscribe).
         if (principal != null) {
             auditLogger.record(principal, AuditActions.CONSENT_UNSUBSCRIBED, "membership",
                     membershipId, "Unsubscribed via " + source + " channel=" + channel);
+        }
+    }
+
+    /**
+     * Best-effort sticky {@code marketing_optouts} write — the record that stops a
+     * Release-2 preference-centre toggle from resurrecting an organizer the buyer
+     * explicitly left (§6.3).
+     *
+     * <p><b>It can never fail the unsubscribe.</b> This is the live RFC 8058 one-click
+     * path and the legally mandated SMS STOP path; recording stickiness is a bonus
+     * record, never a precondition. Two things make that true together, and neither is
+     * sufficient alone:
+     * <ul>
+     *   <li>{@link MarketingOptOutRecorder#record} is {@code REQUIRES_NEW} on a separate
+     *       bean, so a constraint violation rolls back only its own transaction and
+     *       never marks this one rollback-only. A plain try/catch around a same-transaction
+     *       write would still explode at commit with an {@code UnexpectedRollbackException}.</li>
+     *   <li>The catch is here, outside that boundary, so it also covers whatever the
+     *       proxy throws at the inner commit.</li>
+     * </ul>
+     *
+     * <p>The email is resolved here rather than inside the recorder on purpose: the
+     * {@code Consumer} row may have been written by this very transaction and would be
+     * invisible to the recorder's separate connection.
+     */
+    private void recordStickyOptOut(Membership m, UUID orgId, String channel, String source) {
+        try {
+            String email = consumerRepo.findByConsumerId(m.getConsumerId())
+                    .map(Consumer::getNormalizedEmail)
+                    .orElse(null);
+            if (email == null) {
+                log.warn("Sticky opt-out skipped: no consumer email for membership={}", m.getMembershipId());
+                return;
+            }
+            optOutRecorder.record(email, orgId, channel, source);
+        } catch (DataIntegrityViolationException race) {
+            // A concurrent unsubscribe inserted the row first. That is the outcome we
+            // wanted, and theirs is the earlier created_at — nothing to do.
+            log.debug("Sticky opt-out already recorded for membership={} channel={}",
+                    m.getMembershipId(), channel);
+        } catch (RuntimeException e) {
+            log.error("Sticky opt-out write failed for membership={} org={} channel={}: {}",
+                    m.getMembershipId(), orgId, channel, e.getMessage(), e);
         }
     }
 
