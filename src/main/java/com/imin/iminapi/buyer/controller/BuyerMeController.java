@@ -54,20 +54,8 @@ public class BuyerMeController {
         BuyerAccount account = accounts.findById(buyer.accountId())
                 .orElseThrow(() -> ApiException.notFound("Account"));
 
-        List<BuyerMeResponse.Address> addresses =
-                emails.findByBuyerAccountIdOrderByCreatedAtAsc(account.getId()).stream()
-                        .map(BuyerMeController::toAddress)
-                        .toList();
-
-        var body = new BuyerMeResponse(
-                account.getId(),
-                account.getDisplayName(),
-                account.getCity(),
-                account.getLocale(),
-                account.getStatus(),
-                account.getDeleteAt(),
-                account.getCreatedAt(),
-                addresses);
+        var body = BuyerMeResponse.of(
+                account, emails.findByBuyerAccountIdOrderByCreatedAtAsc(account.getId()));
 
         return ResponseEntity.ok()
                 .header(HttpHeaders.CACHE_CONTROL, NO_STORE)
@@ -86,14 +74,5 @@ public class BuyerMeController {
                 .header(HttpHeaders.SET_COOKIE, sessionService.clearCookie().toString())
                 .header(HttpHeaders.CACHE_CONTROL, NO_STORE)
                 .build();
-    }
-
-    private static BuyerMeResponse.Address toAddress(BuyerAccountEmail row) {
-        return new BuyerMeResponse.Address(
-                row.getEmail(),
-                row.isPrimary(),
-                row.isVerified(),
-                row.getAddedVia(),
-                row.getCreatedAt());
     }
 }

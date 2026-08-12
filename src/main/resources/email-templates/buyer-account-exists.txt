@@ -1,0 +1,13 @@
+imin.wtf · account already exists
+
+You already have an imin account
+────────────────────────────────
+
+Someone just tried to create an imin account with this address. It already belongs to an account, so we did not create a second one and nothing has changed. Sign in with your password — or reset it if you have forgotten it.
+
+    {{signInUrl}}
+
+Wasn't you? No account was created and nothing on yours has changed — you can ignore this email. If you cannot remember your password, use "Forgot password" on the sign-in page.
+
+—
+imin.wtf · sent because someone tried to sign up with this email

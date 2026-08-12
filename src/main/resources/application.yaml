@@ -320,6 +320,26 @@ imin:
     # an address they cannot verify and locking its owner out forever.
     unverified-email-ttl-hours: ${IMIN_BUYER_UNVERIFIED_EMAIL_TTL_HOURS:72}
     verification-attempt-retention-hours: ${IMIN_BUYER_VERIFICATION_ATTEMPT_RETENTION_HOURS:24}
+    # Pepper for buyer_email_verification_codes.code_hash. A bare SHA-256 of a
+    # six-digit code is an offline dictionary of one million entries, so the
+    # stored digest is HMAC-SHA256(this, code) (epic §2.2).
+    #
+    # BLANK FAILS STARTUP UNDER THE prod PROFILE. Elsewhere it degrades to an
+    # ephemeral per-instance key with a warning, the same fallback
+    # imin.oauth.state-secret uses — harmless for a 10-minute code in dev, fatal
+    # across replicas in production.
+    code-secret: ${IMIN_BUYER_CODE_SECRET:}
+    verification-code-ttl-minutes: ${IMIN_BUYER_VERIFICATION_CODE_TTL_MINUTES:10}
+    # Wrong guesses allowed against ONE code. Mirrors chk_bevc_attempts_range.
+    verification-max-attempts: ${IMIN_BUYER_VERIFICATION_MAX_ATTEMPTS:5}
+    # The DB-counted per-address lockout: this many failures inside the window
+    # lock the ADDRESS, no matter how many fresh codes were issued. It is a table
+    # and not a bucket4j bucket because RateLimitConfig is @Profile("!test") and
+    # a security control the suite cannot assert on is one that will regress.
+    lockout-failure-threshold: ${IMIN_BUYER_LOCKOUT_FAILURE_THRESHOLD:10}
+    lockout-window-minutes: ${IMIN_BUYER_LOCKOUT_WINDOW_MINUTES:60}
+    # Matches PasswordResetService.TOKEN_TTL on the organizer side.
+    password-reset-ttl-minutes: ${IMIN_BUYER_PASSWORD_RESET_TTL_MINUTES:30}
   oauth:
     # Social sign-in (config-gated). A provider is enabled only when ALL its
     # fields below are non-blank; otherwise its endpoints 404 and the FE hides
@@ -343,6 +363,13 @@ imin:
       # e.g. https://dashboard.imin.wtf/auth/callback/google. Register it in the
       # Google client's "Authorized redirect URIs".
       redirect-uri: ${GOOGLE_OAUTH_REDIRECT_URI:}
+      # SECOND Authorized redirect URI on the SAME client, for buyer sign-in on
+      # imin-public: https://app.imin.wtf/auth/callback/google (epic §2.4).
+      # Blank => GET /api/v1/buyer/auth/google/url and its callback 404, and the
+      # buyer sign-in card shows only email + password. Do not set it before the
+      # URI is registered in the Google Cloud console, or buyers land on
+      # redirect_uri_mismatch.
+      buyer-redirect-uri: ${GOOGLE_OAUTH_BUYER_REDIRECT_URI:}
     apple:
       # Apple Developer → Certificates, IDs & Profiles → Identifiers → Services ID
       # (the OAuth client_id / audience), e.g. wtf.imin.web.
@@ -430,6 +457,37 @@ imin:
       # filling notify_subscriptions with fake addresses that NotifyReleaseSender would
       # later actually mail from our sending domain.
       capacity: 20
+      window-minutes: 60
+    # ---- Buyer accounts (app.imin.wtf) — epic §2.2 ----------------------
+    # Separate from the organizer buckets above even where the numbers match:
+    # two surfaces, two abuse profiles, and buyer traffic must never be able to
+    # throttle organizer sign-in.
+    buyer-login:
+      # Per normalized email. Mirrors the organizer `login` bucket.
+      capacity: 5
+      window-minutes: 15
+    buyer-signup:
+      # Per client IP (forward-headers-strategy=framework makes getRemoteAddr
+      # the real client IP in prod). Per-IP and not per-email on purpose: an
+      # email key would let an attacker burn a stranger's bucket and stop them
+      # registering at all.
+      capacity: 10
+      window-minutes: 60
+    buyer-password-reset:
+      # Per normalized email. Mirrors `password-reset`.
+      capacity: 3
+      window-minutes: 15
+    buyer-verification-resend:
+      # Per normalized email. Mirrors `verification-resend`. This is what keeps
+      # the 5-attempts-per-code cap meaningful — without it, an attacker just
+      # requests a fresh code every five guesses. The DB-counted per-address
+      # lockout backs it up where this config does not apply (test profile).
+      capacity: 3
+      window-minutes: 15
+    buyer-email-add:
+      # Per buyer account id. Consumed by R1.3's POST /buyer/emails; the bucket
+      # ships with the other four so the set is complete in one place.
+      capacity: 5
       window-minutes: 60
   media:
     enabled: ${MEDIA_ENABLED:true}

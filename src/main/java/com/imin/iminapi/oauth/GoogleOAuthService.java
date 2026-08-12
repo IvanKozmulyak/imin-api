@@ -20,8 +20,24 @@ import java.util.Set;
 /**
  * Google OIDC provider: builds the authorize URL, exchanges the auth code, and
  * verifies the returned ID token against Google's JWKS. Only ID-token claims are
- * trusted (no userinfo call). All network + crypto lives here; the resulting
- * {@link OAuthUserInfo} is handed to {@link OAuthAccountService}.
+ * trusted (no userinfo call). All network + crypto lives here.
+ *
+ * <h2>Two audiences, one Google client</h2>
+ *
+ * <p>Organizer sign-in and buyer sign-in (buyer-accounts epic §2.4) share this
+ * class for the HTTP exchange and ID-token verification, and nothing else. They
+ * are otherwise physically separate: different endpoints, different redirect
+ * URIs, different resolution services, different sessions. In particular
+ * {@link OAuthAccountService} — whose step 5 auto-provisions an
+ * {@code Organization} — is reached only from the organizer path.
+ *
+ * <p>The <b>redirect URI is a parameter</b> rather than a field read twice,
+ * because Google requires the URI in the token exchange to equal the one the
+ * authorize URL used, and the two audiences land the browser on different
+ * frontends ({@code dashboard.imin.wtf} vs {@code app.imin.wtf}). The organizer
+ * entry points below keep today's behaviour exactly by passing
+ * {@code props.getGoogle().getRedirectUri()}; {@code GoogleOAuthServiceTest} is
+ * the regression net that pins it.
  */
 @Service
 public class GoogleOAuthService {
@@ -47,15 +63,31 @@ public class GoogleOAuthService {
         this.http = http;
     }
 
-    /** Build the Google authorize URL (fresh signed state, openid/email/profile scopes). */
+    /**
+     * Build the ORGANIZER authorize URL (fresh signed organizer-audience state,
+     * openid/email/profile scopes). Unchanged behaviour; the buyer flow calls
+     * {@link #buildAuthorizeUrl(String, String)} with its own redirect URI and
+     * its own state.
+     */
     public String buildAuthorizeUrl() {
-        OAuthProperties.Google g = props.getGoogle();
+        return buildAuthorizeUrl(props.getGoogle().getRedirectUri(), stateService.sign(PROVIDER));
+    }
+
+    /**
+     * Build a Google authorize URL for a caller-chosen redirect URI and state.
+     *
+     * <p>{@code redirectUri} must be registered on the Google client and must be
+     * the same value later handed to {@link #exchangeCode(String, String)} —
+     * Google rejects the exchange otherwise, and it does so <i>after</i> the
+     * user has already consented.
+     */
+    public String buildAuthorizeUrl(String redirectUri, String state) {
         return UriComponentsBuilder.fromUriString(AUTHORIZE_URL)
-                .queryParam("client_id", g.getClientId())
-                .queryParam("redirect_uri", g.getRedirectUri())
+                .queryParam("client_id", props.getGoogle().getClientId())
+                .queryParam("redirect_uri", redirectUri)
                 .queryParam("response_type", "code")
                 .queryParam("scope", "openid email profile")
-                .queryParam("state", stateService.sign(PROVIDER))
+                .queryParam("state", state)
                 .queryParam("access_type", "online")
                 .queryParam("prompt", "select_account")
                 .build()
@@ -63,16 +95,37 @@ public class GoogleOAuthService {
                 .toUriString();
     }
 
-    /** Validate state, exchange the code, verify the ID token, extract the identity. */
+    /**
+     * ORGANIZER entry point: validate the state as an organizer-audience state,
+     * then exchange against the organizer redirect URI.
+     *
+     * <p>State verification happens <b>before</b> the network call, and that
+     * ordering is the CSRF defence — a forged state, a state minted for Apple,
+     * or (since the buyer epic) a state minted for the buyer audience must never
+     * reach Google's token endpoint, let alone
+     * {@code OAuthAccountService.resolve} step 5.
+     */
     public OAuthUserInfo exchange(String code, String state) {
         stateService.verify(state, PROVIDER);
+        return exchangeCode(code, props.getGoogle().getRedirectUri());
+    }
+
+    /**
+     * Exchange an authorization code and verify the returned ID token.
+     *
+     * <p><b>Verifies no state.</b> Callers own that, because the two audiences
+     * check different things — the buyer flow additionally requires an audience
+     * match and a browser-nonce binding. Never call this without having verified
+     * a state first.
+     */
+    public OAuthUserInfo exchangeCode(String code, String redirectUri) {
         OAuthProperties.Google g = props.getGoogle();
 
         MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
         form.add("code", code);
         form.add("client_id", g.getClientId());
         form.add("client_secret", g.getClientSecret());
-        form.add("redirect_uri", g.getRedirectUri());
+        form.add("redirect_uri", redirectUri);
         form.add("grant_type", "authorization_code");
 
         Map<String, Object> tokenResponse = postForm(form);

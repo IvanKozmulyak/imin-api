@@ -25,6 +25,13 @@ public enum ErrorCode {
     OAUTH_INVALID_STATE,
     OAUTH_EMAIL_REQUIRED,
     OAUTH_EMAIL_CONFLICT,
+    /**
+     * The provider returned an address it has not verified. Distinct from
+     * {@link #OAUTH_EMAIL_CONFLICT}: nothing conflicts, the assertion is simply
+     * not trustworthy enough to mint a verified address claim from (buyer
+     * accounts epic §15 D-3).
+     */
+    OAUTH_EMAIL_UNVERIFIED,
     AI_QUOTA_EXCEEDED,
     INTERNAL,
     UPSTREAM_UNAVAILABLE,

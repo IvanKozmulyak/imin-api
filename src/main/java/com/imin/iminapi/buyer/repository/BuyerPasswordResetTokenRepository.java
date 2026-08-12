@@ -9,10 +9,14 @@ import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.Optional;
 import java.util.UUID;
 
 @RepositoryRestResource(exported = false)
 public interface BuyerPasswordResetTokenRepository extends JpaRepository<BuyerPasswordResetToken, UUID> {
+
+    /** Lookup by SHA-256 hex; the raw token exists only in the buyer's inbox. */
+    Optional<BuyerPasswordResetToken> findByTokenHash(String tokenHash);
 
     @Transactional
     @Modifying

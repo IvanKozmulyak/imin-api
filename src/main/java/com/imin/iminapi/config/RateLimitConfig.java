@@ -57,6 +57,26 @@ public class RateLimitConfig {
     private int notifySubscribeCapacity;
     @Value("${imin.ratelimit.notify-subscribe.window-minutes}")
     private int notifySubscribeWindow;
+    @Value("${imin.ratelimit.buyer-login.capacity}")
+    private int buyerLoginCapacity;
+    @Value("${imin.ratelimit.buyer-login.window-minutes}")
+    private int buyerLoginWindow;
+    @Value("${imin.ratelimit.buyer-signup.capacity}")
+    private int buyerSignupCapacity;
+    @Value("${imin.ratelimit.buyer-signup.window-minutes}")
+    private int buyerSignupWindow;
+    @Value("${imin.ratelimit.buyer-password-reset.capacity}")
+    private int buyerPasswordResetCapacity;
+    @Value("${imin.ratelimit.buyer-password-reset.window-minutes}")
+    private int buyerPasswordResetWindow;
+    @Value("${imin.ratelimit.buyer-verification-resend.capacity}")
+    private int buyerVerificationResendCapacity;
+    @Value("${imin.ratelimit.buyer-verification-resend.window-minutes}")
+    private int buyerVerificationResendWindow;
+    @Value("${imin.ratelimit.buyer-email-add.capacity}")
+    private int buyerEmailAddCapacity;
+    @Value("${imin.ratelimit.buyer-email-add.window-minutes}")
+    private int buyerEmailAddWindow;
 
     @Bean
     public RedisClient redisClient(@Value("${spring.data.redis.url}") String url) {
@@ -105,6 +125,43 @@ public class RateLimitConfig {
         // route is a spam relay.
         configs.put("notify-subscribe", BucketConfiguration.builder()
                 .addLimit(Bandwidth.simple(notifySubscribeCapacity, Duration.ofMinutes(notifySubscribeWindow)))
+                .build());
+
+        // ---- Buyer accounts (buyer-accounts epic §2.2) --------------------
+        // Five buckets, deliberately separate from the organizer ones even
+        // where the numbers match: the two surfaces have different abuse
+        // profiles and must be tunable apart, and sharing a bucket would let
+        // buyer traffic throttle organizer sign-in.
+        //
+        // NOTE none of these is the whole story for verification: this class is
+        // @Profile("!test"), so the code-guessing limit that actually has to
+        // hold is the DB-counted lockout in BuyerEmailVerificationService.
+
+        // Password sign-in, keyed per normalized email.
+        configs.put("buyer-login", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(buyerLoginCapacity, Duration.ofMinutes(buyerLoginWindow)))
+                .build());
+        // Account creation, keyed per client IP — keying it per email would let
+        // an attacker burn a stranger's bucket and block them from registering.
+        configs.put("buyer-signup", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(buyerSignupCapacity, Duration.ofMinutes(buyerSignupWindow)))
+                .build());
+        // Forgot-password, keyed per normalized email — every token is a real
+        // outbound email from our sending domain.
+        configs.put("buyer-password-reset", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(buyerPasswordResetCapacity,
+                        Duration.ofMinutes(buyerPasswordResetWindow)))
+                .build());
+        // Code resend, keyed per normalized email. Caps how fast fresh codes can
+        // be minted, which is what keeps the per-code attempt cap meaningful.
+        configs.put("buyer-verification-resend", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(buyerVerificationResendCapacity,
+                        Duration.ofMinutes(buyerVerificationResendWindow)))
+                .build());
+        // Add-an-address, keyed per buyer account id. Consumed by R1.3's
+        // POST /buyer/emails; the bucket ships here so all five arrive together.
+        configs.put("buyer-email-add", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(buyerEmailAddCapacity, Duration.ofMinutes(buyerEmailAddWindow)))
                 .build());
 
         return (bucketName, key) -> {

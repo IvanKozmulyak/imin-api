@@ -1,5 +1,8 @@
 package com.imin.iminapi.buyer.dto;
 
+import com.imin.iminapi.buyer.model.BuyerAccount;
+import com.imin.iminapi.buyer.model.BuyerAccountEmail;
+
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -36,4 +39,26 @@ public record BuyerMeResponse(
             boolean verified,
             String addedVia,
             Instant createdAt) {}
+
+    /**
+     * The single projection used by {@code GET /buyer/me} and by every endpoint
+     * that signs a buyer in (verify-email, login, the Google callback), so those
+     * four responses cannot drift into three different shapes.
+     */
+    public static BuyerMeResponse of(BuyerAccount account, List<BuyerAccountEmail> addresses) {
+        return new BuyerMeResponse(
+                account.getId(),
+                account.getDisplayName(),
+                account.getCity(),
+                account.getLocale(),
+                account.getStatus(),
+                account.getDeleteAt(),
+                account.getCreatedAt(),
+                addresses.stream().map(BuyerMeResponse::toAddress).toList());
+    }
+
+    private static Address toAddress(BuyerAccountEmail row) {
+        return new Address(row.getEmail(), row.isPrimary(), row.isVerified(),
+                row.getAddedVia(), row.getCreatedAt());
+    }
 }

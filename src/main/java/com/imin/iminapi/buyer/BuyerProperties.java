@@ -35,6 +35,39 @@ public class BuyerProperties {
     /** Retention for the DB-counted verification-attempt rows. */
     private int verificationAttemptRetentionHours = 24;
 
+    /**
+     * Pepper for {@code buyer_email_verification_codes.code_hash}
+     * ({@code IMIN_BUYER_CODE_SECRET}). A bare SHA-256 of a six-digit code is an
+     * offline dictionary of one million entries, so the digest is
+     * {@code HMAC-SHA256(secret, code)} (§2.2, and open question 4 settled that
+     * way in §15 — the secret is already set in production).
+     *
+     * <p>Blank fails startup under the {@code prod} profile; elsewhere it
+     * degrades to an ephemeral per-instance key with a warning, exactly as
+     * {@code OAuthStateService} does for its own HMAC key.
+     */
+    private String codeSecret = "";
+
+    /** Verification-code lifetime. Matches the organizer code's 10 minutes. */
+    private int verificationCodeTtlMinutes = 10;
+
+    /** Wrong guesses allowed against one code, mirroring {@code chk_bevc_attempts_range}. */
+    private int verificationMaxAttempts = 5;
+
+    /**
+     * DB-counted per-address lockout (§2.2): this many failed verifications for
+     * one {@code email_normalized} inside {@link #lockoutWindowMinutes} locks
+     * that address for the rest of the window, no matter how many fresh codes
+     * were issued. Separate from the bucket4j resend limit precisely because
+     * {@code RateLimitConfig} is {@code @Profile("!test")}.
+     */
+    private int lockoutFailureThreshold = 10;
+
+    private int lockoutWindowMinutes = 60;
+
+    /** Password-reset token lifetime. Matches {@code PasswordResetService.TOKEN_TTL}. */
+    private int passwordResetTtlMinutes = 30;
+
     public List<String> getAllowedOrigins() { return allowedOrigins; }
     public void setAllowedOrigins(List<String> allowedOrigins) { this.allowedOrigins = allowedOrigins; }
 
@@ -58,4 +91,22 @@ public class BuyerProperties {
     public void setVerificationAttemptRetentionHours(int verificationAttemptRetentionHours) {
         this.verificationAttemptRetentionHours = verificationAttemptRetentionHours;
     }
+
+    public String getCodeSecret() { return codeSecret; }
+    public void setCodeSecret(String codeSecret) { this.codeSecret = codeSecret; }
+
+    public int getVerificationCodeTtlMinutes() { return verificationCodeTtlMinutes; }
+    public void setVerificationCodeTtlMinutes(int v) { this.verificationCodeTtlMinutes = v; }
+
+    public int getVerificationMaxAttempts() { return verificationMaxAttempts; }
+    public void setVerificationMaxAttempts(int v) { this.verificationMaxAttempts = v; }
+
+    public int getLockoutFailureThreshold() { return lockoutFailureThreshold; }
+    public void setLockoutFailureThreshold(int v) { this.lockoutFailureThreshold = v; }
+
+    public int getLockoutWindowMinutes() { return lockoutWindowMinutes; }
+    public void setLockoutWindowMinutes(int v) { this.lockoutWindowMinutes = v; }
+
+    public int getPasswordResetTtlMinutes() { return passwordResetTtlMinutes; }
+    public void setPasswordResetTtlMinutes(int v) { this.passwordResetTtlMinutes = v; }
 }

@@ -1,0 +1,13 @@
+imin.wtf · la cuenta ya existe
+
+Ya tienes una cuenta de imin
+────────────────────────────
+
+Alguien acaba de intentar crear una cuenta de imin con esta dirección. Ya pertenece a una cuenta, así que no creamos una segunda y nada ha cambiado. Inicia sesión con tu contraseña, o restablécela si la has olvidado.
+
+    {{signInUrl}}
+
+¿No fuiste tú? No se creó ninguna cuenta y nada en la tuya ha cambiado: puedes ignorar este correo. Si no recuerdas tu contraseña, usa «He olvidado mi contraseña» en la página de inicio de sesión.
+
+—
+imin.wtf · enviado porque alguien intentó registrarse con este correo

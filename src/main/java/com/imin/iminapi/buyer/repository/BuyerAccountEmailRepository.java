@@ -31,6 +31,33 @@ public interface BuyerAccountEmailRepository extends JpaRepository<BuyerAccountE
     Optional<BuyerAccountEmail> findByPrimaryMarker(UUID buyerAccountId);
 
     /**
+     * The newest <b>unverified</b> claim on an address, across all accounts.
+     *
+     * <p>Unverified rows are deliberately not unique (§2.3 rule 1): a global
+     * UNIQUE spanning them would let an attacker squat an address they cannot
+     * verify and lock its owner out forever. Several accounts may therefore hold
+     * an unverified claim on one address at once, and "newest wins" is the rule
+     * {@code resend-verification} and code issuance both use — the person who
+     * most recently asked is the person waiting on the mail.
+     */
+    Optional<BuyerAccountEmail> findFirstByEmailNormalizedAndVerifiedAtIsNullOrderByCreatedAtDesc(
+            String emailNormalized);
+
+    /**
+     * Verification re-claim (§2.3 rule 3): when an address is verified for one
+     * account, every unverified claim on it elsewhere is dropped in the same
+     * transaction. Whoever proves control wins; nobody is locked out by someone
+     * else's typing. The now-empty squatter accounts are collected by
+     * {@code BuyerAccountRepository.deleteNeverActivatedWithoutEmails}.
+     */
+    @Transactional
+    @Modifying
+    @Query("delete from BuyerAccountEmail e where e.emailNormalized = :email " +
+           "and e.verifiedAt is null and e.buyerAccountId <> :accountId")
+    int deleteUnverifiedClaimsElsewhere(@Param("email") String emailNormalized,
+                                        @Param("accountId") UUID accountId);
+
+    /**
      * 72-hour GC of unverified rows (§4.5). Unverified rows grant nothing, and
      * expiring them is what stops an attacker from squatting an address they
      * cannot verify.
