@@ -2,7 +2,11 @@ package com.imin.iminapi.buyer.repository;
 
 import com.imin.iminapi.buyer.model.BuyerIdentity;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.data.rest.core.annotation.RepositoryRestResource;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.Optional;
@@ -20,4 +24,14 @@ public interface BuyerIdentityRepository extends JpaRepository<BuyerIdentity, UU
     Optional<BuyerIdentity> findByProviderAndProviderUserId(String provider, String providerUserId);
 
     List<BuyerIdentity> findByBuyerAccountId(UUID buyerAccountId);
+
+    /**
+     * §7.2 step 4 — the Google subject and the email it carried at link time are
+     * both the buyer's data, and leaving the row would let a re-signup silently
+     * re-adopt the erased account.
+     */
+    @Transactional
+    @Modifying
+    @Query("delete from BuyerIdentity i where i.buyerAccountId = :accountId")
+    int deleteByBuyerAccountId(@Param("accountId") UUID accountId);
 }

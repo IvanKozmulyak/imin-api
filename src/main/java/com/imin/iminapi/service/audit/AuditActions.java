@@ -39,6 +39,16 @@ public final class AuditActions {
     public static final String DSAR_ERASE_REQUESTED     = "DSAR_ERASE_REQUESTED";
     public static final String DSAR_ERASE_EXECUTED      = "DSAR_ERASE_EXECUTED";
 
+    // ---- Buyer account deletion (buyer-accounts epic §7) ----
+    // Buyer-initiated, and therefore platform-wide rather than org-scoped. The
+    // rows are still written PER ORG that held a copy of the buyer, because
+    // audit_logs.org_id is NOT NULL (V21:3) and every reader filters on it — a
+    // tombstone nobody can query is not a tombstone. One row per affected org is
+    // also the right GDPR shape: each controller gets told its copy is gone.
+    public static final String BUYER_ACCOUNT_DELETE_REQUESTED = "BUYER_ACCOUNT_DELETE_REQUESTED";
+    public static final String BUYER_ACCOUNT_DELETE_CANCELLED = "BUYER_ACCOUNT_DELETE_CANCELLED";
+    public static final String BUYER_ACCOUNT_ERASED           = "BUYER_ACCOUNT_ERASED";
+
     // ---- Marketing campaigns (Phase 1) ----
     public static final String CAMPAIGN_CREATED = "CAMPAIGN_CREATED";
     public static final String CAMPAIGN_DUPLICATED = "CAMPAIGN_DUPLICATED";

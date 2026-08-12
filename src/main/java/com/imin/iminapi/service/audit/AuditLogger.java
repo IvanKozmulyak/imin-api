@@ -49,11 +49,39 @@ public class AuditLogger {
      * @param action a constant from {@link AuditActions}
      * @param targetType short type name (e.g. "event", "tier", "promo", "user"), nullable
      * @param targetId optional id of the affected resource
-     * @param summary human-readable, one-line description (≤ 512 chars)
+     * @param summary human-readable, one-line description (≤ 512 chars; truncated if longer)
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void record(AuthPrincipal principal, String action, String targetType,
                        UUID targetId, String summary) {
+        // ── Validate BEFORE writing, because a failed write here is not
+        // recoverable by the catch below. ────────────────────────────────────
+        //
+        // The try/catch cannot save us from a constraint violation. This method
+        // runs in its own REQUIRES_NEW transaction; a failing INSERT marks that
+        // transaction rollback-only, and the commit — performed by the
+        // transaction interceptor AFTER this method has returned — then throws
+        // UnexpectedRollbackException straight into the caller's frame, rolling
+        // back its business transaction. The class contract below says audit
+        // writes are best-effort and swallowed; the only way to actually honour
+        // that is to never emit a statement that cannot succeed.
+        //
+        // This is not hypothetical. audit_logs.org_id is NOT NULL (V21:3) and
+        // AudienceErasureJob passed a SYSTEM principal with a null org, so
+        // DsarService.executeErase aborted on every run: no tombstone was
+        // written AND no membership was ever erased. Every test that covered
+        // the cascade mocked this class, so nothing caught it for months.
+        if (principal == null || principal.orgId() == null) {
+            // Same reasoning ConsentService documents for its null-principal
+            // captures: an org-less audit row cannot be stored (NOT NULL) and
+            // could not be found if it were, since the index and every reader
+            // are org-scoped. Callers with no org must attribute the row to the
+            // org whose data they are touching — see AudienceErasureJob.
+            log.warn("Audit write skipped — no org on principal. action={} target={}/{}",
+                    action, targetType, targetId);
+            return;
+        }
+
         try {
             AuditLog row = new AuditLog();
             row.setOrgId(principal.orgId());
@@ -62,13 +90,23 @@ public class AuditLogger {
             row.setAction(action);
             row.setTargetType(targetType);
             row.setTargetId(targetId);
-            row.setSummary(summary == null ? "" : summary);
-            auditLogs.save(row);
+            row.setSummary(truncate(summary));
+            // saveAndFlush, not save: with a plain save() the INSERT is only
+            // queued and runs at commit — outside this try, where the catch can
+            // no longer see it. Flushing here at least brings the remaining
+            // failure modes back inside the block that logs them.
+            auditLogs.saveAndFlush(row);
         } catch (RuntimeException e) {
             // Never rethrow — audit failures must not break the surrounding business txn.
             log.error("Audit write failed action={} target={} org={} actor={}: {}",
                     action, targetType, principal.orgId(), principal.userId(), e.getMessage(), e);
         }
+    }
+
+    /** {@code summary} is {@code VARCHAR(512) NOT NULL} — overlong text is clipped, never rejected. */
+    private static String truncate(String summary) {
+        if (summary == null) return "";
+        return summary.length() <= 512 ? summary : summary.substring(0, 512);
     }
 
     private String lookupEmail(UUID userId) {

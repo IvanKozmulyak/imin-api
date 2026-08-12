@@ -49,4 +49,33 @@ public interface NotifySubscriptionRepository extends JpaRepository<NotifySubscr
     @Query("DELETE FROM NotifySubscription s WHERE LOWER(s.email) = :email "
             + "AND s.eventId IN (SELECT e.id FROM Event e WHERE e.orgId = :orgId)")
     int deleteByOrgIdAndEmail(@Param("orgId") UUID orgId, @Param("email") String email);
+
+    /**
+     * Buyer-initiated Art.17 erasure (§7.2 step 3): drop notify-me rows for the
+     * account's whole address set, <b>across every org</b>.
+     *
+     * <p>Deliberately unscoped, and deliberately not a loop over
+     * {@link #deleteByOrgIdAndEmail}. The org scope on that method is correct for
+     * an <i>organizer</i> DSAR — one controller erasing its own copy — but here
+     * the data subject is erasing themselves platform-wide, and a notify
+     * subscription is the buyer's own standing request for mail, not an
+     * organizer's audience record. Two consequences follow:
+     *
+     * <ul>
+     *   <li>Rows in orgs the buyer never bought from are still theirs, and
+     *       {@code executeErase} would never reach them: it only iterates the
+     *       orgs that hold a membership.</li>
+     *   <li>A notify subscription can exist with <b>no membership at all</b> —
+     *       anyone can subscribe to a release without buying — so the
+     *       membership-driven cascade has no hook for it whatsoever.</li>
+     * </ul>
+     *
+     * <p>{@code email} is NOT NULL in the column and lowercased on write;
+     * callers pass non-null normalized addresses, which also keeps the
+     * H2-vs-Postgres {@code lower(bytea)} null-String trap out of reach.
+     */
+    @Modifying
+    @Transactional
+    @Query("DELETE FROM NotifySubscription s WHERE LOWER(s.email) IN :emails")
+    int deleteByEmailIn(@Param("emails") java.util.Collection<String> emails);
 }

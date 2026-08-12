@@ -22,4 +22,10 @@ public interface BuyerPasswordResetTokenRepository extends JpaRepository<BuyerPa
     @Modifying
     @Query("delete from BuyerPasswordResetToken t where t.expiresAt < :cutoff")
     int deleteExpiredBefore(@Param("cutoff") Instant cutoff);
+
+    /** §7.2 step 4 — a live reset token on an erased account would be a way back in. */
+    @Transactional
+    @Modifying
+    @Query("delete from BuyerPasswordResetToken t where t.buyerAccountId = :accountId")
+    int deleteByBuyerAccountId(@Param("accountId") UUID accountId);
 }

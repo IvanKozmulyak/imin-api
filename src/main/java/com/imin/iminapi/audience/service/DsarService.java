@@ -45,6 +45,7 @@ public class DsarService {
     private final AuditLogger auditLogger;
     private final com.imin.iminapi.marketing.repository.CampaignRecipientRepository campaignRecipientRepo;
     private final NotifySubscriptionRepository notifySubscriptionRepo;
+    private final com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository buyerAccountEmailRepo;
 
     public DsarService(MembershipRepository membershipRepo,
                        ConsumerRepository consumerRepo,
@@ -53,7 +54,8 @@ public class DsarService {
                        ConsentService consentService,
                        AuditLogger auditLogger,
                        com.imin.iminapi.marketing.repository.CampaignRecipientRepository campaignRecipientRepo,
-                       NotifySubscriptionRepository notifySubscriptionRepo) {
+                       NotifySubscriptionRepository notifySubscriptionRepo,
+                       com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository buyerAccountEmailRepo) {
         this.membershipRepo = membershipRepo;
         this.consumerRepo = consumerRepo;
         this.consentRepo = consentRepo;
@@ -62,6 +64,7 @@ public class DsarService {
         this.auditLogger = auditLogger;
         this.campaignRecipientRepo = campaignRecipientRepo;
         this.notifySubscriptionRepo = notifySubscriptionRepo;
+        this.buyerAccountEmailRepo = buyerAccountEmailRepo;
     }
 
     /** Art.15 access — returns the membership (caller maps to DTO). Audited. */
@@ -149,23 +152,49 @@ public class DsarService {
         // Scope by the parent event's org: DSAR is org-scoped, so another org's subscription
         // for the same address is that org's data and is left alone. Read the address BEFORE
         // step 5 possibly deletes the consumer row it lives on.
-        consumerRepo.findByConsumerId(consumerId)
+        String normalizedEmail = consumerRepo.findByConsumerId(consumerId)
                 .map(c -> c.getNormalizedEmail())
                 .filter(email -> email != null && !email.isBlank())
-                .ifPresent(email -> notifySubscriptionRepo.deleteByOrgIdAndEmail(orgId, email));
+                .orElse(null);
+        if (normalizedEmail != null) {
+            notifySubscriptionRepo.deleteByOrgIdAndEmail(orgId, normalizedEmail);
+        }
 
         // 4. Delete membership (consent_records cascade via FK ON DELETE CASCADE)
         membershipRepo.deleteByIdAndOrgId(membershipId, orgId);
 
-        // 5. Delete Consumer if no remaining memberships reference it
+        // 5. Delete Consumer if no remaining memberships reference it AND no buyer
+        // account is anchored on the same address.
+        //
+        // The second condition is the buyer-accounts guard (epic §7.2). `Consumer`
+        // is keyed by normalized_email and is the platform identity anchor that a
+        // buyer account resolves through at the point of need — there is no
+        // buyer_accounts.consumer_id FK to make the database refuse this delete
+        // (§4.1), so this check is the only thing between an organizer erasing
+        // their copy of a buyer and that buyer's imin account losing its anchor.
+        //
+        // Verified rows only: an unverified buyer_account_emails row is a claim
+        // that granted nothing, and letting one pin a Consumer row alive would
+        // hand anybody a way to veto someone else's lawful Art.17 erasure just by
+        // typing their address into a signup form.
         long remaining = consumerRepo.countMembershipsByConsumerId(consumerId);
-        if (remaining == 0) {
+        if (remaining == 0 && !anchoredByBuyerAccount(normalizedEmail)) {
             consumerRepo.deleteByConsumerId(consumerId);
         }
 
         // 6. Tombstone in audit_logs (immutable, REQUIRES_NEW inside AuditLogger)
         auditLogger.record(principal, AuditActions.DSAR_ERASE_EXECUTED, "membership", membershipId,
                 "DSAR erase executed — org=" + orgId);
+    }
+
+    /**
+     * True when a verified buyer account address carries this normalized email,
+     * i.e. deleting the {@code Consumer} would strip a live imin account of its
+     * identity anchor. A null/blank address cannot anchor anything.
+     */
+    private boolean anchoredByBuyerAccount(String normalizedEmail) {
+        if (normalizedEmail == null || normalizedEmail.isBlank()) return false;
+        return buyerAccountEmailRepo.existsByVerifiedKey(normalizedEmail);
     }
 
     private Membership require(UUID orgId, UUID membershipId) {

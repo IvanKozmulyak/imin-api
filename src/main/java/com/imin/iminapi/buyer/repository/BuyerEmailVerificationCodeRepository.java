@@ -53,4 +53,10 @@ public interface BuyerEmailVerificationCodeRepository extends JpaRepository<Buye
     @Modifying
     @Query("delete from BuyerEmailVerificationCode c where c.expiresAt < :cutoff")
     int deleteExpiredBefore(@Param("cutoff") Instant cutoff);
+
+    /** §7.2 step 4 — outstanding codes carry the buyer's address; erasure drops them. */
+    @Transactional
+    @Modifying
+    @Query("delete from BuyerEmailVerificationCode c where c.buyerAccountId = :accountId")
+    int deleteByBuyerAccountId(@Param("accountId") UUID accountId);
 }

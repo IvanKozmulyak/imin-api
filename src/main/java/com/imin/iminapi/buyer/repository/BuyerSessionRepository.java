@@ -72,4 +72,17 @@ public interface BuyerSessionRepository extends JpaRepository<BuyerSession, UUID
     @Modifying
     @Query("delete from BuyerSession s where s.revokedAt is not null and s.revokedAt < :cutoff")
     int deleteRevokedBefore(@Param("cutoff") Instant cutoff);
+
+    /**
+     * §7.2 step 4 — hard-delete every session row for an account being erased.
+     *
+     * <p>Distinct from {@link #revokeAllForAccount}: revocation stamps
+     * {@code revoked_at} and leaves the row (and its {@code user_agent}, which is
+     * personal data) in place for the sweeper to collect 30 days later. An
+     * account being erased has no 30 days left.
+     */
+    @Transactional
+    @Modifying
+    @Query("delete from BuyerSession s where s.buyerAccountId = :accountId")
+    int deleteByBuyerAccountId(@Param("accountId") UUID accountId);
 }
