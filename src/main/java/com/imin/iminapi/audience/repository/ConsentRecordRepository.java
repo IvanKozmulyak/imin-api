@@ -3,6 +3,7 @@ package com.imin.iminapi.audience.repository;
 import com.imin.iminapi.audience.model.ConsentRecord;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.Repository;
+import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 import org.springframework.data.repository.query.Param;
 
 import java.util.List;
@@ -12,6 +13,7 @@ import java.util.UUID;
  * Tenant-scoped via the membership_id → membership.org_id join (M4).
  * Append-only: no delete/update methods exposed.
  */
+@RepositoryRestResource(exported = false)
 public interface ConsentRecordRepository extends Repository<ConsentRecord, UUID> {
 
     ConsentRecord save(ConsentRecord record);

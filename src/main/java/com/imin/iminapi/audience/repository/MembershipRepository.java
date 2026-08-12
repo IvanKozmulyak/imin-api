@@ -5,6 +5,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.Repository;
+import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 import org.springframework.data.repository.query.Param;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -19,6 +20,7 @@ import java.util.UUID;
  * Every read method takes orgId. No unscoped finders are exposed.
  * Does NOT extend JpaRepository/CrudRepository.
  */
+@RepositoryRestResource(exported = false)
 public interface MembershipRepository extends Repository<Membership, UUID> {
 
     // ---- writes (used by ingestion + service layer) ----

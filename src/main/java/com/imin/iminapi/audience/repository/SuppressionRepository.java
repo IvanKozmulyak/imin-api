@@ -4,6 +4,7 @@ import com.imin.iminapi.audience.model.SuppressionEntry;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.Repository;
+import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 import org.springframework.data.repository.query.Param;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -17,6 +18,7 @@ import java.util.UUID;
  * <p>Marketing suppression is org-scoped. Deliverability suppression is shared/allow-listed
  * (keyed on normalizedEmail, no orgId) — this is the M4 exception.
  */
+@RepositoryRestResource(exported = false)
 public interface SuppressionRepository extends Repository<SuppressionEntry, UUID> {
 
     SuppressionEntry save(SuppressionEntry entry);

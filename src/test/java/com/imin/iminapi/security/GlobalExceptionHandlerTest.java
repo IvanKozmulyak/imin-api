@@ -27,7 +27,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @WebMvcTest(controllers = GlobalExceptionHandlerTest.DummyController.class,
         excludeAutoConfiguration = Saml2RelyingPartyAutoConfiguration.class)
-@Import({GlobalExceptionHandler.class, GlobalExceptionHandlerTest.DummyController.class})
+// BuyerConfig supplies BuyerProperties: @WebMvcTest slices instantiate Filter
+// beans, and the buyer filters are Filters, so their dependencies have to be
+// resolvable here exactly as BearerTokenAuthFilter's already are.
+@Import({GlobalExceptionHandler.class, GlobalExceptionHandlerTest.DummyController.class,
+        com.imin.iminapi.buyer.BuyerConfig.class})
 class GlobalExceptionHandlerTest {
 
     @Autowired MockMvc mvc;
@@ -36,6 +40,7 @@ class GlobalExceptionHandlerTest {
     @MockitoBean UserRepository userRepository;
     @MockitoBean TokenService tokenService;
     @MockitoBean GateAuthService gateAuthService;
+    @MockitoBean com.imin.iminapi.buyer.repository.BuyerSessionRepository buyerSessionRepository;
 
     @RestController
     @RequestMapping("/__test")

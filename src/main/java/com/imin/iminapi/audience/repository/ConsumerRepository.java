@@ -3,6 +3,7 @@ package com.imin.iminapi.audience.repository;
 import com.imin.iminapi.audience.model.Consumer;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.Repository;
+import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 import org.springframework.data.repository.query.Param;
 
 import java.util.Collection;
@@ -16,6 +17,7 @@ import java.util.UUID;
  * This is one of the two M4 allow-listed exceptions (the other being
  * deliverability suppression). Callers must normalize via EmailNormalizer.
  */
+@RepositoryRestResource(exported = false)
 public interface ConsumerRepository extends Repository<Consumer, UUID> {
 
     Optional<Consumer> findByNormalizedEmail(String normalizedEmail);
