@@ -3,6 +3,7 @@ package com.imin.iminapi.buyer.service;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
+import com.imin.iminapi.audience.service.ConsentOrigin;
 import com.imin.iminapi.audience.service.ConsentService;
 import com.imin.iminapi.buyer.model.BuyerAccount;
 import com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository;
@@ -182,9 +183,10 @@ public class BuyerAccountDeletionService {
                 AuthPrincipal principal = new AuthPrincipal(null, m.getOrgId(), UserRole.MEMBER, null);
                 for (String channel : List.of("email", "sms")) {
                     try {
-                        // R1.6 seam: pass ConsentOrigin.DATA_SUBJECT once the parameter lands.
+                        // The buyer asked for deletion themselves, so this is an Art. 21
+                        // objection by the data subject and writes a sticky opt-out row.
                         consentService.unsubscribe(m.getOrgId(), m.getMembershipId(),
-                                CONSENT_SOURCE, channel, principal);
+                                CONSENT_SOURCE, channel, ConsentOrigin.DATA_SUBJECT, principal);
                         count++;
                     } catch (RuntimeException e) {
                         // One org's membership failing must not strand the rest of

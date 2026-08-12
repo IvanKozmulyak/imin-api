@@ -70,4 +70,19 @@ public class MarketingOptOutRecorder {
         // from the proxy instead, which says nothing about what went wrong.
         optOuts.saveAndFlush(MarketingOptOut.of(email, orgId, channel, source));
     }
+
+    /**
+     * Does a sticky row already exist? Used by the caller to tell a lost race (expected,
+     * a no-op) from a genuine write failure wearing the same exception type.
+     *
+     * <p>{@code REQUIRES_NEW} again, and for a second reason beyond isolation: after a
+     * violation the caller's own transaction may be rollback-only, so this read needs a
+     * transaction that is not.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW, readOnly = true)
+    public boolean exists(String rawEmail, UUID orgId, String channel) {
+        String email = EmailNormalizer.normalize(rawEmail);
+        if (email == null || email.isBlank() || orgId == null || channel == null) return false;
+        return optOuts.existsById(new MarketingOptOutId(email, orgId, channel));
+    }
 }

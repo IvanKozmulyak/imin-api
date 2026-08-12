@@ -150,6 +150,12 @@ public class ConsentService {
 
         if (origin == ConsentOrigin.DATA_SUBJECT) {
             recordStickyOptOut(m, orgId, channel, source);
+        } else if (origin == null) {
+            // Unreachable today — all call sites pass a compile-time constant. Kept
+            // audible rather than silent: a future caller that forgets would otherwise
+            // lose sticky rows for years without a single line in the log.
+            log.warn("Unsubscribe with no ConsentOrigin — no sticky opt-out recorded. membership={} source={}",
+                    membershipId, source);
         }
 
         // As in capture(): skip the organizer-actor audit row when there is no
@@ -183,20 +189,33 @@ public class ConsentService {
      * invisible to the recorder's separate connection.
      */
     private void recordStickyOptOut(Membership m, UUID orgId, String channel, String source) {
+        // Deliberately OUTSIDE the try. This read runs in the CALLER's transaction, not
+        // the recorder's, so a JDBC-level failure here marks the caller rollback-only —
+        // swallowing it would hide the cause and still kill the unsubscribe at commit.
+        // Its failure is not "the sticky write failed", and letting it propagate is honest.
+        String email = consumerRepo.findByConsumerId(m.getConsumerId())
+                .map(Consumer::getNormalizedEmail)
+                .orElse(null);
+        if (email == null) {
+            log.warn("Sticky opt-out skipped: no consumer email for membership={}", m.getMembershipId());
+            return;
+        }
         try {
-            String email = consumerRepo.findByConsumerId(m.getConsumerId())
-                    .map(Consumer::getNormalizedEmail)
-                    .orElse(null);
-            if (email == null) {
-                log.warn("Sticky opt-out skipped: no consumer email for membership={}", m.getMembershipId());
-                return;
-            }
             optOutRecorder.record(email, orgId, channel, source);
-        } catch (DataIntegrityViolationException race) {
-            // A concurrent unsubscribe inserted the row first. That is the outcome we
-            // wanted, and theirs is the earlier created_at — nothing to do.
-            log.debug("Sticky opt-out already recorded for membership={} channel={}",
-                    m.getMembershipId(), channel);
+        } catch (DataIntegrityViolationException violation) {
+            // Expected case: a concurrent unsubscribe inserted the row first. That is the
+            // outcome we wanted, and theirs is the earlier created_at — nothing to do.
+            //
+            // Confirm it rather than assume it. Today a duplicate PK is the only violation
+            // this table can raise, but adding a column or a CHECK later would turn a real
+            // write failure into a silent debug line. Re-reading settles which happened.
+            if (optOutRecorder.exists(email, orgId, channel)) {
+                log.debug("Sticky opt-out already recorded for membership={} channel={}",
+                        m.getMembershipId(), channel);
+            } else {
+                log.error("Sticky opt-out write failed (not a duplicate) for membership={} org={} channel={}: {}",
+                        m.getMembershipId(), orgId, channel, violation.getMessage(), violation);
+            }
         } catch (RuntimeException e) {
             log.error("Sticky opt-out write failed for membership={} org={} channel={}: {}",
                     m.getMembershipId(), orgId, channel, e.getMessage(), e);
