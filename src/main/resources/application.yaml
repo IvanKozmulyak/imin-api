@@ -300,6 +300,26 @@ imin:
     base-path: /api/v1
   auth:
     session-ttl-days: 30
+  buyer:
+    # Buyer accounts (app.imin.wtf). EXACT origins, no wildcards — used both as
+    # the CORS allow-list registered for /api/v1/buyer/** and as the Origin
+    # check that backs the platform-wide csrf.disable() now that the buyer
+    # session is a cookie (epic §2.6). Do NOT point this at
+    # imin.cors.allowed-origin-patterns: that list contains
+    # https://imin-public-*.vercel.app, and Vercel project names are first-come.
+    # There is deliberately no SameSite=None staging escape hatch, so ephemeral
+    # per-commit previews cannot exercise signed-in flows; use a stable alias.
+    allowed-origins: ${IMIN_BUYER_ALLOWED_ORIGINS:http://localhost:3000,https://app.imin.wtf}
+    # 180 days absolute / 90 days idle. Long because the failure mode — being
+    # asked to sign in again while queuing outside a venue with no signal — is
+    # the worst thing this feature can do, and sessions are revocable.
+    session-ttl-days: ${IMIN_BUYER_SESSION_TTL_DAYS:180}
+    session-idle-days: ${IMIN_BUYER_SESSION_IDLE_DAYS:90}
+    revoked-session-retention-days: ${IMIN_BUYER_REVOKED_SESSION_RETENTION_DAYS:30}
+    # Unverified address rows expire; that is what stops an attacker squatting
+    # an address they cannot verify and locking its owner out forever.
+    unverified-email-ttl-hours: ${IMIN_BUYER_UNVERIFIED_EMAIL_TTL_HOURS:72}
+    verification-attempt-retention-hours: ${IMIN_BUYER_VERIFICATION_ATTEMPT_RETENTION_HOURS:24}
   oauth:
     # Social sign-in (config-gated). A provider is enabled only when ALL its
     # fields below are non-blank; otherwise its endpoints 404 and the FE hides

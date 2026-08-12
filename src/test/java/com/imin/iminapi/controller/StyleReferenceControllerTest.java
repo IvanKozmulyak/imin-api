@@ -24,7 +24,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         controllers = StyleReferenceController.class,
         excludeAutoConfiguration = Saml2RelyingPartyAutoConfiguration.class
 )
-@Import(SecurityConfig.class)
+// BuyerConfig supplies BuyerProperties: @WebMvcTest slices include Filter beans,
+// so the two buyer filters are instantiated here even though this controller has
+// nothing to do with them — same reason the organizer session repositories below
+// are mocked for BearerTokenAuthFilter.
+@Import({SecurityConfig.class, com.imin.iminapi.buyer.BuyerConfig.class})
 class StyleReferenceControllerTest {
 
     @Autowired private MockMvc mockMvc;
@@ -33,6 +37,7 @@ class StyleReferenceControllerTest {
     @MockitoBean private UserRepository userRepository;
     @MockitoBean private TokenService tokenService;
     @MockitoBean private GateAuthService gateAuthService;
+    @MockitoBean private com.imin.iminapi.buyer.repository.BuyerSessionRepository buyerSessionRepository;
 
     @Test
     void list_returnsCatalogWithImageUrls() throws Exception {
