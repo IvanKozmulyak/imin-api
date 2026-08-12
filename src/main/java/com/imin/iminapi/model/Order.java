@@ -1,5 +1,6 @@
 package com.imin.iminapi.model;
 
+import com.imin.iminapi.audience.service.EmailNormalizer;
 import com.imin.iminapi.util.Times;
 import jakarta.persistence.*;
 import lombok.Getter;
@@ -38,6 +39,32 @@ public class Order {
 
     @Column(nullable = false, length = 254)
     private String email;
+
+    /**
+     * {@code lower(trim(email))} (V86) — the join key for
+     * {@code GET /buyer/orders}, which matches it against
+     * {@code buyer_account_emails.email_normalized}.
+     *
+     * <p><b>Never set this by hand.</b> It is derived in {@link #onWrite()},
+     * which runs on every JPA persist and merge, so the column cannot drift
+     * from {@code email} through any entity write path — that is the whole
+     * point of deriving it at a lifecycle callback rather than at the two
+     * places that create orders today (buyer-accounts epic §4.4). A third
+     * writer will be added one day and will not remember.
+     *
+     * <p>The one gap a callback cannot cover is a bulk JPQL / native
+     * {@code UPDATE}, which bypasses callbacks entirely.
+     * {@link com.imin.iminapi.repository.OrderRepository} has no
+     * {@code @Modifying} query at all, and nothing else in the tree writes
+     * {@code orders.email}; anything that starts to must set this column in the
+     * same statement.
+     *
+     * <p>Nullable in the schema so V86 could add the column to a live table
+     * without a rewrite, and because pre-V86 rows are backfilled by the
+     * migration rather than by the application.
+     */
+    @Column(name = "email_normalized", length = 254)
+    private String emailNormalized;
 
     @Column(name = "total_minor", nullable = false)
     private long totalMinor;
@@ -135,9 +162,17 @@ public class Order {
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Times.nowMicros();
 
+    /**
+     * The single chokepoint for everything on this row that is derived rather
+     * than supplied. Runs on persist AND on merge, so neither the free-checkout
+     * writer nor the Stripe-webhook writer — nor whatever writes orders next —
+     * has to remember to keep {@link #emailNormalized} in step with
+     * {@link #email}.
+     */
     @PrePersist
     @PreUpdate
-    void truncateTimestamps() {
+    void onWrite() {
         createdAt = createdAt == null ? Times.nowMicros() : createdAt.truncatedTo(ChronoUnit.MICROS);
+        emailNormalized = EmailNormalizer.normalize(email);
     }
 }

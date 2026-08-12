@@ -1,0 +1,15 @@
+imin.wtf · primary address changed
+
+Your imin primary email address changed
+───────────────────────────────────────
+
+The main email address on your imin account was changed to the address below. Password resets and security notices now go there, and every device signed in to the account was signed out.
+
+    {{address}}
+
+    {{signInUrl}}
+
+Wasn't you? Sign in immediately and change it back, then change your password. If you can no longer sign in, reply to this email — this message was sent to both the old and the new address on purpose, so whichever one you still control can reach us.
+
+—
+imin.wtf · sent to both the old and the new address

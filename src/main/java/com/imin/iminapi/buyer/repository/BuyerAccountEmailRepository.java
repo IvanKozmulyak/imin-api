@@ -27,6 +27,14 @@ public interface BuyerAccountEmailRepository extends JpaRepository<BuyerAccountE
 
     Optional<BuyerAccountEmail> findByBuyerAccountIdAndEmailNormalized(UUID buyerAccountId, String emailNormalized);
 
+    /**
+     * How many verified addresses the account holds. Backs the removal rule in
+     * {@code BuyerAddressService.remove}: an account must never be left with
+     * zero verified addresses, because a verified address is what sign-in is
+     * gated on, where transactional mail goes, and what the orders join reads.
+     */
+    long countByBuyerAccountIdAndVerifiedAtIsNotNull(UUID buyerAccountId);
+
     /** The account's primary address, or empty while it has none. */
     Optional<BuyerAccountEmail> findByPrimaryMarker(UUID buyerAccountId);
 

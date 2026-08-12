@@ -57,6 +57,15 @@ public record BuyerMeResponse(
                 addresses.stream().map(BuyerMeResponse::toAddress).toList());
     }
 
+    /**
+     * The address list on its own, for {@code GET /buyer/emails}. Same
+     * projection as the {@code emails} block above so the profile screen and the
+     * nav cannot disagree about what "verified" means.
+     */
+    public static List<Address> addresses(List<BuyerAccountEmail> rows) {
+        return rows.stream().map(BuyerMeResponse::toAddress).toList();
+    }
+
     private static Address toAddress(BuyerAccountEmail row) {
         return new Address(row.getEmail(), row.isPrimary(), row.isVerified(),
                 row.getAddedVia(), row.getCreatedAt());
