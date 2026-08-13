@@ -57,6 +57,20 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
     Optional<Membership> findByOrgIdAndConsumerId(@Param("orgId") UUID orgId,
                                                    @Param("consumerId") UUID consumerId);
 
+    /**
+     * Every membership held by these consumers, <b>across all organizers</b>.
+     *
+     * <p>Deliberately not tenant-scoped, and the only read here that is not.
+     * The buyer preference centre (spec §4.4) is the buyer's own view of the
+     * consent they hold, which is cross-organizer by definition — the same way
+     * {@code GET /buyer/orders} crosses organizers. Every other query in this
+     * interface derives its tenant from {@code AuthPrincipal.orgId}; this one is
+     * scoped by the caller having proved they own the addresses behind those
+     * consumer ids. Do not call it from an organizer-authenticated path.
+     */
+    @Query("select m from Membership m where m.consumerId in :consumerIds")
+    List<Membership> findAllOrgsByConsumerIdIn(@Param("consumerIds") Collection<UUID> consumerIds);
+
     // ---- keyset pagination (S2): sort by (created_at DESC, membership_id DESC) ----
     // search is split into its own methods: a nullable String fed into concat()/lower()
     // is bound by Hibernate as bytea when null, and Postgres rejects lower(bytea)

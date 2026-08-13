@@ -619,11 +619,23 @@ class AudienceControllerWebTest {
                 }
 
                 if (hasPagingOnly) {
+                    // Default-deny. Two named exceptions, each one a read that is
+                    // cross-organizer BY DEFINITION and cannot be expressed with an
+                    // orgId — adding a third means arguing for it here:
+                    //
+                    //   findErasureDue          — the erasure job sweeps every org.
+                    //   findAllOrgsByConsumerIdIn — the buyer preference centre (§4.4).
+                    //       A buyer's own consent spans organizers the same way
+                    //       GET /buyer/orders does. Named "AllOrgs" so the absence of
+                    //       tenant scoping is visible at the call site rather than
+                    //       inferred from a missing parameter. Buyer-authenticated
+                    //       only: scoped by the caller having proved they own the
+                    //       addresses behind those consumer ids.
                     assertThat(name)
                             .withFailMessage(
                                     "Method '%s' in MembershipRepository has no orgId scope — potential cross-tenant leak (M4)",
                                     name)
-                            .startsWith("findErasureDue"); // only allowed unscoped method
+                            .isIn("findErasureDue", "findAllOrgsByConsumerIdIn");
                 }
             }
         }
