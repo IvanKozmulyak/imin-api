@@ -12,6 +12,7 @@ import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.stripe.StripeProperties;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
@@ -218,6 +219,38 @@ class PublicEventServiceListTest {
                 null, null, List.of("techno"), null, null, null, null, null, false, false, false, 1, 20));
         assertThat(result.items()).hasSize(1);
         assertThat(result.items().get(0).genre()).isEqualTo("techno");
+    }
+
+    /**
+     * The facet placeholder must be text every engine accepts.
+     *
+     * <p>This exists because the first version used a NUL byte: unmatchable, which
+     * was the requirement being thought about, and accepted by H2, so the whole
+     * suite passed while production returned 400 for every listing call — Postgres
+     * rejects NUL in text. No behavioural test on H2 can catch that, so the
+     * invariant is asserted directly on the value instead.
+     */
+    @Test
+    void theEmptyFacetPlaceholderContainsNoControlCharacters() {
+        PageResponse<PublicEventListItem> unfiltered = publicEventService.list(new PublicEventListQuery(
+                null, null, List.of(), List.of(), null, null, null, null,
+                false, false, false, 1, 20));
+        assertThat(unfiltered).isNotNull();
+
+        // The value bound whenever a facet is off, read back from the service.
+        String placeholder = ReflectionTestUtils.getField(PublicEventService.class, "NO_FACET") == null
+                ? null
+                : ((java.util.Collection<?>) java.util.Objects.requireNonNull(
+                        ReflectionTestUtils.getField(PublicEventService.class, "NO_FACET")))
+                        .iterator().next().toString();
+
+        assertThat(placeholder)
+                .as("the placeholder is bound on every query where a facet is absent")
+                .isNotNull();
+        assertThat(placeholder.chars().anyMatch(Character::isISOControl))
+                .as("Postgres rejects control characters in text; H2 accepts them, "
+                        + "so only this assertion stands between the two")
+                .isFalse();
     }
 
     /**
