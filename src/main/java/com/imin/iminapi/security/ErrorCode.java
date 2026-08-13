@@ -53,5 +53,13 @@ public enum ErrorCode {
     IMPORT_FILE_TOO_LARGE,
     IMPORT_TOO_MANY_ROWS,
     IMPORT_EMAIL_COLUMN_MISSING,
-    IMPORT_INVALID_CSV
+    IMPORT_INVALID_CSV,
+
+    // ---- Buyer accounts ----
+    /**
+     * Unlinking this identity would leave the account with no way to sign in —
+     * no password and no other provider. Returned by
+     * {@code DELETE /buyer/identities/{provider}} as a 409.
+     */
+    LAST_CREDENTIAL
 }

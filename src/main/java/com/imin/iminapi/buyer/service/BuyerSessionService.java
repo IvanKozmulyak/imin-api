@@ -84,6 +84,16 @@ public class BuyerSessionService {
         return sessions.revokeAllForAccount(accountId, Instant.now());
     }
 
+    /**
+     * Revokes every live session for the account except {@code keepSessionId}.
+     * Returns how many were live. Used by the password change, which
+     * deliberately spares the acting session.
+     */
+    @Transactional
+    public int revokeAllExcept(UUID accountId, UUID keepSessionId) {
+        return sessions.revokeAllForAccountExcept(accountId, keepSessionId, Instant.now());
+    }
+
     /** The {@code Set-Cookie} that removes the session cookie from the browser. */
     public ResponseCookie clearCookie() {
         return BuyerSessionCookie.clear();

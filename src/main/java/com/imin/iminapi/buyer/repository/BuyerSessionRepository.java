@@ -35,6 +35,22 @@ public interface BuyerSessionRepository extends JpaRepository<BuyerSession, UUID
            "where s.buyerAccountId = :accountId and s.revokedAt is null")
     int revokeAllForAccount(@Param("accountId") UUID accountId, @Param("now") Instant now);
 
+    /**
+     * Revokes every live session for an account <b>except</b> one.
+     *
+     * <p>The password-change case. Distinct from {@link #revokeAllForAccount}:
+     * changing a password is hygiene you perform mid-session, and signing the
+     * buyer out of the very tab they did it in reads as a failure rather than
+     * as protection.
+     */
+    @Transactional
+    @Modifying
+    @Query("update BuyerSession s set s.revokedAt = :now " +
+           "where s.buyerAccountId = :accountId and s.id <> :keepSessionId and s.revokedAt is null")
+    int revokeAllForAccountExcept(@Param("accountId") UUID accountId,
+                                  @Param("keepSessionId") UUID keepSessionId,
+                                  @Param("now") Instant now);
+
     /** Revokes one session by id. Idempotent — a second call matches nothing. */
     @Transactional
     @Modifying
