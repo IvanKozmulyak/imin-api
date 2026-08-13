@@ -81,7 +81,14 @@ public class TicketIssuanceEmailer {
         }
     }
 
-    void send(UUID orderId) {
+    /**
+     * Renders and sends the ticket email for one order.
+     *
+     * <p>Public so {@code BuyerOrderActionsController} can re-send on demand
+     * (spec §4.6). There is exactly one renderer for this mail; a second one for
+     * "resend" would drift from the original the first time a template changed.
+     */
+    public void send(UUID orderId) {
         Order order = orders.findById(orderId).orElseThrow();
         Event event = events.findById(order.getEventId()).orElseThrow();
         List<Ticket> issued = tickets.findByOrderIdOrderByCreatedAtAsc(order.getId());

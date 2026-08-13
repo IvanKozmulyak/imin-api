@@ -26,7 +26,12 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * Public, unauthenticated lookup of an order or a single ticket by URL-safe token.
@@ -89,7 +94,11 @@ public class PublicOrderController {
                         .map(t -> new PublicOrderResponse.Ticket(
                                 t.getToken(), t.getTierName(), normalizeState(t.getState()),
                                 qrSigner.sign(t.getToken())))
-                        .toList());
+                        .toList(),
+                receiptLines(ticketRows),
+                subtotalOf(ticketRows),
+                discountOf(order, ticketRows),
+                order.getApplicationFeeMinor());
 
         return ResponseEntity.ok()
                 .header(HttpHeaders.CACHE_CONTROL, "private, no-store")
@@ -159,6 +168,49 @@ public class PublicOrderController {
      * surface those as {@code 'issued'} so the FE only has to handle one
      * vocabulary.
      */
+    /**
+     * The receipt rows, grouped by {@code (tierId, priceMinor)} and ordered by
+     * first appearance so the receipt reads in the order the tickets were
+     * issued. Every ticket counts, including refunded ones — the receipt says
+     * what was charged, and hiding a refunded ticket would make the arithmetic
+     * disagree with the total.
+     */
+    private static List<PublicOrderResponse.Line> receiptLines(List<Ticket> ticketRows) {
+        record Key(UUID tierId, long priceMinor) {}
+        Map<Key, List<Ticket>> grouped = ticketRows.stream()
+                .collect(Collectors.groupingBy(t -> new Key(t.getTierId(), t.getPriceMinor()),
+                        LinkedHashMap::new, Collectors.toList()));
+
+        List<PublicOrderResponse.Line> out = new ArrayList<>();
+        grouped.forEach((key, rows) -> out.add(new PublicOrderResponse.Line(
+                rows.get(0).getTierName(),
+                rows.size(),
+                key.priceMinor(),
+                key.priceMinor() * rows.size())));
+        return out;
+    }
+
+    private static long subtotalOf(List<Ticket> ticketRows) {
+        return ticketRows.stream().mapToLong(Ticket::getPriceMinor).sum();
+    }
+
+    /**
+     * The promo discount, or zero.
+     *
+     * <p>Deliberately <b>not</b> derived from {@code subtotal + fee - total}
+     * alone. {@code PaidCheckoutService} snapshots each ticket's price from the
+     * tier at webhook time, not at quote time, so an organizer who moved a price
+     * between session creation and fulfilment leaves a nonzero residue on an
+     * order that carried no promo — and a "Discount" line would appear on a
+     * receipt for a discount nobody gave. The residue is only reported when the
+     * order actually carries a promo code.
+     */
+    private static long discountOf(Order order, List<Ticket> ticketRows) {
+        if (order.getPromoCodeId() == null) return 0L;
+        long residue = subtotalOf(ticketRows) + order.getApplicationFeeMinor() - order.getTotalMinor();
+        return Math.max(0L, residue);
+    }
+
     private static String normalizeState(String wire) {
         return TicketState.fromWire(wire).wire();
     }

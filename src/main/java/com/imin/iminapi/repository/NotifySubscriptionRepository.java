@@ -78,4 +78,25 @@ public interface NotifySubscriptionRepository extends JpaRepository<NotifySubscr
     @Transactional
     @Query("DELETE FROM NotifySubscription s WHERE LOWER(s.email) IN :emails")
     int deleteByEmailIn(@Param("emails") java.util.Collection<String> emails);
+
+    // ── Buyer accounts: drop alerts on the account page (spec §4.5) ─────────
+
+    /**
+     * Every drop alert held by these addresses.
+     *
+     * <p>Same boundary as {@code GET /buyer/orders}: the caller passes the
+     * account's <b>verified</b> normalized addresses and nothing else. Sorting
+     * is left to the caller — the natural order is un-notified first, and
+     * {@code NULLS FIRST} is not portable across H2 and Postgres, so it is done
+     * in Java rather than fought with in the dialect.
+     */
+    @Query("SELECT s FROM NotifySubscription s WHERE LOWER(s.email) IN :emails")
+    List<NotifySubscription> findByEmailIn(@Param("emails") java.util.Collection<String> emails);
+
+    /** "Stop watching" — removes the alert for every address the account holds. */
+    @Modifying
+    @Transactional
+    @Query("DELETE FROM NotifySubscription s WHERE s.eventId = :eventId AND LOWER(s.email) IN :emails")
+    int deleteByEventIdAndEmailIn(@Param("eventId") UUID eventId,
+                                  @Param("emails") java.util.Collection<String> emails);
 }

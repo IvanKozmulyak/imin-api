@@ -156,7 +156,11 @@ class PublicOrderControllerTest {
 
         Set<String> expectedRootKeys = Set.of(
                 "token", "email", "totalMinor", "currency",
-                "paymentMethod", "createdAt", "event", "tickets");
+                "paymentMethod", "createdAt", "event", "tickets",
+                // Receipt breakdown (spec §4.6). All four are money the buyer was
+                // already shown at checkout, restated so the receipt reconciles to
+                // the charge; none is new information about them.
+                "lines", "subtotalMinor", "discountMinor", "feeMinor");
         assertThat(fieldNames(root))
                 .as("Top-level keys leaked or missing. " +
                     "If this fails, you added a field to PublicOrderResponse. " +

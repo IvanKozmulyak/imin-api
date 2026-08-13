@@ -5,6 +5,8 @@ import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.model.TicketState;
+import com.imin.iminapi.refund.RefundRequest;
+import com.imin.iminapi.refund.RefundRequestRepository;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketRepository;
@@ -63,11 +65,14 @@ public class BuyerOrdersService {
     private final OrderRepository orders;
     private final TicketRepository tickets;
     private final EventRepository events;
+    private final RefundRequestRepository refundRequests;
 
-    public BuyerOrdersService(OrderRepository orders, TicketRepository tickets, EventRepository events) {
+    public BuyerOrdersService(OrderRepository orders, TicketRepository tickets, EventRepository events,
+                              RefundRequestRepository refundRequests) {
         this.orders = orders;
         this.tickets = tickets;
         this.events = events;
+        this.refundRequests = refundRequests;
     }
 
     @Transactional(readOnly = true)
@@ -117,6 +122,15 @@ public class BuyerOrdersService {
             eventsById.put(event.getId(), event);
         }
 
+        // The latest refund request per order, one batched query. Latest, not
+        // "any pending": a rejected request is still the answer to "what
+        // happened when I asked", and the buyer needs to see that it was
+        // answered rather than watch a chip silently disappear.
+        Map<UUID, String> refundStatusByOrder = new HashMap<>();
+        for (RefundRequest request : refundRequests.findByOrderIdInOrderByCreatedAtAsc(orderIds)) {
+            refundStatusByOrder.put(request.getOrderId(), request.getStatus().name());
+        }
+
         List<BuyerOrdersResponse.Item> items = new ArrayList<>(page.size());
         for (Order order : page) {
             List<Ticket> orderTickets = ticketsByOrder.getOrDefault(order.getId(), List.of());
@@ -130,7 +144,8 @@ public class BuyerOrdersService {
                     // than vanishing from the buyer's history.
                     eventBlock(eventsById.get(order.getEventId())),
                     orderTickets.size(),
-                    states(orderTickets)));
+                    states(orderTickets),
+                    refundStatusByOrder.get(order.getId())));
         }
         return items;
     }

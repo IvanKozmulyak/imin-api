@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -14,6 +15,16 @@ import java.util.UUID;
 public interface RefundRequestRepository extends JpaRepository<RefundRequest, UUID> {
 
     Optional<RefundRequest> findByIdAndOrgId(UUID id, UUID orgId);
+
+    /**
+     * Refund requests on these orders, oldest first, <b>across organizers</b>.
+     *
+     * <p>For the buyer's own order list (spec §4.6), which crosses organizers by
+     * design the way {@code GET /buyer/orders} does. Ascending so a caller
+     * folding into a map keyed by order id ends up holding the latest. Callers
+     * must have already proved the orders belong to the buyer.
+     */
+    List<RefundRequest> findByOrderIdInOrderByCreatedAtAsc(Collection<UUID> orderIds);
 
     @Query("""
         select rr from RefundRequest rr

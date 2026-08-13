@@ -219,7 +219,11 @@ class BuyerOrdersTest {
         JsonNode item = json.readTree(result.getResponse().getContentAsString()).get("items").get(0);
 
         assertThat(names(item)).containsExactlyInAnyOrder(
-                "orderToken", "createdAt", "totalMinor", "currency", "event", "ticketCount", "states");
+                "orderToken", "createdAt", "totalMinor", "currency", "event", "ticketCount", "states",
+                // Null here (this order has no refund request) but present in the
+                // payload — the FE branches on null vs a status string, and an
+                // absent key would be indistinguishable from a stale client.
+                "refundRequestStatus");
         assertThat(names(item.get("event"))).containsExactlyInAnyOrder(
                 "id", "name", "slug", "startsAt", "endsAt", "timezone",
                 "venueName", "venueCity", "posterUrl");

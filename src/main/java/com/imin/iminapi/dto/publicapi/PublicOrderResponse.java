@@ -18,7 +18,24 @@ public record PublicOrderResponse(
         String paymentMethod,
         Instant createdAt,
         Event event,
-        List<Ticket> tickets) {
+        List<Ticket> tickets,
+        List<Line> lines,
+        long subtotalMinor,
+        long discountMinor,
+        long feeMinor) {
+
+    /**
+     * One receipt row: tickets grouped by {@code (tier_id, price_minor)}.
+     *
+     * <p>Grouped by price as well as tier because a tier's price can move
+     * between purchases; two rows at different prices are two rows, not one
+     * row with a fabricated average.
+     *
+     * <p><b>There is no refund-protection line.</b> The design's receipt shows
+     * one; imin does not sell that product, and inventing a line item for it
+     * would put a charge on a receipt that was never made.
+     */
+    public record Line(String tierName, int quantity, long unitPriceMinor, long amountMinor) {}
 
     /**
      * {@code eventId} is the public event UUID — the same one already exposed by

@@ -45,7 +45,14 @@ public record BuyerOrdersResponse(List<Item> items, String nextCursor) {
             String currency,
             Event event,
             int ticketCount,
-            States states) {}
+            States states,
+            /**
+             * The most recent refund request on this order, or <b>null</b> when
+             * there is none — never the string {@code "NONE"}. The frontend
+             * renders no chip for null; a chip reading "none" would announce a
+             * non-event on every order the buyer ever placed.
+             */
+            String refundRequestStatus) {}
 
     /** Just enough of the event to render a ticket card without a second call. */
     public record Event(
