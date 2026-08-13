@@ -62,14 +62,18 @@ class EventReminderSenderTest {
     @Autowired BuyerNotificationPreferenceRepository preferences;
     @MockitoBean EmailService email;
 
+    /** 22 hours out — inside the T-24h band and nowhere near the T-3h one. */
+    private Event tomorrow;
+    /** 2.5 hours out — inside the T-3h band only. */
     private Event soon;
 
     @BeforeEach
-    void anEventInsideTheWindow() {
+    void eventsInEachBand() {
         reset(email);
-        // Two hours out: inside both the 24h and the 3h window.
-        soon = OrderFixtures.event(orgs, users, events, "Vechirka",
-                Instant.now().plusSeconds(2 * 3600));
+        tomorrow = OrderFixtures.event(orgs, users, events, "Vechirka",
+                Instant.now().plusSeconds(22 * 3600));
+        soon = OrderFixtures.event(orgs, users, events, "Tonight",
+                Instant.now().plusSeconds((long) (2.5 * 3600)));
     }
 
     @Test
@@ -94,18 +98,37 @@ class EventReminderSenderTest {
         verify(email, times(1)).send(eq(address), any(), any(), any());
     }
 
+    /**
+     * The bug this band exists to prevent. An event two and a half hours away is
+     * NOT "tomorrow", and before the bands existed it matched the 24h query too
+     * — so a buyer who bought at 18:00 for a 20:00 door got "Vechirka is
+     * tomorrow" and "Doors soon" milliseconds apart, the first of them lying.
+     */
     @Test
-    void theTwoWindowsAreClaimedIndependently() {
-        String address = address("both-windows");
-        Order order = orderWith(address, 1);
+    void anEventHoursAwayIsNeverToldItIsTomorrow() {
+        String address = address("tonight");
+        Order order = orderOn(soon, address, 1);
 
         sender.sweepWindow(EventReminderSender.Window.T24H);
-        sender.sweepWindow(EventReminderSender.Window.T3H);
 
-        verify(email, times(2)).send(eq(address), any(), any(), any());
-        Order after = orders.findById(order.getId()).orElseThrow();
-        assertThat(after.getReminder24hAt()).isNotNull();
-        assertThat(after.getReminder3hAt()).isNotNull();
+        verify(email, never()).send(eq(address), any(), any(), any());
+        assertThat(orders.findById(order.getId()).orElseThrow().getReminder24hAt()).isNull();
+
+        sender.sweepWindow(EventReminderSender.Window.T3H);
+        assertThat(subjectSentTo(address)).contains("Doors soon");
+    }
+
+    /** And the converse: a night 22 hours out gets the date, not the door call. */
+    @Test
+    void anEventTomorrowIsNotToldDoorsAreSoon() {
+        String address = address("tomorrow");
+        orderWith(address, 1);
+
+        sender.sweepWindow(EventReminderSender.Window.T3H);
+        verify(email, never()).send(eq(address), any(), any(), any());
+
+        sender.sweepWindow(EventReminderSender.Window.T24H);
+        assertThat(subjectSentTo(address)).contains("is tomorrow");
     }
 
     @Test
@@ -151,7 +174,7 @@ class EventReminderSenderTest {
     @Test
     void anOrderWhoseEveryTicketIsRefundedOrRevokedIsSkipped() {
         String refunded = "refunded+" + UUID.randomUUID() + "@example.com";
-        Order a = OrderFixtures.order(orders, soon, refunded, Instant.now());
+        Order a = OrderFixtures.order(orders, tomorrow, refunded, Instant.now());
         OrderFixtures.ticket(tickets, a, "refunded");
         OrderFixtures.ticket(tickets, a, "revoked");
 
@@ -164,7 +187,7 @@ class EventReminderSenderTest {
     @Test
     void oneLiveTicketAmongRefundedOnesStillEarnsAReminder() {
         String address = "partial+" + UUID.randomUUID() + "@example.com";
-        Order order = OrderFixtures.order(orders, soon, address, Instant.now());
+        Order order = OrderFixtures.order(orders, tomorrow, address, Instant.now());
         OrderFixtures.ticket(tickets, order, "refunded");
         OrderFixtures.ticket(tickets, order, "issued");
 
@@ -176,7 +199,7 @@ class EventReminderSenderTest {
     @Test
     void aCancelledEventNeverNudgesAnyone() {
         Event cancelled = OrderFixtures.event(orgs, users, events, "Called Off",
-                Instant.now().plusSeconds(2 * 3600));
+                Instant.now().plusSeconds(22 * 3600));
         cancelled.setStatus(com.imin.iminapi.model.EventStatus.CANCELLED);
         events.save(cancelled);
 
@@ -193,7 +216,7 @@ class EventReminderSenderTest {
     void localeFallsBackOrderLocaleThenAccountThenEnglish() {
         // 1. The order's own snapshot wins.
         String withOrderLocale = "fr+" + UUID.randomUUID() + "@example.com";
-        Order french = OrderFixtures.order(orders, soon, withOrderLocale, Instant.now());
+        Order french = OrderFixtures.order(orders, tomorrow, withOrderLocale, Instant.now());
         french.setBuyerLocale("fr");
         orders.save(french);
         OrderFixtures.ticket(tickets, french, "issued");
@@ -222,10 +245,10 @@ class EventReminderSenderTest {
         String address = address("switch");
         orderWith(address, 1);
 
-        // Two sends, not one: sweep() runs BOTH windows, and this event is
-        // inside each of them.
+        // Once, not twice. sweep() runs both windows, but the bands are
+        // disjoint, so any one event is in exactly one of them.
         sender.sweep();     // enabled by @SpringBootTest properties
-        verify(email, times(2)).send(eq(address), any(), any(), any());
+        verify(email, times(1)).send(eq(address), any(), any(), any());
     }
 
     // ── plumbing ───────────────────────────────────────────────────────────
@@ -235,7 +258,11 @@ class EventReminderSenderTest {
     }
 
     private Order orderWith(String buyerEmail, int ticketCount) {
-        Order order = OrderFixtures.order(orders, soon, buyerEmail, Instant.now());
+        return orderOn(tomorrow, buyerEmail, ticketCount);
+    }
+
+    private Order orderOn(Event event, String buyerEmail, int ticketCount) {
+        Order order = OrderFixtures.order(orders, event, buyerEmail, Instant.now());
         for (int i = 0; i < ticketCount; i++) {
             OrderFixtures.ticket(tickets, order, "issued");
         }

@@ -77,6 +77,10 @@ public class RateLimitConfig {
     private int buyerEmailAddCapacity;
     @Value("${imin.ratelimit.buyer-email-add.window-minutes}")
     private int buyerEmailAddWindow;
+    @Value("${imin.ratelimit.buyer-order-resend.capacity}")
+    private int buyerOrderResendCapacity;
+    @Value("${imin.ratelimit.buyer-order-resend.window-minutes}")
+    private int buyerOrderResendWindow;
 
     @Bean
     public RedisClient redisClient(@Value("${spring.data.redis.url}") String url) {
@@ -162,6 +166,17 @@ public class RateLimitConfig {
         // POST /buyer/emails; the bucket ships here so all five arrive together.
         configs.put("buyer-email-add", BucketConfiguration.builder()
                 .addLimit(Bandwidth.simple(buyerEmailAddCapacity, Duration.ofMinutes(buyerEmailAddWindow)))
+                .build());
+        // Re-send my tickets, keyed per buyer account id. Consumed by
+        // POST /buyer/orders/{token}/resend.
+        //
+        // A bucket that is not registered here is not a soft failure: the
+        // lambda below throws on an unknown name and the global handler turns
+        // that into a 500. The test double invents a bucket for any name, so
+        // an unregistered bucket is green in the suite and broken in prod —
+        // which is exactly how this one was nearly shipped.
+        configs.put("buyer-order-resend", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(buyerOrderResendCapacity, Duration.ofMinutes(buyerOrderResendWindow)))
                 .build());
 
         return (bucketName, key) -> {

@@ -3,9 +3,11 @@ package com.imin.iminapi.repository;
 import com.imin.iminapi.model.Order;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.data.rest.core.annotation.RepositoryRestResource;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.Collection;
@@ -190,24 +192,47 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
             select o from Order o
               join com.imin.iminapi.model.Event e on e.id = o.eventId
              where o.reminder24hAt is null
-               and e.startsAt > :now
+               and e.startsAt > :from
                and e.startsAt <= :until
                and e.deletedAt is null
                and e.status <> com.imin.iminapi.model.EventStatus.CANCELLED
             """)
-    List<Order> findDue24hReminder(@Param("now") Instant now, @Param("until") Instant until);
+    List<Order> findDue24hReminder(@Param("from") Instant from, @Param("until") Instant until);
 
     /** The T-3h analogue of {@link #findDue24hReminder}. Claimed independently. */
     @Query("""
             select o from Order o
               join com.imin.iminapi.model.Event e on e.id = o.eventId
              where o.reminder3hAt is null
-               and e.startsAt > :now
+               and e.startsAt > :from
                and e.startsAt <= :until
                and e.deletedAt is null
                and e.status <> com.imin.iminapi.model.EventStatus.CANCELLED
             """)
-    List<Order> findDue3hReminder(@Param("now") Instant now, @Param("until") Instant until);
+    List<Order> findDue3hReminder(@Param("from") Instant from, @Param("until") Instant until);
+
+    /**
+     * Stamps one reminder marker. A targeted two-column UPDATE, deliberately
+     * not {@code save(entity)}.
+     *
+     * <p>The sweep is not transactional, so its {@code Order} objects are
+     * detached snapshots that may be minutes old by the time the tail of a long
+     * batch is reached. {@code save()} would go through {@code merge()} and
+     * write every field of that stale snapshot back over the current row —
+     * silently reverting, for example, the {@code sms_marketing_opt_in} a buyer
+     * ticked on the order page while the sweep was running. Same reasoning as
+     * {@code EventRepository.updateVenueCoordinates}.
+     */
+    @Transactional
+    @Modifying
+    @Query("update Order o set o.reminder24hAt = :at where o.id = :id and o.reminder24hAt is null")
+    int stampReminder24h(@Param("id") UUID id, @Param("at") Instant at);
+
+    /** The T-3h analogue of {@link #stampReminder24h}. */
+    @Transactional
+    @Modifying
+    @Query("update Order o set o.reminder3hAt = :at where o.id = :id and o.reminder3hAt is null")
+    int stampReminder3h(@Param("id") UUID id, @Param("at") Instant at);
 
     // ── Buyer accounts: the cross-org order join (epic §2.3, §3.4) ──────────
     //

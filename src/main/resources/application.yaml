@@ -494,6 +494,14 @@ imin:
       # ships with the other four so the set is complete in one place.
       capacity: 5
       window-minutes: 60
+    buyer-order-resend:
+      # Per buyer account id. Consumed by POST /buyer/orders/{token}/resend.
+      # Deliberately tighter than add-an-address: the mail goes to an address
+      # the account already owns, so the only thing this bounds is somebody
+      # hammering their own inbox — five an hour covers "it did not arrive,
+      # try again" several times over.
+      capacity: 5
+      window-minutes: 60
   media:
     enabled: ${MEDIA_ENABLED:true}
     bucket: ${R2_BUCKET:imin-media-dev}

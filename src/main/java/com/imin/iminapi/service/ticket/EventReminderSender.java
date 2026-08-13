@@ -59,12 +59,23 @@ public class EventReminderSender {
     private static final Logger log = LoggerFactory.getLogger(EventReminderSender.class);
 
     /**
-     * How far ahead each sweep looks. Wider than the tick interval on purpose:
-     * an order bought at T-20h has already missed the 24h window opening, and
-     * should still be caught by the next sweep rather than fall through.
+     * Each nudge is a BAND, not a prefix.
+     *
+     * <p>The obvious shape — "every event starting in the next 24 hours" — is
+     * wrong in a way that only shows up in the copy: an event two hours away is
+     * also inside the next 24 hours, so a buyer who bought at 18:00 for a 20:00
+     * door would receive "Vechirka is tomorrow" and "Doors soon" milliseconds
+     * apart, the first of them lying about the date. Last-minute purchases are
+     * a large share of ticket sales, so that is the common case rather than an
+     * edge one.
+     *
+     * <p>Both bands are hours wide against a five-minute tick, so nothing falls
+     * through a gap, and they do not overlap, so nothing is claimed twice.
      */
-    private static final Duration WINDOW_24H = Duration.ofHours(24);
-    private static final Duration WINDOW_3H = Duration.ofHours(3);
+    private static final Duration T24H_FROM = Duration.ofHours(20);
+    private static final Duration T24H_UNTIL = Duration.ofHours(24);
+    private static final Duration T3H_FROM = Duration.ofHours(2);
+    private static final Duration T3H_UNTIL = Duration.ofHours(3);
 
     private final OrderRepository orders;
     private final TicketRepository tickets;
@@ -101,15 +112,17 @@ public class EventReminderSender {
 
     /** Which nudge is being swept. The two are claimed independently. */
     enum Window {
-        T24H("24h", WINDOW_24H),
-        T3H("3h", WINDOW_3H);
+        T24H("24h", T24H_FROM, T24H_UNTIL),
+        T3H("3h", T3H_FROM, T3H_UNTIL);
 
         final String label;
-        final Duration ahead;
+        final Duration from;
+        final Duration until;
 
-        Window(String label, Duration ahead) {
+        Window(String label, Duration from, Duration until) {
             this.label = label;
-            this.ahead = ahead;
+            this.from = from;
+            this.until = until;
         }
     }
 
@@ -123,11 +136,12 @@ public class EventReminderSender {
 
     void sweepWindow(Window window) {
         Instant now = clock.instant();
-        Instant until = now.plus(window.ahead);
+        Instant from = now.plus(window.from);
+        Instant until = now.plus(window.until);
 
         List<Order> due = window == Window.T24H
-                ? orders.findDue24hReminder(now, until)
-                : orders.findDue3hReminder(now, until);
+                ? orders.findDue24hReminder(from, until)
+                : orders.findDue3hReminder(from, until);
 
         for (Order order : due) {
             try {
@@ -246,14 +260,23 @@ public class EventReminderSender {
         return accountFor(order).map(BuyerAccount::getLocale).orElse(null);
     }
 
+    /**
+     * Marks one order done.
+     *
+     * <p>A targeted UPDATE, not {@code orders.save(order)}. The sweep is not
+     * transactional, so these entities are detached snapshots — for the tail of
+     * a long batch, minutes old. {@code save()} merges, which writes every field
+     * of the stale snapshot back over the current row and would silently revert
+     * an {@code sms_marketing_opt_in} the buyer ticked on the order page while
+     * the sweep was running.
+     */
     private void stamp(Order order, Window window) {
         Instant now = clock.instant();
         if (window == Window.T24H) {
-            order.setReminder24hAt(now);
+            orders.stampReminder24h(order.getId(), now);
         } else {
-            order.setReminder3hAt(now);
+            orders.stampReminder3h(order.getId(), now);
         }
-        orders.save(order);
     }
 
     private static String formatWhen(Event event) {
