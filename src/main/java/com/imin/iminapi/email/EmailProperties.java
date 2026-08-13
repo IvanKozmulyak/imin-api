@@ -22,6 +22,16 @@ public class EmailProperties {
     private String refundRequestInbox = "";
     // Magic-link TTL in minutes. Knob for incident response without redeploying.
     private int refundRequestTokenTtlMinutes = 60;
+    /**
+     * Master switch for the T-24h / T-3h door reminders (IMIN_REMINDERS_ENABLED).
+     *
+     * <p><b>Defaults false, deliberately. Do not "fix" this.</b> EventReminderSender
+     * sweeps every upcoming event in the database on its first tick; enabling it by
+     * default means the deploy that ships it also mails every buyer holding a ticket
+     * for anything in the next 24 hours, with no operator having chosen that moment.
+     * The first production run has to be a deliberate act.
+     */
+    private boolean remindersEnabled = false;
 
     public String getApiKey() { return apiKey; }
     public void setApiKey(String apiKey) { this.apiKey = apiKey; }
@@ -41,6 +51,9 @@ public class EmailProperties {
     public void setRefundRequestTokenTtlMinutes(int v) { this.refundRequestTokenTtlMinutes = v; }
 
     /** Convenience: "Name <addr@example.com>" or just "addr@example.com" if name blank. */
+    public boolean isRemindersEnabled() { return remindersEnabled; }
+    public void setRemindersEnabled(boolean remindersEnabled) { this.remindersEnabled = remindersEnabled; }
+
     public String fromHeader() {
         if (fromName == null || fromName.isBlank()) return fromAddress;
         return fromName + " <" + fromAddress + ">";

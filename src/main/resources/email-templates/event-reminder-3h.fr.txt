@@ -1,0 +1,15 @@
+OUVERTURE BIENTÔT · imin
+
+Ouverture des portes bientôt — {{eventName}}
+
+Prépare ton QR code avant d'arriver en tête de file.
+
+{{eventName}}
+{{eventWhen}}
+{{eventWhere}}
+
+Ouvrir tes billets: {{orderUrl}}
+
+La page fonctionne hors ligne une fois chargée — ouvre-la avant de perdre le réseau sur place.
+
+imin.wtf · rappel d'entrée pour {{eventName}}

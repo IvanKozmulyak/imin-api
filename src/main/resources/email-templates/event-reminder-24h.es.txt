@@ -1,0 +1,15 @@
+MAÑANA POR LA NOCHE · imin
+
+{{eventName}} es mañana
+
+Tus {{ticketCount}} entrada(s) están listas. Esto es todo lo que necesitas para la puerta.
+
+{{eventName}}
+{{eventWhen}}
+{{eventWhere}}
+
+Ver tus entradas: {{orderUrl}}
+
+Lleva el código QR de este pedido — las capturas de pantalla funcionan, y la página también. No hace falta imprimir nada.
+
+imin.wtf · recordatorio de puerta para {{eventName}}

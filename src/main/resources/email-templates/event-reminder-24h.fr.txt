@@ -1,0 +1,15 @@
+DEMAIN SOIR · imin
+
+{{eventName}}, c'est demain
+
+Tes {{ticketCount}} billet(s) sont prêts. Voici tout ce qu'il te faut à l'entrée.
+
+{{eventName}}
+{{eventWhen}}
+{{eventWhere}}
+
+Voir tes billets: {{orderUrl}}
+
+Présente le QR code de cette commande — les captures d'écran fonctionnent, la page aussi. Pas besoin d'imprimer.
+
+imin.wtf · rappel d'entrée pour {{eventName}}

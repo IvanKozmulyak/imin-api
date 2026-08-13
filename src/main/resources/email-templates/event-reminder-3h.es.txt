@@ -1,0 +1,15 @@
+PUERTAS PRONTO · imin
+
+Las puertas abren pronto — {{eventName}}
+
+Ten tu QR listo antes de llegar al principio de la fila.
+
+{{eventName}}
+{{eventWhen}}
+{{eventWhere}}
+
+Abrir tus entradas: {{orderUrl}}
+
+La página funciona sin conexión una vez cargada — ábrela antes de quedarte sin señal en el local.
+
+imin.wtf · recordatorio de puerta para {{eventName}}

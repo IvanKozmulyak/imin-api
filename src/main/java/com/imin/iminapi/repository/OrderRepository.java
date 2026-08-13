@@ -175,6 +175,40 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
     @Query("select distinct o.orgId, lower(o.email) from Order o where o.email is not null")
     List<Object[]> findDistinctOrgAndEmailPairs();
 
+    // ── Door reminders (buyer-account-area spec §4.7) ───────────────────────
+
+    /**
+     * Orders still owed a T-24h reminder for an event starting inside the window.
+     *
+     * <p>The marker column leads {@code ix_orders_reminder_24h_pending}, so the
+     * NULLs cluster and this scan touches only pending rows (V87, following V76).
+     * Cancelled and soft-deleted events are excluded here rather than filtered in
+     * Java — nudging someone to turn up to a cancelled night is the one failure
+     * mode worse than not nudging them at all.
+     */
+    @Query("""
+            select o from Order o
+              join com.imin.iminapi.model.Event e on e.id = o.eventId
+             where o.reminder24hAt is null
+               and e.startsAt > :now
+               and e.startsAt <= :until
+               and e.deletedAt is null
+               and e.status <> com.imin.iminapi.model.EventStatus.CANCELLED
+            """)
+    List<Order> findDue24hReminder(@Param("now") Instant now, @Param("until") Instant until);
+
+    /** The T-3h analogue of {@link #findDue24hReminder}. Claimed independently. */
+    @Query("""
+            select o from Order o
+              join com.imin.iminapi.model.Event e on e.id = o.eventId
+             where o.reminder3hAt is null
+               and e.startsAt > :now
+               and e.startsAt <= :until
+               and e.deletedAt is null
+               and e.status <> com.imin.iminapi.model.EventStatus.CANCELLED
+            """)
+    List<Order> findDue3hReminder(@Param("now") Instant now, @Param("until") Instant until);
+
     // ── Buyer accounts: the cross-org order join (epic §2.3, §3.4) ──────────
     //
     // THE SECURITY BOUNDARY OF BUYER ACCOUNTS IS THE `verifiedAt is not null`

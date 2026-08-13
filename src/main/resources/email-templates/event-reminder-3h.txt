@@ -1,0 +1,15 @@
+DOORS SOON · imin
+
+Doors soon — {{eventName}}
+
+Have your QR ready before you get to the front of the queue.
+
+{{eventName}}
+{{eventWhen}}
+{{eventWhere}}
+
+Open your tickets: {{orderUrl}}
+
+The page works offline once it has loaded — open it before you lose signal at the venue.
+
+imin.wtf · door reminder for {{eventName}}

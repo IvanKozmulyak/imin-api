@@ -187,6 +187,11 @@ imin:
     refund-request-inbox: ${IMIN_REFUND_REQUEST_INBOX:}
     # Refund-request magic-link TTL in minutes. Default 60; bump via env in incident response.
     refund-request-token-ttl-minutes: ${IMIN_REFUND_REQUEST_TOKEN_TTL_MINUTES:60}
+    # Master switch for the T-24h / T-3h door reminders (EventReminderSender).
+    # DEFAULTS FALSE deliberately: the first sweep after a deploy would otherwise
+    # mail every buyer holding a ticket for anything in the next 24 hours, with
+    # no operator having chosen that moment. Turning it on is a deliberate act.
+    reminders-enabled: ${IMIN_REMINDERS_ENABLED:false}
   marketing:
     # Bulk-email sending identity — a marketing subdomain (e.g. news.imin.wtf)
     # with its OWN SPF/DKIM so bulk sends never touch the transactional auth-email

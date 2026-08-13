@@ -1,0 +1,15 @@
+TOMORROW NIGHT · imin
+
+{{eventName}} is tomorrow
+
+Your {{ticketCount}} ticket(s) are ready. Here is everything you need for the door.
+
+{{eventName}}
+{{eventWhen}}
+{{eventWhere}}
+
+View your tickets: {{orderUrl}}
+
+Bring the QR code on this order — screenshots work, and so does the page itself. No printing needed.
+
+imin.wtf · door reminder for {{eventName}}
