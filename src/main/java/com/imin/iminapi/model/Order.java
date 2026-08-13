@@ -159,6 +159,23 @@ public class Order {
     @Column(name = "buyer_locale", length = 5)
     private String buyerLocale;
 
+    /**
+     * Stamped when the T-24h reminder for this order has been SENT (V87).
+     *
+     * <p>Delivery semantics: at-least-once, marked after the send — the same
+     * trade {@link com.imin.iminapi.service.event.NotifyReleaseSender} makes,
+     * and for the same reason. If the process dies between the send and the
+     * stamp the buyer may get a second nudge; if it were stamped first, a crash
+     * would mean they silently never hear about a night they paid for. A
+     * duplicate is an annoyance, a miss is a no-show.
+     */
+    @Column(name = "reminder_24h_at")
+    private Instant reminder24hAt;
+
+    /** The T-3h analogue of {@link #reminder24hAt}. Claimed independently. */
+    @Column(name = "reminder_3h_at")
+    private Instant reminder3hAt;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Times.nowMicros();
 
