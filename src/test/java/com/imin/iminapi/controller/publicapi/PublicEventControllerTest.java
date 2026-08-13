@@ -285,6 +285,40 @@ class PublicEventControllerTest {
                 .andExpect(status().isOk());
     }
 
+    /**
+     * Repeated params bind to the list, and a single occurrence still binds to a
+     * list of one — which is what keeps every ?genre=Techno link ever shared, and
+     * every organizer's own deep link, working after multi-select landed.
+     */
+    @Test
+    void list_bindsRepeatedGenreAndTypeParams() throws Exception {
+        when(publicEventService.list(any(PublicEventListQuery.class)))
+                .thenReturn(new PageResponse<>(List.of(), 0, 1, 20));
+
+        mvc.perform(get("/api/v1/public/events")
+                        .param("genre", "techno", "house")
+                        .param("type", "Rave", "Club"))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<PublicEventListQuery> captor = ArgumentCaptor.forClass(PublicEventListQuery.class);
+        verify(publicEventService).list(captor.capture());
+        assertThat(captor.getValue().genres()).containsExactly("techno", "house");
+        assertThat(captor.getValue().types()).containsExactly("Rave", "Club");
+    }
+
+    @Test
+    void list_omittedFacetsBindAsNoFilter() throws Exception {
+        when(publicEventService.list(any(PublicEventListQuery.class)))
+                .thenReturn(new PageResponse<>(List.of(), 0, 1, 20));
+
+        mvc.perform(get("/api/v1/public/events")).andExpect(status().isOk());
+
+        ArgumentCaptor<PublicEventListQuery> captor = ArgumentCaptor.forClass(PublicEventListQuery.class);
+        verify(publicEventService).list(captor.capture());
+        assertThat(captor.getValue().genres()).isNull();
+        assertThat(captor.getValue().types()).isNull();
+    }
+
     @Test
     void list_bindsFullFilterSetIntoQueryObject() throws Exception {
         when(publicEventService.list(any(PublicEventListQuery.class)))
@@ -310,8 +344,8 @@ class PublicEventControllerTest {
 
         assertThat(captured.from()).isEqualTo(Instant.parse("2026-06-01T00:00:00Z"));
         assertThat(captured.to()).isEqualTo(Instant.parse("2026-09-01T00:00:00Z"));
-        assertThat(captured.genre()).isEqualTo("techno");
-        assertThat(captured.type()).isEqualTo("festival");
+        assertThat(captured.genres()).containsExactly("techno");
+        assertThat(captured.types()).containsExactly("festival");
         assertThat(captured.city()).isEqualTo("Berlin");
         assertThat(captured.country()).isEqualTo("DE");
         assertThat(captured.orgSlug()).isEqualTo("funkhaus");

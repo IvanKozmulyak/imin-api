@@ -12,6 +12,7 @@ import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -161,8 +162,16 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
                 OR e.startsAt >= :from
                 OR (:includeOngoing = true AND (e.endsAt IS NULL OR e.endsAt > :now)))
            AND (CAST(:to AS timestamp) IS NULL OR e.startsAt < :to)
-           AND (CAST(:genreKey AS string) IS NULL OR e.genreKey = CAST(:genreKey AS string))
-           AND (CAST(:type AS string) IS NULL OR e.type = :type)
+           AND (:genreCount = 0 OR e.genreKey IN :genreKeys)
+           AND (:typeCount = 0 OR e.type IN :types)
+           /* The two facets above are multi-select (?genre=a&genre=b). The count
+              guard, not the list, decides whether the facet filters at all:
+              `0 = 0 OR anything` is TRUE in three-valued logic whatever the IN
+              evaluates to, so no short-circuit is assumed. The caller never
+              passes an empty collection either — an empty IN list is rendered
+              differently by H2 and Postgres and this repo has been bitten by
+              exactly that class of divergence before (see V30, and the
+              lower(bytea) note on the search queries). */
            AND (CAST(:cityKey AS string) IS NULL OR e.venueCityKey = CAST(:cityKey AS string))
            AND (CAST(:country AS string) IS NULL OR e.venueCountry = :country)
            AND (CAST(:q AS string) IS NULL OR LOWER(e.name) LIKE LOWER(CONCAT('%', CAST(:q AS string), '%')))
@@ -189,8 +198,10 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
     Page<Event> findPublicListing(
             @Param("from") Instant from,
             @Param("to") Instant to,
-            @Param("genreKey") String genreKey,
-            @Param("type") String type,
+            @Param("genreKeys") Collection<String> genreKeys,
+            @Param("genreCount") int genreCount,
+            @Param("types") Collection<String> types,
+            @Param("typeCount") int typeCount,
             @Param("cityKey") String cityKey,
             @Param("country") String country,
             @Param("q") String q,

@@ -118,8 +118,11 @@ public class PublicEventController {
     public ResponseEntity<PageResponse<PublicEventListItem>> list(
             @RequestParam(required = false) Instant from,
             @RequestParam(required = false) Instant to,
-            @RequestParam(required = false) String genre,
-            @RequestParam(required = false) String type,
+            // Repeated params: ?genre=Techno&genre=House, ?type=Rave&type=Club.
+            // Spring binds a single occurrence to a one-element list, so every
+            // link handed out before multi-select existed still resolves.
+            @RequestParam(required = false) List<String> genre,
+            @RequestParam(required = false) List<String> type,
             @RequestParam(required = false) String city,
             @RequestParam(required = false) String country,
             @RequestParam(required = false) String orgSlug,

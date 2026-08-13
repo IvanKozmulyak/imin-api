@@ -215,9 +215,77 @@ class PublicEventServiceListTest {
         eventRepository.save(b);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, "techno", null, null, null, null, null, false, false, false, 1, 20));
+                null, null, List.of("techno"), null, null, null, null, null, false, false, false, 1, 20));
         assertThat(result.items()).hasSize(1);
         assertThat(result.items().get(0).genre()).isEqualTo("techno");
+    }
+
+    /**
+     * Multi-select: several values in one facet are an OR, and an empty facet is
+     * still "no filter" rather than "match nothing" — the two halves of the guard
+     * in {@code EventRepository.findPublicListing}.
+     */
+    @Test
+    void filter_by_several_genres_is_an_or_within_the_facet() {
+        Event techno = publishedLiveEvent();
+        techno.setGenre("techno");
+        eventRepository.save(techno);
+        Event house = publishedLiveEvent();
+        house.setGenre("house");
+        eventRepository.save(house);
+        Event disco = publishedLiveEvent();
+        disco.setGenre("disco");
+        eventRepository.save(disco);
+
+        PageResponse<PublicEventListItem> both = publicEventService.list(new PublicEventListQuery(
+                null, null, List.of("techno", "house"), null, null, null, null, null,
+                false, false, false, 1, 20));
+        assertThat(both.items())
+                .extracting(PublicEventListItem::id)
+                .containsExactlyInAnyOrder(techno.getId(), house.getId());
+
+        // Casing still folds to one key, and a key repeated across spellings is
+        // not a wider query — it is the same single value.
+        PageResponse<PublicEventListItem> shouted = publicEventService.list(new PublicEventListQuery(
+                null, null, List.of("TECHNO", "  techno "), null, null, null, null, null,
+                false, false, false, 1, 20));
+        assertThat(shouted.items()).extracting(PublicEventListItem::id).containsExactly(techno.getId());
+
+        // Blank-only input is not a filter that matches nothing.
+        PageResponse<PublicEventListItem> blanks = publicEventService.list(new PublicEventListQuery(
+                null, null, List.of("", "   "), null, null, null, null, null,
+                false, false, false, 1, 20));
+        assertThat(blanks.items()).hasSize(3);
+    }
+
+    @Test
+    void filter_by_several_types_is_an_or_and_the_two_facets_and_together() {
+        Event technoRave = publishedLiveEvent();
+        technoRave.setGenre("techno");
+        technoRave.setType("Rave");
+        eventRepository.save(technoRave);
+        Event technoClub = publishedLiveEvent();
+        technoClub.setGenre("techno");
+        technoClub.setType("Club");
+        eventRepository.save(technoClub);
+        Event houseRave = publishedLiveEvent();
+        houseRave.setGenre("house");
+        houseRave.setType("Rave");
+        eventRepository.save(houseRave);
+        Event technoConcert = publishedLiveEvent();
+        technoConcert.setGenre("techno");
+        technoConcert.setType("Concert");
+        eventRepository.save(technoConcert);
+
+        PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
+                null, null, List.of("techno"), List.of("Rave", "Club"), null, null, null, null,
+                false, false, false, 1, 20));
+
+        // "techno AND (Rave OR Club)" — the house rave and the techno concert both
+        // fail exactly one half, which is what makes this an AND between groups.
+        assertThat(result.items())
+                .extracting(PublicEventListItem::id)
+                .containsExactlyInAnyOrder(technoRave.getId(), technoClub.getId());
     }
 
     @Test
@@ -237,7 +305,7 @@ class PublicEventServiceListTest {
 
         for (String probe : List.of("Techno", "techno", "  TECHNO ")) {
             PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                    null, null, probe, null, null, null, null, null, false, false, false, 1, 20));
+                    null, null, List.of(probe), null, null, null, null, null, false, false, false, 1, 20));
             assertThat(result.items())
                     .as("?genre=%s must find both spellings of one genre", probe)
                     .extracting(PublicEventListItem::id)
@@ -260,7 +328,7 @@ class PublicEventServiceListTest {
         eventRepository.save(b);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, "festival", null, null, null, null, false, false, false, 1, 20));
+                null, null, null, List.of("festival"), null, null, null, null, false, false, false, 1, 20));
         assertThat(result.items()).hasSize(1);
         assertThat(result.items().get(0).type()).isEqualTo("festival");
     }
@@ -891,7 +959,7 @@ class PublicEventServiceListTest {
         assertThat(genres).containsExactly("Techno");
 
         PageResponse<PublicEventListItem> tapped = publicEventService.list(new PublicEventListQuery(
-                null, null, genres.get(0), null, null, null, null, null, false, false, false, 1, 20));
+                null, null, List.of(genres.get(0)), null, null, null, null, null, false, false, false, 1, 20));
         assertThat(tapped.total()).isEqualTo(4L);
     }
 

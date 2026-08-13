@@ -24,12 +24,15 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.UnaryOperator;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
 
@@ -145,11 +148,15 @@ public class PublicEventService {
         //    must not open a page that also lists Metzingen.
         String rawCity = nullIfBlank(query.city());
         String cityKey = rawCity == null ? null : nullIfBlank(EventNormalization.cityKey(rawCity));
-        String rawGenre = nullIfBlank(query.genre());
-        String genreKey = rawGenre == null ? null : nullIfBlank(EventNormalization.genreKey(rawGenre));
+        // Both facets are multi-select: ?genre=a&genre=b is "a OR b", and the two
+        // groups AND together. Genres normalise to their keys first, exactly as the
+        // single-value filter always did, so a chip still returns the nights it counted.
+        List<String> genreKeys = distinctNonBlank(query.genres(), EventNormalization::genreKey);
+        List<String> types = distinctNonBlank(query.types(), t -> t);
         Page<Event> result = eventRepository.findPublicListing(
                 query.from(), query.to(),
-                genreKey, nullIfBlank(query.type()),
+                bindable(genreKeys), genreKeys.size(),
+                bindable(types), types.size(),
                 cityKey, country, nullIfBlank(query.q()),
                 orgId, query.onSaleOnly(), query.includeOngoing(), query.freeOnly(), clock.instant(),
                 PageRequest.of(page - 1, pageSize));
@@ -352,4 +359,34 @@ public class PublicEventService {
     }
 
     private static String nullIfBlank(String s) { return s == null || s.isBlank() ? null : s; }
+
+    /**
+     * Normalise a multi-select facet: drop blanks, apply the facet's key function,
+     * de-duplicate, preserve order.
+     *
+     * <p>De-duplication matters beyond tidiness — {@code ?genre=Techno&genre=techno}
+     * is one key twice, and binding it twice would widen the IN list for no reason
+     * on every page of a shared link.
+     */
+    private static List<String> distinctNonBlank(List<String> raw, UnaryOperator<String> key) {
+        if (raw == null || raw.isEmpty()) return List.of();
+        return raw.stream()
+                .map(PublicEventService::nullIfBlank)
+                .filter(Objects::nonNull)
+                .map(key)
+                .map(PublicEventService::nullIfBlank)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+    }
+
+    /**
+     * The collection actually handed to JPA. Never empty: H2 and Postgres render an
+     * empty {@code IN ()} differently, and the count guard beside it already makes
+     * the contents irrelevant when the facet is off. The placeholder is a value no
+     * normalised key can be — every key is non-blank by construction.
+     */
+    private static Collection<String> bindable(List<String> values) {
+        return values.isEmpty() ? List.of("\u0000") : values;
+    }
 }
