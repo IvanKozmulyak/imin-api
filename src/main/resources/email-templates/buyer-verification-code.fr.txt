@@ -1,0 +1,15 @@
+imin.wtf · code de vérification
+
+Confirmez votre e-mail
+──────────────────────
+
+Saisissez ce code à 6 chiffres pour confirmer cette adresse sur votre compte imin :
+
+    {{code}}
+
+Expire dans {{expiresInMinutes}} minutes.
+
+Quelqu'un a demandé à ajouter cette adresse à un compte imin. Si ce n'est pas vous, ignorez cet e-mail : rien ne se passe sans le code, et il expire de lui-même. Nous ne vous demanderons jamais ce code.
+
+—
+imin.wtf · envoyé car quelqu'un a demandé à ajouter cette adresse à un compte imin

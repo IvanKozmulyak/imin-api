@@ -4,6 +4,7 @@ import com.imin.iminapi.audience.repository.ConsentRecordRepository;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.AudienceOrderProjector;
+import com.imin.iminapi.audience.service.ConsentOrigin;
 import com.imin.iminapi.audience.service.ConsentService;
 import com.imin.iminapi.audience.service.SendGateService;
 import com.imin.iminapi.config.TestRateLimitConfig;
@@ -276,7 +277,8 @@ class MarketingOptInWriteTest {
         projector.upsertMembership(orgId, "gone@example.com", "gone@example.com",
                 null, false, true, null);
         var m = membershipFor("gone@example.com");
-        consentService.unsubscribe(orgId, m.getMembershipId(), "user-request", null);
+        consentService.unsubscribe(orgId, m.getMembershipId(), "user-request",
+                ConsentOrigin.DATA_SUBJECT, null);
         assertThat(membershipFor("gone@example.com").getConsentStatus()).isEqualTo("unsubscribed");
         long proofsAfterUnsub = consentRecords
                 .findByMembershipId(m.getMembershipId()).size();

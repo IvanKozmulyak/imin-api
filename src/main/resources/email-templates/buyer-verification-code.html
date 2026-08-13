@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="x-apple-disable-message-reformatting" />
+  <title>Confirm your email</title>
+</head>
+<body style="margin:0; padding:0; background:#f4f2fa; font-family:'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color:#11091f; -webkit-font-smoothing:antialiased;">
+
+  <!-- preheader -->
+  <div style="display:none; max-height:0; overflow:hidden; opacity:0; mso-hide:all;">
+    Your imin code — expires in {{expiresInMinutes}} minutes.
+  </div>
+
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f2fa; padding:32px 16px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="max-width:600px; width:100%; background:#ffffff; border:1px solid #d4cee6; border-radius:10px; overflow:hidden; box-shadow:0 6px 18px rgba(20,12,45,0.08);">
+
+          <!-- header -->
+          <tr>
+            <td style="padding:24px 32px 0; text-align:left;">
+              <span style="font-size:18px; font-weight:700; letter-spacing:-0.3px; color:#11091f;">imin</span><span style="font-size:18px; font-weight:700; color:#2d5cff;">.wtf</span>
+            </td>
+          </tr>
+
+          <!-- eyebrow -->
+          <tr>
+            <td style="padding:28px 32px 0;">
+              <div style="font-family:'Space Mono', ui-monospace, Menlo, Consolas, monospace; font-size:11px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:#7a738f;">VERIFICATION CODE</div>
+            </td>
+          </tr>
+
+          <!-- title -->
+          <tr>
+            <td style="padding:6px 32px 0;">
+              <h1 style="margin:0; font-size:24px; font-weight:700; letter-spacing:-0.4px; color:#11091f; line-height:1.2;">Confirm your email</h1>
+            </td>
+          </tr>
+
+          <!-- body -->
+          <tr>
+            <td style="padding:14px 32px 0;">
+              <p style="margin:0; font-size:14px; line-height:1.6; color:#4d4666;">
+                Enter this 6-digit code to confirm this address on your imin account:
+              </p>
+            </td>
+          </tr>
+
+          <!-- the code -->
+          <tr>
+            <td style="padding:24px 32px 0;">
+              <div style="padding:18px 22px; background:#ebe8f5; border:1px solid #d4cee6; border-radius:8px; text-align:center; font-family:'Space Mono', ui-monospace, Menlo, Consolas, monospace; font-size:32px; font-weight:700; letter-spacing:8px; color:#11091f;">
+                {{code}}
+              </div>
+            </td>
+          </tr>
+
+          <!-- expiry -->
+          <tr>
+            <td style="padding:12px 32px 0;">
+              <p style="margin:0; font-size:13px; line-height:1.6; color:#7a738f;">Expires in {{expiresInMinutes}} minutes.</p>
+            </td>
+          </tr>
+
+          <!-- divider -->
+          <tr>
+            <td style="padding:28px 32px 0;">
+              <hr style="border:0; height:1px; background:#d4cee6; margin:0;" />
+            </td>
+          </tr>
+
+          <!-- security note -->
+          <tr>
+            <td style="padding:18px 32px 32px;">
+              <p style="margin:0; font-size:12px; line-height:1.6; color:#7a738f;">
+                Someone asked to add this address to an imin account. If that wasn&apos;t you, ignore this email — nothing happens without the code, and it expires on its own. We will never ask you for this code.
+              </p>
+            </td>
+          </tr>
+
+        </table>
+
+        <!-- outside footer -->
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="max-width:600px; width:100%; margin-top:14px;">
+          <tr>
+            <td align="center" style="padding:0 16px;">
+              <p style="margin:0; font-family:'Space Mono', ui-monospace, Menlo, Consolas, monospace; font-size:11px; letter-spacing:1.5px; text-transform:uppercase; color:#7a738f;">imin.wtf &middot; sent because someone asked to add this address to an imin account</p>
+            </td>
+          </tr>
+        </table>
+
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

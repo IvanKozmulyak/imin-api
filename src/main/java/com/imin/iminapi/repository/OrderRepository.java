@@ -174,4 +174,64 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
     // silently excluded them from the backfill.
     @Query("select distinct o.orgId, lower(o.email) from Order o where o.email is not null")
     List<Object[]> findDistinctOrgAndEmailPairs();
+
+    // ── Buyer accounts: the cross-org order join (epic §2.3, §3.4) ──────────
+    //
+    // THE SECURITY BOUNDARY OF BUYER ACCOUNTS IS THE `verifiedAt is not null`
+    // PREDICATE BELOW. An unverified buyer_account_emails row is a claim, not a
+    // permission: anyone can type any address into POST /buyer/emails, and the
+    // response is deliberately neutral about whether that address is already
+    // taken. If these queries ever match an unverified row, adding an address
+    // becomes a way to read a stranger's ticket history — and each row carries
+    // an `orderToken`, which opens the order page and its tickets with no
+    // further authentication. Do not relax it, do not add an `or` beside it.
+    //
+    // THIS IS THE FIRST NON-ORG-SCOPED AUTHENTICATED READ IN THE PLATFORM.
+    // Every other authenticated query derives its tenant from
+    // AuthPrincipal.orgId. These two are scoped by the account's VERIFIED
+    // addresses and cross organizers by design — that is the entire product
+    // proposition of buyer accounts. A future reviewer "fixing" that into an
+    // org filter would silently return nothing.
+    //
+    // No `distinct` is needed: uq_bae_account_email means one account holds at
+    // most one row per address, so an order matches at most once per account.
+    //
+    // Two queries rather than one with nullable cursor parameters. A nullable
+    // parameter compared inside a query passes on H2 and can 500 on Postgres
+    // (the `lower(bytea)` trap this repo has hit before); splitting is the
+    // house workaround and it also lets each query use the index cleanly.
+
+    /**
+     * First page of a buyer's orders, newest first. Keyset order is
+     * {@code (created_at DESC, id DESC)} — {@code id} breaks ties so the cursor
+     * below is a total order and a page boundary can never drop or repeat a row.
+     *
+     * <p>Pass {@code PageRequest.of(0, pageSize + 1)}: the caller uses the
+     * extra row to decide whether to emit a cursor, without a second count query.
+     */
+    @Query("""
+            select o from Order o
+              join com.imin.iminapi.buyer.model.BuyerAccountEmail e
+                on e.emailNormalized = o.emailNormalized
+             where e.buyerAccountId = :accountId
+               and e.verifiedAt is not null
+             order by o.createdAt desc, o.id desc
+            """)
+    List<Order> findForBuyerAccount(@Param("accountId") UUID accountId, Pageable pageable);
+
+    /** Subsequent pages: everything strictly after the {@code (createdAt, id)} cursor. */
+    @Query("""
+            select o from Order o
+              join com.imin.iminapi.buyer.model.BuyerAccountEmail e
+                on e.emailNormalized = o.emailNormalized
+             where e.buyerAccountId = :accountId
+               and e.verifiedAt is not null
+               and (o.createdAt < :beforeCreatedAt
+                    or (o.createdAt = :beforeCreatedAt and o.id < :beforeId))
+             order by o.createdAt desc, o.id desc
+            """)
+    List<Order> findForBuyerAccountBefore(@Param("accountId") UUID accountId,
+                                          @Param("beforeCreatedAt") Instant beforeCreatedAt,
+                                          @Param("beforeId") UUID beforeId,
+                                          Pageable pageable);
 }

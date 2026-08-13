@@ -1,0 +1,13 @@
+imin.wtf · compte déjà existant
+
+Vous avez déjà un compte imin
+─────────────────────────────
+
+Quelqu'un vient d'essayer de créer un compte imin avec cette adresse. Elle appartient déjà à un compte : nous n'en avons pas créé de second et rien n'a changé. Connectez-vous avec votre mot de passe, ou réinitialisez-le si vous l'avez oublié.
+
+    {{signInUrl}}
+
+Ce n'était pas vous ? Aucun compte n'a été créé et rien n'a changé sur le vôtre — vous pouvez ignorer cet e-mail. Si vous ne vous souvenez plus de votre mot de passe, utilisez « Mot de passe oublié » sur la page de connexion.
+
+—
+imin.wtf · envoyé car quelqu'un a tenté de s'inscrire avec cet e-mail

@@ -1,5 +1,6 @@
 package com.imin.iminapi.marketing.unsubscribe;
 
+import com.imin.iminapi.audience.service.ConsentOrigin;
 import com.imin.iminapi.audience.service.ConsentService;
 import com.imin.iminapi.security.ApiException;
 import org.springframework.http.MediaType;
@@ -33,8 +34,10 @@ public class PublicUnsubscribeController {
     public String oneClick(@PathVariable String token) {
         UnsubscribeTokenService.Claims claims = tokens.verify(token)
                 .orElseThrow(() -> ApiException.notFound("Unsubscribe link"));
+        // The recipient clicked their own mail client's unsubscribe control (RFC 8058) —
+        // as explicit a decision about one sender as exists, so it is sticky (§6.3).
         consentService.unsubscribe(claims.orgId(), claims.membershipId(),
-                "one_click", claims.channel(), null);
+                "one_click", claims.channel(), ConsentOrigin.DATA_SUBJECT, null);
         return "unsubscribed";
     }
 
@@ -44,8 +47,11 @@ public class PublicUnsubscribeController {
         UnsubscribeTokenService.Claims claims = tokens.verify(token)
                 .orElseThrow(() -> ApiException.notFound("Unsubscribe link"));
         // GET also honors the opt-out (footer-link click) — same channel-aware write.
+        // The buyer followed the footer link themselves, so this is sticky too (§6.3).
+        // Note this handler MUTATES on GET, so link prefetchers and mail-client image
+        // proxies reach it unprompted: the sticky write must be idempotent, and is.
         consentService.unsubscribe(claims.orgId(), claims.membershipId(),
-                "footer_link", claims.channel(), null);
+                "footer_link", claims.channel(), ConsentOrigin.DATA_SUBJECT, null);
         return "<!DOCTYPE html><html><body style=\"font-family:sans-serif;text-align:center;padding:48px;\">"
                 + "<h1>You are unsubscribed</h1>"
                 + "<p>You will no longer receive marketing messages from this organizer.</p>"

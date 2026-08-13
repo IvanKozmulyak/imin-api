@@ -1,0 +1,15 @@
+imin.wtf · adresse ajoutée
+
+Une adresse e-mail a été ajoutée à votre compte imin
+────────────────────────────────────────────────────
+
+Quelqu'un a ajouté cette adresse e-mail à votre compte imin. Elle n'est pas encore active : rien n'est partagé avec elle et aucun billet n'y est visible tant qu'elle n'est pas confirmée depuis cette boîte de réception.
+
+    {{address}}
+
+    {{profileUrl}}
+
+Ce n'était pas vous ? Supprimez l'adresse depuis votre profil et changez votre mot de passe. Quiconque peut ajouter une adresse à votre compte y a déjà accès : traitez cela comme une connexion que vous n'avez pas faite.
+
+—
+imin.wtf · envoyé à l'adresse principale de votre compte

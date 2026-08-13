@@ -198,6 +198,25 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
     @Query("select count(m) from Membership m where m.consumerId = :consumerId")
     long countByConsumerId(@Param("consumerId") UUID consumerId);
 
+    /**
+     * Every membership for a consumer, ACROSS ORGS — the fan-out a buyer-initiated
+     * Art.17 erasure needs (§7.2 step 2).
+     *
+     * <p>Unscoped on purpose, and the third documented exception in this file
+     * after {@link #findAllByPhoneE164} and {@link #countByConsumerId}. The
+     * justification is the same shape: the subject here is the <i>person</i>, not
+     * one org's list. A buyer deleting their imin account is exercising Art.17
+     * against every controller at once, so "which orgs hold a copy of this human"
+     * is exactly the question being asked, and there is no orgId to scope it by
+     * — the caller is discovering the org set, not filtering within one.
+     *
+     * <p>Only {@code BuyerAccountErasureService} may call this, and what it does
+     * with each row is hand it straight back to the org-scoped
+     * {@code DsarService.executeErase(orgId, membershipId, …)}.
+     */
+    @Query("select m from Membership m where m.consumerId = :consumerId")
+    List<Membership> findAllByConsumerId(@Param("consumerId") UUID consumerId);
+
     // ---- SMS: phone-keyed lookup (platform-wide, M4 exception) ----
 
     /**

@@ -18,6 +18,10 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *       auth code. This is a FRONTEND URL (the SPA callback), e.g.
  *       {@code https://dashboard.imin.wtf/auth/callback/google}. Must be
  *       registered as an Authorized redirect URI in the Google client.</li>
+ *   <li>{@code google.buyer-redirect-uri} — the SECOND Authorized redirect URI
+ *       on the same client, for buyer sign-in on {@code imin-public}:
+ *       {@code https://app.imin.wtf/auth/callback/google}. Blank ⇒ the buyer
+ *       Google endpoints 404 and only email + password is offered.</li>
  *   <li>{@code apple.client-id} — the Services ID identifier (the OAuth
  *       {@code client_id} / audience), e.g. {@code wtf.imin.web}.</li>
  *   <li>{@code apple.team-id} — the 10-char Apple Developer Team ID.</li>
@@ -64,6 +68,7 @@ public class OAuthProperties {
         private String clientId = "";
         private String clientSecret = "";
         private String redirectUri = "";
+        private String buyerRedirectUri = "";
 
         public String getClientId() { return clientId; }
         public void setClientId(String clientId) { this.clientId = clientId; }
@@ -71,10 +76,26 @@ public class OAuthProperties {
         public void setClientSecret(String clientSecret) { this.clientSecret = clientSecret; }
         public String getRedirectUri() { return redirectUri; }
         public void setRedirectUri(String redirectUri) { this.redirectUri = redirectUri; }
+        public String getBuyerRedirectUri() { return buyerRedirectUri; }
+        public void setBuyerRedirectUri(String buyerRedirectUri) { this.buyerRedirectUri = buyerRedirectUri; }
 
         /** Enabled only when the client id, secret and redirect URI are all set. */
         public boolean isEnabled() {
             return notBlank(clientId) && notBlank(clientSecret) && notBlank(redirectUri);
+        }
+
+        /**
+         * Buyer Google sign-in is gated <b>separately</b> from the organizer
+         * one: it needs a second Authorized redirect URI on the same client
+         * ({@code https://app.imin.wtf/auth/callback/google}), and until that is
+         * registered in the Google Cloud console the buyer endpoints must 404
+         * rather than send a buyer to a {@code redirect_uri_mismatch} page.
+         * Setting {@code GOOGLE_OAUTH_BUYER_REDIRECT_URI} is therefore the
+         * switch that turns the flow on, and it should only be set once the
+         * console change has landed.
+         */
+        public boolean isBuyerEnabled() {
+            return notBlank(clientId) && notBlank(clientSecret) && notBlank(buyerRedirectUri);
         }
     }
 

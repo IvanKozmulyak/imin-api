@@ -5,6 +5,7 @@ import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsentRecordRepository;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
+import com.imin.iminapi.audience.service.ConsentOrigin;
 import com.imin.iminapi.audience.service.ConsentService;
 import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.UserRole;
@@ -45,7 +46,8 @@ class ConsentServiceChannelTest {
         UUID membershipId = memberships.save(m).getMembershipId();
 
         AuthPrincipal system = new AuthPrincipal(null, orgId, UserRole.MEMBER, null);
-        consentService.unsubscribe(orgId, membershipId, "one_click", "sms", system);
+        consentService.unsubscribe(orgId, membershipId, "one_click", "sms",
+                ConsentOrigin.DATA_SUBJECT, system);
 
         Membership after = memberships.findByIdAndOrgId(membershipId, orgId).orElseThrow();
         // Channel isolation (§2.2): SMS unsubscribe clears the SMS state only —
@@ -71,7 +73,8 @@ class ConsentServiceChannelTest {
         UUID membershipId = memberships.save(m).getMembershipId();
 
         AuthPrincipal system = new AuthPrincipal(null, orgId, UserRole.MEMBER, null);
-        consentService.unsubscribe(orgId, membershipId, "dsar_object", system);
+        consentService.unsubscribe(orgId, membershipId, "dsar_object",
+                ConsentOrigin.DATA_SUBJECT, system);
 
         assertThat(consentRecords.findByMembershipId(membershipId).stream()
                 .anyMatch(r -> "email".equals(r.getChannel())

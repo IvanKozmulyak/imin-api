@@ -1,0 +1,55 @@
+-- V86__orders_email_normalized.sql
+-- Buyer-accounts epic §4.4. The join key for GET /buyer/orders.
+--
+-- `GET /buyer/orders` runs `where orders.email_normalized = ?` across every
+-- org, and `orders` has no index on `email` at all (§1.4). The one cross-org
+-- query that exists today — OrderRepository.findRecentForRecovery, behind the
+-- unauthenticated /recover flow — matches `lower(o.email)` with no orgId
+-- predicate and therefore sequential-scans the table on every call. This column
+-- and its index fix both.
+--
+-- A REAL COLUMN, NOT AN EXPRESSION INDEX OR A GENERATED COLUMN.
+-- No migration in this tree uses either, and V82:40-41,66-68,71-72 is the exact
+-- precedent: `venue_city_key` / `genre_key` are plain columns backfilled with
+-- `lower(coalesce(...))` and then indexed. §4.4 asked for an hour of H2 testing
+-- on `GENERATED ALWAYS AS (...) STORED` before choosing; §15 records that open
+-- question as settled in favour of the plain column, and the anti-drift
+-- mechanism below is what makes it safe.
+--
+-- THE BACKFILL RUNS INLINE because production `orders` is 67 rows (§15,
+-- verified 2026-08-12). §4.4's "over 100,000 rows, split the backfill out and
+-- use CREATE INDEX CONCURRENTLY" branch is moot at that size — the UPDATE and
+-- the index build are milliseconds, and CONCURRENTLY cannot run inside the
+-- transaction Flyway wraps a migration in anyway.
+--
+-- ANTI-DRIFT IS A JPA LIFECYCLE CALLBACK, NOT DISCIPLINE.
+-- "Maintain it in both order writers" is a promise the third writer breaks.
+-- `Order` already had a @PrePersist/@PreUpdate callback, so it was extended to
+-- set `emailNormalized = EmailNormalizer.normalize(email)` (Order.java) — the
+-- same chokepoint `Consumer.onPersist` uses. Every JPA write path is therefore
+-- covered by construction rather than by review.
+--
+-- The one gap is bulk JPQL/native updates, which bypass entity callbacks.
+-- `OrderRepository` has no @Modifying query at all today, and none of the
+-- native SQL in this tree writes `orders.email`. Anything added later that
+-- UPDATEs `orders.email` must set `email_normalized` in the same statement.
+--
+-- NORMALISATION EQUIVALENCE, AND WHERE IT IS NOT EXACT.
+-- EmailNormalizer.normalize is `raw.trim().toLowerCase(Locale.ROOT)` — no
+-- plus-address stripping, no dot folding. `lower(trim(email))` is the same
+-- function for every address these columns actually hold, and
+-- V86OrdersEmailNormalizedTest asserts that against EmailNormalizer directly.
+-- Two documented divergences, both of which fail CLOSED (an order is not
+-- matched, never someone else's order matched):
+--   * SQL TRIM strips spaces only; Java's String.trim() also strips tabs and
+--     newlines. An address stored with a leading tab keeps it here and simply
+--     never joins.
+--   * lower() is collation-dependent on Postgres for non-ASCII; Locale.ROOT is
+--     not. Same consequence.
+ALTER TABLE orders ADD COLUMN email_normalized VARCHAR(254) NULL;
+
+UPDATE orders SET email_normalized = lower(trim(email)) WHERE email IS NOT NULL;
+
+-- Plain (non-partial) index: H2 in PG-compat mode, which the whole test suite
+-- boots against, has no WHERE-clause indexes.
+CREATE INDEX ix_orders_email_normalized ON orders (email_normalized);

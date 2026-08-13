@@ -58,6 +58,33 @@ class BuyerEmailLocaleVariantsTest {
                 "eventWhen", "Friday, 5 Jun 2026 · 23:00",
                 "eventWhere", "Sala Apolo, Barcelona",
                 "eventUrl", "https://app.imin.wtf/e/abc"));
+
+        // ---- Buyer accounts ----
+        // R1.2's three templates were localized but never registered here, so a
+        // dropped or misspelled placeholder in one of their .es/.fr/.uk files
+        // would only have surfaced as a failed send to a real buyer. Registered
+        // now alongside R1.3's two.
+        TEMPLATES.put("buyer-verification-code", Map.of(
+                "code", "428106",
+                "expiresInMinutes", "10"));
+
+        TEMPLATES.put("buyer-account-exists", Map.of(
+                "signInUrl", "https://app.imin.wtf/auth/login"));
+
+        TEMPLATES.put("buyer-password-changed", Map.of(
+                "signInUrl", "https://app.imin.wtf/auth/login"));
+
+        TEMPLATES.put("buyer-address-added", Map.of(
+                "address", "work@company.example",
+                "profileUrl", "https://app.imin.wtf/profile/emails"));
+
+        TEMPLATES.put("buyer-primary-changed", Map.of(
+                "address", "work@company.example",
+                "signInUrl", "https://app.imin.wtf/auth/login"));
+
+        TEMPLATES.put("buyer-deletion-scheduled", Map.of(
+                "deletionDate", "11 September 2026",
+                "accountUrl", "https://app.imin.wtf/profile/delete"));
     }
 
     static Stream<org.junit.jupiter.params.provider.Arguments> variants() {

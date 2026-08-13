@@ -298,6 +298,35 @@
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!--
+                      Run tests in UTC, the way production does.
+
+                      Not a style choice. H2 takes its session time zone from the
+                      JVM, and it interprets a bound TIMESTAMP WITH TIME ZONE
+                      value in that zone: on a machine at UTC+2 an Instant written
+                      as 12:00:00Z was stored as `12:00:00+02` and read back as
+                      10:00:00Z. Every timestamptz column in the schema was
+                      skewed by the developer's UTC offset — equally on write and
+                      read, so no long-TTL assertion ever caught it. The first
+                      thing short enough to trip it was the 10-minute buyer
+                      verification code (V84), which came back already expired on
+                      a European laptop and fine in UTC CI.
+
+                      Pinning the JVM rather than H2's session zone fixes DATE
+                      columns too: java.sql.Date is instant-backed, so local
+                      midnight under a UTC session zone lands on the previous day
+                      (event_sales_daily.sales_date did exactly that).
+
+                      Production (Railway) runs UTC, so this makes the suite
+                      match it instead of matching whoever ran it.
+                    -->
+                    <argLine>-Duser.timezone=UTC</argLine>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <executions>
                     <execution>

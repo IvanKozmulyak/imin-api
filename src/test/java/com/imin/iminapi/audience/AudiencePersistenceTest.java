@@ -200,7 +200,7 @@ class AudiencePersistenceTest {
     @Test
     void sendgate_unsubscribed_excluded() {
         UUID mid = seedSubscribed(orgA, "unsub@x.com", "explicit");
-        consentService.unsubscribe(orgA, mid, "test", principalA);
+        consentService.unsubscribe(orgA, mid, "test", ConsentOrigin.OPERATOR, principalA);
 
         SendGateService.GateResult r = sendGateService.evaluate(orgA, List.of(mid));
         assertThat(r.sendable()).isEmpty();
@@ -262,7 +262,7 @@ class AudiencePersistenceTest {
     void sendgate_resubscriber_is_sendable_m3_regression() {
         // [subscribed, unsub, subscribed] → must be sendable (M3: reads consent_status column)
         UUID mid = seedSubscribed(orgA, "resub@x.com", "explicit");
-        consentService.unsubscribe(orgA, mid, "own", principalA);
+        consentService.unsubscribe(orgA, mid, "own", ConsentOrigin.OPERATOR, principalA);
         consentService.capture(orgA, mid, "explicit", "re-signup", "proof2", principalA);
 
         Membership m = membershipRepo.findByIdAndOrgId(mid, orgA).orElseThrow();
@@ -295,7 +295,7 @@ class AudiencePersistenceTest {
         assertThat(records.get(0).getLawfulBasis()).isEqualTo("explicit");
 
         // Unsubscribe appends another row — original row untouched
-        consentService.unsubscribe(orgA, mid, "test", principalA);
+        consentService.unsubscribe(orgA, mid, "test", ConsentOrigin.OPERATOR, principalA);
         List<ConsentRecord> after = consentRepo.findByMembershipId(mid);
         assertThat(after).hasSize(2);
         assertThat(after.get(0).getStatus()).isEqualTo("subscribed"); // original intact
@@ -307,7 +307,7 @@ class AudiencePersistenceTest {
         UUID mid = seedSubscribed(orgA, "sync@x.com", "explicit");
         assertThat(sendGateService.evaluate(orgA, List.of(mid)).sendable()).containsExactly(mid);
 
-        consentService.unsubscribe(orgA, mid, "test", principalA);
+        consentService.unsubscribe(orgA, mid, "test", ConsentOrigin.OPERATOR, principalA);
         assertThat(sendGateService.evaluate(orgA, List.of(mid)).sendable()).isEmpty();
     }
 

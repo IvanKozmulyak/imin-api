@@ -1,6 +1,10 @@
 package com.imin.iminapi.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.imin.iminapi.buyer.BuyerProperties;
+import com.imin.iminapi.buyer.security.BuyerPrincipal;
+import com.imin.iminapi.buyer.security.BuyerRequestGuardFilter;
+import com.imin.iminapi.buyer.security.BuyerSessionAuthFilter;
 import com.imin.iminapi.security.ApiError;
 import com.imin.iminapi.security.BearerTokenAuthFilter;
 import com.imin.iminapi.security.ErrorCode;
@@ -39,7 +43,7 @@ public class SecurityConfig {
     }
 
     @Bean
-    public CorsConfigurationSource corsConfigurationSource() {
+    public CorsConfigurationSource corsConfigurationSource(BuyerProperties buyerProps) {
         CorsConfiguration config = new CorsConfiguration();
         List<String> patterns = Arrays.stream(allowedOriginPatterns)
                 .filter(p -> p != null && !p.isBlank())
@@ -50,7 +54,26 @@ public class SecurityConfig {
         config.setExposedHeaders(List.of("Location"));
         config.setAllowCredentials(true);
         config.setMaxAge(3600L);
+
+        // Buyer endpoints get their own CORS configuration with EXACT origins
+        // (imin.buyer.allowed-origins) instead of inheriting the platform-wide
+        // pattern list (buyer-accounts epic §2.6). That list contains
+        // `https://imin-public-*.vercel.app` next to setAllowCredentials(true),
+        // and Vercel project names are first-come — an attacker who registers
+        // `imin-public-anything` would otherwise sit inside a credentialed
+        // allowlist for the one namespace that authenticates with a cookie.
+        CorsConfiguration buyerConfig = new CorsConfiguration();
+        buyerConfig.setAllowedOrigins(List.copyOf(buyerProps.getAllowedOrigins()));
+        buyerConfig.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
+        buyerConfig.setAllowedHeaders(List.of("*"));
+        buyerConfig.setAllowCredentials(true);
+        buyerConfig.setMaxAge(3600L);
+
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        // Registration ORDER is load-bearing: UrlBasedCorsConfigurationSource
+        // returns the first pattern that matches, so the buyer mapping has to
+        // precede the "/**" catch-all or it never applies.
+        source.registerCorsConfiguration("/api/v1/buyer/**", buyerConfig);
         source.registerCorsConfiguration("/**", config);
         return source;
     }
@@ -58,6 +81,8 @@ public class SecurityConfig {
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http,
                                                    BearerTokenAuthFilter bearerFilter,
+                                                   BuyerRequestGuardFilter buyerGuardFilter,
+                                                   BuyerSessionAuthFilter buyerSessionFilter,
                                                    CorsConfigurationSource corsConfigurationSource) throws Exception {
         http
                 .cors(c -> c.configurationSource(corsConfigurationSource))
@@ -128,11 +153,47 @@ public class SecurityConfig {
                         // signed-token-verified inside the handler.
                         .requestMatchers(HttpMethod.GET, "/api/v1/public/unsubscribe/**").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/public/unsubscribe/**").permitAll()
+                        // ── Buyer accounts (imin-public / app.imin.wtf) ──────────────
+                        // A separate namespace from /api/v1/public/**, which is blanket
+                        // permitAll on GET (:102 above): keeping the two disjoint makes
+                        // "buyer data is never public" an invariant instead of a list of
+                        // exceptions. Credential endpoints are unauthenticated by nature
+                        // and must be permitted BEFORE the /api/v1/** catch-all or they
+                        // 401 before reaching a controller. Signup/login/verify/reset and
+                        // the Google pair land in R1.2; permitting them now keeps the
+                        // security rule in one commit.
+                        //
+                        // logout is permitted deliberately: it must clear the cookie and
+                        // answer 204 even when the session has already expired, or the
+                        // frontend can never clean up. It is idempotent, carries no data,
+                        // and is still covered by the Origin check in BuyerRequestGuardFilter.
+                        .requestMatchers(HttpMethod.POST,
+                                         "/api/v1/buyer/auth/signup",
+                                         "/api/v1/buyer/auth/login",
+                                         "/api/v1/buyer/auth/logout",
+                                         "/api/v1/buyer/auth/verify-email",
+                                         "/api/v1/buyer/auth/resend-verification",
+                                         "/api/v1/buyer/auth/forgot-password",
+                                         "/api/v1/buyer/auth/reset-password",
+                                         "/api/v1/buyer/auth/google/callback").permitAll()
+                        .requestMatchers(HttpMethod.GET,
+                                         "/api/v1/buyer/auth/google/url").permitAll()
+                        // hasRole("BUYER"), not .authenticated(): an organizer bearer
+                        // token authenticates with ROLE_OWNER/ADMIN/MEMBER and must not
+                        // be able to read a buyer's account or order history.
+                        .requestMatchers("/api/v1/buyer/**").hasRole(BuyerPrincipal.ROLE)
                         // Everything else under /api/v1 requires a session
                         .requestMatchers("/api/v1/**").authenticated()
                         .anyRequest().permitAll()
                 )
                 .addFilterBefore(bearerFilter, UsernamePasswordAuthenticationFilter.class)
+                // Order is explicit and relative to the bearer filter rather than to
+                // UsernamePasswordAuthenticationFilter, so it cannot depend on
+                // registration ties: guard → bearer → buyer session. The guard rejects
+                // cross-site mutations before any credential is resolved, and the buyer
+                // filter runs last so it no-ops when a bearer token already authenticated.
+                .addFilterBefore(buyerGuardFilter, BearerTokenAuthFilter.class)
+                .addFilterAfter(buyerSessionFilter, BearerTokenAuthFilter.class)
                 .exceptionHandling(eh -> eh
                         .authenticationEntryPoint((req, resp, ex) -> {
                             ErrorCode errorCode = (ErrorCode) req.getAttribute("imin.authErrorCode");

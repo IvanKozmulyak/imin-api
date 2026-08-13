@@ -89,7 +89,7 @@ class AudienceSendGateConsentSuppressionTest {
     void sendgate_a_unsubscribed_excluded() {
         UUID mid = seedSubscribed(orgA, "unsub@gate.com", "explicit", principalA);
 
-        consentService.unsubscribe(orgA, mid, "test", principalA);
+        consentService.unsubscribe(orgA, mid, "test", ConsentOrigin.OPERATOR, principalA);
 
         SendGateService.GateResult r = sendGateService.evaluate(orgA, List.of(mid));
         assertThat(r.sendable()).isEmpty();
@@ -182,7 +182,7 @@ class AudienceSendGateConsentSuppressionTest {
         UUID mid = seedSubscribed(orgA, "resub@gate.com", "explicit", principalA);
 
         // Unsubscribe
-        consentService.unsubscribe(orgA, mid, "user-request", principalA);
+        consentService.unsubscribe(orgA, mid, "user-request", ConsentOrigin.OPERATOR, principalA);
         assertThat(sendGateService.evaluate(orgA, List.of(mid)).sendable()).isEmpty();
 
         // Re-subscribe
@@ -211,7 +211,7 @@ class AudienceSendGateConsentSuppressionTest {
     void sendgate_mixed_batch_correct_partition() {
         UUID sendable = seedSubscribed(orgA, "s@gate.com", "explicit", principalA);
         UUID unsubbed = seedSubscribed(orgA, "u@gate.com", "explicit", principalA);
-        consentService.unsubscribe(orgA, unsubbed, "test", principalA);
+        consentService.unsubscribe(orgA, unsubbed, "test", ConsentOrigin.OPERATOR, principalA);
 
         orderProjector.upsertMembership(orgA, "nb@gate.com", "NB");
         Consumer nbC = consumerRepo.findByNormalizedEmail("nb@gate.com").orElseThrow();
@@ -267,7 +267,7 @@ class AudienceSendGateConsentSuppressionTest {
     void consent_unsubscribe_prior_rows_untouched() {
         UUID mid = seedSubscribed(orgA, "unsub@consent.com", "explicit", principalA);
 
-        consentService.unsubscribe(orgA, mid, "user-unsubscribe-link", principalA);
+        consentService.unsubscribe(orgA, mid, "user-unsubscribe-link", ConsentOrigin.OPERATOR, principalA);
 
         List<ConsentRecord> records = consentRepo.findByMembershipId(mid);
         assertThat(records).hasSize(2);
@@ -286,7 +286,7 @@ class AudienceSendGateConsentSuppressionTest {
         UUID mid = seedSubscribed(orgA, "sync@consent.com", "explicit", principalA);
         assertThat(sendGateService.evaluate(orgA, List.of(mid)).sendable()).containsExactly(mid);
 
-        consentService.unsubscribe(orgA, mid, "sync-test", principalA);
+        consentService.unsubscribe(orgA, mid, "sync-test", ConsentOrigin.OPERATOR, principalA);
 
         // Gate immediately reflects the change
         assertThat(sendGateService.evaluate(orgA, List.of(mid)).sendable()).isEmpty();
@@ -465,7 +465,7 @@ class AudienceSendGateConsentSuppressionTest {
         reset(auditLogger);
 
         ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
-        consentService.unsubscribe(orgA, mid, "link", principalA);
+        consentService.unsubscribe(orgA, mid, "link", ConsentOrigin.OPERATOR, principalA);
 
         verify(auditLogger).record(any(), captor.capture(), any(), any(), any());
         assertThat(captor.getValue()).isEqualTo(AuditActions.CONSENT_UNSUBSCRIBED);
@@ -504,7 +504,7 @@ class AudienceSendGateConsentSuppressionTest {
         UUID mid1 = seedSubscribed(orgA, "h1@gate.com", "explicit", principalA);
         UUID mid2 = seedSubscribed(orgA, "h2@gate.com", "explicit", principalA);
         UUID mid3 = seedSubscribed(orgA, "h3@gate.com", "explicit", principalA);
-        consentService.unsubscribe(orgA, mid3, "test", principalA);
+        consentService.unsubscribe(orgA, mid3, "test", ConsentOrigin.OPERATOR, principalA);
 
         var response = sendGateService.handoff(orgA, List.of(mid1, mid2, mid3), principalA);
 

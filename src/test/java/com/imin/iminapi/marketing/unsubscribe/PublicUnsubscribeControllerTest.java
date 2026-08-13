@@ -1,5 +1,6 @@
 package com.imin.iminapi.marketing.unsubscribe;
 
+import com.imin.iminapi.audience.service.ConsentOrigin;
 import com.imin.iminapi.audience.service.ConsentService;
 import com.imin.iminapi.config.TestRateLimitConfig;
 import org.junit.jupiter.api.Test;
@@ -38,7 +39,8 @@ class PublicUnsubscribeControllerTest {
         mvc.perform(post("/api/v1/public/unsubscribe/{token}", token))
                 .andExpect(status().isOk());
 
-        verify(consentService).unsubscribe(eq(org), eq(member), eq("one_click"), eq("email"), any());
+        verify(consentService).unsubscribe(eq(org), eq(member), eq("one_click"), eq("email"),
+                eq(ConsentOrigin.DATA_SUBJECT), any());
     }
 
     @Test
@@ -52,5 +54,23 @@ class PublicUnsubscribeControllerTest {
         String token = tokenService.sign(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), "sms");
         mvc.perform(get("/api/v1/public/unsubscribe/{token}", token))
                 .andExpect(status().isOk());
+    }
+
+    /**
+     * Both public handlers are the buyer acting on their own behalf (§16), so both
+     * carry DATA_SUBJECT and both write the sticky opt-out. The GET one matters as
+     * much as the POST: it is what a footer link resolves to.
+     */
+    @Test
+    void confirmationPageGet_validToken_unsubscribesAsDataSubject() throws Exception {
+        UUID org = UUID.randomUUID();
+        UUID member = UUID.randomUUID();
+        String token = tokenService.sign(org, member, UUID.randomUUID(), "email");
+
+        mvc.perform(get("/api/v1/public/unsubscribe/{token}", token))
+                .andExpect(status().isOk());
+
+        verify(consentService).unsubscribe(eq(org), eq(member), eq("footer_link"), eq("email"),
+                eq(ConsentOrigin.DATA_SUBJECT), any());
     }
 }

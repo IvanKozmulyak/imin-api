@@ -1,0 +1,24 @@
+imin.wtf · suppression programmée
+
+Votre compte est programmé pour suppression
+───────────────────────────────────────────
+
+Quelqu'un a demandé la suppression de votre compte imin. Tous les appareils ont
+été déconnectés et les organisateurs ont cessé de vous envoyer du marketing,
+mais rien n'est effacé avant le {{deletionDate}}.
+
+EFFACÉ LE : {{deletionDate}}
+
+Vous avez changé d'avis ? Connectez-vous et appuyez sur Conserver mon compte :
+
+    {{accountUrl}}
+
+Les billets que vous avez déjà achetés continuent de fonctionner. Les liens de
+vos e-mails de confirmation les ouvrent toujours, compte supprimé ou non.
+
+Ce n'était pas vous ? Quelqu'un d'autre a peut-être accès à votre messagerie.
+Connectez-vous, appuyez sur Conserver mon compte, puis changez votre mot de
+passe — dans cet ordre, car se connecter ne suffit pas à annuler la suppression.
+
+—
+imin.wtf · envoyé car une suppression a été programmée sur votre compte
