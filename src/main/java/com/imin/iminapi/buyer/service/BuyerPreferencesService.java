@@ -6,6 +6,9 @@ import com.imin.iminapi.audience.repository.MarketingOptOutRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.ConsentOrigin;
 import com.imin.iminapi.audience.service.ConsentService;
+import com.imin.iminapi.buyer.model.BuyerAccount;
+import com.imin.iminapi.buyer.repository.BuyerAccountRepository;
+import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.buyer.dto.BuyerPreferencesResponse;
 import com.imin.iminapi.buyer.model.BuyerAccountEmail;
 import com.imin.iminapi.buyer.model.BuyerNotificationPreference;
@@ -56,15 +59,32 @@ public class BuyerPreferencesService {
     static final String CHANNEL_EMAIL = "email";
 
     /**
-     * Stored verbatim on the consent record as proof. Must match the sentence
-     * rendered next to the toggle in {@code imin-public} — if the screen and
-     * this string ever diverge, the proof text stops describing what the buyer
-     * actually agreed to.
+     * The sentence rendered next to the toggle in {@code imin-public}, stored
+     * verbatim on the consent record as proof — <b>in the language the buyer
+     * actually read it in</b>.
+     *
+     * <p>These four strings are
+     * {@code profile.notifications.organizers.body} in
+     * {@code imin-public/lib/i18n/{en,es,fr,uk}.ts}, character for character.
+     * {@code BuyerPreferencesProofTextTest} pins them so a change here is
+     * deliberate; if you edit the screen, edit these too.
+     *
+     * <p>Storing English for everybody — which this did until 2026-08-13 — puts
+     * a sentence on file as Art. 7(1) proof that the data subject was never
+     * shown, in a language they may not read. Art. 7(2) and 12(1) both ask that
+     * the request be intelligible to them, and a proof text that describes a
+     * different sentence than the one on screen is not proof of anything.
      */
-    static final String PROOF_TEXT =
-            "Turned organizer updates on from my imin account preferences.";
+    public static String proofText(String locale) {
+        return EmailLocale.choose(locale,
+                "Marketing from organizers you've bought from. Turning this on won't undo an unsubscribe you've already made.",
+                "Marketing de organizadores a los que has comprado. Activarlo no deshará una baja que ya hayas hecho.",
+                "Le marketing des organisateurs chez qui tu as acheté. L’activer n’annulera pas une désinscription déjà faite.",
+                "Розсилки від організаторів, у яких ти вже маєш покупки. Увімкнення не скасує відписку, яку ти вже оформив(ла).");
+    }
 
     private final BuyerNotificationPreferenceRepository preferences;
+    private final BuyerAccountRepository accounts;
     private final BuyerAccountEmailRepository emails;
     private final ConsumerRepository consumers;
     private final MembershipRepository memberships;
@@ -73,6 +93,7 @@ public class BuyerPreferencesService {
     private final ConsentService consent;
 
     public BuyerPreferencesService(BuyerNotificationPreferenceRepository preferences,
+                                   BuyerAccountRepository accounts,
                                    BuyerAccountEmailRepository emails,
                                    ConsumerRepository consumers,
                                    MembershipRepository memberships,
@@ -80,6 +101,7 @@ public class BuyerPreferencesService {
                                    OrganizationRepository organizations,
                                    ConsentService consent) {
         this.preferences = preferences;
+        this.accounts = accounts;
         this.emails = emails;
         this.consumers = consumers;
         this.memberships = memberships;
@@ -140,13 +162,16 @@ public class BuyerPreferencesService {
 
     private void fanOut(UUID accountId, boolean on) {
         Reach reach = reachOf(accountId);
+        // The proof text is the sentence THIS buyer read, so it is resolved
+        // from their own locale rather than defaulted to English.
+        String proof = proofText(localeOf(accountId));
         for (Membership m : reach.memberships()) {
             if (on) {
                 // Never resurrect an explicit per-organizer objection.
                 if (reach.stickyOrgIds().contains(m.getOrgId())) continue;
                 if ("subscribed".equals(m.getConsentStatus())) continue;
                 consent.capture(m.getOrgId(), m.getMembershipId(), "explicit", SOURCE,
-                        PROOF_TEXT, CHANNEL_EMAIL, null);
+                        proof, CHANNEL_EMAIL, null);
             } else {
                 if (!"subscribed".equals(m.getConsentStatus())) continue;
                 consent.unsubscribe(m.getOrgId(), m.getMembershipId(), SOURCE, CHANNEL_EMAIL,
@@ -156,6 +181,11 @@ public class BuyerPreferencesService {
     }
 
     // ── plumbing ───────────────────────────────────────────────────────────
+
+    /** The account's own UI language, or null for the English default. */
+    private String localeOf(UUID accountId) {
+        return accounts.findById(accountId).map(BuyerAccount::getLocale).orElse(null);
+    }
 
     /** Creates the row lazily with its column defaults rather than 404ing. */
     private BuyerNotificationPreference rowFor(UUID accountId) {
