@@ -1,0 +1,24 @@
+imin.wtf · eliminación programada
+
+Tu cuenta está programada para eliminarse
+─────────────────────────────────────────
+
+Alguien nos pidió eliminar tu cuenta de imin. Se ha cerrado la sesión en todos
+los dispositivos y los organizadores han dejado de enviarte marketing, pero no
+se borra nada hasta el {{deletionDate}}.
+
+SE BORRA EL: {{deletionDate}}
+
+¿Cambiaste de idea? Inicia sesión y pulsa Conservar mi cuenta:
+
+    {{accountUrl}}
+
+Las entradas que ya compraste siguen funcionando igualmente. Los enlaces de tus
+correos de confirmación las siguen abriendo, con cuenta o sin ella.
+
+¿No fuiste tú? Puede que otra persona tenga acceso a tu correo. Inicia sesión,
+pulsa Conservar mi cuenta y luego cambia tu contraseña — en ese orden, porque
+iniciar sesión por sí solo no detiene la eliminación.
+
+—
+imin.wtf · enviado porque se programó la eliminación de tu cuenta

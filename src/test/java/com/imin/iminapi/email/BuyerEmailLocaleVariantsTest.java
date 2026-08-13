@@ -81,6 +81,10 @@ class BuyerEmailLocaleVariantsTest {
         TEMPLATES.put("buyer-primary-changed", Map.of(
                 "address", "work@company.example",
                 "signInUrl", "https://app.imin.wtf/auth/login"));
+
+        TEMPLATES.put("buyer-deletion-scheduled", Map.of(
+                "deletionDate", "11 September 2026",
+                "accountUrl", "https://app.imin.wtf/profile/delete"));
     }
 
     static Stream<org.junit.jupiter.params.provider.Arguments> variants() {

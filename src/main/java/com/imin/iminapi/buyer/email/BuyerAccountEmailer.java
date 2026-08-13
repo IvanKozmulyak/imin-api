@@ -6,6 +6,11 @@ import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.email.EmailTemplateRenderer;
 import org.springframework.stereotype.Service;
 
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.time.format.FormatStyle;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -149,6 +154,58 @@ public class BuyerAccountEmailer {
     /** Profile screen on the buyer site, where addresses are managed. */
     public String profileUrl() {
         return props.getBuyerSiteBaseUrl() + "/profile/emails";
+    }
+
+    /** The deletion screen, which is also where "Keep my account" lives. */
+    public String deletionUrl() {
+        return props.getBuyerSiteBaseUrl() + "/profile/delete";
+    }
+
+    /**
+     * "Your account is scheduled for deletion" — sent to <b>every verified
+     * address</b> on the transition, not just the primary.
+     *
+     * <p>This mail is the account's only defence against a hostile deletion.
+     * Scheduling one needs nothing but a live session, so someone who has
+     * taken over an inbox can erase the account and the owner would otherwise
+     * find out in thirty days, when it is already gone. Fanning out over the
+     * whole address set means an attacker holding one inbox does not
+     * automatically get silence in the others.
+     *
+     * <p>It carries the deadline and the cancel link and deliberately says
+     * nothing about how long purchase records are kept — that number is still
+     * a counsel deliverable (§7.3), and a mail is a bad place to guess.
+     */
+    public void sendDeletionScheduled(String to, String locale, Instant deleteAt) {
+        var r = renderer.render("buyer-deletion-scheduled", locale, Map.of(
+                "deletionDate", formatDeletionDate(deleteAt, locale),
+                "accountUrl", deletionUrl()));
+        email.send(to, EmailLocale.choose(locale,
+                "Your imin account is scheduled for deletion",
+                "Tu cuenta de imin está programada para eliminarse",
+                "Votre compte imin est programmé pour suppression",
+                "Ваш акаунт imin заплановано до видалення"), r.html(), r.text());
+    }
+
+    /**
+     * The deadline as a date, in the buyer's language and in UTC.
+     *
+     * <p>UTC because that is what {@code delete_at} means and a buyer account
+     * carries no timezone — inventing one from an IP would move the date by a
+     * day for some readers and be wrong for the travelling ones. The grace
+     * period is thirty days, so a few hours of skew changes nothing that
+     * matters; a wrong date printed confidently would.
+     *
+     * <p>The language is chosen through {@link EmailLocale#choose} rather than
+     * from the raw string, so the date can never end up in a language the
+     * template around it isn't in: both fall back to English on the same rule.
+     */
+    private static String formatDeletionDate(Instant deleteAt, String locale) {
+        String tag = EmailLocale.choose(locale, "en", "es", "fr", "uk");
+        return DateTimeFormatter.ofLocalizedDate(FormatStyle.LONG)
+                .withLocale(Locale.forLanguageTag(tag))
+                .withZone(ZoneOffset.UTC)
+                .format(deleteAt);
     }
 
     /**

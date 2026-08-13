@@ -5,6 +5,7 @@ import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.ConsentOrigin;
 import com.imin.iminapi.audience.service.ConsentService;
+import com.imin.iminapi.buyer.email.BuyerAccountEmailer;
 import com.imin.iminapi.buyer.model.BuyerAccount;
 import com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository;
 import com.imin.iminapi.buyer.repository.BuyerAccountRepository;
@@ -77,6 +78,7 @@ public class BuyerAccountDeletionService {
     private final ConsentService consentService;
     private final BuyerSessionService sessions;
     private final AuditLogger auditLogger;
+    private final BuyerAccountEmailer emailer;
 
     public BuyerAccountDeletionService(BuyerAccountRepository accounts,
                                        BuyerAccountEmailRepository emails,
@@ -84,7 +86,8 @@ public class BuyerAccountDeletionService {
                                        MembershipRepository memberships,
                                        ConsentService consentService,
                                        BuyerSessionService sessions,
-                                       AuditLogger auditLogger) {
+                                       AuditLogger auditLogger,
+                                       BuyerAccountEmailer emailer) {
         this.accounts = accounts;
         this.emails = emails;
         this.consumers = consumers;
@@ -92,6 +95,7 @@ public class BuyerAccountDeletionService {
         this.consentService = consentService;
         this.sessions = sessions;
         this.auditLogger = auditLogger;
+        this.emailer = emailer;
     }
 
     /**
@@ -122,11 +126,44 @@ public class BuyerAccountDeletionService {
 
         int unsubscribed = unsubscribeEverything(accountId);
         int revoked = sessions.revokeAll(accountId);
+        int notified = notifyDeletionScheduled(accountId, account.getLocale(), deleteAt);
 
-        log.info("[buyer] deletion scheduled account={} deleteAt={} unsubscribed={} sessionsRevoked={}",
-                accountId, deleteAt, unsubscribed, revoked);
+        log.info("[buyer] deletion scheduled account={} deleteAt={} unsubscribed={} sessionsRevoked={} notified={}",
+                accountId, deleteAt, unsubscribed, revoked, notified);
 
         return deleteAt;
+    }
+
+    /**
+     * Tells the account's owner that a deletion was scheduled, on the transition
+     * only — a second confirm from another device must not re-mail them.
+     *
+     * <p><b>Every verified address, not just the primary.</b> This mail exists for
+     * the case where the person scheduling the deletion is not the owner: without
+     * it, someone with access to one inbox can erase an account and the owner
+     * learns about it in 30 days, when it is gone. An attacker who controls one
+     * address does not necessarily control the others, so the notice goes to all
+     * of them — same reasoning as the primary-change notice going to the old
+     * address as well as the new one.
+     *
+     * <p>A send failure can never fail the deletion. The buyer asked for it, the
+     * status flip and the session revocation have already happened, and refusing
+     * the request because Resend was down would be the wrong trade. Each address
+     * is attempted independently so one bad address cannot silence the rest.
+     *
+     * @return how many addresses were mailed
+     */
+    private int notifyDeletionScheduled(UUID accountId, String locale, Instant deleteAt) {
+        int sent = 0;
+        for (String address : emails.findVerifiedEmailsByBuyerAccountId(accountId)) {
+            try {
+                emailer.sendDeletionScheduled(address, locale, deleteAt);
+                sent++;
+            } catch (RuntimeException e) {
+                log.error("[buyer] deletion notice failed account={} : {}", accountId, e.getMessage());
+            }
+        }
+        return sent;
     }
 
     /**

@@ -93,6 +93,33 @@ class StickyMarketingOptOutTest {
         assertThat(consentStatus(orgId, tidiedMembership)).isEqualTo("unsubscribed");
     }
 
+    /**
+     * The buyer's own master switch (§6.3, Release 2) is not sticky. Same actor as
+     * {@code DATA_SUBJECT} — the person themselves — but a preference they can flip
+     * back on tomorrow must not leave a permanent per-organizer objection behind it,
+     * or turning it on again would be a lie.
+     *
+     * <p>This is the case the two-constant enum had no honest answer for: the R2 author
+     * would have had to pass {@code OPERATOR} for a buyer action, which is false in the
+     * audit trail, or {@code null}, which is silently non-sticky.
+     */
+    @Test
+    void theBuyersGlobalPreferenceUnsubscribesWithoutWritingAStickyRow() {
+        String buyer = seedEmail("origin-global");
+        UUID orgId = UUID.randomUUID();
+        UUID membership = seedMembership(orgId, buyer);
+
+        consentService.unsubscribe(orgId, membership, "master_toggle",
+                ConsentOrigin.DATA_SUBJECT_GLOBAL, null);
+
+        assertThat(consentStatus(orgId, membership))
+                .as("the unsubscribe itself still happens")
+                .isEqualTo("unsubscribed");
+        assertThat(optOuts.findByEmailNormalized(buyer))
+                .as("a reversible global preference must leave nothing permanent behind")
+                .isEmpty();
+    }
+
     // ── Idempotency ─────────────────────────────────────────────────────────
 
     /**

@@ -1,0 +1,24 @@
+imin.wtf · deletion scheduled
+
+Your account is scheduled for deletion
+──────────────────────────────────────
+
+Someone asked us to delete your imin account. Every device has been signed out
+and organizers have stopped sending you marketing, but nothing is erased until
+{{deletionDate}}.
+
+ERASED ON: {{deletionDate}}
+
+Changed your mind? Sign in and press Keep my account:
+
+    {{accountUrl}}
+
+Tickets you already bought keep working either way. The links in your
+confirmation emails still open them, deleted account or not.
+
+Didn't do this? Someone else may have access to your email. Sign in, press Keep
+my account, then change your password — in that order, because signing in alone
+does not stop the deletion.
+
+—
+imin.wtf · sent because deletion was scheduled on your account

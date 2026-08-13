@@ -38,7 +38,9 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.atLeast;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -193,6 +195,56 @@ class BuyerAccountDeletionTest {
         requestDeletion().andExpect(status().isOk());
 
         assertThat(accounts.findById(accountId).orElseThrow().getDeleteAt()).isEqualTo(first);
+    }
+
+    /**
+     * The notice goes to EVERY verified address, not just the primary.
+     *
+     * <p>Scheduling a deletion needs nothing but a live session, so this mail is
+     * the only thing standing between a taken-over inbox and a silently erased
+     * account. An attacker holding one address does not necessarily hold the
+     * others — mailing only the primary would hand them exactly the silence they
+     * need for thirty days.
+     */
+    @Test
+    void delete_notifies_every_verified_address() throws Exception {
+        String second = address();
+        addAddress(second);
+        verifyAddress(second, codeSentTo(second));
+        assertThat(emails.findVerifiedEmailsByBuyerAccountId(accountId))
+                .as("both addresses must be verified before the notice can prove anything")
+                .hasSize(2);
+        reset(email);
+
+        requestDeletion().andExpect(status().isOk());
+
+        assertThat(bodySentTo(primary))
+                .as("the primary address is told")
+                .get().asString()
+                .contains("/profile/delete");
+        assertThat(bodySentTo(second))
+                .as("so is every other verified address")
+                .get().asString()
+                .contains("/profile/delete");
+    }
+
+    /**
+     * A dead mail provider must not be able to refuse a deletion. The buyer asked
+     * for it, the status flip and the session revocation have already happened,
+     * and rolling all that back because Resend was down would leave the account
+     * in the one state nobody asked for.
+     */
+    @Test
+    void a_failing_notice_does_not_fail_the_deletion() throws Exception {
+        doThrow(new RuntimeException("resend is down"))
+                .when(email).send(any(), any(), any(), any());
+
+        requestDeletion().andExpect(status().isOk());
+
+        BuyerAccount account = accounts.findById(accountId).orElseThrow();
+        assertThat(account.getStatus()).isEqualTo(BuyerAccount.STATUS_DELETE_PENDING);
+        assertThat(account.getDeleteAt()).isNotNull();
+        assertThat(sessions.findByBuyerAccountIdAndRevokedAtIsNull(accountId)).isEmpty();
     }
 
     // ── Cancelling ─────────────────────────────────────────────────────────

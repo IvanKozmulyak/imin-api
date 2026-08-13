@@ -148,6 +148,9 @@ public class ConsentService {
         }
         membershipRepo.save(m);
 
+        // DATA_SUBJECT alone is sticky. OPERATOR is an organizer tidying their own list,
+        // and DATA_SUBJECT_GLOBAL is the buyer's own master switch — reversible tomorrow,
+        // so it must not leave permanent per-organizer objections behind it.
         if (origin == ConsentOrigin.DATA_SUBJECT) {
             recordStickyOptOut(m, orgId, channel, source);
         } else if (origin == null) {
