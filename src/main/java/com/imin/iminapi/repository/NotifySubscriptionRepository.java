@@ -89,14 +89,20 @@ public interface NotifySubscriptionRepository extends JpaRepository<NotifySubscr
      * is left to the caller — the natural order is un-notified first, and
      * {@code NULLS FIRST} is not portable across H2 and Postgres, so it is done
      * in Java rather than fought with in the dialect.
+     *
+     * <p>Compares the column directly rather than wrapping it in {@code LOWER}:
+     * rows are lowercased on write and the caller passes
+     * {@code email_normalized}, so both sides are already lower case — and a
+     * {@code LOWER(...)} wrapper would make {@code ix_notify_subscriptions_email}
+     * (V89) unusable, which is the whole reason the index exists.
      */
-    @Query("SELECT s FROM NotifySubscription s WHERE LOWER(s.email) IN :emails")
+    @Query("SELECT s FROM NotifySubscription s WHERE s.email IN :emails")
     List<NotifySubscription> findByEmailIn(@Param("emails") java.util.Collection<String> emails);
 
     /** "Stop watching" — removes the alert for every address the account holds. */
     @Modifying
     @Transactional
-    @Query("DELETE FROM NotifySubscription s WHERE s.eventId = :eventId AND LOWER(s.email) IN :emails")
+    @Query("DELETE FROM NotifySubscription s WHERE s.eventId = :eventId AND s.email IN :emails")
     int deleteByEventIdAndEmailIn(@Param("eventId") UUID eventId,
                                   @Param("emails") java.util.Collection<String> emails);
 }

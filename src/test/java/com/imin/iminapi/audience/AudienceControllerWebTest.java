@@ -550,7 +550,7 @@ class AudienceControllerWebTest {
      * deleteAll, getReferenceById, getOne).
      */
     @Test
-    void m4_membership_repository_has_no_unscoped_finders() {
+    void m4_membership_repository_has_no_unscoped_finders() throws Exception {
         // MembershipRepository extends Repository<T,ID>, not JpaRepository
         // Verify it does NOT inherit the dangerous unscoped methods
         Class<?> repoClass = MembershipRepository.class;
@@ -640,11 +640,45 @@ class AudienceControllerWebTest {
             }
         }
 
+        // Name-based allow-listing is necessary but not sufficient: it permits
+        // ANY future caller of the exempted method, including an
+        // organizer-authenticated one. So the call sites are pinned too.
+        assertThatOnlyTheBuyerPreferenceCentreCallsTheCrossOrgFinder();
+
         // Explicitly assert there is no findAll(), findById() without orgId, deleteAll()
         assertThatNoUnscopedMethodExists(repoClass, "findAll");
         assertThatNoUnscopedMethodExists(repoClass, "deleteAll");
         assertThatNoUnscopedMethodExists(repoClass, "getReferenceById");
         assertThatNoUnscopedMethodExists(repoClass, "getOne");
+    }
+
+    /**
+     * {@code findAllOrgsByConsumerIdIn} is exempt from the orgId rule because a
+     * buyer's own consent crosses organizers by definition. That exemption is
+     * only safe while the sole caller is buyer-authenticated — reached through
+     * {@code @CurrentBuyer} on an {@code /api/v1/buyer/**} path, scoped by the
+     * caller having proved they own the addresses behind those consumer ids.
+     *
+     * <p>An organizer-path caller would turn the same method into a
+     * cross-tenant read with no scope at all, and the name-based allow-list
+     * above would not notice. This does.
+     */
+    private void assertThatOnlyTheBuyerPreferenceCentreCallsTheCrossOrgFinder() throws Exception {
+        java.util.List<String> callers = new java.util.ArrayList<>();
+        try (java.util.stream.Stream<java.nio.file.Path> files =
+                     java.nio.file.Files.walk(java.nio.file.Path.of("src/main/java"))) {
+            for (java.nio.file.Path file : files.filter(f -> f.toString().endsWith(".java")).toList()) {
+                String body = java.nio.file.Files.readString(file, java.nio.charset.StandardCharsets.UTF_8);
+                if (body.contains(".findAllOrgsByConsumerIdIn(")) callers.add(file.getFileName().toString());
+            }
+        }
+        assertThat(callers)
+                .withFailMessage(
+                        "findAllOrgsByConsumerIdIn is the deliberately unscoped cross-org read (M4). "
+                                + "Its exemption holds only while every caller is buyer-authenticated. "
+                                + "New callers: %s — prove the caller is under /api/v1/buyer/** with "
+                                + "@CurrentBuyer before adding it here.", callers)
+                .containsExactly("BuyerPreferencesService.java");
     }
 
     private void assertThatNoUnscopedMethodExists(Class<?> repoClass, String methodName) {

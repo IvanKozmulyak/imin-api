@@ -1,0 +1,15 @@
+-- V89__notify_subscriptions_email_index.sql
+-- An index the buyer drop-alert reads can actually use.
+--
+-- GET /buyer/notify-subscriptions and its "stop watching" delete both match
+-- notify_subscriptions by address. Without an index that is a sequential scan
+-- of a table that grows with every buyer who ever asked to be told about a
+-- sold-out night, and which nothing prunes.
+--
+-- A plain column index, NOT a functional one on LOWER(email): H2 backs the test
+-- suite and rejects CREATE INDEX ... (LOWER(col)) outright. It does not need to
+-- be functional — NotifySubscriptionService lowercases on write
+-- (normalizeAndValidate), and the buyer-side queries pass
+-- buyer_account_emails.email_normalized, which is lowercased by the same
+-- convention. Both sides of the comparison are already lower case.
+CREATE INDEX ix_notify_subscriptions_email ON notify_subscriptions (email);

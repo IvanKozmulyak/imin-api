@@ -19,6 +19,8 @@ import com.imin.iminapi.repository.TicketRepository;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -26,6 +28,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -77,6 +80,19 @@ public class EventReminderSender {
     private static final Duration T3H_FROM = Duration.ofHours(2);
     private static final Duration T3H_UNTIL = Duration.ofHours(3);
 
+    /**
+     * Hard ceiling on one window's work per tick.
+     *
+     * <p>The sweep sends synchronously — roughly 200ms of Resend round-trip per
+     * order — so an unbounded batch can outrun {@code lockAtMostFor}. When the
+     * lock expires mid-run a second replica picks up the same window, re-reads
+     * the still-unstamped tail and mails it again: not one duplicate, but every
+     * order past the crossover point. Capping the batch bounds the run time so
+     * the lock cannot expire under it; the remainder is picked up on the next
+     * tick, which is five minutes inside bands that are hours wide.
+     */
+    private static final int MAX_PER_TICK = 200;
+
     private final OrderRepository orders;
     private final TicketRepository tickets;
     private final EventRepository events;
@@ -127,7 +143,10 @@ public class EventReminderSender {
     }
 
     @Scheduled(fixedDelay = 300_000, initialDelay = 60_000)
-    @SchedulerLock(name = "EventReminderSender.sweep", lockAtLeastFor = "PT1M", lockAtMostFor = "PT10M")
+    // lockAtMostFor comfortably exceeds the worst case: two windows × 200
+    // orders × ~200ms of send ≈ 80s. It overrides SchedulingConfig's PT5M
+    // default deliberately.
+    @SchedulerLock(name = "EventReminderSender.sweep", lockAtLeastFor = "PT1M", lockAtMostFor = "PT15M")
     public void sweep() {
         if (!emailProps.isRemindersEnabled()) return;
         sweepWindow(Window.T24H);
@@ -139,9 +158,17 @@ public class EventReminderSender {
         Instant from = now.plus(window.from);
         Instant until = now.plus(window.until);
 
+        Pageable batch = PageRequest.of(0, MAX_PER_TICK);
         List<Order> due = window == Window.T24H
-                ? orders.findDue24hReminder(from, until)
-                : orders.findDue3hReminder(from, until);
+                ? orders.findDue24hReminder(from, until, batch)
+                : orders.findDue3hReminder(from, until, batch);
+
+        if (due.size() == MAX_PER_TICK) {
+            // Never silently truncated: a capped tick is visible, and the
+            // remainder rides the next one.
+            log.info("EventReminderSender: {} window hit the {}-order cap; remainder next tick",
+                    window.label, MAX_PER_TICK);
+        }
 
         for (Order order : due) {
             try {
@@ -279,9 +306,27 @@ public class EventReminderSender {
         }
     }
 
+    /**
+     * The door time in the event's own zone.
+     *
+     * <p>The zone falls back to UTC rather than throwing. {@code events.timezone}
+     * is NOT NULL DEFAULT 'UTC', but it is organizer-supplied text: a malformed
+     * value would throw out of {@code send()} before {@code stamp()}, leaving
+     * the marker null so the sweep retried that order every five minutes for
+     * the rest of the window and logged an error each time. A slightly wrong
+     * time is better than a reminder that never arrives.
+     */
     private static String formatWhen(Event event) {
         if (event.getStartsAt() == null) return "";
-        ZoneId zone = event.getTimezone() == null ? ZoneId.of("UTC") : ZoneId.of(event.getTimezone());
+        ZoneId zone = ZoneOffset.UTC;
+        if (event.getTimezone() != null) {
+            try {
+                zone = ZoneId.of(event.getTimezone());
+            } catch (RuntimeException e) {
+                log.warn("Event {} has an unusable timezone {} — formatting the reminder in UTC",
+                        event.getId(), event.getTimezone());
+            }
+        }
         return DateTimeFormatter.ofPattern("EEE d MMM · HH:mm", Locale.ENGLISH)
                 .withZone(zone)
                 .format(event.getStartsAt());

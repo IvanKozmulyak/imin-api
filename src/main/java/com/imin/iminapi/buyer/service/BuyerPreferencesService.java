@@ -59,6 +59,23 @@ public class BuyerPreferencesService {
     static final String CHANNEL_EMAIL = "email";
 
     /**
+     * The most memberships one toggle will fan out over in a single request.
+     *
+     * <p>Each one costs roughly three statements inside the caller's
+     * transaction, so an unbounded loop is an unbounded write transaction
+     * holding locks on {@code memberships} and {@code consent_records}. A
+     * frequent buyer with a role address like {@code tickets@venue.com} can
+     * accumulate memberships without limit.
+     *
+     * <p>Over the cap the request is refused rather than half-applied: a
+     * partial fan-out would leave the derived toggle reading a state the buyer
+     * did not ask for, and the retry would be indistinguishable from a fresh
+     * press. 200 is far above any real buyer and far below anything that holds
+     * a transaction open long enough to matter.
+     */
+    static final int MAX_FANOUT = 200;
+
+    /**
      * The sentence rendered next to the toggle in {@code imin-public}, stored
      * verbatim on the consent record as proof — <b>in the language the buyer
      * actually read it in</b>.
@@ -154,16 +171,28 @@ public class BuyerPreferencesService {
         if (patch.containsKey("productNews")) {
             rowFor(accountId).setProductNews(bool(patch.get("productNews"), "productNews"));
         }
+        // Resolved once and threaded through. The address → consumer →
+        // membership → optout walk is the expensive part of this endpoint, and
+        // doing it again for the response doubled it on every write.
+        Reach reach = reachOf(accountId);
         if (patch.containsKey("organizerUpdates")) {
-            fanOut(accountId, bool(patch.get("organizerUpdates"), "organizerUpdates"));
+            fanOut(accountId, reach, bool(patch.get("organizerUpdates"), "organizerUpdates"));
+            reach = reachOf(accountId);   // the fan-out just changed it
         }
-        return read(accountId);
+        BuyerNotificationPreference row = rowFor(accountId);
+        return new BuyerPreferencesResponse(
+                row.isEventReminders(), reach.anySubscribed(), reach.locked(), row.isProductNews());
     }
 
-    private void fanOut(UUID accountId, boolean on) {
-        Reach reach = reachOf(accountId);
+    private void fanOut(UUID accountId, Reach reach, boolean on) {
+        if (reach.memberships().size() > MAX_FANOUT) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_REQUEST,
+                    "This account holds too many organizer subscriptions to change at once."
+                            + " Use the unsubscribe link in an organizer's email instead.");
+        }
         // The proof text is the sentence THIS buyer read, so it is resolved
-        // from their own locale rather than defaulted to English.
+        // from their own locale rather than defaulted to English. Resolved once
+        // for the whole fan-out, not per membership.
         String proof = proofText(localeOf(accountId));
         for (Membership m : reach.memberships()) {
             if (on) {

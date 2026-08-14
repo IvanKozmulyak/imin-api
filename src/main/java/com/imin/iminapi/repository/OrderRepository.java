@@ -184,6 +184,11 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
      *
      * <p>The marker column leads {@code ix_orders_reminder_24h_pending}, so the
      * NULLs cluster and this scan touches only pending rows (V87, following V76).
+     *
+     * <p>Ordered soonest-event-first, and paged by the caller. The order matters
+     * because the page is capped: when a tick cannot drain the band, the orders
+     * that get their nudge are the ones whose doors open first. Without an
+     * explicit ORDER BY the cap would drop an arbitrary subset.
      * Cancelled and soft-deleted events are excluded here rather than filtered in
      * Java — nudging someone to turn up to a cancelled night is the one failure
      * mode worse than not nudging them at all.
@@ -196,8 +201,10 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
                and e.startsAt <= :until
                and e.deletedAt is null
                and e.status <> com.imin.iminapi.model.EventStatus.CANCELLED
+             order by e.startsAt asc, o.id asc
             """)
-    List<Order> findDue24hReminder(@Param("from") Instant from, @Param("until") Instant until);
+    List<Order> findDue24hReminder(@Param("from") Instant from, @Param("until") Instant until,
+                                   Pageable pageable);
 
     /** The T-3h analogue of {@link #findDue24hReminder}. Claimed independently. */
     @Query("""
@@ -208,8 +215,10 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
                and e.startsAt <= :until
                and e.deletedAt is null
                and e.status <> com.imin.iminapi.model.EventStatus.CANCELLED
+             order by e.startsAt asc, o.id asc
             """)
-    List<Order> findDue3hReminder(@Param("from") Instant from, @Param("until") Instant until);
+    List<Order> findDue3hReminder(@Param("from") Instant from, @Param("until") Instant until,
+                                  Pageable pageable);
 
     /**
      * Stamps one reminder marker. A targeted two-column UPDATE, deliberately

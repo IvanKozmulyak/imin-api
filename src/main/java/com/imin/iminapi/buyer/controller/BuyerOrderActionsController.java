@@ -17,6 +17,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.UUID;
 
 /**
  * Actions a signed-in buyer can take on one of their own orders (spec §4.6).
@@ -56,26 +57,39 @@ public class BuyerOrderActionsController {
      * already on its way.
      */
     @PostMapping("/api/v1/buyer/orders/{token}/resend")
-    @Transactional(readOnly = true)
     public ResponseEntity<Void> resend(@CurrentBuyer BuyerPrincipal buyer, @PathVariable String token) {
         rateLimiter.consume("buyer-order-resend", "account:" + buyer.accountId());
 
+        UUID orderId = authorize(buyer.accountId(), token);
+
+        // Deliberately OUTSIDE the transaction above. TicketIssuanceEmailer.send
+        // makes a synchronous Resend API call, and holding a pooled connection
+        // open across an outbound HTTP request is how a slow third party turns
+        // into an exhausted connection pool.
+        emailer.send(orderId);
+
+        return ResponseEntity.noContent().header(HttpHeaders.CACHE_CONTROL, NO_STORE).build();
+    }
+
+    /**
+     * Resolves the order and proves the caller owns it, or 404s.
+     *
+     * <p>404 and not 403: an order the caller does not own must be
+     * indistinguishable from one that does not exist, or the endpoint becomes a
+     * way to ask whether a given token is real.
+     */
+    @Transactional(readOnly = true)
+    protected UUID authorize(UUID accountId, String token) {
         Order order = orders.findByToken(token).orElseThrow(() -> ApiException.notFound("Order"));
 
-        List<String> verified = emails.findByBuyerAccountIdOrderByCreatedAtAsc(buyer.accountId()).stream()
+        List<String> verified = emails.findByBuyerAccountIdOrderByCreatedAtAsc(accountId).stream()
                 .filter(e -> e.getVerifiedAt() != null)
                 .map(BuyerAccountEmail::getEmailNormalized)
                 .toList();
 
-        // 404, not 403: an order the caller does not own must be indistinguishable
-        // from one that does not exist, or the endpoint becomes a way to ask
-        // whether a given token is real.
         if (order.getEmailNormalized() == null || !verified.contains(order.getEmailNormalized())) {
             throw ApiException.notFound("Order");
         }
-
-        emailer.send(order.getId());
-
-        return ResponseEntity.noContent().header(HttpHeaders.CACHE_CONTROL, NO_STORE).build();
+        return order.getId();
     }
 }

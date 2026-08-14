@@ -193,6 +193,30 @@ class BuyerPreferencesTest {
                 .andExpect(jsonPath("$.length()").value(2));
     }
 
+    /**
+     * The fan-out is bounded. Each membership costs roughly three statements
+     * inside one transaction, so an account with an unbounded number of them
+     * would hold locks on {@code memberships} and {@code consent_records} for
+     * as long as it took. Refused whole rather than applied halfway: a partial
+     * fan-out leaves the derived toggle reading a state nobody asked for.
+     */
+    @Test
+    void anAccountWithTooManyOrganizersIsRefusedRatherThanHalfApplied() throws Exception {
+        UUID consumerId = consumers.findByNormalizedEmail(address.toLowerCase())
+                .orElseThrow().getConsumerId();
+        for (int i = 0; i < 201; i++) {
+            membership(org("Bulk " + i), consumerId, "unsubscribed");
+        }
+
+        patchPrefs("{\"organizerUpdates\":true}")
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("INVALID_REQUEST"));
+
+        // Nothing moved — not even the first few.
+        assertThat(memberships.findByIdAndOrgId(membershipA, orgA).orElseThrow().getConsentStatus())
+                .isEqualTo("subscribed");
+    }
+
     @Test
     void thePreferenceEndpointsNeedABuyerSession() throws Exception {
         mvc.perform(get("/api/v1/buyer/preferences")).andExpect(status().isUnauthorized());

@@ -243,7 +243,12 @@ class EventReminderSenderTest {
         // per-window method used above deliberately does not, so these tests
         // exercise the sender rather than the switch.
         String address = address("switch");
-        orderWith(address, 1);
+        // The soonest event in the T-24h band, so the per-tick cap cannot page
+        // past it however many orders the rest of the suite has left lying
+        // around: the sweep takes the earliest doors first.
+        Event earliest = OrderFixtures.event(orgs, users, events, "Earliest",
+                Instant.now().plusSeconds(20 * 3600 + 300));
+        orderOn(earliest, address, 1);
 
         // Once, not twice. sweep() runs both windows, but the bands are
         // disjoint, so any one event is in exactly one of them.
