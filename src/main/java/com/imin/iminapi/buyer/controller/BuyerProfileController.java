@@ -9,6 +9,8 @@ import com.imin.iminapi.buyer.security.BuyerPrincipal;
 import com.imin.iminapi.buyer.security.CurrentBuyer;
 import com.imin.iminapi.buyer.service.BuyerProfileService;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -19,6 +21,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -55,6 +58,53 @@ public class BuyerProfileController {
                 account, emails.findByBuyerAccountIdOrderByCreatedAtAsc(account.getId()));
         return ResponseEntity.ok().header(HttpHeaders.CACHE_CONTROL, NO_STORE).body(payload);
     }
+
+    /**
+     * The finish-registration step (V91).
+     *
+     * <p>Separate from {@code PATCH /buyer/me} because it is not a partial
+     * patch: it is one act with a required consent attached, and the terms
+     * stamp and the marketing choice have to land in the same transaction as
+     * the profile fields.
+     *
+     * <p>The proof text is taken from the request rather than a constant here,
+     * and that is deliberate: the buyer read a specific sentence in a specific
+     * language, and the record has to be of THAT sentence. It is bounded and
+     * stored as-is; it is evidence, not markup, and nothing renders it back.
+     */
+    @PostMapping("/api/v1/buyer/me/onboarding")
+    public ResponseEntity<BuyerMeResponse> onboarding(@CurrentBuyer BuyerPrincipal buyer,
+                                                      @Valid @RequestBody OnboardingRequest body) {
+        Map<String, Object> profile = new LinkedHashMap<>();
+        profile.put("firstName", body.firstName());
+        profile.put("lastName", body.lastName());
+        profile.put("city", body.city());
+        profile.put("dateOfBirth", body.dateOfBirth());
+
+        BuyerAccount account = service.completeOnboarding(
+                buyer.accountId(), profile,
+                Boolean.TRUE.equals(body.acceptedTerms()), body.termsVersion(),
+                Boolean.TRUE.equals(body.productNews()), body.productNewsProof());
+
+        var payload = BuyerMeResponse.of(
+                account, emails.findByBuyerAccountIdOrderByCreatedAtAsc(account.getId()));
+        return ResponseEntity.ok().header(HttpHeaders.CACHE_CONTROL, NO_STORE).body(payload);
+    }
+
+    /**
+     * {@code acceptedTerms} is {@code Boolean}, not {@code boolean}: a missing
+     * field must be rejected as "you did not answer", not silently read as
+     * false and then rejected for the wrong reason.
+     */
+    public record OnboardingRequest(
+            String firstName,
+            String lastName,
+            String city,
+            String dateOfBirth,
+            @NotNull Boolean acceptedTerms,
+            @Size(max = 32) String termsVersion,
+            Boolean productNews,
+            @Size(max = 2000) String productNewsProof) {}
 
     @PostMapping("/api/v1/buyer/me/password")
     public ResponseEntity<Void> changePassword(@CurrentBuyer BuyerPrincipal buyer,

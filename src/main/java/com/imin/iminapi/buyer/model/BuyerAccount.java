@@ -55,6 +55,39 @@ public class BuyerAccount {
     @Column(name = "display_name", length = 255)
     private String displayName;
 
+    /**
+     * Structured halves of {@link #displayName} (V90).
+     *
+     * <p>{@code displayName} remains authoritative for display and is kept in
+     * step by {@code BuyerProfileService} — these exist so that "which half is
+     * the first name" is answerable, which one column cannot be.
+     */
+    @Column(name = "first_name", length = 255)
+    private String firstName;
+
+    @Column(name = "last_name", length = 255)
+    private String lastName;
+
+    /**
+     * Optional, and nothing reads it (V90). No age gate, no birthday mail, no
+     * analytics. Collected because it was asked for; if nothing comes to use
+     * it, the column should be dropped rather than left to age.
+     */
+    @Column(name = "date_of_birth")
+    private java.time.LocalDate dateOfBirth;
+
+    /**
+     * When this buyer accepted the terms and privacy policy, and which version
+     * (V91). Null on accounts created before the finish-registration step
+     * existed — absence means "never recorded", not "declined", and the two
+     * must not be conflated when the record is read back.
+     */
+    @Column(name = "terms_accepted_at")
+    private java.time.Instant termsAcceptedAt;
+
+    @Column(name = "terms_version", length = 32)
+    private String termsVersion;
+
     @Column(name = "city", length = 128)
     private String city;
 

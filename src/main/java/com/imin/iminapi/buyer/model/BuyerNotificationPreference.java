@@ -37,12 +37,31 @@ public class BuyerNotificationPreference {
     private boolean eventReminders = true;
 
     /**
-     * Storage for a list that does not exist. Epic §6.4 cut "News from IMIN":
-     * no sender, no lawful basis. The column ships so the row can appear the
-     * day a sender does; nothing reads it and no UI renders it.
+     * imin's own marketing mail — opted into on the finish-registration step
+     * (V91), unticked by default.
+     *
+     * <p>V85 shipped this column for a sender that did not exist and epic §6.4
+     * cut the list for want of a lawful basis. The basis now exists: an
+     * explicit, separately-recorded opt-in with the on-screen sentence stored
+     * in {@link #productNewsProof}. <b>There is still no sender.</b> Nothing in
+     * the platform reads this to mail anybody yet, and whatever does must check
+     * this flag and honour an unsubscribe.
      */
     @Column(name = "product_news", nullable = false)
     private boolean productNews = false;
+
+    /**
+     * When the opt-in was given, and the sentence shown beside it (V91).
+     *
+     * <p>Kept here rather than in {@code consent_records}: that table is keyed
+     * by {@code membership_id} and scoped to one organizer, and this consent has
+     * neither — it is between the buyer and imin.
+     */
+    @Column(name = "product_news_at")
+    private java.time.Instant productNewsAt;
+
+    @Column(name = "product_news_proof", columnDefinition = "TEXT")
+    private String productNewsProof;
 
     public BuyerNotificationPreference(UUID buyerAccountId) {
         this.buyerAccountId = buyerAccountId;

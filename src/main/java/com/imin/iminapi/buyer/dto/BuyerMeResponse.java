@@ -22,6 +22,9 @@ import java.util.UUID;
 public record BuyerMeResponse(
         UUID id,
         String displayName,
+        String firstName,
+        String lastName,
+        java.time.LocalDate dateOfBirth,
         String city,
         String locale,
         String status,
@@ -49,6 +52,9 @@ public record BuyerMeResponse(
         return new BuyerMeResponse(
                 account.getId(),
                 account.getDisplayName(),
+                account.getFirstName(),
+                account.getLastName(),
+                account.getDateOfBirth(),
                 account.getCity(),
                 account.getLocale(),
                 account.getStatus(),

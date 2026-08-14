@@ -30,6 +30,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mockingDetails;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
@@ -52,6 +53,7 @@ import static org.mockito.Mockito.verify;
 class EventReminderSenderTest {
 
     @Autowired EventReminderSender sender;
+    @Autowired com.imin.iminapi.email.EmailProperties emailProps;
     @Autowired OrderRepository orders;
     @Autowired TicketRepository tickets;
     @Autowired EventRepository events;
@@ -69,6 +71,18 @@ class EventReminderSenderTest {
 
     @BeforeEach
     void eventsInEachBand() {
+        // Drain both bands first. The suite shares one H2 instance and orders
+        // persist across test classes, so without this a test asserting on its
+        // own order competes with everything else in the window — and since the
+        // sweep is capped and ordered, whether it is reached at all depends on
+        // suite order. Draining stamps whatever is pending; the reset below
+        // discards those sends so they cannot be mistaken for this test's.
+        for (int i = 0; i < 25; i++) {
+            reset(email);
+            sender.sweepWindow(EventReminderSender.Window.T24H);
+            sender.sweepWindow(EventReminderSender.Window.T3H);
+            if (mockingDetails(email).getInvocations().isEmpty()) break;
+        }
         reset(email);
         tomorrow = OrderFixtures.event(orgs, users, events, "Vechirka",
                 Instant.now().plusSeconds(22 * 3600));
@@ -237,22 +251,47 @@ class EventReminderSenderTest {
         assertThat(subjectSentTo(plain)).contains("is tomorrow");
     }
 
+    /**
+     * The kill switch: with reminders off, {@code sweep()} does not even claim
+     * an order that is otherwise due.
+     *
+     * <p>Only the OFF direction is asserted through {@code sweep()}, and that is
+     * deliberate. {@code sweep()} carries
+     * {@code @SchedulerLock(lockAtLeastFor = "PT1M")}, so a second call inside
+     * the same minute — in this test or a neighbouring one — is swallowed by
+     * ShedLock rather than executed. A test that called it twice was asserting
+     * against the lock, not the flag, and duly passed alone and failed in the
+     * full suite.
+     *
+     * <p>The ON direction is what every other test in this file exercises, via
+     * {@code sweepWindow}, which is the method {@code sweep()} delegates to once
+     * the flag lets it through.
+     */
     @Test
     void theMasterSwitchIsWhatSweepChecks() {
         // sweep() is the scheduled entry point and consults the flag; the
         // per-window method used above deliberately does not, so these tests
         // exercise the sender rather than the switch.
         String address = address("switch");
-        // The soonest event in the T-24h band, so the per-tick cap cannot page
-        // past it however many orders the rest of the suite has left lying
-        // around: the sweep takes the earliest doors first.
-        Event earliest = OrderFixtures.event(orgs, users, events, "Earliest",
-                Instant.now().plusSeconds(20 * 3600 + 300));
-        orderOn(earliest, address, 1);
+        Order order = orderWith(address, 1);
 
-        // Once, not twice. sweep() runs both windows, but the bands are
-        // disjoint, so any one event is in exactly one of them.
-        sender.sweep();     // enabled by @SpringBootTest properties
+        boolean original = emailProps.isRemindersEnabled();
+        try {
+            emailProps.setRemindersEnabled(false);
+
+            sender.sweep();
+
+            verify(email, never()).send(eq(address), any(), any(), any());
+            assertThat(orders.findById(order.getId()).orElseThrow().getReminder24hAt())
+                    .as("a disabled sweep must not send, and must not claim the order either")
+                    .isNull();
+        } finally {
+            emailProps.setRemindersEnabled(original);
+        }
+
+        // And the order is still due afterwards — the switch defers the nudge,
+        // it does not consume it.
+        sender.sweepWindow(EventReminderSender.Window.T24H);
         verify(email, times(1)).send(eq(address), any(), any(), any());
     }
 

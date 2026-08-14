@@ -62,17 +62,33 @@ class BuyerProfileTest {
     @Autowired BuyerOAuthService google;
     @Autowired BuyerAccountRepository accounts;
     @Autowired BuyerIdentityRepository identities;
+    @Autowired com.imin.iminapi.buyer.repository.BuyerNotificationPreferenceRepository preferences;
+    @Autowired com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository emailRows;
     @MockitoBean EmailService email;
 
     private String address;
     private String cookie;
+    /** This test's own account. The suite shares one H2 instance, so every
+     *  assertion below is scoped to it rather than to findAll().findFirst(). */
+    private UUID accountId;
 
     @BeforeEach
     void signedInBuyer() throws Exception {
         reset(email);
         address = address();
         cookie = signUpAndSignIn(address);
+        accountId = accountIdOf(address);
         reset(email);
+    }
+
+    private UUID accountIdOf(String to) {
+        String normalized = to.trim().toLowerCase();
+        return accounts.findAll().stream()
+                .filter(a -> emailRows.findByBuyerAccountIdOrderByCreatedAtAsc(a.getId()).stream()
+                        .anyMatch(r -> normalized.equals(r.getEmailNormalized())))
+                .findFirst()
+                .orElseThrow()
+                .getId();
     }
 
     // ── PATCH /buyer/me ────────────────────────────────────────────────────
@@ -105,10 +121,148 @@ class BuyerProfileTest {
     }
 
     @Test
+    void firstAndLastNameKeepDisplayNameInStep() throws Exception {
+        patchMe("{\"firstName\":\"Sofiya\",\"lastName\":\"K.\"}")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.firstName").value("Sofiya"))
+                .andExpect(jsonPath("$.lastName").value("K."))
+                // display_name stays authoritative for display and follows the halves.
+                .andExpect(jsonPath("$.displayName").value("Sofiya K."));
+    }
+
+    @Test
+    void anExplicitDisplayNameWinsOverTheDerivedOne() throws Exception {
+        patchMe("{\"firstName\":\"Sofiya\",\"lastName\":\"K.\",\"displayName\":\"Sof\"}")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.displayName").value("Sof"));
+    }
+
+    @Test
+    void clearingBothHalvesClearsTheDisplayName() throws Exception {
+        patchMe("{\"firstName\":\"Sofiya\",\"lastName\":\"K.\"}").andExpect(status().isOk());
+        patchMe("{\"firstName\":null,\"lastName\":null}")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.displayName").doesNotExist());
+    }
+
+    @Test
+    void aDateOfBirthRoundTrips() throws Exception {
+        patchMe("{\"dateOfBirth\":\"1994-03-17\"}")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.dateOfBirth").value("1994-03-17"));
+    }
+
+    @Test
+    void animplausibleDateOfBirthIsRejected() throws Exception {
+        patchMe("{\"dateOfBirth\":\"2099-01-01\"}")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_REQUEST"));
+        patchMe("{\"dateOfBirth\":\"not-a-date\"}")
+                .andExpect(status().isBadRequest());
+    }
+
+    /** No age gate exists, so the optional field must not become one. */
+    @Test
+    void aRecentButValidDateOfBirthIsAccepted() throws Exception {
+        patchMe("{\"dateOfBirth\":\"2015-06-01\"}").andExpect(status().isOk());
+    }
+
+    @Test
     void patchCannotReachStatusOrDeleteAt() throws Exception {
         patchMe("{\"status\":\"delete_pending\",\"deleteAt\":\"2030-01-01T00:00:00Z\"}")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("active"));
+    }
+
+    // ── POST /buyer/me/onboarding ──────────────────────────────────────────
+
+    @Test
+    void onboardingStoresTheDetailsAndStampsTheTermsAcceptance() throws Exception {
+        onboard("{\"firstName\":\"Sofiya\",\"lastName\":\"K.\",\"city\":\"Metz\","
+                        + "\"dateOfBirth\":\"1994-03-17\",\"acceptedTerms\":true,"
+                        + "\"termsVersion\":\"2026-08-14\",\"productNews\":false}")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.firstName").value("Sofiya"))
+                .andExpect(jsonPath("$.displayName").value("Sofiya K."))
+                .andExpect(jsonPath("$.city").value("Metz"))
+                .andExpect(jsonPath("$.dateOfBirth").value("1994-03-17"));
+
+        var account = accounts.findById(accountId).orElseThrow();
+        assertThat(account.getTermsAcceptedAt()).isNotNull();
+        assertThat(account.getTermsVersion()).isEqualTo("2026-08-14");
+    }
+
+    /** Not a toggle the client may send false for — the screen cannot continue without it. */
+    @Test
+    void onboardingWithoutAcceptingTheTermsIsRefused() throws Exception {
+        onboard("{\"firstName\":\"Ada\",\"acceptedTerms\":false}")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_REQUEST"));
+    }
+
+    /** An absent answer is not a false one; it is a client that skipped the gate. */
+    @Test
+    void onboardingWithNoTermsFieldAtAllIsRefused() throws Exception {
+        onboard("{\"firstName\":\"Ada\"}").andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void marketingIsOffUnlessExplicitlyTrue() throws Exception {
+        onboard("{\"acceptedTerms\":true}").andExpect(status().isOk());
+
+        mvc.perform(get("/api/v1/buyer/preferences").cookie(cookie(cookie)))
+                .andExpect(jsonPath("$.productNews").value(false));
+    }
+
+    @Test
+    void marketingOptInIsRecordedWithTheSentenceThatWasShown() throws Exception {
+        onboard("{\"acceptedTerms\":true,\"productNews\":true,"
+                        + "\"productNewsProof\":\"Email me about new nights and offers from imin.\"}")
+                .andExpect(status().isOk());
+
+        mvc.perform(get("/api/v1/buyer/preferences").cookie(cookie(cookie)))
+                .andExpect(jsonPath("$.productNews").value(true));
+
+        var prefs = preferences.findById(accountId).orElseThrow();
+        assertThat(prefs.getProductNewsAt()).isNotNull();
+        assertThat(prefs.getProductNewsProof())
+                .isEqualTo("Email me about new nights and offers from imin.");
+    }
+
+    /** Withdrawing clears the proof: a stale one beside a false flag describes an agreement that ended. */
+    @Test
+    void turningMarketingOffClearsTheProof() throws Exception {
+        onboard("{\"acceptedTerms\":true,\"productNews\":true,\"productNewsProof\":\"Yes please.\"}")
+                .andExpect(status().isOk());
+        onboard("{\"acceptedTerms\":true,\"productNews\":false}").andExpect(status().isOk());
+
+        var prefs = preferences.findById(accountId).orElseThrow();
+        assertThat(prefs.isProductNews()).isFalse();
+        assertThat(prefs.getProductNewsAt()).isNull();
+        assertThat(prefs.getProductNewsProof()).isNull();
+    }
+
+    /** The record is of the FIRST acceptance; re-running the step must not rewrite it. */
+    @Test
+    void reRunningOnboardingDoesNotRewriteWhenTheTermsWereAccepted() throws Exception {
+        onboard("{\"acceptedTerms\":true,\"termsVersion\":\"v1\"}").andExpect(status().isOk());
+        var stampedAt = accounts.findById(accountId).orElseThrow().getTermsAcceptedAt();
+        assertThat(stampedAt).isNotNull();
+
+        onboard("{\"acceptedTerms\":true,\"termsVersion\":\"v2\"}").andExpect(status().isOk());
+
+        var again = accounts.findById(accountId).orElseThrow();
+        assertThat(again.getTermsAcceptedAt()).isEqualTo(stampedAt);
+        assertThat(again.getTermsVersion()).isEqualTo("v1");
+    }
+
+    @Test
+    void onboardingNeedsABuyerSession() throws Exception {
+        mvc.perform(post("/api/v1/buyer/me/onboarding")
+                        .header(HttpHeaders.ORIGIN, ORIGIN)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"acceptedTerms\":true}"))
+                .andExpect(status().isUnauthorized());
     }
 
     // ── POST /buyer/me/password ────────────────────────────────────────────
@@ -206,6 +360,14 @@ class BuyerProfileTest {
 
     private ResultActions patchMe(String body) throws Exception {
         return mvc.perform(patch("/api/v1/buyer/me")
+                .header(HttpHeaders.ORIGIN, ORIGIN)
+                .cookie(cookie(cookie))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body));
+    }
+
+    private ResultActions onboard(String body) throws Exception {
+        return mvc.perform(post("/api/v1/buyer/me/onboarding")
                 .header(HttpHeaders.ORIGIN, ORIGIN)
                 .cookie(cookie(cookie))
                 .contentType(MediaType.APPLICATION_JSON)

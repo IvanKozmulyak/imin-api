@@ -2,6 +2,8 @@ package com.imin.iminapi.buyer.service;
 
 import com.imin.iminapi.buyer.model.BuyerAccount;
 import com.imin.iminapi.buyer.model.BuyerIdentity;
+import com.imin.iminapi.buyer.model.BuyerNotificationPreference;
+import com.imin.iminapi.buyer.repository.BuyerNotificationPreferenceRepository;
 import com.imin.iminapi.buyer.repository.BuyerAccountRepository;
 import com.imin.iminapi.buyer.repository.BuyerIdentityRepository;
 import com.imin.iminapi.security.ApiException;
@@ -36,15 +38,18 @@ public class BuyerProfileService {
     private static final int CITY_MAX = 128;
 
     private final BuyerAccountRepository accounts;
+    private final BuyerNotificationPreferenceRepository preferences;
     private final BuyerIdentityRepository identities;
     private final BuyerSessionService sessions;
     private final PasswordHasher hasher;
 
     public BuyerProfileService(BuyerAccountRepository accounts,
+                               BuyerNotificationPreferenceRepository preferences,
                                BuyerIdentityRepository identities,
                                BuyerSessionService sessions,
                                PasswordHasher hasher) {
         this.accounts = accounts;
+        this.preferences = preferences;
         this.identities = identities;
         this.sessions = sessions;
         this.hasher = hasher;
@@ -63,6 +68,22 @@ public class BuyerProfileService {
         if (patch.containsKey("displayName")) {
             account.setDisplayName(text(patch.get("displayName"), "displayName", DISPLAY_NAME_MAX));
         }
+        if (patch.containsKey("firstName")) {
+            account.setFirstName(text(patch.get("firstName"), "firstName", DISPLAY_NAME_MAX));
+        }
+        if (patch.containsKey("lastName")) {
+            account.setLastName(text(patch.get("lastName"), "lastName", DISPLAY_NAME_MAX));
+        }
+        if (patch.containsKey("dateOfBirth")) {
+            account.setDateOfBirth(date(patch.get("dateOfBirth")));
+        }
+        // display_name stays authoritative for display, so it follows the two
+        // halves whenever they move. Only when the caller did not set it
+        // explicitly in the same patch — an explicit value always wins.
+        if ((patch.containsKey("firstName") || patch.containsKey("lastName"))
+                && !patch.containsKey("displayName")) {
+            account.setDisplayName(joinName(account.getFirstName(), account.getLastName()));
+        }
         if (patch.containsKey("city")) {
             account.setCity(text(patch.get("city"), "city", CITY_MAX));
         }
@@ -76,6 +97,56 @@ public class BuyerProfileService {
 
         account.setUpdatedAt(Times.nowMicros());
         return accounts.save(account);
+    }
+
+    /**
+     * The finish-registration step: profile details plus the two consents.
+     *
+     * <p>One call and one transaction on purpose. Accepting the terms and
+     * recording the marketing choice are the same act from the buyer's side,
+     * and splitting them across two requests invents a state where somebody has
+     * accepted the terms but their marketing answer was lost to a dropped
+     * connection.
+     *
+     * <p>Terms acceptance is <b>required</b> and is not a toggle the caller can
+     * send false for: the screen cannot continue without it, and a request that
+     * arrives without it is a client that skipped the gate.
+     *
+     * <p>Marketing defaults to OFF and is only ever turned on by an explicit
+     * true — a pre-ticked box is not consent, and neither is an absent field.
+     * Turning it off later clears the timestamp and proof: the record is of a
+     * consent that is current, and a stale proof beside a false flag would
+     * describe an agreement that has been withdrawn.
+     */
+    @Transactional
+    public BuyerAccount completeOnboarding(UUID accountId,
+                                           Map<String, Object> patch,
+                                           boolean acceptedTerms,
+                                           String termsVersion,
+                                           boolean productNews,
+                                           String productNewsProof) {
+        if (!acceptedTerms) {
+            throw badRequest("The terms of use and privacy policy must be accepted to continue");
+        }
+
+        BuyerAccount account = updateProfile(accountId, patch);
+        // Stamped once and never overwritten: the record is of the FIRST
+        // acceptance. A later terms version is a new acceptance to capture, not
+        // a reason to rewrite when the original one happened.
+        if (account.getTermsAcceptedAt() == null) {
+            account.setTermsAcceptedAt(Times.nowMicros());
+            account.setTermsVersion(termsVersion);
+            accounts.save(account);
+        }
+
+        BuyerNotificationPreference prefs = preferences.findById(accountId)
+                .orElseGet(() -> preferences.save(new BuyerNotificationPreference(accountId)));
+        prefs.setProductNews(productNews);
+        prefs.setProductNewsAt(productNews ? Times.nowMicros() : null);
+        prefs.setProductNewsProof(productNews ? productNewsProof : null);
+        preferences.save(prefs);
+
+        return account;
     }
 
     /**
@@ -142,6 +213,39 @@ public class BuyerProfileService {
         }
 
         identities.delete(target);
+    }
+
+    /** "First Last", or whichever half exists, or null when neither does. */
+    private static String joinName(String first, String last) {
+        String joined = ((first == null ? "" : first) + " " + (last == null ? "" : last)).trim();
+        return joined.isEmpty() ? null : joined;
+    }
+
+    /**
+     * An ISO date, or null.
+     *
+     * <p>Rejects a future date and anything implausibly old rather than storing
+     * it: a birth date in 2099 is a typo or a probe, and neither belongs on an
+     * account. There is deliberately no minimum-age check — imin runs no age
+     * gate, and inventing one here would silently lock people out of a field
+     * the screen calls optional.
+     */
+    private static java.time.LocalDate date(Object raw) {
+        if (raw == null) return null;
+        if (!(raw instanceof String str)) throw badRequest("dateOfBirth must be a string or null");
+        String trimmed = str.trim();
+        if (trimmed.isEmpty()) return null;
+        java.time.LocalDate parsed;
+        try {
+            parsed = java.time.LocalDate.parse(trimmed);
+        } catch (RuntimeException e) {
+            throw badRequest("dateOfBirth must be an ISO date, for example 1994-03-17");
+        }
+        java.time.LocalDate today = java.time.LocalDate.now();
+        if (parsed.isAfter(today) || parsed.isBefore(today.minusYears(120))) {
+            throw badRequest("dateOfBirth is not a plausible date of birth");
+        }
+        return parsed;
     }
 
     /** Trims, maps blank to null, and enforces the column width. */
