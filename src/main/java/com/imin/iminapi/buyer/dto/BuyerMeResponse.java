@@ -28,6 +28,14 @@ public record BuyerMeResponse(
         String city,
         String locale,
         String status,
+        /**
+         * When the buyer accepted the terms, or null.
+         *
+         * <p>Exposed because the frontend routes on it: a session whose account
+         * has never accepted is sent to the finish-registration step. Null means
+         * "never recorded" — accounts predate the step — and not "declined".
+         */
+        java.time.Instant termsAcceptedAt,
         Instant deleteAt,
         Instant createdAt,
         List<Address> emails) {
@@ -58,6 +66,7 @@ public record BuyerMeResponse(
                 account.getCity(),
                 account.getLocale(),
                 account.getStatus(),
+                account.getTermsAcceptedAt(),
                 account.getDeleteAt(),
                 account.getCreatedAt(),
                 addresses.stream().map(BuyerMeResponse::toAddress).toList());
