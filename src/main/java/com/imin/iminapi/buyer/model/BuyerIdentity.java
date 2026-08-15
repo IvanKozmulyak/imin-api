@@ -36,6 +36,13 @@ public class BuyerIdentity {
 
     public static final String PROVIDER_GOOGLE = "google";
 
+    /**
+     * Sign in with Apple. Note {@code buyer_identities.provider} is
+     * {@code VARCHAR(16)} with no CHECK constraint (V83:91 — its comment already
+     * reads "google (apple later)"), so this needs no migration.
+     */
+    public static final String PROVIDER_APPLE = "apple";
+
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;

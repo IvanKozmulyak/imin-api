@@ -12,6 +12,7 @@ import com.imin.iminapi.buyer.security.BuyerSessionCookie;
 import com.imin.iminapi.buyer.service.BuyerCredentialService;
 import com.imin.iminapi.buyer.service.BuyerOAuthService;
 import com.imin.iminapi.buyer.service.BuyerSessionService;
+import com.imin.iminapi.oauth.AppleNativeIdentityService;
 import com.imin.iminapi.oauth.GoogleOAuthService;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
@@ -65,6 +66,12 @@ public class BuyerAuthController {
     private final BuyerOAuthService buyerIdentityResolver;
     /** ID-token verification only — no code exchange on the native lane. */
     private final GoogleOAuthService googleIdTokens;
+    /**
+     * Deliberately <b>not</b> {@code AppleOAuthService}: that one serves the
+     * organizer web flow and hardcodes {@code emailVerified = true}, which would
+     * make the buyer-side verification gate a no-op.
+     */
+    private final AppleNativeIdentityService appleIdentities;
     private final BuyerAccountEmailRepository emails;
     private final RateLimiter rateLimiter;
 
@@ -72,12 +79,14 @@ public class BuyerAuthController {
                                BuyerCredentialService credentials,
                                BuyerOAuthService buyerIdentityResolver,
                                GoogleOAuthService googleIdTokens,
+                               AppleNativeIdentityService appleIdentities,
                                BuyerAccountEmailRepository emails,
                                RateLimiter rateLimiter) {
         this.sessions = sessions;
         this.credentials = credentials;
         this.buyerIdentityResolver = buyerIdentityResolver;
         this.googleIdTokens = googleIdTokens;
+        this.appleIdentities = appleIdentities;
         this.emails = emails;
         this.rateLimiter = rateLimiter;
     }
@@ -209,6 +218,37 @@ public class BuyerAuthController {
                     "google sign-in is not configured for native clients");
         }
         var info = googleIdTokens.verifyNativeIdToken(req.idToken());
+        var signedIn = buyerIdentityResolver.resolve(info, userAgent(http));
+        return signedInResponse(signedIn.account(), signedIn.session(), http);
+    }
+
+    // ── Apple ──────────────────────────────────────────────────────────────
+
+    /**
+     * Native Sign in with Apple. Required by App Store Guideline 4.8 wherever
+     * Google sign-in is offered, and there is no web Apple flow for buyers — the
+     * organizer {@code form_post} pair is a different surface with a different
+     * audience and a different verifier.
+     *
+     * <p>A buyer arriving on a Hide My Email relay address matches no past guest
+     * order — deliberately, because identities match on subject and never on
+     * email. They recover their history by adding and verifying their real
+     * address under {@code /buyer/emails}, and the app should offer that
+     * immediately after a first Apple sign-in.
+     *
+     * <p>{@code fullName} is Apple-only and first-sign-in-only: Apple returns the
+     * name exactly once, so the app forwards it here on that first call or it is
+     * lost. It is client-supplied and used for display only.
+     */
+    @PostMapping("/api/v1/buyer/auth/apple/native")
+    public ResponseEntity<BuyerMeResponse> appleNative(
+            @Valid @RequestBody BuyerAuthRequests.NativeIdToken req,
+            HttpServletRequest http) {
+        if (!appleIdentities.enabled()) {
+            throw new ApiException(HttpStatus.NOT_FOUND, ErrorCode.OAUTH_PROVIDER_DISABLED,
+                    "apple sign-in is not configured for buyers");
+        }
+        var info = appleIdentities.verify(req.idToken(), req.fullName());
         var signedIn = buyerIdentityResolver.resolve(info, userAgent(http));
         return signedInResponse(signedIn.account(), signedIn.session(), http);
     }

@@ -29,6 +29,11 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *       client secret nor a redirect URI.</li>
  *   <li>{@code apple.client-id} — the Services ID identifier (the OAuth
  *       {@code client_id} / audience), e.g. {@code wtf.imin.web}.</li>
+ *   <li>{@code apple.native-audience} — the audience of ID tokens the iOS app
+ *       receives from the OS, i.e. its <b>bundle identifier</b>. Unlike the
+ *       Google equivalent this has <b>no fallback</b>: blank means native Apple
+ *       sign-in is off (404), because silently verifying app tokens against the
+ *       web Services ID would accept tokens minted for the wrong client.</li>
  *   <li>{@code apple.team-id} — the 10-char Apple Developer Team ID.</li>
  *   <li>{@code apple.key-id} — the Key ID of the Sign in with Apple {@code .p8}
  *       private key.</li>
@@ -129,8 +134,23 @@ public class OAuthProperties {
         private String privateKeyBase64 = "";
         private String redirectUri = "";
 
+        /**
+         * Audience for ID tokens issued to the native iOS app — the app's
+         * <b>bundle identifier</b> ({@code APPLE_OAUTH_NATIVE_AUDIENCE}), not
+         * the Services ID in {@link #clientId} that the organizer web flow uses.
+         *
+         * <p><b>No fallback, deliberately:</b> blank disables native Apple
+         * sign-in, which the controller reports as
+         * {@code 404 OAUTH_PROVIDER_DISABLED}. Defaulting to the Services ID
+         * would make the verifier accept a token minted for the web client while
+         * looking configured, so an unset value must fail closed instead.
+         */
+        private String nativeAudience = "";
+
         public String getClientId() { return clientId; }
         public void setClientId(String clientId) { this.clientId = clientId; }
+        public String getNativeAudience() { return nativeAudience; }
+        public void setNativeAudience(String nativeAudience) { this.nativeAudience = nativeAudience; }
         public String getTeamId() { return teamId; }
         public void setTeamId(String teamId) { this.teamId = teamId; }
         public String getKeyId() { return keyId; }

@@ -398,6 +398,14 @@ imin:
       # Services ID "Return URL", e.g.
       # https://imin-api-production.up.railway.app/api/v1/auth/apple/return.
       redirect-uri: ${APPLE_OAUTH_REDIRECT_URI:}
+      # Audience of the ID tokens the native iOS app gets from the OS — the
+      # app's BUNDLE IDENTIFIER (e.g. wtf.imin.fan), NOT the Services ID in
+      # client-id above, which is the organizer web flow's audience. Unlike the
+      # Google native lane there is NO fallback: blank => POST
+      # /api/v1/buyer/auth/apple/native 404s, which also fails App Store review
+      # under Guideline 4.8. This is the ONLY gate on that lane — it does no
+      # code exchange, so team-id / key-id / the .p8 key do not apply.
+      native-audience: ${APPLE_OAUTH_NATIVE_AUDIENCE:}
   gate:
     # Gate-scanner bearer-token lifetime. Gate phones live at venues and reboot
     # rarely; default 30 days. Override with IMIN_GATE_TOKEN_TTL_DAYS.

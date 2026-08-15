@@ -26,8 +26,15 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Google sign-in for <b>buyers</b>. Physically separate from the organizer flow
+ * Social sign-in for <b>buyers</b>. Physically separate from the organizer flow
  * (epic §2.4), and the separation is the point.
+ *
+ * <p>The browser flow this class drives end-to-end ({@link #authorizeUrl()},
+ * {@link #callback}) is Google's. {@link #resolve} is <b>provider-agnostic</b>
+ * and is the shared entry point for every buyer identity: the web Google
+ * callback, native Google, and native Apple all land there with an
+ * already-verified {@code OAuthUserInfo}, so no two of them can diverge on who
+ * gets which account.
  *
  * <h2>Why this is a second service and not a flag</h2>
  *
@@ -54,7 +61,7 @@ import java.util.UUID;
  *       the address on their Google account must not lose their tickets, and
  *       Apple's relay address matches nothing at all.</li>
  *   <li><b>No email</b> ⇒ 400 {@code OAUTH_EMAIL_REQUIRED}.</li>
- *   <li><b>Google has not verified the email</b> ⇒ 409
+ *   <li><b>The provider has not verified the email</b> ⇒ 409
  *       {@code OAUTH_EMAIL_UNVERIFIED}. See below.</li>
  *   <li><b>Verified address on an existing buyer account</b> ⇒ link the identity
  *       and sign in.</li>
@@ -76,10 +83,13 @@ import java.util.UUID;
  * returning buyer out because Google flipped a flag would be a false lockout for
  * no security gain.
  *
- * <p><b>Trap for whoever unblocks Apple:</b> {@code AppleOAuthService:131}
- * hardcodes {@code emailVerified = true}, so this gate is already a no-op on the
- * organizer side for Apple. Do not inherit that — Apple's Hide My Email relay
- * needs the add-an-address flow (R1.3), not a hardcoded true.
+ * <p><b>Trap, and how Apple avoids it:</b> {@code AppleOAuthService:131}
+ * hardcodes {@code emailVerified = true}, so this gate is a no-op on the
+ * organizer side for Apple. The buyer lane therefore does <b>not</b> reuse that
+ * class: {@link com.imin.iminapi.oauth.AppleNativeIdentityService} reads the
+ * {@code email_verified} claim and asserts it. Apple's Hide My Email relay is
+ * recovered through the add-an-address flow (R1.3), never through a hardcoded
+ * true or a weaker match.
  */
 @Service
 public class BuyerOAuthService {
@@ -179,9 +189,12 @@ public class BuyerOAuthService {
         }
 
         // (3) The gate. See the class Javadoc for why steps 4 and 5 need it and step 1 does not.
+        // Provider-neutral wording: this message reaches an Apple user too, and
+        // telling them Google failed to verify their address is simply false.
         if (!info.emailVerified()) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.OAUTH_EMAIL_UNVERIFIED,
-                    "Google has not verified this email address. Sign in with your password instead.");
+                    "Your sign-in provider has not verified this email address. "
+                            + "Sign in with your password instead.");
         }
 
         String normalized = EmailNormalizer.normalize(email);
@@ -193,7 +206,7 @@ public class BuyerOAuthService {
                     .orElseThrow(() -> new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, ErrorCode.INTERNAL,
                             "Verified address points at a missing account"));
             link(account.getId(), info);
-            log.info("[buyer] google identity linked to existing account {}", account.getId());
+            log.info("[buyer] {} identity linked to existing account {}", info.provider(), account.getId());
             return signIn(account, userAgent, now);
         }
 
@@ -202,13 +215,13 @@ public class BuyerOAuthService {
         account.setDisplayName(trimToNull(info.displayName()));
         BuyerAccount saved = accounts.save(account);
 
-        BuyerAccountEmail row = BuyerAccountEmail.of(saved.getId(), email, BuyerAccountEmail.ADDED_VIA_GOOGLE);
+        BuyerAccountEmail row = BuyerAccountEmail.of(saved.getId(), email, addedVia(info.provider()));
         emails.save(row);
         // Goes through the same claim path as a redeemed code: re-claims other
         // accounts' unverified rows, sets the primary, stamps activated_at.
         claims.verifyAndClaim(saved, row, now);
         link(saved.getId(), info);
-        log.info("[buyer] google sign-up created buyer account {}", saved.getId());
+        log.info("[buyer] {} sign-up created buyer account {}", info.provider(), saved.getId());
         return signIn(saved, userAgent, now);
     }
 
@@ -228,6 +241,23 @@ public class BuyerOAuthService {
         identity.setEmailAtLink(info.email());
         identity.setDisplayName(info.displayName());
         identities.save(identity);
+    }
+
+    /**
+     * The {@code added_via} provenance label for a provider.
+     *
+     * <p>Not {@code info.provider()} passed straight through: the column is
+     * {@code VARCHAR(16)} and its values are a closed vocabulary the profile
+     * screen renders, so a provider this method does not know about must fail
+     * loudly at development time rather than write an unrecognised label — or,
+     * worse, keep filing everything as {@code google}, which is what this method
+     * replaced.
+     */
+    private static String addedVia(String provider) {
+        if (BuyerIdentity.PROVIDER_GOOGLE.equals(provider)) return BuyerAccountEmail.ADDED_VIA_GOOGLE;
+        if (BuyerIdentity.PROVIDER_APPLE.equals(provider)) return BuyerAccountEmail.ADDED_VIA_APPLE;
+        throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, ErrorCode.INTERNAL,
+                "Unknown identity provider: " + provider);
     }
 
     private static String trimToNull(String s) {

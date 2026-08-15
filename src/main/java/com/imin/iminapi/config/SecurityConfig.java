@@ -179,7 +179,11 @@ public class SecurityConfig {
                                          // Native sign-in: the app posts an OS-issued ID
                                          // token instead of driving a browser redirect.
                                          // Unauthenticated by nature, like the callback.
-                                         "/api/v1/buyer/auth/google/native").permitAll()
+                                         // Apple has no web counterpart on the buyer
+                                         // surface — App Store Guideline 4.8 needs it
+                                         // wherever Google sign-in is offered.
+                                         "/api/v1/buyer/auth/google/native",
+                                         "/api/v1/buyer/auth/apple/native").permitAll()
                         .requestMatchers(HttpMethod.GET,
                                          "/api/v1/buyer/auth/google/url").permitAll()
                         // hasRole("BUYER"), not .authenticated(): an organizer bearer
