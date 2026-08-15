@@ -2470,7 +2470,7 @@ git commit -m "feat(buyer): native Sign in with Apple for the mobile app"
 - Test: `src/test/java/com/imin/iminapi/buyer/BuyerPushDeviceTest.java`
 
 **Interfaces:**
-- Produces: `BuyerPushDevice` entity; `BuyerPushDeviceRepository.findByExpoToken(String)`, `.findLiveTokensForAccounts(Collection<UUID>)`, `.revokeByTokens(Collection<String>, Instant)`; `BuyerPushDeviceService.register(UUID, String, String, String, String)`, `.revoke(UUID, String)`; `POST/DELETE /api/v1/buyer/push-devices`.
+- Produces: `BuyerPushDevice` entity; `BuyerPushDeviceRepository.findByExpoToken(String)`, `.findLiveTokensForAccounts(Collection<UUID>)`, `.revokeByTokens(Collection<String>, Instant)`; `BuyerPushDeviceService.register(UUID, String, String, String, String)`, `.revoke(UUID, String)`; `POST /api/v1/buyer/push-devices` and `POST /api/v1/buyer/push-devices/revoke` — **both POST**; the revoke token cannot go in a path segment (see Step 5).
 - Consumes: `@CurrentBuyer BuyerPrincipal` (`buyer.accountId()`); the bearer lane from Task 1.
 
 ---
@@ -2559,9 +2559,16 @@ class BuyerPushDeviceTest extends NativeBuyerTestBase {
 
     private static final String TOKEN = "ExponentPushToken[aaaaaaaaaaaaaaaaaaaaaa]";
 
-    @Autowired MockMvc mvc;
+    // mvc and the EmailService mock come from NativeBuyerTestBase. Re-declaring
+    // @MockitoBean EmailService here breaks context startup — see Global Constraints.
     @Autowired BuyerPushDeviceRepository devices;
-    @MockitoBean EmailService email;
+
+    @org.junit.jupiter.api.BeforeEach
+    void isolateTheRegistry() {
+        // The plan asserts devices.count() == 1 against a table the whole H2
+        // schema shares. Without this the count is order-dependent.
+        devices.deleteAll();
+    }
 
     @Test
     void registrationIsIdempotent() throws Exception {
@@ -2683,7 +2690,7 @@ import java.util.UUID;
 public class BuyerPushDevice {
 
     @Id
-    // Strategy is explicit, matching all four sibling buyer entities. A bare
+    // Strategy is explicit, matching the sibling buyer entities. A bare
     // @GeneratedValue lets the provider pick, and on Hibernate 6 that is a
     // sequence — wrong for a UUID column.
     @GeneratedValue(strategy = jakarta.persistence.GenerationType.UUID)
@@ -2758,7 +2765,15 @@ public interface BuyerPushDeviceRepository extends JpaRepository<BuyerPushDevice
          + "WHERE d.revokedAt IS NULL AND d.buyerAccountId IN :accountIds")
     List<String> findLiveTokensForAccounts(@Param("accountIds") Collection<UUID> accountIds);
 
+    /**
+     * {@code @Transactional} here, not on the caller: Task 7's fan-out reaches
+     * this by self-invocation from a private method, which proxy AOP never
+     * intercepts, and a {@code @Modifying} query with no transaction throws
+     * {@code TransactionRequiredException} on the first call. Same placement as
+     * {@code BuyerSavedEventRepository.deleteByBuyerAccountIdAndEventId}.
+     */
     @Modifying
+    @org.springframework.transaction.annotation.Transactional
     @Query("UPDATE BuyerPushDevice d SET d.revokedAt = :now "
          + "WHERE d.revokedAt IS NULL AND d.expoToken IN :tokens")
     int revokeByTokens(@Param("tokens") Collection<String> tokens, @Param("now") Instant now);
@@ -2870,8 +2885,6 @@ import com.imin.iminapi.buyer.service.BuyerPushDeviceService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.DeleteMapping;
-import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
@@ -2943,7 +2956,9 @@ In `BuyerNotificationPreference.java` add:
     private boolean pushDropAlerts = true;
 ```
 
-Add `pushDropAlerts` to `BuyerPreferencesResponse` and populate it in `BuyerPreferencesService`, following exactly how `eventReminders` is read and written there — including the absent-row default (`true`).
+Add `pushDropAlerts` to `BuyerPreferencesResponse` and populate it in `BuyerPreferencesService`, following exactly how `eventReminders` is read there — including the absent-row default (`true`).
+
+**Also add the write branch.** `BuyerPreferencesService.update` needs a `pushDropAlerts` case or the switch renders in the app and saves nothing — the standing no-fabricated-data rule again. Test it, and assert a partial patch leaves `eventReminders` untouched.
 
 - [ ] **Step 7: Run the tests**
 
@@ -2982,7 +2997,8 @@ git commit -m "feat(buyer): push device registry and drop-alert push preference"
 - Create: `src/main/java/com/imin/iminapi/push/ExpoPushSender.java`
 - Create: `src/main/java/com/imin/iminapi/push/PushConfig.java`
 - Modify: `src/main/java/com/imin/iminapi/service/event/NotifyReleaseSender.java:127-170`
-- Modify: `src/main/java/com/imin/iminapi/buyer/repository/BuyerPushDeviceRepository.java` — `@Transactional` on `revokeByTokens`
+- Modify: `src/main/java/com/imin/iminapi/buyer/service/BuyerAccountErasureService.java` — enumerate the new table (Step 5b)
+- Test: `src/test/java/com/imin/iminapi/buyer/BuyerAccountErasureTest.java` — assert the device is erased
 - Modify: `src/test/java/com/imin/iminapi/service/event/NotifyReleaseSenderTest.java:84-85` — **compile-breaking**, see Step 7b
 - Modify: `src/main/resources/application.yaml`
 - Test: `src/test/java/com/imin/iminapi/push/DropAlertPushTest.java`
@@ -3323,6 +3339,18 @@ import org.springframework.context.annotation.Configuration;
 @EnableConfigurationProperties(PushProperties.class)
 public class PushConfig {}
 ```
+
+- [ ] **Step 5b: List push devices in the erasure service**
+
+`BuyerAccountErasureService` enumerates the buyer tables explicitly and says why: *"Enumerated even where an FK cascade from `buyer_accounts` would cover it … an explicit list is the only version of this that can be reviewed against the schema."* `buyer_push_devices` is not in that list. V92's `ON DELETE CASCADE` means there is no leak today — but a push token is personal data, the guarantee rests on a constraint nobody reviews, and `BuyerAccountErasureTest` does not cover it.
+
+Add the delete alongside `buyer_saved_events` and `buyer_notification_preferences`:
+
+```java
+        jdbc.update("delete from buyer_push_devices where buyer_account_id = ?", accountId);
+```
+
+and an assertion in `BuyerAccountErasureTest` that a registered device is gone after erasure. Cheap, and it keeps the reviewable-list property the service was built around.
 
 - [ ] **Step 6: Fan out from NotifyReleaseSender**
 
