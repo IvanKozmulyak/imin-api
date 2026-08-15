@@ -12,6 +12,7 @@ import com.imin.iminapi.buyer.security.BuyerSessionCookie;
 import com.imin.iminapi.buyer.service.BuyerCredentialService;
 import com.imin.iminapi.buyer.service.BuyerOAuthService;
 import com.imin.iminapi.buyer.service.BuyerSessionService;
+import com.imin.iminapi.oauth.GoogleOAuthService;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.security.RateLimiter;
@@ -55,18 +56,28 @@ public class BuyerAuthController {
 
     private final BuyerSessionService sessions;
     private final BuyerCredentialService credentials;
-    private final BuyerOAuthService googleAuth;
+    /**
+     * The buyer-side identity resolution matrix. Named for what it does rather
+     * than for Google specifically: the native lanes hand it an already-verified
+     * {@code OAuthUserInfo} from any provider, so it is not the "Google auth"
+     * service any more.
+     */
+    private final BuyerOAuthService buyerIdentityResolver;
+    /** ID-token verification only — no code exchange on the native lane. */
+    private final GoogleOAuthService googleIdTokens;
     private final BuyerAccountEmailRepository emails;
     private final RateLimiter rateLimiter;
 
     public BuyerAuthController(BuyerSessionService sessions,
                                BuyerCredentialService credentials,
-                               BuyerOAuthService googleAuth,
+                               BuyerOAuthService buyerIdentityResolver,
+                               GoogleOAuthService googleIdTokens,
                                BuyerAccountEmailRepository emails,
                                RateLimiter rateLimiter) {
         this.sessions = sessions;
         this.credentials = credentials;
-        this.googleAuth = googleAuth;
+        this.buyerIdentityResolver = buyerIdentityResolver;
+        this.googleIdTokens = googleIdTokens;
         this.emails = emails;
         this.rateLimiter = rateLimiter;
     }
@@ -146,7 +157,7 @@ public class BuyerAuthController {
     @GetMapping("/api/v1/buyer/auth/google/url")
     public ResponseEntity<BuyerAuthUrlResponse> googleUrl() {
         requireGoogleEnabled();
-        BuyerOAuthService.Authorize authorize = googleAuth.authorizeUrl();
+        BuyerOAuthService.Authorize authorize = buyerIdentityResolver.authorizeUrl();
         return ResponseEntity.ok()
                 .header(HttpHeaders.SET_COOKIE, authorize.nonceCookie().toString())
                 .header(HttpHeaders.CACHE_CONTROL, NO_STORE)
@@ -164,7 +175,7 @@ public class BuyerAuthController {
             @Valid @RequestBody BuyerAuthRequests.GoogleCallback req,
             HttpServletRequest http) {
         requireGoogleEnabled();
-        var signedIn = googleAuth.callback(
+        var signedIn = buyerIdentityResolver.callback(
                 req.code(), req.state(), BuyerOAuthNonceCookie.read(http), userAgent(http));
         return ResponseEntity.ok()
                 .header(HttpHeaders.SET_COOKIE, signedIn.session().cookie().toString())
@@ -173,6 +184,33 @@ public class BuyerAuthController {
                 .header(HttpHeaders.SET_COOKIE, BuyerOAuthNonceCookie.clear().toString())
                 .header(HttpHeaders.CACHE_CONTROL, NO_STORE)
                 .body(body(signedIn.account()));
+    }
+
+    /**
+     * Native Google sign-in. The app gets an ID token from the OS and posts it
+     * here; there is no redirect, no {@code state} and no nonce cookie, because
+     * there is no browser in the loop to bind to.
+     *
+     * <p>Resolution goes through the same {@link BuyerOAuthService#resolve}
+     * matrix as the web callback — including the {@code email_verified} gate —
+     * so the two entry points cannot diverge on who gets which account.
+     */
+    @PostMapping("/api/v1/buyer/auth/google/native")
+    public ResponseEntity<BuyerMeResponse> googleNative(
+            @Valid @RequestBody BuyerAuthRequests.NativeIdToken req,
+            HttpServletRequest http) {
+        // NOT requireGoogleEnabled(): that gate is isBuyerEnabled(), which
+        // requires clientId + clientSecret + buyerRedirectUri. The native lane
+        // has no redirect URI and performs no code exchange, so it needs no
+        // client secret either — gating on the web flow's config would 404
+        // native sign-in whenever GOOGLE_OAUTH_BUYER_REDIRECT_URI is unset.
+        if (!googleIdTokens.nativeEnabled()) {
+            throw new ApiException(HttpStatus.NOT_FOUND, ErrorCode.OAUTH_PROVIDER_DISABLED,
+                    "google sign-in is not configured for native clients");
+        }
+        var info = googleIdTokens.verifyNativeIdToken(req.idToken());
+        var signedIn = buyerIdentityResolver.resolve(info, userAgent(http));
+        return signedInResponse(signedIn.account(), signedIn.session(), http);
     }
 
     // ── Logout ─────────────────────────────────────────────────────────────
@@ -203,7 +241,7 @@ public class BuyerAuthController {
     // ── helpers ────────────────────────────────────────────────────────────
 
     private void requireGoogleEnabled() {
-        if (!googleAuth.enabled()) {
+        if (!buyerIdentityResolver.enabled()) {
             throw new ApiException(HttpStatus.NOT_FOUND, ErrorCode.OAUTH_PROVIDER_DISABLED,
                     "google sign-in is not configured for buyers");
         }

@@ -22,6 +22,11 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *       on the same client, for buyer sign-in on {@code imin-public}:
  *       {@code https://app.imin.wtf/auth/callback/google}. Blank ⇒ the buyer
  *       Google endpoints 404 and only email + password is offered.</li>
+ *   <li>{@code google.native-audience} — the audience the mobile apps' OS-issued
+ *       ID tokens carry, i.e. their {@code serverClientId}. Defaults to
+ *       {@code client-id}, which is what it should be set to. Native sign-in is
+ *       gated on this alone — it does no code exchange, so it needs neither the
+ *       client secret nor a redirect URI.</li>
  *   <li>{@code apple.client-id} — the Services ID identifier (the OAuth
  *       {@code client_id} / audience), e.g. {@code wtf.imin.web}.</li>
  *   <li>{@code apple.team-id} — the 10-char Apple Developer Team ID.</li>
@@ -70,6 +75,18 @@ public class OAuthProperties {
         private String redirectUri = "";
         private String buyerRedirectUri = "";
 
+        /**
+         * Audience for ID tokens minted by the native mobile apps
+         * ({@code GOOGLE_OAUTH_NATIVE_AUDIENCE}). Native Google Sign-In is
+         * configured with this as its {@code serverClientId} on both iOS and
+         * Android, so one audience covers both platforms.
+         *
+         * <p>Defaults to the web {@code client-id} because that is exactly what
+         * {@code serverClientId} should be set to — a separate value is only
+         * needed if the apps are ever pointed at a different Google project.
+         */
+        private String nativeAudience = "";
+
         public String getClientId() { return clientId; }
         public void setClientId(String clientId) { this.clientId = clientId; }
         public String getClientSecret() { return clientSecret; }
@@ -78,6 +95,12 @@ public class OAuthProperties {
         public void setRedirectUri(String redirectUri) { this.redirectUri = redirectUri; }
         public String getBuyerRedirectUri() { return buyerRedirectUri; }
         public void setBuyerRedirectUri(String buyerRedirectUri) { this.buyerRedirectUri = buyerRedirectUri; }
+
+        public String getNativeAudience() {
+            return nativeAudience == null || nativeAudience.isBlank() ? getClientId() : nativeAudience;
+        }
+
+        public void setNativeAudience(String nativeAudience) { this.nativeAudience = nativeAudience; }
 
         /** Enabled only when the client id, secret and redirect URI are all set. */
         public boolean isEnabled() {

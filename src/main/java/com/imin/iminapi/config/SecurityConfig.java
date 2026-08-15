@@ -175,7 +175,11 @@ public class SecurityConfig {
                                          "/api/v1/buyer/auth/resend-verification",
                                          "/api/v1/buyer/auth/forgot-password",
                                          "/api/v1/buyer/auth/reset-password",
-                                         "/api/v1/buyer/auth/google/callback").permitAll()
+                                         "/api/v1/buyer/auth/google/callback",
+                                         // Native sign-in: the app posts an OS-issued ID
+                                         // token instead of driving a browser redirect.
+                                         // Unauthenticated by nature, like the callback.
+                                         "/api/v1/buyer/auth/google/native").permitAll()
                         .requestMatchers(HttpMethod.GET,
                                          "/api/v1/buyer/auth/google/url").permitAll()
                         // hasRole("BUYER"), not .authenticated(): an organizer bearer

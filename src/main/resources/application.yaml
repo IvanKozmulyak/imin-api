@@ -375,6 +375,14 @@ imin:
       # URI is registered in the Google Cloud console, or buyers land on
       # redirect_uri_mismatch.
       buyer-redirect-uri: ${GOOGLE_OAUTH_BUYER_REDIRECT_URI:}
+      # Audience of the ID tokens the native apps get from the OS — i.e. the
+      # serverClientId Google Sign-In is configured with on iOS and Android.
+      # Blank => falls back to client-id, which is what serverClientId should be,
+      # so the native lane needs no extra config in the normal case. Set this
+      # only if the apps are pointed at a different Google project. Note this is
+      # the ONLY gate on POST /api/v1/buyer/auth/google/native: that lane does no
+      # code exchange, so neither client-secret nor a redirect URI applies.
+      native-audience: ${GOOGLE_OAUTH_NATIVE_AUDIENCE:}
     apple:
       # Apple Developer → Certificates, IDs & Profiles → Identifiers → Services ID
       # (the OAuth client_id / audience), e.g. wtf.imin.web.

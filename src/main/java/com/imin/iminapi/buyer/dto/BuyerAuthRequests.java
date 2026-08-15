@@ -64,4 +64,15 @@ public final class BuyerAuthRequests {
             @NotBlank String code,
             @NotBlank String state
     ) {}
+
+    /**
+     * An OS-issued OIDC ID token from native Google Sign-In or Sign in with
+     * Apple. {@code fullName} is Apple-only and first-sign-in-only — Apple
+     * returns the name exactly once and never again, so the app must send it on
+     * that first call or it is lost forever.
+     */
+    public record NativeIdToken(
+            @NotBlank String idToken,
+            String fullName
+    ) {}
 }
