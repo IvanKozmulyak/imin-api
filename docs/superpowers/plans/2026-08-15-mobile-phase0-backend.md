@@ -22,6 +22,8 @@
 - **Commits:** one per task, conventional-commit prefix, no `git add -A`.
 - **Error envelope:** `ApiError` wraps the body in `error`, so assertions are `$.error.code` and `$.error.message` — never `$.code`. (`$.error.code` appears 106 times in the existing suite; `$.code` zero times.)
 - **A permissive test double certifies the bug.** Several tasks here mock the very component under test for HTTP wiring; where that happens, a second non-Spring unit test drives the real logic. Do not delete those — they are the tests that fail when the logic breaks.
+- **MockMvc never parses a raw `Cookie` header.** `MockHttpServletRequest.addHeader` special-cases only `Content-Type` and `Accept-Language`; everything else is stored verbatim and never reaches `getCookies()`, which is what `BuyerSessionCookie.read` and `isShadowed` actually read. Always send a cookie with `.cookie(new Cookie(BuyerSessionCookie.NAME, value))` and read it back with `response.getCookie(NAME).getValue()`. Found the hard way in Task 1, where the header form would have made the bearer-precedence test pass with no cookie present at all — green, and proving nothing.
+- **Do not name a test helper's parameter `email`** in a class that has a `@MockitoBean EmailService email`: the parameter shadows the field and `verify(email, …)` stops compiling. Use `to`.
 - **Deploy:** `imin-api` master → Railway auto-deploy. `imin-webapp`/`imin-public` run `api:sync` against **production**, so this must be merged and deployed before any FE type regeneration.
 - **Out of scope for this plan:** Ukrainian locale work (user confirmed out of scope), Apple/Google Wallet passes (separate plan — see §Scope note), event-reminder push, SMS notification column.
 
@@ -130,8 +132,10 @@ Create `src/test/java/com/imin/iminapi/buyer/BuyerNativeSessionTest.java`:
 ```java
 package com.imin.iminapi.buyer;
 
+import com.imin.iminapi.buyer.security.BuyerSessionCookie;
 import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.email.EmailService;
+import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -154,6 +158,7 @@ import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -250,12 +255,15 @@ class BuyerNativeSessionTest {
                         .content(loginBody(other)))
                 .andExpect(status().isOk())
                 .andReturn();
-        String cookieB = webB.getResponse().getHeader("Set-Cookie");
-        assertThat(cookieB).isNotNull();
+        String cookieB = sessionCookieValue(webB);
 
         mvc.perform(get("/api/v1/buyer/me")
                         .header("Authorization", "Bearer " + bearerA)
-                        .header("Cookie", cookieB.substring(0, cookieB.indexOf(';'))))
+                        // MockMvc does NOT parse a raw Cookie header into
+                        // getCookies() — see the note below. Sending it that way
+                        // would make this test pass vacuously, with no cookie for
+                        // the bearer to actually beat.
+                        .cookie(new Cookie(BuyerSessionCookie.NAME, cookieB)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.emails[0].email").value(address));
     }
@@ -299,23 +307,22 @@ class BuyerNativeSessionTest {
                         .content(loginBody(address)))
                 .andExpect(status().isOk())
                 .andReturn();
-        String cookie = webLogin.getResponse().getHeader("Set-Cookie");
-        assertThat(cookie).isNotNull();
+        String cookie = sessionCookieValue(webLogin);
 
         // Native header present, but so is a cookie: the guard must NOT be skipped.
         mvc.perform(post("/api/v1/buyer/auth/logout")
                         .header("X-Imin-Client", "native")
-                        .header("Cookie", cookie.substring(0, cookie.indexOf(';'))))
+                        .cookie(new Cookie(BuyerSessionCookie.NAME, cookie)))
                 .andExpect(status().isForbidden());
     }
 
     // ── helpers ────────────────────────────────────────────────────────────
 
-    private MvcResult nativeLogin(String email) throws Exception {
+    private MvcResult nativeLogin(String to) throws Exception {
         return mvc.perform(post("/api/v1/buyer/auth/login")
                         .header("X-Imin-Client", "native")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(loginBody(email)))
+                        .content(loginBody(to)))
                 .andExpect(status().isOk())
                 .andReturn();
     }
@@ -327,20 +334,45 @@ class BuyerNativeSessionTest {
         return m.group(1);
     }
 
-    private static String loginBody(String email) {
-        return "{\"email\":\"" + email + "\",\"password\":\"" + PASSWORD + "\"}";
+    private static String loginBody(String to) {
+        return "{\"email\":\"" + to + "\",\"password\":\"" + PASSWORD + "\"}";
     }
 
-    /** Signup → read the six-digit code out of the mocked mail → verify. */
-    private void register(String email) throws Exception {
+    /**
+     * Reads the session cookie off a sign-in response so it can be replayed with
+     * {@code .cookie(...)} — the same thing the rest of the buyer suite does
+     * ({@code BuyerCredentialFlowTest:172,306}, {@code BuyerOAuthAudienceTest:131}).
+     *
+     * <p><b>Never send it as a raw {@code Cookie} header.</b>
+     * {@code MockHttpServletRequest.addHeader} special-cases only Content-Type
+     * and Accept-Language; every other header, including {@code Cookie}, is
+     * stored verbatim and never parsed into {@code getCookies()}. Both
+     * {@code BuyerSessionCookie.read} and {@code isShadowed} read
+     * {@code getCookies()}, so a raw header means "no cookie" — which would make
+     * the precedence test above pass with nothing for the bearer to beat.
+     */
+    private static String sessionCookieValue(MvcResult result) {
+        Cookie cookie = result.getResponse().getCookie(BuyerSessionCookie.NAME);
+        assertThat(cookie).isNotNull();
+        return cookie.getValue();
+    }
+
+    /**
+     * Signup → read the six-digit code out of the mocked mail → verify.
+     *
+     * <p>The parameter is {@code to}, not {@code email}: naming it {@code email}
+     * shadows the {@code @MockitoBean EmailService email} field, so
+     * {@code verify(email, …)} infers {@code String} and does not compile.
+     */
+    private void register(String to) throws Exception {
         mvc.perform(post("/api/v1/buyer/auth/signup")
                         .header("Origin", ORIGIN)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"email\":\"" + email + "\",\"password\":\"" + PASSWORD + "\"}"))
+                        .content("{\"email\":\"" + to + "\",\"password\":\"" + PASSWORD + "\"}"))
                 .andExpect(status().isNoContent());
 
         ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
-        verify(email, atLeast(1)).send(org.mockito.ArgumentMatchers.eq(email),
+        verify(email, atLeast(1)).send(org.mockito.ArgumentMatchers.eq(to),
                 org.mockito.ArgumentMatchers.anyString(), html.capture(),
                 org.mockito.ArgumentMatchers.anyString());
         Matcher m = SIX_DIGITS.matcher(html.getValue());
@@ -349,7 +381,7 @@ class BuyerNativeSessionTest {
         mvc.perform(post("/api/v1/buyer/auth/verify-email")
                         .header("Origin", ORIGIN)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"email\":\"" + email + "\",\"code\":\"" + m.group(1) + "\"}"))
+                        .content("{\"email\":\"" + to + "\",\"code\":\"" + m.group(1) + "\"}"))
                 .andExpect(status().isOk());
         reset(email);
     }
@@ -359,7 +391,7 @@ class BuyerNativeSessionTest {
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `./mvnw test -Dtest=BuyerNativeSessionTest`
-Expected: FAIL — `nativeLoginReturnsATokenAndWebLoginDoesNot` fails because `$.sessionToken` does not exist, and `bearerTokenAuthenticatesWithNoCookieAndNoOrigin` fails with 401/403.
+Expected: **FAIL, 4 of 7**, all with `Status expected:<200> but was:<403>` — the Origin-less native login is rejected by `BuyerRequestGuardFilter` before a token can be minted, so the failures are on the *login status*, not on a missing `$.sessionToken`. If you see a different failure shape, stop and re-read: the guard exemption is the thing being built.
 
 - [ ] **Step 3: Add the client-kind helper**
 
@@ -574,7 +606,7 @@ Update `of(...)` to pass `null` as the final argument, and add:
 
 In `src/main/java/com/imin/iminapi/buyer/controller/BuyerAuthController.java`, change the three sign-in call sites to pass the request, and rewrite the helper:
 
-Replace `signedInResponse(signedIn.account(), signedIn.session())` in `verifyEmail` and `login` with `signedInResponse(signedIn.account(), signedIn.session(), http)`. Leave `googleCallback` untouched.
+There are exactly **two** `signedInResponse(...)` call sites — `verifyEmail` and `login`. Replace `signedInResponse(signedIn.account(), signedIn.session())` with `signedInResponse(signedIn.account(), signedIn.session(), http)` in both. `googleCallback` builds its `ResponseEntity` inline and stays untouched.
 
 Then replace the helper:
 
