@@ -303,6 +303,21 @@ imin:
     allowed-origin-patterns: ${CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:3000,http://localhost:5173,https://imin-webapp.vercel.app,https://imin-webapp-*.vercel.app,https://dashboard.imin.wtf,https://imin.wtf,https://www.imin.wtf,https://imin-public.vercel.app,https://imin-public-*.vercel.app,https://t.imin.wtf}
   api:
     base-path: /api/v1
+  # Mobile force-upgrade gate, served by GET /api/v1/public/app-config.
+  # Bound to env so gating a shipped binary off is a Railway env edit, not a
+  # deploy. DEFAULT 0.0.0 = gate OFF: no build in the field is below it, so an
+  # unconfigured deploy blocks nobody. Only raise these once a build is in a
+  # store — this endpoint can only ever take installs away, and there is no way
+  # to send a fix to a client we have locked out.
+  app:
+    ios:
+      min-supported-version: ${IMIN_APP_IOS_MIN_VERSION:0.0.0}
+      latest-version: ${IMIN_APP_IOS_LATEST_VERSION:0.0.0}
+      store-url: ${IMIN_APP_IOS_STORE_URL:}
+    android:
+      min-supported-version: ${IMIN_APP_ANDROID_MIN_VERSION:0.0.0}
+      latest-version: ${IMIN_APP_ANDROID_LATEST_VERSION:0.0.0}
+      store-url: ${IMIN_APP_ANDROID_STORE_URL:}
   auth:
     session-ttl-days: 30
   buyer:

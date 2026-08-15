@@ -70,4 +70,18 @@ public class TicketReservation {
 
     @Column(name = "release_reason", length = 32)
     private String releaseReason;
+
+    /**
+     * The caller-supplied {@code Idempotency-Key} for the native PaymentIntent
+     * flow, or null for every other path (the whole web flow, and native calls
+     * that sent no key). Unique-indexed for the not-null subset, exactly like
+     * {@link #stripeSessionId}.
+     *
+     * <p>This is what makes a retried native checkout replay instead of minting
+     * a second 30-minute hold on real inventory. It is written in the same
+     * transaction that the row is claimed in, so the unique index — not a
+     * check-then-act — is what actually decides a concurrent duplicate.
+     */
+    @Column(name = "idempotency_key", length = 128)
+    private String idempotencyKey;
 }

@@ -62,7 +62,8 @@ class AttributionControllerTest {
     @Test
     @WithStubUser
     void attribution_json_shape() throws Exception {
-        when(service.attribution(any())).thenReturn(new AttributionResponse(
+        // Two-arg overload: the controller now forwards an optional client slice.
+        when(service.attribution(any(), any())).thenReturn(new AttributionResponse(
                 10000L, 20, 50,
                 List.of(new AttributionResponse.Channel("instagram", 7500L, 3))));
 
@@ -75,6 +76,24 @@ class AttributionControllerTest {
                 .andExpect(jsonPath("$.channels[0].source").value("instagram"))
                 .andExpect(jsonPath("$.channels[0].revenueMinor").value(7500))
                 .andExpect(jsonPath("$.channels[0].visits").value(3));
+    }
+
+    /**
+     * The client slice reaches the service. Without this the query param would
+     * bind and be silently dropped, and the endpoint would answer web+app
+     * totals to a caller who asked for one of them.
+     */
+    @Test
+    @WithStubUser
+    void the_client_query_param_is_forwarded() throws Exception {
+        when(service.attribution(any(), any())).thenReturn(
+                new AttributionResponse(0L, 0, 0, List.of()));
+
+        mvc.perform(get("/api/v1/analytics/attribution?client=ios"))
+                .andExpect(status().isOk());
+
+        org.mockito.Mockito.verify(service)
+                .attribution(any(), org.mockito.ArgumentMatchers.eq("ios"));
     }
 
     @Test

@@ -92,10 +92,12 @@ class BuyerDropAlertsTest {
 
         mvc.perform(get("/api/v1/buyer/notify-subscriptions").cookie(cookie(cookie)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.length()").value(2))
-                .andExpect(jsonPath("$[0].notifiedAt").doesNotExist())
-                .andExpect(jsonPath("$[0].eventId").value(eventA.getId().toString()))
-                .andExpect(jsonPath("$[1].notifiedAt").exists());
+                // {items, nextCursor}, not a bare array — see BuyerSavedListResponse.
+                .andExpect(jsonPath("$.items.length()").value(2))
+                .andExpect(jsonPath("$.items[0].notifiedAt").doesNotExist())
+                .andExpect(jsonPath("$.items[0].eventId").value(eventA.getId().toString()))
+                .andExpect(jsonPath("$.items[1].notifiedAt").exists())
+                .andExpect(jsonPath("$.nextCursor").doesNotExist());
     }
 
     @Test
@@ -103,10 +105,10 @@ class BuyerDropAlertsTest {
         alert(eventA, address, null);
 
         mvc.perform(get("/api/v1/buyer/notify-subscriptions").cookie(cookie(cookie)))
-                .andExpect(jsonPath("$[0].eventName").value("Alpha"))
-                .andExpect(jsonPath("$[0].slug").exists())
-                .andExpect(jsonPath("$[0].startsAt").exists())
-                .andExpect(jsonPath("$[0].posterUrl").exists());
+                .andExpect(jsonPath("$.items[0].eventName").value("Alpha"))
+                .andExpect(jsonPath("$.items[0].slug").exists())
+                .andExpect(jsonPath("$.items[0].startsAt").exists())
+                .andExpect(jsonPath("$.items[0].posterUrl").exists());
     }
 
     @Test
@@ -114,7 +116,7 @@ class BuyerDropAlertsTest {
         alert(eventA, "someone-else@example.com", null);
 
         mvc.perform(get("/api/v1/buyer/notify-subscriptions").cookie(cookie(cookie)))
-                .andExpect(jsonPath("$.length()").value(0));
+                .andExpect(jsonPath("$.items.length()").value(0));
     }
 
     @Test
@@ -125,7 +127,7 @@ class BuyerDropAlertsTest {
         stopWatching(eventA.getId()).andExpect(status().isNoContent());
 
         mvc.perform(get("/api/v1/buyer/notify-subscriptions").cookie(cookie(cookie)))
-                .andExpect(jsonPath("$.length()").value(0));
+                .andExpect(jsonPath("$.items.length()").value(0));
     }
 
     // ── resend ─────────────────────────────────────────────────────────────
