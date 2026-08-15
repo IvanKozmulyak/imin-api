@@ -2,6 +2,9 @@ package com.imin.iminapi.service.event;
 
 import com.imin.iminapi.audience.model.SuppressionEntry;
 import com.imin.iminapi.audience.repository.SuppressionRepository;
+import com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository;
+import com.imin.iminapi.buyer.repository.BuyerNotificationPreferenceRepository;
+import com.imin.iminapi.buyer.repository.BuyerPushDeviceRepository;
 import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.email.EmailService;
@@ -14,6 +17,8 @@ import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.TicketTier;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.model.UserRole;
+import com.imin.iminapi.push.ExpoPushSender;
+import com.imin.iminapi.push.PushProperties;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.NotifySubscriptionRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
@@ -32,6 +37,7 @@ import java.time.ZoneOffset;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
@@ -71,8 +77,13 @@ class NotifyReleaseSenderTest {
     @Autowired SuppressionRepository suppressions;
     @Autowired EmailTemplateRenderer renderer;
     @Autowired EmailProperties emailProps;
+    @Autowired BuyerPushDeviceRepository pushDevices;
+    @Autowired BuyerAccountEmailRepository buyerEmails;
+    @Autowired BuyerNotificationPreferenceRepository pushPrefs;
 
     EmailService emailService;
+    ExpoPushSender push;
+    PushProperties pushProps;
     NotifyReleaseSender sender;
 
     Organization org;
@@ -81,8 +92,14 @@ class NotifyReleaseSenderTest {
     @BeforeEach
     void setUp() {
         emailService = mock(EmailService.class);
+        // Push is dark in every case in this file. These tests exist to protect
+        // the EMAIL promise, and the whole point of the fan-out's placement is
+        // that push can neither enable nor suppress a single one of them.
+        push = mock(ExpoPushSender.class);
+        pushProps = new PushProperties(); // enabled defaults to false
         sender = new NotifyReleaseSender(subscriptions, events, tiers, suppressions,
-                emailService, renderer, emailProps, CLOCK);
+                emailService, renderer, emailProps, CLOCK,
+                pushProps, push, pushDevices, buyerEmails, pushPrefs);
 
         org = new Organization();
         org.setName("Release Org");
@@ -164,6 +181,10 @@ class NotifyReleaseSenderTest {
                 contains("one-time notification"),
                 contains("one-time notification"));
         assertThat(notifiedAtOf(sub)).isEqualTo(NOW);
+
+        // Push must be dark unless explicitly enabled, and must never be a
+        // precondition for the email these tests exist to protect.
+        verify(push, never()).send(anyList());
     }
 
     /**

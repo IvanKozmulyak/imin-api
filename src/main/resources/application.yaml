@@ -518,6 +518,18 @@ imin:
       # try again" several times over.
       capacity: 5
       window-minutes: 60
+  push:
+    # Outbound push to the native fan app, via Expo's push service.
+    # Dark by default: until the app ships there are no tokens to send to, and a
+    # dark sender is better than one firing at an empty registry.
+    enabled: ${IMIN_PUSH_ENABLED:false}
+    base-url: ${EXPO_PUSH_BASE_URL:https://exp.host/--/api/v2/push/send}
+    # Optional. Expo accepts unauthenticated sends; with "enhanced security" on
+    # the Expo project this becomes required.
+    access-token: ${EXPO_ACCESS_TOKEN:}
+    # Connect + read timeout. The POST runs inline on a @Scheduled sweep that
+    # shares a pool of ONE with every other job in this app — see PushConfig.
+    timeout-seconds: ${IMIN_PUSH_TIMEOUT_SECONDS:10}
   media:
     enabled: ${MEDIA_ENABLED:true}
     bucket: ${R2_BUCKET:imin-media-dev}

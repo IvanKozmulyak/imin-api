@@ -1,6 +1,11 @@
 package com.imin.iminapi.service.event;
 
 import com.imin.iminapi.audience.repository.SuppressionRepository;
+import com.imin.iminapi.buyer.model.BuyerAccountEmail;
+import com.imin.iminapi.buyer.model.BuyerNotificationPreference;
+import com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository;
+import com.imin.iminapi.buyer.repository.BuyerNotificationPreferenceRepository;
+import com.imin.iminapi.buyer.repository.BuyerPushDeviceRepository;
 import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.email.EmailService;
@@ -9,6 +14,9 @@ import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.EventVisibility;
 import com.imin.iminapi.model.NotifySubscription;
+import com.imin.iminapi.push.ExpoPushSender;
+import com.imin.iminapi.push.PushMessage;
+import com.imin.iminapi.push.PushProperties;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.NotifySubscriptionRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
@@ -28,6 +36,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -53,6 +62,13 @@ import java.util.UUID;
  * Deliverability suppression IS honoured: a suppressed address is marked as notified with
  * no send, so we neither mail it nor re-scan it forever.
  *
+ * <p><b>Push rides along, and never instead.</b> Signed-in buyers with a registered
+ * device also get a drop-alert push ({@link #pushToAccountHolders}). It runs after the
+ * email loop, outside its try/catch, and never touches {@code mark(sub)} — a push
+ * outage must not suppress an email somebody is owed, nor cause a second one. Guests
+ * keep getting email only, because a device belongs to an account and
+ * {@code notify_subscriptions} does not.
+ *
  * <p>Follows the {@link ReservationSweeper} scheduling pattern — 60s fixed delay, 30s
  * initial delay, ShedLock so only one replica sweeps per cycle.
  */
@@ -69,6 +85,11 @@ public class NotifyReleaseSender {
     private final EmailTemplateRenderer renderer;
     private final EmailProperties emailProps;
     private final Clock clock;
+    private final PushProperties pushProps;
+    private final ExpoPushSender push;
+    private final BuyerPushDeviceRepository pushDevices;
+    private final BuyerAccountEmailRepository buyerEmails;
+    private final BuyerNotificationPreferenceRepository pushPrefs;
 
     public NotifyReleaseSender(NotifySubscriptionRepository subscriptions,
                                EventRepository events,
@@ -77,7 +98,12 @@ public class NotifyReleaseSender {
                                EmailService email,
                                EmailTemplateRenderer renderer,
                                EmailProperties emailProps,
-                               Clock clock) {
+                               Clock clock,
+                               PushProperties pushProps,
+                               ExpoPushSender push,
+                               BuyerPushDeviceRepository pushDevices,
+                               BuyerAccountEmailRepository buyerEmails,
+                               BuyerNotificationPreferenceRepository pushPrefs) {
         this.subscriptions = subscriptions;
         this.events = events;
         this.tiers = tiers;
@@ -86,6 +112,11 @@ public class NotifyReleaseSender {
         this.renderer = renderer;
         this.emailProps = emailProps;
         this.clock = clock;
+        this.pushProps = pushProps;
+        this.push = push;
+        this.pushDevices = pushDevices;
+        this.buyerEmails = buyerEmails;
+        this.pushPrefs = pushPrefs;
     }
 
     @Scheduled(fixedDelay = 60_000, initialDelay = 30_000)
@@ -164,6 +195,72 @@ public class NotifyReleaseSender {
         }
         log.info("NotifyReleaseSender: event {} sent={} suppressed={} pending={}",
                 event.getId(), sent, skipped, pending.size() - sent - skipped);
+
+        pushToAccountHolders(event, pending);
+    }
+
+    /**
+     * Best-effort push alongside the drop-alert email.
+     *
+     * <p><b>Deliberately after the email loop and outside its try/catch.</b>
+     * {@link #mark(NotifySubscription)} is the one-shot delivery marker and it is
+     * driven by the email alone; letting a push failure influence it would either
+     * re-send a mail somebody already has or suppress one they are owed. Push is
+     * the enhancement, email is the promise.
+     *
+     * <p>Only account holders are reachable: {@code notify_subscriptions} is
+     * keyed by email and works for guests, while a device belongs to a signed-in
+     * buyer. The join goes through <b>verified</b> addresses only — the same
+     * boundary {@code GET /buyer/orders} uses, because an unverified row is a
+     * claim anybody can make about any address.
+     *
+     * <p>No {@code @Transactional} here, and it must not gain one: the method is
+     * private and reached by self-invocation, which proxy-based AOP never
+     * intercepts, so the annotation would be inert while looking load-bearing.
+     * The revoke's boundary lives on
+     * {@code BuyerPushDeviceRepository.revokeByTokens} instead.
+     */
+    private void pushToAccountHolders(Event event, List<NotifySubscription> pending) {
+        if (!pushProps.isEnabled()) return;
+        try {
+            List<UUID> accountIds = pending.stream()
+                    .map(s -> normalize(s.getEmail()))
+                    .distinct()
+                    .map(buyerEmails::findByVerifiedKey)
+                    .flatMap(Optional::stream)
+                    .map(BuyerAccountEmail::getBuyerAccountId)
+                    .distinct()
+                    .filter(this::pushOptedIn)
+                    .toList();
+            if (accountIds.isEmpty()) return;
+
+            List<String> tokens = pushDevices.findLiveTokensForAccounts(accountIds);
+            if (tokens.isEmpty()) return;
+
+            String title = "Tickets are live";
+            String body = eventName(event);
+            List<PushMessage> messages = tokens.stream()
+                    .map(t -> new PushMessage(t, title, body, PushMessage.CHANNEL_DROP_ALERTS,
+                            Map.of("type", "drop-alert", "eventId", event.getId().toString())))
+                    .toList();
+
+            ExpoPushSender.Result result = push.send(messages);
+            if (!result.deadTokens().isEmpty()) {
+                // Uninstalled apps never tell us they are gone; this is the only
+                // signal, so acting on it is what keeps the registry from rotting.
+                pushDevices.revokeByTokens(result.deadTokens(), clock.instant());
+            }
+        } catch (Exception e) {
+            log.warn("NotifyReleaseSender: push fan-out failed for event {} — {}",
+                    event.getId(), e.getMessage());
+        }
+    }
+
+    /** Absent preference row means defaults, and the default is on. */
+    private boolean pushOptedIn(UUID accountId) {
+        return pushPrefs.findById(accountId)
+                .map(BuyerNotificationPreference::isPushDropAlerts)
+                .orElse(true);
     }
 
     private void mark(NotifySubscription sub) {
