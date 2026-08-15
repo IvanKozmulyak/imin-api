@@ -26,6 +26,8 @@
 - **Do not name a test helper's parameter `email`** in a class that has a `@MockitoBean EmailService email`: the parameter shadows the field and `verify(email, …)` stops compiling. Use `to`.
 - **A `@MockitoBean` replaces the bean wholesale, so a `@TestPropertySource` cannot open a gate that lives on it.** If a controller asks a mocked service "are you configured?", the answer is Mockito's default `false` no matter what the property says, and every case 404s. Stub the gate in a `@BeforeEach`. The property is still worth keeping — it documents the production configuration — but it is documentation, not wiring.
 - **Every `imin.oauth.*` key is enumerated explicitly in `application.yaml` with a `${ENV:default}` placeholder.** A new property therefore needs a line there, or Spring's relaxed binding accepts only the long `IMIN_OAUTH_…` form and the short env var this plan documents is silently inert.
+- **`src/test/resources/application.yaml` REPLACES the main one, it does not merge.** Test resources come first on the classpath, so `classpath:/application.yaml` resolves to the 103-line test file — which carries no `imin.oauth`, `imin.buyer`, `imin.app` or `imin.marketing.guard` block at all. Anything a test needs must therefore come from a **Java field default** on the `@ConfigurationProperties` class or from `@TestPropertySource`; a value that lives only in the main YAML is invisible to every test. The enumerate-the-key rule above is about **production binding only**.
+- **`jsonPath("$.length()")` silently passes on an envelope.** Applied to `{items, nextCursor}` it counts the envelope's two keys, so an assertion written for a bare array of two rows stays green for entirely the wrong reason. Any list assertion must be `$.items.length()`. This was the one of seven affected assertions in Task 8 that did **not** go red on its own.
 - **Deploy:** `imin-api` master → Railway auto-deploy. `imin-webapp`/`imin-public` run `api:sync` against **production**, so this must be merged and deployed before any FE type regeneration.
 - **Out of scope for this plan:** Ukrainian locale work (user confirmed out of scope), Apple/Google Wallet passes (separate plan — see §Scope note), event-reminder push, SMS notification column.
 
@@ -103,7 +105,7 @@ The handoff has no push surface, so this plan defines the minimum honest one:
 **Task 8 — one-way doors**
 - Create `app/AppVersions.java`, `app/AppReleaseProperties.java`, `app/AppConfig.java`, `controller/publicapi/AppConfigController.java`
 - Create `db/migration/V93__native_client_fields.sql`
-- Modify the PaymentIntent pair for `Idempotency-Key`, three buyer list controllers for `{items, nextCursor}`, and `TrackRequest` for `client`
+- Modify the PaymentIntent pair for `Idempotency-Key`, three buyer list controllers for `{items, nextCursor}`, and `dto/event/TrackRequest` for `client`
 
 ---
 
@@ -3622,7 +3624,7 @@ Everything here is cheap now and either impossible or permanently half-broken la
 - Modify: `src/main/java/com/imin/iminapi/stripe/StripePaymentIntentService.java` — replay on a repeat key
 - Modify: `src/main/java/com/imin/iminapi/model/TicketReservation.java`
 - Modify: `src/main/java/com/imin/iminapi/buyer/controller/BuyerSavedController.java:45`, `BuyerNotifySubscriptionController.java:54`, `BuyerPreferencesController.java:54`
-- Modify: `src/main/java/com/imin/iminapi/dto/publicapi/TrackRequest.java` + the funnel-beacon persistence
+- Modify: `src/main/java/com/imin/iminapi/dto/event/TrackRequest.java` (**not** `dto/publicapi/`) + the `FunnelEvent` entity and its persistence
 - Modify: `src/main/resources/application.yaml`
 - Test: `src/test/java/com/imin/iminapi/app/AppVersionsTest.java`, `.../AppConfigControllerTest.java`
 - Test: `src/test/java/com/imin/iminapi/stripe/PaymentIntentIdempotencyTest.java`
@@ -3816,15 +3818,21 @@ Tests: same key twice → one reservation, one `paymentIntents().create` call, i
 
 `GET /buyer/saved` (`BuyerSavedController:45`), `GET /buyer/notify-subscriptions` (`BuyerNotifySubscriptionController:54`) and `GET /buyer/organizers` (`BuyerPreferencesController:54`) each return a bare array. Wrap them as `{items, nextCursor}`, copying `BuyerOrdersResponse`'s existing contract rather than inventing a second one. `nextCursor` may be null for now — the shape is the point.
 
-**Leave `/buyer/emails` and `/buyer/identities` as arrays.** Both are bounded by human behaviour and will never need a cursor.
+**Leave `/buyer/emails` and `/buyer/identities` as arrays.** Both are bounded by human behaviour and will never need a cursor. Leave `POST /buyer/saved/merge` a bare array too — it is a mutation result, not a page, so a cursor never applies.
 
-Ship the matching `imin-public` PR in the same pair — this is a contract change, and per the standing rule the two repos move together.
+Ship the matching `imin-public` PR in the same pair — this is a contract change, and per the standing rule the two repos move together. Scope, verified by grep across both frontends: only `lib/api/buyer.ts` changes, and only its `listDropAlerts` and `listBuyerSaved` (both currently `throw new ApiError(502)` on a non-array, so they hard-fail without the PR). **`GET /buyer/organizers` has no consumer in either frontend** — it appears only in docs — so there is nothing to ship for it.
 
 - [ ] **Step 5: Label the funnel beacon with its client**
 
 *Why it cannot wait:* `/api/v1/analytics/attribution` and the funnel are **live in production** and organizer-facing. Without a label the app either sends no beacons (a silent under-count that grows with app adoption) or merges indistinguishably into web "direct" — quietly making shipped organizer conversion numbers wrong. Under the no-fabricated-data rule that is not an acceptable interim state.
 
 Add a nullable `client` to `TrackRequest` (`"web"` / `"ios"` / `"android"`; null reads as web), persist it to the new column, and add an optional `client` filter to `/api/v1/analytics/attribution`.
+
+Three things this touches that are easy to miss:
+
+- **Keep a delegating 1-argument `AttributionService.attribution(...)` overload.** `AttributionServiceTest` calls it from five sites and `AttributionControllerTest` stubs that exact arity — without the overload the stub misses, returns null, and the controller 500s.
+- **Filter visits only, never revenue.** Orders carry no client column, so a per-client revenue figure would have to be apportioned — an invented number, which the no-fabricated-data rule forbids. An unrecognised label should fall back to all clients rather than answer an empty chart.
+- **Split the query rather than passing a nullable `String`** into it: a nullable String in a JPQL predicate passes on H2 and 500s on Postgres with `lower(bytea)`. Three queries, not one.
 
 **Do not overload `utm_source`** — the shipped auto-tag feature already writes that field, and colliding with it would corrupt live campaign attribution.
 
@@ -3840,7 +3848,7 @@ git add src/main/java/com/imin/iminapi/app/ \
         src/main/java/com/imin/iminapi/stripe/ \
         src/main/java/com/imin/iminapi/model/TicketReservation.java \
         src/main/java/com/imin/iminapi/buyer/controller/ \
-        src/main/java/com/imin/iminapi/dto/publicapi/TrackRequest.java \
+        src/main/java/com/imin/iminapi/dto/event/TrackRequest.java \
         src/main/resources/application.yaml \
         src/test/java/com/imin/iminapi/app/ \
         src/test/java/com/imin/iminapi/stripe/PaymentIntentIdempotencyTest.java
