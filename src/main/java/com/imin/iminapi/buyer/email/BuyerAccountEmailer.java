@@ -43,14 +43,35 @@ public class BuyerAccountEmailer {
         this.props = props;
     }
 
-    /** Sign-in page on the buyer site. */
+    /**
+     * Sign-in page on the buyer site.
+     *
+     * <p><b>These two paths are a cross-repo contract with {@code imin-public}
+     * and nothing but a test enforces them.</b> They were wrong from the day
+     * they shipped — {@code /auth/login} and {@code /auth/reset-password} are
+     * the API endpoint paths under {@code /api/v1/buyer}, not page routes, and
+     * imin-public has never served either as a page. Every password-reset mail
+     * landed on a 404. There are no redirects to fall back on: imin-public has
+     * no {@code redirects} block in {@code next.config.ts}, no
+     * {@code middleware.ts} and no {@code vercel.json}.
+     *
+     * <p>If you change a route under {@code imin-public/app/auth/}, change these
+     * with it in the same lockstep pair of PRs, and
+     * {@code BuyerAccountEmailerUrlTest} will fail until you do.
+     */
     public String signInUrl() {
-        return props.getBuyerSiteBaseUrl() + "/auth/login";
+        return props.getBuyerSiteBaseUrl() + "/auth/sign-in";
     }
 
-    /** Reset-password page on the buyer site, carrying the one-shot token. */
+    /**
+     * Reset-password page on the buyer site, carrying the one-shot token.
+     *
+     * <p>{@code imin-public/app/auth/reset/page.tsx} reads {@code ?token=} and
+     * is {@code noindex} — the query string is a 30-minute single-use
+     * credential. See {@link #signInUrl()} for why these paths need a test.
+     */
     public String resetUrl(String rawToken) {
-        return props.getBuyerSiteBaseUrl() + "/auth/reset-password?token=" + rawToken;
+        return props.getBuyerSiteBaseUrl() + "/auth/reset?token=" + rawToken;
     }
 
     /**
