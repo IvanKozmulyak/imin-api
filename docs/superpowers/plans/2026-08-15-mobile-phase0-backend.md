@@ -24,6 +24,8 @@
 - **A permissive test double certifies the bug.** Several tasks here mock the very component under test for HTTP wiring; where that happens, a second non-Spring unit test drives the real logic. Do not delete those — they are the tests that fail when the logic breaks.
 - **MockMvc never parses a raw `Cookie` header.** `MockHttpServletRequest.addHeader` special-cases only `Content-Type` and `Accept-Language`; everything else is stored verbatim and never reaches `getCookies()`, which is what `BuyerSessionCookie.read` and `isShadowed` actually read. Always send a cookie with `.cookie(new Cookie(BuyerSessionCookie.NAME, value))` and read it back with `response.getCookie(NAME).getValue()`. Found the hard way in Task 1, where the header form would have made the bearer-precedence test pass with no cookie present at all — green, and proving nothing.
 - **Do not name a test helper's parameter `email`** in a class that has a `@MockitoBean EmailService email`: the parameter shadows the field and `verify(email, …)` stops compiling. Use `to`.
+- **A `@MockitoBean` replaces the bean wholesale, so a `@TestPropertySource` cannot open a gate that lives on it.** If a controller asks a mocked service "are you configured?", the answer is Mockito's default `false` no matter what the property says, and every case 404s. Stub the gate in a `@BeforeEach`. The property is still worth keeping — it documents the production configuration — but it is documentation, not wiring.
+- **Every `imin.oauth.*` key is enumerated explicitly in `application.yaml` with a `${ENV:default}` placeholder.** A new property therefore needs a line there, or Spring's relaxed binding accepts only the long `IMIN_OAUTH_…` form and the short env var this plan documents is silently inert.
 - **Deploy:** `imin-api` master → Railway auto-deploy. `imin-webapp`/`imin-public` run `api:sync` against **production**, so this must be merged and deployed before any FE type regeneration.
 - **Out of scope for this plan:** Ukrainian locale work (user confirmed out of scope), Apple/Google Wallet passes (separate plan — see §Scope note), event-reminder push, SMS notification column.
 
@@ -1628,6 +1630,7 @@ The resolution matrix is untouched: this reuses `BuyerOAuthService.resolve`, whi
 
 **Files:**
 - Modify: `src/main/java/com/imin/iminapi/oauth/OAuthProperties.java`
+- Modify: `src/main/resources/application.yaml` — **required**, see Step 3
 - Modify: `src/main/java/com/imin/iminapi/oauth/GoogleOAuthService.java:173-181`
 - Modify: `src/main/java/com/imin/iminapi/buyer/controller/BuyerAuthController.java`
 - Modify: `src/main/java/com/imin/iminapi/buyer/dto/BuyerAuthRequests.java`
@@ -1683,8 +1686,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 @Import(TestRateLimitConfig.class)
-// Without this the native audience is blank, nativeEnabled() is false, and
-// every case 404s. src/test/resources/application.yaml has no imin.oauth block.
+// Documents the PRODUCTION gate. It does not open the gate here: the class
+// also declares @MockitoBean GoogleOAuthService, which replaces the bean
+// wholesale, so nativeEnabled() answers Mockito's default false no matter what
+// this property says. The @BeforeEach stub below is what actually opens it.
 @org.springframework.test.context.TestPropertySource(
         properties = "imin.oauth.google.native-audience=test-native-audience")
 class BuyerNativeGoogleSignInTest {
@@ -1694,6 +1699,13 @@ class BuyerNativeGoogleSignInTest {
     @Autowired UserRepository users;
     @MockitoBean EmailService email;
     @MockitoBean GoogleOAuthService google;
+
+    @org.junit.jupiter.api.BeforeEach
+    void openTheNativeGate() {
+        // The controller asks the (mocked) service whether native sign-in is
+        // configured. Without this every case 404s OAUTH_PROVIDER_DISABLED.
+        when(google.nativeEnabled()).thenReturn(true);
+    }
 
     @Test
     void verifiedIdTokenSignsInAndReturnsASessionToken() throws Exception {
@@ -1729,6 +1741,10 @@ class BuyerNativeGoogleSignInTest {
                         .content("{\"idToken\":\"id-token-unverified\"}"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error.code").value("OAUTH_EMAIL_UNVERIFIED"));
+
+        // The status alone would still pass if the gate ran AFTER the write.
+        // This is the assertion that proves no address claim was minted.
+        assertThat(buyerEmails.findByVerifiedKey(EmailNormalizer.normalize(address))).isEmpty();
     }
 
     @Test
@@ -1770,6 +1786,17 @@ In `src/main/java/com/imin/iminapi/oauth/OAuthProperties.java`, inside the `Goog
 
         public void setNativeAudience(String nativeAudience) { this.nativeAudience = nativeAudience; }
 ```
+
+**Also add the key to `src/main/resources/application.yaml`, under `imin.oauth.google`:**
+
+```yaml
+      # Audience for ID tokens from the native apps — the WEB client id above,
+      # which is what both iOS and Android pass as serverClientId. Blank falls
+      # back to client-id, which is the correct value in the normal case.
+      native-audience: ${GOOGLE_OAUTH_NATIVE_AUDIENCE:}
+```
+
+This line is not optional. That file enumerates every `imin.oauth.google.*` key explicitly, and Spring's relaxed binding would otherwise only accept `IMIN_OAUTH_GOOGLE_NATIVE_AUDIENCE` — so the env var named everywhere else in this plan would be **silently inert**, falling back to `client-id` and looking correct until the day someone points the apps at a different Google project.
 
 - [ ] **Step 4: Add ID-token verification to GoogleOAuthService**
 
@@ -1937,6 +1964,7 @@ git commit -m "feat(buyer): native Google sign-in via OS-issued ID token"
 **Files:**
 - Modify: `src/main/java/com/imin/iminapi/buyer/model/BuyerIdentity.java:37`
 - Modify: `src/main/java/com/imin/iminapi/oauth/OAuthProperties.java`
+- Modify: `src/main/resources/application.yaml` — **required**, see Step 4
 - Create: `src/main/java/com/imin/iminapi/oauth/AppleNativeIdentityService.java`
 - Modify: `src/main/java/com/imin/iminapi/buyer/controller/BuyerAuthController.java`
 - Modify: `src/main/java/com/imin/iminapi/config/SecurityConfig.java`
@@ -2113,6 +2141,18 @@ In `OAuthProperties.Apple`, add:
         public String getNativeAudience() { return nativeAudience; }
         public void setNativeAudience(String nativeAudience) { this.nativeAudience = nativeAudience; }
 ```
+
+**And the key in `src/main/resources/application.yaml`, under `imin.oauth.apple`:**
+
+```yaml
+      # Audience for ID tokens from the native iOS app — the app's BUNDLE
+      # IDENTIFIER (wtf.imin.fan), NOT the Services ID in client-id above, which
+      # is the organizer web flow's audience. Blank => native Apple sign-in 404s,
+      # which also fails App Store review under Guideline 4.8.
+      native-audience: ${APPLE_OAUTH_NATIVE_AUDIENCE:}
+```
+
+**Mandatory, and worse to omit here than on the Google side.** That file enumerates every `imin.oauth.apple.*` key explicitly, so without this line Spring binds only `IMIN_OAUTH_APPLE_NATIVE_AUDIENCE` and the documented env var does nothing. Apple's audience has **no fallback** — blank means disabled — so the symptom is a production gate that stays shut while the Railway variable that was supposed to open it sits there looking correct.
 
 - [ ] **Step 5: Write the verifier**
 
