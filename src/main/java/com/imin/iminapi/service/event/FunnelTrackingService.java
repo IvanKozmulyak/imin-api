@@ -50,7 +50,21 @@ public class FunnelTrackingService {
         row.setUtmCampaign(cap(req.utmCampaign(), 128));
         row.setUtmContent(cap(req.utmContent(), 128));
         row.setReferrerHost(cap(req.referrerHost(), 255));
+        // Which client sent this (V93). Unknown values become null rather than
+        // being stored: "web" vs null already means the same thing downstream,
+        // and a typo'd label would otherwise appear as its own channel in the
+        // organizer's live attribution view.
+        row.setClient(client(req.client()));
         funnel.save(row);
+    }
+
+    /** The closed set of client labels. Anything else — including null — is web. */
+    private static final Set<String> ALLOWED_CLIENTS = Set.of("web", "ios", "android");
+
+    private static String client(String v) {
+        if (v == null) return null;
+        String t = v.trim().toLowerCase();
+        return ALLOWED_CLIENTS.contains(t) ? t : null;
     }
 
     /** Trim, null-out blanks, and cap to the column width. */

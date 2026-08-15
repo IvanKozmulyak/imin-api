@@ -190,7 +190,11 @@ class BuyerPreferencesTest {
 
         mvc.perform(get("/api/v1/buyer/organizers").cookie(cookie(cookie)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.length()").value(2));
+                // {items, nextCursor}, not a bare array — see BuyerSavedListResponse.
+                // $.length() would have counted the ENVELOPE's two keys and passed
+                // for the wrong reason; assert inside items.
+                .andExpect(jsonPath("$.items.length()").value(2))
+                .andExpect(jsonPath("$.nextCursor").doesNotExist());
     }
 
     /**

@@ -1,5 +1,6 @@
 package com.imin.iminapi.buyer.controller;
 
+import com.imin.iminapi.buyer.dto.BuyerOrganizerListResponse;
 import com.imin.iminapi.buyer.dto.BuyerPreferencesResponse;
 import com.imin.iminapi.buyer.security.BuyerPrincipal;
 import com.imin.iminapi.buyer.security.CurrentBuyer;
@@ -11,7 +12,6 @@ import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.List;
 import java.util.Map;
 
 /**
@@ -50,12 +50,17 @@ public class BuyerPreferencesController {
         return noStore(service.update(buyer.accountId(), body));
     }
 
+    /**
+     * Answers {@code {items, nextCursor}}, not a bare array — see
+     * {@link com.imin.iminapi.buyer.dto.BuyerSavedListResponse}: a top-level
+     * array cannot grow a cursor without breaking every shipped app binary.
+     */
     @GetMapping("/api/v1/buyer/organizers")
-    public ResponseEntity<List<BuyerPreferencesResponse.Organizer>> organizers(
+    public ResponseEntity<BuyerOrganizerListResponse> organizers(
             @CurrentBuyer BuyerPrincipal buyer) {
         return ResponseEntity.ok()
                 .header(HttpHeaders.CACHE_CONTROL, NO_STORE)
-                .body(service.organizers(buyer.accountId()));
+                .body(BuyerOrganizerListResponse.of(service.organizers(buyer.accountId())));
     }
 
     private ResponseEntity<BuyerPreferencesResponse> noStore(BuyerPreferencesResponse body) {

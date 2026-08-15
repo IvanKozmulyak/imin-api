@@ -242,4 +242,56 @@ class AttributionServiceTest {
         UntaggedLinksResponse u = service.untagged(other);
         assertThat(u.links()).isEmpty();
     }
+
+    // ── client slice (V93) ─────────────────────────────────────────────────
+
+    /**
+     * Without a client label, app traffic merges indistinguishably into web
+     * "direct" on this live, organizer-facing read-model. These cases pin that
+     * the slice actually separates them.
+     */
+    @Test
+    void the_client_filter_separates_app_traffic_from_web() {
+        visit("s1", "instagram", "instagram.com", "ios");
+        visit("s2", "instagram", "instagram.com", "ios");
+        visit("s3", "instagram", "instagram.com", "web");
+        visit("s4", "newsletter", "mail.google.com", null);   // pre-V93 row
+
+        assertThat(visitsFor("ios")).isEqualTo(2);
+        // NULL counts as web: those rows predate the column, and calling them
+        // anything else would invent a distinction that was never made.
+        assertThat(visitsFor("web")).isEqualTo(2);
+        assertThat(visitsFor("android")).isZero();
+        // No filter is every client — exactly the pre-app behaviour.
+        assertThat(visitsFor(null)).isEqualTo(4);
+    }
+
+    /**
+     * An unrecognised label falls back to every client rather than answering an
+     * empty chart. An empty chart reads as "nobody came from there", which would
+     * be a number nothing backs.
+     */
+    @Test
+    void an_unknown_client_filter_falls_back_to_every_client() {
+        visit("s1", "instagram", "instagram.com", "ios");
+        visit("s2", "instagram", "instagram.com", "web");
+
+        assertThat(visitsFor("windows-phone")).isEqualTo(2);
+    }
+
+    private long visitsFor(String client) {
+        return service.attribution(principal, client).channels().stream()
+                .mapToLong(AttributionResponse.Channel::visits).sum();
+    }
+
+    private void visit(String anon, String source, String referrerHost, String client) {
+        FunnelEvent fe = new FunnelEvent();
+        fe.setEventId(event.getId());
+        fe.setStage(FunnelEvent.STAGE_PAGE_VIEW);
+        fe.setAnonId(anon);
+        fe.setUtmSource(source);
+        fe.setReferrerHost(referrerHost);
+        fe.setClient(client);
+        funnel.save(fe);
+    }
 }

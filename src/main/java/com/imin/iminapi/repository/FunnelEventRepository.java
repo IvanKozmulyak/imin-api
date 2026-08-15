@@ -63,6 +63,44 @@ public interface FunnelEventRepository extends JpaRepository<FunnelEvent, UUID> 
     List<Object[]> countVisitsBySourceForOrg(@Param("orgId") UUID orgId);
 
     /**
+     * As {@link #countVisitsBySourceForOrg(UUID)} but restricted to one non-web
+     * client ({@code "ios"} / {@code "android"}).
+     *
+     * <p><b>Three queries rather than one with nullable parameters.</b> A
+     * nullable {@code String} threaded into a comparison passes on H2 and 500s
+     * on Postgres — the standing trap in this codebase — and the web case needs
+     * a different predicate anyway. {@code AttributionService} picks; nothing
+     * ever binds null here.
+     */
+    @Query("""
+            select fe.utmSource, count(fe) from FunnelEvent fe, Event ev
+             where fe.eventId = ev.id
+               and ev.orgId = :orgId
+               and ev.deletedAt is null
+               and fe.client = :client
+             group by fe.utmSource
+            """)
+    List<Object[]> countVisitsBySourceForOrgAndClient(@Param("orgId") UUID orgId,
+                                                      @Param("client") String client);
+
+    /**
+     * The web slice.
+     *
+     * <p>NULL counts as web on purpose: every row written before V93 carries it
+     * because no other kind of client existed. Reporting those as a separate
+     * "unknown client" bucket would invent a distinction that was never made.
+     */
+    @Query("""
+            select fe.utmSource, count(fe) from FunnelEvent fe, Event ev
+             where fe.eventId = ev.id
+               and ev.orgId = :orgId
+               and ev.deletedAt is null
+               and (fe.client is null or fe.client = 'web')
+             group by fe.utmSource
+            """)
+    List<Object[]> countWebVisitsBySourceForOrg(@Param("orgId") UUID orgId);
+
+    /**
      * Untagged (no {@code utm_source}) visits grouped by referrer host across an
      * org's active events. Tuple shape:
      * {@code [String referrerHost (nullable), Long visits]}. Ordered by visit

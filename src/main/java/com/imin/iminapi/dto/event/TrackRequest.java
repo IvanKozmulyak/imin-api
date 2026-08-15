@@ -25,10 +25,29 @@ public record TrackRequest(
         @JsonProperty("utm_medium")    String utmMedium,
         @JsonProperty("utm_campaign")  String utmCampaign,
         @JsonProperty("utm_content")   String utmContent,
-        @JsonProperty("referrer_host") String referrerHost) {
+        @JsonProperty("referrer_host") String referrerHost,
+        /**
+         * Which client sent the beacon: {@code "web"}, {@code "ios"} or
+         * {@code "android"}. <b>Null reads as web</b>, so every caller that
+         * predates the mobile app keeps its current meaning and no backfill is
+         * needed.
+         *
+         * <p>Deliberately its own field and <b>not</b> folded into
+         * {@code utm_source}: the shipped auto-tag feature already writes that
+         * field, and colliding with it would corrupt live campaign attribution.
+         *
+         * <p>It has to exist before the app ships. {@code /analytics/attribution}
+         * and the funnel are live and organizer-facing, so unlabelled app
+         * traffic would merge indistinguishably into web "direct" and quietly
+         * make already-shipped conversion numbers wrong.
+         *
+         * <p>Single word, so no {@link JsonProperty} is needed — unlike the five
+         * snake_case attribution tags above.
+         */
+        String client) {
 
     /** Back-compat 2-arg constructor (no UTM tags) — kept for existing call sites. */
     public TrackRequest(String stage, String anonId) {
-        this(stage, anonId, null, null, null, null, null);
+        this(stage, anonId, null, null, null, null, null, null);
     }
 }

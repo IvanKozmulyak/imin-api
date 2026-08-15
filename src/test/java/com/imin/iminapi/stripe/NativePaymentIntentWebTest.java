@@ -47,7 +47,7 @@ class NativePaymentIntentWebTest {
     @Test
     void returnsTheClientSecretShapeAndNeverCachesIt() throws Exception {
         when(intents.create(any(), any(), anyInt(), any(), any(), any(),
-                anyBoolean(), anyBoolean(), any(), any()))
+                anyBoolean(), anyBoolean(), any(), any(), any()))
                 .thenReturn(new StripePaymentIntentService.NativeIntent(
                         "pi_x_secret_y", "pi_x", 5448L, 448L, "eur"));
 
@@ -87,6 +87,48 @@ class NativePaymentIntentWebTest {
                 .andExpect(status().isBadRequest());
 
         verify(intents, never()).create(any(), any(), anyInt(), any(), any(), any(),
-                anyBoolean(), anyBoolean(), any(), any());
+                anyBoolean(), anyBoolean(), any(), any(), any());
+    }
+
+    /**
+     * The {@code Idempotency-Key} header reaches the service. Bound but dropped
+     * is the failure mode that matters: the endpoint would keep answering 200
+     * while every native retry took a second 30-minute hold on real inventory,
+     * and nothing on the wire would say so.
+     */
+    @Test
+    void theIdempotencyKeyHeaderIsForwarded() throws Exception {
+        when(intents.create(any(), any(), anyInt(), any(), any(), any(),
+                anyBoolean(), anyBoolean(), any(), any(), any()))
+                .thenReturn(new StripePaymentIntentService.NativeIntent(
+                        "pi_x_secret_y", "pi_x", 5448L, 448L, "eur"));
+
+        mvc.perform(post("/api/v1/public/events/" + EVENT + "/payment-intent")
+                        .header("Idempotency-Key", "retry-me-once")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tierId\":\"" + TIER + "\",\"quantity\":2}"))
+                .andExpect(status().isOk());
+
+        verify(intents).create(any(), any(), anyInt(), any(), any(), any(),
+                anyBoolean(), anyBoolean(), any(), any(),
+                org.mockito.ArgumentMatchers.eq("retry-me-once"));
+    }
+
+    /** The web sends no header at all and must keep working unchanged. */
+    @Test
+    void noIdempotencyKeyIsStillAValidRequest() throws Exception {
+        when(intents.create(any(), any(), anyInt(), any(), any(), any(),
+                anyBoolean(), anyBoolean(), any(), any(), any()))
+                .thenReturn(new StripePaymentIntentService.NativeIntent(
+                        "pi_x_secret_y", "pi_x", 5448L, 448L, "eur"));
+
+        mvc.perform(post("/api/v1/public/events/" + EVENT + "/payment-intent")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tierId\":\"" + TIER + "\",\"quantity\":2}"))
+                .andExpect(status().isOk());
+
+        verify(intents).create(any(), any(), anyInt(), any(), any(), any(),
+                anyBoolean(), anyBoolean(), any(), any(),
+                org.mockito.ArgumentMatchers.isNull());
     }
 }

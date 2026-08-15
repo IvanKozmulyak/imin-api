@@ -34,9 +34,26 @@ public class AttributionService {
         this.orders = orders;
     }
 
+    /** Every client. */
     @Transactional(readOnly = true)
     public AttributionResponse attribution(AuthPrincipal p) {
-        var rows = funnel.countVisitsBySourceForOrg(p.orgId());
+        return attribution(p, null);
+    }
+
+    /**
+     * @param client optional slice: {@code "web"}, {@code "ios"} or
+     *               {@code "android"}. Null (or anything unrecognised) means
+     *               every client, which is the pre-app behaviour.
+     *
+     * <p>The filter applies to <b>visits only</b>, not to revenue. Orders carry
+     * no client column, so a per-client revenue figure would have to be
+     * apportioned — an invented number, and the one thing this read-model must
+     * not produce. A sliced call therefore reports that client's visits against
+     * the org's real revenue; read it as traffic mix, not as per-client ROAS.
+     */
+    @Transactional(readOnly = true)
+    public AttributionResponse attribution(AuthPrincipal p, String client) {
+        var rows = visitsBySource(p, client);
 
         long totalVisits = 0;
         long untaggedVisits = 0;
@@ -112,6 +129,24 @@ public class AttributionService {
                     new UntaggedLinksResponse.Suggested(s.source(), s.medium(), s.campaign())));
         }
         return new UntaggedLinksResponse(links);
+    }
+
+    /**
+     * Picks the query for the requested client slice. Three separate queries,
+     * never one with a nullable bind: a null {@code String} in a comparison is
+     * the {@code lower(bytea)} trap that passes on H2 and 500s on Postgres.
+     */
+    private List<Object[]> visitsBySource(AuthPrincipal p, String client) {
+        if (client == null || client.isBlank()) return funnel.countVisitsBySourceForOrg(p.orgId());
+        String c = client.trim().toLowerCase();
+        return switch (c) {
+            case "web" -> funnel.countWebVisitsBySourceForOrg(p.orgId());
+            case "ios", "android" -> funnel.countVisitsBySourceForOrgAndClient(p.orgId(), c);
+            // An unrecognised label is not an empty result set — an empty chart
+            // reads as "nobody came from there", which would be a fabricated
+            // fact. Fall back to every client.
+            default -> funnel.countVisitsBySourceForOrg(p.orgId());
+        };
     }
 
     /**

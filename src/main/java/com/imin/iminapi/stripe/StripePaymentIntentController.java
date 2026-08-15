@@ -15,6 +15,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -51,6 +52,12 @@ public class StripePaymentIntentController {
             // without this the @NotNull/@Min/@Max on PaymentIntentRequest below
             // never run and a quantity of 500 reaches the service.
             @Valid @RequestBody PaymentIntentRequest body,
+            // Optional, and optional on purpose: the web flow never sends one and
+            // must keep working unchanged. When a native client does send one, a
+            // retry replays the first call's PaymentIntent instead of taking a
+            // second 30-minute hold on real inventory. Same header name as the
+            // refund, payout and campaign endpoints already use.
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
             HttpServletRequest http) {
         // Shares the "checkout" bucket with the hosted endpoint deliberately: the
         // two are the same scarce operation (a Stripe object plus a real
@@ -67,7 +74,8 @@ public class StripePaymentIntentController {
         StripePaymentIntentService.NativeIntent intent = intents.create(
                 eventId, body.tierId(), quantity, body.promoCode(), body.expectedPriceMinor(),
                 body.email(), Boolean.TRUE.equals(body.adsConsent()),
-                Boolean.TRUE.equals(body.marketingOptIn()), attribution, body.locale());
+                Boolean.TRUE.equals(body.marketingOptIn()), attribution, body.locale(),
+                idempotencyKey);
 
         return ResponseEntity.ok()
                 .header(HttpHeaders.CACHE_CONTROL, "private, no-store")

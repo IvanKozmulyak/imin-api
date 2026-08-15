@@ -1,5 +1,6 @@
 package com.imin.iminapi.buyer.controller;
 
+import com.imin.iminapi.buyer.dto.BuyerSavedListResponse;
 import com.imin.iminapi.buyer.dto.BuyerSavedResponse;
 import com.imin.iminapi.buyer.security.BuyerPrincipal;
 import com.imin.iminapi.buyer.security.CurrentBuyer;
@@ -41,9 +42,18 @@ public class BuyerSavedController {
     /** The merge body. A null list is rejected; an empty one is a legal no-op. */
     public record MergeRequest(@NotNull List<UUID> eventIds) {}
 
+    /**
+     * Answers {@code {items, nextCursor}}, not a bare array — a top-level array
+     * cannot grow a cursor without becoming an object, which would break every
+     * app binary already installed. {@code POST /saved/merge} below deliberately
+     * stays an array: it is a mutation result, not a page.
+     */
     @GetMapping("/api/v1/buyer/saved")
-    public ResponseEntity<List<BuyerSavedResponse>> list(@CurrentBuyer BuyerPrincipal buyer) {
-        return noStore(service.list(buyer.accountId()).stream().map(BuyerSavedResponse::of).toList());
+    public ResponseEntity<BuyerSavedListResponse> list(@CurrentBuyer BuyerPrincipal buyer) {
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CACHE_CONTROL, NO_STORE)
+                .body(BuyerSavedListResponse.of(
+                        service.list(buyer.accountId()).stream().map(BuyerSavedResponse::of).toList()));
     }
 
     @PutMapping("/api/v1/buyer/saved/{eventId}")

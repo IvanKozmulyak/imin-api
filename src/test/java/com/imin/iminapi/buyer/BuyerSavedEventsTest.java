@@ -88,10 +88,13 @@ class BuyerSavedEventsTest {
                 .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "private, no-store"));
         save(eventId).andExpect(status().isNoContent());
 
+        // {items, nextCursor}, not a bare array — a top-level array could never
+        // grow a cursor without breaking every shipped app binary.
         list().andExpect(status().isOk())
-                .andExpect(jsonPath("$.length()").value(1))
-                .andExpect(jsonPath("$[0].eventId").value(eventId.toString()))
-                .andExpect(jsonPath("$[0].savedAt").exists());
+                .andExpect(jsonPath("$.items.length()").value(1))
+                .andExpect(jsonPath("$.items[0].eventId").value(eventId.toString()))
+                .andExpect(jsonPath("$.items[0].savedAt").exists())
+                .andExpect(jsonPath("$.nextCursor").doesNotExist());
     }
 
     @Test
@@ -100,7 +103,7 @@ class BuyerSavedEventsTest {
         unsave(eventId).andExpect(status().isNoContent());
         unsave(eventId).andExpect(status().isNoContent());
 
-        list().andExpect(jsonPath("$.length()").value(0));
+        list().andExpect(jsonPath("$.items.length()").value(0));
     }
 
     @Test
@@ -137,7 +140,7 @@ class BuyerSavedEventsTest {
         String stranger = signUpAndSignIn(address());
         mvc.perform(get("/api/v1/buyer/saved").cookie(cookie(stranger)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.length()").value(0));
+                .andExpect(jsonPath("$.items.length()").value(0));
     }
 
     @Test

@@ -106,4 +106,53 @@ class FunnelTrackingServiceTest {
         assertThat(rows.get(0).getStage()).isEqualTo(FunnelEvent.STAGE_CHECKOUT_START);
         assertThat(rows.get(0).getAnonId()).isEqualTo("x".repeat(64));
     }
+
+    /**
+     * The client label (V93). It has to exist before the app ships:
+     * {@code /analytics/attribution} is live and organizer-facing, so unlabelled
+     * app traffic would merge into web "direct" and quietly make shipped
+     * conversion numbers wrong.
+     */
+    @Test
+    void records_the_client_label_normalised() {
+        service.track(publicEvent.getId(), new TrackRequest(
+                "PAGE_VIEW", "sess-1", null, null, null, null, null, "  IOS "));
+
+        assertThat(funnel.findAll().get(0).getClient()).isEqualTo("ios");
+    }
+
+    /** A beacon from before the app — and every web beacon — stays null. */
+    @Test
+    void an_absent_client_stays_null_so_existing_rows_keep_their_meaning() {
+        service.track(publicEvent.getId(), new TrackRequest("PAGE_VIEW", "sess-1"));
+
+        assertThat(funnel.findAll().get(0).getClient()).isNull();
+    }
+
+    /**
+     * An unrecognised label is dropped rather than stored. A typo'd client would
+     * otherwise show up as its own row in an organizer's attribution view.
+     */
+    @Test
+    void an_unknown_client_is_dropped_not_stored() {
+        service.track(publicEvent.getId(), new TrackRequest(
+                "PAGE_VIEW", "sess-1", null, null, null, null, null, "windows-phone"));
+
+        assertThat(funnel.findAll().get(0).getClient()).isNull();
+    }
+
+    /**
+     * The client label must never touch {@code utm_source}: the shipped auto-tag
+     * feature already writes that field, and colliding with it would corrupt
+     * live campaign attribution.
+     */
+    @Test
+    void the_client_label_never_lands_in_utm_source() {
+        service.track(publicEvent.getId(), new TrackRequest(
+                "PAGE_VIEW", "sess-1", "instagram", null, null, null, null, "android"));
+
+        var row = funnel.findAll().get(0);
+        assertThat(row.getUtmSource()).isEqualTo("instagram");
+        assertThat(row.getClient()).isEqualTo("android");
+    }
 }
