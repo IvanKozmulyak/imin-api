@@ -3199,21 +3199,51 @@ public class ExpoPushSender {
     private final PushProperties props;
     private final RestClient http;
 
-    public ExpoPushSender(PushProperties props, RestClient.Builder builder) {
+    /**
+     * Takes an already-built {@code RestClient}, not a {@code Builder} — the
+     * HTTP wiring lives in {@code PushConfig}. Two reasons, both learned the
+     * hard way:
+     *
+     * <ul>
+     *   <li>{@code MockRestServiceServer.bindTo(builder)} installs its request
+     *       factory <i>on the builder</i>. A constructor that then calls
+     *       {@code builder.requestFactory(...)} overwrites it and the test hits
+     *       the real {@code exp.host}.</li>
+     *   <li>Splitting it is what makes the timeout provable: a test can assert
+     *       the configured value reached {@code HttpClientSettings}. Otherwise
+     *       {@code getTimeoutSeconds()} can go unread and every test still
+     *       passes — which is exactly how it shipped unwired the first time.</li>
+     * </ul>
+     *
+     * <p>The timeout itself is not decorative. This POST runs inline on
+     * {@code NotifyReleaseSender.sweep()}, a {@code @Scheduled} method on
+     * Spring's default scheduler — <b>pool size 1</b>, because
+     * {@code spring.task.scheduling.pool.size} is unset. A hung connection to
+     * exp.host stalls all 25 {@code @Scheduled} jobs in this repo, including
+     * {@code ReservationSweeper}, and outlives the ShedLock
+     * {@code lockAtMostFor}, letting a second replica re-enter the sweep. There
+     * is no global HTTP timeout default here to fall back on.
+     */
+    public ExpoPushSender(PushProperties props,
+                          @Qualifier("expoRestClient") RestClient http) {
         this.props = props;
-        // The timeout is not decorative. This POST runs inline on
-        // NotifyReleaseSender.sweep(), a @Scheduled method on Spring's default
-        // scheduler — which is POOL SIZE 1, because spring.task.scheduling.pool.size
-        // is unset. A hung connection to exp.host would stall all 25 @Scheduled
-        // jobs in this repo, including ReservationSweeper (the thing that
-        // releases stale inventory holds), and outlive the ShedLock
-        // lockAtMostFor, letting a second replica re-enter the sweep. There is
-        // no global HTTP timeout default to fall back on.
-        Duration timeout = Duration.ofSeconds(props.getTimeoutSeconds());
-        this.http = builder
-                .requestFactory(ClientHttpRequestFactoryBuilder.detect()
-                        .withConnectTimeout(timeout)
-                        .withReadTimeout(timeout))
+        this.http = http;
+    }
+```
+
+`PushConfig` owns the client and the timeouts. **Boot 4.0.5 API, not Boot 3's** — `ClientHttpRequestFactorySettings` no longer exists, and `ClientHttpRequestFactoryBuilder` has no `withConnectTimeout`/`withReadTimeout`:
+
+```java
+    @Bean
+    HttpClientSettings expoHttpClientSettings(PushProperties props) {
+        Duration t = Duration.ofSeconds(props.getTimeoutSeconds());
+        return HttpClientSettings.defaults().withTimeouts(t, t);
+    }
+
+    @Bean("expoRestClient")
+    RestClient expoRestClient(RestClient.Builder builder, HttpClientSettings settings) {
+        return builder
+                .requestFactory(ClientHttpRequestFactoryBuilder.detect().build(settings))
                 .build();
     }
 
@@ -3271,7 +3301,16 @@ public class ExpoPushSender {
         if (props.getAccessToken() != null && !props.getAccessToken().isBlank()) {
             spec = spec.header("Authorization", "Bearer " + props.getAccessToken());
         }
-        return spec.body(body).retrieve().body(JsonNode.class);
+        // Retrieve String and parse explicitly. Boot 4 ships BOTH Jackson
+        // generations and wires its HTTP message converters to Jackson 3
+        // (tools.jackson), so asking for the Jackson 2
+        // com.fasterxml.jackson.databind.JsonNode fails at RUNTIME —
+        // "Type definition error: [simple type, class …JsonNode]" — which the
+        // catch in send() swallows, leaving accepted=0 dead=0 forever with no
+        // error surfaced. Same pattern as ResendWebhookController and
+        // NominatimGeocoder. (The unused MAPPER field above was the tell.)
+        String raw = spec.body(body).retrieve().body(String.class);
+        return raw == null ? null : MAPPER.readTree(raw);
     }
 
     /**
@@ -3548,6 +3587,8 @@ class DropAlertFanOutTest extends com.imin.iminapi.buyer.NativeBuyerTestBase {
 }
 ```
 
+> **This test block does not compile as written — rewrite it on the `NotifyReleaseSenderTest` pattern.** `NativeBuyerTestBase` is package-private in `com.imin.iminapi.buyer`, so a class in `com.imin.iminapi.push` cannot extend it; `subscriptions.findByEmailIn(...)` does not exist (`NotifySubscriptionRepository` has only `deleteByEmailIn`); and it `@Autowired`s the sender in direct contradiction of its own note below. Use real JPA fixtures, a hand-constructed sender, a fixed `Clock`, mocked `EmailService` + `ExpoPushSender`, and `@Transactional`.
+>
 > **Implementer notes — read before writing this test; three hazards.**
 >
 > 1. **Do not `@Autowired` the sender.** `NotifyReleaseSender.sweep()` is proxied by `@SchedulerLock(lockAtLeastFor = "PT10S")` (`SchedulingConfig:27-29`), so the second and third sweeps inside one 10-second window are *skipped* and `verify(push).send(...)` fails with zero interactions. Construct the bean explicitly with a fixed `Clock` and mocked collaborators and call `sweep()` directly, exactly as the existing `NotifyReleaseSenderTest:44-65` does — read that file first; its Javadoc documents both this and the next hazard.
