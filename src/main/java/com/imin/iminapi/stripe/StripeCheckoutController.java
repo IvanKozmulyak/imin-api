@@ -52,10 +52,10 @@ public class StripeCheckoutController {
         // normalizes blank to null, so a hostile or over-long param can't break the insert.
         CheckoutAttribution attribution = new CheckoutAttribution(
                 body.utmSource(), body.utmMedium(), body.utmCampaign(), body.anonId());
-        String url = checkout.createCheckoutSession(eventId, body.tierId(), quantity,
+        StripeCheckoutService.CheckoutResult result = checkout.createCheckout(eventId, body.tierId(), quantity,
                 promoCode, body.expectedPriceMinor(), body.email(), adsConsent, marketingOptIn,
                 attribution, body.locale());
-        return new CheckoutResponse(url);
+        return new CheckoutResponse(result.url(), result.kind(), result.sessionId(), result.orderToken());
     }
 
     public record CheckoutRequest(@NotNull UUID tierId,
@@ -101,5 +101,10 @@ public class StripeCheckoutController {
                                    // account, so the order is the only place it can live.
                                    String locale) {}
 
-    public record CheckoutResponse(String url) {}
+    /**
+     * {@code url} is unchanged and still first — imin-public reads only that.
+     * {@code kind} is {@code "stripe"} or {@code "order"}; {@code sessionId} is
+     * present only for {@code "stripe"}.
+     */
+    public record CheckoutResponse(String url, String kind, String sessionId, String orderToken) {}
 }

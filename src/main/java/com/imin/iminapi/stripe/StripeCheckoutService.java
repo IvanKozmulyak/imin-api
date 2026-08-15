@@ -98,6 +98,38 @@ public class StripeCheckoutService {
     }
 
     /**
+     * What a checkout call produced. {@code kind} exists because the two
+     * branches return structurally different things through what used to be one
+     * {@code url} string: a Stripe-hosted session the buyer must be redirected
+     * to, or a finished free order's page. Clients switched on the URL's shape;
+     * now they switch on this.
+     *
+     * @param sessionId the Stripe Checkout Session id, or null on the free path.
+     *                  Clients poll {@code GET /api/v1/public/checkout/{sessionId}}
+     *                  with it to learn when issuance finished.
+     */
+    public record CheckoutResult(String kind, String url, String sessionId, String orderToken) {
+
+        public static final String KIND_STRIPE = "stripe";
+        public static final String KIND_ORDER = "order";
+
+        public static CheckoutResult stripe(String url, String sessionId) {
+            return new CheckoutResult(KIND_STRIPE, url, sessionId, null);
+        }
+
+        /**
+         * The free path finishes the purchase outright. {@code orderToken} is
+         * the same value embedded in {@code url} — returned as a field so a
+         * client does not have to slice it out of a web URL it should not be
+         * parsing. Two of the six events in the design handoff are free, so
+         * this is a real app path, not an edge case.
+         */
+        public static CheckoutResult order(String url, String orderToken) {
+            return new CheckoutResult(KIND_ORDER, url, null, orderToken);
+        }
+    }
+
+    /**
      * @param promoCode optional buyer-supplied code. Validated against the event's promo list;
      *                  on success a one-shot Stripe Coupon is attached to the Session so the
      *                  discount appears at checkout. Invalid code → 400 INVALID_PROMO_CODE (we
@@ -149,7 +181,7 @@ public class StripeCheckoutService {
      * Stripe; the explicit release-on-failure path below and the ReservationSweeper keep holds
      * correct if Stripe then fails or this process dies mid-flight.
      */
-    public String createCheckoutSession(UUID eventId, UUID tierId, int quantity,
+    public CheckoutResult createCheckout(UUID eventId, UUID tierId, int quantity,
                                          String promoCode, Integer expectedPriceMinor, String buyerEmail,
                                          boolean adsConsent, boolean marketingOptIn,
                                          CheckoutAttribution attribution, String rawLocale) {
@@ -217,7 +249,7 @@ public class StripeCheckoutService {
             // Best-effort confirmation email; failures are logged inside the service.
             // Branded ticket-issued email now rides TicketsIssuedEvent (published inside
             // issueFreeOrder) — same renderer/template as the paid path; no inline send.
-            return freeCheckoutService.orderUrl(order);
+            return CheckoutResult.order(freeCheckoutService.orderUrl(order), order.getToken());
         }
 
         if (tier.getStripePriceId() == null || tier.getStripePriceId().isBlank()) {
@@ -427,7 +459,19 @@ public class StripeCheckoutService {
             log.warn("Failed to attach session id {} to reservation {}: {}",
                     session.getId(), reservationId, e.getMessage());
         }
-        return session.getUrl();
+        return CheckoutResult.stripe(session.getUrl(), session.getId());
+    }
+
+    /**
+     * Pre-discriminant form. Kept because five overloads and their callers
+     * expect a bare URL; new callers should use {@link #createCheckout}.
+     */
+    public String createCheckoutSession(UUID eventId, UUID tierId, int quantity,
+                                         String promoCode, Integer expectedPriceMinor, String buyerEmail,
+                                         boolean adsConsent, boolean marketingOptIn,
+                                         CheckoutAttribution attribution, String rawLocale) {
+        return createCheckout(eventId, tierId, quantity, promoCode, expectedPriceMinor, buyerEmail,
+                adsConsent, marketingOptIn, attribution, rawLocale).url();
     }
 
     /**
