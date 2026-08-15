@@ -1987,10 +1987,14 @@ git commit -m "feat(buyer): native Google sign-in via OS-issued ID token"
 
 > **Prerequisite — `BuyerOAuthService.resolve` is Google-flavoured in four places that are not the `PROVIDER` constant.** The constant (`:88`) is genuinely absent from `resolve`, but grepping for it is the wrong check. Fix all four as part of this task:
 >
-> 1. **`:205` files every new address as `ADDED_VIA_GOOGLE`.** An Apple relay address would be recorded as having arrived via Google — in `buyer_account_emails.added_via`, which is surfaced on `BuyerMeResponse:51` and feeds DSAR export. Add `BuyerAccountEmail.ADDED_VIA_APPLE = "apple"` and select on `info.provider()`. No migration needed: `V83:51` is `VARCHAR(16) NOT NULL` with no CHECK constraint.
+> 1. **`:205` files every new address as `ADDED_VIA_GOOGLE`.** An Apple relay address would be recorded as having arrived via Google. The only reader is `BuyerMeResponse.Address.addedVia` (`:61`), surfaced by `GET /buyer/me`, `GET /buyer/emails` and every sign-in response — **not** DSAR export, whose sole contact with this repository is `existsByVerifiedKey` at `DsarService:197` and which never reads the column. So this is wrong provenance shown to the buyer, not a corrupted compliance record. Add `BuyerAccountEmail.ADDED_VIA_APPLE = "apple"` and select on `info.provider()`; make the selector **fail closed** on an unrecognised provider rather than defaulting, so a future third provider cannot silently mislabel. No migration needed: `added_via` (`V83:51`) is `VARCHAR(16) NOT NULL` with no CHECK, and `buyer_identities.provider` (`V83:91`) already carries the comment `-- google (apple later)`.
 > 2. **`:184`'s 409 message** says "Google has not verified this email address. Sign in with your password instead." — shown to an Apple user. Make it provider-neutral.
 > 3. **`:196` and `:211` log** "google identity linked" / "google sign-up created buyer account". Interpolate the provider.
-> 4. Only after those: confirm nothing else in the method assumes Google.
+> 4. **The class Javadoc, which the prerequisite's "four places" does not cover.** Once `resolve` serves Apple, three passages are wrong: the header "Google sign-in for <b>buyers</b>", matrix bullet 3 "Google has not verified the email", and the closing trap paragraph addressed to "whoever unblocks Apple" — that reader is this commit. Update all three.
+>
+> 5. Only after those: confirm nothing else in the method assumes Google.
+>
+> **None of the plan's own tests cover items 1–3.** Reverting `addedVia(info.provider())` to `ADDED_VIA_GOOGLE` leaves the whole Task 5 suite green, because `BuyerGoogleSignInTest:88` pins only the Google side. Add an `$.emails[0].addedVia == "apple"` assertion and a `not(containsStringIgnoringCase("google"))` matcher on `$.error.message` in an unverified-token case.
 
 ---
 
