@@ -24,7 +24,13 @@ public record BuyerPreferencesResponse(
          * control that silently does nothing.
          */
         boolean organizerUpdatesLocked,
-        boolean productNews) {
+        boolean productNews,
+        /**
+         * The native app's drop-alert push switch (V92). Defaults true, and is
+         * meaningless to a browser: the OS permission is the primary gate and
+         * only the app can hold one. The buyer site does not render it.
+         */
+        boolean pushDropAlerts) {
 
     /**
      * One row of {@code GET /buyer/organizers} — read-only disclosure of who
