@@ -64,7 +64,7 @@ Phase 0 has config gates that stay closed until these arrive. All three default 
 
 | Env var | Value | Consequence while unset |
 |---|---|---|
-| `GOOGLE_OAUTH_NATIVE_AUDIENCE` | the **Web** OAuth client id — this is what *both* native apps pass as `serverClientId`, so one audience covers iOS and Android | `GoogleOAuthService.nativeEnabled()` is false ⇒ `POST /buyer/auth/google/native` answers 404 `OAUTH_PROVIDER_DISABLED` |
+| `GOOGLE_OAUTH_NATIVE_AUDIENCE` | the **Web** OAuth client id — this is what *both* native apps pass as `serverClientId`, so one audience covers iOS and Android | **Nothing — the endpoint is already live.** `getNativeAudience()` falls back to `client-id`, which is set in production, so `nativeEnabled()` is already true and `POST /buyer/auth/google/native` verifies tokens against the web client id today. That is the correct value in the normal setup; the override only matters if the apps are ever pointed at a different Google project. Verified against production 2026-08-15. |
 | `APPLE_OAUTH_NATIVE_AUDIENCE` | the **bundle id** `wtf.imin.fan` — *not* the web Services ID in `apple.client-id`, which is a different value for the organizer web flow | `AppleNativeIdentityService.enabled()` is false ⇒ `POST /buyer/auth/apple/native` answers 404. **This one also blocks App Store review**: Guideline 4.8 requires Sign in with Apple wherever Google sign-in is offered |
 | `EXPO_ACCESS_TOKEN` | from the Expo org, if enhanced security is enabled on the project | push sends unauthenticated, which Expo permits by default |
 
