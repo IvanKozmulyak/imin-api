@@ -890,7 +890,7 @@ The native Stripe PaymentSheet binds to a PaymentIntent `client_secret`. There i
 - Test: `src/test/java/com/imin/iminapi/service/ticket/PaidCheckoutServiceTest.java` — add the native-metadata case
 - Test: the `CheckoutStatusService` test (locate with `grep -rln CheckoutStatusService src/test/java`)
 - Test: the `ReservationSweeper` test — add the cancel cases
-- Doc: `/Users/ivan/imin/imin-public/docs/PUBLIC_PAGE_API.md` — the widened `/public/checkout/{id}` contract
+- Doc: `/Users/ivan/imin/imin-public/docs/PUBLIC_PAGE_API.md` — the widened `/public/checkout/{id}` contract. **In the imin-public repo, not this one**: `imin-api/docs/PUBLIC_PAGE_API.md` is a 9-line stub that says it drifted and defers to imin-public. Ships lockstep with the API change.
 
 **Interfaces:**
 - Consumes: `StripeCheckoutService.CheckoutResult` (Task 2); `InventoryService.reserve(UUID, int, Instant, String)`, `InventoryService.releaseReservation(UUID, String)`, `InventoryService.attachSessionId(UUID, String)`; `QuoteService.computeFee(long, int, int, int)`; `PublicTierEligibility.loadBuyableTier`, `.assertExpectedPriceMatches`; `StripeConnectService.getStatusLive(UUID)`.
@@ -1178,7 +1178,7 @@ class NativePaymentIntentTest {
 - [ ] **Step 3: Run the test to verify it fails**
 
 Run: `./mvnw test -Dtest=NativePaymentIntentTest`
-Expected: FAIL — 404 on every case, the endpoint does not exist.
+Expected: FAIL — **a compile error** on the missing `StripePaymentIntentService`. This is a plain Mockito test with no HTTP in it, so there is no 404 to see.
 
 - [ ] **Step 4: Write the service**
 
@@ -1356,6 +1356,7 @@ import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.security.RateLimiter;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
@@ -1499,25 +1500,31 @@ Add a test to `PaidCheckoutServiceTest` (it already has 15+ cases in this exact 
 
 ```java
     @Test
-    void nativePaymentIntentIsFulfilledFromMetadataWithNoCheckoutSession() {
-        // No latest_charge, and the session list is never consulted — exactly the
+    void nativePaymentIntentIsFulfilledFromMetadataWithNoCheckoutSession() throws Exception {
+        // No latest_charge, and the session list is wired empty — exactly the
         // shape a Stripe PaymentSheet purchase arrives in.
-        PaymentIntent pi = paymentIntentWithMetadata("pi_test_native", Map.of(
+        PaymentIntent pi = pi("pi_test_native", 1500, "eur", Map.of(
                 "reservation_id", reservationId.toString(),
-                "tier_id", tierId.toString(),
+                "tier_id", tier.getId().toString(),
                 "qty", "1",
-                "event_id", eventId.toString(),
+                "event_id", event.getId().toString(),
                 "buyer_email", "native-buyer@example.test",
                 "client", "native"));
 
-        service.fulfil(pi);
+        service.issuePaidOrder(pi);
 
         Order order = orders.findByStripePaymentIntentId("pi_test_native").orElseThrow();
-        assertThat(order.getBuyerEmail()).isEqualTo("native-buyer@example.test");
+        assertThat(order.getEmail()).isEqualTo("native-buyer@example.test");
         assertThat(order.getStripeSessionId()).isNull();
-        verify(stripeClient, never()).checkout();
+        // Skipped, not merely tolerated: listing sessions for a native PI is a
+        // guaranteed-empty round trip to Stripe on every fulfilment.
+        verify(sessionService, never()).list(org.mockito.ArgumentMatchers.any());
     }
 ```
+
+> **Use the real names.** The method is `issuePaidOrder(PaymentIntent)`, not `fulfil`; the accessor is `Order.getEmail()`, not `getBuyerEmail()`; and the fixture helper in `PaidCheckoutServiceTest` is `pi(id, amount, currency, meta)`. Read the class before writing this — it already has 15+ cases in exactly this shape.
+>
+> Add two companions while you are here: the same metadata fallback must also rescue a **hosted** PI whose session lookup comes back empty, and a charge billing email must still **beat** metadata.
 
 - [ ] **Step 7: Let the app find the order it just paid for (BLOCKER)**
 
@@ -1554,6 +1561,10 @@ Add a test to `PaidCheckoutServiceTest` (it already has 15+ cases in this exact 
 Update `imin-public/docs/PUBLIC_PAGE_API.md` in the same change: `GET /api/v1/public/checkout/{id}` now accepts either id shape.
 
 - [ ] **Step 8: Cancel the PaymentIntent when its hold is released**
+
+> **Ordering matters, and it is not obvious.** Put the cancel *inside* the try, *after* the release has actually succeeded. If the release itself throws and you cancel anyway, you have killed a PaymentIntent under a buyer who may be mid-payment while the hold is still `HELD` — strictly worse than doing nothing. A cancel failure, by contrast, must not break the batch: Stripe legitimately refuses to cancel an intent that already succeeded, and that one is a real sale the webhook will fulfil.
+>
+> No `ReservationSweeperTest` exists yet — create it. Cover both of the above alongside the two cases named below.
 
 On the hosted path the reservation and the payability window are the same instant — `StripeCheckoutService:253` feeds both the reservation row and `.setExpiresAt(...)` on the Session (:368), so once `ReservationSweeper` returns the seats the session can no longer be paid. **A PaymentIntent has no `expires_at`.** Left alone, a native intent stays payable indefinitely: mint intents on a hot tier, wait out the 30-minute TTL, let the seats resell, then confirm. `InventoryService.confirmSold` on a `RELEASED` row deliberately credits `sold` anyway and logs `[OVERSOLD]`, so that becomes a real, fully-charged, fully-transferred oversold sale.
 
@@ -1596,11 +1607,11 @@ In `src/main/java/com/imin/iminapi/config/SecurityConfig.java`, directly below t
 - [ ] **Step 10: Run the tests**
 
 Run: `./mvnw test -Dtest=NativePaymentIntentTest`
-Expected: PASS (4 tests)
+Expected: PASS (5 tests)
 
 - [ ] **Step 11: Prove the two flows still agree on money**
 
-Run: `./mvnw test -Dtest='*Checkout*,*Stripe*,*Quote*,*Inventory*'`
+Run: `./mvnw test` — the **whole suite**, not a filter. `*Checkout*,*Stripe*,*Quote*,*Inventory*` matches neither `NativePaymentIntentTest` nor `NativePaymentIntentWebTest`, so a filtered run would skip the code this task adds.
 Expected: PASS. If a fee or inventory test fails, the Step 1 extraction changed behaviour — revert and redo it as a pure move.
 
 - [ ] **Step 12: Commit**
