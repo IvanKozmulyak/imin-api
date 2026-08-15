@@ -201,8 +201,30 @@ public class PaidCheckoutService {
         return true;
     }
 
-    /** One Stripe lookup that returns both the buyer email and the session id. */
+    /**
+     * One Stripe lookup that returns both the buyer email and the session id.
+     *
+     * <p>The hosted path never carries the buyer address in metadata — it rides the
+     * Checkout Session ({@code setCustomerEmail}) and is recovered by listing the
+     * Session for this PaymentIntent. <b>A natively-created PaymentIntent has no
+     * Session at all</b>, so that source is structurally empty, and the Stripe
+     * PaymentSheet does not populate {@code billing_details.email} by default.
+     * Without the {@code buyer_email} metadata fallback below, every native purchase
+     * throws at {@code issuePaidOrder} and Stripe retries forever: the buyer is
+     * charged and never receives a ticket. ({@code receipt_email} is not a way out —
+     * nothing in this codebase reads it back.)
+     */
     private Resolved resolveBuyerAndSession(PaymentIntent pi) {
+        Map<String, String> meta = pi.getMetadata() == null ? Map.of() : pi.getMetadata();
+
+        // A native PI has no Checkout Session, so listing sessions for it is a
+        // guaranteed-empty round trip and the address can only come from metadata.
+        // StripePaymentIntentService stamps both keys via the shared prelude.
+        if ("native".equals(meta.get("client"))) {
+            String fromCharge = readChargeEmail(pi);
+            return new Resolved(fromCharge != null ? fromCharge : trimToNull(meta.get("buyer_email")), null);
+        }
+
         String emailFromCharge = readChargeEmail(pi);
 
         String email = emailFromCharge;
@@ -227,7 +249,16 @@ public class PaidCheckoutService {
         } catch (StripeException e) {
             log.warn("Failed to list sessions for PI {}: {}", pi.getId(), e.getMessage());
         }
+        // Last resort for a hosted PI whose session lookup failed or came back empty.
+        // Costs nothing and turns an unfulfillable order into a fulfilled one.
+        if (email == null) email = trimToNull(meta.get("buyer_email"));
         return new Resolved(email, sessionId);
+    }
+
+    private static String trimToNull(String s) {
+        if (s == null) return null;
+        String t = s.trim();
+        return t.isEmpty() ? null : t;
     }
 
     private String readChargeEmail(PaymentIntent pi) {

@@ -12,15 +12,22 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * GET /api/v1/public/checkout/{sessionId}
+ * GET /api/v1/public/checkout/{id}
  *
- * <p>Used by the imin-public success page to learn whether the issuance
- * webhook has finished for a buyer just redirected from Stripe. Returns
+ * <p>Used by the imin-public success page — and by the native app's success
+ * screen — to learn whether the issuance webhook has finished. Returns
  * {@code {status: "ready", orderToken}} once the Order exists, otherwise
- * {@code {status: "pending"}}. The Stripe session id in the URL is the
- * authorization — only the buyer's browser receives it from Stripe's
- * redirect, and {@code Cache-Control: private, no-store} keeps it out of
- * shared caches.
+ * {@code {status: "pending"}}.
+ *
+ * <p><b>Two id shapes are accepted.</b> The web passes the Stripe Checkout
+ * Session id ({@code cs_…}) it got from Stripe's redirect. The app passes the
+ * PaymentIntent id ({@code pi_…}), because a native PaymentSheet purchase has no
+ * Checkout Session and therefore no {@code cs_…} to poll with. See
+ * {@link CheckoutStatusService#statusFor(String)}.
+ *
+ * <p>The id in the URL is the authorization in both shapes — only the buyer's
+ * own client ever holds it — and {@code Cache-Control: private, no-store} keeps
+ * it out of shared caches.
  */
 @RestController
 public class PublicCheckoutController {

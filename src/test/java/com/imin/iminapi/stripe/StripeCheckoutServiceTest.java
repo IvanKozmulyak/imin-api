@@ -359,6 +359,97 @@ class StripeCheckoutServiceTest {
         assertThat(url).isNotBlank();
     }
 
+    // ---- Shared prelude (hosted + native) -----------------------------------
+
+    /**
+     * The invariant {@code NativePaymentIntentTest} cannot prove, because it stubs
+     * the prelude: <b>a promo discounts the tickets and never the platform fee.</b>
+     *
+     * <p>The hosted path expresses the discount as a Stripe Coupon scoped to the
+     * ticket Product, so the fee line item is untouched by construction. The native
+     * path has no coupon — it subtracts the discount from the PaymentIntent amount —
+     * so the only thing keeping the platform's cut intact is that
+     * {@code reserveAndBuildMetadata} feeds {@code QuoteService.computeFee} the
+     * UNDISCOUNTED subtotal. This drives the real method to pin that.
+     *
+     * <p>2 × €25.00 = 5000. Fee = round(5000 × 500 / 10000) + 99 × 2 = 250 + 198 = 448,
+     * with or without the 20% promo.
+     */
+    @Test
+    void reserveAndBuildMetadata_computesFeeOnUndiscountedSubtotal() {
+        TicketTier priced25 = tier();
+        priced25.setPriceMinor(2500);
+        when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(priced25));
+
+        StripeCheckoutService.Priced plain = svc.priceIt(eventId, tierId, 2, null, null);
+        StripeCheckoutService.PaidPrelude noPromo = svc.reserveAndBuildMetadata(plain, eventId, tierId, 2,
+                "buyer@example.test", false, false,
+                com.imin.iminapi.model.CheckoutAttribution.NONE, "en", true);
+
+        assertThat(plain.subtotalMinor()).isEqualTo(5000L);
+        assertThat(plain.netTotalMinor()).isEqualTo(5000L);
+        assertThat(noPromo.applicationFee()).isEqualTo(448L);
+
+        com.imin.iminapi.model.PromoCode promo = new com.imin.iminapi.model.PromoCode();
+        promo.setId(UUID.randomUUID());
+        promo.setEventId(eventId);
+        promo.setCode("VECHIRKA20");
+        promo.setDiscountPct(20);
+        promo.setMaxUses(50);
+        promo.setUsedCount(0);
+        promo.setEnabled(true);
+        when(promos.findByEventId(eventId)).thenReturn(java.util.List.of(promo));
+
+        StripeCheckoutService.Priced discounted = svc.priceIt(eventId, tierId, 2, "VECHIRKA20", null);
+        StripeCheckoutService.PaidPrelude withPromo = svc.reserveAndBuildMetadata(discounted, eventId, tierId, 2,
+                "buyer@example.test", false, false,
+                com.imin.iminapi.model.CheckoutAttribution.NONE, "en", true);
+
+        assertThat(discounted.discountMinor()).isEqualTo(1000L);
+        assertThat(discounted.netTotalMinor()).isEqualTo(4000L);
+        // The assertion that fails if someone writes computeFee(netTotal, ...).
+        assertThat(withPromo.applicationFee()).isEqualTo(noPromo.applicationFee());
+        assertThat(withPromo.metadata()).containsEntry("promo_id", promo.getId().toString());
+    }
+
+    /**
+     * The native-only metadata keys. {@code buyer_email} is the only recoverable
+     * source of the buyer's address for a PaymentIntent with no Checkout Session,
+     * and {@code client} is what tells {@code PaidCheckoutService} to skip the
+     * guaranteed-empty session lookup. Both are stamped on BOTH flows on purpose —
+     * a key present on one path only is a paid buyer with no ticket on the other.
+     */
+    @Test
+    void reserveAndBuildMetadata_stampsBuyerEmailAndClientOnBothFlows() {
+        StripeCheckoutService.Priced priced = svc.priceIt(eventId, tierId, 1, null, null);
+
+        assertThat(svc.reserveAndBuildMetadata(priced, eventId, tierId, 1, " Buyer@Example.test ",
+                false, false, com.imin.iminapi.model.CheckoutAttribution.NONE, "en", false).metadata())
+                .containsEntry("buyer_email", "Buyer@Example.test")
+                .containsEntry("client", "web");
+
+        assertThat(svc.reserveAndBuildMetadata(priced, eventId, tierId, 1, "buyer@example.test",
+                false, false, com.imin.iminapi.model.CheckoutAttribution.NONE, "en", true).metadata())
+                .containsEntry("buyer_email", "buyer@example.test")
+                .containsEntry("client", "native");
+
+        // A guest who supplied no address must not get an empty-string key — absent
+        // means "unknown", and the resolver's null check depends on that.
+        assertThat(svc.reserveAndBuildMetadata(priced, eventId, tierId, 1, "   ",
+                false, false, com.imin.iminapi.model.CheckoutAttribution.NONE, "en", true).metadata())
+                .doesNotContainKey("buyer_email");
+    }
+
+    /** {@code priceIt} takes no hold and calls no Stripe — that is what lets the native flow reject a free total cleanly. */
+    @Test
+    void priceIt_isSideEffectFree() throws Exception {
+        svc.priceIt(eventId, tierId, 2, null, null);
+
+        verify(inventoryService, never()).reserve(any(), anyInt(), any(Instant.class), nullable(String.class));
+        verify(sessionService, never()).create(any(SessionCreateParams.class));
+        verify(connectService, never()).getStatusLive(any());
+    }
+
     // ---- Free flow ----------------------------------------------------------
 
     @Test

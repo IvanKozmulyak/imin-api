@@ -41,6 +41,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @SpringBootTest
@@ -381,6 +383,87 @@ class PaidCheckoutServiceTest {
         assertThat(order.getEmail()).isEqualTo("from-session@example.com");
     }
 
+    /**
+     * BLOCKER regression. A natively-created PaymentIntent has <b>no Checkout
+     * Session</b>, and the Stripe PaymentSheet does not populate
+     * {@code billing_details.email} by default — so both of the sources this
+     * resolver used to have come up empty. Before the {@code buyer_email}
+     * metadata fallback that meant an {@link IllegalStateException} on every
+     * webhook delivery: Stripe retries forever, the buyer is charged, and no
+     * ticket is ever issued.
+     *
+     * <p>The charge here carries no email and the session list is empty — exactly
+     * the shape a native purchase arrives in — and an Order must still appear.
+     */
+    @Test
+    void nativePaymentIntentIsFulfilledFromMetadataWithNoCheckoutSession() throws Exception {
+        PaymentIntent pi = pi("pi_test_native", 1500, "eur",
+                Map.of(
+                        "tier_id", tier.getId().toString(),
+                        "qty", "1",
+                        "event_id", event.getId().toString(),
+                        "buyer_email", "native-buyer@example.test",
+                        "client", "native"));
+        wireBuyerEmail(pi, null);      // PaymentSheet leaves billing_details.email unset
+        wireEmptySessionLookup();      // a native PI has no Session to find
+
+        service.issuePaidOrder(pi);
+
+        Order order = orders.findByStripePaymentIntentId("pi_test_native").orElseThrow();
+        assertThat(order.getEmail()).isEqualTo("native-buyer@example.test");
+        assertThat(order.getStripeSessionId()).isNull();
+        // The Session lookup is a guaranteed-empty round trip for a native PI, so
+        // it must be skipped entirely rather than merely tolerated.
+        verify(sessionService, never()).list(any(com.stripe.param.checkout.SessionListParams.class));
+    }
+
+    /**
+     * The same fallback rescues a HOSTED order whose Session lookup failed or came
+     * back empty (Stripe blip, retry after the session aged out). Costs nothing and
+     * turns an unfulfillable order into a fulfilled one.
+     */
+    @Test
+    void hostedPaymentIntentFallsBackToMetadataEmailWhenTheSessionLookupIsEmpty() throws Exception {
+        PaymentIntent pi = pi("pi_test_hosted_fallback", 1500, "eur",
+                Map.of(
+                        "tier_id", tier.getId().toString(),
+                        "qty", "1",
+                        "event_id", event.getId().toString(),
+                        "buyer_email", "hosted-buyer@example.test",
+                        "client", "web"));
+        wireBuyerEmail(pi, null);
+        wireEmptySessionLookup();
+
+        service.issuePaidOrder(pi);
+
+        Order order = orders.findByStripePaymentIntentId("pi_test_hosted_fallback").orElseThrow();
+        assertThat(order.getEmail()).isEqualTo("hosted-buyer@example.test");
+        // A web PI still consults the Session — that is where its address normally lives.
+        verify(sessionService).list(any(com.stripe.param.checkout.SessionListParams.class));
+    }
+
+    /**
+     * The charge's billing address still wins over metadata when Stripe actually
+     * collected one — it is the address the payment was made with.
+     */
+    @Test
+    void chargeBillingEmailBeatsMetadataOnANativeIntent() throws Exception {
+        PaymentIntent pi = pi("pi_test_native_charge_email", 1500, "eur",
+                Map.of(
+                        "tier_id", tier.getId().toString(),
+                        "qty", "1",
+                        "event_id", event.getId().toString(),
+                        "buyer_email", "metadata@example.test",
+                        "client", "native"));
+        wireBuyerEmail(pi, "from-charge@example.test");
+        wireEmptySessionLookup();
+
+        service.issuePaidOrder(pi);
+
+        assertThat(orders.findByStripePaymentIntentId("pi_test_native_charge_email").orElseThrow()
+                .getEmail()).isEqualTo("from-charge@example.test");
+    }
+
     // ─── Stripe fixture helpers ──────────────────────────────────────────────
 
     private PaymentIntent pi(String id, long amount, String currency, Map<String, String> meta) {
@@ -414,6 +497,13 @@ class PaidCheckoutServiceTest {
         }
         SessionCollection coll = new SessionCollection();
         coll.setData(List.of(s));
+        when(sessionService.list(any(com.stripe.param.checkout.SessionListParams.class))).thenReturn(coll);
+    }
+
+    /** No Session exists for this PaymentIntent — the native shape, and the hosted-blip shape. */
+    private void wireEmptySessionLookup() throws Exception {
+        SessionCollection coll = new SessionCollection();
+        coll.setData(List.of());
         when(sessionService.list(any(com.stripe.param.checkout.SessionListParams.class))).thenReturn(coll);
     }
 }

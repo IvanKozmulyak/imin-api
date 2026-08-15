@@ -2,6 +2,7 @@ package com.imin.iminapi.service.event;
 
 import com.imin.iminapi.model.TicketReservation;
 import com.imin.iminapi.repository.TicketReservationRepository;
+import com.stripe.StripeClient;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,13 +39,16 @@ public class ReservationSweeper {
     private final TicketReservationRepository reservations;
     private final InventoryService inventoryService;
     private final Clock clock;
+    private final StripeClient stripeClient;
 
     public ReservationSweeper(TicketReservationRepository reservations,
                               InventoryService inventoryService,
-                              Clock clock) {
+                              Clock clock,
+                              StripeClient stripeClient) {
         this.reservations = reservations;
         this.inventoryService = inventoryService;
         this.clock = clock;
+        this.stripeClient = stripeClient;
     }
 
     /**
@@ -68,6 +72,9 @@ public class ReservationSweeper {
             try {
                 inventoryService.releaseReservation(r.getId(), "SWEEPER");
                 released++;
+                // Only after the seats are genuinely back in the pool — cancelling an
+                // intent whose hold is still HELD would strand a buyer mid-payment.
+                cancelIfNativeIntent(r);
             } catch (Exception e) {
                 // One bad row shouldn't kill the batch — log and continue. The
                 // row stays HELD so the next tick retries.
@@ -76,5 +83,35 @@ public class ReservationSweeper {
             }
         }
         log.info("ReservationSweeper: tick done released={} skipped={}", released, skipped);
+    }
+
+    /**
+     * A released hold must also stop being payable. The hosted path gets this free
+     * from the Checkout Session's {@code expires_at}, which is the same instant as
+     * the reservation's. <b>A PaymentIntent has no equivalent</b>, so releasing the
+     * seats without cancelling would leave a payable intent for inventory somebody
+     * else can now buy — and {@link InventoryService#confirmSold} on a RELEASED row
+     * deliberately credits {@code sold} anyway and logs {@code [OVERSOLD]} rather
+     * than refusing, so the sale would go through, charged and transferred.
+     *
+     * <p>The {@code pi_} prefix is what distinguishes the two: the reservation's
+     * {@code stripeSessionId} column holds whichever Stripe object owns the
+     * payability window — a {@code cs_…} Session for hosted checkout, a {@code pi_…}
+     * PaymentIntent for the native sheet ({@code StripePaymentIntentService} stamps
+     * it through the same {@code attachSessionId} call).
+     *
+     * <p>Best-effort: a cancel failure must never stop the sweep. Stripe also refuses
+     * to cancel an intent that already succeeded, which is correct — that one is a
+     * real sale and the webhook will fulfil it.
+     */
+    private void cancelIfNativeIntent(TicketReservation reservation) {
+        String id = reservation.getStripeSessionId();
+        if (id == null || !id.startsWith("pi_")) return;
+        try {
+            stripeClient.paymentIntents().cancel(id);
+        } catch (Exception e) {
+            log.warn("Could not cancel PaymentIntent {} for released reservation {}: {}",
+                    id, reservation.getId(), e.getMessage());
+        }
     }
 }

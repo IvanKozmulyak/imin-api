@@ -130,6 +130,30 @@ public class StripeCheckoutService {
     }
 
     /**
+     * Prices a request without touching anything — no reservation, no Stripe call,
+     * no connected-account gate. Produced by {@link #priceIt} and consumed by both
+     * the hosted flow and the native PaymentIntent flow, so the two can never
+     * disagree on which tiers are buyable or what a ticket costs.
+     */
+    public record Priced(Event event, TicketTier tier, PromoCode promo,
+                         long subtotalMinor, long discountMinor, long netTotalMinor) {}
+
+    /**
+     * Everything both the hosted and the native flow must agree on: a buyable
+     * tier, a resolved promo, a ready connected account, a held reservation and
+     * the metadata map the fulfilment webhook reads.
+     *
+     * <p>Extracted so the two flows cannot drift. If you add a metadata key,
+     * add it here — {@code PaidCheckoutService} reads them off the PaymentIntent
+     * either way, and a key present on only one path is a paid buyer with no
+     * ticket.
+     */
+    public record PaidPrelude(Event event, TicketTier tier, Organization org, PromoCode promo,
+                              UUID reservationId, Instant expiresAt, long subtotalMinor,
+                              long discountMinor, long netTotalMinor, long applicationFee,
+                              String currency, Map<String, String> metadata) {}
+
+    /**
      * @param promoCode optional buyer-supplied code. Validated against the event's promo list;
      *                  on success a one-shot Stripe Coupon is attached to the Session so the
      *                  discount appears at checkout. Invalid code → 400 INVALID_PROMO_CODE (we
@@ -189,41 +213,17 @@ public class StripeCheckoutService {
         // Normalize once, here, so neither the free path nor the Stripe metadata can ever
         // carry an unsupported tag. null = "no preference" ⇒ English emails (V78).
         String buyerLocale = EmailLocale.normalizeOrNull(rawLocale);
-        if (quantity < 1 || quantity > 10) {
-            // 400, not 404 — quantity is a client bug, not an event-discovery question.
-            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
-                    "quantity must be between 1 and 10");
-        }
 
-        // 1. Load + validate event (must be publicly visible).
-        Event event = events.findPublic(eventId).orElseThrow(() -> ApiException.notFound("Event"));
+        // Steps 1-2c live in priceIt, shared with the native PaymentIntent flow so the
+        // two can never disagree on which tiers are buyable or what a ticket costs.
+        // Side-effect free: nothing is reserved and Stripe is not called, so a rejection
+        // here leaves nothing to clean up.
+        Priced priced = priceIt(eventId, tierId, quantity, promoCode, expectedPriceMinor);
+        Event event = priced.event();
+        TicketTier tier = priced.tier();
+        PromoCode promo = priced.promo();
 
-        // 2. Load + validate tier (belongs to event, enabled, in sale window, has price+quantity).
-        // Shared eligibility predicate so quote and checkout never disagree on buyability — see PublicTierEligibility.
-        Instant now = clock.instant();
-        TicketTier tier = PublicTierEligibility.loadBuyableTier(tiers, eventId, tierId, now);
-
-        // 2a. Price-drift guard. No-op when the client didn't send `expectedPriceMinor`.
-        // When supplied and mismatched → 409 PRICE_CHANGED with `currentPriceMinor` in fields.
-        PublicTierEligibility.assertExpectedPriceMatches(tier, expectedPriceMinor);
-
-        // 2b. Resolve promo (if any) BEFORE deciding free vs paid. An invalid promo
-        // throws 400 regardless of the eventual flow — that's a buyer-fixable typo.
-        PromoCode promo = resolvePromoCode(eventId, promoCode);
-
-        // 2c. Compute the net total after discount. Same math the quote endpoint
-        // uses (see QuoteService.evaluatePromo). If the net is 0 — whether because
-        // the tier itself is free OR a 100%-off promo zeroed out a paid tier — we
-        // bypass Stripe entirely. Stripe Checkout *can* handle $0 sessions, but
-        // routing them through Stripe is wasted latency and a redundant network
-        // hop for the buyer; keeping the free path local also avoids needing a
-        // Stripe-side org account, useful for free events from orgs that haven't
-        // finished onboarding.
-        long subtotal = (long) tier.getPriceMinor() * quantity;
-        long discount = computeDiscount(promo, subtotal);
-        long netTotal = Math.max(0L, subtotal - discount);
-
-        if (netTotal == 0L) {
+        if (priced.netTotalMinor() == 0L) {
             String email = buyerEmail == null ? null : buyerEmail.trim();
             if (email == null || email.isEmpty()) {
                 throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
@@ -252,60 +252,17 @@ public class StripeCheckoutService {
             return CheckoutResult.order(freeCheckoutService.orderUrl(order), order.getToken());
         }
 
-        if (tier.getStripePriceId() == null || tier.getStripePriceId().isBlank()) {
-            // Product sync failed earlier (best-effort). Surface as 404 to the buyer — they have nothing
-            // they can do about it — and let the organizer see the dashboard error.
-            log.warn("Tier {} has no Stripe price id — checkout blocked", tier.getId());
-            throw ApiException.notFound("Event");
-        }
-
-        // 3. Load org + verify the connected account is ready.
-        Organization org = orgs.findById(event.getOrgId()).orElseThrow(() -> ApiException.notFound("Event"));
-        if (org.getStripeAccountId() == null || org.getStripeAccountId().isBlank()) {
-            throw ApiException.notFound("Event");
-        }
-        // Authoritative readiness: force-refresh from Stripe (degrading to the mirror if Stripe
-        // is down) rather than trusting a possibly-stale local mirror to gate money movement.
-        StripeConnectService.StatusResult status = connectService.getStatusLive(org.getId());
-        if (!status.readyToReceivePayments()) {
-            throw ApiException.notFound("Event");
-        }
-
-        // Promo was resolved earlier (before the free-vs-paid branch).
-
-        // 4a. Reserve inventory BEFORE creating the Stripe Session. This locks the tier row
-        // and atomically claims `quantity` seats. If we can't reserve, we collapse to 404 to
-        // preserve the leak-safe behavior (don't reveal "sold out vs not found vs wrong tier"
-        // to the buyer-facing public API). If reserve succeeds but Stripe later fails, we
-        // release the hold below before rethrowing so the buyer doesn't get a phantom hold.
-        //
-        // The reservation row is written with its expires_at mirroring the Stripe session's
-        // expires_at (Stripe minimum: 30 minutes), so the ReservationSweeper releases the
-        // hold even if checkout.session.expired never reaches us.
-        Instant expiresAt = clock.instant().plus(Duration.ofMinutes(props.getCheckoutSessionTtlMinutes()));
-        UUID reservationId;
-        try {
-            // sessionId is null at this point — we haven't called Stripe yet. The webhook
-            // resolves the hold via the reservation_id we stamp into metadata below.
-            reservationId = inventoryService.reserve(tierId, quantity, expiresAt, null);
-        } catch (ApiException e) {
-            if (e.status() == HttpStatus.CONFLICT) {
-                // "Not enough tickets" — remap so the buyer can't enumerate inventory state.
-                throw ApiException.notFound("Event");
-            }
-            throw e;
-        }
-
-        // 5. Compute platform fee. Same formula QuoteService uses so the buyer's
-        // displayed total matches what Stripe charges. The fee is computed on the
-        // *undiscounted* subtotal so a promo doesn't shrink our cut. The application
-        // fee equals the buyer-visible service-fee line item — the organizer is paid
-        // the net ticket revenue (subtotal − discount), platform keeps the fee.
-        long subtotalMinor = (long) tier.getPriceMinor() * quantity;
-        long applicationFee = QuoteService.computeFee(subtotalMinor, quantity,
-                props.getApplicationFeeBps(), props.getApplicationFeeFixedMinor());
-        String currency = event.getCurrency() == null
-                ? "eur" : event.getCurrency().toLowerCase(Locale.ROOT);
+        // Steps 3-5 plus the fulfilment metadata map live in reserveAndBuildMetadata,
+        // shared with the native PaymentIntent flow so the readiness gate, the inventory
+        // hold, the platform fee and the metadata the webhook reads cannot drift apart.
+        PaidPrelude prelude = reserveAndBuildMetadata(priced, eventId, tierId, quantity, buyerEmail,
+                adsConsent, marketingOptIn, attribution, rawLocale, false);
+        Organization org = prelude.org();
+        UUID reservationId = prelude.reservationId();
+        Instant expiresAt = prelude.expiresAt();
+        long applicationFee = prelude.applicationFee();
+        String currency = prelude.currency();
+        Map<String, String> metadata = prelude.metadata();
 
         // 6. Build the session.
         SessionCreateParams.Builder builder = SessionCreateParams.builder()
@@ -331,44 +288,16 @@ public class StripeCheckoutService {
                     .build());
         }
 
-        // Build the metadata map ONCE and mirror it onto both the Session and the
-        // underlying PaymentIntent. The webhook keys fulfilment off
-        // payment_intent.succeeded (the PI is what tells us the money moved), so
-        // it must see the same reservation_id/tier_id/qty/event_id/promo_id the
-        // Session would. reservation_id is the primary inventory key — the
-        // webhook calls InventoryService.{confirmSold,releaseReservation}(reservationId);
-        // tier_id and qty remain for issuance (PaidCheckoutService reads them
-        // when it materializes Order + Ticket rows).
-        Map<String, String> metadata = new HashMap<>();
-        metadata.put("reservation_id", reservationId.toString());
-        metadata.put("tier_id", tierId.toString());
-        metadata.put("qty", String.valueOf(quantity));
-        metadata.put("event_id", eventId.toString());
-        // Ride the buyer's cookie-consent ads-consent decision (§7) through Stripe session
-        // metadata so PaidCheckoutService can snapshot it onto orders.ads_consent at
-        // webhook-driven order creation. Only "true" enables the server-side CAPI event.
-        metadata.put("ads_consent", String.valueOf(adsConsent));
-        metadata.put("marketing_opt_in", String.valueOf(marketingOptIn));
-        // Ride the landing utm_* + anon_id (V62) the same way so PaidCheckoutService can
-        // snapshot them onto orders.utm_* at webhook-driven order creation — that's what
-        // turns per-campaign revenue from a visit-share estimate into a true per-order sum.
-        // Absent fields are omitted rather than written as "null".
-        attribution.putInto(metadata);
-        // Buyer's UI language (V78). The Order is only created at webhook fulfilment, so
-        // the locale has to survive the Stripe round-trip like every other checkout-time
-        // fact; PaidCheckoutService reads it back onto orders.buyer_locale. Omitted when
-        // unknown, so a missing key means "no preference", not "English was chosen".
-        if (buyerLocale != null) {
-            metadata.put("buyer_locale", buyerLocale);
-        }
-
         String couponId = null;
         if (promo != null) {
             // Create a one-shot Stripe Coupon on the platform account and attach it. The
             // coupon is scoped to the ticket Product (applies_to.products) so it never
-            // discounts the service-fee line item — promos discount tickets only.
+            // discounts the service-fee line item — promos discount tickets only. This is
+            // the one piece of the paid prelude that stays here: a Coupon is a hosted-
+            // Checkout construct, and the native flow subtracts the discount from the
+            // PaymentIntent amount instead. `promo_id` metadata is stamped in the shared
+            // prelude, so both flows carry it.
             couponId = createOneShotCoupon(promo, eventId, tier.getStripeProductId());
-            metadata.put("promo_id", promo.getId().toString());
         }
 
         // Stripe Checkout's documented minimum lifetime is 30 minutes — anything shorter
@@ -460,6 +389,185 @@ public class StripeCheckoutService {
                     session.getId(), reservationId, e.getMessage());
         }
         return CheckoutResult.stripe(session.getUrl(), session.getId());
+    }
+
+    /**
+     * Validate and price a purchase without touching anything — no inventory hold,
+     * no Stripe call, no connected-account gate.
+     *
+     * <p>Split out of {@link #createCheckout} so the native PaymentIntent flow can
+     * learn the total <b>before</b> deciding whether it can serve the request at all.
+     * That ordering is load-bearing: a free tier fails the {@code stripePriceId} /
+     * readiness checks in {@link #reserveAndBuildMetadata} with a leak-safe 404, which
+     * would be a useless answer to "this ticket is free" — and reaching the reserve
+     * first would take a hold the caller then has to clean up.
+     */
+    public Priced priceIt(UUID eventId, UUID tierId, int quantity,
+                          String promoCode, Integer expectedPriceMinor) {
+        if (quantity < 1 || quantity > 10) {
+            // 400, not 404 — quantity is a client bug, not an event-discovery question.
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
+                    "quantity must be between 1 and 10");
+        }
+
+        // 1. Load + validate event (must be publicly visible).
+        Event event = events.findPublic(eventId).orElseThrow(() -> ApiException.notFound("Event"));
+
+        // 2. Load + validate tier (belongs to event, enabled, in sale window, has price+quantity).
+        // Shared eligibility predicate so quote and checkout never disagree on buyability — see PublicTierEligibility.
+        Instant now = clock.instant();
+        TicketTier tier = PublicTierEligibility.loadBuyableTier(tiers, eventId, tierId, now);
+
+        // 2a. Price-drift guard. No-op when the client didn't send `expectedPriceMinor`.
+        // When supplied and mismatched → 409 PRICE_CHANGED with `currentPriceMinor` in fields.
+        PublicTierEligibility.assertExpectedPriceMatches(tier, expectedPriceMinor);
+
+        // 2b. Resolve promo (if any) BEFORE deciding free vs paid. An invalid promo
+        // throws 400 regardless of the eventual flow — that's a buyer-fixable typo.
+        PromoCode promo = resolvePromoCode(eventId, promoCode);
+
+        // 2c. Compute the net total after discount. Same math the quote endpoint
+        // uses (see QuoteService.evaluatePromo). If the net is 0 — whether because
+        // the tier itself is free OR a 100%-off promo zeroed out a paid tier — we
+        // bypass Stripe entirely. Stripe Checkout *can* handle $0 sessions, but
+        // routing them through Stripe is wasted latency and a redundant network
+        // hop for the buyer; keeping the free path local also avoids needing a
+        // Stripe-side org account, useful for free events from orgs that haven't
+        // finished onboarding.
+        long subtotal = (long) tier.getPriceMinor() * quantity;
+        long discount = computeDiscount(promo, subtotal);
+        long netTotal = Math.max(0L, subtotal - discount);
+
+        return new Priced(event, tier, promo, subtotal, discount, netTotal);
+    }
+
+    /**
+     * The rest of the paid prelude, shared by the hosted and native flows: the Stripe
+     * price check, the org load and connected-account readiness gate, the inventory
+     * hold, the platform fee, and the metadata map the fulfilment webhook reads.
+     *
+     * <p>The metadata map is built ONCE here and mirrored onto both the Session and the
+     * underlying PaymentIntent (hosted) or onto the PaymentIntent alone (native). The
+     * webhook keys fulfilment off {@code payment_intent.succeeded} — the PI is what
+     * tells us the money moved — so it must see the same
+     * {@code reservation_id}/{@code tier_id}/{@code qty}/{@code event_id}/{@code promo_id}
+     * either way. {@code reservation_id} is the primary inventory key: the webhook calls
+     * {@code InventoryService.{confirmSold,releaseReservation}(reservationId)};
+     * {@code tier_id} and {@code qty} remain for issuance (PaidCheckoutService reads them
+     * when it materializes Order + Ticket rows).
+     *
+     * <p><b>Add new metadata keys here, never in one flow only</b> — a key present on one
+     * path is a paid buyer with no ticket on the other.
+     *
+     * @param nativeClient true when the caller is creating a bare PaymentIntent for the
+     *                     native payment sheet. Only affects the {@code client} metadata
+     *                     value; every money and inventory decision is identical.
+     */
+    public PaidPrelude reserveAndBuildMetadata(Priced priced, UUID eventId, UUID tierId, int quantity,
+                                               String buyerEmail, boolean adsConsent, boolean marketingOptIn,
+                                               CheckoutAttribution attribution, String rawLocale,
+                                               boolean nativeClient) {
+        if (attribution == null) attribution = CheckoutAttribution.NONE;
+        String buyerLocale = EmailLocale.normalizeOrNull(rawLocale);
+        Event event = priced.event();
+        TicketTier tier = priced.tier();
+        PromoCode promo = priced.promo();
+
+        if (tier.getStripePriceId() == null || tier.getStripePriceId().isBlank()) {
+            // Product sync failed earlier (best-effort). Surface as 404 to the buyer — they have nothing
+            // they can do about it — and let the organizer see the dashboard error.
+            log.warn("Tier {} has no Stripe price id — checkout blocked", tier.getId());
+            throw ApiException.notFound("Event");
+        }
+
+        // 3. Load org + verify the connected account is ready.
+        Organization org = orgs.findById(event.getOrgId()).orElseThrow(() -> ApiException.notFound("Event"));
+        if (org.getStripeAccountId() == null || org.getStripeAccountId().isBlank()) {
+            throw ApiException.notFound("Event");
+        }
+        // Authoritative readiness: force-refresh from Stripe (degrading to the mirror if Stripe
+        // is down) rather than trusting a possibly-stale local mirror to gate money movement.
+        StripeConnectService.StatusResult status = connectService.getStatusLive(org.getId());
+        if (!status.readyToReceivePayments()) {
+            throw ApiException.notFound("Event");
+        }
+
+        // Promo was resolved earlier (before the free-vs-paid branch).
+
+        // 4a. Reserve inventory BEFORE creating the Stripe Session. This locks the tier row
+        // and atomically claims `quantity` seats. If we can't reserve, we collapse to 404 to
+        // preserve the leak-safe behavior (don't reveal "sold out vs not found vs wrong tier"
+        // to the buyer-facing public API). If reserve succeeds but Stripe later fails, we
+        // release the hold below before rethrowing so the buyer doesn't get a phantom hold.
+        //
+        // The reservation row is written with its expires_at mirroring the Stripe session's
+        // expires_at (Stripe minimum: 30 minutes), so the ReservationSweeper releases the
+        // hold even if checkout.session.expired never reaches us.
+        Instant expiresAt = clock.instant().plus(Duration.ofMinutes(props.getCheckoutSessionTtlMinutes()));
+        UUID reservationId;
+        try {
+            // sessionId is null at this point — we haven't called Stripe yet. The webhook
+            // resolves the hold via the reservation_id we stamp into metadata below.
+            reservationId = inventoryService.reserve(tierId, quantity, expiresAt, null);
+        } catch (ApiException e) {
+            if (e.status() == HttpStatus.CONFLICT) {
+                // "Not enough tickets" — remap so the buyer can't enumerate inventory state.
+                throw ApiException.notFound("Event");
+            }
+            throw e;
+        }
+
+        // 5. Compute platform fee. Same formula QuoteService uses so the buyer's
+        // displayed total matches what Stripe charges. The fee is computed on the
+        // *undiscounted* subtotal so a promo doesn't shrink our cut. The application
+        // fee equals the buyer-visible service-fee line item — the organizer is paid
+        // the net ticket revenue (subtotal − discount), platform keeps the fee.
+        long subtotalMinor = (long) tier.getPriceMinor() * quantity;
+        long applicationFee = QuoteService.computeFee(subtotalMinor, quantity,
+                props.getApplicationFeeBps(), props.getApplicationFeeFixedMinor());
+        String currency = event.getCurrency() == null
+                ? "eur" : event.getCurrency().toLowerCase(Locale.ROOT);
+
+        Map<String, String> metadata = new HashMap<>();
+        metadata.put("reservation_id", reservationId.toString());
+        metadata.put("tier_id", tierId.toString());
+        metadata.put("qty", String.valueOf(quantity));
+        metadata.put("event_id", eventId.toString());
+        // Ride the buyer's cookie-consent ads-consent decision (§7) through Stripe session
+        // metadata so PaidCheckoutService can snapshot it onto orders.ads_consent at
+        // webhook-driven order creation. Only "true" enables the server-side CAPI event.
+        metadata.put("ads_consent", String.valueOf(adsConsent));
+        metadata.put("marketing_opt_in", String.valueOf(marketingOptIn));
+        // Ride the landing utm_* + anon_id (V62) the same way so PaidCheckoutService can
+        // snapshot them onto orders.utm_* at webhook-driven order creation — that's what
+        // turns per-campaign revenue from a visit-share estimate into a true per-order sum.
+        // Absent fields are omitted rather than written as "null".
+        attribution.putInto(metadata);
+        // Buyer's UI language (V78). The Order is only created at webhook fulfilment, so
+        // the locale has to survive the Stripe round-trip like every other checkout-time
+        // fact; PaidCheckoutService reads it back onto orders.buyer_locale. Omitted when
+        // unknown, so a missing key means "no preference", not "English was chosen".
+        if (buyerLocale != null) {
+            metadata.put("buyer_locale", buyerLocale);
+        }
+        // The hosted path carries the buyer address on the Checkout Session
+        // (setCustomerEmail, below) and PaidCheckoutService recovers it by listing the
+        // Session for the PaymentIntent. A native PI has NO Session, so without this the
+        // address is unrecoverable and fulfilment throws on every webhook retry — a
+        // charged buyer with no ticket.
+        if (buyerEmail != null && !buyerEmail.isBlank()) {
+            metadata.put("buyer_email", buyerEmail.trim());
+        }
+        // Lets the fulfilment path skip a Stripe round trip it knows will be empty, and
+        // lets analytics tell app orders from web ones.
+        metadata.put("client", nativeClient ? "native" : "web");
+        if (promo != null) {
+            metadata.put("promo_id", promo.getId().toString());
+        }
+
+        return new PaidPrelude(event, tier, org, promo, reservationId, expiresAt,
+                priced.subtotalMinor(), priced.discountMinor(), priced.netTotalMinor(),
+                applicationFee, currency, metadata);
     }
 
     /**
