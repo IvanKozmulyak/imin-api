@@ -19,7 +19,7 @@
 - **Tests:** `./mvnw test` must stay fully green. Tests run on H2 in PG-compat mode; all external services (Stripe, Expo, Google, Apple JWKS) are mocked. New integration tests follow `BuyerSavedEventsTest`: `@SpringBootTest @AutoConfigureMockMvc @Import(TestRateLimitConfig.class)`.
 - **Nullable String params in JPQL:** never put a nullable `String` into `concat`/`lower`/`like` — it passes on H2 and 500s on Postgres (`lower(bytea)`). Split into two queries.
 - **Security invariants that must survive:** buyer data is never readable by an organizer token (`hasRole("BUYER")`, not `.authenticated()`); a cookie-carrying request is always subject to the full `BuyerRequestGuardFilter`; `emailVerified` gates any flow that joins or mints an address claim.
-- **Commits:** one per task, conventional-commit prefix, no `git add -A`.
+- **Commits:** one per task, conventional-commit prefix, no `git add -A`. Every commit carries the `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>` trailer — the tasks' `git commit -m` blocks omit it for brevity, but the repo's recent history has it on every commit and the harness requires it.
 - **Error envelope:** `ApiError` wraps the body in `error`, so assertions are `$.error.code` and `$.error.message` — never `$.code`. (`$.error.code` appears 106 times in the existing suite; `$.code` zero times.)
 - **A permissive test double certifies the bug.** Several tasks here mock the very component under test for HTTP wiring; where that happens, a second non-Spring unit test drives the real logic. Do not delete those — they are the tests that fail when the logic breaks.
 - **MockMvc never parses a raw `Cookie` header.** `MockHttpServletRequest.addHeader` special-cases only `Content-Type` and `Accept-Language`; everything else is stored verbatim and never reaches `getCookies()`, which is what `BuyerSessionCookie.read` and `isShadowed` actually read. Always send a cookie with `.cookie(new Cookie(BuyerSessionCookie.NAME, value))` and read it back with `response.getCookie(NAME).getValue()`. Found the hard way in Task 1, where the header form would have made the bearer-precedence test pass with no cookie present at all — green, and proving nothing.
@@ -792,7 +792,7 @@ In `src/main/java/com/imin/iminapi/stripe/StripeCheckoutService.java`, add the r
          * this is a real app path, not an edge case.
          */
         public static CheckoutResult order(String url, String orderToken) {
-            return new CheckoutResult(KIND_ORDER, url, orderToken);
+            return new CheckoutResult(KIND_ORDER, url, null, orderToken);
         }
     }
 ```
@@ -804,12 +804,13 @@ In the same file, rename the **10-argument** `createCheckoutSession` (line 152) 
 - change the free-path return (line 220) from `return freeCheckoutService.orderUrl(order);` to `return CheckoutResult.order(freeCheckoutService.orderUrl(order), order.getToken());`
 - change the final return (line 430) from `return session.getUrl();` to `return CheckoutResult.stripe(session.getUrl(), session.getId());`
 
-Then add the back-compat shim so the four existing overloads keep working unchanged:
+Then add the back-compat shim so the five existing overloads keep working unchanged:
 
 ```java
     /**
-     * Pre-discriminant form. Kept because five overloads and their callers
-     * expect a bare URL; new callers should use {@link #createCheckout}.
+     * Pre-discriminant form. Kept because the five thin overloads above and
+     * their callers expect a bare URL; new callers should use
+     * {@link #createCheckout}.
      */
     public String createCheckoutSession(UUID eventId, UUID tierId, int quantity,
                                          String promoCode, Integer expectedPriceMinor, String buyerEmail,
@@ -843,7 +844,7 @@ In `src/main/java/com/imin/iminapi/stripe/StripeCheckoutController.java`, replac
 - [ ] **Step 6: Run the tests**
 
 Run: `./mvnw test -Dtest=CheckoutResponseShapeTest`
-Expected: PASS (2 tests)
+Expected: PASS (3 tests)
 
 - [ ] **Step 7: Run the checkout suite**
 
