@@ -183,6 +183,12 @@ public class BuyerAccountErasureService {
                 "delete from buyer_saved_events where buyer_account_id = ?", accountId);
         int prefs = jdbc.update(
                 "delete from buyer_notification_preferences where buyer_account_id = ?", accountId);
+        // V92's FK does cascade this one, but a push token is a personal
+        // delivery address and the enumerated list is the only version of this
+        // step anybody reviews against the schema. Leaving it out would make the
+        // guarantee rest on a constraint nothing tests.
+        int pushDevices = jdbc.update(
+                "delete from buyer_push_devices where buyer_account_id = ?", accountId);
         identities.deleteByBuyerAccountId(accountId);
         sessions.deleteByBuyerAccountId(accountId);
         codes.deleteByBuyerAccountId(accountId);
@@ -220,9 +226,9 @@ public class BuyerAccountErasureService {
                 orgs, consumersDeleted, notifyRemoved, tombstoned);
 
         log.info("[buyer] erased account={} addresses={} memberships={} orgs={} consumers={} "
-                        + "notify={} saved={} prefs={} attempts={} optouts={} tombstoned={}",
+                        + "notify={} saved={} prefs={} devices={} attempts={} optouts={} tombstoned={}",
                 accountId, addressSet.size(), membershipsErased, orgs.size(), consumersDeleted,
-                notifyRemoved, savedEvents, prefs, attemptRows, optoutRows, tombstoned);
+                notifyRemoved, savedEvents, prefs, pushDevices, attemptRows, optoutRows, tombstoned);
 
         return result;
     }

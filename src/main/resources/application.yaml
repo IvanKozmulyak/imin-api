@@ -303,6 +303,21 @@ imin:
     allowed-origin-patterns: ${CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:3000,http://localhost:5173,https://imin-webapp.vercel.app,https://imin-webapp-*.vercel.app,https://dashboard.imin.wtf,https://imin.wtf,https://www.imin.wtf,https://imin-public.vercel.app,https://imin-public-*.vercel.app,https://t.imin.wtf}
   api:
     base-path: /api/v1
+  # Mobile force-upgrade gate, served by GET /api/v1/public/app-config.
+  # Bound to env so gating a shipped binary off is a Railway env edit, not a
+  # deploy. DEFAULT 0.0.0 = gate OFF: no build in the field is below it, so an
+  # unconfigured deploy blocks nobody. Only raise these once a build is in a
+  # store — this endpoint can only ever take installs away, and there is no way
+  # to send a fix to a client we have locked out.
+  app:
+    ios:
+      min-supported-version: ${IMIN_APP_IOS_MIN_VERSION:0.0.0}
+      latest-version: ${IMIN_APP_IOS_LATEST_VERSION:0.0.0}
+      store-url: ${IMIN_APP_IOS_STORE_URL:}
+    android:
+      min-supported-version: ${IMIN_APP_ANDROID_MIN_VERSION:0.0.0}
+      latest-version: ${IMIN_APP_ANDROID_LATEST_VERSION:0.0.0}
+      store-url: ${IMIN_APP_ANDROID_STORE_URL:}
   auth:
     session-ttl-days: 30
   buyer:
@@ -375,6 +390,14 @@ imin:
       # URI is registered in the Google Cloud console, or buyers land on
       # redirect_uri_mismatch.
       buyer-redirect-uri: ${GOOGLE_OAUTH_BUYER_REDIRECT_URI:}
+      # Audience of the ID tokens the native apps get from the OS — i.e. the
+      # serverClientId Google Sign-In is configured with on iOS and Android.
+      # Blank => falls back to client-id, which is what serverClientId should be,
+      # so the native lane needs no extra config in the normal case. Set this
+      # only if the apps are pointed at a different Google project. Note this is
+      # the ONLY gate on POST /api/v1/buyer/auth/google/native: that lane does no
+      # code exchange, so neither client-secret nor a redirect URI applies.
+      native-audience: ${GOOGLE_OAUTH_NATIVE_AUDIENCE:}
     apple:
       # Apple Developer → Certificates, IDs & Profiles → Identifiers → Services ID
       # (the OAuth client_id / audience), e.g. wtf.imin.web.
@@ -390,6 +413,14 @@ imin:
       # Services ID "Return URL", e.g.
       # https://imin-api-production.up.railway.app/api/v1/auth/apple/return.
       redirect-uri: ${APPLE_OAUTH_REDIRECT_URI:}
+      # Audience of the ID tokens the native iOS app gets from the OS — the
+      # app's BUNDLE IDENTIFIER (e.g. wtf.imin.fan), NOT the Services ID in
+      # client-id above, which is the organizer web flow's audience. Unlike the
+      # Google native lane there is NO fallback: blank => POST
+      # /api/v1/buyer/auth/apple/native 404s, which also fails App Store review
+      # under Guideline 4.8. This is the ONLY gate on that lane — it does no
+      # code exchange, so team-id / key-id / the .p8 key do not apply.
+      native-audience: ${APPLE_OAUTH_NATIVE_AUDIENCE:}
   gate:
     # Gate-scanner bearer-token lifetime. Gate phones live at venues and reboot
     # rarely; default 30 days. Override with IMIN_GATE_TOKEN_TTL_DAYS.
@@ -502,6 +533,18 @@ imin:
       # try again" several times over.
       capacity: 5
       window-minutes: 60
+  push:
+    # Outbound push to the native fan app, via Expo's push service.
+    # Dark by default: until the app ships there are no tokens to send to, and a
+    # dark sender is better than one firing at an empty registry.
+    enabled: ${IMIN_PUSH_ENABLED:false}
+    base-url: ${EXPO_PUSH_BASE_URL:https://exp.host/--/api/v2/push/send}
+    # Optional. Expo accepts unauthenticated sends; with "enhanced security" on
+    # the Expo project this becomes required.
+    access-token: ${EXPO_ACCESS_TOKEN:}
+    # Connect + read timeout. The POST runs inline on a @Scheduled sweep that
+    # shares a pool of ONE with every other job in this app — see PushConfig.
+    timeout-seconds: ${IMIN_PUSH_TIMEOUT_SECONDS:10}
   media:
     enabled: ${MEDIA_ENABLED:true}
     bucket: ${R2_BUCKET:imin-media-dev}

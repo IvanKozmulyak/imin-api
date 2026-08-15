@@ -44,6 +44,16 @@ public class BuyerAccountEmail {
     public static final String ADDED_VIA_SIGNUP = "signup";
     /** Address supplied by the Google ID token. */
     public static final String ADDED_VIA_GOOGLE = "google";
+    /**
+     * Address supplied by an Apple ID token — frequently a Hide My Email relay
+     * ({@code …@privaterelay.appleid.com}) rather than the buyer's real address.
+     * Distinct from {@link #ADDED_VIA_GOOGLE} because this value is provenance
+     * shown to the buyer: it rides {@code BuyerMeResponse.Address.addedVia} on
+     * {@code GET /buyer/me}, on every sign-in response and on
+     * {@code GET /buyer/emails}, so "where did this address come from" has to be
+     * answered truthfully.
+     */
+    public static final String ADDED_VIA_APPLE = "apple";
     /** Address added later from the profile screen. */
     public static final String ADDED_VIA_MANUAL = "manual";
 

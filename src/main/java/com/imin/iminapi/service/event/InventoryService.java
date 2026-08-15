@@ -302,6 +302,45 @@ public class InventoryService {
         reservations.save(r);
     }
 
+    /**
+     * The hold a previous request with this {@code Idempotency-Key} took, if
+     * any. Backs the native checkout's replay path — see
+     * {@code StripePaymentIntentService}.
+     *
+     * @param idempotencyKey never null or blank; a null would match the entire
+     *                       unkeyed population (every web checkout ever made).
+     */
+    @Transactional(readOnly = true)
+    public Optional<TicketReservation> findByIdempotencyKey(String idempotencyKey) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()) return Optional.empty();
+        return reservations.findByIdempotencyKey(idempotencyKey);
+    }
+
+    /**
+     * Stamp an {@code Idempotency-Key} onto a freshly-reserved hold, claiming it
+     * for this request.
+     *
+     * <p><b>The unique index is the decision, not this method.</b> The write is
+     * flushed inside this transaction so a second concurrent caller with the
+     * same key fails here, on
+     * {@code uq_ticket_reservations_idem}, rather than at some later commit —
+     * which is what lets the loser release its hold before it has asked Stripe
+     * for anything. A check-then-act on
+     * {@link #findByIdempotencyKey} alone would let two racing retries both take
+     * seats.
+     *
+     * @throws org.springframework.dao.DataIntegrityViolationException when the
+     *         key is already claimed by another reservation.
+     */
+    @Transactional
+    public void claimIdempotencyKey(UUID reservationId, String idempotencyKey) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()) return;
+        TicketReservation r = reservations.findById(reservationId)
+                .orElseThrow(() -> ApiException.notFound("TicketReservation"));
+        r.setIdempotencyKey(idempotencyKey);
+        reservations.saveAndFlush(r);
+    }
+
     /** Same shape as {@link #releaseReservationBySessionId} but for the success path. */
     @Transactional
     public boolean confirmSoldBySessionId(String stripeSessionId) {

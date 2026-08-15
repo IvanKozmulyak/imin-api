@@ -137,7 +137,8 @@ public class BuyerPreferencesService {
                 row.isEventReminders(),
                 reach.anySubscribed(),
                 reach.locked(),
-                row.isProductNews());
+                row.isProductNews(),
+                row.isPushDropAlerts());
     }
 
     @Transactional(readOnly = true)
@@ -171,6 +172,9 @@ public class BuyerPreferencesService {
         if (patch.containsKey("productNews")) {
             rowFor(accountId).setProductNews(bool(patch.get("productNews"), "productNews"));
         }
+        if (patch.containsKey("pushDropAlerts")) {
+            rowFor(accountId).setPushDropAlerts(bool(patch.get("pushDropAlerts"), "pushDropAlerts"));
+        }
         // Resolved once and threaded through. The address → consumer →
         // membership → optout walk is the expensive part of this endpoint, and
         // doing it again for the response doubled it on every write.
@@ -181,7 +185,8 @@ public class BuyerPreferencesService {
         }
         BuyerNotificationPreference row = rowFor(accountId);
         return new BuyerPreferencesResponse(
-                row.isEventReminders(), reach.anySubscribed(), reach.locked(), row.isProductNews());
+                row.isEventReminders(), reach.anySubscribed(), reach.locked(), row.isProductNews(),
+                row.isPushDropAlerts());
     }
 
     private void fanOut(UUID accountId, Reach reach, boolean on) {

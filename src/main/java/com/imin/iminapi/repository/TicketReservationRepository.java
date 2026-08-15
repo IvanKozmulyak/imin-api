@@ -37,6 +37,17 @@ public interface TicketReservationRepository extends JpaRepository<TicketReserva
     Optional<TicketReservation> findByStripeSessionId(String stripeSessionId);
 
     /**
+     * Resolve a repeated {@code Idempotency-Key} to the hold the first call
+     * took, so a native retry replays instead of reserving again.
+     *
+     * <p>Callers must never pass null: a null argument would match the whole
+     * unkeyed population (every web checkout ever made) in insertion order.
+     * {@code StripePaymentIntentService} normalises a blank key to null and
+     * skips this lookup entirely.
+     */
+    Optional<TicketReservation> findByIdempotencyKey(String idempotencyKey);
+
+    /**
      * Atomic conditional transition HELD → RELEASED. Returns row count: 1 means
      * we won the race against a concurrent releaser / sweeper / webhook; 0 means
      * the row was already non-HELD (or unknown) and our caller should no-op.

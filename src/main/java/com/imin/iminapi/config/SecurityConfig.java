@@ -127,6 +127,8 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/v1/public/**").permitAll()
                         // Public buyer checkout — unauthenticated POST (validated server-side).
                         .requestMatchers(HttpMethod.POST, "/api/v1/public/events/*/checkout").permitAll()
+                        // Native checkout — same trust model as the hosted sibling above.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/public/events/*/payment-intent").permitAll()
                         // Public funnel beacon — unauthenticated POST, always 204 (no-leak).
                         .requestMatchers(HttpMethod.POST, "/api/v1/public/events/*/track").permitAll()
                         // Public "notify me when tickets release" subscription — unauthenticated POST.
@@ -175,7 +177,15 @@ public class SecurityConfig {
                                          "/api/v1/buyer/auth/resend-verification",
                                          "/api/v1/buyer/auth/forgot-password",
                                          "/api/v1/buyer/auth/reset-password",
-                                         "/api/v1/buyer/auth/google/callback").permitAll()
+                                         "/api/v1/buyer/auth/google/callback",
+                                         // Native sign-in: the app posts an OS-issued ID
+                                         // token instead of driving a browser redirect.
+                                         // Unauthenticated by nature, like the callback.
+                                         // Apple has no web counterpart on the buyer
+                                         // surface — App Store Guideline 4.8 needs it
+                                         // wherever Google sign-in is offered.
+                                         "/api/v1/buyer/auth/google/native",
+                                         "/api/v1/buyer/auth/apple/native").permitAll()
                         .requestMatchers(HttpMethod.GET,
                                          "/api/v1/buyer/auth/google/url").permitAll()
                         // hasRole("BUYER"), not .authenticated(): an organizer bearer

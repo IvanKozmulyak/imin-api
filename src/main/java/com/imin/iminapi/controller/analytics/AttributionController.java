@@ -7,6 +7,7 @@ import com.imin.iminapi.security.CurrentUser;
 import com.imin.iminapi.service.analytics.AttributionService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -25,9 +26,16 @@ public class AttributionController {
         this.attribution = attribution;
     }
 
+    /**
+     * @param client optional slice — {@code web} | {@code ios} | {@code android}.
+     *               Absent means every client, which is exactly what this
+     *               endpoint returned before the app existed, so the shipped
+     *               dashboard is unaffected.
+     */
     @GetMapping("/attribution")
-    public AttributionResponse attribution(@CurrentUser AuthPrincipal p) {
-        return attribution.attribution(p);
+    public AttributionResponse attribution(@CurrentUser AuthPrincipal p,
+                                           @RequestParam(required = false) String client) {
+        return attribution.attribution(p, client);
     }
 
     @GetMapping("/untagged")

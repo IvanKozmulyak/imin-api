@@ -202,6 +202,7 @@ class BuyerAccountErasureTest {
         attempt(address);
         savedEvent(account, event(orgA));
         notificationPreference(account);
+        pushDevice(account);
         marketingOptout(address, orgA);
 
         erasureService.erase(account);
@@ -215,6 +216,9 @@ class BuyerAccountErasureTest {
         assertThat(count("buyer_password_reset_tokens", "buyer_account_id", account)).isZero();
         assertThat(count("buyer_saved_events", "buyer_account_id", account)).isZero();
         assertThat(count("buyer_notification_preferences", "buyer_account_id", account)).isZero();
+        // A push token is a personal delivery address. V92 cascades it, but the
+        // enumerated delete is what a reviewer can check against the schema.
+        assertThat(count("buyer_push_devices", "buyer_account_id", account)).isZero();
 
         // The two with no FK to cascade through.
         assertThat(jdbc.queryForObject(
@@ -600,6 +604,14 @@ class BuyerAccountErasureTest {
     private void notificationPreference(UUID accountId) {
         jdbc.update("insert into buyer_notification_preferences "
                 + "(buyer_account_id, event_reminders, product_news) values (?, true, false)", accountId);
+    }
+
+    private void pushDevice(UUID accountId) {
+        jdbc.update("insert into buyer_push_devices "
+                        + "(id, buyer_account_id, expo_token, platform, created_at, last_seen_at) "
+                        + "values (?, ?, ?, 'ios', current_timestamp, current_timestamp)",
+                UUID.randomUUID(), accountId,
+                "ExponentPushToken[era" + UUID.randomUUID().toString().substring(0, 8) + "]");
     }
 
     private void marketingOptout(String address, UUID orgId) {

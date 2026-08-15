@@ -54,6 +54,7 @@ public class GoogleOAuthService {
     private final OAuthStateService stateService;
     private final RestClient http;
     private volatile OidcJwtVerifier verifier;
+    private volatile OidcJwtVerifier nativeVerifier;
 
     public GoogleOAuthService(OAuthProperties props,
                               OAuthStateService stateService,
@@ -148,6 +149,75 @@ public class GoogleOAuthService {
             throw new ApiException(HttpStatus.UNAUTHORIZED, ErrorCode.AUTH_INVALID_CREDENTIALS,
                     "Malformed Google ID token claims");
         }
+    }
+
+    // ── Native (mobile) ID tokens ──────────────────────────────────────────
+
+    /**
+     * Whether native sign-in can be served. Native sign-in needs only an
+     * audience to verify against.
+     *
+     * <p>Deliberately <b>not</b> {@code isBuyerEnabled()}: that gate requires a
+     * client secret and a buyer redirect URI, and the native lane performs no
+     * code exchange and drives no browser redirect, so neither exists for it.
+     */
+    public boolean nativeEnabled() {
+        String audience = props.getGoogle().getNativeAudience();
+        return audience != null && !audience.isBlank();
+    }
+
+    /**
+     * Verify an ID token minted by native Google Sign-In on iOS or Android.
+     *
+     * <p>No code exchange, no redirect URI, no state: the OS performs the
+     * authorization and hands the app a signed ID token, so all that remains is
+     * to prove the token is Google's, is for us, and has not expired. Nimbus
+     * checks signature and {@code exp}; issuer and audience are asserted by
+     * {@link OidcJwtVerifier} itself.
+     *
+     * <p>The audience is a <b>separate</b> verifier from the web one because the
+     * expected audience differs — reusing the web verifier would accept a token
+     * minted for the wrong client.
+     */
+    public OAuthUserInfo verifyNativeIdToken(String idToken) {
+        if (idToken == null || idToken.isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
+                    "idToken is required");
+        }
+        JWTClaimsSet claims = nativeVerifier().verify(idToken);
+        try {
+            return new OAuthUserInfo(
+                    PROVIDER,
+                    claims.getSubject(),
+                    claims.getStringClaim("email"),
+                    // asBool, NOT getBooleanClaim: Google spells email_verified
+                    // as a boolean on some tokens and as the string "true" on
+                    // others, and getBooleanClaim throws ParseException on the
+                    // string form — which the catch below would turn into a 401
+                    // for a perfectly valid token. The web path uses asBool for
+                    // the same reason.
+                    asBool(claims.getClaim("email_verified")),
+                    claims.getStringClaim("given_name"),
+                    claims.getStringClaim("family_name"),
+                    claims.getStringClaim("name"));
+        } catch (java.text.ParseException e) {
+            throw new ApiException(HttpStatus.UNAUTHORIZED, ErrorCode.AUTH_INVALID_CREDENTIALS,
+                    "Malformed Google ID token claims");
+        }
+    }
+
+    private OidcJwtVerifier nativeVerifier() {
+        OidcJwtVerifier v = nativeVerifier;
+        if (v == null) {
+            synchronized (this) {
+                v = nativeVerifier;
+                if (v == null) {
+                    v = new OidcJwtVerifier(JWKS_URL, ISSUERS, props.getGoogle().getNativeAudience());
+                    nativeVerifier = v;
+                }
+            }
+        }
+        return v;
     }
 
     @SuppressWarnings("unchecked")

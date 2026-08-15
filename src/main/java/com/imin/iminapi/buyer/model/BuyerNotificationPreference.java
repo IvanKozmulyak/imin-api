@@ -63,6 +63,18 @@ public class BuyerNotificationPreference {
     @Column(name = "product_news_proof", columnDefinition = "TEXT")
     private String productNewsProof;
 
+    /**
+     * The in-app switch for drop-alert pushes (V92). The OS permission is the
+     * primary gate; this is what lets someone keep the permission and still
+     * silence imin. Default true — registering a device already required an
+     * affirmative OS prompt.
+     *
+     * <p>Absent row means defaults, same as the two columns above: readers must
+     * treat a missing row as {@code pushDropAlerts = true}.
+     */
+    @Column(name = "push_drop_alerts", nullable = false)
+    private boolean pushDropAlerts = true;
+
     public BuyerNotificationPreference(UUID buyerAccountId) {
         this.buyerAccountId = buyerAccountId;
     }

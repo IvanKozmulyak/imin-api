@@ -1,5 +1,6 @@
 package com.imin.iminapi.buyer.controller;
 
+import com.imin.iminapi.buyer.dto.BuyerNotifySubscriptionListResponse;
 import com.imin.iminapi.buyer.dto.BuyerNotifySubscriptionResponse;
 import com.imin.iminapi.buyer.model.BuyerAccountEmail;
 import com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository;
@@ -49,9 +50,14 @@ public class BuyerNotifySubscriptionController {
         this.events = events;
     }
 
+    /**
+     * Answers {@code {items, nextCursor}}, not a bare array — see
+     * {@link com.imin.iminapi.buyer.dto.BuyerSavedListResponse}: a top-level
+     * array cannot grow a cursor without breaking every shipped app binary.
+     */
     @GetMapping("/api/v1/buyer/notify-subscriptions")
     @Transactional(readOnly = true)
-    public ResponseEntity<List<BuyerNotifySubscriptionResponse>> list(@CurrentBuyer BuyerPrincipal buyer) {
+    public ResponseEntity<BuyerNotifySubscriptionListResponse> list(@CurrentBuyer BuyerPrincipal buyer) {
         List<String> addresses = verifiedAddresses(buyer.accountId());
         if (addresses.isEmpty()) return noStore(List.of());
 
@@ -106,8 +112,10 @@ public class BuyerNotifySubscriptionController {
                 .toList();
     }
 
-    private ResponseEntity<List<BuyerNotifySubscriptionResponse>> noStore(
+    private ResponseEntity<BuyerNotifySubscriptionListResponse> noStore(
             List<BuyerNotifySubscriptionResponse> body) {
-        return ResponseEntity.ok().header(HttpHeaders.CACHE_CONTROL, NO_STORE).body(body);
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CACHE_CONTROL, NO_STORE)
+                .body(BuyerNotifySubscriptionListResponse.of(body));
     }
 }

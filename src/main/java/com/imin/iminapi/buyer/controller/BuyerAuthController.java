@@ -6,11 +6,14 @@ import com.imin.iminapi.buyer.dto.BuyerAuthUrlResponse;
 import com.imin.iminapi.buyer.dto.BuyerMeResponse;
 import com.imin.iminapi.buyer.model.BuyerAccount;
 import com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository;
+import com.imin.iminapi.buyer.security.BuyerClientKind;
 import com.imin.iminapi.buyer.security.BuyerOAuthNonceCookie;
 import com.imin.iminapi.buyer.security.BuyerSessionCookie;
 import com.imin.iminapi.buyer.service.BuyerCredentialService;
 import com.imin.iminapi.buyer.service.BuyerOAuthService;
 import com.imin.iminapi.buyer.service.BuyerSessionService;
+import com.imin.iminapi.oauth.AppleNativeIdentityService;
+import com.imin.iminapi.oauth.GoogleOAuthService;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.security.RateLimiter;
@@ -54,18 +57,36 @@ public class BuyerAuthController {
 
     private final BuyerSessionService sessions;
     private final BuyerCredentialService credentials;
-    private final BuyerOAuthService googleAuth;
+    /**
+     * The buyer-side identity resolution matrix. Named for what it does rather
+     * than for Google specifically: the native lanes hand it an already-verified
+     * {@code OAuthUserInfo} from any provider, so it is not the "Google auth"
+     * service any more.
+     */
+    private final BuyerOAuthService buyerIdentityResolver;
+    /** ID-token verification only — no code exchange on the native lane. */
+    private final GoogleOAuthService googleIdTokens;
+    /**
+     * Deliberately <b>not</b> {@code AppleOAuthService}: that one serves the
+     * organizer web flow and hardcodes {@code emailVerified = true}, which would
+     * make the buyer-side verification gate a no-op.
+     */
+    private final AppleNativeIdentityService appleIdentities;
     private final BuyerAccountEmailRepository emails;
     private final RateLimiter rateLimiter;
 
     public BuyerAuthController(BuyerSessionService sessions,
                                BuyerCredentialService credentials,
-                               BuyerOAuthService googleAuth,
+                               BuyerOAuthService buyerIdentityResolver,
+                               GoogleOAuthService googleIdTokens,
+                               AppleNativeIdentityService appleIdentities,
                                BuyerAccountEmailRepository emails,
                                RateLimiter rateLimiter) {
         this.sessions = sessions;
         this.credentials = credentials;
-        this.googleAuth = googleAuth;
+        this.buyerIdentityResolver = buyerIdentityResolver;
+        this.googleIdTokens = googleIdTokens;
+        this.appleIdentities = appleIdentities;
         this.emails = emails;
         this.rateLimiter = rateLimiter;
     }
@@ -97,7 +118,7 @@ public class BuyerAuthController {
     public ResponseEntity<BuyerMeResponse> verifyEmail(@Valid @RequestBody BuyerAuthRequests.VerifyEmail req,
                                                        HttpServletRequest http) {
         var signedIn = credentials.verifyEmail(req.email(), req.code(), userAgent(http));
-        return signedInResponse(signedIn.account(), signedIn.session());
+        return signedInResponse(signedIn.account(), signedIn.session(), http);
     }
 
     @PostMapping("/api/v1/buyer/auth/resend-verification")
@@ -113,7 +134,7 @@ public class BuyerAuthController {
                                                  HttpServletRequest http) {
         rateLimiter.consume("buyer-login", EmailNormalizer.normalize(req.email()));
         var signedIn = credentials.login(req.email(), req.password(), userAgent(http));
-        return signedInResponse(signedIn.account(), signedIn.session());
+        return signedInResponse(signedIn.account(), signedIn.session(), http);
     }
 
     @PostMapping("/api/v1/buyer/auth/forgot-password")
@@ -145,7 +166,7 @@ public class BuyerAuthController {
     @GetMapping("/api/v1/buyer/auth/google/url")
     public ResponseEntity<BuyerAuthUrlResponse> googleUrl() {
         requireGoogleEnabled();
-        BuyerOAuthService.Authorize authorize = googleAuth.authorizeUrl();
+        BuyerOAuthService.Authorize authorize = buyerIdentityResolver.authorizeUrl();
         return ResponseEntity.ok()
                 .header(HttpHeaders.SET_COOKIE, authorize.nonceCookie().toString())
                 .header(HttpHeaders.CACHE_CONTROL, NO_STORE)
@@ -163,7 +184,7 @@ public class BuyerAuthController {
             @Valid @RequestBody BuyerAuthRequests.GoogleCallback req,
             HttpServletRequest http) {
         requireGoogleEnabled();
-        var signedIn = googleAuth.callback(
+        var signedIn = buyerIdentityResolver.callback(
                 req.code(), req.state(), BuyerOAuthNonceCookie.read(http), userAgent(http));
         return ResponseEntity.ok()
                 .header(HttpHeaders.SET_COOKIE, signedIn.session().cookie().toString())
@@ -172,6 +193,64 @@ public class BuyerAuthController {
                 .header(HttpHeaders.SET_COOKIE, BuyerOAuthNonceCookie.clear().toString())
                 .header(HttpHeaders.CACHE_CONTROL, NO_STORE)
                 .body(body(signedIn.account()));
+    }
+
+    /**
+     * Native Google sign-in. The app gets an ID token from the OS and posts it
+     * here; there is no redirect, no {@code state} and no nonce cookie, because
+     * there is no browser in the loop to bind to.
+     *
+     * <p>Resolution goes through the same {@link BuyerOAuthService#resolve}
+     * matrix as the web callback — including the {@code email_verified} gate —
+     * so the two entry points cannot diverge on who gets which account.
+     */
+    @PostMapping("/api/v1/buyer/auth/google/native")
+    public ResponseEntity<BuyerMeResponse> googleNative(
+            @Valid @RequestBody BuyerAuthRequests.NativeIdToken req,
+            HttpServletRequest http) {
+        // NOT requireGoogleEnabled(): that gate is isBuyerEnabled(), which
+        // requires clientId + clientSecret + buyerRedirectUri. The native lane
+        // has no redirect URI and performs no code exchange, so it needs no
+        // client secret either — gating on the web flow's config would 404
+        // native sign-in whenever GOOGLE_OAUTH_BUYER_REDIRECT_URI is unset.
+        if (!googleIdTokens.nativeEnabled()) {
+            throw new ApiException(HttpStatus.NOT_FOUND, ErrorCode.OAUTH_PROVIDER_DISABLED,
+                    "google sign-in is not configured for native clients");
+        }
+        var info = googleIdTokens.verifyNativeIdToken(req.idToken());
+        var signedIn = buyerIdentityResolver.resolve(info, userAgent(http));
+        return signedInResponse(signedIn.account(), signedIn.session(), http);
+    }
+
+    // ── Apple ──────────────────────────────────────────────────────────────
+
+    /**
+     * Native Sign in with Apple. Required by App Store Guideline 4.8 wherever
+     * Google sign-in is offered, and there is no web Apple flow for buyers — the
+     * organizer {@code form_post} pair is a different surface with a different
+     * audience and a different verifier.
+     *
+     * <p>A buyer arriving on a Hide My Email relay address matches no past guest
+     * order — deliberately, because identities match on subject and never on
+     * email. They recover their history by adding and verifying their real
+     * address under {@code /buyer/emails}, and the app should offer that
+     * immediately after a first Apple sign-in.
+     *
+     * <p>{@code fullName} is Apple-only and first-sign-in-only: Apple returns the
+     * name exactly once, so the app forwards it here on that first call or it is
+     * lost. It is client-supplied and used for display only.
+     */
+    @PostMapping("/api/v1/buyer/auth/apple/native")
+    public ResponseEntity<BuyerMeResponse> appleNative(
+            @Valid @RequestBody BuyerAuthRequests.NativeIdToken req,
+            HttpServletRequest http) {
+        if (!appleIdentities.enabled()) {
+            throw new ApiException(HttpStatus.NOT_FOUND, ErrorCode.OAUTH_PROVIDER_DISABLED,
+                    "apple sign-in is not configured for buyers");
+        }
+        var info = appleIdentities.verify(req.idToken(), req.fullName());
+        var signedIn = buyerIdentityResolver.resolve(info, userAgent(http));
+        return signedInResponse(signedIn.account(), signedIn.session(), http);
     }
 
     // ── Logout ─────────────────────────────────────────────────────────────
@@ -186,7 +265,13 @@ public class BuyerAuthController {
      */
     @PostMapping("/api/v1/buyer/auth/logout")
     public ResponseEntity<Void> logout(HttpServletRequest request) {
-        sessions.revokeByRawToken(BuyerSessionCookie.read(request));
+        // Bearer first, cookie second — the same precedence the auth filter uses,
+        // so logout always revokes the credential the caller actually presented.
+        String header = request.getHeader(HttpHeaders.AUTHORIZATION);
+        String raw = header != null && header.startsWith("Bearer ")
+                ? header.substring("Bearer ".length()).trim()
+                : BuyerSessionCookie.read(request);
+        sessions.revokeByRawToken(raw);
         return ResponseEntity.noContent()
                 .header(HttpHeaders.SET_COOKIE, sessions.clearCookie().toString())
                 .header(HttpHeaders.CACHE_CONTROL, NO_STORE)
@@ -196,18 +281,45 @@ public class BuyerAuthController {
     // ── helpers ────────────────────────────────────────────────────────────
 
     private void requireGoogleEnabled() {
-        if (!googleAuth.enabled()) {
+        if (!buyerIdentityResolver.enabled()) {
             throw new ApiException(HttpStatus.NOT_FOUND, ErrorCode.OAUTH_PROVIDER_DISABLED,
                     "google sign-in is not configured for buyers");
         }
     }
 
+    /**
+     * A signed-in response, in one of two mutually exclusive shapes.
+     *
+     * <p><b>Native clients get the token and NO cookie; browsers get the cookie
+     * and no token.</b> The exclusivity is load-bearing in both directions:
+     *
+     * <ul>
+     *   <li>Emitting {@code Set-Cookie} to a native client would break the CSRF
+     *       exemption by construction. React Native's {@code fetch} runs on
+     *       NSURLSession / OkHttp with the <b>platform cookie store enabled by
+     *       default</b>, so the app would store {@code imin_buyer_session}
+     *       (host-only, {@code Path=/api/v1/buyer}, {@code Secure} — every
+     *       attribute satisfied in production) and replay it on every later
+     *       request. {@link BuyerClientKind#isCookielessNative} would then
+     *       return false, the guard would demand an {@code Origin} the app does
+     *       not send, and logout, push-device registration and preference
+     *       updates would all 403.</li>
+     *   <li>Emitting the token to a browser would hand page JavaScript a
+     *       portable 180-day credential — see
+     *       {@link BuyerClientKind#mayReceiveRawToken}.</li>
+     * </ul>
+     */
     private ResponseEntity<BuyerMeResponse> signedInResponse(BuyerAccount account,
-                                                             BuyerSessionService.IssuedSession session) {
-        return ResponseEntity.ok()
+                                                             BuyerSessionService.IssuedSession session,
+                                                             HttpServletRequest http) {
+        BuyerMeResponse me = body(account);
+        var response = ResponseEntity.ok().header(HttpHeaders.CACHE_CONTROL, NO_STORE);
+        if (BuyerClientKind.mayReceiveRawToken(http)) {
+            return response.body(me.withSessionToken(session.rawToken()));
+        }
+        return response
                 .header(HttpHeaders.SET_COOKIE, session.cookie().toString())
-                .header(HttpHeaders.CACHE_CONTROL, NO_STORE)
-                .body(body(account));
+                .body(me);
     }
 
     /** Same projection as {@code GET /buyer/me}, so a sign-in and a reload agree. */

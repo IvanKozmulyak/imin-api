@@ -57,6 +57,16 @@ public class FunnelEvent {
     @Column(name = "referrer_host", length = 255)
     private String referrerHost;
 
+    /**
+     * Which client sent the beacon (V93): {@code "web"}, {@code "ios"} or
+     * {@code "android"}. <b>Null means web</b> — every row written before the
+     * mobile app carries null and keeps its original meaning, so there is
+     * nothing to backfill. Never inferred from a User-Agent; the client says so
+     * or it is unknown.
+     */
+    @Column(name = "client", length = 16)
+    private String client;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Times.nowMicros();
 }
