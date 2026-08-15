@@ -38,7 +38,17 @@ public record BuyerMeResponse(
         java.time.Instant termsAcceptedAt,
         Instant deleteAt,
         Instant createdAt,
-        List<Address> emails) {
+        List<Address> emails,
+        /**
+         * The raw session token, for native clients only.
+         *
+         * <p>Populated <b>only</b> by the sign-in endpoints and <b>only</b> when
+         * the request declared {@code X-Imin-Client: native}. A browser gets
+         * null here and its {@code HttpOnly} cookie instead — handing the raw
+         * token to page JavaScript would give up the whole point of the cookie.
+         * {@code GET /buyer/me} never populates it.
+         */
+        String sessionToken) {
 
     /**
      * One address on the account. {@code verified} is the only field that
@@ -69,7 +79,14 @@ public record BuyerMeResponse(
                 account.getTermsAcceptedAt(),
                 account.getDeleteAt(),
                 account.getCreatedAt(),
-                addresses.stream().map(BuyerMeResponse::toAddress).toList());
+                addresses.stream().map(BuyerMeResponse::toAddress).toList(),
+                null);
+    }
+
+    /** The same projection carrying the raw session token. Native sign-ins only. */
+    public BuyerMeResponse withSessionToken(String token) {
+        return new BuyerMeResponse(id, displayName, firstName, lastName, dateOfBirth,
+                city, locale, status, termsAcceptedAt, deleteAt, createdAt, emails, token);
     }
 
     /**

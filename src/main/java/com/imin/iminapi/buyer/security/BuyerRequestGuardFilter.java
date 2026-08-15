@@ -81,6 +81,15 @@ public class BuyerRequestGuardFilter extends OncePerRequestFilter {
             return;
         }
 
+        // Native clients carry a bearer token, never the cookie. Both checks
+        // below defend a cookie credential against cross-site forgery, and a
+        // cookieless request has no such credential to forge. The declaration
+        // itself is unforgeable cross-site — see BuyerClientKind's Javadoc.
+        if (BuyerClientKind.isCookielessNative(request)) {
+            chain.doFilter(request, response);
+            return;
+        }
+
         String origin = request.getHeader(HttpHeaders.ORIGIN);
         if (origin == null || !props.getAllowedOrigins().contains(origin)) {
             log.debug("[buyer] rejected {} {} — origin {}", request.getMethod(), request.getRequestURI(), origin);

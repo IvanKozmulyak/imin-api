@@ -92,18 +92,27 @@ public class BuyerSessionAuthFilter extends OncePerRequestFilter {
             chain.doFilter(request, response);
             return;
         }
-        if (BuyerSessionCookie.isShadowed(request)) {
-            // Two cookies of this name: one of them was set with Domain=imin.wtf
-            // by some other host under the registrable domain. Which one
-            // getCookies() returns first is not specified, so authenticate
-            // nobody rather than authenticate whoever won the ordering.
-            // See BuyerSessionCookie's Javadoc for why not __Host-.
-            log.warn("[buyer] refused a request carrying duplicate {} cookies", BuyerSessionCookie.NAME);
-            request.setAttribute("imin.authErrorCode", ErrorCode.AUTH_MISSING);
-            chain.doFilter(request, response);
-            return;
+
+        // Bearer first. A native client holds the raw token; the cookie is a
+        // browser transport for the same opaque credential, resolved against the
+        // same rows by the same hash. When a bearer token is present the cookie
+        // is ignored entirely rather than used as a fallback — one request, one
+        // credential, no ambiguity about which identity won.
+        String raw = bearerToken(request);
+        if (raw == null) {
+            if (BuyerSessionCookie.isShadowed(request)) {
+                // Two cookies of this name: one of them was set with Domain=imin.wtf
+                // by some other host under the registrable domain. Which one
+                // getCookies() returns first is not specified, so authenticate
+                // nobody rather than authenticate whoever won the ordering.
+                // See BuyerSessionCookie's Javadoc for why not __Host-.
+                log.warn("[buyer] refused a request carrying duplicate {} cookies", BuyerSessionCookie.NAME);
+                request.setAttribute("imin.authErrorCode", ErrorCode.AUTH_MISSING);
+                chain.doFilter(request, response);
+                return;
+            }
+            raw = BuyerSessionCookie.read(request);
         }
-        String raw = BuyerSessionCookie.read(request);
         if (raw == null) {
             chain.doFilter(request, response);
             return;
@@ -159,5 +168,22 @@ public class BuyerSessionAuthFilter extends OncePerRequestFilter {
 
     static boolean isBuyerPath(String uri) {
         return uri != null && BUYER_PATH.matcher(uri).matches();
+    }
+
+    /**
+     * The raw token from {@code Authorization: Bearer …}, or null.
+     *
+     * <p>This runs after {@link com.imin.iminapi.security.BearerTokenAuthFilter},
+     * which will already have tried the same header as an organizer session and
+     * as a gate token and found neither — the three token kinds live in
+     * different tables, so a buyer token falls through unauthenticated and
+     * reaches here. The no-op-if-already-authenticated guard at the top of
+     * {@code doFilterInternal} is what keeps the two from fighting.
+     */
+    private static String bearerToken(HttpServletRequest request) {
+        String header = request.getHeader("Authorization");
+        if (header == null || !header.startsWith("Bearer ")) return null;
+        String raw = header.substring("Bearer ".length()).trim();
+        return raw.isEmpty() ? null : raw;
     }
 }

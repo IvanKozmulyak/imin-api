@@ -6,6 +6,7 @@ import com.imin.iminapi.buyer.dto.BuyerAuthUrlResponse;
 import com.imin.iminapi.buyer.dto.BuyerMeResponse;
 import com.imin.iminapi.buyer.model.BuyerAccount;
 import com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository;
+import com.imin.iminapi.buyer.security.BuyerClientKind;
 import com.imin.iminapi.buyer.security.BuyerOAuthNonceCookie;
 import com.imin.iminapi.buyer.security.BuyerSessionCookie;
 import com.imin.iminapi.buyer.service.BuyerCredentialService;
@@ -97,7 +98,7 @@ public class BuyerAuthController {
     public ResponseEntity<BuyerMeResponse> verifyEmail(@Valid @RequestBody BuyerAuthRequests.VerifyEmail req,
                                                        HttpServletRequest http) {
         var signedIn = credentials.verifyEmail(req.email(), req.code(), userAgent(http));
-        return signedInResponse(signedIn.account(), signedIn.session());
+        return signedInResponse(signedIn.account(), signedIn.session(), http);
     }
 
     @PostMapping("/api/v1/buyer/auth/resend-verification")
@@ -113,7 +114,7 @@ public class BuyerAuthController {
                                                  HttpServletRequest http) {
         rateLimiter.consume("buyer-login", EmailNormalizer.normalize(req.email()));
         var signedIn = credentials.login(req.email(), req.password(), userAgent(http));
-        return signedInResponse(signedIn.account(), signedIn.session());
+        return signedInResponse(signedIn.account(), signedIn.session(), http);
     }
 
     @PostMapping("/api/v1/buyer/auth/forgot-password")
@@ -186,7 +187,13 @@ public class BuyerAuthController {
      */
     @PostMapping("/api/v1/buyer/auth/logout")
     public ResponseEntity<Void> logout(HttpServletRequest request) {
-        sessions.revokeByRawToken(BuyerSessionCookie.read(request));
+        // Bearer first, cookie second — the same precedence the auth filter uses,
+        // so logout always revokes the credential the caller actually presented.
+        String header = request.getHeader(HttpHeaders.AUTHORIZATION);
+        String raw = header != null && header.startsWith("Bearer ")
+                ? header.substring("Bearer ".length()).trim()
+                : BuyerSessionCookie.read(request);
+        sessions.revokeByRawToken(raw);
         return ResponseEntity.noContent()
                 .header(HttpHeaders.SET_COOKIE, sessions.clearCookie().toString())
                 .header(HttpHeaders.CACHE_CONTROL, NO_STORE)
@@ -202,12 +209,39 @@ public class BuyerAuthController {
         }
     }
 
+    /**
+     * A signed-in response, in one of two mutually exclusive shapes.
+     *
+     * <p><b>Native clients get the token and NO cookie; browsers get the cookie
+     * and no token.</b> The exclusivity is load-bearing in both directions:
+     *
+     * <ul>
+     *   <li>Emitting {@code Set-Cookie} to a native client would break the CSRF
+     *       exemption by construction. React Native's {@code fetch} runs on
+     *       NSURLSession / OkHttp with the <b>platform cookie store enabled by
+     *       default</b>, so the app would store {@code imin_buyer_session}
+     *       (host-only, {@code Path=/api/v1/buyer}, {@code Secure} — every
+     *       attribute satisfied in production) and replay it on every later
+     *       request. {@link BuyerClientKind#isCookielessNative} would then
+     *       return false, the guard would demand an {@code Origin} the app does
+     *       not send, and logout, push-device registration and preference
+     *       updates would all 403.</li>
+     *   <li>Emitting the token to a browser would hand page JavaScript a
+     *       portable 180-day credential — see
+     *       {@link BuyerClientKind#mayReceiveRawToken}.</li>
+     * </ul>
+     */
     private ResponseEntity<BuyerMeResponse> signedInResponse(BuyerAccount account,
-                                                             BuyerSessionService.IssuedSession session) {
-        return ResponseEntity.ok()
+                                                             BuyerSessionService.IssuedSession session,
+                                                             HttpServletRequest http) {
+        BuyerMeResponse me = body(account);
+        var response = ResponseEntity.ok().header(HttpHeaders.CACHE_CONTROL, NO_STORE);
+        if (BuyerClientKind.mayReceiveRawToken(http)) {
+            return response.body(me.withSessionToken(session.rawToken()));
+        }
+        return response
                 .header(HttpHeaders.SET_COOKIE, session.cookie().toString())
-                .header(HttpHeaders.CACHE_CONTROL, NO_STORE)
-                .body(body(account));
+                .body(me);
     }
 
     /** Same projection as {@code GET /buyer/me}, so a sign-in and a reload agree. */
