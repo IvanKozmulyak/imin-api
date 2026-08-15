@@ -28,7 +28,9 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.time.DateTimeException;
 import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 
@@ -81,6 +83,18 @@ public class AppleWalletPassService {
         this.orders = orders;
         this.events = events;
         this.qrSigner = qrSigner;
+
+        // Fail loudly at boot rather than silently on the first buyer's tap.
+        // Deliberately a log line and NOT a throw: an unusable certificate must
+        // not stop the application from booting — checkout, issuance, email and
+        // the door are all unaffected by a broken pass.
+        WalletCredentialCheck.validate(props).ifPresentOrElse(
+                reason -> log.error("[wallet] Apple Wallet is configured but UNUSABLE: {} "
+                        + "— /apple-wallet.pkpass will fail. Fix the credentials or set "
+                        + "APPLE_WALLET_ENABLED=false.", reason),
+                () -> log.info("[wallet] Apple Wallet {}", props.fullyConfigured()
+                        ? "configured and credentials load OK"
+                        : "not configured"));
     }
 
     public boolean isConfigured() {
@@ -141,7 +155,9 @@ public class AppleWalletPassService {
             PKSigningInformation signing = new PKSigningInformationUtil()
                     .loadSigningInformationFromPKCS12AndIntermediateCertificate(
                             new ByteArrayInputStream(p12Bytes),
-                            props.getCertPassword(),
+                            // Never null: jpasskit does keyStorePassword.toCharArray()
+                            // and an empty-password P12 wants an empty char[].
+                            props.certPasswordOrEmpty(),
                             new ByteArrayInputStream(wwdrBytes));
 
             return new PKInMemorySigningUtil()
@@ -223,10 +239,36 @@ public class AppleWalletPassService {
 
     private static String formatWhen(Event e) {
         if (e.getStartsAt() == null) return "";
-        ZoneId zone = e.getTimezone() == null ? ZoneId.systemDefault() : ZoneId.of(e.getTimezone());
         return DateTimeFormatter.ofPattern("EEE d LLL · HH:mm")
-                .withZone(zone)
+                .withZone(zoneOf(e))
                 .format(e.getStartsAt());
+    }
+
+    /**
+     * The event's timezone, or UTC.
+     *
+     * <p>The previous shape resolved this with a bare {@code ZoneId.of(...)}
+     * outside the {@code try} in {@link #generatePass(String)}, so a malformed
+     * {@code events.timezone} escaped as an unhandled 500 while the
+     * {@code systemDefault()} fallback beside it read like a safety net and
+     * caught nothing. The trigger is narrow — the column is {@code NOT NULL
+     * DEFAULT 'UTC'} and values come from a fixed country map — but a pass is a
+     * decoration and must never be able to 500 a ticket endpoint.
+     *
+     * <p>The fallback is UTC rather than {@code ZoneId.systemDefault()} on
+     * purpose: the column's own default is {@code 'UTC'}, and a door time that
+     * depends on which machine rendered it is a wrong door time.
+     */
+    private static ZoneId zoneOf(Event e) {
+        String tz = e.getTimezone();
+        if (tz == null || tz.isBlank()) return ZoneOffset.UTC;
+        try {
+            return ZoneId.of(tz);
+        } catch (DateTimeException ex) {
+            log.warn("[wallet] event {} has an unusable timezone '{}' — rendering the "
+                    + "pass date in UTC", e.getId(), tz);
+            return ZoneOffset.UTC;
+        }
     }
 
     private static String formatWhere(Event e) {

@@ -30,7 +30,7 @@ import java.util.Date;
  * trusts only Apple's real WWDR), but the test asserts the archive
  * structure and signature shape, which is what we control.
  */
-final class WalletTestCerts {
+public final class WalletTestCerts {
 
     static {
         if (Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null) {
@@ -38,11 +38,24 @@ final class WalletTestCerts {
         }
     }
 
-    record Bundle(String p12Base64, String password, String wwdrPemBase64) {}
+    public record Bundle(String p12Base64, String password, String wwdrPemBase64) {}
 
     private WalletTestCerts() {}
 
-    static Bundle generate() {
+    public static Bundle generate() {
+        return generate("test");
+    }
+
+    /**
+     * Same bundle, with a caller-chosen PKCS#12 export password.
+     *
+     * <p>Exists so a test can mint a <b>passwordless</b> archive
+     * ({@code generate("")}) — the exact shape produced by
+     * {@code openssl pkcs12 -export -passout pass:}, which the old
+     * {@code fullyConfigured()} treated as "not configured" and turned into a
+     * permanent 503.
+     */
+    public static Bundle generate(String password) {
         try {
             // Root / WWDR-shaped self-signed cert.
             X500Name wwdrSubject = new X500Name("CN=Test Apple WWDR CA, O=imin-test, C=US");
@@ -61,7 +74,6 @@ final class WalletTestCerts {
             // PKCS#12 with the leaf private key + leaf cert (chain not included;
             // the WWDR cert is supplied separately as an intermediate to jpasskit
             // via wwdrPemBase64).
-            String password = "test";
             KeyStore p12 = KeyStore.getInstance("PKCS12");
             p12.load(null, null);
             p12.setKeyEntry("imin-test", leafKp.getPrivate(),

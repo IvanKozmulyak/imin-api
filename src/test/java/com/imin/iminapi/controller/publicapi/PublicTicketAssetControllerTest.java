@@ -30,6 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest
@@ -66,11 +67,23 @@ class PublicTicketAssetControllerTest {
                 .andExpect(status().isNotFound());
     }
 
+    /**
+     * The 503 used to be {@code ResponseEntity.status(503).build()} — an empty
+     * body, where every other error in this API is an {@code ApiError} envelope
+     * and {@code imin-public} reads {@code $.error.code}.
+     *
+     * <p>Green here for the right reason: {@code src/test/resources/application.yaml}
+     * REPLACES the main file and carries no {@code imin.apple-wallet} block, so
+     * every field binds from its Java default and {@code fullyConfigured()} is
+     * false.
+     */
     @Test
-    void applePass_returns503WhenWalletNotConfigured() throws Exception {
+    void applePass_returns503WithAnErrorEnvelopeWhenWalletNotConfigured() throws Exception {
         Ticket t = persistTicket();
         mvc.perform(get("/api/v1/public/tickets/" + t.getToken() + "/apple-wallet.pkpass"))
-                .andExpect(status().isServiceUnavailable());
+                .andExpect(status().isServiceUnavailable())
+                // $.error.code, never $.code — ApiError wraps the body.
+                .andExpect(jsonPath("$.error.code").value("UPSTREAM_UNAVAILABLE"));
     }
 
     @Test

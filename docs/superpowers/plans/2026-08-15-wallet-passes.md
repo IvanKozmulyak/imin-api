@@ -233,7 +233,7 @@ Four defects, all in the "is this configured, and what happens when it isn't" se
 
 ---
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `src/test/java/com/imin/iminapi/service/ticket/WalletConfigGateTest.java`:
 
@@ -344,12 +344,12 @@ class WalletConfigGateTest {
 }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `./mvnw test -Dtest=WalletConfigGateTest`
 Expected: **FAIL** — compilation error, `WalletCredentialCheck` does not exist and `setEnabled` is not on the properties. Once those compile, `blankPasswordDoesNotDisqualifyAnOtherwiseCompleteConfig` is the one that fails on logic.
 
-- [ ] **Step 3: Fix the properties gate**
+- [x] **Step 3: Fix the properties gate**
 
 In `AppleWalletProperties.java`, add the switch and remove the password from the required set:
 
@@ -393,7 +393,7 @@ Add the YAML line beside the other five (`application.yaml`, in the `imin.apple-
     enabled: ${APPLE_WALLET_ENABLED:true}
 ```
 
-- [ ] **Step 4: Add the credential check**
+- [x] **Step 4: Add the credential check**
 
 Create `src/main/java/com/imin/iminapi/service/ticket/WalletCredentialCheck.java`:
 
@@ -478,7 +478,7 @@ Then call it once at startup, from `AppleWalletPassService`. Add to the construc
 
 **Do not** make this throw. A bad certificate must not take the API down; see the Javadoc above.
 
-- [ ] **Step 5: Give the 503 a body, a filename and a bucket**
+- [x] **Step 5: Give the 503 a body, a filename and a bucket**
 
 Replace `PublicTicketAssetController.applePass` (`:52-63`):
 
@@ -514,7 +514,7 @@ Replace `PublicTicketAssetController.applePass` (`:52-63`):
 
 Inject `RateLimiter` into the constructor.
 
-- [ ] **Step 6: Register the bucket in all three places**
+- [x] **Step 6: Register the bucket in all three places**
 
 `RateLimitBucketCoverageTest` checks **only** that `application.yaml` has an `imin.ratelimit.wallet-pass:` block. It does **not** check the `@Value` pair or the `configs.put(...)`, and the test double invents buckets on demand — so missing either of the other two is green in the suite and a **500 on every request** in production. Do all three.
 
@@ -547,7 +547,7 @@ and the registration, beside the others:
                 .build());
 ```
 
-- [ ] **Step 7: Widen the controller test**
+- [x] **Step 7: Widen the controller test**
 
 In `PublicTicketAssetControllerTest`, replace the bare-status 503 assertion so the envelope is actually pinned:
 
@@ -564,12 +564,12 @@ In `PublicTicketAssetControllerTest`, replace the bare-status 503 assertion so t
 
 Note this test is green for the *right* reason under the test profile: `src/test/resources/application.yaml` carries no `imin.apple-wallet` block at all, so every field binds from its Java default and `fullyConfigured()` is false.
 
-- [ ] **Step 8: Run the tests**
+- [x] **Step 8: Run the tests**
 
 Run: `./mvnw test -Dtest='WalletConfigGateTest,PublicTicketAssetControllerTest,RateLimitBucketCoverageTest,AppleWalletPassServiceTest'`
 Expected: PASS.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add src/main/java/com/imin/iminapi/service/ticket/AppleWalletProperties.java \

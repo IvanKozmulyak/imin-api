@@ -57,6 +57,10 @@ public class RateLimitConfig {
     private int notifySubscribeCapacity;
     @Value("${imin.ratelimit.notify-subscribe.window-minutes}")
     private int notifySubscribeWindow;
+    @Value("${imin.ratelimit.wallet-pass.capacity}")
+    private int walletPassCapacity;
+    @Value("${imin.ratelimit.wallet-pass.window-minutes}")
+    private int walletPassWindow;
     @Value("${imin.ratelimit.buyer-login.capacity}")
     private int buyerLoginCapacity;
     @Value("${imin.ratelimit.buyer-login.window-minutes}")
@@ -129,6 +133,12 @@ public class RateLimitConfig {
         // route is a spam relay.
         configs.put("notify-subscribe", BucketConfiguration.builder()
                 .addLimit(Bandwidth.simple(notifySubscribeCapacity, Duration.ofMinutes(notifySubscribeWindow)))
+                .build());
+        // Signed .pkpass minting on the public per-ticket asset endpoint, keyed per
+        // client IP. Unauthenticated, and each call is three DB reads plus an RSA
+        // signature plus a ZIP — the most expensive thing reachable with only a URL.
+        configs.put("wallet-pass", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(walletPassCapacity, Duration.ofMinutes(walletPassWindow)))
                 .build());
 
         // ---- Buyer accounts (buyer-accounts epic §2.2) --------------------
