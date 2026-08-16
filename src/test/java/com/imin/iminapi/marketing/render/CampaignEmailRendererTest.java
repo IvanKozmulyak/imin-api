@@ -12,14 +12,28 @@ class CampaignEmailRendererTest {
     final CampaignEmailRenderer renderer =
             new CampaignEmailRenderer(new UtmLinkRewriter());
 
-    private static final String UNSUB = "https://app.imin.wtf/optout?token=TKN";
+    /**
+     * The shape production actually emits — {@link
+     * com.imin.iminapi.marketing.email.MarketingEmailProperties#unsubscribeUrl}
+     * builds {@code <api host>/api/v1/public/unsubscribe/<token>}.
+     *
+     * <p>Every fixture here pinned {@code https://app.imin.wtf/optout?token=TKN}
+     * until 2026-08-16 — a URL the code can no longer produce and which 404'd
+     * for the whole time it could. The tests passed throughout, because the
+     * renderer treats this argument as an opaque string; that is exactly why a
+     * stale fixture here is worth correcting rather than leaving green. Only
+     * {@code UnsubscribeUrlTest} proves the URL resolves; this file must at
+     * least not contradict it.
+     */
+    private static final String UNSUB =
+            "https://api.imin.wtf/api/v1/public/unsubscribe/TKN";
 
     @Test
     void rendersMarkdownAndEscapesRawHtml() {
         String md = "Hello **world** <script>alert('x')</script>";
         CampaignEmailRenderer.Rendered r = renderer.render(
                 "Subject", "Preheader", md, "camp-1", "email",
-                "https://app.imin.wtf/optout?token=TKN");
+                UNSUB);
         assertThat(r.html()).contains("<strong>world</strong>");
         // raw HTML must be escaped, not passed through
         assertThat(r.html()).doesNotContain("<script>");
@@ -30,8 +44,8 @@ class CampaignEmailRendererTest {
     void appendsUnsubscribeFooterWithTokenLink() {
         CampaignEmailRenderer.Rendered r = renderer.render(
                 "S", "P", "body", "camp-1", "email",
-                "https://app.imin.wtf/optout?token=TKN");
-        assertThat(r.html()).contains("https://app.imin.wtf/optout?token=TKN");
+                UNSUB);
+        assertThat(r.html()).contains(UNSUB);
         assertThat(r.html().toLowerCase()).contains("unsubscribe");
     }
 
@@ -39,7 +53,7 @@ class CampaignEmailRendererTest {
     void rewritesIminLinksWithUtm() {
         CampaignEmailRenderer.Rendered r = renderer.render(
                 "S", "P", "[Buy](https://imin.wtf/e/x)", "camp-9", "email",
-                "https://app.imin.wtf/optout?token=TKN");
+                UNSUB);
         assertThat(r.html()).contains("utm_campaign=camp-9");
     }
 
@@ -55,9 +69,9 @@ class CampaignEmailRendererTest {
     void producesPlainTextVariantWithFooter() {
         CampaignEmailRenderer.Rendered r = renderer.render(
                 "S", "P", "Hello world", "camp-1", "email",
-                "https://app.imin.wtf/optout?token=TKN");
+                UNSUB);
         assertThat(r.text()).contains("Hello world");
-        assertThat(r.text()).contains("https://app.imin.wtf/optout?token=TKN");
+        assertThat(r.text()).contains(UNSUB);
     }
 
     // ---- template-driven rendering (V66) ----
@@ -156,12 +170,13 @@ class CampaignEmailRendererTest {
 
     @Test
     void unsubscribeLinkIsNotUtmTagged() {
-        // The footer's optout link is itself an imin.wtf URL; UTM rewriting runs on the BODY
-        // only, so the unsubscribe link must NOT get a utm_campaign appended.
+        // The footer's unsubscribe link is itself an imin.wtf URL; UTM rewriting runs on the
+        // BODY only, so it must NOT get a utm_campaign appended.
         CampaignEmailRenderer.Rendered r = renderer.render(
                 "S", "P", "Body", "camp-77", "email", UNSUB,
                 BuiltinTemplates.byKey("classic"), "Acme", null);
-        assertThat(r.html()).contains("optout?token=TKN\"");
-        assertThat(r.html()).doesNotContain("optout?token=TKN&utm");
+        assertThat(r.html()).contains(UNSUB + "\"");
+        assertThat(r.html()).doesNotContain(UNSUB + "?utm");
+        assertThat(r.html()).doesNotContain(UNSUB + "&utm");
     }
 }

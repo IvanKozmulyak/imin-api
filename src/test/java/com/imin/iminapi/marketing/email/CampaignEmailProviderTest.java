@@ -28,11 +28,16 @@ class CampaignEmailProviderTest {
                 List.of(new BatchEmail("msg-1"), new BatchEmail("msg-2"))));
 
         CampaignEmailProvider provider = new CampaignEmailProvider(resend);
+        // The shape MarketingEmailProperties.unsubscribeUrl actually emits. These
+        // fixtures carried https://app.imin.wtf/optout?token=… until 2026-08-16 —
+        // a form production can no longer produce, and which 404'd for the whole
+        // time it could. They passed anyway: this class only threads the string
+        // through to the List-Unsubscribe header.
         List<CampaignEmailProvider.OutgoingEmail> batchInput = List.of(
                 new CampaignEmailProvider.OutgoingEmail("from <a@x>", "a@x", "s", "<p>h</p>", "t",
-                        "https://app.imin.wtf/optout?token=A"),
+                        "https://api.imin.wtf/api/v1/public/unsubscribe/A"),
                 new CampaignEmailProvider.OutgoingEmail("from <a@x>", "b@x", "s", "<p>h</p>", "t",
-                        "https://app.imin.wtf/optout?token=B"));
+                        "https://api.imin.wtf/api/v1/public/unsubscribe/B"));
 
         List<String> ids = provider.sendBatch(batchInput);
         assertThat(ids).containsExactly("msg-1", "msg-2");
