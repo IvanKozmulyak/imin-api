@@ -12,12 +12,14 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.client.RestClient;
 
 import java.time.Instant;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowableOfType;
 import static org.springframework.test.web.client.ExpectedCount.once;
 import static org.springframework.test.web.client.ExpectedCount.twice;
@@ -397,6 +399,78 @@ class GoogleWalletProvisionerTest {
         assertThat(provisioner.provision(redeemed, event(), organization(), QR))
                 .isEqualTo(OBJECT_ID);
         server.verify();
+    }
+
+    // ── the transaction constraint ───────────────────────────────────────────
+
+    /**
+     * <b>The plan's one concurrency constraint, given an owner and a test.</b>
+     *
+     * <p>"Must not run inside the read transaction of the ticket lookup" was
+     * written into Task 6 and enforced by nothing: this class carries no
+     * {@code @Transactional}, and while it had no caller at all the property held
+     * by accident. Task 7 gives it a caller, so it is asserted at runtime now,
+     * and this is the test that proves the assertion bites.
+     *
+     * <p>What it catches: someone putting {@code @Transactional(readOnly = true)}
+     * on {@code GoogleWalletPassService#saveUrl} — the annotation any reviewer
+     * would suggest for a method that only reads rows. It would look correct,
+     * pass every existing test, and hold a pooled JDBC connection open across up
+     * to three 5s-timeout calls to Google on an unauthenticated endpoint. That is
+     * a whole-API pool-exhaustion outage triggered by Google being slow, and it
+     * only appears under concurrency plus a slow upstream.
+     *
+     * <p>No database is involved here: {@code isActualTransactionActive()} reads a
+     * thread-local, so the condition can be created directly. The mock server has
+     * no expectations, so "no socket was opened" is asserted rather than assumed.
+     */
+    @Test
+    void provisioningInsideATransactionIsRefusedBeforeAnySocketOpens() {
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            assertThatThrownBy(() -> provisioner.provision(ticket(), event(), organization(), QR))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("must not run inside a database transaction");
+            server.verify();
+        } finally {
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+    }
+
+    /**
+     * The guard is about outbound calls, not about the method. A refused ticket
+     * has opened no socket, so it gets its true answer — 409 — even from inside a
+     * transaction, rather than an {@code IllegalStateException} that would turn a
+     * correct 409 into a 500 for a caller that did nothing wrong to this buyer.
+     */
+    @Test
+    void aDeadTicketInsideATransactionStillGetsItsOwnAnswer() {
+        Ticket refunded = ticket();
+        refunded.setState(Ticket.STATE_REFUNDED);
+
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            assertThat(refusal(() -> provisioner.provision(refunded, event(), organization(), QR))
+                    .status()).isEqualTo(HttpStatus.CONFLICT);
+            server.verify();
+        } finally {
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+    }
+
+    /** Same reasoning for a closed gate: nothing was sent, so nothing was violated. */
+    @Test
+    void aClosedGateInsideATransactionIsStill503() {
+        GoogleWalletProvisioner gated = provisionerFor(new GoogleWalletProperties());
+
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            assertThat(refusal(() -> gated.provision(ticket(), event(), organization(), QR))
+                    .status()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+            server.verify();
+        } finally {
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
     }
 
     // ── fixtures ─────────────────────────────────────────────────────────────

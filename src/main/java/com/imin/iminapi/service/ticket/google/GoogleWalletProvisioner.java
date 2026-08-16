@@ -11,6 +11,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -135,6 +136,10 @@ public class GoogleWalletProvisioner {
             throw unavailable();
         }
 
+        // Last thing before the first socket, and only when a socket is actually
+        // going to be opened: a closed gate or a dead ticket has violated nothing.
+        assertNoTransactionOpen();
+
         String issuerId = props.getIssuerId().trim();
         String classId = GoogleWalletModels.classId(issuerId, event.getId());
 
@@ -191,6 +196,42 @@ public class GoogleWalletProvisioner {
                 GoogleWalletModels.eventTicketClass(props.getIssuerId().trim(), event, org)));
         log.info("[wallet] created Google Wallet class {} for event {}", classId, event.getId());
         knownClasses.put(classId, Boolean.TRUE);
+    }
+
+    /**
+     * <b>No database transaction may be open while this talks to Google.</b>
+     *
+     * <p>The plan states the constraint — "must not run inside the read
+     * transaction of the ticket lookup" — and until now nothing enforced it: this
+     * class carries no {@code @Transactional} and, while it had no caller at all,
+     * the property held by accident. It has a caller now
+     * ({@link GoogleWalletPassService}), so it is asserted here rather than
+     * described in a comment somewhere.
+     *
+     * <p>What it is protecting against is not subtle in effect, only in cause. Up
+     * to three HTTPS calls happen below at 5s connect + 5s read each. Inside a
+     * transaction, every one of those seconds is a pooled JDBC connection held
+     * open and unusable by anything else, on an endpoint that needs no
+     * authentication to call. Google having a bad minute would then take out
+     * checkout, the door and the organizer dashboard together — an outage of
+     * everything, caused by a button that is supposed to degrade to a 503 on its
+     * own. It needs concurrency plus a slow upstream to appear, so no
+     * single-request test would ever show it; the annotation would simply look
+     * correct forever.
+     *
+     * <p>An {@link IllegalStateException} rather than a graceful degrade, on
+     * purpose: this cannot be reached by any deployment or any input, only by an
+     * edit to a caller. It is a broken build, and it should read like one.
+     */
+    private static void assertNoTransactionOpen() {
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            log.error("[wallet] Google Wallet provisioning was called inside an active database "
+                    + "transaction. Up to three multi-second HTTPS calls would hold a pooled JDBC "
+                    + "connection for their whole duration. Remove @Transactional from the caller, "
+                    + "or read the rows in one transaction and provision outside it.");
+            throw new IllegalStateException(
+                    "Google Wallet provisioning must not run inside a database transaction");
+        }
     }
 
     /** The buyer's own ticket page, the same link the Apple pass puts on its back. */
