@@ -1269,6 +1269,41 @@ git commit -m "feat(wallet): real pass artwork and the iOS 18 poster event ticke
 
 ## Task 5: Google Wallet foundations — properties, credential, JWT signer
 
+> ### AS BUILT (2026-08-16) — foundations shipped; eight plan defects, one of which made `origins` dead config
+>
+> Built as specified with four additions the plan needed and did not have. Full suite **2457** green (2426 baseline + 31 new). Nothing here is wired to an endpoint yet — that is Task 7.
+>
+> **The JWT is provably the one Google accepts, not merely a string.** Decoded from a real signing run (`GoogleWalletJwtSignerTest`, real 2048-bit RSA minted by `GoogleTestKeys`):
+>
+> ```
+> HEADER {"typ":"JWT","alg":"RS256"}
+> CLAIMS {"aud":"google","payload":{"eventTicketObjects":[{"id":"3388000000000000000.tkt_abc"}]},
+>         "iss":"imin-wallet@imin-test.iam.gserviceaccount.com","origins":["https://app.imin.wtf"],
+>         "typ":"savetowallet","iat":1786842450}
+> SIGLEN 256
+> ```
+>
+> `aud` is a bare string (not an array), `iat` is unix **seconds** (not millis), the signature is 256 bytes = RSA-2048 PKCS#1 v1.5. The test verifies it with `RSASSAVerifier` against the matching public key, rejects a signature from a *different* key, and rejects a token whose ticket id was swapped after signing — so the signature is proven to actually cover the payload. What no test here can prove, stated plainly: that `pay.google.com` accepts it. Google verifies against the public half of a key **it** issued. Only **G-ISSUER** closes that.
+>
+> **Four additions beyond the plan:**
+> 1. `GoogleWalletProperties.gateReason() : Optional<String>` — see defect 3.
+> 2. `GoogleWalletJwtSigner` is a `@Component` whose constructor parses the credential and logs the outcome — see defect 2. It never throws; a broken key must not stop the app booting.
+> 3. `GoogleServiceAccountKey.parseBase64(...)` also accepts raw JSON and MIME-decodes wrapped base64 — a pasted key file and a line-wrapped blob are both reasonable, and neither should look like a corrupt credential.
+> 4. `GoogleServiceAccountKeyTest` — 12 cases, over half of them about the key not escaping. See defect 7.
+>
+> **Production YAML binding verified, not assumed.** Bound `src/main/resources/application.yaml` through the real Boot `Binder` with the env vars set: all four keys bind, `GOOGLE_WALLET_ORIGINS=a,b` → a 2-element list. With nothing set: `enabled=false, fullyConfigured=false`, reason `GOOGLE_WALLET_ISSUER_ID is blank; GOOGLE_WALLET_SERVICE_ACCOUNT_JSON_BASE64 is blank; GOOGLE_WALLET_ENABLED is false`. Worth doing: loading `classpath:/application.yaml` binds **nothing**, because the test resource replaces it — the trap §Global Constraints describes, hit live.
+>
+> ### Plan defects found while executing Task 5
+>
+> 1. **`origins` is configured, argued for at length, and never reaches a token.** Decision 2b spends a paragraph on it — *"shipping the field undefined in production is betting on a distinction the docs do not make for us"* — Step 3 makes it a property, and then **nothing in the file list reads both it and the key.** §Interfaces gives `GoogleWalletJwtSigner.sign(Map<String,Object>) : String` and shows the constructor taking only a parsed `GoogleServiceAccountKey`. Built as written, `GOOGLE_WALLET_ORIGINS` is dead config. Fixed by giving the signer a `(key, origins)` constructor and a properties constructor that supplies both.
+> 2. **Boot-time credential validation is specified for Apple and silently dropped for Google.** §Defects opens with *"Nothing validates the certs until a buyer taps the button"* and Task 1 builds `WalletCredentialCheck` to fix it. Task 5's file list has no equivalent, no `@Component`, and nothing that constructs any of the three classes until Task 7 — so a garbage `GOOGLE_WALLET_SERVICE_ACCOUNT_JSON_BASE64` reproduces the exact Apple bug the plan opened by fixing. Fixed in the signer's Spring constructor: parse once, log `ERROR` with the reason, keep serving everything else.
+> 3. **A boolean gate repeats the `certPassword` mistake in a new place.** §Defects 1: a passwordless `.p12` gave *"no log line and no way to tell it apart from 'not configured yet'"*. Google has **three** closed states, and one of them — credentials complete, `enabled` still false — is the *expected* state for the entire development period per §"What is gated on what". `fullyConfigured()` cannot distinguish "nobody set this up" from "we are holding for Google's publishing review", and those want opposite responses from whoever reads the log. Fixed with `gateReason()`, which names the env var that closed the gate and says so explicitly in the demo-mode case.
+> 4. **The JOSE header is unspecified, and Nimbus's default is wrong for it.** The plan pins the claim set — *"`iss` = the service-account email, `aud` = `"google"`, `typ` = `"savetowallet"`, `iat` = unix seconds"* — and says *"Signing is **RS256**"*, but never mentions the header's own `typ`. `new JWSHeader.Builder(JWSAlgorithm.RS256).build()` leaves it **null**; Google's reference sample sets `typ: JWT`. Two different fields named `typ`, one in the header and one in the claims, and the plan names only one of them.
+> 5. **The plan's `aud` assertion cannot fail.** Step 1 writes `assertThat(claims.getAudience()).containsExactly("google")`. Nimbus normalises **both** `"aud":"google"` and `"aud":["google"]` to a one-element list on parse, so that assertion passes either way — while Google documents the bare string. Only decoding the claims segment can tell them apart; added `theAudienceIsABareStringNotAnArray` to do that.
+> 6. **The one place in the plan that must parse JSON by hand is the one place it does not say which Jackson to use.** Task 2's as-built records that Jackson 2 (`com.fasterxml`, via jpasskit) and Jackson 3 (`tools.jackson`, Boot 4's HTTP converters) are both on the classpath, and the task brief flags picking wrong as a runtime failure a `catch` swallows. Step 4 says only that `parse(json)` *"reads `client_email` and `private_key`"*. Resolved by using neither: Nimbus's shaded `JSONObjectUtils`, already a hard dependency of the signer.
+> 7. **The private key's own exposure surface is never mentioned.** The plan's only secrecy note is *"**Never log the serialised JWT**: it is a bearer artifact that mints a pass"* — nothing about the key that signs it. Two concrete holes in the sketch as given: (a) `GoogleServiceAccountKey` holds an `RSAPrivateKey` and is specified with no `toString()`, and both sibling helpers in this plan (`WalletTestCerts.Bundle`, `GoogleTestKeys.Bundle`) are **records**, whose generated `toString()` calls `RSAPrivateKey.toString()` — an identity hash on JDK 17, the modulus and private exponent on JDKs where `RSAPrivateCrtKeyImpl` printed them; (b) `parse` is specified to throw *"with a message naming the missing field"* with nothing forbidding it from naming that field's **value**, which for `private_key` is the secret. Fixed: explicit redacting `toString()`, every failure message written by hand with no cause attached and no echo of the input. Proven by mutation — re-introducing both leaks turns `GoogleServiceAccountKeyTest` red in 3 places; reverting turns it green.
+> 8. **What blank `origins` *binds* to is asserted but never pinned.** *"Blank is the local dev default"* — verified true (an unset env var binds to an empty list), but nothing stopped `GOOGLE_WALLET_ORIGINS=""` or `"a,,b"` from shipping an empty-string origin Google can never match. The setter now drops blank elements, and the signer **omits** the claim rather than sending `"origins": []` — an empty array is a defined restriction to nothing, which is worse than an absent field, not equivalent to it.
+
 Size: **M**. Gated on nothing to build and test; gated on **G-ISSUER** to switch on.
 
 **No new dependency.** `com.nimbusds:nimbus-jose-jwt:10.4` is already on the classpath via `spring-security-oauth2-jose`, and `oauth/OidcJwtVerifier.java` and `oauth/AppleNativeIdentityService.java` already use it. `RSASSASigner` is what we need and it is right there. Do **not** add `google-api-client` or `google-auth-library`: they pull a large transitive tree to do RS256 over a JSON body and one HTTPS call, both of which Nimbus and `RestClient` already do.
@@ -1290,7 +1325,7 @@ Size: **M**. Gated on nothing to build and test; gated on **G-ISSUER** to switch
 
 ---
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 The test that matters. A signer test that only checks "a string came out" is worthless; this one **verifies the signature with the matching public key** before it looks at a single claim. If the signing algorithm, the key, or the canonical JSON is wrong, verification fails and the test goes red — which is exactly what would happen at `pay.google.com`.
 
@@ -1404,9 +1439,9 @@ class GoogleWalletJwtSignerTest {
 
 `GoogleTestKeys.generate()` mints a 2048-bit RSA keypair, PEM-encodes the PKCS#8 private key, and assembles a service-account-shaped JSON (`type`, `client_email`, `private_key`, `private_key_id`, `project_id`). Model it on `WalletTestCerts` — same idea, same reason it exists.
 
-- [ ] **Step 2: Run to verify it fails** — compilation error, none of the three classes exist.
+- [x] **Step 2: Run to verify it fails** — compilation error, none of the three classes exist.
 
-- [ ] **Step 3: Properties**
+- [x] **Step 3: Properties**
 
 ```java
 @ConfigurationProperties(prefix = "imin.google-wallet")
@@ -1491,13 +1526,13 @@ Register in `TicketConfig`:
         GoogleWalletProperties.class})
 ```
 
-- [ ] **Step 4: Credential + signer**
+- [x] **Step 4: Credential + signer**
 
 `GoogleServiceAccountKey.parse(json)` reads `client_email` and `private_key`, strips the PEM armour, base64-decodes and builds an `RSAPrivateKey` via `KeyFactory.getInstance("RSA")` + `PKCS8EncodedKeySpec`. It throws `IllegalArgumentException` with a message naming the missing field — a credential that half-parses is worse than one that does not parse.
 
 `GoogleWalletJwtSigner.sign(payload)` builds `JWSHeader(RS256)` + a `JWTClaimsSet` with `iss` = client email, `aud` = `"google"`, `typ` = `"savetowallet"`, `iat` = now, `origins` when configured, and `payload` = the map. Signs with `RSASSASigner`. **Never log the serialised JWT**: it is a bearer artifact that mints a pass.
 
-- [ ] **Step 5: Run the tests, commit**
+- [x] **Step 5: Run the tests, commit**
 
 ```bash
 git commit -m "feat(wallet): Google Wallet credential loading and save-link JWT signing"
