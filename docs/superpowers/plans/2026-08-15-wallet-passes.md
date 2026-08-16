@@ -668,7 +668,7 @@ The pass generates and signs correctly today. What it does not do is **behave li
 
 ---
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 This is a plain unit test, not a Spring test — mirror `AppleWalletPassServiceTest`, which is the established pattern for this service. It unzips the signed archive and reads `pass.json`, so it asserts on **what Apple will actually see**, not on an intermediate object we could get wrong in the same direction twice.
 
@@ -862,12 +862,12 @@ class ApplePassContentTest {
 }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `./mvnw test -Dtest=ApplePassContentTest`
 Expected: **FAIL on every assertion except the two "still mints" cases** — none of these fields are emitted today. `aRefundedTicketIsRefused` fails by *not* throwing, which is the point.
 
-- [ ] **Step 3: Add the shared eligibility rule**
+- [x] **Step 3: Add the shared eligibility rule**
 
 Create `src/main/java/com/imin/iminapi/service/ticket/WalletEligibility.java`:
 
@@ -922,7 +922,7 @@ public final class WalletEligibility {
 }
 ```
 
-- [ ] **Step 4: Rewrite the pass body**
+- [x] **Step 4: Rewrite the pass body**
 
 In `AppleWalletPassService.generatePass`, after loading `Ticket`/`Order`/`Event`, call `WalletEligibility.assertLive(t)`. Then replace the builder block (`:109-127`) with the full field set. The important parts, with the reasoning that must survive into the code:
 
@@ -1053,12 +1053,12 @@ Replace `formatWhen` with a non-throwing zone resolver:
 
 `expiryOf(event)` = `endsAt` when set, else `startsAt + 12h`, plus 12h of slack either way. `brandOrImin(org)` = `org.getBrandName()` when non-blank, else `"imin"` — the organizer's name belongs on the ticket; `organizationName` stays `"imin"` because that is the merchant of record.
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 Run: `./mvnw test -Dtest='ApplePassContentTest,AppleWalletPassServiceTest'`
 Expected: PASS. The old test's assertions on `pass.json` containing `imin1.TKT_X.`, the pass type id, the event name, venue and tier all still hold — none of those fields moved.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/main/java/com/imin/iminapi/service/ticket/AppleWalletPassService.java \

@@ -1,10 +1,12 @@
 package com.imin.iminapi.service.ticket;
 
+import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
+import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import org.junit.jupiter.api.Test;
 
@@ -33,7 +35,9 @@ class AppleWalletPassServiceTest {
                 mock(TicketRepository.class),
                 mock(OrderRepository.class),
                 mock(EventRepository.class),
-                signer());
+                mock(OrganizationRepository.class),
+                signer(),
+                new EmailProperties());
 
         assertThat(svc.isConfigured()).isFalse();
         assertThatThrownBy(() -> svc.generatePass("any-token"))
@@ -80,7 +84,8 @@ class AppleWalletPassServiceTest {
         when(events.findById(t.getEventId())).thenReturn(Optional.of(e));
 
         AppleWalletPassService svc = new AppleWalletPassService(
-                props, tickets, orders, events, signer());
+                props, tickets, orders, events, mock(OrganizationRepository.class), signer(),
+                new EmailProperties());
         assertThat(svc.isConfigured()).isTrue();
 
         byte[] pkpass = svc.generatePass("TKT_X");
@@ -149,7 +154,8 @@ class AppleWalletPassServiceTest {
         when(events.findById(t.getEventId())).thenReturn(Optional.of(e));
 
         AppleWalletPassService svc = new AppleWalletPassService(
-                props, tickets, orders, events, signer());
+                props, tickets, orders, events, mock(OrganizationRepository.class), signer(),
+                new EmailProperties());
 
         byte[] pkpass = svc.generatePass("TKT_TZ");
         assertThat(listZipEntries(pkpass)).contains("pass.json", "signature");
@@ -196,7 +202,8 @@ class AppleWalletPassServiceTest {
         when(events.findById(t.getEventId())).thenReturn(Optional.of(e));
 
         AppleWalletPassService svc = new AppleWalletPassService(
-                props, tickets, orders, events, signer());
+                props, tickets, orders, events, mock(OrganizationRepository.class), signer(),
+                new EmailProperties());
 
         assertThat(readZipEntry(svc.generatePass("TKT_TZ2"), "pass.json")).contains("20:00");
     }

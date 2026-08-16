@@ -1,10 +1,12 @@
 package com.imin.iminapi.service.ticket;
 
+import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
+import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
@@ -333,7 +335,8 @@ class WalletConfigGateTest {
 
         TicketProperties tp = new TicketProperties();
         tp.setSigningSecret("walletconfiggate-test-signing-secret");
-        return new AppleWalletPassService(props, tickets, orders, events, new QrPayloadSigner(tp));
+        return new AppleWalletPassService(props, tickets, orders, events,
+                mock(OrganizationRepository.class), new QrPayloadSigner(tp), new EmailProperties());
     }
 
     /** Runs {@code work} with a listening appender attached to the service's logger. */

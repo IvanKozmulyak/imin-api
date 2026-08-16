@@ -1,10 +1,12 @@
 package com.imin.iminapi.controller.publicapi;
 
+import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
+import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.security.GlobalExceptionHandler;
 import com.imin.iminapi.security.RateLimiter;
@@ -47,6 +49,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class PublicTicketAssetControllerWalletTest {
 
     private static final String TOKEN = "abc-DEF_123ghiJKL456mnoPQR";
+    private static final String REFUNDED_TOKEN = "refunded-DEF_123ghiJKL456mno";
+    private static final String REVOKED_TOKEN = "revoked-DEF_123ghiJKL456mnoP";
+    private static final String REDEEMED_TOKEN = "redeemed-DEF_123ghiJKL456mn";
 
     private final List<String> bucketsConsumed = new ArrayList<>();
 
@@ -127,6 +132,49 @@ class PublicTicketAssetControllerWalletTest {
         assertThat(bucketsConsumed).containsExactly("wallet-pass");
     }
 
+    /**
+     * <b>The defect this task exists to close, at the level a buyer meets it.</b>
+     *
+     * <p>{@code generatePass} never looked at {@code ticket.state}, so a fully
+     * configured deployment would sign and serve a real, valid-looking pkpass for
+     * a ticket that had already been refunded — a buyer at a door holding
+     * something that looks official on their phone, which the scanner then
+     * correctly refuses. The refusal is a handled 409 in the standard envelope,
+     * not a 500 and not an empty body: {@code imin-public} reads
+     * {@code $.error.code}.
+     */
+    @Test
+    void aRefundedTicketIsRefusedAtTheEndpointRatherThanSigned() throws Exception {
+        MockMvc mvc = mvcWith(propsFrom(WalletTestCerts.generate("")));
+
+        mvc.perform(get("/api/v1/public/tickets/" + REFUNDED_TOKEN + "/apple-wallet.pkpass"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("TICKET_ALREADY_REFUNDED"));
+    }
+
+    /** The other state the gate paints red. Distinct code so the FE can tell them apart. */
+    @Test
+    void aRevokedTicketIsRefusedAtTheEndpoint() throws Exception {
+        MockMvc mvc = mvcWith(propsFrom(WalletTestCerts.generate("")));
+
+        mvc.perform(get("/api/v1/public/tickets/" + REVOKED_TOKEN + "/apple-wallet.pkpass"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("INVALID_STATE"));
+    }
+
+    /**
+     * Redeemed is amber at the door, not red, and re-adding the pass after entry
+     * is harmless — a buyer whose phone died in the queue must not be locked out
+     * of their own ticket record.
+     */
+    @Test
+    void aRedeemedTicketStillGetsItsPass() throws Exception {
+        MockMvc mvc = mvcWith(propsFrom(WalletTestCerts.generate("")));
+
+        mvc.perform(get("/api/v1/public/tickets/" + REDEEMED_TOKEN + "/apple-wallet.pkpass"))
+                .andExpect(status().isOk());
+    }
+
     // ── wiring ───────────────────────────────────────────────────────────────
 
     private static AppleWalletProperties propsFrom(WalletTestCerts.Bundle bundle) {
@@ -153,6 +201,12 @@ class PublicTicketAssetControllerWalletTest {
         t.setState(Ticket.STATE_ISSUED);
         when(tickets.findByToken(TOKEN)).thenReturn(Optional.of(t));
         when(tickets.findByToken("no-such-token")).thenReturn(Optional.empty());
+        when(tickets.findByToken(REFUNDED_TOKEN))
+                .thenReturn(Optional.of(sameTicketIn(t, REFUNDED_TOKEN, Ticket.STATE_REFUNDED)));
+        when(tickets.findByToken(REVOKED_TOKEN))
+                .thenReturn(Optional.of(sameTicketIn(t, REVOKED_TOKEN, Ticket.STATE_REVOKED)));
+        when(tickets.findByToken(REDEEMED_TOKEN))
+                .thenReturn(Optional.of(sameTicketIn(t, REDEEMED_TOKEN, Ticket.STATE_REDEEMED)));
 
         Order o = new Order();
         o.setId(t.getOrderId());
@@ -179,11 +233,24 @@ class PublicTicketAssetControllerWalletTest {
 
         PublicTicketAssetController controller = new PublicTicketAssetController(
                 tickets, qr, new QrImageRenderer(),
-                new AppleWalletPassService(props, tickets, orders, events, qr),
+                new AppleWalletPassService(props, tickets, orders, events,
+                        mock(OrganizationRepository.class), qr, new EmailProperties()),
                 recording);
 
         return MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
+    }
+
+    /** The same order/event/tier as the live fixture, differing only in token and state. */
+    private static Ticket sameTicketIn(Ticket live, String token, String state) {
+        Ticket t = new Ticket();
+        t.setToken(token);
+        t.setOrderId(live.getOrderId());
+        t.setEventId(live.getEventId());
+        t.setTierId(live.getTierId());
+        t.setTierName(live.getTierName());
+        t.setState(state);
+        return t;
     }
 }
