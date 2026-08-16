@@ -177,7 +177,10 @@ class PublicOrderControllerTest {
                     "Verify it is safe to expose, then update this test's allowlist.")
                 .isEqualTo(expectedEventKeys);
 
-        Set<String> expectedTicketKeys = Set.of("token", "tierName", "state", "qrPayload");
+        Set<String> expectedTicketKeys = Set.of("token", "tierName", "state", "qrPayload",
+                // Per-ticket, so the order page stops fetching a whole extra
+                // ticket through a Suspense boundary to learn one boolean.
+                "wallet");
         assertThat(fieldNames(root.get("tickets").get(0)))
                 .as("tickets[0] keys leaked or missing. " +
                     "If this fails, you added a field to PublicOrderResponse.Ticket. " +

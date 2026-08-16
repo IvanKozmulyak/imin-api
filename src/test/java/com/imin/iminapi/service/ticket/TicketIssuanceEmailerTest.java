@@ -9,6 +9,7 @@ import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketRepository;
+import com.imin.iminapi.service.ticket.google.GoogleWalletPassService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -36,8 +37,7 @@ class TicketIssuanceEmailerTest {
         EventRepository events = mock(EventRepository.class);
         EmailProperties emailProps = new EmailProperties();
         emailProps.setBuyerSiteBaseUrl("https://app.imin.wtf");
-        AppleWalletPassService wallet = mock(AppleWalletPassService.class);
-        when(wallet.isConfigured()).thenReturn(true);
+        WalletOffers wallet = offers(true, true);
 
         UUID orderId = UUID.randomUUID();
         UUID eventId = UUID.randomUUID();
@@ -83,6 +83,7 @@ class TicketIssuanceEmailerTest {
                 .contains("https://api.imin.test/api/v1/public/tickets/TKT_A/qr.png")
                 .contains("https://api.imin.test/api/v1/public/tickets/TKT_B/qr.png")
                 .contains("https://api.imin.test/api/v1/public/tickets/TKT_A/apple-wallet.pkpass")
+                .contains("https://api.imin.test/api/v1/public/tickets/TKT_A/google-wallet")
                 .contains("https://app.imin.wtf/tickets/TKT_A")
                 .contains("https://app.imin.wtf/order/ORDER_TOK")
                 .contains("https://app.imin.wtf/recover");
@@ -102,8 +103,7 @@ class TicketIssuanceEmailerTest {
         EventRepository events = mock(EventRepository.class);
         EmailProperties emailProps = new EmailProperties();
         emailProps.setBuyerSiteBaseUrl("https://app.imin.wtf");
-        AppleWalletPassService wallet = mock(AppleWalletPassService.class);
-        when(wallet.isConfigured()).thenReturn(false);
+        WalletOffers wallet = offers(false, false);
 
         UUID orderId = UUID.randomUUID();
         UUID eventId = UUID.randomUUID();
@@ -137,8 +137,10 @@ class TicketIssuanceEmailerTest {
         verify(email).send(eq("solo@example.com"), subject.capture(), html.capture(), any());
 
         assertThat(subject.getValue()).isEqualTo("Your ticket for Helios");
-        // No wallet → no wallet link
-        assertThat(html.getValue()).doesNotContain("apple-wallet.pkpass");
+        // No wallet → no wallet link, on either side
+        assertThat(html.getValue())
+                .doesNotContain("apple-wallet.pkpass")
+                .doesNotContain("google-wallet");
     }
 
     /**
@@ -191,8 +193,7 @@ class TicketIssuanceEmailerTest {
         EventRepository events = mock(EventRepository.class);
         EmailProperties emailProps = new EmailProperties();
         emailProps.setBuyerSiteBaseUrl("https://app.imin.wtf");
-        AppleWalletPassService wallet = mock(AppleWalletPassService.class);
-        when(wallet.isConfigured()).thenReturn(false);
+        WalletOffers wallet = offers(false, false);
 
         UUID orderId = UUID.randomUUID();
         UUID eventId = UUID.randomUUID();
@@ -226,5 +227,144 @@ class TicketIssuanceEmailerTest {
         ArgumentCaptor<String> text = ArgumentCaptor.forClass(String.class);
         verify(email).send(eq(buyerEmail), subject.capture(), html.capture(), text.capture());
         return new SentEmail(subject.getValue(), html.getValue(), text.getValue());
+    }
+
+    /**
+     * A real {@link WalletOffers} over doubled wallet services.
+     *
+     * <p>The doubles supply only the two inputs this test is parameterised on —
+     * "are the Apple certs loaded" and "is the Google issuer live". Everything
+     * the assertions actually read (which rows appear, and the exact URL in
+     * each) is produced by the real {@code WalletOffers} from the real
+     * {@code TicketProperties}. A {@code mock(WalletOffers.class)} would have to
+     * be told the answer the test then checks.
+     */
+    private static WalletOffers offers(boolean appleOn, boolean googleOn) {
+        AppleWalletPassService apple = mock(AppleWalletPassService.class);
+        when(apple.isConfigured()).thenReturn(appleOn);
+        GoogleWalletPassService google = mock(GoogleWalletPassService.class);
+        when(google.isConfigured()).thenReturn(googleOn);
+
+        TicketProperties props = new TicketProperties();
+        props.setApiPublicBaseUrl("https://api.imin.test");
+        return new WalletOffers(apple, google, props);
+    }
+
+    /** One-ticket issuance with an arbitrary wallet configuration and ticket state. */
+    private SentEmail sendWith(WalletOffers wallet, String ticketState) {
+        EmailService email = mock(EmailService.class);
+        OrderRepository orders = mock(OrderRepository.class);
+        TicketRepository tickets = mock(TicketRepository.class);
+        EventRepository events = mock(EventRepository.class);
+        EmailProperties emailProps = new EmailProperties();
+        emailProps.setBuyerSiteBaseUrl("https://app.imin.wtf");
+
+        UUID orderId = UUID.randomUUID();
+        UUID eventId = UUID.randomUUID();
+        Order order = new Order();
+        order.setId(orderId);
+        order.setToken("ORDER_W");
+        order.setEventId(eventId);
+        order.setEmail("wallet@example.com");
+
+        Event event = new Event();
+        event.setId(eventId);
+        event.setName("Helios");
+
+        Ticket t = new Ticket();
+        t.setToken("TKT_SOLO");
+        t.setTierName("GA");
+        t.setState(ticketState);
+
+        when(orders.findById(orderId)).thenReturn(Optional.of(order));
+        when(events.findById(eventId)).thenReturn(Optional.of(event));
+        when(tickets.findByOrderIdOrderByCreatedAtAsc(orderId)).thenReturn(List.of(t));
+
+        TicketProperties ticketProps = new TicketProperties();
+        ticketProps.setSigningSecret("x".repeat(32));
+        ticketProps.setApiPublicBaseUrl("https://api.imin.test");
+        new TicketIssuanceEmailer(orders, tickets, events, email, new EmailTemplateRenderer(),
+                emailProps, ticketProps, wallet).send(orderId);
+
+        ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<String> text = ArgumentCaptor.forClass(String.class);
+        verify(email).send(eq("wallet@example.com"), any(), html.capture(), text.capture());
+        return new SentEmail("", html.getValue(), text.getValue());
+    }
+
+    // ── the two-wallet email (Task 8) ────────────────────────────────────────
+
+    /**
+     * Google on, Apple off. The asymmetry is not hypothetical: Apple is gated on
+     * a Pass Type ID certificate and Google on an issuer account, two unrelated
+     * registrations with two unrelated lead times, so "exactly one wallet works"
+     * is the state this product will spend months in.
+     */
+    @Test
+    void googleAloneRendersOnlyTheGoogleRow() {
+        SentEmail sent = sendWith(offers(false, true), Ticket.STATE_ISSUED);
+
+        assertThat(sent.html())
+                .contains("https://api.imin.test/api/v1/public/tickets/TKT_SOLO/google-wallet")
+                .contains("Save to Google Wallet")
+                .doesNotContain("apple-wallet.pkpass")
+                .doesNotContain("Apple Wallet");
+        assertThat(sent.text())
+                .contains("Google Wallet: https://api.imin.test/api/v1/public/tickets/TKT_SOLO/google-wallet")
+                .doesNotContain("Apple Wallet");
+    }
+
+    /**
+     * Both on ⇒ both rows, to every recipient. An email carries no user agent
+     * and is read on more devices than it was sent from, so an iPhone owner
+     * seeing a Google link is the correct outcome and not a targeting bug.
+     */
+    @Test
+    void bothWalletsRenderBothRowsBecauseAnEmailCannotKnowTheDevice() {
+        SentEmail sent = sendWith(offers(true, true), Ticket.STATE_ISSUED);
+
+        assertThat(sent.html())
+                .contains("https://api.imin.test/api/v1/public/tickets/TKT_SOLO/apple-wallet.pkpass")
+                .contains("https://api.imin.test/api/v1/public/tickets/TKT_SOLO/google-wallet");
+    }
+
+    /**
+     * THE REASON THE EMAILER GOES THROUGH {@link WalletOffers} AT ALL.
+     *
+     * <p>{@code BuyerOrderActionsController} re-sends this email on demand, at
+     * any time, including after a refund. The old gate was
+     * {@code wallet.isConfigured()} — the wallet config and nothing about the
+     * ticket — so a re-send for a refunded order mailed the buyer two
+     * official-looking wallet buttons whose endpoints both answer 409. One rule,
+     * three surfaces, is what removes that by construction.
+     */
+    @Test
+    void aRefundedTicketGetsNoWalletRowEvenWithBothWalletsConfigured() {
+        SentEmail sent = sendWith(offers(true, true), Ticket.STATE_REFUNDED);
+
+        assertThat(sent.html())
+                .doesNotContain("apple-wallet.pkpass")
+                .doesNotContain("google-wallet");
+        assertThat(sent.text())
+                .doesNotContain("Apple Wallet")
+                .doesNotContain("Google Wallet");
+        // …and the ticket itself is still in the email. A refunded buyer keeps
+        // their record; only the wallet CTA goes.
+        assertThat(sent.html()).contains("https://api.imin.test/api/v1/public/tickets/TKT_SOLO/qr.png");
+    }
+
+    /**
+     * Redeemed is not refused. The door paints {@code already_redeemed} amber,
+     * not red, and a buyer whose phone died in the queue must not be locked out
+     * of their own ticket record — {@code WalletEligibility}'s own rule, held
+     * here so a later "tighten the email" change has to argue with it.
+     */
+    @Test
+    void aRedeemedTicketKeepsItsWalletRows() {
+        SentEmail sent = sendWith(offers(true, true), Ticket.STATE_REDEEMED);
+
+        assertThat(sent.html())
+                .contains("apple-wallet.pkpass")
+                .contains("google-wallet");
     }
 }

@@ -139,6 +139,9 @@ public class AppleWalletPassService {
     private final QrPayloadSigner qrSigner;
     private final EmailProperties emailProps;
 
+    /** Snapshot of the boot-time credential check — see {@link #isConfigured()}. */
+    private final boolean credentialsLoad;
+
     /**
      * Every image the archive carries, and the size of the placeholder to draw if
      * that file ever goes missing. Insertion-ordered so the archive's entries do
@@ -191,7 +194,9 @@ public class AppleWalletPassService {
         // Deliberately a log line and NOT a throw: an unusable certificate must
         // not stop the application from booting — checkout, issuance, email and
         // the door are all unaffected by a broken pass.
-        WalletCredentialCheck.validate(props).ifPresentOrElse(
+        var credentialFault = WalletCredentialCheck.validate(props);
+        this.credentialsLoad = credentialFault.isEmpty();
+        credentialFault.ifPresentOrElse(
                 reason -> log.error("[wallet] Apple Wallet is configured but UNUSABLE: {} "
                         + "— /apple-wallet.pkpass will fail. Fix the credentials or set "
                         + "APPLE_WALLET_ENABLED=false.", reason),
@@ -200,8 +205,29 @@ public class AppleWalletPassService {
                         : "not configured"));
     }
 
+    /**
+     * Whether a pass can actually be signed — <b>both</b> halves.
+     *
+     * <p>The env vars being set and the certificate being loadable are different
+     * facts, and until Task 8 only the first one was asked. A complete config
+     * around a truncated base64 blob or an expired certificate therefore
+     * advertised {@code walletAvailable: true}, lit the buyer's CTA, and blew up
+     * inside jpasskit on the tap — a 500 on an unauthenticated endpoint for a
+     * fault that was already known and already logged at boot. The boot check
+     * existed; nothing consumed its answer.
+     *
+     * <p>The result is memoised from construction rather than re-derived, because
+     * the check opens a PKCS#12 keystore and this is called on every ticket read.
+     * That is sound precisely because {@link AppleWalletProperties} is bound once
+     * at startup — a credential swap is a redeploy, which is a new instance.
+     *
+     * <p>This is now the exact analogue of
+     * {@code GoogleWalletPassService.isConfigured()}, which has always been
+     * {@code props.fullyConfigured() && signer.isUsable()}. One question, two
+     * wallets, one answer shape.
+     */
     public boolean isConfigured() {
-        return props.fullyConfigured();
+        return props.fullyConfigured() && credentialsLoad;
     }
 
     public byte[] generatePass(String ticketToken) {

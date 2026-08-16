@@ -50,7 +50,21 @@ public record PublicOrderResponse(
                         String venuePostalCode, String venueCountry,
                         String posterUrl, String metaPixelId) {}
 
-    /** {@code qrPayload} is the signed {@code imin1.<token>.<hmac>} string, so the
-     *  order page can pre-render every ticket's QR without an N+1 per-ticket fetch. */
-    public record Ticket(String token, String tierName, String state, String qrPayload) {}
+    /**
+     * {@code qrPayload} is the signed {@code imin1.<token>.<hmac>} string, so the
+     * order page can pre-render every ticket's QR without an N+1 per-ticket fetch.
+     *
+     * <p>{@code wallet} is here for the same reason and closes the same N+1.
+     * {@code imin-public/components/buyer/order-view.tsx:53-63} currently fetches
+     * a <i>whole extra ticket</i> through a {@code <Suspense>} boundary purely to
+     * learn one boolean, because the order response did not carry it. It is
+     * resolved per ticket, not once per order: an order with one refunded ticket
+     * and three live ones is four different answers.
+     *
+     * <p>There is no {@code walletAvailable} on this record and there never was —
+     * nothing has ever read one here, so the Apple-only flag has no installed
+     * reader to preserve and the new block is the whole contract.
+     */
+    public record Ticket(String token, String tierName, String state, String qrPayload,
+                         TicketWallets wallet) {}
 }

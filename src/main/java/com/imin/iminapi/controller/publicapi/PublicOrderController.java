@@ -14,9 +14,9 @@ import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.service.event.PublicEventService;
-import com.imin.iminapi.service.ticket.AppleWalletPassService;
 import com.imin.iminapi.service.ticket.QrPayloadSigner;
 import com.imin.iminapi.service.ticket.TicketProperties;
+import com.imin.iminapi.service.ticket.WalletOffers;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.transaction.annotation.Transactional;
@@ -51,7 +51,7 @@ public class PublicOrderController {
     private final TicketRepository tickets;
     private final EventRepository events;
     private final QrPayloadSigner qrSigner;
-    private final AppleWalletPassService wallet;
+    private final WalletOffers wallet;
     private final TicketProperties ticketProps;
     private final SmsConsentService smsConsentService;
     private final PublicEventService publicEventService;
@@ -60,7 +60,7 @@ public class PublicOrderController {
                                   TicketRepository tickets,
                                   EventRepository events,
                                   QrPayloadSigner qrSigner,
-                                  AppleWalletPassService wallet,
+                                  WalletOffers wallet,
                                   TicketProperties ticketProps,
                                   SmsConsentService smsConsentService,
                                   PublicEventService publicEventService) {
@@ -93,7 +93,10 @@ public class PublicOrderController {
                 ticketRows.stream()
                         .map(t -> new PublicOrderResponse.Ticket(
                                 t.getToken(), t.getTierName(), normalizeState(t.getState()),
-                                qrSigner.sign(t.getToken())))
+                                qrSigner.sign(t.getToken()),
+                                // Per ticket, not per order: a refunded ticket
+                                // among live siblings is its own answer.
+                                wallet.forTicket(t)))
                         .toList(),
                 receiptLines(ticketRows),
                 subtotalOf(ticketRows),
@@ -117,6 +120,7 @@ public class PublicOrderController {
         String qrPayload = qrSigner.sign(ticket.getToken());
         String base = baseUrl();
         String qrUrl = base + "/api/v1/public/tickets/" + ticket.getToken() + "/qr.png";
+        var wallets = wallet.forTicket(ticket);
 
         var body = new PublicTicketResponse(
                 ticket.getToken(),
@@ -124,7 +128,14 @@ public class PublicOrderController {
                 ticket.getTierName(),
                 qrPayload,
                 qrUrl,
-                wallet.isConfigured(),
+                // The deprecated flag is READ OFF the new block rather than
+                // computed beside it, so the two cannot drift apart even by
+                // accident. Its old value was the Apple config alone, which
+                // claimed "available" for a refunded ticket the pkpass endpoint
+                // answers 409 for — a narrowing, and one that can only ever
+                // remove a button that was going to fail.
+                wallets.apple().available(),
+                wallets,
                 new PublicTicketResponse.Event(
                         event.getId(), event.getName(), event.getSlug(),
                         event.getStartsAt(), event.getEndsAt(), event.getTimezone(),
