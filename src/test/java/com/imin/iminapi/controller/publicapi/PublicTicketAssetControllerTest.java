@@ -92,6 +92,53 @@ class PublicTicketAssetControllerTest {
                 .andExpect(status().isNotFound());
     }
 
+    /**
+     * A dead ticket is 409 even with the wallet switched off.
+     *
+     * <p>It used to be 503: the controller consulted {@code isConfigured()} first
+     * and {@code AppleWalletPassService} only checked the state afterwards. The
+     * plan's rule is one shared rule for both wallets, and 409 is the true answer
+     * whatever env vars a deployment happens to carry — "temporarily unavailable"
+     * would be a lie that invites a retry which can never succeed.
+     */
+    @Test
+    void applePass_returns409ForARefundedTicketEvenThoughTheWalletIsUnconfigured() throws Exception {
+        Ticket t = persistTicket();
+        t.setState(Ticket.STATE_REFUNDED);
+        tickets.save(t);
+
+        mvc.perform(get("/api/v1/public/tickets/" + t.getToken() + "/apple-wallet.pkpass"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("TICKET_ALREADY_REFUNDED"));
+    }
+
+    /**
+     * The Google save link over the <b>real security chain</b>, which is the only
+     * thing this file can prove that {@code GoogleWalletEndpointTest}'s standalone
+     * MockMvc cannot: {@code SecurityConfig} blanket-permits
+     * {@code GET /api/v1/public/**} and this route has no matcher of its own, so a
+     * change to that rule shows up here as a 401 or 403 instead of a 503.
+     *
+     * <p>503 and not 200 because {@code src/test/resources/application.yaml}
+     * replaces the main YAML and carries no {@code imin.google-wallet} block — the
+     * gate is closed on every developer machine and every CI run, which is the
+     * state to assert.
+     */
+    @Test
+    void googleWallet_returns503WithAnErrorEnvelopeWhenWalletNotConfigured() throws Exception {
+        Ticket t = persistTicket();
+        mvc.perform(get("/api/v1/public/tickets/" + t.getToken() + "/google-wallet"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.error.code").value("UPSTREAM_UNAVAILABLE"));
+    }
+
+    /** The token is the credential, and an unknown one is 404 before the gate is consulted. */
+    @Test
+    void googleWallet_returns404ForUnknownToken() throws Exception {
+        mvc.perform(get("/api/v1/public/tickets/no-such-token/google-wallet"))
+                .andExpect(status().isNotFound());
+    }
+
     private Ticket persistTicket() {
         Organization org = new Organization();
         org.setName("Asset Test Org");

@@ -16,6 +16,7 @@ import com.imin.iminapi.service.ticket.QrImageRenderer;
 import com.imin.iminapi.service.ticket.QrPayloadSigner;
 import com.imin.iminapi.service.ticket.TicketProperties;
 import com.imin.iminapi.service.ticket.WalletTestCerts;
+import com.imin.iminapi.service.ticket.google.GoogleWalletPassService;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -235,6 +236,13 @@ class PublicTicketAssetControllerWalletTest {
                 tickets, qr, new QrImageRenderer(),
                 new AppleWalletPassService(props, tickets, orders, events,
                         mock(OrganizationRepository.class), qr, new EmailProperties()),
+                // Apple's routes are the subject here; the Google collaborator only
+                // has to exist. A Mockito double answers isConfigured() => false,
+                // which is the closed direction — nothing in this file can reach
+                // the Google endpoint and accidentally get a save link out of it.
+                // The Google endpoint has its own file, GoogleWalletEndpointTest,
+                // which uses no doubles at all below the HTTP transport.
+                mock(GoogleWalletPassService.class),
                 recording);
 
         return MockMvcBuilders.standaloneSetup(controller)

@@ -4,10 +4,14 @@ import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.service.EventContentService;
 import com.imin.iminapi.service.auth.AuthService;
 import org.junit.jupiter.api.Test;
+import org.springframework.aop.support.AopUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.core.annotation.AnnotationUtils;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.ReflectionUtils;
 import org.springframework.web.client.RestClient;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -52,6 +56,7 @@ class GoogleWalletContextTest {
     @Autowired GoogleWalletApiClient api;
     @Autowired GoogleWalletJwtSigner signer;
     @Autowired GoogleWalletProvisioner provisioner;
+    @Autowired GoogleWalletPassService passService;
 
     @Autowired
     @org.springframework.beans.factory.annotation.Qualifier("googleWalletRestClient")
@@ -68,6 +73,40 @@ class GoogleWalletContextTest {
         assertThat(googleWalletRestClient)
                 .as("named, because this project has several RestClient beans")
                 .isNotNull();
+        assertThat(passService)
+                .as("the save-link service pulls in three repositories and the QR signer")
+                .isNotNull();
+    }
+
+    /**
+     * <b>No transaction may wrap the Google calls, and this is where that is
+     * checked against the real container.</b>
+     *
+     * <p>{@link GoogleWalletProvisioner} refuses at runtime if a transaction is
+     * active, but a runtime guard only fires on a request that reaches it — and
+     * on a machine with the wallet off, nothing ever does. This is the static
+     * half: the bean the container hands out is the plain object, not a
+     * transactional proxy, and neither the class nor {@code saveUrl} carries the
+     * annotation.
+     *
+     * <p>The edit it catches is a reasonable-looking one. {@code saveUrl} only
+     * reads rows, so {@code @Transactional(readOnly = true)} is exactly what a
+     * reviewer would suggest — and it would hold a pooled JDBC connection across
+     * up to three 5s-timeout calls to Google on an unauthenticated endpoint,
+     * turning a slow upstream into pool exhaustion for the whole API. It would
+     * pass every other test in the repository.
+     */
+    @Test
+    void theSaveLinkServiceIsNotWrappedInATransaction() {
+        assertThat(AopUtils.isAopProxy(passService))
+                .as("a transactional proxy here would put Google's latency inside a JDBC connection")
+                .isFalse();
+        assertThat(AnnotationUtils.findAnnotation(GoogleWalletPassService.class, Transactional.class))
+                .isNull();
+        assertThat(AnnotationUtils.findAnnotation(
+                ReflectionUtils.findMethod(GoogleWalletPassService.class, "saveUrl", String.class),
+                Transactional.class))
+                .isNull();
     }
 
     /**
