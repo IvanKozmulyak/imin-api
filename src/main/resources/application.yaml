@@ -200,7 +200,16 @@ imin:
     from-name: ${IMIN_MARKETING_FROM_NAME:Alex}
     # Public host (imin-public) that serves the /optout confirmation page and hosts
     # the RFC 8058 unsubscribe link. In prod: https://app.imin.wtf.
-    unsubscribe-base-url: ${IMIN_MARKETING_UNSUBSCRIBE_BASE_URL:https://app.imin.wtf}
+    # The buyer site root — the {{eventUrl}} fallback when a campaign has no
+    # linked event. It does NOT build the unsubscribe link any more; that URL
+    # was https://app.imin.wtf/optout?token=… and it 404'd in production,
+    # because imin-public has never served /optout.
+    buyer-site-base-url: ${IMIN_MARKETING_BUYER_SITE_BASE_URL:https://app.imin.wtf}
+    # Where the opt-out actually lives. PublicUnsubscribeController serves both
+    # verbs on one URL: POST is RFC 8058 one-click, GET is the human page.
+    # Defaults to prod, never localhost: an unset env var here would put a
+    # dead link in a real inbox, which is the defect this replaced.
+    api-public-base-url: ${IMIN_API_PUBLIC_BASE_URL:https://api.imin.wtf}
     resend-webhook:
       # Svix signing secret from the Resend dashboard ("whsec_..."). Verifies the
       # inbound POST /api/v1/public/webhooks/resend delivery events. Blank => every

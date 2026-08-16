@@ -90,15 +90,15 @@ public class EmailChannelSender {
         String ticketsUrl = ticketsUrl(c, event);
         // {{eventUrl}} resolves to the linked event's buyer page; with no linked event,
         // to the buyer-site root rather than a broken/empty link.
-        String eventUrl = ticketsUrl != null ? ticketsUrl : props.getUnsubscribeBaseUrl();
+        String eventUrl = ticketsUrl != null ? ticketsUrl : props.getBuyerSiteBaseUrl();
         // Per-recipient {{firstName}} — resolve display names for the whole batch in two
         // batched queries (membership -> consumer -> display_name), not per row.
         Map<UUID, String> firstNameByMembership = resolveFirstNames(c.getOrgId(), batch);
 
         List<CampaignEmailProvider.OutgoingEmail> outgoing = new ArrayList<>(batch.size());
         for (CampaignRecipient r : batch) {
-            String unsubUrl = props.getUnsubscribeBaseUrl() + "/optout?token="
-                    + tokens.sign(c.getOrgId(), r.getMembershipId(), c.getId(), "email");
+            String unsubUrl = props.unsubscribeUrl(
+                    tokens.sign(c.getOrgId(), r.getMembershipId(), c.getId(), "email"));
             String firstName = r.getMembershipId() == null
                     ? MergeTags.FIRST_NAME_FALLBACK
                     : firstNameByMembership.getOrDefault(r.getMembershipId(), MergeTags.FIRST_NAME_FALLBACK);
@@ -186,7 +186,7 @@ public class EmailChannelSender {
      */
     private String ticketsUrl(Campaign c, Event event) {
         if (event == null) return null;
-        return props.getUnsubscribeBaseUrl() + "/e/" + event.getId();
+        return props.getBuyerSiteBaseUrl() + "/e/" + event.getId();
     }
 
     /**
