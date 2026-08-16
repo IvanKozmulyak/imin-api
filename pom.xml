@@ -140,11 +140,26 @@
         <!-- Apple Wallet (.pkpass) generation. jpasskit handles pass.json + manifest +
              PKCS#7 detached signature over the manifest using the Apple Pass Type ID
              cert. AppleWalletPassService stays a graceful no-op when certs aren't
-             configured, so the dep is harmless without prod env vars. -->
+             configured, so the dep is harmless without prod env vars.
+
+             0.5.8 is a floor, not a preference: `relevantDates` (the array that
+             replaced Apple's deprecated scalar `relevantDate`, and the field that
+             puts a ticket on the lock screen at door time) and
+             `preferredStyleSchemes` (the iOS 18 poster event ticket opt-in) do not
+             exist in 0.4.x. JpasskitCapabilityTest fails on a downgrade.
+
+             The SHA-1 manifest digest and SHA1withRSA signature this library uses
+             are correct and must not be "modernised" — Apple still specifies SHA-1
+             for pkpass; the SHA-256 belongs to Apple Wallet Orders, a different
+             product. JpasskitCapabilityTest pins the digest for that reason.
+
+             jpasskit declares jackson-databind 2.22.1; Spring Boot's BOM mediates
+             it down to the managed 2.21.2 and there is exactly one on the
+             classpath. Do not pin jpasskit's version over Boot's. -->
         <dependency>
             <groupId>de.brendamour</groupId>
             <artifactId>jpasskit</artifactId>
-            <version>0.4.1</version>
+            <version>0.5.8</version>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>

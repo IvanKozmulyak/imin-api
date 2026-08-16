@@ -593,7 +593,7 @@ Size: **S**. Gated on nothing. **Hard prerequisite for Tasks 3 and 4** — not a
 
 - **`relevantDate` is deprecated on Apple's side in favour of `relevantDates`** (an array of `Pass.RelevantDates`). jpasskit gained `PKRelevantDate` / `relevantDates` in the 0.5.x line, with the list serialization fixed in **0.5.5**. 0.4.1 can only emit the deprecated scalar.
 - **`preferredStyleSchemes` exists in 0.5.0+ and is absent from 0.4.1/0.4.2.** That is the opt-in for the iOS 18 poster event ticket in Task 4.
-- 0.5.x also carries the full event semantic set — `venueName`, `venueLocation`, `venueEntrance`, `venueRoom`, `performerNames`, `seats` — where 0.4.1's `PKSemantics` has only `eventName`, `eventType`, `eventStartDate`, `eventEndDate` (verified by diffing both source jars: `PKSemantics.java:130-146` vs `:170-190`).
+- ~~0.5.x also carries the full event semantic set — `venueName`, `venueLocation`, `venueEntrance`, `venueRoom`, `performerNames`, `seats` — where 0.4.1's `PKSemantics` has only `eventName`, `eventType`, `eventStartDate`, `eventEndDate` (verified by diffing both source jars: `PKSemantics.java:130-146` vs `:170-190`).~~ **Wrong — corrected while executing Task 2.** `0.4.1/PKSemantics.java:130-152` already declares `eventName`, `venueName`, `venueLocation`, `venueEntrance`, `venuePhoneNumber`, `venueRoom`, `eventType`, `eventStartDate`, `eventEndDate`, `artistIDs`, `performerNames`, `genre`, and `seats` at `:42`. The cited line range is the `eventName…eventEndDate` slice, not the whole set. **The semantic venue fields are not a reason to upgrade** — `relevantDates` and `preferredStyleSchemes` are, and they are sufficient. (What 0.5.8 does add to `PKSemanticsBuilder` is aviation/transit: `boardingZone`, airport locations and timezones, security programs, SSRs, `ticketFareClass`, `membershipProgramStatus`. Nothing an event ticket uses. `eventStartDate`/`eventEndDate` still take `java.util.Date`, not `Instant`, in 0.5.8.)
 
 **Why the bump is low-risk.** Verified by unzipping both source jars, not assumed: the signing behaviour is **byte-identical in intent**. Both use Guava `Hashing.sha1()` for `manifest.json` (`PKInMemorySigningUtil.java:130` in 0.4.1, `:145` in 0.5.8) and `SHA1withRSA` for the detached CMS signature (`PKAbstractSigningUtil.java:86` in both). That is not a defect to fix — **Apple's current *Building a Pass* still specifies SHA-1 manifest hashes**. (The SHA-256 you may remember belongs to Apple **Wallet Orders**' `order.json`, a different product. Do not conflate them.)
 
@@ -601,13 +601,21 @@ Size: **S**. Gated on nothing. **Hard prerequisite for Tasks 3 and 4** — not a
 - **jpasskit does not bundle the WWDR certificate** — we must supply it, which is what `APPLE_WALLET_WWDR_PEM_BASE64` is for — and `loadSigningInformationFromPKCS12AndIntermediateCertificate(...)` calls `checkValidity()`, so **an expired WWDR intermediate fails hard at load**. That is precisely the failure `WalletCredentialCheck` (Task 1) turns into a startup ERROR instead of a 500 at the door.
 - **The correct intermediate is WWDR G4.** Apple's WWDR reference table maps Pass Type ID certificates (along with APNs SSL and Order Type ID) to **G4**, required for certificates issued after 2022-01-27, expiring 2030. G3 is software signing; G5/G6/G7 are unrelated to passes. Record the generation when the certificate is created.
 
-**Watch for:** 0.5.8's POM pulls `jackson-databind` 2.22.1, `guava` 33.6.0-jre, `bcpkix-jdk18on` 1.85 and adds `pushy` (an APNs client, for the pass-update service we are **not** building — it is dead weight, not a signal to build one). Spring Boot's `dependencyManagement` pins Jackson via `jackson-bom`, so Boot's version wins; confirm that rather than assume it. jpasskit targets Java 11, which is fine for Java 17.
+**Watch for:** 0.5.8's POM pulls `jackson-databind` 2.22.1, `guava` 33.6.0-jre, `bcpkix-jdk18on` 1.85 and ~~adds~~ **already carried** `pushy` (an APNs client, for the pass-update service we are **not** building — it is dead weight, not a signal to build one). Spring Boot's `dependencyManagement` pins Jackson via `jackson-bom`, so Boot's version wins; confirm that rather than assume it. jpasskit targets Java 11, which is fine for Java 17.
 
-**Files:** Modify `pom.xml:146-149`.
+**What the bump actually did — measured, 2026-08-16.**
+
+- **Zero API breaks.** A `javap` diff of every public type in both jars removes **nothing**: 0.4.1's entire public surface is present in 0.5.8. The only altered declaration is `PKPassTemplateInMemory`, which additionally implements `Serializable` and gains a `Map<String,byte[]>` constructor plus `getFilesMap()`. `AppleWalletPassService` compiled and its tests passed with **no source change**.
+- **Jackson: Boot wins, confirmed not assumed.** `dependency:tree -Dverbose` prints `com.fasterxml.jackson.core:jackson-databind:2.21.2 — version managed from 2.22.1`; exactly one copy on the classpath. The Jackson 3 (`tools.jackson.core:jackson-databind:3.1.0`) that Boot 4 uses for HTTP is a **different groupId and package** and does not collide. Note the direction: jpasskit is compiled against 2.22.1 and runs on 2.21.2 — a downgrade, which would surface as `NoSuchMethodError` inside the signing `catch`. It does not: the serialization path is exercised for real by `AppleWalletPassServiceTest` and `JpasskitCapabilityTest`.
+- **The transitive set did not change shape.** Same artifacts, newer versions: `pushy` 0.15.4→0.15.6, `guava` 33.1.0→33.6.0-jre, `commons-io` 2.16.1→2.22.0, BouncyCastle 1.78.1→1.85 (the only BC on the classpath — `WalletTestCerts` uses it). **`pushy` and its netty transitives were already there under 0.4.1**, so no exclusions are warranted and none were added; netty is independently on the classpath via reactor-netty and the AWS SDK at the same 4.2.12.Final.
+- **One wire-format change, and it is benign.** jpasskit builds `relevantDates` as `Collections.emptyList()` when unset and the signing `ObjectMapper` is `Include.NON_NULL`, so **every pass now carries `"relevantDates":[]`** until Task 3 populates it. Byte-diffed a generated `pass.json` under both versions: that empty array is the *only* difference — same QR message, same field order, same `"voided":false,"sharingProhibited":false`. It is the same shape 0.4.1 already emitted for `beacons`, `locations`, `associatedApps` and `associatedStoreIdentifiers`.
+- **For Task 3:** `PKRelevantDateBuilder` implements `IPKBuilder` only — **not `IPKValidateable`**. It will happily emit a `startDate` with no `endDate`, which Apple documents as invalid ("Required when providing startDate"). Enforce the pairing in `AppleWalletPassService`; the library will not.
+
+**Files:** Modify `pom.xml:146-149`. Plus `src/test/java/com/imin/iminapi/service/ticket/JpasskitCapabilityTest.java` — see Step 3.
 
 ---
 
-- [ ] **Step 1: Bump the version**
+- [x] **Step 1: Bump the version**
 
 ```xml
         <dependency>
@@ -617,24 +625,28 @@ Size: **S**. Gated on nothing. **Hard prerequisite for Tasks 3 and 4** — not a
         </dependency>
 ```
 
-- [ ] **Step 2: Confirm Boot still wins on Jackson**
+- [x] **Step 2: Confirm Boot still wins on Jackson**
 
 Run: `./mvnw dependency:tree -Dincludes='com.fasterxml.jackson.core:jackson-databind'`
 Expected: exactly one `jackson-databind`, at the Spring Boot 4.0.5 managed version — **not** 2.22.1. If two appear, or if the version is jpasskit's, add an explicit `<exclusions>` on the jpasskit dependency rather than letting a transitive Jackson float into the app.
 
-- [ ] **Step 3: Run the wallet tests, then everything**
+Note `-Dincludes` filters the tree but `-q` suppresses it entirely, and the plain form hides the mediation. Use `-Dverbose` to see `version managed from 2.22.1` rather than inferring it.
+
+- [x] **Step 3: Run the wallet tests, then everything — and prove the capability**
 
 Run: `./mvnw test -Dtest='AppleWalletPassServiceTest,WalletConfigGateTest,PublicTicketAssetControllerTest'`
-Expected: PASS with no source changes. If `PKPass.builder()`, `PKEventTicket.builder()`, `PKSigningInformationUtil` or `PKInMemorySigningUtil` moved, fix the call sites here — that is the whole point of doing the bump as its own commit.
+Expected: PASS with no source changes. If `PKPass.builder()`, `PKEventTicket.builder()`, `PKSigningInformationUtil` or `PKInMemorySigningUtil` moved, fix the call sites here — that is the whole point of doing the bump as its own commit. *(Nothing moved. See "What the bump actually did" above.)*
+
+**Added beyond the plan:** `src/test/java/com/imin/iminapi/service/ticket/JpasskitCapabilityTest.java`. A version string in `pom.xml` cannot say why it is there, and an upgrade justified entirely by "0.4.1 cannot emit `relevantDates`" with nothing asserting that claim is an unverified upgrade. The test builds a real event ticket, signs it with `WalletTestCerts`, and reads `relevantDates` and `preferredStyleSchemes` back out of the archive's `pass.json`; a third case pins the manifest digest to **SHA-1** so nobody "modernises" it to SHA-256 and ships passes Apple rejects. Verified to fail on a downgrade to 0.4.1 — `NoClassDefFound de/brendamour/jpasskit/PKRelevantDate` and `NoSuchMethod …preferredStyleSchemes(java.util.List)`.
 
 Run: `./mvnw test`
 Expected: fully green.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
-git add pom.xml
-git commit -m "chore(wallet): upgrade jpasskit 0.4.1 -> 0.5.8 for semantic venue fields"
+git add pom.xml src/test/java/com/imin/iminapi/service/ticket/JpasskitCapabilityTest.java
+git commit -m "chore(wallet): upgrade jpasskit 0.4.1 -> 0.5.8 for relevantDates"
 ```
 
 ---
