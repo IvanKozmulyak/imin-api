@@ -1071,6 +1071,41 @@ git commit -m "feat(wallet): complete the Apple event ticket — relevantDates, 
 
 ## Task 4: Real pass artwork, and the iOS 18 poster event ticket
 
+> ### AS BUILT (2026-08-16) — artwork shipped, **poster event ticket cut**
+>
+> **The poster event ticket is not adoptable by this product, and the reason is a single sentence in Apple's own minimum-requirements list.** From [*Creating a poster event pass using semantic tags*](https://developer.apple.com/documentation/walletpasses/creating-an-event-pass-using-semantic-tags), verbatim:
+>
+> > "Poster event tickets aren't compatible with tickets that require a QR code or barcode for entry."
+>
+> Every imin ticket is redeemed by scanning its QR at the door (`imin-tickets-gate` is a QR scanner; `TicketRedeemService` is driven by the signed payload). The poster layout is an NFC-entry layout. This is a product-level exclusion, not a missing field, and no amount of semantic-tag work reaches it. `preferredStyleSchemes` was therefore **not** added — `WalletArtworkTest.thePassDoesNotClaimAPosterEventTicketItCannotRender` pins its absence so a later reader does not "fix" the gap.
+>
+> Three further corrections to what this section asserts, each verified rather than assumed:
+>
+> 1. **It is an iOS 26 feature, not iOS 18.** Apple's current doc opens "In iOS 26 and later and watchOS 26 and later you can provide an engaging event ticket experience by creating a poster event tickets using semantic tags in Wallet." The iOS 18 framing dates from the WWDC24 announcement.
+> 2. **The four required tags are an AND, not a shortfall we could absorb.** Apple lists `eventName`, `venueName`, `venueRegionName`, `venueRoom` as "Required tags for all event passes" and states: *"If you omit any of these tags, your pass falls back to the legacy event pass style."* We can supply two. `venueRoom` has no column on `Event` (confirmed: `grep -in "room\|performer\|lineup" Event.java` → nothing). **`venueRegionName` does not exist in jpasskit 0.5.8 at all** — `grep -rn "venueRegionName\|RegionName"` over the 0.5.8 sources returns nothing; `PKSemantics` carries only `venueName`, `venueLocation`, `venueEntrance`, `venuePhoneNumber`, `venueRoom`, and there is no `@JsonAnySetter` or map escape hatch to inject it. The plan's claim that it *"maps cleanly to `event.venueCity`"* is true of the data and false of the library. `performerNames` **is** in jpasskit but is required only for `PKEventTypeLivePerformance`, which we do not set. So the layout would not have triggered even with a certificate and a device.
+> 3. **`primaryLogo.png` is not a Wallet asset**, and none of the sizes this section gives for the new assets are documented. The WWDC24 session introduces exactly two new assets, `artwork` and `secondaryLogo`, and names no dimensions; `primaryLogo` appears in neither the session nor the current doc. Apple has never published pixel specs for `artwork.png` (the developer-forum thread asking for them, 757181, has no Apple reply). **`358×448` in this section is unsourced.** No `artwork.png` was shipped: it would have meant an R2 round trip and a re-encode on the door path, at an invented size, for a layout that cannot render.
+>
+> **What did ship:** the six real PNGs, `WalletArtwork` with the missing-file fallback, and the icon size correction from the archived guide's 29pt to the current 38pt.
+>
+> | file | pixels | source |
+> |---|---|---|
+> | `icon.png` | 38×38 | `imin-public/public/logo-mark-light.png`, luminance-keyed, mark at 60% over opaque `#08070d` |
+> | `icon@2x.png` | 76×76 | same |
+> | `icon@3x.png` | 114×114 | same |
+> | `logo.png` | 42×50 | same source, ink `#f4f2fb` on transparency, aspect-fit |
+> | `logo@2x.png` | 84×100 | same |
+> | `logo@3x.png` | 126×150 | same |
+>
+> The mark is 11:13, so Apple's 160×50pt cap binds on height and the width falls out of it — 42pt, nowhere near the 160 limit. `strip.png` was correctly identified as not an event-ticket asset and is absent; `background.png` and `thumbnail.png` are also absent, because the only image we hold that could fill them is the event's own poster, and that is the fetch this task declined to put on the door path.
+>
+> **The source file's trap is real and is documented in `WalletArtwork`'s javadoc:** `logo-mark-light.png` is a black mark on an *opaque white* field. Its alpha is 255 across the interior (only a ~4px transparent frame at the edge) and carries no shape whatsoever. Keying a mask off alpha yields a solid white rectangle, which on an `rgb(8,7,13)` pass is a white box that looks deliberate. `theLogoIsAMarkOnTransparency_notAnOpaqueBoxOfBackgroundColour` fails on exactly that mistake.
+>
+> Every assertion reads the image back out of a generated, signed archive, compares it byte-for-byte against the committed file, and checks the manifest digest covers it — proven by deleting `src/main/resources/wallet/` *and* `target/classes/wallet/` and watching two tests go red. Deleting only the source directory leaves a stale `target/classes` copy and the suite stays green: a size assertion alone cannot tell the real art from the same-sized placeholder, which is why the byte-identity test exists.
+>
+> **Still gated on G-CERT:** nothing in this task, now that the poster style is cut. Step 6 as written is void. The one device check that remains worth doing when a real Pass Type ID certificate exists is that the 38pt icon and the transparent logo render as intended on the near-black pass — cosmetic, not a blocker.
+>
+> `imin-public/docs/BRANDING.md:92-95` still describes this as unbuilt ("generates icon/logo PNGs procedurally … (placeholder). Drop real PNGs at …"). It is now stale in the opposite direction and needs a one-line correction in that repo.
+
 Size: **M**. Not gated on any account — gated on someone handing over the brand mark. **Depends on Task 2.**
 
 Today the icon and logo are drawn at runtime: a near-black rectangle with a white circle in the middle (`AppleWalletPassService.solidRect():192-212`). It satisfies Apple's schema and nothing else. Meanwhile `imin-public/docs/BRANDING.md:92,94` already tells readers the real files live at `imin-api/src/main/resources/wallet/*.png` — **that directory does not exist**, which is a doc describing a thing nobody built.
@@ -1104,7 +1139,7 @@ The second value is the legacy fallback, and Apple keeps it backward compatible 
 
 ---
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test** *(built differently — see the as-built note: the sketch below asserts on the loader, and the shipped test asserts on the signed archive)*
 
 ```java
 package com.imin.iminapi.service.ticket;
@@ -1178,19 +1213,19 @@ class WalletArtworkTest {
 
 (Fix the typo in the method name when you write it — it is there to force a read, not a copy-paste.)
 
-- [ ] **Step 2: Obtain and commit the six PNGs**
+- [x] **Step 2: Obtain and commit the six PNGs**
 
 **This is the asset dependency, and it is the one thing in this task that is not code.** The mark must be a transparent PNG. If no suitable mark is available, the fallback in Step 3 keeps everything working and this step can land later — but do **not** ship the generated black-square placeholder to production and call the feature done; a buyer's lock screen showing a black square with a dot is worse than not shipping.
 
-- [ ] **Step 3: Add the loader with the fallback**
+- [x] **Step 3: Add the loader with the fallback**
 
 `WalletArtwork.load(name, w, h)` reads `classpath:/wallet/{name}`, and on absence or a decode failure returns the existing `solidRect(w, h)` output — moved here verbatim from `AppleWalletPassService`. Cache decoded bytes in a `ConcurrentHashMap` keyed by name; they never change at runtime. Log **once** at WARN per missing file, not per request.
 
-- [ ] **Step 4: Consume it and delete the six lazily-cached fields**
+- [x] **Step 4: Consume it and delete the six lazily-cached fields**
 
 Replace `iconArt()` … `logo3xArt()` and the six `volatile byte[]` fields in `AppleWalletPassService` with calls to `WalletArtwork`.
 
-- [ ] **Step 5: Opt into the poster style**
+- [x] ~~**Step 5: Opt into the poster style**~~ **CUT** — Apple: "Poster event tickets aren't compatible with tickets that require a QR code or barcode for entry." See the as-built note.
 
 Add to the `PKPass.builder()` chain:
 
@@ -1216,11 +1251,11 @@ and extend the semantics with what we actually hold:
 
 Then attach the event's own poster as `artwork.png`, resized to 358×448 (4:5, which is exactly the ratio every imin poster is generated at). Fetch via `PosterImageStorage.download(event.getPosterUrl())`, decode/resize/encode with the Java2D toolkit `BrandLogoCompositor` already uses, and **cache by URL** the way that class does — a per-request R2 fetch and re-encode on the door path is not acceptable. **Wrap the whole thing in try/catch and degrade to no artwork**: this follows ADR-0002's precedent exactly — generation never fails over a decoration. A null `posterUrl` is normal and must be a clean skip, not a caught exception.
 
-- [ ] **Step 6: Verify the poster style on a real iOS 18+ device** *(gated on **G-CERT**)*
+- [x] ~~**Step 6: Verify the poster style on a real iOS 18+ device** *(gated on **G-CERT**)*~~ **VOID** — there is no poster style to verify.
 
 The only step in this task that a test cannot cover. Confirm: the pass adds; the poster layout renders rather than silently falling back; and if it does fall back, that the classic layout is intact. **Missing `venueRoom` / `performerNames` is the specific thing to look for** — the plan assumes graceful omission and has not verified it.
 
-- [ ] **Step 7: Run the tests, commit**
+- [x] **Step 7: Run the tests, commit**
 
 ```bash
 git add src/main/resources/wallet/ \

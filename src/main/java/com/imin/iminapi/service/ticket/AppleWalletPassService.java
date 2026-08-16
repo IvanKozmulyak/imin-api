@@ -32,14 +32,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import javax.imageio.ImageIO;
-import java.awt.Color;
-import java.awt.Graphics2D;
-import java.awt.RenderingHints;
-import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 import java.time.DateTimeException;
 import java.time.Duration;
 import java.time.Instant;
@@ -50,7 +43,9 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Date;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Builds and signs Apple Wallet {@code .pkpass} archives on demand.
@@ -73,10 +68,24 @@ import java.util.List;
  *       night is over, which covers the overwhelmingly common staleness case.</li>
  * </ul>
  *
- * <p>Artwork (icon + logo) is generated programmatically as solid brand-coloured
- * squares. Replacing the bundled art with real branded PNGs at
- * {@code src/main/resources/wallet/icon.png} etc. is a separate task; the
- * placeholders satisfy Apple's pkpass schema and keep the pass scannable.
+ * <p>Artwork (icon + logo) is the real imin mark, committed under
+ * {@code src/main/resources/wallet/} and loaded by {@link WalletArtwork}, which
+ * falls back to a generated placeholder rather than failing a pass if a file
+ * ever goes missing.
+ *
+ * <p><b>This is not a poster event ticket, and it cannot be one.</b> Apple's
+ * <i>Creating a poster event pass using semantic tags</i> states as a minimum
+ * requirement: "Poster event tickets aren't compatible with tickets that require
+ * a QR code or barcode for entry." Every imin ticket is redeemed by scanning its
+ * QR at the door, so the poster layout is excluded by the product, not by a
+ * missing field. Two of the four semantic tags it requires would be
+ * unsatisfiable anyway — {@code venueRegionName} is not expressible through
+ * jpasskit 0.5.8 at all, and {@code venueRoom} has no column on {@code Event} —
+ * and Apple is explicit that "if you omit any of these tags, your pass falls
+ * back to the legacy event pass style". So {@code preferredStyleSchemes} is
+ * deliberately absent: declaring an intent that provably cannot be honoured
+ * would read like a shipped feature. See the Task 4 as-built note in
+ * {@code docs/superpowers/plans/2026-08-15-wallet-passes.md}.
  *
  * <p>When any of the {@code APPLE_WALLET_*} env vars are missing,
  * {@link #isConfigured()} returns false; callers (controller + email template)
@@ -130,13 +139,38 @@ public class AppleWalletPassService {
     private final QrPayloadSigner qrSigner;
     private final EmailProperties emailProps;
 
-    /** Cached artwork bytes — generated once at first use. */
-    private volatile byte[] iconPng;
-    private volatile byte[] icon2xPng;
-    private volatile byte[] icon3xPng;
-    private volatile byte[] logoPng;
-    private volatile byte[] logo2xPng;
-    private volatile byte[] logo3xPng;
+    /**
+     * Every image the archive carries, and the size of the placeholder to draw if
+     * that file ever goes missing. Insertion-ordered so the archive's entries do
+     * not shuffle between builds.
+     *
+     * <p><b>The icon is 38pt, not the 29 this class shipped before.</b> 29×29 is
+     * Apple's <i>archived</i> Wallet guide; the current one specifies 38×38. A
+     * wrong-sized icon is not rejected — it is resampled and rendered slightly
+     * soft on every buyer's phone forever, which is worse than a hard failure
+     * because nothing ever reports it.
+     *
+     * <p>The logo is 42×50, well inside Apple's 160×50 maximum: the mark is
+     * taller than it is wide (11:13), so height is the binding constraint and the
+     * width falls out of it. @2x and @3x are the same size in <i>points</i>.
+     *
+     * <p>{@code strip.png} is deliberately absent. It is a coupon / store-card
+     * asset and has never been an event-ticket one; the event ticket's optional
+     * artwork is {@code background.png} and {@code thumbnail.png}, and we ship
+     * neither because there is no brand asset for either that is not the event's
+     * own poster — see the note on the poster event ticket in
+     * {@code docs/superpowers/plans/2026-08-15-wallet-passes.md}.
+     */
+    private static final Map<String, int[]> ARTWORK = new LinkedHashMap<>();
+
+    static {
+        ARTWORK.put(PKPassTemplateInMemory.PK_ICON, new int[]{38, 38});
+        ARTWORK.put(PKPassTemplateInMemory.PK_ICON_RETINA, new int[]{76, 76});
+        ARTWORK.put(PKPassTemplateInMemory.PK_ICON_RETINAHD, new int[]{114, 114});
+        ARTWORK.put(PKPassTemplateInMemory.PK_LOGO, new int[]{42, 50});
+        ARTWORK.put(PKPassTemplateInMemory.PK_LOGO_RETINA, new int[]{84, 100});
+        ARTWORK.put(PKPassTemplateInMemory.PK_LOGO_RETINAHD, new int[]{126, 150});
+    }
 
     public AppleWalletPassService(AppleWalletProperties props,
                                    TicketRepository tickets,
@@ -314,12 +348,10 @@ public class AppleWalletPassService {
 
         try {
             PKPassTemplateInMemory template = new PKPassTemplateInMemory();
-            template.addFile(PKPassTemplateInMemory.PK_ICON, new ByteArrayInputStream(iconArt()));
-            template.addFile(PKPassTemplateInMemory.PK_ICON_RETINA, new ByteArrayInputStream(icon2xArt()));
-            template.addFile(PKPassTemplateInMemory.PK_ICON_RETINAHD, new ByteArrayInputStream(icon3xArt()));
-            template.addFile(PKPassTemplateInMemory.PK_LOGO, new ByteArrayInputStream(logoArt()));
-            template.addFile(PKPassTemplateInMemory.PK_LOGO_RETINA, new ByteArrayInputStream(logo2xArt()));
-            template.addFile(PKPassTemplateInMemory.PK_LOGO_RETINAHD, new ByteArrayInputStream(logo3xArt()));
+            for (Map.Entry<String, int[]> art : ARTWORK.entrySet()) {
+                template.addFile(art.getKey(), new ByteArrayInputStream(
+                        WalletArtwork.load(art.getKey(), art.getValue()[0], art.getValue()[1])));
+            }
 
             byte[] p12Bytes = Base64.getDecoder().decode(props.getCertP12Base64());
             byte[] wwdrBytes = Base64.getDecoder().decode(props.getWwdrPemBase64());
@@ -444,64 +476,6 @@ public class AppleWalletPassService {
     private static String brandOrImin(Organization org) {
         String brand = org == null ? null : org.getBrandName();
         return notBlank(brand) ? brand : "imin";
-    }
-
-    // ─── artwork (lazily generated solid-colour placeholders) ────────────────
-
-    private byte[] iconArt() throws IOException {
-        if (iconPng == null) iconPng = solidSquare(29);
-        return iconPng;
-    }
-
-    private byte[] icon2xArt() throws IOException {
-        if (icon2xPng == null) icon2xPng = solidSquare(58);
-        return icon2xPng;
-    }
-
-    private byte[] icon3xArt() throws IOException {
-        if (icon3xPng == null) icon3xPng = solidSquare(87);
-        return icon3xPng;
-    }
-
-    private byte[] logoArt() throws IOException {
-        if (logoPng == null) logoPng = solidRect(160, 50);
-        return logoPng;
-    }
-
-    private byte[] logo2xArt() throws IOException {
-        if (logo2xPng == null) logo2xPng = solidRect(320, 100);
-        return logo2xPng;
-    }
-
-    private byte[] logo3xArt() throws IOException {
-        if (logo3xPng == null) logo3xPng = solidRect(480, 150);
-        return logo3xPng;
-    }
-
-    private static byte[] solidSquare(int size) throws IOException {
-        return solidRect(size, size);
-    }
-
-    private static byte[] solidRect(int w, int h) throws IOException {
-        BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
-        Graphics2D g = img.createGraphics();
-        try {
-            g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-            // imin brand near-black with subtle off-white "i" mark. Apple is
-            // lenient about content; only the file shape matters.
-            g.setColor(new Color(20, 20, 24));
-            g.fillRect(0, 0, w, h);
-            g.setColor(new Color(245, 245, 247));
-            int markSize = Math.max(2, Math.min(w, h) / 4);
-            int markX = (w - markSize) / 2;
-            int markY = (h - markSize) / 2;
-            g.fillOval(markX, markY, markSize, markSize);
-        } finally {
-            g.dispose();
-        }
-        ByteArrayOutputStream out = new ByteArrayOutputStream(2048);
-        ImageIO.write(img, "PNG", out);
-        return out.toByteArray();
     }
 
     // ─── small helpers ───────────────────────────────────────────────────────
