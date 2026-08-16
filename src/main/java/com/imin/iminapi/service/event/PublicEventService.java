@@ -199,12 +199,17 @@ public class PublicEventService {
      * including an unknown-country chip if some of its events have no country at all; the
      * frontend must add {@code &country=} to those chips' links for their counts to hold.
      * No country is ever inferred from a sibling row — an unknown country stays {@code null}.
+     *
+     * <p><b>Upcoming only.</b> The count is bounded by {@code clock.instant()} the same way the
+     * feed behind the chip is (see {@link EventRepository#findPublicCityCounts(Instant)}): every
+     * real client sends {@code from=now&includeOngoing=true}, so a count over all time promised
+     * nights that no feed could show. A city with nothing left ahead of it returns no chip.
      */
     @Transactional(readOnly = true)
     public List<com.imin.iminapi.dto.publicapi.PublicCityItem> listCities() {
         // row = [cityKey, displaySpelling, country, count]
         Map<String, List<Object[]>> byKey = new LinkedHashMap<>();
-        for (Object[] row : eventRepository.findPublicCityCounts()) {
+        for (Object[] row : eventRepository.findPublicCityCounts(clock.instant())) {
             byKey.computeIfAbsent((String) row[0], k -> new java.util.ArrayList<>()).add(row);
         }
 
@@ -292,12 +297,16 @@ public class PublicEventService {
      *
      * <p>Sorted alphabetically ignoring case, so "Techno" and "afro house" interleave the way a
      * reader expects rather than splitting into upper- and lower-case blocks.
+     *
+     * <p><b>Upcoming only</b>, on the same clock and for the same reason as {@link #listCities()}:
+     * a chip is a promise that tapping it shows something, and a genre whose nights have all
+     * passed opened an empty feed.
      */
     @Transactional(readOnly = true)
     public List<String> listGenres() {
         // row = [genreKey, displaySpelling, count]
         Map<String, Map<String, Long>> byKey = new LinkedHashMap<>();
-        for (Object[] row : eventRepository.findPublicGenreCounts()) {
+        for (Object[] row : eventRepository.findPublicGenreCounts(clock.instant())) {
             byKey.computeIfAbsent((String) row[0], k -> new LinkedHashMap<>())
                     .merge((String) row[1], ((Number) row[2]).longValue(), Long::sum);
         }
