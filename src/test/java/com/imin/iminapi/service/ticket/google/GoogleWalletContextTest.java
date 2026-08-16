@@ -51,6 +51,7 @@ class GoogleWalletContextTest {
     @Autowired GoogleWalletProperties props;
     @Autowired GoogleWalletApiClient api;
     @Autowired GoogleWalletJwtSigner signer;
+    @Autowired GoogleWalletProvisioner provisioner;
 
     @Autowired
     @org.springframework.beans.factory.annotation.Qualifier("googleWalletRestClient")
@@ -61,6 +62,9 @@ class GoogleWalletContextTest {
         assertThat(props).isNotNull();
         assertThat(api).isNotNull();
         assertThat(signer).isNotNull();
+        assertThat(provisioner)
+                .as("the provisioner pulls in EmailProperties for the buyer ticket link")
+                .isNotNull();
         assertThat(googleWalletRestClient)
                 .as("named, because this project has several RestClient beans")
                 .isNotNull();
