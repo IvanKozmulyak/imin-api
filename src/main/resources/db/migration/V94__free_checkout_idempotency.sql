@@ -1,0 +1,55 @@
+-- V94__free_checkout_idempotency.sql
+-- A free ticket could be claimed twice.
+--
+-- POST /api/v1/public/events/{eventId}/checkout accepted no Idempotency-Key and
+-- FreeCheckoutService.issueFreeOrder was not idempotent, so two taps produced two
+-- orders, two sets of tickets, and two sets of seats taken off a real capacity.
+-- The free path is where a double tap is most likely: a EUR 0 checkout shows no
+-- payment sheet, so nothing visible happens while the request is in flight.
+--
+-- WHY THIS HANGS OFF `orders` AND NOT `ticket_reservations` (V93).
+-- The native paid path claims its key on the hold, because the hold outlives the
+-- request: Stripe I/O happens after it and is not transactional, so the key has to
+-- be claimed before the remote call and resolved afterwards. A free checkout has
+-- no remote call — it reserves, confirms, writes the Order and writes the Tickets
+-- in ONE transaction. The reservation is a transient intermediate that is already
+-- CONFIRMED by the time the request returns, and the thing a replay has to hand
+-- back is the Order, whose `token` is what /order/{token} is keyed on. So the row
+-- that must be unique is the order row, and its INSERT is the claim.
+--
+-- SCOPED, NOT GLOBAL: (event_id, email, idempotency_key).
+-- The key is minted by an untrusted client, so it is not a global namespace, and
+-- the replay answer is `orders.token` — a bearer credential for /order/{token}
+-- and every QR code on it. A single global unique index on idempotency_key would
+-- buy two problems:
+--   * KEY SQUATTING. Anyone can POST a free checkout and claim short or guessable
+--     keys ("1", the all-zeros UUID, a fixed string a client library uses). Any
+--     later buyer whose client mints a colliding key is handed the squatter's
+--     order instead of a ticket, and never gets one.
+--   * CROSS-BUYER TICKET DISCLOSURE. One guessed live key anywhere on the
+--     platform returns some stranger's order token, i.e. their tickets.
+-- (event_id, email) is the narrowest namespace in which "the same tap, retried"
+-- still means something: a genuine double tap is always the same event and always
+-- the same buyer address (the free path requires an email and has no other notion
+-- of who is asking). Scoped this way, a collision needs the victim's event AND
+-- their exact address AND their key, and even then it can only ever return an
+-- order that was issued to that same address.
+--
+-- `email`, NOT `email_normalized`. `orders.email` is NOT NULL; `email_normalized`
+-- is nullable because V86 added it to a live table. A NULL in any indexed column
+-- exempts the row from a unique index in PostgreSQL and H2 alike, so indexing the
+-- nullable column would fail OPEN — the duplicate this migration exists to stop
+-- would slip through for any row whose derivation had not run. FreeCheckoutService
+-- writes `email` through EmailNormalizer, the same function that derives
+-- `email_normalized`, so the two agree without depending on it.
+--
+-- Nullable key + plain (non-partial) unique index, exactly like
+-- uq_ticket_reservations_idem (V93:20) and uq_ticket_reservations_session
+-- (V27:53): PostgreSQL and H2 both treat NULLs as distinct in a unique index, so
+-- every existing row and every unkeyed caller is unaffected and only keyed
+-- requests participate. imin-public sends no Idempotency-Key on /checkout today
+-- (lib/api/public-events.ts:createCheckoutSession) and must keep working byte for
+-- byte. No partial index — H2 backs the test suite and does not support one.
+ALTER TABLE orders ADD COLUMN idempotency_key VARCHAR(128) NULL;
+
+CREATE UNIQUE INDEX uq_orders_idem ON orders (event_id, email, idempotency_key);

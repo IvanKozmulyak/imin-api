@@ -28,6 +28,8 @@ import com.stripe.param.CouponCreateParams;
 import com.stripe.param.checkout.SessionCreateParams;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.ConcurrencyFailureException;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
@@ -209,6 +211,53 @@ public class StripeCheckoutService {
                                          String promoCode, Integer expectedPriceMinor, String buyerEmail,
                                          boolean adsConsent, boolean marketingOptIn,
                                          CheckoutAttribution attribution, String rawLocale) {
+        return createCheckout(eventId, tierId, quantity, promoCode, expectedPriceMinor, buyerEmail,
+                adsConsent, marketingOptIn, attribution, rawLocale, null);
+    }
+
+    /**
+     * @param rawIdempotencyKey the caller's {@code Idempotency-Key} header, or null.
+     *
+     * <h2>What it does, and on which branch</h2>
+     *
+     * <p>It makes the <b>free</b> branch replayable. That branch is the one that
+     * finishes a purchase outright, inside this request, with no payment sheet and no
+     * redirect — so a buyer who taps twice because nothing visibly happened got two
+     * orders, two sets of tickets and two bites out of a real capacity. The paid branch
+     * is untouched: its answer is a Stripe-hosted Session, its own retry protection is
+     * Stripe's, and the native sibling that does need a key claims it on
+     * {@code ticket_reservations} instead ({@link StripePaymentIntentService}).
+     *
+     * <p><b>The lookup happens before {@link #priceIt}</b>, for the same reason the
+     * native path checks before pricing, plus one this branch adds: a replay must not
+     * be re-validated. If the last seat went between the buyer's two taps, re-pricing
+     * would answer the second tap with a leak-safe 404 — telling a buyer who already
+     * holds a valid order that the event does not exist.
+     *
+     * <p>Absent or blank header ⇒ unkeyed, byte-identical to the previous behaviour;
+     * over-long ⇒ 400 rather than a truncation that would merge two distinct keys.
+     * See {@link IdempotencyKey}.
+     */
+    public CheckoutResult createCheckout(UUID eventId, UUID tierId, int quantity,
+                                         String promoCode, Integer expectedPriceMinor, String buyerEmail,
+                                         boolean adsConsent, boolean marketingOptIn,
+                                         CheckoutAttribution attribution, String rawLocale,
+                                         String rawIdempotencyKey) {
+        // Normalize first, so a malformed header is a 400 before anything is priced,
+        // reserved or charged — and so both public checkout endpoints reject the same
+        // header the same way.
+        String idempotencyKey = IdempotencyKey.normalize(rawIdempotencyKey);
+
+        // A replay answers from the stored order, never from a fresh evaluation of the
+        // request. Nothing below this line runs for a repeated key.
+        if (idempotencyKey != null) {
+            CheckoutResult replayed = replayFreeOrder(eventId, buyerEmail, idempotencyKey);
+            if (replayed != null) {
+                log.info("Replaying free order for a repeated Idempotency-Key (event {})", eventId);
+                return replayed;
+            }
+        }
+
         if (attribution == null) attribution = CheckoutAttribution.NONE;
         // Normalize once, here, so neither the free path nor the Stripe metadata can ever
         // carry an unsupported tag. null = "no preference" ⇒ English emails (V78).
@@ -238,13 +287,40 @@ public class StripeCheckoutService {
             Order order;
             try {
                 order = freeCheckoutService.issueFreeOrder(event, tier, quantity, email, promo, adsConsent,
-                        marketingOptIn, attribution, buyerLocale);
+                        marketingOptIn, attribution, buyerLocale, idempotencyKey);
             } catch (ApiException e) {
                 // Inventory shortage → collapse to leak-safe 404 like the paid path.
                 if (e.status() == HttpStatus.CONFLICT) {
                     throw ApiException.notFound("Event");
                 }
                 throw e;
+            } catch (DataIntegrityViolationException | ConcurrencyFailureException duplicate) {
+                // Two requests with the same key arrived at once, so neither lookup above
+                // could see the other; uq_orders_idem settled it. Which of the two
+                // exception types Spring translates the conflict into depends on whether
+                // the winner had committed yet, so both are caught — treating one of them
+                // as an unhandled error is exactly how a duplicate becomes a 500.
+                if (idempotencyKey == null) {
+                    // Not ours. Some other constraint failed and must not be dressed up
+                    // as an idempotent replay.
+                    throw duplicate;
+                }
+                // issueFreeOrder is @Transactional, so the loser's reserve + confirmSold
+                // rolled back with its order: the seats are already back in the pool and
+                // there is nothing to release by hand.
+                CheckoutResult winner = replayFreeOrder(eventId, email, idempotencyKey);
+                if (winner != null) {
+                    log.info("Concurrent free checkout with a repeated Idempotency-Key resolved "
+                            + "to the winning order (event {})", eventId);
+                    return winner;
+                }
+                // The constraint fired but the winning row is not visible. Do not invent
+                // an order: say the key is in flight, the same answer the native path
+                // gives when a key is claimed but its result has not landed.
+                log.error("uq_orders_idem rejected a free order for event {} but no winning "
+                        + "order was readable", eventId, duplicate);
+                throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                        "A checkout with this Idempotency-Key is already in progress");
             }
             // Best-effort confirmation email; failures are logged inside the service.
             // Branded ticket-issued email now rides TicketsIssuedEvent (published inside
@@ -389,6 +465,21 @@ public class StripeCheckoutService {
                     session.getId(), reservationId, e.getMessage());
         }
         return CheckoutResult.stripe(session.getUrl(), session.getId());
+    }
+
+    /**
+     * The finished free order behind {@code key}, rendered as the same
+     * {@code kind: "order"} answer the original request returned, or null when the key
+     * has never produced one on this event for this buyer.
+     *
+     * <p>Nothing is recomputed: the URL is rebuilt from the stored order's token, so a
+     * replay cannot disagree with the answer the buyer already has.
+     */
+    private CheckoutResult replayFreeOrder(UUID eventId, String buyerEmail, String key) {
+        return freeCheckoutService.findByIdempotencyKey(eventId, buyerEmail, key)
+                .map(existing -> CheckoutResult.order(
+                        freeCheckoutService.orderUrl(existing), existing.getToken()))
+                .orElse(null);
     }
 
     /**

@@ -18,6 +18,23 @@ import java.util.UUID;
 @RepositoryRestResource(exported = false)
 public interface OrderRepository extends JpaRepository<Order, UUID> {
     Optional<Order> findByToken(String token);
+
+    /**
+     * The order a previous free checkout with this {@code Idempotency-Key}
+     * already produced, or empty when the key has never been used <i>by this
+     * buyer on this event</i>.
+     *
+     * <p>All three columns are the lookup, and they are the same three the
+     * {@code uq_orders_idem} unique index covers (V94) — the query and the
+     * constraint must agree or a replay would resolve to a row the index never
+     * protected. {@code email} is part of the key rather than of the answer:
+     * the header is minted by an untrusted client, and the value returned is
+     * {@code orders.token}, the bearer credential for the buyer's tickets.
+     *
+     * <p>Pass {@code email} already normalized — see
+     * {@link com.imin.iminapi.service.event.FreeCheckoutService#findByIdempotencyKey}.
+     */
+    Optional<Order> findByEventIdAndEmailAndIdempotencyKey(UUID eventId, String email, String idempotencyKey);
     Optional<Order> findByStripePaymentIntentId(String paymentIntentId);
     Optional<Order> findByStripeSessionId(String sessionId);
 

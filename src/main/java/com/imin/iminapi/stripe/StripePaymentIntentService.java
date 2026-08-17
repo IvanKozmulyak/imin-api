@@ -59,9 +59,6 @@ public class StripePaymentIntentService {
 
     private static final Logger log = LoggerFactory.getLogger(StripePaymentIntentService.class);
 
-    /** Matches {@code ticket_reservations.idempotency_key} (V93). */
-    private static final int MAX_IDEMPOTENCY_KEY_LENGTH = 128;
-
     private final StripeClient stripeClient;
     private final StripeCheckoutService checkoutService;
     private final InventoryService inventoryService;
@@ -279,16 +276,14 @@ public class StripePaymentIntentService {
      * Trim to null, and reject anything over the column width rather than
      * truncating it — two distinct 200-character keys that share a 128-character
      * prefix must not collapse into one reservation.
+     *
+     * <p>Shared with the hosted {@code /checkout} endpoint via
+     * {@link IdempotencyKey} rather than duplicated: the two endpoints are the
+     * same promise to the same client, and two private copies of this would
+     * drift while both kept passing their own tests.
      */
     private static String normalizeKey(String raw) {
-        if (raw == null) return null;
-        String key = raw.trim();
-        if (key.isEmpty()) return null;
-        if (key.length() > MAX_IDEMPOTENCY_KEY_LENGTH) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
-                    "Idempotency-Key must be at most " + MAX_IDEMPOTENCY_KEY_LENGTH + " characters");
-        }
-        return key;
+        return IdempotencyKey.normalize(raw);
     }
 
     /** Give the seats back, and never let the cleanup mask the original failure. */
