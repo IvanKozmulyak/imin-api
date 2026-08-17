@@ -195,7 +195,8 @@ public class RefundRequestService {
 
         Event event = events.findById(order.getEventId()).orElse(null);
 
-        List<Ticket> refundable = refundableTicketsFor(order);
+        RefundEligibility eligibility = eligibilityFor(order);
+        List<Ticket> refundable = eligibility.refundable();
         if (refundable.isEmpty()) {
             throw new ApiException(
                 HttpStatus.CONFLICT,
@@ -225,6 +226,7 @@ public class RefundRequestService {
                     tierNames.getOrDefault(t.getTierId(), ""),
                     t.getPriceMinor()))
                 .toList(),
+            eligibility.nonRefundableCount(),
             estimated,
             order.getCurrency(),
             PublicRefundFormResponse.defaultReasons(),
@@ -235,15 +237,42 @@ public class RefundRequestService {
         );
     }
 
-    private List<Ticket> refundableTicketsFor(Order order) {
+    /**
+     * The outcome of the refundable-set filter for one order: the tickets that survived
+     * it, and how many it dropped.
+     *
+     * <p>{@code nonRefundableCount} is deliberately a subtraction —
+     * {@code (all tickets on the order) - refundable.size()} — rather than a second pass
+     * with its own re-stated predicate. A re-stated predicate is free to disagree with the
+     * list it describes the moment either copy is edited; a subtraction cannot. Whatever
+     * {@link #eligibilityFor} excludes and for whatever reason, the count is exactly that.
+     */
+    private record RefundEligibility(List<Ticket> refundable, int nonRefundableCount) {}
+
+    /**
+     * Splits an order's tickets into refundable and not.
+     *
+     * <p>A ticket is excluded when it already carries a {@code refund_tickets} row, or
+     * when it has been redeemed at the door. Note what is NOT excluded: a {@code revoked}
+     * ticket, and a ticket for an event that has already ended, both stay refundable —
+     * see the class notes on this in the branch that introduced the count. This method is
+     * the single definition of that rule for the buyer-facing form; changing it changes
+     * what is refundable, which is out of scope for a reporting field.
+     */
+    private RefundEligibility eligibilityFor(Order order) {
         List<Ticket> all = tickets.findByOrderId(order.getId());
         List<UUID> ids = all.stream().map(Ticket::getId).toList();
         Set<UUID> alreadyRefunded = ids.isEmpty()
             ? Set.of() : refundTickets.findRefundedTicketIds(ids);
-        return all.stream()
+        List<Ticket> refundable = all.stream()
             .filter(t -> !alreadyRefunded.contains(t.getId()))
             .filter(t -> !Ticket.STATE_REDEEMED.equals(t.getState()))
             .toList();
+        return new RefundEligibility(refundable, all.size() - refundable.size());
+    }
+
+    private List<Ticket> refundableTicketsFor(Order order) {
+        return eligibilityFor(order).refundable();
     }
 
     @Transactional
