@@ -11,9 +11,8 @@ import java.util.UUID;
  * <p>{@code qrPayload} is the signed {@code imin1.<token>.<hmac>} string —
  * useful for hand-rolled scanner integrations. {@code qrUrl} is the
  * server-rendered PNG that the buyer's web ticket page can simply
- * {@code <img src>} onto. {@code walletAvailable} gates the "Add to Apple
- * Wallet" CTA — false when the server isn't configured for Wallet pass
- * signing so the FE can suppress a button that would 503.
+ * {@code <img src>} onto. {@code wallet} says which wallet passes this server
+ * can mint for this ticket, and where.
  */
 public record PublicTicketResponse(
         String token,
@@ -22,8 +21,37 @@ public record PublicTicketResponse(
         String qrPayload,
         String qrUrl,
         boolean walletAvailable,
+        TicketWallets wallet,
         Event event,
         Order order) {
+
+    /**
+     * Apple only, and permanent.
+     *
+     * <p>Exactly equal to {@code wallet.apple.available}, forever — the
+     * controller reads it <i>off</i> that block rather than computing it
+     * alongside, so the two cannot drift. New clients read {@link #wallet()};
+     * this stays because {@code imin-public} reads it in production today
+     * ({@code lib/api/types.ts:243}) and because a shipped mobile binary cannot
+     * be force-updated. A wire field with an installed reader is a one-way door.
+     *
+     * <p>It is <b>not</b> repurposed to mean "either wallet". The client gate on
+     * the other side is {@code walletAvailable && isApplePlatform()}, so a true
+     * value earned by Google alone would light the Apple CTA on Android and hand
+     * that buyer a {@code .pkpass} their device cannot open.
+     *
+     * <p>Its meaning did narrow in one direction, deliberately: it now folds in
+     * ticket eligibility, so a refunded ticket reports {@code false} where it
+     * used to report the Apple config alone. That can only ever remove a button
+     * whose endpoint answers {@code 409}; it can never light one.
+     *
+     * @deprecated read {@code wallet.apple.available} instead.
+     */
+    @Deprecated
+    @Override
+    public boolean walletAvailable() {
+        return walletAvailable;
+    }
 
     /**
      * No {@code metaPixelId} here — the Purchase pixel is order-page-only; a web

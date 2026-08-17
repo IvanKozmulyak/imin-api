@@ -103,7 +103,24 @@ class PublicTicketPayloadTest {
         assertThat(fieldNames(root))
                 .as("Top-level keys leaked or missing on PublicTicketResponse.")
                 .isEqualTo(Set.of("token", "state", "tierName", "qrPayload", "qrUrl",
-                        "walletAvailable", "event", "order"));
+                        "walletAvailable", "wallet", "event", "order"));
+
+        assertThat(fieldNames(root.get("wallet")))
+                .as("wallet keys leaked or missing on TicketWallets. Keyed by wallet "
+                    + "VENDOR, never by device platform — see the record's javadoc.")
+                .isEqualTo(Set.of("apple", "google"));
+
+        // Both nested objects are always present with both keys, including on a
+        // server where neither wallet is configured (which is this one). A
+        // closed wallet is `{available:false,url:null}`, never an absent object
+        // and never an absent key: a client that has to distinguish "false" from
+        // "missing" is a client that will get one of them wrong.
+        for (String vendor : new String[]{"apple", "google"}) {
+            assertThat(fieldNames(root.get("wallet").get(vendor)))
+                    .as("wallet." + vendor + " keys leaked or missing on TicketWallets.WalletPass. "
+                        + "No reason/state field belongs here — a buyer can act on none of it.")
+                    .isEqualTo(Set.of("available", "url"));
+        }
 
         assertThat(fieldNames(root.get("event")))
                 .as("event keys leaked or missing on PublicTicketResponse.Event. " +

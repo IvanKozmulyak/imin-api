@@ -55,6 +55,22 @@ Object storage (Cloudflare R2, S3-compatible) for generated poster images and ev
 - `R2_REGION` — region passed to the SDK; R2 ignores it but one is required (default `auto`)
 - `R2_PUBLIC_URL_PREFIX` — public read base URL for the bucket (R2 public bucket domain or custom domain); returned image URLs are `<prefix>/<key>` (no default; required when `MEDIA_ENABLED=true`)
 
+Wallet passes (Apple Wallet `.pkpass` + Google Wallet Event Ticket). Two independent gates, both **fail closed and quietly**: blank ⇒ that wallet reports itself unavailable, the CTA is suppressed on the buyer page and in the issuance email, and the endpoint 503s. Neither gate can affect checkout, issuance, email or the door. **Everything below is unset in production today — the whole feature is dark.** See `docs/decisions/ADR-0004-wallet-passes-are-not-updated.md`.
+- `APPLE_WALLET_ENABLED` — kill switch, default **`true`**. Set `false` to stop signing without deleting the certificate from the environment.
+- `APPLE_WALLET_PASS_TYPE_ID`, `APPLE_WALLET_TEAM_ID`, `APPLE_WALLET_CERT_P12_BASE64`, `APPLE_WALLET_WWDR_PEM_BASE64` — all four required for Apple. Blocked on an Apple Developer Program membership (ADR-0003); a Pass Type ID certificate needs a legal entity + D-U-N-S.
+- `APPLE_WALLET_CERT_PASSWORD` — **optional**. A PKCS#12 exported with an empty password is legal and common (`openssl pkcs12 -export -passout pass:`), so blank does *not* mean unconfigured. `WalletCredentialCheck` loads the p12 + WWDR once at startup and logs an ERROR naming the reason if they do not; it never throws (a bad cert must not stop the API booting), and `AppleWalletPassService.isConfigured()` folds its answer in, so a complete config wrapped around a corrupt p12 reports unavailable rather than 500ing on the tap.
+- `GOOGLE_WALLET_ENABLED` — default **`false`**, deliberately asymmetric with Apple. A new Google issuer account is in demo mode (passes reach only issuer admins/testers and carry a `[TEST ONLY]` prefix) until publishing access is granted, and that request cannot be made until a class already exists in production. Flip this last, after approval.
+- `GOOGLE_WALLET_ISSUER_ID` — numeric issuer id from the Google Pay & Wallet Console.
+- `GOOGLE_WALLET_SERVICE_ACCOUNT_JSON_BASE64` — base64 of the service-account JSON key; needs exactly one scope, `https://www.googleapis.com/auth/wallet_object.issuer`. A private key: environment only, never a file in this repo, never logged. Parsed once at startup by `GoogleWalletJwtSigner`'s constructor, which logs the outcome and never throws.
+- `GOOGLE_WALLET_ORIGINS` — comma-separated approved origins for the save link. Blank = unrestricted (the dev default); **set it in production** (`https://app.imin.wtf` plus the API origin the email links from). Blank elements are dropped and the claim is omitted entirely rather than sent as `[]`.
+- `GoogleWalletProperties.gateReason()` names the env var that closed the gate, in the log only — the wire collapses all five closed states (three Google, two Apple) to `available: false`.
+
+Wallet endpoints (both unauthenticated — the 24-byte ticket token is the credential; both metered by the `wallet-pass` rate-limit bucket, 30 per 5 min per IP):
+- `GET /api/v1/public/tickets/{token}/apple-wallet.pkpass` — signed pkpass (jpasskit 0.5.8; SHA-1 manifest, which is what Apple's format specifies — do not "modernise" it to SHA-256, that is Wallet **Orders**).
+- `GET /api/v1/public/tickets/{token}/google-wallet` — `302` to `https://pay.google.com/gp/v/save/<jwt>`. Lazily creates the Event Ticket class (`{issuerId}.evt_{eventId}`) and object (`{issuerId}.tkt_{ticketToken}`) through `walletobjects` on first request.
+- Both: unknown token ⇒ `404`; refunded ⇒ `409 TICKET_ALREADY_REFUNDED`, revoked ⇒ `409 INVALID_STATE` (`WalletEligibility`, checked **before** the config gate so it holds with the wallet off; `redeemed` is deliberately allowed); wallet off or any upstream failure ⇒ `503 UPSTREAM_UNAVAILABLE`, never a 500.
+- `PublicTicketResponse` / `PublicOrderResponse.tickets[]` carry `wallet: { apple: {available, url}, google: {available, url} }` — `url` non-null iff `available`. The legacy `walletAvailable` boolean is **deprecated but permanent**, means Apple only, and equals `wallet.apple.available`.
+
 Swagger UI: `http://localhost:8085/swagger-ui.html` (dev only; disabled in prod).
 
 ## Architecture

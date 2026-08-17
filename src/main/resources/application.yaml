@@ -303,6 +303,12 @@ imin:
     min-interval-millis: ${IMIN_GEOCODING_MIN_INTERVAL_MILLIS:1100}
     max-throttle-wait-millis: ${IMIN_GEOCODING_MAX_THROTTLE_WAIT_MILLIS:60000}
   apple-wallet:
+    # Kill switch. true + the credential values below = passes on. Set false to
+    # stop signing without removing the certificate from the environment (and
+    # losing the only copy of it). The Java field default is also true, which is
+    # what the test profile binds — src/test/resources/application.yaml replaces
+    # this file rather than merging with it.
+    enabled: ${APPLE_WALLET_ENABLED:true}
     # Apple Pass Type ID, e.g. pass.com.imin.ticket. Required for /apple-wallet.pkpass
     # to serve a pass; when blank the endpoint returns 503 and the email template
     # suppresses the "Add to Apple Wallet" CTA.
@@ -311,9 +317,36 @@ imin:
     team-id: ${APPLE_WALLET_TEAM_ID:}
     # Base64-encoded PKCS#12 (.p12) that holds the Pass Type ID cert + private key.
     cert-p12-base64: ${APPLE_WALLET_CERT_P12_BASE64:}
+    # OPTIONAL. A PKCS#12 exported with an empty password is legal and common
+    # (`openssl pkcs12 -export -passout pass:`), so a blank value here does NOT
+    # mean "not configured" — it means "the archive has no export password".
     cert-password: ${APPLE_WALLET_CERT_PASSWORD:}
     # Base64-encoded Apple WWDR intermediate certificate (PEM).
     wwdr-pem-base64: ${APPLE_WALLET_WWDR_PEM_BASE64:}
+  google-wallet:
+    # Google Wallet Event Ticket passes. Blank issuer-id or service account ⇒
+    # the save link is unavailable and the CTA is suppressed. Independent of
+    # imin.apple-wallet: either wallet can be live without the other.
+    #
+    # DEFAULTS FALSE, unlike apple-wallet.enabled — a new Google issuer account
+    # is in demo mode (passes reach only issuer admins/testers and carry a
+    # [TEST ONLY] prefix) until publishing access is granted, and that request
+    # cannot be made until a class already exists in production. So there is a
+    # window where the credentials are correct and the pass reaches nobody;
+    # enabling by default would light the buyer CTA during exactly that window.
+    # See GoogleWalletProperties#enabled. Flip this true only after approval.
+    enabled: ${GOOGLE_WALLET_ENABLED:false}
+    # Issuer ID from the Google Pay & Wallet Console (a long numeric string).
+    issuer-id: ${GOOGLE_WALLET_ISSUER_ID:}
+    # Base64 of the service-account JSON key. The service account needs exactly
+    # one scope: https://www.googleapis.com/auth/wallet_object.issuer
+    # This is a PRIVATE KEY — it lives in the environment only, never in a file
+    # in this repository, and nothing logs it.
+    service-account-json-base64: ${GOOGLE_WALLET_SERVICE_ACCOUNT_JSON_BASE64:}
+    # Comma-separated approved origins for the save link. Blank is the dev
+    # default and means "unrestricted"; set it in production —
+    # see GoogleWalletProperties#origins.
+    origins: ${GOOGLE_WALLET_ORIGINS:}
   cors:
     allowed-origin-patterns: ${CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:3000,http://localhost:5173,https://imin-webapp.vercel.app,https://imin-webapp-*.vercel.app,https://dashboard.imin.wtf,https://imin.wtf,https://www.imin.wtf,https://imin-public.vercel.app,https://imin-public-*.vercel.app,https://t.imin.wtf}
   api:
@@ -509,6 +542,14 @@ imin:
       # later actually mail from our sending domain.
       capacity: 20
       window-minutes: 60
+    wallet-pass:
+      # Signed .pkpass minting, keyed per client IP (forward-headers-strategy=framework
+      # makes getRemoteAddr the real client IP in prod). Three DB reads, an RSA
+      # signature and a ZIP per call on an endpoint whose only credential is a URL.
+      # Generous for a real buyer with several tickets on one order who taps each
+      # one, tight enough that a loop cannot spin RSA signatures.
+      capacity: 30
+      window-minutes: 5
     # ---- Buyer accounts (app.imin.wtf) — epic §2.2 ----------------------
     # Separate from the organizer buckets above even where the numbers match:
     # two surfaces, two abuse profiles, and buyer traffic must never be able to

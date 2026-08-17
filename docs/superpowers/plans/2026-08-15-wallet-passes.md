@@ -233,7 +233,7 @@ Four defects, all in the "is this configured, and what happens when it isn't" se
 
 ---
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `src/test/java/com/imin/iminapi/service/ticket/WalletConfigGateTest.java`:
 
@@ -344,12 +344,12 @@ class WalletConfigGateTest {
 }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `./mvnw test -Dtest=WalletConfigGateTest`
 Expected: **FAIL** — compilation error, `WalletCredentialCheck` does not exist and `setEnabled` is not on the properties. Once those compile, `blankPasswordDoesNotDisqualifyAnOtherwiseCompleteConfig` is the one that fails on logic.
 
-- [ ] **Step 3: Fix the properties gate**
+- [x] **Step 3: Fix the properties gate**
 
 In `AppleWalletProperties.java`, add the switch and remove the password from the required set:
 
@@ -393,7 +393,7 @@ Add the YAML line beside the other five (`application.yaml`, in the `imin.apple-
     enabled: ${APPLE_WALLET_ENABLED:true}
 ```
 
-- [ ] **Step 4: Add the credential check**
+- [x] **Step 4: Add the credential check**
 
 Create `src/main/java/com/imin/iminapi/service/ticket/WalletCredentialCheck.java`:
 
@@ -478,7 +478,7 @@ Then call it once at startup, from `AppleWalletPassService`. Add to the construc
 
 **Do not** make this throw. A bad certificate must not take the API down; see the Javadoc above.
 
-- [ ] **Step 5: Give the 503 a body, a filename and a bucket**
+- [x] **Step 5: Give the 503 a body, a filename and a bucket**
 
 Replace `PublicTicketAssetController.applePass` (`:52-63`):
 
@@ -514,7 +514,7 @@ Replace `PublicTicketAssetController.applePass` (`:52-63`):
 
 Inject `RateLimiter` into the constructor.
 
-- [ ] **Step 6: Register the bucket in all three places**
+- [x] **Step 6: Register the bucket in all three places**
 
 `RateLimitBucketCoverageTest` checks **only** that `application.yaml` has an `imin.ratelimit.wallet-pass:` block. It does **not** check the `@Value` pair or the `configs.put(...)`, and the test double invents buckets on demand — so missing either of the other two is green in the suite and a **500 on every request** in production. Do all three.
 
@@ -547,7 +547,7 @@ and the registration, beside the others:
                 .build());
 ```
 
-- [ ] **Step 7: Widen the controller test**
+- [x] **Step 7: Widen the controller test**
 
 In `PublicTicketAssetControllerTest`, replace the bare-status 503 assertion so the envelope is actually pinned:
 
@@ -564,12 +564,12 @@ In `PublicTicketAssetControllerTest`, replace the bare-status 503 assertion so t
 
 Note this test is green for the *right* reason under the test profile: `src/test/resources/application.yaml` carries no `imin.apple-wallet` block at all, so every field binds from its Java default and `fullyConfigured()` is false.
 
-- [ ] **Step 8: Run the tests**
+- [x] **Step 8: Run the tests**
 
 Run: `./mvnw test -Dtest='WalletConfigGateTest,PublicTicketAssetControllerTest,RateLimitBucketCoverageTest,AppleWalletPassServiceTest'`
 Expected: PASS.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add src/main/java/com/imin/iminapi/service/ticket/AppleWalletProperties.java \
@@ -593,7 +593,7 @@ Size: **S**. Gated on nothing. **Hard prerequisite for Tasks 3 and 4** — not a
 
 - **`relevantDate` is deprecated on Apple's side in favour of `relevantDates`** (an array of `Pass.RelevantDates`). jpasskit gained `PKRelevantDate` / `relevantDates` in the 0.5.x line, with the list serialization fixed in **0.5.5**. 0.4.1 can only emit the deprecated scalar.
 - **`preferredStyleSchemes` exists in 0.5.0+ and is absent from 0.4.1/0.4.2.** That is the opt-in for the iOS 18 poster event ticket in Task 4.
-- 0.5.x also carries the full event semantic set — `venueName`, `venueLocation`, `venueEntrance`, `venueRoom`, `performerNames`, `seats` — where 0.4.1's `PKSemantics` has only `eventName`, `eventType`, `eventStartDate`, `eventEndDate` (verified by diffing both source jars: `PKSemantics.java:130-146` vs `:170-190`).
+- ~~0.5.x also carries the full event semantic set — `venueName`, `venueLocation`, `venueEntrance`, `venueRoom`, `performerNames`, `seats` — where 0.4.1's `PKSemantics` has only `eventName`, `eventType`, `eventStartDate`, `eventEndDate` (verified by diffing both source jars: `PKSemantics.java:130-146` vs `:170-190`).~~ **Wrong — corrected while executing Task 2.** `0.4.1/PKSemantics.java:130-152` already declares `eventName`, `venueName`, `venueLocation`, `venueEntrance`, `venuePhoneNumber`, `venueRoom`, `eventType`, `eventStartDate`, `eventEndDate`, `artistIDs`, `performerNames`, `genre`, and `seats` at `:42`. The cited line range is the `eventName…eventEndDate` slice, not the whole set. **The semantic venue fields are not a reason to upgrade** — `relevantDates` and `preferredStyleSchemes` are, and they are sufficient. (What 0.5.8 does add to `PKSemanticsBuilder` is aviation/transit: `boardingZone`, airport locations and timezones, security programs, SSRs, `ticketFareClass`, `membershipProgramStatus`. Nothing an event ticket uses. `eventStartDate`/`eventEndDate` still take `java.util.Date`, not `Instant`, in 0.5.8.)
 
 **Why the bump is low-risk.** Verified by unzipping both source jars, not assumed: the signing behaviour is **byte-identical in intent**. Both use Guava `Hashing.sha1()` for `manifest.json` (`PKInMemorySigningUtil.java:130` in 0.4.1, `:145` in 0.5.8) and `SHA1withRSA` for the detached CMS signature (`PKAbstractSigningUtil.java:86` in both). That is not a defect to fix — **Apple's current *Building a Pass* still specifies SHA-1 manifest hashes**. (The SHA-256 you may remember belongs to Apple **Wallet Orders**' `order.json`, a different product. Do not conflate them.)
 
@@ -601,13 +601,21 @@ Size: **S**. Gated on nothing. **Hard prerequisite for Tasks 3 and 4** — not a
 - **jpasskit does not bundle the WWDR certificate** — we must supply it, which is what `APPLE_WALLET_WWDR_PEM_BASE64` is for — and `loadSigningInformationFromPKCS12AndIntermediateCertificate(...)` calls `checkValidity()`, so **an expired WWDR intermediate fails hard at load**. That is precisely the failure `WalletCredentialCheck` (Task 1) turns into a startup ERROR instead of a 500 at the door.
 - **The correct intermediate is WWDR G4.** Apple's WWDR reference table maps Pass Type ID certificates (along with APNs SSL and Order Type ID) to **G4**, required for certificates issued after 2022-01-27, expiring 2030. G3 is software signing; G5/G6/G7 are unrelated to passes. Record the generation when the certificate is created.
 
-**Watch for:** 0.5.8's POM pulls `jackson-databind` 2.22.1, `guava` 33.6.0-jre, `bcpkix-jdk18on` 1.85 and adds `pushy` (an APNs client, for the pass-update service we are **not** building — it is dead weight, not a signal to build one). Spring Boot's `dependencyManagement` pins Jackson via `jackson-bom`, so Boot's version wins; confirm that rather than assume it. jpasskit targets Java 11, which is fine for Java 17.
+**Watch for:** 0.5.8's POM pulls `jackson-databind` 2.22.1, `guava` 33.6.0-jre, `bcpkix-jdk18on` 1.85 and ~~adds~~ **already carried** `pushy` (an APNs client, for the pass-update service we are **not** building — it is dead weight, not a signal to build one). Spring Boot's `dependencyManagement` pins Jackson via `jackson-bom`, so Boot's version wins; confirm that rather than assume it. jpasskit targets Java 11, which is fine for Java 17.
 
-**Files:** Modify `pom.xml:146-149`.
+**What the bump actually did — measured, 2026-08-16.**
+
+- **Zero API breaks.** A `javap` diff of every public type in both jars removes **nothing**: 0.4.1's entire public surface is present in 0.5.8. The only altered declaration is `PKPassTemplateInMemory`, which additionally implements `Serializable` and gains a `Map<String,byte[]>` constructor plus `getFilesMap()`. `AppleWalletPassService` compiled and its tests passed with **no source change**.
+- **Jackson: Boot wins, confirmed not assumed.** `dependency:tree -Dverbose` prints `com.fasterxml.jackson.core:jackson-databind:2.21.2 — version managed from 2.22.1`; exactly one copy on the classpath. The Jackson 3 (`tools.jackson.core:jackson-databind:3.1.0`) that Boot 4 uses for HTTP is a **different groupId and package** and does not collide. Note the direction: jpasskit is compiled against 2.22.1 and runs on 2.21.2 — a downgrade, which would surface as `NoSuchMethodError` inside the signing `catch`. It does not: the serialization path is exercised for real by `AppleWalletPassServiceTest` and `JpasskitCapabilityTest`.
+- **The transitive set did not change shape.** Same artifacts, newer versions: `pushy` 0.15.4→0.15.6, `guava` 33.1.0→33.6.0-jre, `commons-io` 2.16.1→2.22.0, BouncyCastle 1.78.1→1.85 (the only BC on the classpath — `WalletTestCerts` uses it). **`pushy` and its netty transitives were already there under 0.4.1**, so no exclusions are warranted and none were added; netty is independently on the classpath via reactor-netty and the AWS SDK at the same 4.2.12.Final.
+- **One wire-format change, and it is benign.** jpasskit builds `relevantDates` as `Collections.emptyList()` when unset and the signing `ObjectMapper` is `Include.NON_NULL`, so **every pass now carries `"relevantDates":[]`** until Task 3 populates it. Byte-diffed a generated `pass.json` under both versions: that empty array is the *only* difference — same QR message, same field order, same `"voided":false,"sharingProhibited":false`. It is the same shape 0.4.1 already emitted for `beacons`, `locations`, `associatedApps` and `associatedStoreIdentifiers`.
+- **For Task 3:** `PKRelevantDateBuilder` implements `IPKBuilder` only — **not `IPKValidateable`**. It will happily emit a `startDate` with no `endDate`, which Apple documents as invalid ("Required when providing startDate"). Enforce the pairing in `AppleWalletPassService`; the library will not.
+
+**Files:** Modify `pom.xml:146-149`. Plus `src/test/java/com/imin/iminapi/service/ticket/JpasskitCapabilityTest.java` — see Step 3.
 
 ---
 
-- [ ] **Step 1: Bump the version**
+- [x] **Step 1: Bump the version**
 
 ```xml
         <dependency>
@@ -617,24 +625,28 @@ Size: **S**. Gated on nothing. **Hard prerequisite for Tasks 3 and 4** — not a
         </dependency>
 ```
 
-- [ ] **Step 2: Confirm Boot still wins on Jackson**
+- [x] **Step 2: Confirm Boot still wins on Jackson**
 
 Run: `./mvnw dependency:tree -Dincludes='com.fasterxml.jackson.core:jackson-databind'`
 Expected: exactly one `jackson-databind`, at the Spring Boot 4.0.5 managed version — **not** 2.22.1. If two appear, or if the version is jpasskit's, add an explicit `<exclusions>` on the jpasskit dependency rather than letting a transitive Jackson float into the app.
 
-- [ ] **Step 3: Run the wallet tests, then everything**
+Note `-Dincludes` filters the tree but `-q` suppresses it entirely, and the plain form hides the mediation. Use `-Dverbose` to see `version managed from 2.22.1` rather than inferring it.
+
+- [x] **Step 3: Run the wallet tests, then everything — and prove the capability**
 
 Run: `./mvnw test -Dtest='AppleWalletPassServiceTest,WalletConfigGateTest,PublicTicketAssetControllerTest'`
-Expected: PASS with no source changes. If `PKPass.builder()`, `PKEventTicket.builder()`, `PKSigningInformationUtil` or `PKInMemorySigningUtil` moved, fix the call sites here — that is the whole point of doing the bump as its own commit.
+Expected: PASS with no source changes. If `PKPass.builder()`, `PKEventTicket.builder()`, `PKSigningInformationUtil` or `PKInMemorySigningUtil` moved, fix the call sites here — that is the whole point of doing the bump as its own commit. *(Nothing moved. See "What the bump actually did" above.)*
+
+**Added beyond the plan:** `src/test/java/com/imin/iminapi/service/ticket/JpasskitCapabilityTest.java`. A version string in `pom.xml` cannot say why it is there, and an upgrade justified entirely by "0.4.1 cannot emit `relevantDates`" with nothing asserting that claim is an unverified upgrade. The test builds a real event ticket, signs it with `WalletTestCerts`, and reads `relevantDates` and `preferredStyleSchemes` back out of the archive's `pass.json`; a third case pins the manifest digest to **SHA-1** so nobody "modernises" it to SHA-256 and ships passes Apple rejects. Verified to fail on a downgrade to 0.4.1 — `NoClassDefFound de/brendamour/jpasskit/PKRelevantDate` and `NoSuchMethod …preferredStyleSchemes(java.util.List)`.
 
 Run: `./mvnw test`
 Expected: fully green.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
-git add pom.xml
-git commit -m "chore(wallet): upgrade jpasskit 0.4.1 -> 0.5.8 for semantic venue fields"
+git add pom.xml src/test/java/com/imin/iminapi/service/ticket/JpasskitCapabilityTest.java
+git commit -m "chore(wallet): upgrade jpasskit 0.4.1 -> 0.5.8 for relevantDates"
 ```
 
 ---
@@ -656,7 +668,7 @@ The pass generates and signs correctly today. What it does not do is **behave li
 
 ---
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 This is a plain unit test, not a Spring test — mirror `AppleWalletPassServiceTest`, which is the established pattern for this service. It unzips the signed archive and reads `pass.json`, so it asserts on **what Apple will actually see**, not on an intermediate object we could get wrong in the same direction twice.
 
@@ -850,12 +862,12 @@ class ApplePassContentTest {
 }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `./mvnw test -Dtest=ApplePassContentTest`
 Expected: **FAIL on every assertion except the two "still mints" cases** — none of these fields are emitted today. `aRefundedTicketIsRefused` fails by *not* throwing, which is the point.
 
-- [ ] **Step 3: Add the shared eligibility rule**
+- [x] **Step 3: Add the shared eligibility rule**
 
 Create `src/main/java/com/imin/iminapi/service/ticket/WalletEligibility.java`:
 
@@ -910,7 +922,7 @@ public final class WalletEligibility {
 }
 ```
 
-- [ ] **Step 4: Rewrite the pass body**
+- [x] **Step 4: Rewrite the pass body**
 
 In `AppleWalletPassService.generatePass`, after loading `Ticket`/`Order`/`Event`, call `WalletEligibility.assertLive(t)`. Then replace the builder block (`:109-127`) with the full field set. The important parts, with the reasoning that must survive into the code:
 
@@ -1041,12 +1053,12 @@ Replace `formatWhen` with a non-throwing zone resolver:
 
 `expiryOf(event)` = `endsAt` when set, else `startsAt + 12h`, plus 12h of slack either way. `brandOrImin(org)` = `org.getBrandName()` when non-blank, else `"imin"` — the organizer's name belongs on the ticket; `organizationName` stays `"imin"` because that is the merchant of record.
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 Run: `./mvnw test -Dtest='ApplePassContentTest,AppleWalletPassServiceTest'`
 Expected: PASS. The old test's assertions on `pass.json` containing `imin1.TKT_X.`, the pass type id, the event name, venue and tier all still hold — none of those fields moved.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/main/java/com/imin/iminapi/service/ticket/AppleWalletPassService.java \
@@ -1058,6 +1070,41 @@ git commit -m "feat(wallet): complete the Apple event ticket — relevantDates, 
 ---
 
 ## Task 4: Real pass artwork, and the iOS 18 poster event ticket
+
+> ### AS BUILT (2026-08-16) — artwork shipped, **poster event ticket cut**
+>
+> **The poster event ticket is not adoptable by this product, and the reason is a single sentence in Apple's own minimum-requirements list.** From [*Creating a poster event pass using semantic tags*](https://developer.apple.com/documentation/walletpasses/creating-an-event-pass-using-semantic-tags), verbatim:
+>
+> > "Poster event tickets aren't compatible with tickets that require a QR code or barcode for entry."
+>
+> Every imin ticket is redeemed by scanning its QR at the door (`imin-tickets-gate` is a QR scanner; `TicketRedeemService` is driven by the signed payload). The poster layout is an NFC-entry layout. This is a product-level exclusion, not a missing field, and no amount of semantic-tag work reaches it. `preferredStyleSchemes` was therefore **not** added — `WalletArtworkTest.thePassDoesNotClaimAPosterEventTicketItCannotRender` pins its absence so a later reader does not "fix" the gap.
+>
+> Three further corrections to what this section asserts, each verified rather than assumed:
+>
+> 1. **It is an iOS 26 feature, not iOS 18.** Apple's current doc opens "In iOS 26 and later and watchOS 26 and later you can provide an engaging event ticket experience by creating a poster event tickets using semantic tags in Wallet." The iOS 18 framing dates from the WWDC24 announcement.
+> 2. **The four required tags are an AND, not a shortfall we could absorb.** Apple lists `eventName`, `venueName`, `venueRegionName`, `venueRoom` as "Required tags for all event passes" and states: *"If you omit any of these tags, your pass falls back to the legacy event pass style."* We can supply two. `venueRoom` has no column on `Event` (confirmed: `grep -in "room\|performer\|lineup" Event.java` → nothing). **`venueRegionName` does not exist in jpasskit 0.5.8 at all** — `grep -rn "venueRegionName\|RegionName"` over the 0.5.8 sources returns nothing; `PKSemantics` carries only `venueName`, `venueLocation`, `venueEntrance`, `venuePhoneNumber`, `venueRoom`, and there is no `@JsonAnySetter` or map escape hatch to inject it. The plan's claim that it *"maps cleanly to `event.venueCity`"* is true of the data and false of the library. `performerNames` **is** in jpasskit but is required only for `PKEventTypeLivePerformance`, which we do not set. So the layout would not have triggered even with a certificate and a device.
+> 3. **`primaryLogo.png` is not a Wallet asset**, and none of the sizes this section gives for the new assets are documented. The WWDC24 session introduces exactly two new assets, `artwork` and `secondaryLogo`, and names no dimensions; `primaryLogo` appears in neither the session nor the current doc. Apple has never published pixel specs for `artwork.png` (the developer-forum thread asking for them, 757181, has no Apple reply). **`358×448` in this section is unsourced.** No `artwork.png` was shipped: it would have meant an R2 round trip and a re-encode on the door path, at an invented size, for a layout that cannot render.
+>
+> **What did ship:** the six real PNGs, `WalletArtwork` with the missing-file fallback, and the icon size correction from the archived guide's 29pt to the current 38pt.
+>
+> | file | pixels | source |
+> |---|---|---|
+> | `icon.png` | 38×38 | `imin-public/public/logo-mark-light.png`, luminance-keyed, mark at 60% over opaque `#08070d` |
+> | `icon@2x.png` | 76×76 | same |
+> | `icon@3x.png` | 114×114 | same |
+> | `logo.png` | 42×50 | same source, ink `#f4f2fb` on transparency, aspect-fit |
+> | `logo@2x.png` | 84×100 | same |
+> | `logo@3x.png` | 126×150 | same |
+>
+> The mark is 11:13, so Apple's 160×50pt cap binds on height and the width falls out of it — 42pt, nowhere near the 160 limit. `strip.png` was correctly identified as not an event-ticket asset and is absent; `background.png` and `thumbnail.png` are also absent, because the only image we hold that could fill them is the event's own poster, and that is the fetch this task declined to put on the door path.
+>
+> **The source file's trap is real and is documented in `WalletArtwork`'s javadoc:** `logo-mark-light.png` is a black mark on an *opaque white* field. Its alpha is 255 across the interior (only a ~4px transparent frame at the edge) and carries no shape whatsoever. Keying a mask off alpha yields a solid white rectangle, which on an `rgb(8,7,13)` pass is a white box that looks deliberate. `theLogoIsAMarkOnTransparency_notAnOpaqueBoxOfBackgroundColour` fails on exactly that mistake.
+>
+> Every assertion reads the image back out of a generated, signed archive, compares it byte-for-byte against the committed file, and checks the manifest digest covers it — proven by deleting `src/main/resources/wallet/` *and* `target/classes/wallet/` and watching two tests go red. Deleting only the source directory leaves a stale `target/classes` copy and the suite stays green: a size assertion alone cannot tell the real art from the same-sized placeholder, which is why the byte-identity test exists.
+>
+> **Still gated on G-CERT:** nothing in this task, now that the poster style is cut. Step 6 as written is void. The one device check that remains worth doing when a real Pass Type ID certificate exists is that the 38pt icon and the transparent logo render as intended on the near-black pass — cosmetic, not a blocker.
+>
+> `imin-public/docs/BRANDING.md:92-95` still describes this as unbuilt ("generates icon/logo PNGs procedurally … (placeholder). Drop real PNGs at …"). It is now stale in the opposite direction and needs a one-line correction in that repo.
 
 Size: **M**. Not gated on any account — gated on someone handing over the brand mark. **Depends on Task 2.**
 
@@ -1092,7 +1139,7 @@ The second value is the legacy fallback, and Apple keeps it backward compatible 
 
 ---
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test** *(built differently — see the as-built note: the sketch below asserts on the loader, and the shipped test asserts on the signed archive)*
 
 ```java
 package com.imin.iminapi.service.ticket;
@@ -1166,19 +1213,19 @@ class WalletArtworkTest {
 
 (Fix the typo in the method name when you write it — it is there to force a read, not a copy-paste.)
 
-- [ ] **Step 2: Obtain and commit the six PNGs**
+- [x] **Step 2: Obtain and commit the six PNGs**
 
 **This is the asset dependency, and it is the one thing in this task that is not code.** The mark must be a transparent PNG. If no suitable mark is available, the fallback in Step 3 keeps everything working and this step can land later — but do **not** ship the generated black-square placeholder to production and call the feature done; a buyer's lock screen showing a black square with a dot is worse than not shipping.
 
-- [ ] **Step 3: Add the loader with the fallback**
+- [x] **Step 3: Add the loader with the fallback**
 
 `WalletArtwork.load(name, w, h)` reads `classpath:/wallet/{name}`, and on absence or a decode failure returns the existing `solidRect(w, h)` output — moved here verbatim from `AppleWalletPassService`. Cache decoded bytes in a `ConcurrentHashMap` keyed by name; they never change at runtime. Log **once** at WARN per missing file, not per request.
 
-- [ ] **Step 4: Consume it and delete the six lazily-cached fields**
+- [x] **Step 4: Consume it and delete the six lazily-cached fields**
 
 Replace `iconArt()` … `logo3xArt()` and the six `volatile byte[]` fields in `AppleWalletPassService` with calls to `WalletArtwork`.
 
-- [ ] **Step 5: Opt into the poster style**
+- [x] ~~**Step 5: Opt into the poster style**~~ **CUT** — Apple: "Poster event tickets aren't compatible with tickets that require a QR code or barcode for entry." See the as-built note.
 
 Add to the `PKPass.builder()` chain:
 
@@ -1204,11 +1251,11 @@ and extend the semantics with what we actually hold:
 
 Then attach the event's own poster as `artwork.png`, resized to 358×448 (4:5, which is exactly the ratio every imin poster is generated at). Fetch via `PosterImageStorage.download(event.getPosterUrl())`, decode/resize/encode with the Java2D toolkit `BrandLogoCompositor` already uses, and **cache by URL** the way that class does — a per-request R2 fetch and re-encode on the door path is not acceptable. **Wrap the whole thing in try/catch and degrade to no artwork**: this follows ADR-0002's precedent exactly — generation never fails over a decoration. A null `posterUrl` is normal and must be a clean skip, not a caught exception.
 
-- [ ] **Step 6: Verify the poster style on a real iOS 18+ device** *(gated on **G-CERT**)*
+- [x] ~~**Step 6: Verify the poster style on a real iOS 18+ device** *(gated on **G-CERT**)*~~ **VOID** — there is no poster style to verify.
 
 The only step in this task that a test cannot cover. Confirm: the pass adds; the poster layout renders rather than silently falling back; and if it does fall back, that the classic layout is intact. **Missing `venueRoom` / `performerNames` is the specific thing to look for** — the plan assumes graceful omission and has not verified it.
 
-- [ ] **Step 7: Run the tests, commit**
+- [x] **Step 7: Run the tests, commit**
 
 ```bash
 git add src/main/resources/wallet/ \
@@ -1221,6 +1268,48 @@ git commit -m "feat(wallet): real pass artwork and the iOS 18 poster event ticke
 ---
 
 ## Task 5: Google Wallet foundations — properties, credential, JWT signer
+
+> ### AS BUILT (2026-08-16) — foundations shipped; eight plan defects, one of which made `origins` dead config
+>
+> Built as specified with four additions the plan needed and did not have. Full suite **2457** green (2426 baseline + 31 new). Nothing here is wired to an endpoint yet — that is Task 7.
+>
+> **The JWT is provably the one Google accepts, not merely a string.** Decoded from a real signing run (`GoogleWalletJwtSignerTest`, real 2048-bit RSA minted by `GoogleTestKeys`):
+>
+> ```
+> HEADER {"typ":"JWT","alg":"RS256"}
+> CLAIMS {"aud":"google","payload":{"eventTicketObjects":[{"id":"3388000000000000000.tkt_abc"}]},
+>         "iss":"imin-wallet@imin-test.iam.gserviceaccount.com","origins":["https://app.imin.wtf"],
+>         "typ":"savetowallet","iat":1786842450}
+> SIGLEN 256
+> ```
+>
+> `aud` is a bare string (not an array), `iat` is unix **seconds** (not millis), the signature is 256 bytes = RSA-2048 PKCS#1 v1.5. The test verifies it with `RSASSAVerifier` against the matching public key, rejects a signature from a *different* key, and rejects a token whose ticket id was swapped after signing — so the signature is proven to actually cover the payload. What no test here can prove, stated plainly: that `pay.google.com` accepts it. Google verifies against the public half of a key **it** issued. Only **G-ISSUER** closes that.
+>
+> **Four additions beyond the plan:**
+> 1. `GoogleWalletProperties.gateReason() : Optional<String>` — see defect 3.
+> 2. `GoogleWalletJwtSigner` is a `@Component` whose constructor parses the credential and logs the outcome — see defect 2. It never throws; a broken key must not stop the app booting.
+> 3. `GoogleServiceAccountKey.parseBase64(...)` also accepts raw JSON and MIME-decodes wrapped base64 — a pasted key file and a line-wrapped blob are both reasonable, and neither should look like a corrupt credential.
+> 4. `GoogleServiceAccountKeyTest` — 12 cases, over half of them about the key not escaping. See defect 7.
+>
+> **Production YAML binding verified, not assumed.** Bound `src/main/resources/application.yaml` through the real Boot `Binder` with the env vars set: all four keys bind, `GOOGLE_WALLET_ORIGINS=a,b` → a 2-element list. With nothing set: `enabled=false, fullyConfigured=false`, reason `GOOGLE_WALLET_ISSUER_ID is blank; GOOGLE_WALLET_SERVICE_ACCOUNT_JSON_BASE64 is blank; GOOGLE_WALLET_ENABLED is false`. Worth doing: loading `classpath:/application.yaml` binds **nothing**, because the test resource replaces it — the trap §Global Constraints describes, hit live.
+>
+> ### Plan defects found while executing Task 5
+>
+> 1. **`origins` is configured, argued for at length, and never reaches a token.** Decision 2b spends a paragraph on it — *"shipping the field undefined in production is betting on a distinction the docs do not make for us"* — Step 3 makes it a property, and then **nothing in the file list reads both it and the key.** §Interfaces gives `GoogleWalletJwtSigner.sign(Map<String,Object>) : String` and shows the constructor taking only a parsed `GoogleServiceAccountKey`. Built as written, `GOOGLE_WALLET_ORIGINS` is dead config. Fixed by giving the signer a `(key, origins)` constructor and a properties constructor that supplies both.
+> 2. **Boot-time credential validation is specified for Apple and silently dropped for Google.** §Defects opens with *"Nothing validates the certs until a buyer taps the button"* and Task 1 builds `WalletCredentialCheck` to fix it. Task 5's file list has no equivalent, no `@Component`, and nothing that constructs any of the three classes until Task 7 — so a garbage `GOOGLE_WALLET_SERVICE_ACCOUNT_JSON_BASE64` reproduces the exact Apple bug the plan opened by fixing. Fixed in the signer's Spring constructor: parse once, log `ERROR` with the reason, keep serving everything else.
+> 3. **A boolean gate repeats the `certPassword` mistake in a new place.** §Defects 1: a passwordless `.p12` gave *"no log line and no way to tell it apart from 'not configured yet'"*. Google has **three** closed states, and one of them — credentials complete, `enabled` still false — is the *expected* state for the entire development period per §"What is gated on what". `fullyConfigured()` cannot distinguish "nobody set this up" from "we are holding for Google's publishing review", and those want opposite responses from whoever reads the log. Fixed with `gateReason()`, which names the env var that closed the gate and says so explicitly in the demo-mode case.
+> 4. **The JOSE header is unspecified, and Nimbus's default is wrong for it.** The plan pins the claim set — *"`iss` = the service-account email, `aud` = `"google"`, `typ` = `"savetowallet"`, `iat` = unix seconds"* — and says *"Signing is **RS256**"*, but never mentions the header's own `typ`. `new JWSHeader.Builder(JWSAlgorithm.RS256).build()` leaves it **null**; Google's reference sample sets `typ: JWT`. Two different fields named `typ`, one in the header and one in the claims, and the plan names only one of them.
+> 5. **The plan's `aud` assertion cannot fail.** Step 1 writes `assertThat(claims.getAudience()).containsExactly("google")`. Nimbus normalises **both** `"aud":"google"` and `"aud":["google"]` to a one-element list on parse, so that assertion passes either way — while Google documents the bare string. Only decoding the claims segment can tell them apart; added `theAudienceIsABareStringNotAnArray` to do that.
+> 6. **The one place in the plan that must parse JSON by hand is the one place it does not say which Jackson to use.** Task 2's as-built records that Jackson 2 (`com.fasterxml`, via jpasskit) and Jackson 3 (`tools.jackson`, Boot 4's HTTP converters) are both on the classpath, and the task brief flags picking wrong as a runtime failure a `catch` swallows. Step 4 says only that `parse(json)` *"reads `client_email` and `private_key`"*. Resolved by using neither: Nimbus's shaded `JSONObjectUtils`, already a hard dependency of the signer.
+> 7. **The private key's own exposure surface is never mentioned.** The plan's only secrecy note is *"**Never log the serialised JWT**: it is a bearer artifact that mints a pass"* — nothing about the key that signs it. Two concrete holes in the sketch as given: (a) `GoogleServiceAccountKey` holds an `RSAPrivateKey` and is specified with no `toString()`, and both sibling helpers in this plan (`WalletTestCerts.Bundle`, `GoogleTestKeys.Bundle`) are **records**, whose generated `toString()` calls `RSAPrivateKey.toString()` — an identity hash on JDK 17, the modulus and private exponent on JDKs where `RSAPrivateCrtKeyImpl` printed them; (b) `parse` is specified to throw *"with a message naming the missing field"* with nothing forbidding it from naming that field's **value**, which for `private_key` is the secret. Fixed: explicit redacting `toString()`, every failure message written by hand with no cause attached and no echo of the input.
+>
+>    **Correction, 2026-08-17.** This line used to end *"Proven by mutation — re-introducing both leaks turns `GoogleServiceAccountKeyTest` red in 3 places; reverting turns it green."* An adversarial audit ran both leaks separately and that claim was half false. Measured against the tests as they stood:
+>
+>    - Echoing the PEM into the `private_key` failure message → **red in 2 places**, not 3 (`noParsePathEchoesKeyMaterialWhetherItFailsOrSucceeds`, `theBootTimeFailureReasonCarriesNoKeyMaterial`). A real guard, one place fewer than advertised.
+>    - `toString()` returning `"…privateKey=" + privateKey` — the `String.valueOf(privateKey)` path this very paragraph names as the threat — → **green, the whole suite.** On this JDK (17.0.20) the rendering is `sun.security.rsa.RSAPrivateCrtKeyImpl@e3be9ff4`, an identity hash, so nothing material escaped *here*. The test could not distinguish that from a JDK or provider whose `toString()` prints the modulus, which is exactly the case the fix exists for: the redaction was a real control standing behind a decorative test.
+>
+>    Closed from both ends rather than by restating the claim. `toStringRedactsThePrivateKey` now asserts the literal `privateKey=<redacted>` marker, so *any* delegation to the key object fails on *any* JDK; `assertNoKeyMaterial` now hunts the key's arithmetic components — modulus, private exponent and the CRT factors, in decimal and both hex cases, plus the DER as hex — so a provider that does print key material is caught whatever base it uses. Re-measured after that: PEM echo → red in 2; `toString()` delegation → red in 1; a `toString()` that keeps the marker and appends only the modulus → red in 2; **both original leaks together → red in 3 — which is what this line claimed before anything made it true.**
+> 8. **What blank `origins` *binds* to is asserted but never pinned.** *"Blank is the local dev default"* — verified true (an unset env var binds to an empty list), but nothing stopped `GOOGLE_WALLET_ORIGINS=""` or `"a,,b"` from shipping an empty-string origin Google can never match. The setter now drops blank elements, and the signer **omits** the claim rather than sending `"origins": []` — an empty array is a defined restriction to nothing, which is worse than an absent field, not equivalent to it.
 
 Size: **M**. Gated on nothing to build and test; gated on **G-ISSUER** to switch on.
 
@@ -1243,7 +1332,7 @@ Size: **M**. Gated on nothing to build and test; gated on **G-ISSUER** to switch
 
 ---
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 The test that matters. A signer test that only checks "a string came out" is worthless; this one **verifies the signature with the matching public key** before it looks at a single claim. If the signing algorithm, the key, or the canonical JSON is wrong, verification fails and the test goes red — which is exactly what would happen at `pay.google.com`.
 
@@ -1357,9 +1446,9 @@ class GoogleWalletJwtSignerTest {
 
 `GoogleTestKeys.generate()` mints a 2048-bit RSA keypair, PEM-encodes the PKCS#8 private key, and assembles a service-account-shaped JSON (`type`, `client_email`, `private_key`, `private_key_id`, `project_id`). Model it on `WalletTestCerts` — same idea, same reason it exists.
 
-- [ ] **Step 2: Run to verify it fails** — compilation error, none of the three classes exist.
+- [x] **Step 2: Run to verify it fails** — compilation error, none of the three classes exist.
 
-- [ ] **Step 3: Properties**
+- [x] **Step 3: Properties**
 
 ```java
 @ConfigurationProperties(prefix = "imin.google-wallet")
@@ -1444,13 +1533,13 @@ Register in `TicketConfig`:
         GoogleWalletProperties.class})
 ```
 
-- [ ] **Step 4: Credential + signer**
+- [x] **Step 4: Credential + signer**
 
 `GoogleServiceAccountKey.parse(json)` reads `client_email` and `private_key`, strips the PEM armour, base64-decodes and builds an `RSAPrivateKey` via `KeyFactory.getInstance("RSA")` + `PKCS8EncodedKeySpec`. It throws `IllegalArgumentException` with a message naming the missing field — a credential that half-parses is worse than one that does not parse.
 
 `GoogleWalletJwtSigner.sign(payload)` builds `JWSHeader(RS256)` + a `JWTClaimsSet` with `iss` = client email, `aud` = `"google"`, `typ` = `"savetowallet"`, `iat` = now, `origins` when configured, and `payload` = the map. Signs with `RSASSASigner`. **Never log the serialised JWT**: it is a bearer artifact that mints a pass.
 
-- [ ] **Step 5: Run the tests, commit**
+- [x] **Step 5: Run the tests, commit**
 
 ```bash
 git commit -m "feat(wallet): Google Wallet credential loading and save-link JWT signing"
@@ -1490,9 +1579,34 @@ Two constraints that will bite if skipped:
 - Test: `src/test/java/com/imin/iminapi/service/ticket/google/GoogleWalletModelsTest.java`
 - Test: `src/test/java/com/imin/iminapi/service/ticket/google/GoogleWalletProvisionerTest.java`
 
+> **As built** — `110d472`, `71fbf46`, `c0790d1` on `feat/wallet-apple-hygiene`. Full suite **2515 tests, 0 failures, 0 errors** (baseline 2457; +58 = 21 models, 17 client, 17 provisioner, 3 context).
+>
+> **Three additions beyond the plan's file list:**
+> 1. `GoogleWalletConfig` — a named `googleWalletRestClient` bean with 5s connect and 5s read timeouts. See defects 4 and 5.
+> 2. `GoogleWalletApiClientTest` — 17 cases over `MockRestServiceServer`, including opening the RFC 7523 assertion and verifying it against the public half of the signing key. The plan specified a test for the provisioner and none for the client, which is the layer where the wire lives.
+> 3. `GoogleWalletContextTest` — boots the real context and asserts every Google Wallet bean constructs and is wired **closed**. This exists because the first attempt at `GoogleWalletApiClient` gave it two constructors and no `@Autowired`; Spring's implicit single-constructor rule needs exactly one, so the container went looking for a no-arg constructor and refused to start the context — **1075 tests erroring, none of them about wallets**. No unit test can see that.
+>
+> **`heroImage` is deliberately not sent, although `events.poster_url` exists.** Google's hero image is a ~3:1 banner and every imin poster is 4:5, so a buyer would see a horizontal slice through the middle of their own artwork; and Google fetches the URL when the **class** is inserted, so a poster that has since moved would fail the class insert permanently for every ticket to that event, because a class is created once and nothing patches it (ADR-0004). Apple arrived at the same place from the other end when Task 4 cut the poster event ticket. Pinned by `theEventPosterIsNotSentAsAHeroImage_setOrUnset`, which is the test to delete if this is ever revisited — and deleting it should require answering both objections.
+>
+> **Class per event, and the operational cost of that stated rather than implied.** A class holds `eventName`, `venue` and `dateTime`, so one shared class would put a single event's name on every ticket imin ever sells; that settles it. The consequence worth remembering is the blast radius in the other direction: **a class change propagates immediately to every object referencing it**, so per-event a bad edit reaches one night's holders instead of everyone. The price is real and accepted — there is no template inheritance between classes, so a change wanted on *all* events is N patches, and classes already created keep the shape they were created with. Nothing patches anything today, so new events get the new shape and old ones silently diverge. If a systematic class change is ever needed it is a backfill job over `events`, and it should be written as one rather than discovered as a bug report about one club's ticket looking different.
+>
+> **Ordering changed from the plan: eligibility, then the gate.** A refunded ticket is refunded whether or not Google Wallet is switched on, so `provision` throws `409` before it consults the gate — `503 "temporarily unavailable"` would be false and would invite a retry that can never succeed. It is the plan's own reason for checking the token before the config (Task 7, Step 1), applied one level down. Pinned by `aRefundedTicketIs409EvenWhenTheWalletIsOff`.
+>
+> ### Plan defects found while executing Task 6
+>
+> 1. **The one "good news" claim in the task is false about production data, and the conclusion survives by exactly one character.** *"**Good news on ids:** ticket tokens are `TKT_<uuid>` and event ids are dashed UUIDs — uppercase alphanumeric, `_` and `-` — all inside Google's allowed set."* `TKT_` appears nowhere in `src/main`; it is the **test fixture** token asserted at `AppleWalletPassServiceTest:104` (`"imin1.TKT_X."`). `PaidCheckoutService.randomToken()` is `Base64.getUrlEncoder().withoutPadding()` over 24 random bytes — mixed-case alphanumerics plus `-` and `_`. The conclusion holds only because base64**url** substitutes those two for base64's `+` and `/`; one character different in the token generator and every object id would be a 400 from Google. The plan said *"assert it rather than trusting this sentence"*, which was right, so the charset is now checked at runtime on every id and driven by 500 real tokens in the test.
+> 2. **Step 4's get-then-insert on the object costs a round trip to learn what the insert already reports, and breaks the plan's own budget.** *"Get-then-insert for the class, then get-then-insert for the object, both tolerating `409` as success so two concurrent buyers cannot both create and neither fails."* Tolerating `409` achieves that goal by itself; the read adds nothing, and unlike the class there is no second field to inspect. §Decision 2 also states the ceiling as *"two synchronous outbound calls sit inside the request"* — get-then-insert on both is up to four, plus the token exchange, so the plan contradicts its own budget. Built as: read the class (for `reviewStatus` alone, see defect 6), insert-tolerating-409 for the object. Steady state after the first buyer is one call.
+> 3. **Step 1's null-safety list names a field the task never specifies sending, and a field Google does not have.** *"a venue with no coordinates, a null `posterUrl`, a null `venueName` must each omit their field"*. `posterUrl` implies `heroImage`, which appears nowhere else in the task or its file list. And Google's `EventTicketClass.venue` is `{name, address}` — it carries **no coordinates at all**, so there is no field for them to be absent from. Meanwhile the real venue trap goes unmentioned anywhere in the plan: Google requires **both** `name` and `address`, so an event with a venue name and a blank address is a 400 — which, with `IMIN_GEOCODING_ENABLED` false by default, is the common case rather than the edge one. The whole block is omitted when either half is missing; two tests pin it.
+> 4. **The client is specified in a shape that cannot be tested the way the same task requires it to be tested.** *"Create: `service/ticket/google/GoogleWalletApiClient.java` — `RestClient` wrapper + OAuth token acquisition"*, and then *"Its test mocks the HTTP layer"*. A class that builds its own `RestClient` cannot have `MockRestServiceServer` bound to it: the constructor's `requestFactory(...)` overwrites the mock and the suite quietly hits the real `walletobjects.googleapis.com`. This repository already documents that trap in `ExpoPushSenderTest`, and the plan names no config class and no bean. Fixed with `GoogleWalletConfig` and an injected client.
+> 5. **No timeout is specified for calls the plan itself puts on the buyer's request thread.** §Decision 2: *"**Ceiling, stated:** two synchronous outbound calls sit inside the request."* Neither Task 6 nor Decision 2 sets a connect or read timeout, and there is no global HTTP default in this project — every client either sets its own or has none. A hung connection to `walletobjects.googleapis.com` would pin a Tomcat worker for as long as the OS allows. Set to 5s/5s, so a total outage costs a buyer about fifteen seconds across the worst path and then a 503 on one button.
+> 6. **"`5xx` surfaces as `503`" leaves 4xx unmapped — and 4xx is what the failures this task exists to prevent actually look like.** *"Assert: a `409` on insert is success; a `5xx` surfaces as `503 UPSTREAM_UNAVAILABLE`, **never as a 500 to the buyer and never as a partially-created pass**."* The likely production failures are 401/403 (the service account not added to the issuer, or without `wallet_object.issuer`) and **400** — which is how a `DRAFT` class reports itself, the exact condition the task's own constraint list opens with. Built as written, every one of those hits `RestClient`'s default and throws `HttpClientErrorException`: a 500 to the buyer, precisely what the sentence forbids, through the statuses it forgot to name. Everything non-2xx is mapped to 503 here, with 401/403 logged as an operator fault naming the console fix.
+> 7. **The token cache is specified as a phrase, and the response it caches is untrusted input.** *"Cache the access token until shortly before expiry."* "Shortly" is undefined, and nothing says what to do with an absent or absurd `expires_in`. Caching a token past its life turns one bad response into an outage lasting until the next deploy, and the symptom is 401s that no credential change fixes. Implemented with a 60s refresh margin and a rule that an out-of-range `expires_in` **shortens** the cache to 300s and can never lengthen it; pinned by `anAbsurdExpiresInShortensTheCacheRatherThanExtendingIt`.
+> 8. **The task's one concurrency-correctness constraint has no owner and is currently vacuous.** *"**Must not run inside the read transaction** of the ticket lookup."* The transaction belongs to Task 7's service; nothing in Task 6 can enforce it and no Task 6 test can observe it. `GoogleWalletProvisioner` carries no `@Transactional` and today has no caller at all, so the constraint is satisfied by accident. **It must be re-asserted and tested in Task 7**, where the read transaction actually exists.
+> 9. **The "one canonical payload" assertion cannot fail inside this task.** *"The barcode carries the **same** `qrSigner.sign(token)` string the pkpass and the emailed PNG carry — one canonical payload, three transports. Assert the literal `imin1.` prefix."* The models take `qrPayload` as a parameter, so the test feeds in the literal it then asserts — a tautology. The invariant only becomes real at the seam where the payload is produced, which is Task 7. **Task 7 must pass `QrPayloadSigner.sign(token)` through the real path and assert the object's barcode equals what the pkpass carries**, or this property is documented and unproven.
+
 ---
 
-- [ ] **Step 1: Write the failing model test** — assert the serialised JSON, not the record
+- [x] **Step 1: Write the failing model test** — assert the serialised JSON, not the record
 
 The value is in the mapping, and the mapping is only visible after Jackson runs. Assert on the JSON tree:
 
@@ -1503,19 +1617,19 @@ The value is in the mapping, and the mapping is only visible after Jackson runs.
 - Venue and `dateTime` round-trip, with the start time carrying the **venue's** offset — the same door-time invariant Apple's `ignoresTimeZone` protects. Google takes an ISO-8601 string, so the offset must be the event's zone, not the server's.
 - **Null-safety on optional blocks:** a venue with no coordinates, a null `posterUrl`, a null `venueName` must each omit their field rather than serialise `null`. `IMIN_GEOCODING_ENABLED` is false by default, so the no-coordinates case is the *common* one, not the edge case.
 
-- [ ] **Step 2: Build the models** — plain records + Jackson with `@JsonInclude(NON_NULL)`. Do not hand-roll JSON strings.
+- [x] **Step 2: Build the models** — plain records + Jackson with `@JsonInclude(NON_NULL)`. Do not hand-roll JSON strings.
 
-- [ ] **Step 3: The API client**
+- [x] **Step 3: The API client**
 
 `RestClient` + a bearer token minted from the service-account key (the same `GoogleServiceAccountKey` from Task 5, signing a `https://oauth2.googleapis.com/token` assertion). Cache the access token until shortly before expiry — a token fetch per pass save is an avoidable round trip on the door path.
 
-- [ ] **Step 4: The provisioner**
+- [x] **Step 4: The provisioner**
 
 Get-then-insert for the class, then get-then-insert for the object, both tolerating `409` as success so two concurrent buyers cannot collide. **Must not run inside the read transaction** of the ticket lookup.
 
 Its test mocks the HTTP layer — the subject is the idempotency and the error mapping, not Google. Assert: a `409` on insert is success; a `5xx` surfaces as `503 UPSTREAM_UNAVAILABLE`, **never as a 500 to the buyer and never as a partially-created pass**; a second call for the same event does not re-insert the class; and a failure creating the *class* does not go on to attempt the object.
 
-- [ ] **Step 5: Run, commit**
+- [x] **Step 5: Run, commit**
 
 ```bash
 git commit -m "feat(wallet): Google Event Ticket class and object provisioning"
@@ -1538,9 +1652,41 @@ GET /api/v1/public/tickets/{token}/google-wallet  →  302  https://pay.google.c
 
 **SecurityConfig needs no change.** `SecurityConfig:127` already blanket-permits `GET /api/v1/public/**`; the pkpass endpoint relies on exactly that and has no matcher of its own. **Verify this rather than adding a redundant line** — an extra matcher here is a second place to keep in sync.
 
+> ### AS BUILT (2026-08-16) — `02ba47a`, `6881f1e` on `feat/wallet-apple-hygiene`
+>
+> Full suite **2542 tests, 0 failures, 0 errors** (baseline 2515; +27 = 20 endpoint, 3 provisioner, 3 controller, 1 context). Eight plan defects below.
+>
+> **Both obligations Task 6 carried forward are now discharged, and both were discharged by changing the shape the plan prescribed.**
+>
+> **1. "Must not run inside the read transaction" has an owner.** Task 6 recorded it as *"currently satisfied by accident — the provisioner has no caller"*. `GoogleWalletProvisioner.provision` now calls `assertNoTransactionOpen()` immediately before the first socket — after eligibility and after the config gate, because both of those refuse without opening one and have violated nothing, so a refunded ticket still gets 409 and a closed gate still gets 503 from inside a transaction. It throws `IllegalStateException`, not a graceful degrade: it is unreachable by any deployment or any input, only by an edit to a caller, and it should read like the broken build it is. Three tests, at three levels:
+> - `GoogleWalletProvisionerTest#provisioningInsideATransactionIsRefusedBeforeAnySocketOpens` — sets the thread-local directly (no database needed) and proves the guard bites with nothing sent, against an expectation-free mock server.
+> - `GoogleWalletEndpointTest#theSaveLinkPathGoesThroughTheNoTransactionGuard` — proves the guard is on *this* path and not bypassed by it. **The first draft of this test passed when the guard was deleted**: it asserted only "500", and with the guard gone the request went on to hit a mock server with no expectations and 500ed on *that* — same status, entirely different reason, certifying a guard that was no longer there. It now asserts the resolved exception by type and message. Worth recording because it is the exact failure mode §Global Constraints warns about, produced by a test I wrote against my own guard.
+> - `GoogleWalletContextTest#theSaveLinkServiceIsNotWrappedInATransaction` — the static half, in the real container: the bean is not an AOP proxy and neither the class nor `saveUrl` carries `@Transactional`. A runtime guard only fires on a request that reaches it, and on every machine where the wallet is off nothing ever does.
+>
+> The edit all three exist to catch is a *reasonable-looking* one. `saveUrl` only reads rows, so `@Transactional(readOnly = true)` is what a reviewer would suggest — and it would hold a pooled JDBC connection across up to three 5s-timeout calls to Google on an **unauthenticated** endpoint, turning a slow upstream into pool exhaustion for the entire API. It needs concurrency plus a slow upstream to appear, so it would pass every other test in the repository. Proven by mutation: adding the annotation turns the context test red at the proxy assertion; removing the guard turns the other two red.
+>
+> **2. The "one canonical payload" assertion is no longer a tautology.** Task 6's models take `qrPayload` as a parameter, so its test asserted the literal it fed in. `GoogleWalletEndpointTest#allThreeTransportsCarryTheSameQrPayload` drives all three transports through their real code on one MockMvc — the object body Google would receive, the `/qr.png` PNG **decoded back out of its pixels** with zxing, and the barcode inside a genuinely signed `.pkpass` (`WalletTestCerts`, real RSA, real CMS signature) — and asserts the three are equal to each other and to `QrPayloadSigner.sign(token)`. Proven by mutation: replacing `qrSigner.sign(ticket.getToken())` with `ticket.getToken()` in the service turns it red. What it catches is any future change that gives one wallet a different payload from another — a bare token, a re-signature under a different secret, an id where the payload belongs. Today a door scanner accepts all three because they are the same bytes; this is the test that keeps that sentence true.
+>
+> **What the endpoint returns, per failure mode.** Gate closed (any of the three closed states) ⇒ `503 UPSTREAM_UNAVAILABLE`, nothing on the wire. `DRAFT` class ⇒ `503`, object insert never attempted, `ERROR` naming the console fix. Refunded ⇒ `409 TICKET_ALREADY_REFUNDED`; revoked ⇒ `409 INVALID_STATE`; both **before** the config gate, so they hold with the wallet off. Unknown token ⇒ `404`, before everything except the rate limiter. Google 4xx (401/403/400) ⇒ `503`, with 401/403 logged as an operator fault. Google 5xx ⇒ `503`. Timeout ⇒ `503` (5s connect + 5s read from `GoogleWalletConfig`, so ~15s worst case across three calls, on one button). Never a 500 from any of them — the only 500 reachable is the transaction guard, which no deployment can trigger.
+>
+> **Two build notes.**
+> - **The Order row is not read.** Apple resolves the organization through `orders.findById(...).getOrgId()`; `events.getOrgId()` is the same organization, so the Google path reads two rows plus a nullable third instead of three plus a nullable fourth. One fewer round trip on a path a buyer waits on.
+> - **The Apple endpoint was brought onto the same ordering.** `PublicTicketAssetController.applePass` consulted `isConfigured()` before eligibility, so with `APPLE_WALLET_ENABLED` unset a refunded ticket answered `503` rather than `409` — shipped code, not a plan defect, but it contradicts §Decision 1.5's *"one shared rule (Tasks 3 and 7)"*. Pinned by `PublicTicketAssetControllerTest#applePass_returns409ForARefundedTicketEvenThoughTheWalletIsUnconfigured`.
+>
+> ### Plan defects found while executing Task 7
+>
+> 1. **The test shape Step 1 prescribes cannot test the only class the task builds, and cannot discharge either obligation Task 6 handed it.** *"A `@SpringBootTest` mirroring `PublicTicketAssetControllerTest`, plus a `@MockitoBean GoogleWalletPassService` for the wired cases."* `GoogleWalletPassService` **is** the task. Mocked, every "wired case" asserts that a stub returns what the stub was told to return; and since the QR payload is produced inside that service, a mock never calls `QrPayloadSigner` at all, so Task 6's defect 9 could not be closed. The `@SpringBootTest` half is self-defeating too: the same paragraph notes that `src/test/resources/application.yaml` replaces the main YAML and carries no `imin.google-wallet` block, which is exactly why the gate cannot be opened there. Built as standalone MockMvc over the real service, provisioner, client and signer with only the HTTP transport doubled — the construction `PublicTicketAssetControllerWalletTest` next door already uses, for this same reason, on the Apple side.
+> 2. **The warning about the mock is advice for a method the plan never gave the class, and taking it would have hidden the problem rather than fixed it.** *"a `@MockitoBean` answers `isConfigured()` ⇒ `false` by Mockito default … stub it in `@BeforeEach` or every case 404s/503s and the suite is green for the wrong reason."* §Interfaces for Tasks 5–6 specifies `fullyConfigured()`, `isUsable()` and `provision(...)` — no `isConfigured()` anywhere on the Google side; it is copied from Apple. And stubbing it `true` on a mocked service is not the cure for green-for-the-wrong-reason, it is the mechanism: it opens the gate on a component that has no gate and no behaviour behind it.
+> 3. **"refunded ticket ⇒ 409" is listed as a case and is unreachable in the ordering the same step specifies.** Step 1 orders the checks token → config → …, and names unconfigured as *"the default under the test profile"*. A refunded ticket on that server answers `503`, not `409`, so the case as written cannot pass in the environment the case above it establishes. Task 6 had already found and fixed this one level down (*"eligibility, then the gate"*) and the plan did not propagate it up. Fixed by ordering the endpoint token → eligibility → config, on both wallets.
+> 4. **"Google returning `5xx` ⇒ 503" repeats Task 6's defect 6 word for word, and 4xx is still unnamed.** The two failures this endpoint will actually have in production are 401/403 — a service account not added to the issuer, or without `wallet_object.issuer` — and 400, which is how a `DRAFT` class reports itself. Neither is a 5xx. Task 6 mapped everything non-2xx, so the built endpoint is correct; the plan's checklist would still have passed a build that 500s on both, because it never asks. Pinned at the HTTP layer by `a403FromGoogleIs503AndNotA500` and `aDraftClassIs503AndTheObjectIsNeverInserted`.
+> 5. **The task asks for `SecurityConfig` to be verified, in a test shape that cannot verify it.** *"Verify this rather than adding a redundant line."* Standalone MockMvc — which is what defect 1 forces — runs no security filter chain, so a 302 there says nothing about `SecurityConfig:127`. Verified instead in `PublicTicketAssetControllerTest`, the `@SpringBootTest` that boots the real chain, where a change to the blanket `GET /api/v1/public/**` permit now surfaces as a 401/403 in the suite rather than in production.
+> 6. **The 1800-character cap is specified as a test assertion and nothing else.** Nothing says what the *service* does when it is exceeded. Over the cap the link does not fail loudly at Google — it is truncated somewhere between the browser and Google, and produces a save page that fails for reasons no log line on our side can see. Built to refuse with a `503` and an `ERROR` naming the cause (*"the JWT payload is no longer just an object id"*), so the failure is legible on the day it happens; the test assertion is kept as well.
+> 7. **`Cache-Control: private, no-store` is carried over from the pkpass with its reasoning left behind.** Step 1 lists it as a header to assert. For the pkpass it protects a response *body* on a shared cache. Here it protects a bearer artifact sitting in a `Location` **header**, on a `302` — a status code that caches, proxies and browser histories handle far more freely than a file download. Same header, materially stronger argument, and the plan carries across only the weaker one.
+> 8. **"Same 404/409/503 shapes" (Decision 3) asserts a parity that does not exist on the 503.** For Apple, unconfigured is one condition. For Google it is three — disabled, unconfigured, and configured-but-unparseable — and Task 5 built `gateReason()` precisely because an operator needs to tell them apart. Collapsing all three into one buyer-facing 503 is right (a buyer can act on none of the difference) but it is a decision, and the plan states the parity instead of taking it.
+
 ---
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 A `@SpringBootTest` mirroring `PublicTicketAssetControllerTest`, plus a `@MockitoBean GoogleWalletPassService` for the wired cases. Remember: **a `@MockitoBean` answers `isConfigured()` ⇒ `false` by Mockito default**, so a `@TestPropertySource` cannot open the gate — stub it in `@BeforeEach` or every case 404s/503s and the suite is green for the wrong reason.
 
@@ -1553,9 +1699,9 @@ Cases:
 - **the whole `Location` URL is under 1800 characters** — one assertion, and it is the one that catches the regression Decision 2 exists to prevent
 - Google returning `5xx` while provisioning ⇒ **503**, not 500, and no partially-created pass
 
-- [ ] **Step 2–4:** build the service (provision, then sign a thin JWT), wire the controller method (same shape as `applePass`, same `wallet-pass` rate-limit bucket), run.
+- [x] **Step 2–4:** build the service (provision, then sign a thin JWT), wire the controller method (same shape as `applePass`, same `wallet-pass` rate-limit bucket), run.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git commit -m "feat(wallet): Google Wallet save-link endpoint"
@@ -1564,6 +1710,69 @@ git commit -m "feat(wallet): Google Wallet save-link endpoint"
 ---
 
 ## Task 8: One wallet contract for two wallets and two platforms
+
+> ### AS BUILT (2026-08-16) — `0f4be6a` on `feat/wallet-apple-hygiene`
+>
+> Full suite **2559 tests, 0 failures, 0 errors** (baseline 2542; +17 = 7 contract, 6 offers, 4 emailer). Ten plan defects below. The known `MetaCapiPollerTest` flake did not appear.
+>
+> **The shape, and it is the plan's shape with three decisions the plan did not take.**
+>
+> ```json
+> "walletAvailable": true,
+> "wallet": {
+>   "apple":  { "available": true,  "url": "https://api.imin.wtf/api/v1/public/tickets/TOK/apple-wallet.pkpass" },
+>   "google": { "available": false, "url": null }
+> }
+> ```
+>
+> Wire field name `wallet`, exactly as specified. Java types `TicketWallets` / `TicketWallets.WalletPass`, **not** `Wallet` / `Target` — see defect 3. The same block is on every entry of `PublicOrderResponse.tickets`.
+>
+> **1. `available` means "tap this and it works", not "someone set the env vars."** It is the conjunction of two independent facts: this deployment can sign for that wallet, and this ticket is one we will mint for (`WalletEligibility.isLive` — refunded and revoked refused, **redeemed deliberately not**). The first half is stronger than it was on the Apple side: `AppleWalletPassService.isConfigured()` now includes the boot-time `WalletCredentialCheck` result, so a complete config wrapped around a corrupt p12 reports unavailable instead of advertising a CTA and answering the tap with a 500 out of jpasskit. Task 1 built that check and **nothing ever consumed its answer**; it is now the exact analogue of the Google side's `props.fullyConfigured() && signer.isUsable()`. Memoised from construction because it opens a PKCS#12 and this is called on every ticket read — sound because the properties bind once at startup and a credential swap is a redeploy.
+>
+> **2. `url` is non-null if and only if `available` is true.** The path is a routing constant and could be emitted unconditionally; the reason it is not is that two independently-checkable encodings of one fact is how a client ends up gating on the wrong one, and the shape that produces is a lit CTA that 409s or 503s. A client that forgets the boolean and builds its button from the URL alone still renders nothing. Asserted as a biconditional over every config × state pair in `WalletOffersTest`, and again on the wire in `WalletContractTest`.
+>
+> **3. A client cannot tell "not configured" from "configured but off", and should not.** Google has three closed states and `gateReason()` names the env var behind each — Apple has its own two. All of it stays in the log. A buyer can take exactly one action for all five, so a field they cannot act on would only be acted on wrongly: as a "coming soon" promise about a Google review we do not control. It would also put deployment state on an unauthenticated endpoint whose credential is a token every buyer holds; `theResponseNeverNamesAnEnvVarOrAGateReason` pins that the body contains no `APPLE_WALLET`/`GOOGLE_WALLET`/`demo-mode`/`issuer` substring. **The one distinction a client does need is already on the response and is not in this block:** `state` separates "your ticket was refunded" from "the wallet is off", and it always has.
+>
+> **Keyed by wallet vendor, never by device platform.** `apple`/`google`, not `ios`/`android`. They are not the same partition: a Google save is an **account** action that completes in a desktop browser and lands on whichever phone that account is signed into, while a `.pkpass` is a **file** that opens in Wallet on iOS *and* macOS. Keying by platform would bake one client's device test into the wire — and Decision 4 already says the client owns that test.
+>
+> **One rule, three surfaces.** `WalletOffers` is the only place that decides availability or builds a wallet URL. Before it, the ticket response, the order response and the email each had their own copy of the path and their own reading of "configured", and the email's copy was wrong — see defect 7.
+>
+> **Mutation results.** Dropping eligibility from `WalletOffers` ⇒ 4 failures across all three test classes. Emitting the URL regardless of availability ⇒ 3. Reverting `isConfigured()` to `props.fullyConfigured()` ⇒ `aCompleteButUnloadableCertificateIsNotAvailable` red. Wiring `walletAvailable` to `wallets.google()` ⇒ **only** `walletAvailableFollowsAppleAndNotGoogleWhenTheTwoDisagree` red — the other six container tests stayed green, which is defect 5 demonstrated rather than argued.
+>
+> #### What `imin-public` must change — file by file, so the lockstep PR needs no re-derivation
+>
+> | File | Change |
+> |---|---|
+> | `lib/api/types.ts` | Add `export interface WalletPass { available: boolean; url: string \| null }` and `export interface TicketWallets { apple: WalletPass; google: WalletPass }`. Add `wallet: TicketWallets` to `PublicTicket` (beside `walletAvailable:243`, which stays and keeps its comment — retitled "Apple only; deprecated, equals `wallet.apple.available`"). Add `wallet: TicketWallets` to the order's ticket interface. |
+> | `lib/api/public-events.ts:30-32` | Delete `ticketWalletUrl()`. Every caller reads `wallet.apple.url` / `wallet.google.url`. It is the last client-side API-path concatenation on this surface. |
+> | `components/buyer/wallet-cta.tsx` | Take `{ pass: WalletPass }` instead of `{ walletUrl, available }`, so an unavailable wallet cannot be rendered with a URL. Add the Google branch. **Do not gate Google on an Android UA test** (see defect 9): gate it on `!isApplePlatform()`, because a Google save works in a desktop browser and lands on the account's phone. Keep the badge note — Google mandates its own "Add to Google Wallet" artwork exactly as Apple does, and neither asset is in the repo. |
+> | `components/buyer/ticket-view.tsx:160-166` | Pass `ticket.wallet.apple` / `ticket.wallet.google`. **Drop the `isLive ?` wrapper** — `isLive` is false for `redeemed` (`STATE_BANNER:42`), so the page currently hides the wallet CTA from a buyer who has already scanned in, which is stricter than the server and contradicts `WalletEligibility`'s own reason for allowing it. The server's `available` is now the whole gate. |
+> | `components/buyer/order-view.tsx:44-63` | Delete `OrderWalletAction` and its `<Suspense>` boundary at `:167-171`, and the `getPublicTicket` import. The order response now carries `wallet` per ticket; the extra round trip existed only to learn one boolean. |
+> | `lib/i18n/{en,es,fr,uk}.ts` | `wallet.add` stays Apple-specific; add `wallet.addGoogle`. **`wallet.hint` (`en.ts:408`) becomes wrong** the moment an Android buyer has a real option — it currently says "No Apple Wallet? Screenshot your QR". Rewrite it wallet-agnostic in all four locales, lockstep, `check:i18n` clean. |
+> | `docs/PUBLIC_PAGE_API.md` §14 | Task 9's job, listed here because it is the same PR: the `wallet` block, `GET …/google-wallet` → 302, and the pre-existing `state` drift at `:1186` (three states listed, four exist). |
+>
+> **One behaviour change to expect in that PR:** `walletAvailable` now folds in eligibility, so it goes false for refunded/revoked tickets where it used to report the Apple config alone. `imin-public` is already double-gated, so nothing changes on screen — but see defect 2, because the plan calls this field unchanged.
+>
+> #### What the mobile app will need that the web does not
+>
+> - **The interaction differs per vendor and the server does not describe it, on purpose.** Apple: fetch the bytes and hand them to `PKAddPassesViewController` — the `Content-Disposition` the endpoint sets is irrelevant to a native fetch. Google: open the URL in the **system browser**, never an in-app WebView, because the save flow needs the user's Google session and Google blocks embedded webviews; and never with a redirect-following HTTP client, which would hand the app `pay.google.com`'s HTML instead of a save. None of that is a server fact — it is a property of the vendor, and the vendor is the key — so adding a `kind` field would be indirection the server knows no better than the client.
+> - **No UA test.** The app knows its platform statically: `wallet[Platform.OS === "ios" ? "apple" : "google"]`. That is the whole of Decision 4 on a native client, and it is why the block is keyed by vendor.
+> - **A device check the server cannot make.** `PKPassLibrary.isPassLibraryAvailable()` on iOS, and Google's Wallet availability API on Android. `available: true` on a device with no wallet app is still correct — it says the server can mint — and the app must AND it with its own check.
+> - **The URL is durable and the artifact is not.** `wallet.google.url` is our endpoint, so an offline-cached ticket payload keeps a working button; the `pay.google.com` save link it 302s to carries an `iat` and is a bearer credential, and must never be persisted. Same reasoning protects `imin-public`'s service worker, which caches `/tickets/*` for the door.
+> - **`walletAvailable` is not for it.** A new client reads `wallet` only. The deprecated flag exists for binaries that already shipped, which on mobile is currently none.
+>
+> ### Plan defects found while executing Task 8
+>
+> 1. **The record sketch does not compile, and the annotation it uses cannot go where it is put.** The task gives `@Deprecated boolean walletAvailable,` inside the component list. `@Deprecated`'s `@Target` does not include `RECORD_COMPONENT`, and javac answers `record components cannot have modifiers` — verified, not predicted. Built as an explicit `@Deprecated @Override public boolean walletAvailable()`, which is also the form springdoc reads, so the deprecation reaches `openapi.yaml` and `imin-webapp`'s generated types instead of dying in the source file.
+> 2. **The field is declared unchanged forever and given a new meaning two paragraphs later, and the plan never notices.** *"**It must become nothing. It stays exactly what it is, forever**"* and §Global Constraints' *"It keeps its name and its `boolean` type permanently"*, against *"Equal to `wallet.apple.available`"* plus *"`available` folds in `WalletEligibility.isLive(ticket)`"*. Today `walletAvailable` is `wallet.isConfigured()` with no eligibility term, so those cannot both hold: making it equal to `wallet.apple.available` **narrows the live wire**, from true to false, for every refunded and revoked ticket. The narrowing is right and provably safe — it can only remove a button whose endpoint answers 409 — but it is a behaviour change on a field the plan calls unchanged, and the plan neither states it nor checks the one production consumer for it. Checked here: `ticket-view.tsx:160` already wraps the CTA in `isLive ?`, so nothing moves on screen.
+> 3. **`Wallet` and `Target` are proposed as names in a namespace that is flat and already colliding.** Springdoc flattens nested record names to bare simple names: `imin-webapp/docs/openapi.yaml` already carries top-level schemas literally called `Event`, `Order` and `Ticket`, shared across unrelated DTOs. Dropping `Target` — a word with no domain meaning — into that namespace is a silent cross-DTO collision waiting for the next `api:sync`. Renamed `TicketWallets` / `WalletPass`; the wire field name is `wallet` exactly as specified, so nothing the FE reads changes.
+> 4. **The sketch never says what `url` is when `available` is false**, which is the entire ergonomics of the field and the one thing every client must get right. `Target(boolean available, String url)` and nothing else. Decided: null iff unavailable, so the two fields cannot disagree and a client that checks only the URL still fails closed.
+> 5. **The one test the task names cannot make its own most important assertion.** *"`walletAvailable == wallet.apple.available` in every state; both are `false` for a refunded ticket even when certs are configured"*. On a server where **both** wallets are configured — which is what "even when certs are configured" sets up — `apple.available` and `google.available` are equal in every case, so a `walletAvailable` wired to **Google** passes the entire suite. The invariant only bites where the two disagree, and the asymmetric configuration is never asked for. Demonstrated by mutation: with `walletAvailable` reading `wallets.google()`, six of the seven container tests stayed green. Closed by an added standalone case with Apple off and Google on — the configuration this product will actually ship first, since Google's gate is an account and Apple's is a legal entity plus a D-U-N-S number.
+> 6. **The task requires a configured server and the plan has already explained that no such server exists in the suite.** §Global Constraints: *"`src/test/resources/application.yaml` **REPLACES** the main one"* and carries no wallet block; Task 7's defect 1 hit the same wall from the other side. Task 8 asks for "certs are configured" and says nothing about how. Solved with `@DynamicPropertySource` feeding runtime-minted `WalletTestCerts` and `GoogleTestKeys` material into the real `@ConfigurationProperties`, so the gate is opened by real RSA through the production constructors and not by a stub — which matters, because a stubbed gate is exactly what Task 7 defect 2 warns produces green-for-the-wrong-reason.
+> 7. **The email gate as specified reproduces the bug this task's own field shape exists to fix.** *"`TicketIssuanceEmailer` grows the Google CTA beside the Apple one … each gated on its own wallet's `isConfigured()`"*. `isConfigured()` is the config and nothing about the ticket, while the same task defines `available` as config **and** eligibility. `BuyerOrderActionsController` re-sends this email on demand at any time, including after a refund, so the gate as written mails a refunded buyer two official-looking wallet buttons whose endpoints both answer 409. Built through `WalletOffers`; pinned by `aRefundedTicketGetsNoWalletRowEvenWithBothWalletsConfigured`, which also asserts the QR survives — a refunded buyer keeps their record, only the CTA goes.
+> 8. **Nobody owns the URL.** The assertion *"the URLs are absolute and point at this API's `imin.ticket.api-public-base-url`, not the buyer site"* is exactly right, and the file list names only two DTOs, a controller and the emailer — so as written each of the three surfaces concatenates its own path off its own copy of the base, which is the duplication that produced defect 7. A fourth consumer would be a fourth copy. One `WalletOffers` component instead, which is also the only reason the trailing-slash case has a single test rather than three.
+> 9. **§Deployment's frontend list tells `imin-public` to hide a working flow from every desktop buyer.** *"`components/buyer/wallet-cta.tsx` gains an Android branch mirroring `isApplePlatform()`"*. A Google Wallet save is an **account** action: it completes in any browser, including a laptop, and the pass appears on the phone that Google account is signed into. Gating it on "is Android" hides it from every desktop buyer and every Mac, for nothing. The right client gate is `!isApplePlatform()`. This is a defect in the FE spec, which is the deliverable this task hands over.
+> 10. **"Belt and braces" understates what the 409 is doing.** *"the 409 from Tasks 3 and 7 becomes unreachable through the UI — belt and braces, because the endpoint is directly linkable from an old email"*. It is not only the old email. This response is **cached** — `imin-public`'s service worker keeps `/tickets/*` precisely so the door works without signal — so a payload cached while the ticket was live keeps `available: true` after a refund, and the button stays lit on the buyer's own phone. The two endpoints' 409 is not a redundancy behind the field; it is the only thing that is true at the moment of the tap. The field's job is to avoid *offering*, not to enforce.
 
 Size: **M**. Gated on nothing.
 
@@ -1622,7 +1831,7 @@ Also in this task:
 
 **Test** (`WalletContractTest`): `walletAvailable == wallet.apple.available` in every state; both are `false` for a refunded ticket even when certs are configured; the URLs are absolute and point at this API's `imin.ticket.api-public-base-url`, not the buyer site.
 
-- [ ] **Commit**
+- [x] **Commit**
 
 ```bash
 git commit -m "feat(wallet): two-wallet ticket contract, walletAvailable preserved"
@@ -1632,16 +1841,56 @@ git commit -m "feat(wallet): two-wallet ticket contract, walletAvailable preserv
 
 ## Task 9: ADR and the docs that are already wrong
 
+> ### AS BUILT (2026-08-16) — ADR-0004 covers five decisions, not one; `imin-public` edits specified, not made
+>
+> Full suite **2559 tests, 0 failures, 0 errors** — unchanged from Task 8, which is the expected result for a docs-only task and is why it was run anyway. The known `MetaCapiPollerTest` flake did not appear.
+>
+> **Two files changed in this repo**, plus this plan:
+> - `docs/decisions/ADR-0004-wallet-passes-are-not-updated.md` — created. Filename kept exactly as the plan specifies because **seven javadoc references in already-shipped code point at it** (`AppleWalletPassService:60,357`, `WalletEligibility:14`, `GoogleWalletProvisioner:39,127`, `GoogleWalletModels:63,324`). Scope is wider than the filename — see defect 1.
+> - `CLAUDE.md` — a wallet section: the ten env vars with their defaults and their asymmetry, the two endpoints with their full status vocabulary, the `wallet` response block, and the SHA-1 warning. See defect 2.
+>
+> **Nothing in `imin-public` or `imin-webapp` was touched** — both are separate repos shipping as one lockstep PR. §"What `imin-public` must change" in Task 8 plus the four edits below are the complete specification for it.
+>
+> **The ADR records five decisions, and the four beyond "no updates" are the ones a future reader cannot recover from the code:**
+> 1. No pass updates on either platform — with the Google-only counter-argument kept in full and named as the first thing to revisit, declined for platform symmetry rather than cost.
+> 2. The poster event ticket is **impossible**, not unbuilt: Apple excludes QR-entry tickets from the layout outright, and `venueRegionName` — one of four required tags — is absent from jpasskit 0.5.8 entirely.
+> 3. The SHA-1 manifest is correct and must survive a security review; SHA-256 belongs to Wallet **Orders**. Recorded because a SHA-256 manifest signs and zips perfectly and only a real device rejects it.
+> 4. Class per event, `{issuerId}.evt_{eventId}` — with the operational consequence stated: a class change reaches every object referencing it immediately, there is no template inheritance, and classes already created keep their shape, so a systematic change is a backfill job over `events`.
+> 5. Five closed gate states collapse to one buyer-facing `false`; `gateReason()` names the env var in the log only.
+>
+> **§What is actually proven** is the section the plan did not ask for and the one that matters most. Three tiers, kept apart: proven by the suite; tested only against synthetic key material (`WalletTestCerts`, `GoogleTestKeys` — real cryptography, keys neither Apple nor Google issued); and **entirely unexercised**, where first contact is production. Every `APPLE_WALLET_*` value is unset and `GOOGLE_WALLET_ENABLED` defaults false, so the whole feature is dark and no line of it has met a real certificate or a real issuer.
+>
+> #### The four `imin-public` doc edits, specified precisely (line numbers verified 2026-08-16)
+>
+> | Where | Edit |
+> |---|---|
+> | `docs/BRANDING.md:92-96` | The block says the backend *"generates icon/logo PNGs procedurally as solid brand-coloured squares (placeholder). Drop real PNGs at `src/main/resources/wallet/…`"*. Task 4 shipped those six files. Replace with: the real mark ships at `src/main/resources/wallet/{icon,icon@2x,icon@3x,logo,logo@2x,logo@3x}.png`, loaded by `WalletArtwork`, which keeps the generated square only as a missing-file fallback; icon is 38pt (not the archived guide's 29) and logo 42×50. `imin-webapp/docs/BRANDING.md:90-94` is a byte-identical fork — same edit, same PR family. See defect 5. |
+> | `docs/PUBLIC_PAGE_API.md:1162` (§14.1 sample) + `:1188` (field table) | Add the `wallet` block to the JSON sample and a `wallet` row to the table: `{ apple: {available, url}, google: {available, url} }`, `url` non-null **iff** `available`, keyed by wallet **vendor** not device platform. Retitle the `walletAvailable` row: deprecated but permanent, Apple only, equals `wallet.apple.available`, and it now folds in ticket eligibility so it goes false for refunded/revoked tickets. |
+> | `docs/PUBLIC_PAGE_API.md:1192` (state vocabulary) | Pre-existing drift, and larger than the plan states — see defect 3. `refunded` is missing from **three** claims in that one paragraph: the canonical list, the "full five-value inbound vocabulary", and "going forward the API only emits `issued`, `redeemed`, or `revoked`". |
+> | `docs/PUBLIC_PAGE_API.md:1204-1207` (asset table) + `:1209` (§14.2) | Add `GET /api/v1/public/tickets/{token}/google-wallet` → **302** to `https://pay.google.com/gp/v/save/<jwt>`, `Cache-Control: private, no-store`, never to be followed by a redirect-following HTTP client or an in-app WebView. Correct the pkpass row: the envelope code is **`UPSTREAM_UNAVAILABLE`**, not the `SERVICE_UNAVAILABLE` currently written — that is the HTTP status name and no client can match on it. Both endpoints also answer `409` (`TICKET_ALREADY_REFUNDED` / `INVALID_STATE`) **before** the config gate. §14.2 currently reads *"404 for unknown tokens, no other failure modes"*, which is now false. See defect 4. |
+>
+> ### Plan defects found while executing Task 9
+>
+> 1. **The ADR filename fixes the scope to one decision and five were taken.** `ADR-0004-wallet-passes-are-not-updated.md` names Decision 1 only, and Task 9's brief is *"Decision 1 above, in the house ADR format"*. Four further decisions have no durable home anywhere else: the poster-ticket exclusion (Task 4's as-built), the SHA-1 manifest (Task 2's commit body), class-per-event with its backfill consequence (Task 6's as-built), and the five-closed-states collapse (Tasks 5/7/8). Each is non-obvious, each is a magnet for a well-meaning reversal, and a plan file is not where a decision lives after the branch merges. The filename was kept regardless — seven javadoc references in shipped code already point at it — and the scope widened inside the document.
+> 2. **The one doc in *this* repo that the feature falsifies is not in the file list.** Task 9 names two docs, both about the buyer contract. `imin-api/CLAUDE.md` documents every other env-var group in the project — Stripe, R2, geocoding, Ideogram, Resend, each with defaults and failure modes — and carried **no wallet section at all**, while §Deployment enumerates ten new wallet env vars with two different default polarities and a gate whose expected production state is "off". An operator reading the repo's own guide would not learn that `GOOGLE_WALLET_ENABLED` defaults false on purpose, or that a blank `APPLE_WALLET_CERT_PASSWORD` is legal.
+> 3. **The `state` drift is at a different line and is three claims, not one.** *"Fix the pre-existing drift at `:1186`, which says `state` is one of `"issued" | "redeemed" | "revoked"`."* The quoted sentence is real and lives at **`:1192`**; `:1186` is the `qrPayload` row of the field table. And the same paragraph goes on to give a *"full five-value inbound vocabulary … `issued / pre / redeemed / checkedIn / revoked`"* and to assert *"going forward the API only emits `issued`, `redeemed`, or `revoked`"* — so a fix that edits only the list the plan quotes leaves two further false statements in place, in the paragraph directly under it.
+> 4. **The three status codes are specified for the new block and the existing text that contradicts them is not.** *"the new `wallet` block documented with the three status codes (`404` … `409` … `503` …)"*. §14.2 of the target file says *"Same as §13.2: 404 for unknown tokens, **no other failure modes**"* — that is the sentence the 409 and the 503 falsify, and Task 9 never names it. Separately the existing asset row promises `503 SERVICE_UNAVAILABLE`; the envelope carries `$.error.code == "UPSTREAM_UNAVAILABLE"`, so the documented value is unmatchable. Two edits the task does not ask for, in the section it does.
+> 5. **Step 3 asks for a `imin-webapp` edit in a plan that says `imin-webapp` needs nothing.** §Deployment: *"**`imin-webapp` needs nothing.** It has no wallet surface and should not grow one"*, against Task 9's *"Fix `imin-public/docs/BRANDING.md:92,94` **and** `imin-webapp/docs/BRANDING.md:90,92`"*. Both are true — the product surface is untouched and the doc is stale — but read together they invite someone to resolve the contradiction by skipping the doc. The two BRANDING blocks are byte-identical forks; it is one edit applied twice, and neither is a wallet feature change.
+> 6. **Two line references in Step 3 are off by two.** `imin-public/docs/BRANDING.md` is `92,94` (correct) but the stale block runs `92-96`; `imin-webapp/docs/BRANDING.md` is `90,92`, block `90-94`. Minor, recorded because every other line reference in this plan was verified and these were quoted from a sibling repo without one.
+> 7. **The plan's own §Verification status and §Known gaps still describe the poster event ticket as pending.** U5 and U6 both name *"Task 4, Step 5"* as what they affect, §Deployment's G-CERT checkbox still asks to confirm *"(U5/U6) the poster layout renders on iOS 18+"*, and §Known gaps says *"Task 4 gives the poster style its `artwork.png` from `events.poster_url`"*. Task 4 cut all of it on 2026-08-16 and the surrounding text was never reconciled — the exact failure mode this task exists to prevent, inside the plan that defines the task. Corrected in place below.
+
 Size: **S**.
 
-- [ ] **Create `docs/decisions/ADR-0004-wallet-passes-are-not-updated.md`** — Decision 1 above, in the house ADR format (Context / Decision / Consequences), including the two triggers that reverse it and the explicit note that ticket transfer does not exist today.
+- [x] **Create `docs/decisions/ADR-0004-wallet-passes-are-not-updated.md`** — Decision 1 above, in the house ADR format (Context / Decision / Consequences), including the two triggers that reverse it and the explicit note that ticket transfer does not exist today. *(Built wider — five decisions, plus a §What is actually proven that separates suite-proven from synthetic-credential from entirely unexercised. See defect 1.)*
 
-- [ ] **Update `/Users/ivan/imin/imin-public/docs/PUBLIC_PAGE_API.md` §14** — **in the imin-public repo**; `imin-api/docs/PUBLIC_PAGE_API.md` is a stub that says it drifted and defers. Three edits:
+- [x] **Add the wallet surface to `CLAUDE.md`** *(not in the plan's file list — see defect 2)* — the ten env vars with their asymmetric defaults, the two endpoints with their full status vocabulary, the `wallet` response block, and the SHA-1 warning.
+
+- [ ] **Update `/Users/ivan/imin/imin-public/docs/PUBLIC_PAGE_API.md` §14** — **in the imin-public repo**, shipped as the lockstep PR, **not done here**; `imin-api/docs/PUBLIC_PAGE_API.md` is a stub that says it drifted and defers. Three edits *(four — see defect 4; exact spec in the as-built table above)*:
   - §14.1 field table: `walletAvailable` marked deprecated-but-permanent, and the new `wallet` block documented with the three status codes (`404` unknown token, `409` non-live ticket, `503` wallet not configured).
   - §14.2 asset-endpoint table: add `GET …/google-wallet` → `302`.
   - **Fix the pre-existing drift at `:1186`**, which says `state` is one of `"issued" | "redeemed" | "revoked"`. There are four — `refunded` has been in `Ticket.java:53`, in `imin-public/lib/api/types.ts:226-231`, in `ticket-view.tsx:25,32,50-53` and in the gate's `RedeemOutcome` for months. This plan is the first thing to touch that section since; leave it correct.
 
-- [ ] **Fix `imin-public/docs/BRANDING.md:92,94` and `imin-webapp/docs/BRANDING.md:90,92`** — both point at `imin-api/src/main/resources/wallet/*.png`, which only becomes true when Task 4 lands. Either land Task 4 first or correct the docs.
+- [ ] **Fix `imin-public/docs/BRANDING.md:92,94` and `imin-webapp/docs/BRANDING.md:90,92`** — both point at `imin-api/src/main/resources/wallet/*.png`, which only becomes true when Task 4 lands. Either land Task 4 first or correct the docs. *(Task 4 landed 2026-08-16, so both blocks are now stale in the **opposite** direction: they describe shipped art as an unbuilt placeholder. Blocks run `:92-96` and `:90-94` respectively — see defects 5 and 6. **Not done here** — both are sibling repos, shipped as the lockstep PR.)*
 
 ```bash
 git commit -m "docs(wallet): ADR-0004 and the two-wallet public contract"
@@ -1668,13 +1917,13 @@ git commit -m "docs(wallet): ADR-0004 and the two-wallet public contract"
 | `GOOGLE_WALLET_ORIGINS` | blank = undefined origins. Fine for dev; **set it in production** — Google's docs warn the save button will not render with `origins` undefined, and the plan is not going to bet on that warning being scoped to the JS widget | — |
 
   **Nothing fails open.** A blank value never produces an unsigned pass, a partial pass, or a broken CTA — it produces an absent CTA and a 503 on a URL nothing links to. The one historical exception was the `certPassword` case, which failed closed for the *wrong reason*; Task 1 removes it.
-- [ ] **G-CERT verification, on a real iPhone.** Generate a pass against the production certificate and add it to Wallet. `WalletTestCerts`'s own Javadoc says the synthetic chain would be rejected by Apple — the suite proves the archive is well-formed and correctly signed by the key it was given, and cannot prove more than that. **Apple Wallet is not done until this checkbox is ticked.** Check specifically: the pass adds without an error; `relevantDates` surfaces it on the lock screen near door time; the door time reads in the **venue's** zone; and (U5/U6) the poster layout renders on iOS 18+ despite the two absent semantic tags.
+- [ ] **G-CERT verification, on a real iPhone.** Generate a pass against the production certificate and add it to Wallet. `WalletTestCerts`'s own Javadoc says the synthetic chain would be rejected by Apple — the suite proves the archive is well-formed and correctly signed by the key it was given, and cannot prove more than that. **Apple Wallet is not done until this checkbox is ticked.** Check specifically: the pass adds without an error; `relevantDates` surfaces it on the lock screen near door time; the door time reads in the **venue's** zone; and the 38pt icon and transparent logo render as intended on the near-black pass. ~~(U5/U6) the poster layout renders on iOS 18+ despite the two absent semantic tags~~ — **void**, Task 4 cut the poster style (ADR-0004 §2).
 - [ ] **G-ISSUER, stage 1 — demo mode.** Set the issuer id and service account, deploy, and let the first save-link request create the first class. Add the pass on a real Android phone signed in as an issuer Admin/Developer. It will carry a `[TEST ONLY]` prefix; that is correct, not a fault. Check the barcode scans in the gate PWA.
 - [ ] **G-ISSUER, stage 2 — publishing access.** Only possible *after* stage 1, because the request requires at least one Passes Class to exist. Complete the Business Profile including a payment profile, then request publishing access and wait for the Google Wallet team's response. **Until this lands, Google Wallet reaches nobody but test accounts** — so `wallet.google.available` being `true` in production before approval would light a CTA that fails for every real buyer. Keep `GOOGLE_WALLET_ENABLED=false` in production until approval arrives, and flip it as the last step.
 - [ ] **Scan one of each with the real gate scanner** before announcing. The payload is supposed to be byte-identical across the emailed PNG, the web QR, the pkpass and the Google object — assert that in the field, not only in a test.
 - [ ] **After the deploy is live**, run `npm run api:sync` in `imin-webapp` (its `api:fetch` curls the **production** OpenAPI URL, so FE types only reflect this once Railway has it) and reconcile `src/shared/api/types.ts`.
-- [ ] **Then the frontend work in `imin-public`**, which is not in this plan but is what makes it visible:
-  - `components/buyer/wallet-cta.tsx` gains an Android branch mirroring `isApplePlatform()` at `:8-16`, reading `wallet.google`.
+- [ ] **Then the frontend work in `imin-public`**, which is not in this plan but is what makes it visible. **The authoritative, file-by-file spec is Task 8's as-built table plus Task 9's four doc edits — this list is the earlier sketch and one line of it is wrong:**
+  - ~~`components/buyer/wallet-cta.tsx` gains an **Android** branch mirroring `isApplePlatform()` at `:8-16`~~ — **wrong, see Task 8 defect 9.** Gate on `!isApplePlatform()`, not on an Android UA test: a Google save is an account action that completes in a desktop browser and lands on the phone that account is signed into, so "is Android" hides a working flow from every desktop and every Mac buyer.
   - `lib/api/public-events.ts:30-32`'s `ticketWalletUrl()` is replaced by the server-supplied `wallet.apple.url`.
   - `lib/i18n/{en,es,fr,uk}.ts` — `wallet.add` is Apple-specific ("Add to Apple Wallet"); a `wallet.addGoogle` is needed, and **`wallet.hint` at `en.ts:408` currently says "No Apple Wallet? Screenshot your QR"**, which becomes wrong the moment an Android buyer has a real option. All four locales in lockstep, `check:i18n` clean.
   - Neither CTA uses the official badge artwork today (`wallet-cta.tsx:38-45` explains why, and the reasoning applies identically to Google's badge). Both vendors mandate their own assets; obtaining them is a separate, cheap task and should be done before this is marketed.
@@ -1686,10 +1935,10 @@ git commit -m "docs(wallet): ADR-0004 and the two-wallet public contract"
 
 - **No pass updates, on either platform.** The whole of Decision 1 / ADR-0004. The concrete consequence: a buyer refunded *after* adding a pass keeps a pass that looks valid until the event expires it, and is correctly refused at the door. Revisit if refund volume on live events becomes material, or if ticket transfer ships.
 - **`associatedStoreIdentifiers` is not set**, so the pass does not deep-link to the iOS app. It needs the numeric App Store id, which does not exist until the app is submitted (ADR-0003). One line to add later; recorded so it is not rediscovered.
-- **No `thumbnail.png` or `background.png`** on the classic layout. Task 4 gives the poster style its `artwork.png` from `events.poster_url`; the classic fallback still renders without an image band. Low value once the poster style works, and it is the same fetch-and-re-encode cost for a layout most devices will not use. (`strip.png` is deliberately absent and always will be — it is a **coupon and store-card** asset, not an event-ticket one.)
+- **No `thumbnail.png`, `background.png` or `artwork.png`** — the pass ships six PNGs (icon + logo, three scales each) and nothing else. *(Corrected 2026-08-16: this bullet used to say "Task 4 gives the poster style its `artwork.png` from `events.poster_url`". Task 4 cut the poster style, so there is only the classic layout and it renders without an image band.)* The only image we hold that could fill any of them is the event's own poster, and putting an R2 fetch plus a re-encode on the door path for a decoration was declined — the same objection that keeps Google's `heroImage` unset. (`strip.png` is deliberately absent and always will be — it is a **coupon and store-card** asset, not an event-ticket one.)
 - **The organizer's brand logo is not on the pass.** `Organization.brandLogoUrl` exists and `BrandLogoCompositor` already fetches and caches org logos for posters. Deferred: `logoText` carries the organizer's name (Task 3), which is most of the value for none of the per-request cost.
 - **Locations are usually absent.** `IMIN_GEOCODING_ENABLED` defaults to `false` (`application.yaml`), so `venue_latitude/longitude` are NULL on most rows and the location-based lock-screen trigger never fires. The date-based trigger (`relevantDates`) still does. Turning geocoding on is a separate decision with a Nominatim rate-limit story attached.
-- **Semantics are incomplete, and two of the gaps are data gaps not effort gaps.** `venueLocation` and `venueEntrance` are deferrable. `venueRoom` and `performerNames` are **documented as required for the poster event ticket and have no backing field anywhere** — `grep -i 'lineup\|performer' src/main/java` returns nothing. Under the no-fabricated-data rule they are omitted, not invented. If the poster layout turns out to need them (U6), the honest fix is a real line-up field on `Event`, which is a product decision, not a wallet task.
+- **Semantics are incomplete, and two of the gaps are data gaps not effort gaps.** `venueLocation` and `venueEntrance` are deferrable. `venueRoom` and `performerNames` **have no backing field anywhere** — `grep -i 'lineup\|performer' src/main/java` returns nothing. Under the no-fabricated-data rule they are omitted, not invented. *(2026-08-16: they were required **for the poster event ticket**, which is cut, so this is now a cosmetic gap rather than a blocker on a layout. `venueRegionName` is a third case and a different one — the data exists as `event.venueCity` and jpasskit 0.5.8 has no field for it.)* A real line-up field on `Event` is a product decision, not a wallet task.
 - **Google `notifyPreference` is never set**, so no Google-side push ever fires. Correct while ADR-0004 stands; noted because the field exists and is a one-line temptation. If it is ever used: **max 3 push-triggering updates per object per 24 hours**, and only a specific field list triggers one.
 - **Google's `[TEST ONLY]` prefix persists until publishing access is granted.** Everything works in demo mode; the passes just say so, and only reach test accounts. Do not read that as a bug during development.
 - **Pass generation is not cached.** Each request re-signs. Deliberate: a cache would have to be invalidated on refund and revoke to keep `WalletEligibility` honest, and a stale cached pass for a refunded ticket is exactly the failure this plan is trying to avoid. The `wallet-pass` rate-limit bucket bounds the cost instead.
@@ -1711,6 +1960,6 @@ Everything about **Apple's and Google's APIs** was checked against current offic
 | **U2** | Whether an inline-JWT class in `DRAFT` blocks the save. The docs only say a draft class cannot be used to create objects *via the API*. | Nothing — Decision 2 never uses `DRAFT` and never uses inline classes. | Moot unless both change. |
 | **U3** | `apns-topic` = the Pass Type ID. Stated consistently across Apple's APNs guidance and developer forums, but not in one quotable line of the walletpasses reference. | Only a reversal of ADR-0004. | Moot while we build no web service. |
 | **U4** | On-device behaviour of `voided: true` (Expired folder / greyed out). Community-reported; not in current Apple docs. Apple's own guidance is explicitly *not* to rely on voiding via push. | Nothing — we do not set `voided`, because we cannot update a pass to set it later, and setting it at mint time is what `WalletEligibility`'s 409 does better. | Moot. |
-| **U5** | Pixel dimensions for poster-ticket assets beyond the HIG's point values; Apple publishes no @2x/@3x pixel table for `artwork.png`. | **Task 4, Step 5.** The 358×448 figure is points. | Ship @2x/@3x by the usual multiplication and confirm on device at Task 4 Step 6. |
-| **U6** | Whether the poster event-ticket layout renders when `venueRoom` and `performerNames` are absent — both are documented as required and neither has a backing field. | **Task 4, Step 5.** | Task 4 Step 6, on a real iOS 18+ device. `preferredStyleSchemes` falls back by construction, so the downside is bounded. |
+| ~~**U5**~~ **MOOT** (2026-08-16) | Pixel dimensions for poster-ticket assets beyond the HIG's point values; Apple publishes no @2x/@3x pixel table for `artwork.png`. | ~~Task 4, Step 5.~~ **Nothing** — Task 4 cut the poster style and ships no `artwork.png`. The 358×448 figure is unsourced, not merely in points. | Moot unless ADR-0004 §2 is reversed, which requires Apple to lift the QR-entry exclusion. |
+| ~~**U6**~~ **MOOT** (2026-08-16) | Whether the poster event-ticket layout renders when `venueRoom` and `performerNames` are absent — both are documented as required and neither has a backing field. | ~~Task 4, Step 5.~~ **Nothing** — the layout is excluded for QR-entry tickets outright, and `venueRegionName` is not expressible through jpasskit 0.5.8 at all, so the question cannot arise. | Moot. `WalletArtworkTest.thePassDoesNotClaimAPosterEventTicketItCannotRender` pins the absence. |
 | **U7** | Which WWDR generation the issued certificate actually chains to. Apple's reference table says **G4** for Pass Type ID (required for certs issued after 2022-01-27, expiring 2030), but the authoritative answer is the certificate itself. | **G-CERT.** | Read the Organization field off the issued certificate; `WalletCredentialCheck` will fail loudly at boot if the supplied intermediate does not match, and jpasskit calls `checkValidity()` on it. |

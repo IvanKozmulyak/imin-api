@@ -4,6 +4,7 @@ import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.email.EmailTemplateRenderer;
+import com.imin.iminapi.dto.publicapi.TicketWallets;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Ticket;
@@ -31,10 +32,16 @@ import java.util.UUID;
  *
  * <p>Each ticket gets a hyperlinked QR image pointing at
  * {@code /api/v1/public/tickets/{token}/qr.png} — the same endpoint backing
- * the web ticket page, so we have one renderer and one cache story. When
- * Apple Wallet is configured, an "Add to Apple Wallet" link is appended
- * per ticket; otherwise the row is suppressed entirely so the email never
- * dangles a broken button in front of the buyer.
+ * the web ticket page, so we have one renderer and one cache story. Beneath it
+ * go the wallet links {@link WalletOffers} says are actually available for that
+ * ticket; a wallet that is off, or a ticket that is no longer live, contributes
+ * no row at all, so the email never dangles a broken button in front of a buyer.
+ *
+ * <p><b>Both wallets are offered to every recipient, and that is correct.</b> An
+ * email has no user agent and is read on more devices than it was sent from —
+ * the buyer who checked out on a laptop opens it on a phone we cannot name. So
+ * an iPhone owner may see a Google link. The alternative is guessing, and
+ * guessing wrong hides the only working button.
  */
 @Component
 public class TicketIssuanceEmailer {
@@ -48,7 +55,7 @@ public class TicketIssuanceEmailer {
     private final EmailTemplateRenderer renderer;
     private final EmailProperties emailProps;
     private final TicketProperties ticketProps;
-    private final AppleWalletPassService wallet;
+    private final WalletOffers wallet;
 
     public TicketIssuanceEmailer(OrderRepository orders,
                                   TicketRepository tickets,
@@ -57,7 +64,7 @@ public class TicketIssuanceEmailer {
                                   EmailTemplateRenderer renderer,
                                   EmailProperties emailProps,
                                   TicketProperties ticketProps,
-                                  AppleWalletPassService wallet) {
+                                  WalletOffers wallet) {
         this.orders = orders;
         this.tickets = tickets;
         this.events = events;
@@ -105,9 +112,8 @@ public class TicketIssuanceEmailer {
         String whereText = formatWhere(event);
         String whereSep = (whenText.isEmpty() || whereText.isEmpty()) ? "" : " · ";
 
-        boolean walletOn = wallet.isConfigured();
-        String htmlBlocks = renderHtmlBlocks(issued, siteBase, apiBase, walletOn);
-        String textBlocks = renderTextBlocks(issued, siteBase, apiBase, walletOn);
+        String htmlBlocks = renderHtmlBlocks(issued, siteBase, apiBase);
+        String textBlocks = renderTextBlocks(issued, siteBase, apiBase);
 
         // The renderer auto-escapes every value when emitting HTML. We need to
         // inject pre-built HTML for the per-ticket blocks, so render with a
@@ -146,14 +152,14 @@ public class TicketIssuanceEmailer {
                 order.getId(), issued.size(), order.getEmail());
     }
 
-    private String renderHtmlBlocks(List<Ticket> issued, String siteBase, String apiBase, boolean walletOn) {
+    private String renderHtmlBlocks(List<Ticket> issued, String siteBase, String apiBase) {
         StringBuilder b = new StringBuilder();
         int total = issued.size();
         for (int i = 0; i < total; i++) {
             Ticket t = issued.get(i);
             String qrUrl = apiBase + "/api/v1/public/tickets/" + t.getToken() + "/qr.png";
             String ticketUrl = siteBase + "/tickets/" + t.getToken();
-            String walletUrl = apiBase + "/api/v1/public/tickets/" + t.getToken() + "/apple-wallet.pkpass";
+            TicketWallets wallets = wallet.forTicket(t);
             String eyebrow = "TICKET " + (i + 1) + " OF " + total;
             String tierName = htmlEscape(t.getTierName());
 
@@ -172,30 +178,47 @@ public class TicketIssuanceEmailer {
                     .append("</div>")
                     .append("<p style=\"margin: 14px 0 0; font-size: 13px; line-height: 1.5;\"><a href=\"").append(ticketUrl)
                     .append("\" style=\"color: #2d5cff; text-decoration: none; font-weight: 600;\">Open this ticket &rarr;</a></p>");
-            if (walletOn) {
-                b.append("<p style=\"margin: 4px 0 0; font-size: 13px; line-height: 1.5;\"><a href=\"").append(walletUrl)
-                        .append("\" style=\"color: #2d5cff; text-decoration: none; font-weight: 600;\">Add to Apple Wallet &rarr;</a></p>");
+            if (wallets.apple().available()) {
+                b.append(walletLinkHtml(wallets.apple().url(), "Add to Apple Wallet"));
+            }
+            if (wallets.google().available()) {
+                b.append(walletLinkHtml(wallets.google().url(), "Save to Google Wallet"));
             }
             b.append("</div>");
         }
         return b.toString();
     }
 
-    private String renderTextBlocks(List<Ticket> issued, String siteBase, String apiBase, boolean walletOn) {
+    private String renderTextBlocks(List<Ticket> issued, String siteBase, String apiBase) {
         StringBuilder b = new StringBuilder();
         for (int i = 0; i < issued.size(); i++) {
             Ticket t = issued.get(i);
             String ticketUrl = siteBase + "/tickets/" + t.getToken();
-            String walletUrl = apiBase + "/api/v1/public/tickets/" + t.getToken() + "/apple-wallet.pkpass";
+            TicketWallets wallets = wallet.forTicket(t);
             b.append("Ticket ").append(i + 1).append(" of ").append(issued.size())
                     .append(" — ").append(nullSafe(t.getTierName())).append('\n');
             b.append("  Open: ").append(ticketUrl).append('\n');
-            if (walletOn) {
-                b.append("  Apple Wallet: ").append(walletUrl).append('\n');
+            if (wallets.apple().available()) {
+                b.append("  Apple Wallet: ").append(wallets.apple().url()).append('\n');
+            }
+            if (wallets.google().available()) {
+                b.append("  Google Wallet: ").append(wallets.google().url()).append('\n');
             }
             b.append('\n');
         }
         return b.toString();
+    }
+
+    /**
+     * One wallet row. The URL is not escaped and does not need to be: it is
+     * built by {@link WalletOffers} from a configured base and a base64url
+     * token, so it carries no {@code "} and no {@code <} — but it is also never
+     * user input, which is the reason that stays true.
+     */
+    private static String walletLinkHtml(String url, String label) {
+        return "<p style=\"margin: 4px 0 0; font-size: 13px; line-height: 1.5;\"><a href=\""
+                + url + "\" style=\"color: #2d5cff; text-decoration: none; font-weight: 600;\">"
+                + label + " &rarr;</a></p>";
     }
 
     private String buyerSiteBase() {
