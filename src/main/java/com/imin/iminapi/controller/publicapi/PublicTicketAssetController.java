@@ -9,6 +9,7 @@ import com.imin.iminapi.service.ticket.AppleWalletPassService;
 import com.imin.iminapi.service.ticket.QrImageRenderer;
 import com.imin.iminapi.service.ticket.QrPayloadSigner;
 import com.imin.iminapi.service.ticket.WalletEligibility;
+import com.imin.iminapi.service.ticket.WalletSigningException;
 import com.imin.iminapi.service.ticket.google.GoogleWalletPassService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpHeaders;
@@ -93,7 +94,29 @@ public class PublicTicketAssetController {
             throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, ErrorCode.UPSTREAM_UNAVAILABLE,
                     "Apple Wallet passes are not available");
         }
-        byte[] pkpass = wallet.generatePass(t.getToken());
+        // THE GATE ABOVE CANNOT SEE AN EXPIRED CERTIFICATE. `isConfigured()` is
+        // memoised from construction, which is right for a credential swap (a
+        // redeploy, so a new instance) and wrong for expiry, which happens on the
+        // certificate's own clock — and an Apple Pass Type ID certificate lasts a
+        // year. A process that boots before `notAfter` and outlives it keeps
+        // answering "configured" while every signature throws.
+        //
+        // Without this catch that was an uncaught exception reaching
+        // GlobalExceptionHandler.handleAny, i.e. a 500 on an endpoint whose only
+        // credential is a URL a buyer taps — and 503 UPSTREAM_UNAVAILABLE is what
+        // the rest of this class, CLAUDE.md and ADR-0004 all promise. Proven by
+        // minting an expired certificate and driving the real service.
+        //
+        // WalletSigningException and not IllegalStateException: catching the
+        // latter here would also convert a genuine bug inside pass construction
+        // into a reported upstream outage.
+        byte[] pkpass;
+        try {
+            pkpass = wallet.generatePass(t.getToken());
+        } catch (WalletSigningException e) {
+            throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, ErrorCode.UPSTREAM_UNAVAILABLE,
+                    "Apple Wallet passes are not available");
+        }
         return ResponseEntity.ok()
                 .header(HttpHeaders.CACHE_CONTROL, "private, no-store")
                 .header(HttpHeaders.CONTENT_TYPE, "application/vnd.apple.pkpass")

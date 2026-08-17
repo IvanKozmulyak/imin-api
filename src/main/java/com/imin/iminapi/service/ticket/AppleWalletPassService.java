@@ -393,9 +393,25 @@ public class AppleWalletPassService {
             return new PKInMemorySigningUtil()
                     .createSignedAndZippedPkPassArchive(pass, template, signing);
         } catch (Exception e) {
-            log.error("Failed to build Apple Wallet pass for token {}: {}",
-                    ticketToken, e.getMessage(), e);
-            throw new IllegalStateException("Failed to build Apple Wallet pass", e);
+            // NEITHER THE CAUSE NOR THE TICKET TOKEN GOES INTO THIS LINE, and both
+            // used to. The block above decodes a PKCS#12, opens a keystore with its
+            // password and signs — so `e.getMessage()`, and certainly the attached
+            // stack trace, can carry key material out of a JCA provider we do not
+            // control. `GoogleServiceAccountKey` was designed against exactly this
+            // and logs the class name alone; this is that discipline applied to the
+            // half that did not have it. The ticket token is also a bearer
+            // credential — the whole endpoint is authenticated by it — and had no
+            // business in a log line either.
+            //
+            // What is lost is the operator's ability to read the reason off the
+            // log. What replaces it is `WalletCredentialCheck`, which loads the
+            // same material at boot and names the fault there, where no request
+            // and no token is in scope.
+            log.error("Failed to build an Apple Wallet pass: {} (see the startup "
+                    + "credential check for the reason; details are withheld here "
+                    + "because this path handles key material)",
+                    e.getClass().getSimpleName());
+            throw new WalletSigningException(e);
         }
     }
 

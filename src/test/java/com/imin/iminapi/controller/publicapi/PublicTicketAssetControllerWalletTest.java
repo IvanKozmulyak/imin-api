@@ -11,6 +11,7 @@ import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.security.GlobalExceptionHandler;
 import com.imin.iminapi.security.RateLimiter;
 import com.imin.iminapi.service.ticket.AppleWalletPassService;
+import com.imin.iminapi.service.ticket.WalletSigningException;
 import com.imin.iminapi.service.ticket.AppleWalletProperties;
 import com.imin.iminapi.service.ticket.QrImageRenderer;
 import com.imin.iminapi.service.ticket.QrPayloadSigner;
@@ -87,6 +88,65 @@ class PublicTicketAssetControllerWalletTest {
 
         mvc.perform(get("/api/v1/public/tickets/" + TOKEN + "/apple-wallet.pkpass"))
                 .andExpect(status().isOk());
+    }
+
+    /**
+     * <b>A certificate that expires under a running process must not 500.</b>
+     *
+     * <p>{@code isConfigured()} is memoised from construction. That is sound for
+     * a credential swap — a redeploy, so a new instance — and unsound for the one
+     * thing a certificate does on its own clock. An Apple Pass Type ID
+     * certificate lasts a year; a process that boots before {@code notAfter} and
+     * outlives it keeps answering "configured" while every signature throws.
+     * Found by minting an expired certificate and driving the real service:
+     * {@code isConfigured() == true}, {@code generatePass} threw, nothing caught
+     * it, and {@code GlobalExceptionHandler.handleAny} turned it into a
+     * <b>500 on an endpoint whose only credential is a URL a buyer taps</b>.
+     *
+     * <p>The double stages the failure; it is not the oracle. What is asserted is
+     * the HTTP contract three documents on this branch promise — {@code CLAUDE.md}
+     * ("never a 500"), ADR-0004's Consequences, and {@code isConfigured()}'s own
+     * javadoc, which describes this exact 500 as the defect it was written to fix
+     * and fixed only at boot.
+     *
+     * <p>Delete the {@code catch (WalletSigningException)} in the controller and
+     * this goes red on the status line, which is how it was checked.
+     */
+    @Test
+    void aSigningFailureAtRequestTimeIs503AndNeverA500() throws Exception {
+        AppleWalletPassService expired = mock(AppleWalletPassService.class);
+        // Exactly the state an expired certificate leaves behind: the gate is
+        // open, and the signature is what fails.
+        when(expired.isConfigured()).thenReturn(true);
+        when(expired.generatePass(TOKEN))
+                .thenThrow(new WalletSigningException(new java.security.cert.CertificateExpiredException()));
+
+        MockMvc mvc = mvcWith(new AppleWalletProperties(), expired);
+
+        mvc.perform(get("/api/v1/public/tickets/" + TOKEN + "/apple-wallet.pkpass"))
+                .andExpect(status().isServiceUnavailable())
+                // The envelope too, not only the status: imin-public reads
+                // $.error.code, and this is the branch a buyer actually hits.
+                .andExpect(jsonPath("$.error.code").value("UPSTREAM_UNAVAILABLE"));
+    }
+
+    /**
+     * The other half of the same rule: a fault that is NOT a signing failure must
+     * still surface as a 500, so a genuine bug inside pass construction cannot be
+     * quietly reported as an upstream outage. This is why the controller catches
+     * {@code WalletSigningException} and not {@code IllegalStateException} —
+     * widen that catch and this case goes green while a real defect goes silent.
+     */
+    @Test
+    void aProgrammingErrorIsNotDisguisedAsAnUpstreamOutage() throws Exception {
+        AppleWalletPassService broken = mock(AppleWalletPassService.class);
+        when(broken.isConfigured()).thenReturn(true);
+        when(broken.generatePass(TOKEN)).thenThrow(new NullPointerException("a real bug"));
+
+        MockMvc mvc = mvcWith(new AppleWalletProperties(), broken);
+
+        mvc.perform(get("/api/v1/public/tickets/" + TOKEN + "/apple-wallet.pkpass"))
+                .andExpect(status().isInternalServerError());
     }
 
     /**
@@ -189,6 +249,15 @@ class PublicTicketAssetControllerWalletTest {
     }
 
     private MockMvc mvcWith(AppleWalletProperties props) {
+        return mvcWith(props, null);
+    }
+
+    /**
+     * @param apple when non-null, replaces the real service — the only way to
+     *              stage a request-time signing failure without minting an
+     *              expired certificate, which is a change to a shared helper.
+     */
+    private MockMvc mvcWith(AppleWalletProperties props, AppleWalletPassService apple) {
         TicketRepository tickets = mock(TicketRepository.class);
         OrderRepository orders = mock(OrderRepository.class);
         EventRepository events = mock(EventRepository.class);
@@ -234,7 +303,7 @@ class PublicTicketAssetControllerWalletTest {
 
         PublicTicketAssetController controller = new PublicTicketAssetController(
                 tickets, qr, new QrImageRenderer(),
-                new AppleWalletPassService(props, tickets, orders, events,
+                apple != null ? apple : new AppleWalletPassService(props, tickets, orders, events,
                         mock(OrganizationRepository.class), qr, new EmailProperties()),
                 // Apple's routes are the subject here; the Google collaborator only
                 // has to exist. A Mockito double answers isConfigured() => false,
