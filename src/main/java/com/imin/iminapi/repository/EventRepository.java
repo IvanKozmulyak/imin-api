@@ -133,14 +133,14 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
      * <p><b>{@code cityKey}</b> is the normalised {@code lower(collapse(trim(city)))} key, not the
      * raw string, and it is matched with {@code =} rather than the old case-insensitive
      * {@code LIKE '%…%'}. That is what makes a city chip's count reproducible: the facet
-     * ({@link #findPublicCityCounts()}) groups on the same column with the same equality, so
+     * ({@link #findPublicCityCounts(Instant)}) groups on the same column with the same equality, so
      * "Metz (3)" returns exactly three events — where the substring match could also drag in a
      * {@code Metzingen}. Callers normalise via {@code EventNormalization.cityKey}, so
      * {@code ?city=METZ}, {@code ?city=metz} and {@code ?city=%20Metz%20} are one query.
      *
      * <p><b>{@code genreKey}</b> is the same idea for the genre: {@code lower(collapse(trim))},
      * matched with {@code =} against the derived column the genre facet
-     * ({@link #findPublicGenreCounts()}) groups on. {@code ?genre=Techno} and
+     * ({@link #findPublicGenreCounts(Instant)}) groups on. {@code ?genre=Techno} and
      * {@code ?genre=techno} are one query over one set of nights. The display column
      * {@code e.genre} keeps the organizer's casing and is never filtered on.
      *
@@ -221,6 +221,19 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
      * filters, so the count a city chip shows is the number of events the buyer actually
      * lands on when they tap it.
      *
+     * <p><b>Including the time window (2026-08-16).</b> It used to be "minus the user filters"
+     * full stop — and {@code from} is not really a user filter: every real feed request carries
+     * one. {@code imin-public}'s {@code toListingQuery} and the mobile app's port of it both
+     * send {@code from=now, includeOngoing=true} on every call, including the {@code when=all}
+     * default a chip's own link resolves to. So the chip said "Metz, 14 nights" (all Metz events
+     * ever published) and opened a feed of 4. The past is not a filter the buyer chose; it is
+     * rows no client can reach. The window below is the listing's own time predicate evaluated
+     * at exactly those arguments — {@code startsAt >= now} (upcoming) OR no/unpassed
+     * {@code endsAt} (still running, which {@code includeOngoing=true} keeps) — so the count is
+     * the total of the widest feed the chip can open. A client that asks for a narrower window
+     * ({@code when=tonight}, or {@code includeOngoing=false}) gets fewer rows than the chip
+     * promised, which is the buyer narrowing their own search, not the number lying.
+     *
      * <p>Grouping is on the derived {@code venue_city_key} (V82) — the same column
      * {@link #findPublicListing} now filters on — so {@code Metz} and {@code METZ} are one
      * group and a merged chip's count is reproducible by its own result page. The display
@@ -228,6 +241,13 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
      * the most common spelling as the chip label and decides whether the key's countries agree.
      * That fold is Java, not SQL, because "most common spelling" wants no window function and
      * the facet is small (one row per city, not per event).
+     *
+     * <p>A city whose every night has passed drops out entirely (COUNT would be 0, so GROUP BY
+     * emits no row) rather than appearing as a chip that opens an empty page.
+     *
+     * <p>{@code now} is an {@code Instant}, never null, and is compared directly — no
+     * {@code CAST(:now AS timestamp)} null-guard is needed, and no nullable {@code String}
+     * enters a predicate here (the {@code lower(bytea)} trap the search queries document).
      */
     @Query("""
         SELECT e.venueCityKey, e.venueCity, e.venueCountry, COUNT(e) FROM Event e
@@ -236,12 +256,13 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
            AND e.publishedAt IS NOT NULL
            AND e.status <> com.imin.iminapi.model.EventStatus.DRAFT
            AND e.status <> com.imin.iminapi.model.EventStatus.CANCELLED
+           AND (e.startsAt >= :now OR e.endsAt IS NULL OR e.endsAt > :now)
            AND e.venueCityKey IS NOT NULL
            AND e.venueCityKey <> ''
          GROUP BY e.venueCityKey, e.venueCity, e.venueCountry
          ORDER BY e.venueCityKey ASC
 """)
-    List<Object[]> findPublicCityCounts();
+    List<Object[]> findPublicCityCounts(@Param("now") Instant now);
 
     /**
      * Writes ONLY the two venue coordinate columns (V80). The geocoding listener's sole
@@ -338,13 +359,18 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
      * Raw material for the genre facet: {@code (genreKey, genre, count)}, one row per distinct
      * spelling within a key.
      *
-     * <p>Same shape and same reasoning as {@link #findPublicCityCounts()}. The WHERE clause is
-     * the listing's own eligibility predicate minus the user filters, so a chip's count is the
-     * number of events the buyer lands on when they tap it. Grouping is on the derived
+     * <p>Same shape and same reasoning as {@link #findPublicCityCounts(Instant)}, time window
+     * included. The genre facet spends its counts on the label vote rather than putting a number
+     * on the wire, but a chip is still a promise: it says "there are Techno nights". Without the
+     * window, a genre whose every night had passed kept a chip that opened an empty feed — the
+     * same defect as the city count, one bit wide instead of a number. Grouping is on the derived
      * {@code genre_key} (V82) — the column {@link #findPublicListing} filters on — so
      * {@code Techno} and {@code techno} are one group; the display spelling stays in the GROUP BY
      * because the service picks the most common one as the chip label. That fold is Java, not
      * SQL: "most common spelling" wants no window function and the facet is one row per genre.
+     *
+     * <p>The label vote is now counted over upcoming nights only, so the spelling a chip shows is
+     * the one the events behind it actually use, not the one a long-finished season used most.
      */
     @Query("""
         SELECT e.genreKey, e.genre, COUNT(e) FROM Event e
@@ -353,12 +379,13 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
            AND e.publishedAt IS NOT NULL
            AND e.status <> com.imin.iminapi.model.EventStatus.DRAFT
            AND e.status <> com.imin.iminapi.model.EventStatus.CANCELLED
+           AND (e.startsAt >= :now OR e.endsAt IS NULL OR e.endsAt > :now)
            AND e.genreKey IS NOT NULL
            AND e.genreKey <> ''
          GROUP BY e.genreKey, e.genre
          ORDER BY e.genreKey ASC
 """)
-    List<Object[]> findPublicGenreCounts();
+    List<Object[]> findPublicGenreCounts(@Param("now") Instant now);
 
     /**
      * Track B (manual payouts) Phase 2 — candidate events for the daily

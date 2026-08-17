@@ -140,6 +140,40 @@ class PublicEventServiceListTest {
                 null, null, null, null, null, null, null, null, false, false, false, page, pageSize);
     }
 
+    /**
+     * An event that ran and finished before NOW. These are the rows the facets used to count
+     * and no feed could ever return — {@code endsAt} is set explicitly because a null one means
+     * "no defined end", which {@code includeOngoing=true} legitimately keeps in the feed.
+     */
+    private Event finishedEvent() {
+        Event e = publishedLiveEvent();
+        e.setStartsAt(NOW.minusSeconds(172800));   // started two days ago
+        e.setEndsAt(NOW.minusSeconds(158400));     // ended two days ago
+        e.setStatus(EventStatus.PAST);             // what EventStatusSweeper would have done
+        return e;
+    }
+
+    /**
+     * The feed a city chip actually opens, driven through the same service the HTTP layer calls.
+     *
+     * <p>{@code from=NOW, includeOngoing=true} is not a choice made here: it is what
+     * {@code imin-public}'s {@code toListingQuery} and the mobile app's port of it send on every
+     * request, including the {@code when=all} default that a bare {@code /events?city=…} link —
+     * a chip's own href — resolves to. Asking with {@code from=null}, as the older facet tests
+     * did, asks a question no buyer can ask, which is how a count over all time passed for a
+     * count of the feed.
+     */
+    private PageResponse<PublicEventListItem> feedBehindCityChip(String city) {
+        return publicEventService.list(new PublicEventListQuery(
+                NOW, null, null, null, city, null, null, null, false, true, false, 1, 100));
+    }
+
+    /** The feed a genre chip opens — same window, same reason as {@link #feedBehindCityChip}. */
+    private PageResponse<PublicEventListItem> feedBehindGenreChip(String genre) {
+        return publicEventService.list(new PublicEventListQuery(
+                NOW, null, List.of(genre), null, null, null, null, null, false, true, false, 1, 100));
+    }
+
     // -----------------------------------------------------------------------
     // Eligibility filtering
     // -----------------------------------------------------------------------
@@ -991,9 +1025,7 @@ class PublicEventServiceListTest {
         // title-cases or folds it — the label is a real stored spelling, never an invention.
         assertThat(genres).containsExactly("Techno");
 
-        PageResponse<PublicEventListItem> tapped = publicEventService.list(new PublicEventListQuery(
-                null, null, List.of(genres.get(0)), null, null, null, null, null, false, false, false, 1, 20));
-        assertThat(tapped.total()).isEqualTo(4L);
+        assertThat(feedBehindGenreChip(genres.get(0)).total()).isEqualTo(4L);
     }
 
     @Test
@@ -1376,10 +1408,8 @@ class PublicEventServiceListTest {
         assertThat(cities.get(0).country()).isEqualTo("FR");
         assertThat(cities.get(0).eventCount()).isEqualTo(3L);
 
-        PageResponse<PublicEventListItem> tapped = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, cities.get(0).city(), null, null, null,
-                false, false, false, 1, 20));
-        assertThat(tapped.total()).isEqualTo(cities.get(0).eventCount());
+        assertThat(feedBehindCityChip(cities.get(0).city()).total())
+                .isEqualTo(cities.get(0).eventCount());
     }
 
     @Test
@@ -1422,5 +1452,134 @@ class PublicEventServiceListTest {
         assertThat(cities).extracting(com.imin.iminapi.dto.publicapi.PublicCityItem::country)
                 .containsExactly("FR", "US");
         assertThat(cities).allSatisfy(c -> assertThat(c.eventCount()).isEqualTo(1L));
+    }
+
+    // -----------------------------------------------------------------------
+    // The facets vs the feed they open
+    //
+    // In production the Metz chip promised 14 nights and the feed behind it
+    // returned 4: the count had no time bound, while every real client sends
+    // one. These tests never assert a number of their own — they run BOTH
+    // sides over the same fixtures and require them to agree, which is the
+    // only assertion that would have failed before the fix.
+    // -----------------------------------------------------------------------
+
+    @Test
+    void everyCityChipsCountIsWhatTheFeedBehindItReturns() {
+        // Berlin: two upcoming, one running right now, three long finished.
+        for (int i = 0; i < 2; i++) {
+            Event upcoming = publishedLiveEvent();
+            upcoming.setVenueCity("Berlin");
+            upcoming.setVenueCountry("DE");
+            eventRepository.save(upcoming);
+        }
+        Event running = publishedLiveEvent();
+        running.setVenueCity("Berlin");
+        running.setVenueCountry("DE");
+        running.setStartsAt(NOW.minusSeconds(3600));
+        running.setEndsAt(NOW.plusSeconds(7200));
+        eventRepository.save(running);
+        for (int i = 0; i < 3; i++) {
+            Event over = finishedEvent();
+            over.setVenueCity("Berlin");
+            over.setVenueCountry("DE");
+            eventRepository.save(over);
+        }
+
+        // Metz: nothing left at all — the shape of the production bug.
+        for (int i = 0; i < 4; i++) {
+            Event over = finishedEvent();
+            over.setVenueCity("Metz");
+            over.setVenueCountry("FR");
+            eventRepository.save(over);
+        }
+
+        Event paris = publishedLiveEvent();
+        paris.setVenueCity("Paris");
+        paris.setVenueCountry("FR");
+        eventRepository.save(paris);
+
+        List<com.imin.iminapi.dto.publicapi.PublicCityItem> cities = publicEventService.listCities();
+        assertThat(cities).as("fixtures must produce chips, or the loop below asserts nothing")
+                .isNotEmpty();
+        for (com.imin.iminapi.dto.publicapi.PublicCityItem chip : cities) {
+            assertThat(feedBehindCityChip(chip.city()).total())
+                    .as("chip \"%s\" promises %d night(s); its own feed must return exactly that",
+                            chip.city(), chip.eventCount())
+                    .isEqualTo(chip.eventCount());
+        }
+
+        // Fixture integrity: there really are unreachable rows behind these cities, so the
+        // agreement above is a fact about the time bound and not a vacuous pass on data that
+        // happened to have no past.
+        assertThat(publicEventService.list(new PublicEventListQuery(
+                null, null, null, null, "Berlin", null, null, null, false, true, false, 1, 100)).total())
+                .as("Berlin must own events no feed can reach, or this test proves nothing")
+                .isGreaterThan(feedBehindCityChip("Berlin").total());
+    }
+
+    @Test
+    void aCityWhoseNightsHaveAllPassedGetsNoChip() {
+        // A chip is a promise that tapping it shows something. Metz had four sold-out
+        // memories and an empty feed; the honest answer is no chip, not "Metz, 4".
+        for (int i = 0; i < 4; i++) {
+            Event over = finishedEvent();
+            over.setVenueCity("Metz");
+            over.setVenueCountry("FR");
+            eventRepository.save(over);
+        }
+
+        assertThat(feedBehindCityChip("Metz").total())
+                .as("premise: the feed for this city is empty")
+                .isZero();
+        assertThat(publicEventService.listCities())
+                .extracting(com.imin.iminapi.dto.publicapi.PublicCityItem::city)
+                .doesNotContain("Metz");
+    }
+
+    @Test
+    void aNightThatHasStartedButNotEndedIsCountedBecauseTheFeedStillShowsIt() {
+        // The window is the feed's own (from=now OR still running), not "startsAt in the
+        // future". A doors-open event is still sellable and both clients send
+        // includeOngoing=true, so under-counting it would be the same lie inverted.
+        Event running = publishedLiveEvent();
+        running.setVenueCity("Berlin");
+        running.setVenueCountry("DE");
+        running.setStartsAt(NOW.minusSeconds(3600));
+        running.setEndsAt(NOW.plusSeconds(7200));
+        eventRepository.save(running);
+
+        List<com.imin.iminapi.dto.publicapi.PublicCityItem> cities = publicEventService.listCities();
+        assertThat(cities).hasSize(1);
+        long feedTotal = feedBehindCityChip(cities.get(0).city()).total();
+        assertThat(feedTotal).as("premise: the running night is in the feed").isPositive();
+        assertThat(cities.get(0).eventCount()).isEqualTo(feedTotal);
+    }
+
+    @Test
+    void everyGenreChipOpensAFeedWithSomethingInIt() {
+        // The genre facet puts no number on the wire, so its promise is one bit wide —
+        // "there are Disco nights". Same defect, same fix: a genre nobody can reach is
+        // not offered.
+        Event techno = publishedLiveEvent();
+        techno.setGenre("techno");
+        eventRepository.save(techno);
+
+        Event disco = finishedEvent();
+        disco.setGenre("disco");
+        eventRepository.save(disco);
+
+        List<String> genres = publicEventService.listGenres();
+        assertThat(genres).as("fixtures must produce chips, or the loop below asserts nothing")
+                .isNotEmpty();
+        for (String genre : genres) {
+            assertThat(feedBehindGenreChip(genre).total())
+                    .as("genre chip \"%s\" must open a feed with nights in it", genre)
+                    .isPositive();
+        }
+        assertThat(feedBehindGenreChip("disco").total())
+                .as("premise: the finished genre's feed is empty")
+                .isZero();
+        assertThat(genres).doesNotContain("disco");
     }
 }

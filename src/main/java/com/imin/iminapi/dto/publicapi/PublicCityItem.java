@@ -16,7 +16,11 @@ package com.imin.iminapi.dto.publicapi;
  *
  * <p>{@code eventCount} is how many events the listing returns for this chip's own filter,
  * under the same eligibility predicate the feed uses — published, PUBLIC, not deleted, not
- * DRAFT, not CANCELLED. Both sides key off {@code venue_city_key}, so it is a real count off
- * the same rows and can never disagree with the page behind the chip.
+ * DRAFT, not CANCELLED — <b>and within the same time window</b>: upcoming, or running and not
+ * yet ended. That last clause is what makes the sentence above true; without it the count was
+ * every event the city ever hosted (Metz said 14 and opened 4) because no client ever asks for
+ * the past. Both sides key off {@code venue_city_key} and the same clock, so the number is the
+ * total of the widest feed this chip can open. A buyer who then narrows the window — "tonight",
+ * a date range — sees fewer, which is their filter, not a broken promise.
  */
 public record PublicCityItem(String city, String country, long eventCount) {}
