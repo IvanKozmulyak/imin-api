@@ -589,6 +589,54 @@ imin:
       # try again" several times over.
       capacity: 5
       window-minutes: 60
+    buyer-password-change:
+      # POST /buyer/me/password, keyed per buyer ACCOUNT id — not per IP.
+      #
+      # The endpoint verifies `currentPassword`, so it is a password oracle, and
+      # it shipped with neither a bucket nor an attempt counter: a wrong password
+      # just 403s, for ever, as fast as you can ask.
+      #
+      # Account-keyed because the secret being guessed belongs to the account.
+      # The attacker this defends against holds a session but not the password (a
+      # borrowed or stolen unlocked device), and they can change IP at will — so
+      # an IP key is the one an attacker can shed, while still being the one that
+      # punishes a family or an office behind one NAT. The endpoint is
+      # authenticated, so unlike the pre-auth buckets there is no blind spot: an
+      # account id always exists. Same reasoning already puts buyer-email-add and
+      # buyer-order-resend on the account id.
+      #
+      # Five per 15 minutes deliberately mirrors `buyer-login`, because it is the
+      # same act — proving a password. Someone who fumbles their password twice
+      # and gets it right on the third try spends 3 of 5 and never sees this.
+      # An attacker gets 20 guesses an hour, which is not a brute-force budget.
+      capacity: 5
+      window-minutes: 15
+    buyer-native-signin:
+      # POST /buyer/auth/google/native and /buyer/auth/apple/native — ONE bucket
+      # for both, keyed per client IP (forward-headers-strategy=framework makes
+      # getRemoteAddr the real client IP in prod; never the client-controllable
+      # X-Forwarded-For, which would make the limit decoration).
+      #
+      # Shared rather than split, following `wallet-pass` and `checkout`: two
+      # sibling endpoints, one act, one cost profile. Sharing is also the safer
+      # direction — two buckets would hand an attacker twice the budget for
+      # alternating providers.
+      #
+      # Per IP because there is nothing else pre-auth: the ID token is unverified
+      # at the point the bucket is consumed, and keying on it would be free for an
+      # attacker to vary. What is bounded is signature verification against the
+      # provider JWKS plus, on a first sign-in, account creation.
+      #
+      # 20 per 5 minutes is set for carrier-grade NAT, which is the real
+      # constraint on a mobile surface: a whole carrier can egress from very few
+      # addresses. Sign-in is a rare per-user event (sessions last 180 days), so
+      # even a large installed base behind one NAT produces a couple of sign-ins
+      # per 5 minutes — this leaves roughly an order of magnitude of headroom
+      # while capping a script at 240/hour instead of unbounded. Raise it if a
+      # carrier ever shows up in the 429s; being throttled here costs a retry,
+      # not an account.
+      capacity: 20
+      window-minutes: 5
   push:
     # Outbound push to the native fan app, via Expo's push service.
     # Dark by default: until the app ships there are no tokens to send to, and a
