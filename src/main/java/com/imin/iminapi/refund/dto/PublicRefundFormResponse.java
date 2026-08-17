@@ -15,11 +15,22 @@ import java.util.UUID;
  * re-requests a link while a request is pending would otherwise fill the form only to
  * be 409'd; with the reference in hand the FE can say "REQ-8K2M-26 is already with the
  * organizer" instead. The submit response is where a fresh reference comes from.
+ *
+ * <p>{@code nonRefundableTicketCount} is the number of tickets on the order that the
+ * eligibility filter left OUT of {@code tickets} — precisely
+ * {@code (all tickets on the order) - tickets.size()}. It exists so the buyer can be
+ * told why the list in front of them is shorter than the order they remember, and why
+ * {@code estimatedRefundMinor} is correspondingly smaller. It is a reporting field
+ * only: nothing downstream reads it, and it can never widen or narrow what is
+ * refundable. Because it is derived by subtraction from the very list it sits beside,
+ * it cannot drift out of agreement with that list — a banner that contradicted the
+ * rows under it would be worse than no banner. Zero on a fully refundable order.
  */
 public record PublicRefundFormResponse(
     UUID orderId,
     EventSummary event,
     List<TicketLine> tickets,
+    int nonRefundableTicketCount,
     long estimatedRefundMinor,
     String currency,
     List<String> reasons,

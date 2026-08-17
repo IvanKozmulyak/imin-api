@@ -219,6 +219,114 @@ class RefundRequestServiceTest {
             assertThat(resp.event().startsAt()).isEqualTo(Instant.parse("2026-07-15T18:00:00Z"));
             assertThat(resp.event().venueName()).isEqualTo("Funkhaus");
         }
+
+        // ---- nonRefundableTicketCount ----------------------------------------
+        // The buyer's amber "some of these can't be refunded" banner is driven by this
+        // number. It has to be exactly what the refundable-set filter dropped: if it
+        // disagreed with the ticket rows printed beside it, the banner would be worse
+        // than the silence it replaces.
+
+        private com.imin.iminapi.model.Ticket ticketInState(String state) {
+            com.imin.iminapi.model.Ticket t = new com.imin.iminapi.model.Ticket();
+            t.setId(UUID.randomUUID());
+            t.setOrderId(orderId);
+            t.setTierId(UUID.randomUUID());
+            t.setPriceMinor(2500);
+            t.setState(state);
+            return t;
+        }
+
+        private void stubOrderWith(List<com.imin.iminapi.model.Ticket> all,
+                                   Set<UUID> alreadyRefundedIds) {
+            when(tokens.findByTokenHash(anyString())).thenReturn(Optional.of(token));
+            when(orders.findById(orderId)).thenReturn(Optional.of(o));
+            when(tickets.findByOrderId(orderId)).thenReturn(all);
+            when(refundTickets.findRefundedTicketIds(any())).thenReturn(alreadyRefundedIds);
+            when(refundService.computeRefundAmountMinor(eq(o), org.mockito.ArgumentMatchers.anyList()))
+                .thenReturn(2000L);
+        }
+
+        @Test
+        void count_is_zero_when_the_whole_order_is_still_refundable() {
+            stubOrderWith(List.of(
+                ticketInState(com.imin.iminapi.model.Ticket.STATE_ISSUED),
+                ticketInState(com.imin.iminapi.model.Ticket.STATE_ISSUED),
+                ticketInState(com.imin.iminapi.model.Ticket.STATE_ISSUED)), Set.of());
+
+            var resp = service.lookupByToken("raw");
+
+            assertThat(resp.tickets()).hasSize(3);
+            assertThat(resp.nonRefundableTicketCount())
+                .as("nothing was excluded, so the banner must stay off")
+                .isZero();
+        }
+
+        @Test
+        void redeemed_tickets_are_counted_as_non_refundable() {
+            stubOrderWith(List.of(
+                ticketInState(com.imin.iminapi.model.Ticket.STATE_ISSUED),
+                ticketInState(com.imin.iminapi.model.Ticket.STATE_REDEEMED),
+                ticketInState(com.imin.iminapi.model.Ticket.STATE_REDEEMED)), Set.of());
+
+            var resp = service.lookupByToken("raw");
+
+            assertThat(resp.tickets()).hasSize(1);
+            assertThat(resp.nonRefundableTicketCount()).isEqualTo(2);
+        }
+
+        @Test
+        void already_refunded_tickets_are_counted_as_non_refundable() {
+            com.imin.iminapi.model.Ticket refunded =
+                ticketInState(com.imin.iminapi.model.Ticket.STATE_ISSUED);
+            stubOrderWith(List.of(
+                ticketInState(com.imin.iminapi.model.Ticket.STATE_ISSUED),
+                ticketInState(com.imin.iminapi.model.Ticket.STATE_ISSUED),
+                refunded), Set.of(refunded.getId()));
+
+            var resp = service.lookupByToken("raw");
+
+            assertThat(resp.tickets()).hasSize(2);
+            assertThat(resp.tickets().stream().map(t -> t.id()))
+                .doesNotContain(refunded.getId());
+            assertThat(resp.nonRefundableTicketCount()).isEqualTo(1);
+        }
+
+        @Test
+        void revoked_tickets_stay_refundable_and_are_not_counted() {
+            // Pins today's rule rather than an assumed one: `refundableTicketsFor`
+            // excludes redeemed and already-refunded tickets ONLY, so a revoked ticket
+            // is still offered for refund and must not be reported as excluded. If the
+            // eligibility rule ever grows a revoked check, this test is the one that
+            // should fail and force the count's meaning to be re-decided with it.
+            stubOrderWith(List.of(
+                ticketInState(com.imin.iminapi.model.Ticket.STATE_ISSUED),
+                ticketInState(com.imin.iminapi.model.Ticket.STATE_REVOKED)), Set.of());
+
+            var resp = service.lookupByToken("raw");
+
+            assertThat(resp.tickets()).hasSize(2);
+            assertThat(resp.nonRefundableTicketCount()).isZero();
+        }
+
+        @Test
+        void count_is_always_the_order_size_minus_the_list_beside_it() {
+            com.imin.iminapi.model.Ticket refunded =
+                ticketInState(com.imin.iminapi.model.Ticket.STATE_ISSUED);
+            List<com.imin.iminapi.model.Ticket> all = List.of(
+                ticketInState(com.imin.iminapi.model.Ticket.STATE_ISSUED),
+                ticketInState(com.imin.iminapi.model.Ticket.STATE_REDEEMED),
+                ticketInState(com.imin.iminapi.model.Ticket.STATE_REVOKED),
+                refunded);
+            stubOrderWith(all, Set.of(refunded.getId()));
+
+            var resp = service.lookupByToken("raw");
+
+            // The invariant the banner depends on, asserted against the response itself
+            // rather than against a re-statement of the filter.
+            assertThat(resp.nonRefundableTicketCount())
+                .isEqualTo(all.size() - resp.tickets().size());
+            assertThat(resp.nonRefundableTicketCount()).isEqualTo(2);
+        }
     }
 
     @org.junit.jupiter.api.Nested

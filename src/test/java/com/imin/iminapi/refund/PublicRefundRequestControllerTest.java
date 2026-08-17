@@ -117,7 +117,7 @@ class PublicRefundRequestControllerTest {
                 "Great Event", Instant.parse("2026-09-01T20:00:00Z"), "Europe/Berlin",
                 "Berghain", "EUR"),
             List.of(new PublicRefundFormResponse.TicketLine(UUID.randomUUID(), "GA", 2500)),
-            2500, "EUR", PublicRefundFormResponse.defaultReasons(), "REQ-8K2M-26"));
+            2, 2500, "EUR", PublicRefundFormResponse.defaultReasons(), "REQ-8K2M-26"));
 
         MvcResult result = mvc.perform(get("/api/v1/public/refund-requests/by-token/t1"))
             .andExpect(status().isOk())
@@ -126,8 +126,16 @@ class PublicRefundRequestControllerTest {
         JsonNode root = json.readTree(result.getResponse().getContentAsString());
         assertThat(fieldNames(root))
             .as("PublicRefundFormResponse keys leaked or missing")
-            .isEqualTo(Set.of("orderId", "event", "tickets", "estimatedRefundMinor",
-                "currency", "reasons", "openRequestReference"));
+            .isEqualTo(Set.of("orderId", "event", "tickets", "nonRefundableTicketCount",
+                "estimatedRefundMinor", "currency", "reasons", "openRequestReference"));
+        // The count must reach the wire as a number the FE can compare against zero.
+        // imin-public gates its amber banner on `nonRefundableTicketCount ?? 0`, so a
+        // field that serialises as absent or null is indistinguishable from "nothing
+        // excluded" and the banner stays invisible — which is the bug this fixes.
+        assertThat(root.get("nonRefundableTicketCount").isNumber())
+            .as("nonRefundableTicketCount must serialise as a JSON number")
+            .isTrue();
+        assertThat(root.get("nonRefundableTicketCount").asInt()).isEqualTo(2);
         assertThat(fieldNames(root.get("event")))
             .as("PublicRefundFormResponse.EventSummary keys leaked or missing")
             .isEqualTo(Set.of("name", "startsAt", "timezone", "venueName", "currency"));
