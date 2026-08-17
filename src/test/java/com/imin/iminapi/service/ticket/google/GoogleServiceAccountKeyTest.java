@@ -2,9 +2,15 @@ package com.imin.iminapi.service.ticket.google;
 
 import org.junit.jupiter.api.Test;
 
+import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
+import java.security.interfaces.RSAPrivateCrtKey;
+import java.security.interfaces.RSAPrivateKey;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -21,8 +27,20 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * rather than the key itself. {@code sun.security.rsa.RSAPrivateCrtKeyImpl} on
  * some JDKs printed the modulus and the private exponent from
  * {@code toString()}; on this one (17.0.20) it does not, but "the JDK currently
- * happens not to" is not a control. The assertions below hold regardless of
- * which JDK is underneath, because they hunt for the key's own bytes.
+ * happens not to" is not a control.
+ *
+ * <p><b>This paragraph used to over-claim, and an audit caught it.</b> It said
+ * the assertions "hold regardless of which JDK is underneath, because they hunt
+ * for the key's own bytes" — but they hunted only for the <em>base64</em> of
+ * those bytes, which is one encoding among several. Two consequences, both
+ * measured by mutation rather than argued: writing
+ * {@code "privateKey=" + privateKey} into {@link
+ * GoogleServiceAccountKey#toString()} left the whole suite <b>green</b> on this
+ * JDK, and a provider that printed the modulus would have gone unnoticed too.
+ * Closed from both ends — {@link #toStringRedactsThePrivateKey} now asserts the
+ * redaction marker itself, so any delegation to the key fails on every JDK, and
+ * {@link #assertNoKeyMaterial} now hunts the key's arithmetic components in
+ * decimal and hex as well as its base64.
  */
 class GoogleServiceAccountKeyTest {
 
@@ -119,6 +137,18 @@ class GoogleServiceAccountKeyTest {
      * {@code toString()} is the single most likely accidental leak: the object
      * ends up in a log format argument, an exception message, or a debugger
      * dump of a bean, and nobody notices because the field is called "key".
+     *
+     * <p><b>Two assertions, and the first one is the one that bites on this
+     * JDK.</b> The redaction marker is asserted literally, because the control
+     * being tested is "the key object is never rendered at all" — and that is
+     * not observable from the output on a JDK where {@code RSAPrivateKey}'s own
+     * {@code toString()} prints an identity hash. Written the obvious way, i.e.
+     * hunting only for the key's bytes, this test stays <b>green</b> against
+     * {@code "privateKey=" + privateKey} on JDK 17 — verified by mutation, and
+     * it is precisely the false confidence the class javadoc warns about ("the
+     * JDK currently happens not to" is not a control). {@link
+     * #assertNoKeyMaterial} then covers the other direction: a provider that
+     * <i>does</i> print the secret, in whatever base it chooses.
      */
     @Test
     void toStringRedactsThePrivateKey() {
@@ -126,6 +156,11 @@ class GoogleServiceAccountKeyTest {
         String rendered = GoogleServiceAccountKey.parse(keys.serviceAccountJson()).toString();
 
         assertThat(rendered).contains(keys.clientEmail());
+        assertThat(rendered)
+                .as("the key must be replaced, not merely rendered by a JDK that "
+                        + "happens to be discreet — this is the assertion that fails "
+                        + "when someone writes \"privateKey=\" + privateKey")
+                .contains("privateKey=<redacted>");
         assertNoKeyMaterial(rendered, keys);
     }
 
@@ -227,6 +262,28 @@ class GoogleServiceAccountKeyTest {
         assertThat(chainText(thrown)).doesNotContain("eyJ"); // no JWT segment
     }
 
+    /**
+     * <b>The secret, in every rendering — not just the one this repo happens to
+     * carry it in.</b>
+     *
+     * <p>The base64 needles below only find a leak that reproduces the PEM
+     * encoding. The stated threat is broader and is written on the class under
+     * test: a JDK or JCA provider whose {@code RSAPrivateKey.toString()} prints
+     * the modulus and the private exponent — which is what earlier JDKs'
+     * {@code sun.security.rsa.RSAPrivateCrtKeyImpl} did, and which nothing
+     * outside this repo's control promises not to do again. Such a leak carries
+     * the same secret in <em>decimal</em>, and a test that knows only the base64
+     * form reads it as clean. So the key's own arithmetic components are needles
+     * too, in decimal and in both hex cases, along with the DER as hex.
+     *
+     * <p>The modulus is not itself secret — it is in the public key — and it is
+     * here anyway, deliberately: it is the tripwire. Nothing legitimate renders
+     * it, so its appearance means a key object was printed, and whatever printed
+     * the modulus printed the private exponent on the next line.
+     *
+     * <p>No false positives to worry about: the shortest needle here is the hex
+     * of a 1024-bit prime — 256 characters of an integer minted seconds ago.
+     */
     private static void assertNoKeyMaterial(String text, GoogleTestKeys.Bundle keys) {
         String body = keys.privateKeyPemBody();
         assertThat(text)
@@ -237,6 +294,28 @@ class GoogleServiceAccountKeyTest {
                 .doesNotContain(body.substring(body.length() - 32))
                 .as("nor the PEM armour, which is only ever adjacent to key bytes")
                 .doesNotContain("PRIVATE KEY-----");
+
+        RSAPrivateKey k = keys.privateKey();
+        List<BigInteger> components = new ArrayList<>(
+                List.of(k.getModulus(), k.getPrivateExponent()));
+        if (k instanceof RSAPrivateCrtKey crt) {
+            // The CRT factors reconstruct the key on their own, so a rendering
+            // that omitted the private exponent would still be a total loss.
+            components.addAll(List.of(crt.getPrimeP(), crt.getPrimeQ(),
+                    crt.getPrimeExponentP(), crt.getPrimeExponentQ(), crt.getCrtCoefficient()));
+        }
+        for (BigInteger c : components) {
+            assertThat(text)
+                    .as("a key component must not appear in any base a provider might "
+                            + "print it in — this is the assertion that survives a JDK "
+                            + "whose RSAPrivateKey.toString() is not discreet")
+                    .doesNotContain(c.toString())
+                    .doesNotContain(c.toString(16))
+                    .doesNotContain(c.toString(16).toUpperCase(Locale.ROOT));
+        }
+        assertThat(text)
+                .as("nor the encoded form rendered as hex rather than base64")
+                .doesNotContain(HexFormat.of().formatHex(k.getEncoded()));
     }
 
     /** Message text of a throwable and every cause under it. */

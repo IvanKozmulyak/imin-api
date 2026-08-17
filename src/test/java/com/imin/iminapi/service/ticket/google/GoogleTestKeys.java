@@ -3,6 +3,7 @@ package com.imin.iminapi.service.ticket.google;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.security.interfaces.RSAPrivateKey;
 import java.security.interfaces.RSAPublicKey;
 import java.util.Base64;
 import java.util.UUID;
@@ -32,6 +33,13 @@ public final class GoogleTestKeys {
      * @param clientEmail        the {@code client_email} inside it — the {@code iss}
      *                           the signer must put on the JWT
      * @param publicKey          the matching public key, for verifying the signature
+     * @param privateKey         the key object itself, exposed <b>only</b> so a leak
+     *                           assertion can hunt for its arithmetic components. The
+     *                           PEM body below is one <em>encoding</em> of the secret;
+     *                           a JCA provider that prints a key renders the same
+     *                           secret in decimal or hex instead, and a test that only
+     *                           knows the base64 form cannot see that. See
+     *                           {@code GoogleServiceAccountKeyTest.assertNoKeyMaterial}.
      * @param privateKeyPemBody  the bare base64 body of the PKCS#8 private key, with
      *                           no PEM armour and no line breaks. Tests use it as the
      *                           needle when asserting that key material never reaches
@@ -40,6 +48,7 @@ public final class GoogleTestKeys {
     public record Bundle(String serviceAccountJson,
                          String clientEmail,
                          RSAPublicKey publicKey,
+                         RSAPrivateKey privateKey,
                          String privateKeyPemBody) {
 
         /** The same document, base64-encoded — the shape the env var carries. */
@@ -68,7 +77,8 @@ public final class GoogleTestKeys {
             String pem = "-----BEGIN PRIVATE KEY-----\n" + wrap(body) + "-----END PRIVATE KEY-----\n";
 
             String json = serviceAccountJson(clientEmail, pem);
-            return new Bundle(json, clientEmail, (RSAPublicKey) kp.getPublic(), body);
+            return new Bundle(json, clientEmail, (RSAPublicKey) kp.getPublic(),
+                    (RSAPrivateKey) kp.getPrivate(), body);
         } catch (Exception e) {
             throw new IllegalStateException("Could not generate a test service-account key", e);
         }

@@ -288,13 +288,31 @@ class GoogleWalletProvisionerTest {
         server.verify();
     }
 
-    // ── the gate ─────────────────────────────────────────────────────────────
+    // ── the closed-wallet property: 503, and no socket ───────────────────────
+    //
+    // These three are about the OUTCOME a closed wallet produces, in the wiring
+    // production actually uses. Two independent guards deliver it — the
+    // provisioner's config gate and GoogleWalletApiClient.accessToken()'s own
+    // no-credential check — and which one fires is not what is asserted here.
+    // So aDisabledWallet… and aConfiguredButUnparseableCredential… both survive
+    // the provisioner's gate being deleted, while anUnconfiguredWallet… does not
+    // (it reaches a null issuer id). The section after this one is where the gate
+    // itself is pinned. Said out loud because an audit found it and it is not
+    // visible from the names: a reader who assumes these cover the gate is wrong.
 
     /**
      * <b>Nothing reaches Google, and therefore nothing reaches a buyer, while the
-     * gate is closed.</b> Not "a call is made and its result discarded" — no HTTP
+     * wallet is off.</b> Not "a call is made and its result discarded" — no HTTP
      * request is prepared at all, which {@code server.verify()} proves because
      * the mock server has no expectations and fails on any request.
+     *
+     * <p><b>What this does not pin.</b> With {@code GOOGLE_WALLET_ENABLED=false}
+     * the client built from the same properties parses no credential, so
+     * {@code accessToken()} refuses with the same 503 before opening a socket.
+     * Delete the provisioner's gate and this test stays green. That is a true
+     * and desirable redundancy — the property is what a buyer experiences, and
+     * it holds twice over — but it is not evidence about the gate. See
+     * {@link #theProvisionersOwnGateRefusesEvenWhenTheClientCouldHaveCalled}.
      */
     @Test
     void aDisabledWalletMakesNoHttpCallAtAllAndRefusesWith503() {
@@ -320,19 +338,102 @@ class GoogleWalletProvisionerTest {
      * Enabled, issuer set, and a credential that will not parse. This is the
      * state {@code fullyConfigured()} alone calls open, and it is exactly the
      * Apple-side defect that produced a permanent 503 reported as "not
-     * configured" — so the client's own usability is checked too.
+     * configured".
+     *
+     * <p>Same caveat as above, and here it is sharper: this state closes both
+     * guards at once, because the client and the provisioner parse the same
+     * broken credential. Deleting {@code !api.isUsable()} from the provisioner's
+     * gate leaves this green. The half-gate is pinned by
+     * {@link #aCredentialThatWillNotParseIs503AndNotA500EvenInsideATransaction}.
      */
     @Test
     void aConfiguredButUnparseableCredentialMakesNoHttpCallEither() {
-        GoogleWalletProperties broken = new GoogleWalletProperties();
-        broken.setEnabled(true);
-        broken.setIssuerId(ISSUER);
-        broken.setServiceAccountJsonBase64("{\"client_email\":\"a@b.c\"}");
-        GoogleWalletProvisioner gated = provisionerFor(broken);
+        GoogleWalletProvisioner gated = provisionerFor(unparseableCredential());
 
         assertThat(refusal(() -> gated.provision(ticket(), event(), organization(), QR)).status())
                 .isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
         server.verify();
+    }
+
+    // ── the gate itself, one test per half ───────────────────────────────────
+
+    /**
+     * <b>{@code props.fullyConfigured()}, isolated from every other guard.</b>
+     *
+     * <p>The client here is staged with a credential that <em>does</em> parse, so
+     * its own no-credential check cannot fire. Production never pairs a disabled
+     * wallet with a usable client — the client is built from the same properties
+     * — and that is exactly why the pairing has to be built by hand: it is the
+     * only arrangement in which the provisioner's gate is the sole thing
+     * standing between this call and a socket.
+     *
+     * <p>Delete {@code !props.fullyConfigured()} and the call runs on to
+     * {@code accessToken()}, which now has a key, signs an assertion and posts it
+     * to Google's token endpoint — an unexpected request the mock server fails on.
+     * That is the red this test is worth, and it is the red the two tests above
+     * do not produce.
+     */
+    @Test
+    void theProvisionersOwnGateRefusesEvenWhenTheClientCouldHaveCalled() {
+        GoogleWalletProperties off = liveProperties();
+        off.setEnabled(false);
+
+        RestClient.Builder builder = RestClient.builder();
+        server = MockRestServiceServer.bindTo(builder).build();
+        GoogleWalletApiClient usable = new GoogleWalletApiClient(
+                GoogleServiceAccountKey.parseBase64(KEYS.serviceAccountJsonBase64()),
+                builder.build());
+        assertThat(usable.isUsable())
+                .as("the client's own guard must be open, or this tests the wrong thing")
+                .isTrue();
+        GoogleWalletProvisioner gated =
+                new GoogleWalletProvisioner(off, usable, new EmailProperties());
+
+        assertThat(refusal(() -> gated.provision(ticket(), event(), organization(), QR)).status())
+                .isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        server.verify();
+    }
+
+    /**
+     * <b>{@code !api.isUsable()}, isolated — via the one thing it orders itself
+     * in front of.</b>
+     *
+     * <p>For every call that reaches Google, this half of the gate is
+     * behaviourally redundant with {@code accessToken()}'s own check: both
+     * produce 503 and neither opens a socket, so no assertion on the outcome can
+     * tell them apart. What is <em>not</em> redundant is where it sits — the gate
+     * runs <b>before</b> {@code assertNoTransactionOpen()}, which throws
+     * {@link IllegalStateException} and would surface as a 500.
+     *
+     * <p>So: a deployment whose credential will not parse, called from inside a
+     * transaction, must still answer the buyer 503 and not 500. Delete
+     * {@code !api.isUsable()} and the transaction assertion fires first, the
+     * refusal stops being an {@code ApiException}, and this goes red. It is the
+     * only assertion in the file that distinguishes that half of the gate from
+     * nothing at all — which is itself the finding: the rest of its work is
+     * defence in depth, and that is worth knowing before someone "simplifies" it.
+     */
+    @Test
+    void aCredentialThatWillNotParseIs503AndNotA500EvenInsideATransaction() {
+        GoogleWalletProvisioner gated = provisionerFor(unparseableCredential());
+
+        TransactionSynchronizationManager.setActualTransactionActive(true);
+        try {
+            assertThat(refusal(() -> gated.provision(ticket(), event(), organization(), QR))
+                    .status()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+            server.verify();
+        } finally {
+            TransactionSynchronizationManager.setActualTransactionActive(false);
+        }
+    }
+
+    /** Enabled, issuer set, and a service-account value that cannot be parsed into a key. */
+    private static GoogleWalletProperties unparseableCredential() {
+        GoogleWalletProperties broken = new GoogleWalletProperties();
+        broken.setEnabled(true);
+        broken.setIssuerId(ISSUER);
+        broken.setServiceAccountJsonBase64("{\"client_email\":\"a@b.c\"}");
+        return broken;
     }
 
     // ── dead tickets ─────────────────────────────────────────────────────────

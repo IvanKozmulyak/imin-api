@@ -7,8 +7,15 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketRepository;
+import com.imin.iminapi.service.ticket.google.GoogleTestKeys;
+import com.imin.iminapi.service.ticket.google.GoogleWalletJwtSigner;
 import com.imin.iminapi.service.ticket.google.GoogleWalletPassService;
+import com.imin.iminapi.service.ticket.google.GoogleWalletProperties;
+import com.imin.iminapi.service.ticket.google.GoogleWalletProvisioner;
 import org.junit.jupiter.api.Test;
+
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -158,6 +165,81 @@ class WalletOffersTest {
     }
 
     /**
+     * THE GOOGLE HALF OF THE SAME RULE — and until an audit deleted
+     * {@code && signer.isUsable()} from {@code GoogleWalletPassService.isConfigured()}
+     * and watched all 2561 tests stay green, nothing pinned it.
+     *
+     * <p>The plan calls the two gates "the exact analogue" of one another
+     * (Task 8: {@code AppleWalletPassService.isConfigured()} "is now the exact
+     * analogue of the Google side's {@code props.fullyConfigured() &&
+     * signer.isUsable()}"). The symmetry was in the code and not in the tests:
+     * every other test in the repository that touches
+     * {@code GoogleWalletPassService.isConfigured()} mocks it, so the real
+     * conjunction was never evaluated anywhere.
+     *
+     * <p>What the missing half costs, concretely: a real service-account key
+     * that will not parse leaves {@code GOOGLE_WALLET_*} complete,
+     * {@code wallet.google.available} reporting {@code true}, a lit CTA on the
+     * buyer page and in the issuance email, and a 503 on the tap.
+     * {@code TicketWallets}'s own javadoc says the {@code available ⟺ url != null}
+     * biconditional exists precisely to stop a client rendering a button that
+     * cannot work.
+     *
+     * <p>Real properties, real signer, real parse — the difference between "set"
+     * and "loadable" is invisible to a string comparison, which is the whole
+     * point.
+     */
+    @Test
+    void aCompleteButUnloadableServiceAccountKeyIsNotAvailable() {
+        GoogleWalletProperties broken = new GoogleWalletProperties();
+        broken.setEnabled(true);
+        broken.setIssuerId("3388000000000000000");
+        // Valid base64 of a real JSON object that is not a key document: it has
+        // a client_email and no private_key. The Apple analogue is "Zm9v" —
+        // valid base64 that is not a p12.
+        broken.setServiceAccountJsonBase64(Base64.getEncoder().encodeToString(
+                "{\"client_email\":\"imin-wallet@imin-test.iam.gserviceaccount.com\"}"
+                        .getBytes(StandardCharsets.UTF_8)));
+        assertThat(broken.fullyConfigured())
+                .as("the config really is complete — otherwise this proves nothing")
+                .isTrue();
+        GoogleWalletJwtSigner signer = new GoogleWalletJwtSigner(broken);
+        assertThat(signer.unusableReason())
+                .as("and it really cannot sign")
+                .isPresent();
+
+        WalletOffers offers = new WalletOffers(
+                appleOff(), googleService(broken, signer), props(BASE));
+
+        assertThat(offers.forTicket(ticket("TKT_X", Ticket.STATE_ISSUED)).google().available())
+                .isFalse();
+    }
+
+    /**
+     * The positive control for the test above, and the reason it proves
+     * anything: the same wiring over a key that <em>does</em> load says yes, so
+     * the {@code false} next door is the credential and not some other closed
+     * gate. Mirrors {@code aCertificateThatLoadsIsAvailable} on the Apple side.
+     */
+    @Test
+    void aServiceAccountKeyThatLoadsIsAvailable() {
+        GoogleWalletProperties good = new GoogleWalletProperties();
+        good.setEnabled(true);
+        good.setIssuerId("3388000000000000000");
+        good.setServiceAccountJsonBase64(GoogleTestKeys.generate().serviceAccountJsonBase64());
+        GoogleWalletJwtSigner signer = new GoogleWalletJwtSigner(good);
+        assertThat(signer.isUsable())
+                .as("the key really does load — otherwise this proves nothing")
+                .isTrue();
+
+        WalletOffers offers = new WalletOffers(
+                appleOff(), googleService(good, signer), props(BASE));
+
+        assertThat(offers.forTicket(ticket("TKT_X", Ticket.STATE_ISSUED)).google().available())
+                .isTrue();
+    }
+
+    /**
      * A trailing slash on {@code IMIN_API_PUBLIC_BASE_URL} is a paste, not a
      * configuration error, and it must not produce {@code //api/v1/...} — which
      * some proxies normalise and some 404.
@@ -208,6 +290,28 @@ class WalletOffersTest {
         GoogleWalletPassService google = mock(GoogleWalletPassService.class);
         when(google.isConfigured()).thenReturn(false);
         return google;
+    }
+
+    private static AppleWalletPassService appleOff() {
+        AppleWalletPassService apple = mock(AppleWalletPassService.class);
+        when(apple.isConfigured()).thenReturn(false);
+        return apple;
+    }
+
+    /**
+     * The real Google service over the real signer, so {@code isConfigured()}
+     * evaluates the actual conjunction. Everything it would need to mint a save
+     * link is mocked and never touched — {@code WalletOffers} asks one boolean,
+     * opens no socket and reads no row.
+     */
+    private static GoogleWalletPassService googleService(GoogleWalletProperties props,
+                                                         GoogleWalletJwtSigner signer) {
+        TicketProperties tp = new TicketProperties();
+        tp.setSigningSecret("wallet-offers-test-signing-secret");
+        return new GoogleWalletPassService(props,
+                mock(GoogleWalletProvisioner.class), signer,
+                mock(TicketRepository.class), mock(EventRepository.class),
+                mock(OrganizationRepository.class), new QrPayloadSigner(tp));
     }
 
     private static TicketProperties props(String base) {
