@@ -36,9 +36,11 @@ public class MarketingEmailProperties {
      *
      * <p><b>Defaults to production, not localhost</b>, for the same reason
      * {@link #buyerSiteBaseUrl} does (2026-07-22): an unset env var must never
-     * put a {@code http://localhost:8080} link in a buyer's inbox. Note
+     * put a {@code http://localhost:8080} link in a buyer's inbox.
      * {@code imin.ticket.api-public-base-url} — the sibling used for emailed QR
-     * and pkpass links — still defaults to localhost and carries that risk.
+     * and pkpass links — reads the same {@code IMIN_API_PUBLIC_BASE_URL} and
+     * carried the localhost default until 2026-08-16; it now matches this one,
+     * so the shared env var can no longer mean two different things.
      */
     private String apiPublicBaseUrl = "https://api.imin.wtf";
 

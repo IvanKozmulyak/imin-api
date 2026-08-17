@@ -24,10 +24,21 @@ springdoc:
 server:
   port: ${SERVER_PORT:8085}
 
-# Buyer-site origin for campaign links (unsubscribe + tickets button) — localhost in dev,
-# prod-safe default (https://app.imin.wtf) in application.yaml.
-imin.marketing.unsubscribe-base-url: http://localhost:3000
+# Campaign-link origins. These were ONE property (imin.marketing.unsubscribe-base-url)
+# until 94f648e split them, because the unsubscribe link and the buyer-site links are
+# served by different hosts — and the old one pointed the opt-out at a page that never
+# existed. The dev file kept setting the dead name, so Spring bound nothing and dev
+# silently fell through to the PRODUCTION defaults: a local run could mail a real
+# unsubscribe link. Both names are set explicitly here for that reason.
+imin.marketing.buyer-site-base-url: http://localhost:3000
+imin.marketing.api-public-base-url: http://localhost:8085
 # Local-dev URL overrides (prod-safe defaults live in application.yaml)
 imin.stripe.public-return-url-base: http://localhost:3000
 imin.email.app-base-url: http://localhost:5173
 imin.email.buyer-site-base-url: http://localhost:3000
+# Emailed QR / pkpass links. This one is NEW here (2026-08-16): it used to ride
+# a http://localhost:8080 default in application.yaml, which was wrong twice over
+# — wrong in prod, where an unset IMIN_API_PUBLIC_BASE_URL mailed a link to the
+# recipient's own machine, and wrong here, because this app serves :8085. The
+# default is now production, so dev states the local origin explicitly.
+imin.ticket.api-public-base-url: http://localhost:8085

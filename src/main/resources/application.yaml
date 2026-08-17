@@ -198,8 +198,6 @@ imin:
     # reputation. In prod set IMIN_MARKETING_FROM_ADDRESS to a verified Resend sender.
     from-address: ${IMIN_MARKETING_FROM_ADDRESS:contact@imin.support}
     from-name: ${IMIN_MARKETING_FROM_NAME:Alex}
-    # Public host (imin-public) that serves the /optout confirmation page and hosts
-    # the RFC 8058 unsubscribe link. In prod: https://app.imin.wtf.
     # The buyer site root — the {{eventUrl}} fallback when a campaign has no
     # linked event. It does NOT build the unsubscribe link any more; that URL
     # was https://app.imin.wtf/optout?token=… and it 404'd in production,
@@ -268,7 +266,15 @@ imin:
     # QR / pkpass links the buyer's email client can fetch. Distinct from
     # imin.email.buyer-site-base-url (the buyer site, which serves the ticket
     # HTML page) and imin.email.app-base-url (the organizer dashboard).
-    api-public-base-url: ${IMIN_API_PUBLIC_BASE_URL:http://localhost:8080}
+    #
+    # SAME env var as imin.marketing.api-public-base-url above, and it now
+    # carries the SAME prod default. It used to default to http://localhost:8080:
+    # if IMIN_API_PUBLIC_BASE_URL is unset, every emailed QR and "Add to Apple
+    # Wallet" link points at the buyer's own machine — dead in exactly the way
+    # /optout was, and silently, because the email still renders. A default that
+    # is only correct on a laptop has no business standing behind a send. Local
+    # dev sets the localhost value explicitly in application-dev.yaml.
+    api-public-base-url: ${IMIN_API_PUBLIC_BASE_URL:https://api.imin.wtf}
   public:
     # Total remaining inventory (across enabled tiers) at or below which a
     # not-sold-out event is flagged lowStock on GET /api/v1/public/events,
