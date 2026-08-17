@@ -98,6 +98,41 @@ public class FreeCheckoutService {
                                  String buyerEmail, PromoCode appliedPromo, boolean adsConsent,
                                  boolean marketingOptIn, CheckoutAttribution attribution,
                                  String buyerLocale) {
+        return issueFreeOrder(event, tier, quantity, buyerEmail, appliedPromo, adsConsent,
+                marketingOptIn, attribution, buyerLocale, null);
+    }
+
+    /**
+     * @param idempotencyKey the caller's {@code Idempotency-Key} (already trimmed by
+     *                       {@code IdempotencyKey.normalize}), or null when they sent none.
+     *
+     * <h2>Why the INSERT is the claim, rather than a separate claim step</h2>
+     *
+     * <p>The native paid path claims its key on the reservation <i>before</i> it calls
+     * Stripe, because a blocking HTTP call sits between the hold and the answer and
+     * cannot be rolled back. Nothing sits between here: reserve, confirm, order and
+     * tickets are one transaction, and the answer a replay must return is the Order
+     * itself. So {@code uq_orders_idem} on the row we are already writing is the whole
+     * mechanism — and it is strictly stronger than a claim step, because a loser's
+     * seats go back by transaction rollback rather than by a compensating write that
+     * could itself fail.
+     *
+     * <p><b>There is deliberately no explicit flush.</b> {@code Order} uses
+     * {@code GenerationType.UUID}, so Hibernate defers the INSERT to commit and the
+     * constraint fires there rather than at {@code save()}. That was originally
+     * assumed to be a problem worth flushing away; it is not. Spring's
+     * {@code HibernateJpaDialect} translates a commit-time
+     * {@code ConstraintViolationException} into the same
+     * {@code DataIntegrityViolationException} a flush would have produced, so the
+     * caller's race handling sees exactly the same exception either way — verified by
+     * deleting the flush and watching every test stay green, which is the only reason
+     * it is not here.
+     */
+    @Transactional
+    public Order issueFreeOrder(Event event, TicketTier tier, int quantity,
+                                 String buyerEmail, PromoCode appliedPromo, boolean adsConsent,
+                                 boolean marketingOptIn, CheckoutAttribution attribution,
+                                 String buyerLocale, String idempotencyKey) {
         // Reserve + confirm atomically in the same transaction. expires_at is a
         // short fallback that the sweeper would only see if the surrounding
         // transaction crashed between reserve() and confirmSold() — both calls
@@ -111,7 +146,12 @@ public class FreeCheckoutService {
         order.setToken(randomToken());
         order.setEventId(event.getId());
         order.setOrgId(event.getOrgId());
-        order.setEmail(buyerEmail.trim().toLowerCase());
+        // EmailNormalizer, not an inline trim().toLowerCase(): the address is half
+        // of the idempotency key's namespace, so the value stored here and the value
+        // findByIdempotencyKey looks up with must come from the same function. (It is
+        // also the Locale.ROOT one — a default-locale toLowerCase() maps 'I' to 'ı'
+        // under a Turkish JVM default and would silently change stored addresses.)
+        order.setEmail(normalizeEmail(buyerEmail));
         order.setTotalMinor(0L);
         order.setCurrency(event.getCurrency());
         order.setPaymentMethod("free");
@@ -122,6 +162,7 @@ public class FreeCheckoutService {
         if (appliedPromo != null) {
             order.setPromoCodeId(appliedPromo.getId());
         }
+        order.setIdempotencyKey(idempotencyKey);
         orders.save(order);
 
         // Increment promo usage inline. The paid path does this on the
@@ -192,6 +233,39 @@ public class FreeCheckoutService {
     /** Convenience used by callers + the controller path. */
     public List<Ticket> findOrderTickets(UUID orderId) {
         return tickets.findByOrderIdOrderByCreatedAtAsc(orderId);
+    }
+
+    /**
+     * The order a previous free checkout with this {@code Idempotency-Key} already
+     * produced for this buyer on this event, or empty when there is none.
+     *
+     * <p>Used twice by {@code StripeCheckoutService}: once optimistically, before the
+     * request is priced, so a replay never re-prices and never fails because the tier
+     * sold out between the buyer's two taps; and once after {@code uq_orders_idem}
+     * rejects a concurrent duplicate, to resolve the race to the winning row.
+     *
+     * <p>Empty for a null/blank key or a null/blank email rather than matching
+     * broadly — a NULL key column matches nothing under the index either, so
+     * answering "here is some order" for an absent key would hand back a row the
+     * constraint never made unique.
+     */
+    public java.util.Optional<Order> findByIdempotencyKey(UUID eventId, String buyerEmail, String idempotencyKey) {
+        if (eventId == null || idempotencyKey == null || idempotencyKey.isBlank()) {
+            return java.util.Optional.empty();
+        }
+        String email = normalizeEmail(buyerEmail);
+        if (email == null || email.isEmpty()) return java.util.Optional.empty();
+        return orders.findByEventIdAndEmailAndIdempotencyKey(eventId, email, idempotencyKey);
+    }
+
+    /**
+     * The one function that decides what {@code orders.email} holds on this path.
+     * The write and the idempotency lookup both go through it, so they cannot
+     * disagree about which row a key belongs to. Same normalization
+     * {@code Order.onWrite} uses to derive {@code email_normalized} (V86).
+     */
+    private static String normalizeEmail(String raw) {
+        return com.imin.iminapi.audience.service.EmailNormalizer.normalize(raw);
     }
 
     private static String randomToken() {

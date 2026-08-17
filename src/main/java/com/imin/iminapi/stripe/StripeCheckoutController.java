@@ -32,6 +32,17 @@ public class StripeCheckoutController {
     @PostMapping("/{eventId}/checkout")
     public CheckoutResponse create(@PathVariable UUID eventId,
                                     @RequestBody CheckoutRequest body,
+                                    // Optional, and optional on purpose. imin-public sends no
+                                    // such header today (lib/api/public-events.ts) and must keep
+                                    // working unchanged, so an absent key means "unkeyed", not
+                                    // "rejected" — and generating one server-side would be worse
+                                    // than nothing, since a fresh key per request can never match
+                                    // a retry. When a client does send one, a repeated free
+                                    // checkout returns the SAME order instead of issuing a second
+                                    // set of tickets against a real capacity. Same header name as
+                                    // the sibling /payment-intent endpoint.
+                                    @RequestHeader(name = "Idempotency-Key", required = false)
+                                    String idempotencyKey,
                                     HttpServletRequest http) {
         // Throttle the unauthenticated checkout per client IP before doing any Stripe work, so a
         // loop can't mint unbounded Coupons/Sessions or lock real inventory for 30-min windows.
@@ -54,7 +65,7 @@ public class StripeCheckoutController {
                 body.utmSource(), body.utmMedium(), body.utmCampaign(), body.anonId());
         StripeCheckoutService.CheckoutResult result = checkout.createCheckout(eventId, body.tierId(), quantity,
                 promoCode, body.expectedPriceMinor(), body.email(), adsConsent, marketingOptIn,
-                attribution, body.locale());
+                attribution, body.locale(), idempotencyKey);
         return new CheckoutResponse(result.url(), result.kind(), result.sessionId(), result.orderToken());
     }
 

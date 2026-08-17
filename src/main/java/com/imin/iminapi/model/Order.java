@@ -176,6 +176,23 @@ public class Order {
     @Column(name = "reminder_3h_at")
     private Instant reminder3hAt;
 
+    /**
+     * The caller's {@code Idempotency-Key} on the free-checkout path (V94), or
+     * null when they sent none — which is every web buyer today.
+     *
+     * <p>Unique per {@code (event_id, email, idempotency_key)}, NOT globally.
+     * The key is minted by an untrusted client and a replay hands back
+     * {@link #token}, which is the bearer credential for the buyer's tickets; a
+     * global namespace would let anyone squat guessable keys and be handed a
+     * stranger's order. See {@code V94__free_checkout_idempotency.sql}.
+     *
+     * <p>Only the free branch writes it. The paid branch's answer is a Stripe
+     * object, not an Order, and its own idempotency lives on
+     * {@code ticket_reservations.idempotency_key} (V93).
+     */
+    @Column(name = "idempotency_key", length = 128)
+    private String idempotencyKey;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Times.nowMicros();
 
