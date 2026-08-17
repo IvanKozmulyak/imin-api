@@ -8,6 +8,7 @@ import com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository;
 import com.imin.iminapi.buyer.security.BuyerPrincipal;
 import com.imin.iminapi.buyer.security.CurrentBuyer;
 import com.imin.iminapi.buyer.service.BuyerProfileService;
+import com.imin.iminapi.security.RateLimiter;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
@@ -37,10 +38,14 @@ public class BuyerProfileController {
 
     private final BuyerProfileService service;
     private final BuyerAccountEmailRepository emails;
+    private final RateLimiter rateLimiter;
 
-    public BuyerProfileController(BuyerProfileService service, BuyerAccountEmailRepository emails) {
+    public BuyerProfileController(BuyerProfileService service,
+                                  BuyerAccountEmailRepository emails,
+                                  RateLimiter rateLimiter) {
         this.service = service;
         this.emails = emails;
+        this.rateLimiter = rateLimiter;
     }
 
     /**
@@ -106,9 +111,25 @@ public class BuyerProfileController {
             Boolean productNews,
             @Size(max = 2000) String productNewsProof) {}
 
+    /**
+     * Changing a password means proving the current one, so this endpoint is a
+     * password oracle. It shipped without a bucket and without an attempt
+     * counter: {@code BuyerProfileService.changePassword} answers 403 to a wrong
+     * {@code currentPassword} and records nothing, so guesses were free and
+     * unlimited for anyone holding a session.
+     *
+     * <p>Metered BEFORE the service call — the whole point is that failed
+     * attempts are what consume the budget.
+     *
+     * <p>Keyed per account, not per IP: the secret belongs to the account, and
+     * the attacker in scope (a borrowed or stolen unlocked device) can move
+     * between IPs at will, so an IP key is the one they can shed and the one that
+     * would punish a household behind a single NAT.
+     */
     @PostMapping("/api/v1/buyer/me/password")
     public ResponseEntity<Void> changePassword(@CurrentBuyer BuyerPrincipal buyer,
                                                @Valid @RequestBody PasswordChangeRequest body) {
+        rateLimiter.consume("buyer-password-change", "acct:" + buyer.accountId());
         service.changePassword(buyer.accountId(), buyer.sessionId(),
                 body.currentPassword(), body.newPassword());
         return ResponseEntity.noContent().header(HttpHeaders.CACHE_CONTROL, NO_STORE).build();

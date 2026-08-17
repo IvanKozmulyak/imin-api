@@ -77,6 +77,58 @@ class RateLimitBucketCoverageTest {
                 .isEmpty();
     }
 
+    /**
+     * The YAML check above is necessary but NOT sufficient, and the gap is the
+     * one that actually 500s.
+     *
+     * <p>{@code RateLimitConfig} throws on a name missing from its
+     * {@code configs} map — not on a name missing from application.yaml. A bucket
+     * with a YAML block but no {@code configs.put(...)} therefore satisfies
+     * {@link #everyBucketNameUsedInMainCodeIsConfigured} completely and still
+     * fails every single request to its endpoint with a 500. Registering a
+     * bucket takes three coordinated edits (YAML block, {@code @Value} pair,
+     * {@code configs.put}); the previous test covered one of them.
+     *
+     * <p>Read from source for the same reason the other test is: the production
+     * bean is {@code @Profile("!test")} and is never instantiated here, so there
+     * is no live map to inspect.
+     */
+    @Test
+    void everyBucketNameUsedInMainCodeIsRegisteredInRateLimitConfig() throws IOException {
+        Path main = Path.of("src/main/java");
+        String rateLimitConfig = Files.readString(
+                Path.of("src/main/java/com/imin/iminapi/config/RateLimitConfig.java"),
+                StandardCharsets.UTF_8);
+
+        Set<String> used = new TreeSet<>();
+        try (Stream<Path> files = Files.walk(main)) {
+            List<Path> javaFiles = files.filter(p -> p.toString().endsWith(".java")).toList();
+            for (Path file : javaFiles) {
+                Matcher m = CONSUME.matcher(Files.readString(file, StandardCharsets.UTF_8));
+                while (m.find()) used.add(m.group(1));
+            }
+        }
+
+        assertThat(used)
+                .as("the regex found no rate-limited call sites at all — it has probably rotted")
+                .isNotEmpty();
+
+        Set<String> unregistered = new TreeSet<>();
+        for (String bucket : used) {
+            if (!rateLimitConfig.contains("configs.put(\"" + bucket + "\"")) unregistered.add(bucket);
+        }
+
+        assertThat(unregistered)
+                .as("""
+                    These bucket names are passed to RateLimiter.consume() but are never
+                    put into RateLimitConfig's `configs` map. That map is what the limiter
+                    lambda looks the name up in, and a miss throws IllegalArgumentException
+                    which the global handler renders as a 500 — so each of these is a
+                    guaranteed server error on every call to its endpoint, even if the
+                    application.yaml block exists. Add the configs.put() call.""")
+                .isEmpty();
+    }
+
     /** The reverse direction is deliberately NOT asserted: an unused bucket is dead config, not a 500. */
     @Test
     void theKnownBucketsIncludeTheBuyerNamespace() throws IOException {

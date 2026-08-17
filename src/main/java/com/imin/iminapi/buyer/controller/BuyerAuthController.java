@@ -208,6 +208,14 @@ public class BuyerAuthController {
     public ResponseEntity<BuyerMeResponse> googleNative(
             @Valid @RequestBody BuyerAuthRequests.NativeIdToken req,
             HttpServletRequest http) {
+        // Metered first, before the config gate and before verification — the
+        // same order as the wallet endpoints, so a loop cannot spin JWKS-backed
+        // signature checks (or probe a disabled provider) for free. Keyed on
+        // getRemoteAddr(), proxy-resolved via forward-headers-strategy, never the
+        // client-controllable X-Forwarded-For. Shares one bucket with the Apple
+        // lane below on purpose: see RateLimitConfig.
+        rateLimiter.consume("buyer-native-signin", "ip:" + http.getRemoteAddr());
+
         // NOT requireGoogleEnabled(): that gate is isBuyerEnabled(), which
         // requires clientId + clientSecret + buyerRedirectUri. The native lane
         // has no redirect URI and performs no code exchange, so it needs no
@@ -244,6 +252,9 @@ public class BuyerAuthController {
     public ResponseEntity<BuyerMeResponse> appleNative(
             @Valid @RequestBody BuyerAuthRequests.NativeIdToken req,
             HttpServletRequest http) {
+        // Same bucket and same ordering as the Google lane above.
+        rateLimiter.consume("buyer-native-signin", "ip:" + http.getRemoteAddr());
+
         if (!appleIdentities.enabled()) {
             throw new ApiException(HttpStatus.NOT_FOUND, ErrorCode.OAUTH_PROVIDER_DISABLED,
                     "apple sign-in is not configured for buyers");

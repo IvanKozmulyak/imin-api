@@ -85,6 +85,14 @@ public class RateLimitConfig {
     private int buyerOrderResendCapacity;
     @Value("${imin.ratelimit.buyer-order-resend.window-minutes}")
     private int buyerOrderResendWindow;
+    @Value("${imin.ratelimit.buyer-password-change.capacity}")
+    private int buyerPasswordChangeCapacity;
+    @Value("${imin.ratelimit.buyer-password-change.window-minutes}")
+    private int buyerPasswordChangeWindow;
+    @Value("${imin.ratelimit.buyer-native-signin.capacity}")
+    private int buyerNativeSignInCapacity;
+    @Value("${imin.ratelimit.buyer-native-signin.window-minutes}")
+    private int buyerNativeSignInWindow;
 
     @Bean
     public RedisClient redisClient(@Value("${spring.data.redis.url}") String url) {
@@ -187,6 +195,25 @@ public class RateLimitConfig {
         // which is exactly how this one was nearly shipped.
         configs.put("buyer-order-resend", BucketConfiguration.builder()
                 .addLimit(Bandwidth.simple(buyerOrderResendCapacity, Duration.ofMinutes(buyerOrderResendWindow)))
+                .build());
+        // Password CHANGE, keyed per buyer account id. Distinct from
+        // buyer-password-reset, which is the unauthenticated forgot-password mail:
+        // this one sits behind a session and verifies the CURRENT password, so it
+        // is an oracle, and it shipped with no bucket and no attempt counter at
+        // all. Account-keyed because the secret belongs to the account and the
+        // attacker (holding a session, not the password) can change IP freely.
+        configs.put("buyer-password-change", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(buyerPasswordChangeCapacity,
+                        Duration.ofMinutes(buyerPasswordChangeWindow)))
+                .build());
+        // Native app sign-in (Google AND Apple ID-token lanes), keyed per client
+        // IP — the only key that exists before the token is verified. One bucket
+        // for both providers, like wallet-pass: same act, same cost, and two
+        // buckets would just hand an attacker double the budget for alternating
+        // between them. Sized for carrier NAT; see application.yaml.
+        configs.put("buyer-native-signin", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(buyerNativeSignInCapacity,
+                        Duration.ofMinutes(buyerNativeSignInWindow)))
                 .build());
 
         return (bucketName, key) -> {
