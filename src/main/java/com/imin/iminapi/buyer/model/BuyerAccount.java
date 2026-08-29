@@ -77,6 +77,14 @@ public class BuyerAccount {
     private java.time.LocalDate dateOfBirth;
 
     /**
+     * Optional (V94), and nothing reads it yet — see the migration. Not to be
+     * confused with {@code PublicRefundRequestCreate.phone}, which belongs to
+     * one refund request and not to the account.
+     */
+    @Column(name = "phone", length = 32)
+    private String phone;
+
+    /**
      * When this buyer accepted the terms and privacy policy, and which version
      * (V91). Null on accounts created before the finish-registration step
      * existed — absence means "never recorded", not "declined", and the two

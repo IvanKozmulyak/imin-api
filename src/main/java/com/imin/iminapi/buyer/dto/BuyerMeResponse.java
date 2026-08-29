@@ -25,6 +25,8 @@ public record BuyerMeResponse(
         String firstName,
         String lastName,
         java.time.LocalDate dateOfBirth,
+        /** Optional (V94). Account-level, unlike the refund form's own field. */
+        String phone,
         String city,
         String locale,
         String status,
@@ -73,6 +75,7 @@ public record BuyerMeResponse(
                 account.getFirstName(),
                 account.getLastName(),
                 account.getDateOfBirth(),
+                account.getPhone(),
                 account.getCity(),
                 account.getLocale(),
                 account.getStatus(),
@@ -86,7 +89,7 @@ public record BuyerMeResponse(
     /** The same projection carrying the raw session token. Native sign-ins only. */
     public BuyerMeResponse withSessionToken(String token) {
         return new BuyerMeResponse(id, displayName, firstName, lastName, dateOfBirth,
-                city, locale, status, termsAcceptedAt, deleteAt, createdAt, emails, token);
+                phone, city, locale, status, termsAcceptedAt, deleteAt, createdAt, emails, token);
     }
 
     /**

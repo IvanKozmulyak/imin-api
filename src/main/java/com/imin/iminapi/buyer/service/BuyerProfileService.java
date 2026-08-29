@@ -36,6 +36,7 @@ public class BuyerProfileService {
 
     private static final int DISPLAY_NAME_MAX = 255;   // column widths, V83
     private static final int CITY_MAX = 128;
+    private static final int PHONE_MAX = 32;           // column width, V94
 
     private final BuyerAccountRepository accounts;
     private final BuyerNotificationPreferenceRepository preferences;
@@ -83,6 +84,12 @@ public class BuyerProfileService {
         if ((patch.containsKey("firstName") || patch.containsKey("lastName"))
                 && !patch.containsKey("displayName")) {
             account.setDisplayName(joinName(account.getFirstName(), account.getLastName()));
+        }
+        if (patch.containsKey("phone")) {
+            // Trimmed and length-capped, never format-checked: see V94. A CHECK
+            // that rejects a legitimate French mobile written the way a French
+            // buyer writes it is worse than a column that stores what they typed.
+            account.setPhone(text(patch.get("phone"), "phone", PHONE_MAX));
         }
         if (patch.containsKey("city")) {
             account.setCity(text(patch.get("city"), "city", CITY_MAX));

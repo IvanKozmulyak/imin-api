@@ -168,6 +168,36 @@ class BuyerProfileTest {
     }
 
     @Test
+    void aPhoneRoundTripsAndClears() throws Exception {
+        patchMe("{\"phone\":\"+33 6 12 34 56 78\"}")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.phone").value("+33 6 12 34 56 78"));
+
+        // Absent leaves it alone; an explicit null clears it. Same contract as
+        // every other optional field on this endpoint.
+        patchMe("{\"city\":\"Metz\"}")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.phone").value("+33 6 12 34 56 78"));
+        patchMe("{\"phone\":null}")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.phone").doesNotExist());
+    }
+
+    /**
+     * NOT FORMAT-CHECKED, ON PURPOSE (V94). Four countries, no country picker
+     * on the field, and a rule that rejects a legitimate French mobile written
+     * the way a French buyer writes it is worse than storing what they typed.
+     * Only the column width is enforced.
+     */
+    @Test
+    void aPhoneIsLengthCappedButNotFormatChecked() throws Exception {
+        patchMe("{\"phone\":\"06 12 34 56 78\"}").andExpect(status().isOk());
+        patchMe("{\"phone\":\"" + "9".repeat(33) + "\"}")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_REQUEST"));
+    }
+
+    @Test
     void patchCannotReachStatusOrDeleteAt() throws Exception {
         patchMe("{\"status\":\"delete_pending\",\"deleteAt\":\"2030-01-01T00:00:00Z\"}")
                 .andExpect(status().isOk())
