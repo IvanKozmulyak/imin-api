@@ -1,0 +1,27 @@
+-- V94__buyer_phone.sql
+-- An optional phone number on the buyer account.
+--
+-- WHY IT DID NOT EXIST. `phone` was already a word in this codebase, on
+-- `PublicRefundRequestCreate` — a field the buyer types INTO ONE REFUND FORM so
+-- support can call them back about that request. It was never on the account,
+-- and the mobile app's account screen could not offer the field without
+-- inventing one. This is the account-level column that makes it real.
+--
+-- NULLABLE, AND NOTHING READS IT YET. Same posture as `date_of_birth` in V90:
+-- collected because the operator asked for it, optional on the screen, and
+-- under data minimisation that is the most that can be justified until
+-- something uses it. The moment something does — an SMS reminder, a door
+-- contact — that consumer should be named here. If nothing ever does, drop the
+-- column rather than leaving it to age.
+--
+-- NO FORMAT CONSTRAINT, ON PURPOSE. E.164 is the only shape worth validating
+-- and this app collects numbers from four countries with no country picker on
+-- the field; a CHECK that rejects a legitimate French mobile written the way a
+-- French buyer writes it is worse than a column that stores what they typed.
+-- The application trims and length-caps it (`BuyerProfileService`). 32 matches
+-- the width the refund form already accepts, so the two agree.
+--
+-- ERASURE NEEDS NO NEW CODE: this is a column on `buyer_accounts`, the same row
+-- that carries `first_name` and `date_of_birth`, so whatever erases those
+-- erases this.
+ALTER TABLE buyer_accounts ADD COLUMN phone VARCHAR(32) NULL;
