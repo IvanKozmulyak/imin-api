@@ -1,4 +1,4 @@
--- V94__buyer_phone.sql
+-- V95__buyer_phone.sql
 -- An optional phone number on the buyer account.
 --
 -- WHY IT DID NOT EXIST. `phone` was already a word in this codebase, on
