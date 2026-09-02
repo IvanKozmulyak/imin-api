@@ -77,10 +77,6 @@ public class RateLimitConfig {
     private int buyerVerificationResendCapacity;
     @Value("${imin.ratelimit.buyer-verification-resend.window-minutes}")
     private int buyerVerificationResendWindow;
-    @Value("${imin.ratelimit.buyer-email-add.capacity}")
-    private int buyerEmailAddCapacity;
-    @Value("${imin.ratelimit.buyer-email-add.window-minutes}")
-    private int buyerEmailAddWindow;
     @Value("${imin.ratelimit.buyer-order-resend.capacity}")
     private int buyerOrderResendCapacity;
     @Value("${imin.ratelimit.buyer-order-resend.window-minutes}")
@@ -179,11 +175,6 @@ public class RateLimitConfig {
         configs.put("buyer-verification-resend", BucketConfiguration.builder()
                 .addLimit(Bandwidth.simple(buyerVerificationResendCapacity,
                         Duration.ofMinutes(buyerVerificationResendWindow)))
-                .build());
-        // Add-an-address, keyed per buyer account id. Consumed by R1.3's
-        // POST /buyer/emails; the bucket ships here so all five arrive together.
-        configs.put("buyer-email-add", BucketConfiguration.builder()
-                .addLimit(Bandwidth.simple(buyerEmailAddCapacity, Duration.ofMinutes(buyerEmailAddWindow)))
                 .build());
         // Re-send my tickets, keyed per buyer account id. Consumed by
         // POST /buyer/orders/{token}/resend.

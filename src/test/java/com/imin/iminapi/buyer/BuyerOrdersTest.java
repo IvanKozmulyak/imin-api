@@ -52,6 +52,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import com.imin.iminapi.buyer.model.BuyerAccountEmail;
 
 /**
  * {@code GET /api/v1/buyer/orders} — the cross-organizer ticket list (R1.3).
@@ -97,8 +98,9 @@ class BuyerOrdersTest {
     // ── The security boundary ──────────────────────────────────────────────
 
     /**
-     * THE TEST THIS SLICE EXISTS FOR. Between {@code POST /buyer/emails} and the
-     * redeemed code the row is a claim anyone can make about any address. If it
+     * THE TEST THIS SLICE EXISTS FOR. An unverified row is a claim anyone could
+     * once make about any address — the add endpoint is gone, but legacy rows
+     * and the guest-order merge still create them. If such a row
      * ever grants read access, the neutral "check your inbox" response becomes a
      * theft primitive rather than a privacy measure.
      */
@@ -108,7 +110,7 @@ class BuyerOrdersTest {
         Event event = event("Unverified Probe");
         orderWithTickets(event, stranger, Instant.parse("2026-07-01T10:00:00Z"), "issued");
 
-        addAddress(stranger).andExpect(status().isNoContent());
+        seedAddress(stranger, false);
 
         assertThat(rowFor(stranger).isVerified()).isFalse();
         listOrders().andExpect(status().isOk())
@@ -121,35 +123,27 @@ class BuyerOrdersTest {
         Event event = event("Join On Verify");
         Order theirs = orderWithTickets(event, second, Instant.parse("2026-07-02T10:00:00Z"), "issued");
 
-        addAddress(second).andExpect(status().isNoContent());
+        BuyerAccountEmail row = seedAddress(second, false);
         listOrders().andExpect(jsonPath("$.items.length()").value(0));
 
-        verifyAddress(second, codeSentTo(second)).andExpect(status().isOk());
+        row.markVerified(Instant.now());
+        emails.save(row);
 
         listOrders().andExpect(status().isOk())
                 .andExpect(jsonPath("$.items.length()").value(1))
                 .andExpect(jsonPath("$.items[0].orderToken").value(theirs.getToken()));
     }
 
-    @Test
-    void removing_a_verified_address_takes_its_orders_back_out_of_the_list() throws Exception {
-        String second = address();
-        Event event = event("Removed Address");
-        orderWithTickets(event, second, Instant.parse("2026-07-03T10:00:00Z"), "issued");
-        addAddress(second).andExpect(status().isNoContent());
-        verifyAddress(second, codeSentTo(second)).andExpect(status().isOk());
-        listOrders().andExpect(jsonPath("$.items.length()").value(1));
-
-        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
-                        .delete(java.net.URI.create("/api/v1/buyer/emails/"
-                                + java.net.URLEncoder.encode(second, java.nio.charset.StandardCharsets.UTF_8)
-                                        .replace("+", "%2B")))
-                        .header(HttpHeaders.ORIGIN, ORIGIN)
-                        .cookie(cookie(cookie)))
-                .andExpect(status().isNoContent());
-
-        listOrders().andExpect(jsonPath("$.items.length()").value(0));
-    }
+    /*
+     * `removing_a_verified_address_takes_its_orders_back_out_of_the_list` was
+     * here. It drove `DELETE /buyer/emails/{email}`, which no longer exists —
+     * an account has one address and nothing to remove — so the case went with
+     * the endpoint rather than being rewritten against the repository. The rule
+     * it protected is still covered from the other side by
+     * `an_unverified_address_returns_no_orders` and
+     * `verifying_the_address_is_what_joins_its_orders`: the join follows
+     * `verified`, whatever writes it.
+     */
 
     @Test
     void one_buyer_never_sees_another_buyers_orders() throws Exception {
@@ -251,8 +245,7 @@ class BuyerOrdersTest {
         orderWithTickets(event, primary, Instant.parse("2026-05-02T10:00:00Z"), "issued");
         orderWithTickets(event, second, Instant.parse("2026-05-03T10:00:00Z"), "issued");
 
-        addAddress(second).andExpect(status().isNoContent());
-        verifyAddress(second, codeSentTo(second)).andExpect(status().isOk());
+        seedAddress(second, true);
 
         listOrders().andExpect(status().isOk())
                 .andExpect(jsonPath("$.items.length()").value(2));
@@ -405,20 +398,28 @@ class BuyerOrdersTest {
         return mvc.perform(get("/api/v1/buyer/orders" + query).cookie(cookie(cookie)));
     }
 
-    private ResultActions addAddress(String to) throws Exception {
-        return mvc.perform(post("/api/v1/buyer/emails")
-                .header(HttpHeaders.ORIGIN, ORIGIN)
-                .cookie(cookie(cookie))
-                .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"email\":\"" + to + "\"}"));
+    /**
+     * A second VERIFIED address on the signed-in account, seeded through the
+     * repository.
+     *
+     * ⚠️ IT USED TO GO THROUGH `POST /buyer/emails` + `/verify`. Those
+     * endpoints are gone — an account has one address now — but the BEHAVIOUR
+     * the cases below assert is not: the orders join is on every verified
+     * address, and the erasure notice still fans out to all of them. Legacy
+     * accounts really do carry several rows, so seeding directly is the honest
+     * way to keep testing what the backend still does rather than deleting the
+     * coverage along with the endpoint.
+     */
+    private UUID accountId() {
+        return rowFor(primary).getBuyerAccountId();
     }
 
-    private ResultActions verifyAddress(String to, String code) throws Exception {
-        return mvc.perform(post("/api/v1/buyer/emails/verify")
-                .header(HttpHeaders.ORIGIN, ORIGIN)
-                .cookie(cookie(cookie))
-                .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"email\":\"" + to + "\",\"code\":\"" + code + "\"}"));
+    private BuyerAccountEmail seedAddress(String raw, boolean verified) {
+        BuyerAccountEmail row = BuyerAccountEmail.of(accountId(), raw, "test-seed");
+        if (verified) {
+            row.markVerified(Instant.now());
+        }
+        return emails.save(row);
     }
 
     private String signUpAndSignIn(String to) throws Exception {

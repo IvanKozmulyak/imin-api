@@ -74,7 +74,7 @@ class BuyerNativeAppleSignInTest {
                 .andExpect(jsonPath("$.sessionToken").isNotEmpty())
                 .andExpect(jsonPath("$.emails[0].email").value(relay))
                 // Provenance, not decoration: added_via rides this projection to
-                // GET /buyer/me and GET /buyer/emails, so filing an Apple relay
+                // GET /buyer/me, so filing an Apple relay
                 // address as "google" would be a factual error shown to the
                 // buyer about where their own address came from.
                 .andExpect(jsonPath("$.emails[0].addedVia").value(BuyerAccountEmail.ADDED_VIA_APPLE));

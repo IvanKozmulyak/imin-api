@@ -48,6 +48,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import com.imin.iminapi.buyer.model.BuyerAccountEmail;
 
 /**
  * {@code POST /buyer/account/delete} and {@code /delete/cancel} — epic §7.1.
@@ -155,8 +156,7 @@ class BuyerAccountDeletionTest {
     @Test
     void delete_unsubscribes_memberships_behind_every_verified_address() throws Exception {
         String second = address();
-        addAddress(second).andExpect(status().isNoContent());
-        verifyAddress(second, codeSentTo(second)).andExpect(status().isOk());
+        seedAddress(second, true);
 
         UUID orgA = org("DelFanA");
         UUID mPrimary = membership(orgA, consumer(primary), "subscribed");
@@ -176,7 +176,7 @@ class BuyerAccountDeletionTest {
     @Test
     void delete_leaves_memberships_behind_an_unverified_address_alone() throws Exception {
         String claimed = address();
-        addAddress(claimed).andExpect(status().isNoContent());
+        seedAddress(claimed, false);
 
         UUID stranger = membership(org("DelUnverified"), consumer(claimed), "subscribed");
 
@@ -209,8 +209,7 @@ class BuyerAccountDeletionTest {
     @Test
     void delete_notifies_every_verified_address() throws Exception {
         String second = address();
-        addAddress(second);
-        verifyAddress(second, codeSentTo(second));
+        seedAddress(second, true);
         assertThat(emails.findVerifiedEmailsByBuyerAccountId(accountId))
                 .as("both addresses must be verified before the notice can prove anything")
                 .hasSize(2);
@@ -354,20 +353,24 @@ class BuyerAccountDeletionTest {
         return mvc.perform(get("/api/v1/buyer/me").cookie(cookie(raw)));
     }
 
-    private ResultActions addAddress(String to) throws Exception {
-        return mvc.perform(post("/api/v1/buyer/emails")
-                .header(HttpHeaders.ORIGIN, ORIGIN)
-                .cookie(cookie(cookie))
-                .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"email\":\"" + to + "\"}"));
-    }
-
-    private ResultActions verifyAddress(String to, String code) throws Exception {
-        return mvc.perform(post("/api/v1/buyer/emails/verify")
-                .header(HttpHeaders.ORIGIN, ORIGIN)
-                .cookie(cookie(cookie))
-                .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"email\":\"" + to + "\",\"code\":\"" + code + "\"}"));
+    /**
+     * A second VERIFIED address on the signed-in account, seeded through the
+     * repository.
+     *
+     * ⚠️ IT USED TO GO THROUGH `POST /buyer/emails` + `/verify`. Those
+     * endpoints are gone — an account has one address now — but the BEHAVIOUR
+     * the cases below assert is not: the orders join is on every verified
+     * address, and the erasure notice still fans out to all of them. Legacy
+     * accounts really do carry several rows, so seeding directly is the honest
+     * way to keep testing what the backend still does rather than deleting the
+     * coverage along with the endpoint.
+     */
+    private BuyerAccountEmail seedAddress(String raw, boolean verified) {
+        BuyerAccountEmail row = BuyerAccountEmail.of(accountId, raw, "test-seed");
+        if (verified) {
+            row.markVerified(Instant.now());
+        }
+        return emails.save(row);
     }
 
     private String signUpAndSignIn(String to) throws Exception {

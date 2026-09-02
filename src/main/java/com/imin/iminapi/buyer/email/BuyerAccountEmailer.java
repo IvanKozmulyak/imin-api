@@ -130,52 +130,8 @@ public class BuyerAccountEmailer {
                 "Скиньте свій пароль"), r.html(), r.text());
     }
 
-    /**
-     * "Someone added an address to your imin account" — sent to the account's
-     * <b>primary</b> address whenever {@code POST /buyer/emails} attaches one
-     * (§2.3 rule 7). This is the only signal a buyer has that their account is
-     * being extended without them, which is why it goes to the address they
-     * already control rather than to the one being added.
-     *
-     * <p>The copy must hold on <b>both</b> branches of {@code addAddress}: the
-     * one where a code was mailed to the new address and the one where it was
-     * silently skipped because that address is already verified elsewhere. So it
-     * says the address is pending confirmation and never claims a code was sent
-     * — otherwise the notice itself would tell the caller, in their own inbox,
-     * which branch they hit, and the neutral HTTP response would be pointless.
-     */
-    public void sendAddressAdded(String to, String locale, String addedAddress) {
-        var r = renderer.render("buyer-address-added", locale, Map.of(
-                "address", addedAddress,
-                "profileUrl", profileUrl()));
-        email.send(to, EmailLocale.choose(locale,
-                "An email address was added to your imin account",
-                "Se añadió una dirección de correo a tu cuenta de imin",
-                "Une adresse e-mail a été ajoutée à votre compte imin",
-                "До вашого акаунта imin додано адресу електронної пошти"), r.html(), r.text());
-    }
 
-    /**
-     * "Your primary address changed" — sent to <b>both</b> the old and the new
-     * primary (§2.3 rule 7). The old address is the one that matters: it is
-     * where password resets used to go, so if the change was not the buyer's
-     * doing, that inbox is the only place they will still hear about it.
-     */
-    public void sendPrimaryAddressChanged(String to, String locale, String newPrimary) {
-        var r = renderer.render("buyer-primary-changed", locale, Map.of(
-                "address", newPrimary,
-                "signInUrl", signInUrl()));
-        email.send(to, EmailLocale.choose(locale,
-                "Your imin primary email address changed",
-                "Tu dirección de correo principal de imin ha cambiado",
-                "Votre adresse e-mail principale imin a changé",
-                "Основну адресу електронної пошти imin змінено"), r.html(), r.text());
-    }
 
-    /** Profile screen on the buyer site, where addresses are managed. */
-    public String profileUrl() {
-        return props.getBuyerSiteBaseUrl() + "/profile/emails";
-    }
 
     /** The deletion screen, which is also where "Keep my account" lives. */
     public String deletionUrl() {

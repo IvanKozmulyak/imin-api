@@ -136,7 +136,6 @@ class RateLimitBucketCoverageTest {
                 Path.of("src/main/resources/application.yaml"), StandardCharsets.UTF_8);
 
         assertThat(config)
-                .contains("\n    buyer-order-resend:")
-                .contains("\n    buyer-email-add:");
+                .contains("\n    buyer-order-resend:");
     }
 }

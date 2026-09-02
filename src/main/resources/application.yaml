@@ -576,11 +576,6 @@ imin:
       # lockout backs it up where this config does not apply (test profile).
       capacity: 3
       window-minutes: 15
-    buyer-email-add:
-      # Per buyer account id. Consumed by R1.3's POST /buyer/emails; the bucket
-      # ships with the other four so the set is complete in one place.
-      capacity: 5
-      window-minutes: 60
     buyer-order-resend:
       # Per buyer account id. Consumed by POST /buyer/orders/{token}/resend.
       # Deliberately tighter than add-an-address: the mail goes to an address
@@ -602,7 +597,7 @@ imin:
       # an IP key is the one an attacker can shed, while still being the one that
       # punishes a family or an office behind one NAT. The endpoint is
       # authenticated, so unlike the pre-auth buckets there is no blind spot: an
-      # account id always exists. Same reasoning already puts buyer-email-add and
+      # account id always exists. The same reasoning already puts
       # buyer-order-resend on the account id.
       #
       # Five per 15 minutes deliberately mirrors `buyer-login`, because it is the
