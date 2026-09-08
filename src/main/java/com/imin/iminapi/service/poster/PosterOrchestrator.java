@@ -288,7 +288,7 @@ public class PosterOrchestrator {
                 if (last) {
                     log.warn("Text gate still failing after {} regenerations; accepting best-effort: {}",
                             maxRegenerations, text.reason());
-                    return accept(entity, url, VERDICT_BEST_EFFORT, attempts, brand);
+                    return accept(entity, url, image, VERDICT_BEST_EFFORT, attempts, brand);
                 }
                 correction = buildCorrectionPrompt(variant.ideogramPrompt(), text);
                 seed = nextSeed(seed);
@@ -311,11 +311,11 @@ public class PosterOrchestrator {
                     styleValidation.validateOrExplain(image, ctx.card(), heroType);
             attempts.add(attemptJson(attempt, seed, attempt == 0 ? "generate" : "remix", text, styleDecision));
             if (styleDecision.accepted()) {
-                return accept(entity, url, VERDICT_ACCEPTED, attempts, brand);
+                return accept(entity, url, image, VERDICT_ACCEPTED, attempts, brand);
             }
             // Text is correct; style is soft — accept best-effort without spending more renders.
             log.warn("Style gate soft-failed (text OK); accepting best-effort: {}", styleDecision.reason());
-            return accept(entity, url, VERDICT_BEST_EFFORT, attempts, brand);
+            return accept(entity, url, image, VERDICT_BEST_EFFORT, attempts, brand);
         }
         throw new IllegalStateException("render-with-validation loop exhausted");
     }
@@ -366,8 +366,9 @@ public class PosterOrchestrator {
      * the un-composited render). Failure isolation is absolute: any composite error → final_url =
      * raw_url + Sentry warning + status FAILED. Generation never fails over the logo.
      */
-    private GeneratedPoster accept(PosterVariantEntity entity, String rawUrl, String verdict,
-                                   List<Map<String, Object>> attempts, BrandSnapshot brand) {
+    private GeneratedPoster accept(PosterVariantEntity entity, String rawUrl, byte[] rawBytes,
+                                   String verdict, List<Map<String, Object>> attempts,
+                                   BrandSnapshot brand) {
         entity.setValidationVerdict(verdict);
         entity.setValidationAttemptsJson(serialize(attempts));
         entity.setStatus(PosterVariantStatus.COMPLETE);
@@ -378,7 +379,9 @@ public class PosterOrchestrator {
             compositeStatus = "SKIPPED";
         } else {
             try {
-                byte[] rawBytes = storage.download(rawUrl);
+                // The render bytes are still in hand — re-fetching the object we just wrote adds an
+                // R2 round trip per branded variant and a failure mode (a transient read error ships
+                // the poster un-composited) that holding the bytes cannot have.
                 byte[] composited = logoCompositor.composite(rawBytes, brand.logoUrl());
                 finalUrl = storage.writePng(composited); // SECOND write → distinct object/URL
                 compositeStatus = "APPLIED";

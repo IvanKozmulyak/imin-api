@@ -286,7 +286,6 @@ class PosterOrchestratorTest {
             byte[] b = inv.getArgument(0);
             return (b.length > 0 && b[0] == 7) ? "https://img/composited.png" : "https://img/raw.png";
         });
-        when(storage.download("https://img/raw.png")).thenReturn(new byte[]{9});
         when(logoCompositor.composite(any(), eq("https://cdn/logo.png")))
                 .thenReturn(new byte[]{7});
 
@@ -307,6 +306,34 @@ class PosterOrchestratorTest {
                 .allSatisfy(v -> assertThat(v.getLogoCompositeStatus()).isEqualTo("APPLIED"));
     }
 
+    /**
+     * poster-9: the logo composite must use the render bytes the process is still holding, not a
+     * fresh HTTP GET of the object it just wrote. A transient R2 read error is a failure mode
+     * holding the bytes cannot have — here download() always throws and the composite still lands.
+     */
+    @Test
+    void logoComposite_usesTheRenderBytesInMemory_notAReDownload() {
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 1L));
+        when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
+        when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
+        when(storage.writePng(any())).thenAnswer(inv -> {
+            byte[] b = inv.getArgument(0);
+            return (b.length > 0 && b[0] == 7) ? "https://img/composited.png" : "https://img/raw.png";
+        });
+        when(storage.download(anyString())).thenThrow(new RuntimeException("R2 read failed"));
+        when(logoCompositor.composite(argThat(b -> b != null && b.length == 1 && b[0] == 2),
+                eq("https://cdn/logo.png"))).thenReturn(new byte[]{7});
+
+        BrandSnapshot brand = new BrandSnapshot(List.of("#ec4899"), "https://cdn/logo.png", true);
+        PosterOrchestrator.OrchestrationResult r = orchestrator().run(
+                UUID.randomUUID(), req(), concept(), 123L, List.of(), brand);
+
+        assertThat(r.posters()).allSatisfy(p ->
+                assertThat(p.finalUrl()).isEqualTo("https://img/composited.png"));
+        verify(storage, never()).download(anyString());
+    }
+
     @Test
     void compositeThrows_isIsolated_finalFallsBackToRaw_statusFailed() {
         when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
@@ -314,7 +341,6 @@ class PosterOrchestratorTest {
         when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
         when(storage.writePng(any())).thenReturn("https://img/raw.png");
-        when(storage.download("https://img/raw.png")).thenReturn(new byte[]{9});
         when(logoCompositor.composite(any(), any()))
                 .thenThrow(new RuntimeException("decode boom"));
 
