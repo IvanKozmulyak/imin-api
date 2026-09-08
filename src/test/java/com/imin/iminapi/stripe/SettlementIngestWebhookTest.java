@@ -13,7 +13,11 @@ import com.imin.iminapi.settlement.SettlementObjectType;
 import com.imin.iminapi.settlement.SettlementRepository;
 import com.imin.iminapi.settlement.SettlementStatus;
 import com.stripe.StripeClient;
+import com.stripe.net.ApiRequest;
+import com.stripe.net.ApiResource;
+import com.stripe.net.StripeResponseGetter;
 import com.stripe.net.Webhook;
+import com.stripe.service.ChargeService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -23,11 +27,15 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
+import java.lang.reflect.Type;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * Integration test for Track A settlements ingestion through the V1 webhook path. Unlike the
@@ -199,11 +207,12 @@ class SettlementIngestWebhookTest {
     }
 
     /**
-     * A real {@code charge.dispute.created} V1 envelope. The dispute carries an EXPANDED
-     * {@code charge} object so the ingest can reach {@code charge.source_transfer}.
+     * A real {@code charge.dispute.created} V1 envelope. Webhook bodies are NEVER expanded, so
+     * {@code charge} is a plain {@code "ch_..."} STRING — the previous fixture hand-wrote an
+     * expanded charge object, which is why the handler's expanded-only read looked correct.
+     * The ingest has to retrieve the charge by id, which {@link #stubChargeRetrieve} answers.
      */
-    private String disputeEvent(String eventId, String disputeId, String chargeId,
-                                String sourceTransfer, long amount) {
+    private String disputeEvent(String eventId, String disputeId, String chargeId, long amount) {
         return """
             {
               "id": "%s",
@@ -220,16 +229,31 @@ class SettlementIngestWebhookTest {
                   "currency": "eur",
                   "reason": "fraudulent",
                   "status": "needs_response",
-                  "charge": {
-                    "id": "%s",
-                    "object": "charge",
-                    "source_transfer": "%s"
-                  }
+                  "charge": "%s"
                 }
               }
             }
             """.formatted(eventId, Instant.now().getEpochSecond(), acctId,
-                disputeId, amount, chargeId, sourceTransfer);
+                disputeId, amount, chargeId);
+    }
+
+    /**
+     * Make {@code stripeClient.charges().retrieve(id)} answer with a PLATFORM destination
+     * charge carrying {@code transfer} (no {@code source_transfer} — that field only exists on
+     * the connected account's copy). {@code ChargeService} is final, so the seam is a real
+     * service over a mocked {@link StripeResponseGetter}, as elsewhere in the suite.
+     */
+    private void stubChargeRetrieve(String chargeId, String backingTransfer) throws Exception {
+        StripeResponseGetter rg = mock(StripeResponseGetter.class);
+        when(rg.request(any(ApiRequest.class), any(Type.class)))
+                .thenAnswer(inv -> {
+                    String json = """
+                        { "id": "%s", "object": "charge", "amount": 4200, "currency": "eur",
+                          "transfer": "%s", "transfer_data": { "destination": "%s" } }
+                        """.formatted(chargeId, backingTransfer, acctId);
+                    return ApiResource.GSON.fromJson(json, com.stripe.model.Charge.class);
+                });
+        when(stripeClient.charges()).thenReturn(new ChargeService(rg));
     }
 
     /**
@@ -544,7 +568,8 @@ class SettlementIngestWebhookTest {
         String disputeId = "du_" + UUID.randomUUID().toString().substring(0, 12);
         String chargeId = "ch_" + UUID.randomUUID().toString().substring(0, 12);
         String transferId = "tr_" + UUID.randomUUID().toString().substring(0, 12);
-        String body = disputeEvent("evt_dispute_orphan", disputeId, chargeId, transferId, 4200);
+        String body = disputeEvent("evt_dispute_orphan", disputeId, chargeId, 4200);
+        stubChargeRetrieve(chargeId, transferId);
 
         webhook.handleV1Endpoint(body, sign(body));
 
@@ -564,7 +589,8 @@ class SettlementIngestWebhookTest {
 
         String disputeId = "du_" + UUID.randomUUID().toString().substring(0, 12);
         String chargeId = "ch_" + UUID.randomUUID().toString().substring(0, 12);
-        String body = disputeEvent("evt_disp_annot", disputeId, chargeId, transferId, 4200);
+        String body = disputeEvent("evt_disp_annot", disputeId, chargeId, 4200);
+        stubChargeRetrieve(chargeId, transferId);
         webhook.handleV1Endpoint(body, sign(body));
 
         Settlement s = settlements.findByStripeObjectId(transferId).orElseThrow();

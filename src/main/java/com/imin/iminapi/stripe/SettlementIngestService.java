@@ -9,10 +9,13 @@ import com.imin.iminapi.settlement.Settlement;
 import com.imin.iminapi.settlement.SettlementObjectType;
 import com.imin.iminapi.settlement.SettlementRepository;
 import com.imin.iminapi.settlement.SettlementStatus;
+import com.stripe.StripeClient;
+import com.stripe.exception.StripeException;
 import com.stripe.model.Charge;
 import com.stripe.model.Dispute;
 import com.stripe.model.Payout;
 import com.stripe.model.Transfer;
+import com.stripe.net.RequestOptions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -57,13 +60,16 @@ public class SettlementIngestService {
     private final SettlementRepository settlements;
     private final OrganizationRepository orgs;
     private final PayoutRunRepository payoutRuns;
+    private final StripeClient stripeClient;
 
     public SettlementIngestService(SettlementRepository settlements,
                                    OrganizationRepository orgs,
-                                   PayoutRunRepository payoutRuns) {
+                                   PayoutRunRepository payoutRuns,
+                                   StripeClient stripeClient) {
         this.settlements = settlements;
         this.orgs = orgs;
         this.payoutRuns = payoutRuns;
+        this.stripeClient = stripeClient;
     }
 
     /**
@@ -183,12 +189,19 @@ public class SettlementIngestService {
      * payout-looking positive-amount row. The only safe action is to annotate the status of an
      * EXISTING transfer settlement row that backs the disputed charge.
      *
-     * <p>We resolve the disputed charge ({@code dispute.getChargeObject()}, or via the
-     * {@code dispute.getCharge()} id when the charge object was expanded) and read its
-     * {@code source_transfer} (tr_...). If that transfer already has a settlement row, we flip its
-     * status to FAILED while funds are at risk, or back to PAID when the dispute is won/reinstated
-     * — leaving {@code amountMinor}/currency/eventIds untouched. If we can't resolve to an existing
-     * row (no expanded charge, no source transfer, or no settlement for it) we simply log and skip:
+     * <p>We resolve the disputed charge and read its backing transfer (tr_...). <b>Webhook
+     * payloads are never expanded</b>: a {@code charge.dispute.*} body carries
+     * {@code "charge": "ch_..."} as a plain string, so {@code dispute.getChargeObject()} —
+     * which is {@code ExpandableField.getExpanded()} — is ALWAYS null on a real delivery and
+     * this handler used to log and return every single time. We therefore fall back to
+     * {@code dispute.getCharge()} (the id) and retrieve the Charge from Stripe. The transfer
+     * then comes from {@link #backingTransferOf(Charge)} ({@code transfer} on the platform copy,
+     * {@code source_transfer} on the connected copy) rather than {@code source_transfer} alone.
+     *
+     * <p>If that transfer already has a settlement row, we flip its status to FAILED while funds
+     * are at risk, or back to PAID when the dispute is won/reinstated — leaving
+     * {@code amountMinor}/currency/eventIds untouched. If we can't resolve to an existing row (no
+     * charge id, unreadable charge, no backing transfer, or no settlement for it) we log and skip:
      * disputes are not payouts, so a phantom row is worse than no annotation.
      *
      * @param dispute          the deserialized Stripe Dispute (non-null).
@@ -199,18 +212,24 @@ public class SettlementIngestService {
     public void ingestDispute(Dispute dispute, String connectedAccount, String eventType) {
         if (dispute == null) return;
 
-        // Resolve the disputed charge → its source transfer (tr_...). The Dispute carries no
-        // transfer id directly; we can only reach it through an expanded Charge object.
+        // Resolve the disputed charge → its backing transfer (tr_...). The Dispute carries no
+        // transfer id directly. getChargeObject() is the EXPANDED charge, which a webhook body
+        // never contains — so the id + retrieve is the real path, not the fallback.
         Charge charge = dispute.getChargeObject();
         if (charge == null) {
-            log.info("[settlement-ingest] dispute {} ({}) has no expanded charge — cannot resolve a "
-                    + "source transfer, skipping (disputes are not payouts)", dispute.getId(), eventType);
-            return;
+            String chargeId = dispute.getCharge();
+            if (chargeId == null || chargeId.isBlank()) {
+                log.info("[settlement-ingest] dispute {} ({}) names no charge — cannot resolve a "
+                        + "backing transfer, skipping (disputes are not payouts)", dispute.getId(), eventType);
+                return;
+            }
+            charge = retrieveCharge(chargeId, connectedAccount, dispute.getId(), eventType);
+            if (charge == null) return;
         }
-        String sourceTransfer = charge.getSourceTransfer();
-        if (sourceTransfer == null || sourceTransfer.isBlank()) {
-            log.info("[settlement-ingest] dispute {} ({}) charge {} has no source_transfer — nothing to "
-                    + "annotate, skipping", dispute.getId(), eventType, charge.getId());
+        String sourceTransfer = backingTransferOf(charge);
+        if (sourceTransfer == null) {
+            log.info("[settlement-ingest] dispute {} ({}) charge {} has no transfer/source_transfer — "
+                    + "nothing to annotate, skipping", dispute.getId(), eventType, charge.getId());
             return;
         }
 
@@ -317,6 +336,35 @@ public class SettlementIngestService {
     }
 
     // ── internals ────────────────────────────────────────────────────────────────
+
+    /**
+     * Fetch a disputed Charge by id. A {@code charge.dispute.*} event delivered on the
+     * "Your account" endpoint names a PLATFORM charge, so the platform-scoped read is tried
+     * first; if that fails and the envelope carried a connected account, retry on that account
+     * so the handler also works if the event is re-scoped. Returns null (log + skip) when
+     * neither read succeeds — a dispute must never invent a settlement row.
+     */
+    private Charge retrieveCharge(String chargeId, String connectedAccount, String disputeId, String eventType) {
+        try {
+            return stripeClient.charges().retrieve(chargeId);
+        } catch (StripeException platformFailure) {
+            if (connectedAccount != null && !connectedAccount.isBlank()) {
+                try {
+                    return stripeClient.charges().retrieve(chargeId,
+                            RequestOptions.builder().setStripeAccount(connectedAccount).build());
+                } catch (StripeException connectedFailure) {
+                    log.warn("[settlement-ingest] dispute {} ({}) charge {} unreadable on platform ({}) "
+                                    + "and on {} ({}) — skipping",
+                            disputeId, eventType, chargeId, platformFailure.getCode(),
+                            connectedAccount, connectedFailure.getCode());
+                    return null;
+                }
+            }
+            log.warn("[settlement-ingest] dispute {} ({}) charge {} could not be retrieved — {} (skipping)",
+                    disputeId, eventType, chargeId, platformFailure.getCode());
+            return null;
+        }
+    }
 
     /**
      * The {@code tr_} id backing a destination charge, whichever endpoint scope delivered it.
