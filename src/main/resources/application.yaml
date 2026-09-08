@@ -98,11 +98,6 @@ poster:
     # Size of the per-concept variant thread pool (itself capped at 3, one thread per variant).
     # Alias keeps the old REPLICATE_MAX_CONCURRENT working.
     max-concurrent: ${POSTER_RENDER_MAX_CONCURRENT:${REPLICATE_MAX_CONCURRENT:6}}
-  provider-routing:
-    # When true, each vibe's model_route selects the image provider.
-    # Default false keeps all concept/poster generation on RECRAFT, which is the
-    # reference-first path. Use explicit routing only for provider experiments/fallbacks.
-    enabled: ${POSTER_PROVIDER_ROUTING_ENABLED:false}
 
 openrouter:
   api-key: ${OPENROUTER_API_KEY}
@@ -121,14 +116,12 @@ openai:
     model: ${OPENAI_IMAGE_MODEL:gpt-image-1}
 
 recraft:
-  # Recraft image-gen + per-vibe style training. Required for the default
-  # reference-first poster path and for training a vibe style.
+  # Per-vibe style training only (POST /styles). Ideogram V3 is the sole renderer;
+  # the Recraft image-generation path was removed with that migration.
   api-key: ${RECRAFT_API_KEY:}
   base-url: ${RECRAFT_BASE_URL:https://external.api.recraft.ai/v1}
-  model: ${RECRAFT_MODEL:recraftv3}
-  # Base style used for untrained vibes (style_id absent) and as the training
-  # base for POST /styles. One of: realistic_image | digital_illustration |
-  # vector_illustration | icon.
+  # Base style sent as the training base for POST /styles. One of: realistic_image |
+  # digital_illustration | vector_illustration | icon.
   base-style: ${RECRAFT_BASE_STYLE:realistic_image}
 
 imin:

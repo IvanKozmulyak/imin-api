@@ -18,7 +18,7 @@ class PosterTextSpecFactoryTest {
                 LocalDate.of(2026, 6, 7), List.of("instagram"),
                 "DJ A, DJ B", "RSO", "BIG NIGHT - BERLIN", null,
                 "Schnellerstrasse 137", "https://imin.wtf/e/big-night",
-                "berlin_minimal", null);
+                "berlin_minimal");
 
         var spec = factory.from(r);
 

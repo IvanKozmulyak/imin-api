@@ -61,7 +61,7 @@ class AiEventDescriptionServiceTest {
                 "vibe", "tone", "techno", "city",
                 LocalDate.of(2026, 6, 14), List.of("INSTAGRAM"),
                 null, null, null, null, null, null,
-                pinnedVibeId, null);
+                pinnedVibeId);
     }
 
     private EventCreatorRequest brief() {
@@ -70,7 +70,7 @@ class AiEventDescriptionServiceTest {
                 LocalDate.of(2026, 6, 7), List.of("INSTAGRAM"),
                 "DJ A, DJ B", "RSO", "BIG NIGHT - BERLIN", null,
                 "Schnellerstrasse 137", "https://imin.wtf/e/big-night",
-                "brutalist_techno", null);
+                "brutalist_techno");
     }
 
     private EventCreatorRequest briefWithBrand() {
@@ -80,7 +80,7 @@ class AiEventDescriptionServiceTest {
                 "DJ A, DJ B", "RSO", "BIG NIGHT - BERLIN",
                 "#ec4899 (lead); supporting: #f6c04a, #a78bfa",
                 "Schnellerstrasse 137", "https://imin.wtf/e/big-night",
-                "brutalist_techno", null);
+                "brutalist_techno");
     }
 
     // ---- brand palette mandate --------------------------------------------------------------------
@@ -528,7 +528,7 @@ class AiEventDescriptionServiceTest {
                 "vibe", "tone", "techno", "city",
                 null, List.of("INSTAGRAM"),
                 null, null, null, null, null, null,
-                pinnedVibeId, null);
+                pinnedVibeId);
     }
 
     /** variant_plan [people, object, typographic], humanPolicy RARE — tests DJ bypass. */

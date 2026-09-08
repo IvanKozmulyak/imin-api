@@ -1,6 +1,5 @@
 package com.imin.iminapi.dto;
 
-import com.imin.iminapi.model.ImageProvider;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
@@ -21,10 +20,5 @@ public record EventCreatorRequest(
         String accentColor,
         String address,
         String rsvpUrl,
-        String subStyleTag,
-        ImageProvider imageProvider
-) {
-    public ImageProvider effectiveImageProvider() {
-        return imageProvider != null ? imageProvider : ImageProvider.RECRAFT;
-    }
-}
+        String subStyleTag
+) {}

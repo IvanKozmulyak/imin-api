@@ -9,10 +9,8 @@ import com.imin.iminapi.dto.ai.*;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.GeneratedEvent;
 import com.imin.iminapi.model.GeneratedEventStatus;
-import com.imin.iminapi.model.ImageProvider;
 import com.imin.iminapi.model.PosterGeneration;
 import com.imin.iminapi.model.PosterVariantEntity;
-import org.springframework.beans.factory.annotation.Value;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.GeneratedEventRepository;
@@ -64,11 +62,6 @@ public class ConceptStudioService {
     private final EventRepository eventRepo;
     private final PosterImageStorage posterStorage;
     private final PosterGenerationRepository generationRepo;
-
-    // When true, the resolved vibe's model_route (vibes.yaml) selects the image provider.
-    // Default false keeps the reference-first path on Recraft for every vibe.
-    @Value("${poster.provider-routing.enabled:false}")
-    private boolean providerRoutingEnabled;
 
     public ConceptStudioService(AiEventDescriptionService descService,
                                 PosterOrchestrator orchestrator,
@@ -331,19 +324,6 @@ public class ConceptStudioService {
                 .orElseGet(() -> vibeLibrary.suggestForGenre(req.genre()));
     }
 
-    /** Map the vibe's declared model_route to a provider when routing is enabled; else Recraft. */
-    ImageProvider providerFor(Vibe vibe) {
-        if (!providerRoutingEnabled || vibe == null || vibe.modelRoute() == null) {
-            return ImageProvider.RECRAFT;
-        }
-        return switch (vibe.modelRoute().toLowerCase()) {
-            case "recraft" -> ImageProvider.RECRAFT;
-            case "gpt-image", "openai" -> ImageProvider.OPENAI;
-            case "replicate", "ideogram" -> ImageProvider.REPLICATE;
-            default -> ImageProvider.RECRAFT; // sdxl or unknown: keep the reference-first default.
-        };
-    }
-
     private EventCreatorRequest toLegacyRequest(ConceptRequest req, BrandSnapshot brand) {
         Vibe vibe = resolveVibe(req);
         String djName = (req.lineup() == null || req.lineup().isEmpty())
@@ -363,8 +343,7 @@ public class ConceptStudioService {
                 /* address */ req.address(),
                 /* rsvpUrl */ req.rsvpUrl(),
                 /* subStyleTag: the selected vibe, or one auto-suggested from genre (always set) */
-                vibe == null ? null : vibe.id(),
-                providerFor(vibe));
+                vibe == null ? null : vibe.id());
     }
 
     /**

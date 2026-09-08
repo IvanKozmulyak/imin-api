@@ -12,7 +12,6 @@ import com.imin.iminapi.dto.ai.ConceptResponse;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.GeneratedEvent;
 import com.imin.iminapi.model.GeneratedEventStatus;
-import com.imin.iminapi.model.ImageProvider;
 import com.imin.iminapi.model.PosterGeneration;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.EventRepository;
@@ -192,41 +191,6 @@ class ConceptStudioServiceTest {
         ArgumentCaptor<PosterConcept> cap = ArgumentCaptor.forClass(PosterConcept.class);
         verify(orchestrator).run(any(), any(), cap.capture(), anyLong(), any(), any(), any());
         assertThat(cap.getValue().subStyleTag()).isEqualTo("brutalist_techno");
-    }
-
-    @Test
-    void providerFor_defaultsToRecraftForReferenceFirstGeneration() {
-        Vibe recraftVibe = vibe("recraft");
-        assertThat(sut.providerFor(recraftVibe)).isEqualTo(ImageProvider.RECRAFT);
-        assertThat(sut.providerFor(vibe("sdxl"))).isEqualTo(ImageProvider.RECRAFT);
-        assertThat(sut.providerFor(null)).isEqualTo(ImageProvider.RECRAFT);
-    }
-
-    @Test
-    void providerFor_mapsModelRoute_whenRoutingEnabled() {
-        org.springframework.test.util.ReflectionTestUtils.setField(sut, "providerRoutingEnabled", true);
-        assertThat(sut.providerFor(vibe("recraft"))).isEqualTo(ImageProvider.RECRAFT);
-        assertThat(sut.providerFor(vibe("gpt-image"))).isEqualTo(ImageProvider.OPENAI);
-        assertThat(sut.providerFor(vibe("replicate"))).isEqualTo(ImageProvider.REPLICATE);
-        assertThat(sut.providerFor(vibe("sdxl"))).isEqualTo(ImageProvider.RECRAFT);
-        assertThat(sut.providerFor(null)).isEqualTo(ImageProvider.RECRAFT);
-    }
-
-    @Test
-    void eventCreatorRequest_defaultProviderIsRecraft() {
-        EventCreatorRequest request = new EventCreatorRequest(
-                "vibe", "tone", "techno", "Berlin",
-                LocalDate.of(2026, 6, 14), List.of("INSTAGRAM"),
-                null, null, "Void", null, null, null,
-                "brutalist_techno", null);
-
-        assertThat(request.effectiveImageProvider()).isEqualTo(ImageProvider.RECRAFT);
-    }
-
-    private static Vibe vibe(String modelRoute) {
-        return new Vibe("v", "V", List.of("g"), "vs", List.of("#000"), "typ", "comp",
-                List.of(), List.of(), modelRoute, List.of(), null, "tpl", false,
-                "subject", com.imin.iminapi.dto.StyleMode.TRAINED_STYLE_ID, null);
     }
 
     @Test

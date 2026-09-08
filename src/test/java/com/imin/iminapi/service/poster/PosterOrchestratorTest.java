@@ -98,7 +98,7 @@ class PosterOrchestratorTest {
 
     private static EventCreatorRequest req() {
         return new EventCreatorRequest("v", "energetic", "techno", "Berlin", LocalDate.now(),
-                List.of("instagram"), null, null, "Big Night", null, null, null, "brutalist_techno", null);
+                List.of("instagram"), null, null, "Big Night", null, null, null, "brutalist_techno");
     }
 
     private static PosterConcept concept() {
