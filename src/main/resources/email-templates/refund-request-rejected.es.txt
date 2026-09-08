@@ -1,0 +1,10 @@
+ACTUALIZACIÓN DE TU REEMBOLSO
+
+Hola:
+
+El organizador ha revisado tu solicitud de reembolso y no ha podido
+aprobarla. Su nota:
+
+  {{decisionNote}}
+
+Si quieres comentarlo, responde a este correo y llegará al organizador.

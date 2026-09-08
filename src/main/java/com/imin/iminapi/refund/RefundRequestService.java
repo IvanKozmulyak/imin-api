@@ -166,10 +166,18 @@ public class RefundRequestService {
         Map<String, String> values = new LinkedHashMap<>();
         values.put("link", url);
         values.put("ttlMinutes", String.valueOf(emailProps.getRefundRequestTokenTtlMinutes()));
-        EmailTemplateRenderer.Rendered r = renderer.render("refund-request-link", values);
+        // The buyer's language, snapshotted on the order at checkout (V78) — the same
+        // source the ticket and refund-ack emails use. Null ⇒ English.
+        String locale = chosen.getBuyerLocale();
+        EmailTemplateRenderer.Rendered r = renderer.render("refund-request-link", locale, values);
+        String subject = com.imin.iminapi.email.EmailLocale.choose(locale,
+            "Request a refund · imin",
+            "Solicita tu reembolso · imin",
+            "Demandez votre remboursement · imin",
+            "Запит на повернення коштів · imin");
 
         try {
-            email.send(normalized, "Request a refund · imin", r.html(), r.text());
+            email.send(normalized, subject, r.html(), r.text());
             log.info("[refund-request] token-issued orderId={} emailHash={}",
                 chosen.getId(), sha256Hex(normalized));
         } catch (Exception e) {

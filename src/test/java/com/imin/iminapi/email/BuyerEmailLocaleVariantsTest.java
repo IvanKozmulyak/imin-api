@@ -56,6 +56,13 @@ class BuyerEmailLocaleVariantsTest {
         TEMPLATES.put("refund-request-received-buyer", Map.of(
                 "requestId", "6f1c2f18-9a0e-4c1e-8f2a-1d3b5c7e9a11"));
 
+        TEMPLATES.put("refund-request-link", Map.of(
+                "link", "https://app.imin.wtf/refund/abc123",
+                "ttlMinutes", "30"));
+
+        TEMPLATES.put("refund-request-rejected", Map.of(
+                "decisionNote", "The event went ahead as scheduled."));
+
         TEMPLATES.put("notify-release", Map.of(
                 "eventName", "Warehouse 7",
                 "eventWhen", "Friday, 5 Jun 2026 · 23:00",

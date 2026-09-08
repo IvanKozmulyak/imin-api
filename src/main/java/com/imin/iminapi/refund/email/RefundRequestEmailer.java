@@ -129,7 +129,10 @@ public class RefundRequestEmailer {
             "Новий запит на повернення коштів · imin");
         safeSend(organizerEmail, organizerSubject, org);
 
-        // 3. Imin inbox.
+        // 3. Imin inbox. Deliberately English-only: the recipient is one internal ops
+        // address, not a user, and rendering an operational alert in whichever language
+        // the buyer happened to check out in would make the queue harder to work, not
+        // easier. There is no locale to read for it either — it belongs to imin.
         EmailTemplateRenderer.Rendered imin = renderer.render("refund-request-notify-imin", base);
         safeSend(props.resolveRefundRequestInbox(), "[imin] new refund request", imin);
     }
@@ -145,8 +148,19 @@ public class RefundRequestEmailer {
         Map<String, String> values = new LinkedHashMap<>();
         values.put("decisionNote", rr.getDecisionNote() == null ? "" : rr.getDecisionNote());
 
-        EmailTemplateRenderer.Rendered r = renderer.render("refund-request-rejected", values);
-        safeSend(rr.getBuyerEmail(), "Your refund request · imin", r);
+        // Buyer-facing, so the buyer's checkout language (V78) — the same source the
+        // acknowledgement above already used. A rejection is the message they are most
+        // likely to need to read carefully.
+        String buyerLocale = orders.findById(rr.getOrderId())
+            .map(Order::getBuyerLocale)
+            .orElse(null);
+        EmailTemplateRenderer.Rendered r = renderer.render("refund-request-rejected", buyerLocale, values);
+        String subject = EmailLocale.choose(buyerLocale,
+            "Your refund request · imin",
+            "Tu solicitud de reembolso · imin",
+            "Votre demande de remboursement · imin",
+            "Ваш запит на повернення коштів · imin");
+        safeSend(rr.getBuyerEmail(), subject, r);
     }
 
     private void safeSend(String to, String subject, EmailTemplateRenderer.Rendered r) {
