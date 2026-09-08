@@ -148,7 +148,7 @@ public class StripePaymentIntentService {
         // a different total than the one the buyer already confirmed on the
         // payment sheet. Not calling priceIt at all is what guarantees it.
         if (key != null) {
-            NativeIntent replayed = replay(key);
+            NativeIntent replayed = replay(key, tierId);
             if (replayed != null) return replayed;
         }
 
@@ -181,7 +181,7 @@ public class StripePaymentIntentService {
                 inventoryService.claimIdempotencyKey(p.reservationId(), key);
             } catch (DataIntegrityViolationException duplicate) {
                 releaseQuietly(p.reservationId(), "IDEMPOTENT_REPLAY");
-                NativeIntent replayed = replay(key);
+                NativeIntent replayed = replay(key, tierId);
                 if (replayed != null) return replayed;
                 throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
                         "A checkout with this Idempotency-Key is already in progress");
@@ -253,10 +253,26 @@ public class StripePaymentIntentService {
      * <p>The client secret cannot be stored — it is a credential, and it is not
      * derivable from the id — so the intent is re-read from Stripe. That is one
      * idempotent GET; no second intent is created and no second hold is taken.
+     *
+     * <p>The lookup is on the raw key alone, which is not scoped to anything — and this is an
+     * UNAUTHENTICATED endpoint, so the server must not depend on every client picking good
+     * keys. {@code requestedTierId} is therefore checked against the reservation the key
+     * claimed: a tier belongs to exactly one event, so a match proves the replay is for the
+     * same purchase, and a mismatch means the key is already in use for a different one. The
+     * free path scopes its equivalent lookup by (eventId, buyerEmail, key) for the same reason.
      */
-    private NativeIntent replay(String key) {
+    private NativeIntent replay(String key, UUID requestedTierId) {
         TicketReservation existing = inventoryService.findByIdempotencyKey(key).orElse(null);
         if (existing == null) return null;
+
+        if (!requestedTierId.equals(existing.getTierId())) {
+            // Someone else's key, or the same client reusing one across selections. Never hand
+            // back a client secret (or an amount) belonging to a different purchase.
+            log.warn("Idempotency-Key replay refused: the key is held by a reservation for tier {}, "
+                    + "not the requested tier {}", existing.getTierId(), requestedTierId);
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                    "A checkout with this Idempotency-Key is already in progress");
+        }
 
         if (existing.getStatus() != ReservationStatus.HELD) {
             // Confirmed (already paid) or released (expired, or the sweeper got
