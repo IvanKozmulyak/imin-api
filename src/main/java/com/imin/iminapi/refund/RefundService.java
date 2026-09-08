@@ -82,9 +82,20 @@ public class RefundService {
                 "Idempotency-Key header is required");
         }
 
-        // Idempotency short-circuit BEFORE order load so retries don't hit the DB twice
-        // for the order/tickets/etc. The unique (order_id, idempotency_key) index also
-        // protects against race-stacked POSTs at INSERT time.
+        // Org check FIRST, before any refund row can be returned. The replay short-circuit
+        // below hands back stripeRefundId, amounts, status and ticket ids, and the approve
+        // path's key is guessable by construction ("refund-request-" + requestId, both
+        // halves of which the buyer holds) — so answering it ahead of this check was a
+        // cross-org read of exactly the kind the 404-not-403 handling here exists to stop.
+        Order order = orders.findById(orderId).orElseThrow(() -> ApiException.notFound("Order"));
+        if (!order.getOrgId().equals(principal.orgId())) {
+            // 404, not 403 — leak-safe (don't reveal that the order exists for another org)
+            throw ApiException.notFound("Order");
+        }
+
+        // Idempotency short-circuit before the ticket work so retries don't redo it. The
+        // unique (order_id, idempotency_key) index also protects against race-stacked POSTs
+        // at INSERT time.
         Optional<Refund> existing = refunds.findByOrderIdAndIdempotencyKey(orderId, idempotencyKey);
         if (existing.isPresent()) {
             log.info("[refund] idempotent replay orderId={} key={} → returning existing {}",
@@ -97,11 +108,6 @@ public class RefundService {
                 "ticketIds must be a non-empty unique list");
         }
 
-        Order order = orders.findById(orderId).orElseThrow(() -> ApiException.notFound("Order"));
-        if (!order.getOrgId().equals(principal.orgId())) {
-            // 404, not 403 — leak-safe (don't reveal that the order exists for another org)
-            throw ApiException.notFound("Order");
-        }
         if (order.getStripePaymentIntentId() == null || order.getStripePaymentIntentId().isBlank()) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.ORDER_NOT_REFUNDABLE,
                 "Order has no Stripe payment to refund");

@@ -88,6 +88,7 @@ class RefundServiceTest {
     void idempotency_key_returns_existing_refund_without_calling_stripe() {
         Refund existing = new Refund();
         existing.setId(UUID.randomUUID());
+        when(orders.findById(orderId)).thenReturn(Optional.of(paidOrder()));
         when(refunds.findByOrderIdAndIdempotencyKey(orderId, "idem-1"))
             .thenReturn(Optional.of(existing));
 
@@ -98,8 +99,32 @@ class RefundServiceTest {
         verifyNoInteractions(stripeRefunds);
     }
 
+    /**
+     * refund-6: the replay short-circuit must not answer before the org check. The approve
+     * path builds the key as "refund-request-" + requestId and the buyer holds both that id
+     * and the order id, so a guessable key must not read another org's refund row.
+     */
+    @Test
+    void idempotent_replay_for_another_org_is_404_not_a_refund_row() {
+        Order foreign = paidOrder();
+        foreign.setOrgId(UUID.randomUUID());
+        Refund existing = new Refund();
+        existing.setId(UUID.randomUUID());
+        when(orders.findById(orderId)).thenReturn(Optional.of(foreign));
+        when(refunds.findByOrderIdAndIdempotencyKey(orderId, "refund-request-guessed"))
+            .thenReturn(Optional.of(existing));
+
+        assertThatThrownBy(() -> service.createRefund(orderId, principal,
+            "refund-request-guessed", List.of(UUID.randomUUID()), RefundReason.OTHER))
+            .isInstanceOf(ApiException.class)
+            .extracting(e -> ((ApiException) e).code())
+            .isEqualTo(ErrorCode.NOT_FOUND);
+    }
+
     @Test
     void duplicate_ticket_ids_in_input_400() {
+        // The order is loaded and org-checked before the body is validated (refund-6).
+        when(orders.findById(orderId)).thenReturn(Optional.of(paidOrder()));
         when(refunds.findByOrderIdAndIdempotencyKey(any(), any())).thenReturn(Optional.empty());
         UUID dup = UUID.randomUUID();
         assertThatThrownBy(() ->
