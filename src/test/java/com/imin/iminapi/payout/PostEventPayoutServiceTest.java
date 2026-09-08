@@ -19,6 +19,7 @@ import com.imin.iminapi.settlement.SettlementStatus;
 import com.imin.iminapi.stripe.StripeConnectState;
 import com.imin.iminapi.stripe.StripeProperties;
 import com.stripe.StripeClient;
+import com.stripe.exception.ApiConnectionException;
 import com.stripe.exception.InvalidRequestException;
 import com.stripe.model.Balance;
 import com.stripe.model.Payout;
@@ -77,8 +78,11 @@ class PostEventPayoutServiceTest {
         final AtomicInteger payoutCount = new AtomicInteger(0);
         final AtomicReference<Long> lastPayoutAmount = new AtomicReference<>(null);
         final AtomicReference<String> lastPayoutId = new AtomicReference<>(null);
+        final AtomicReference<String> lastIdempotencyKey = new AtomicReference<>(null);
         /** When set, payouts().create throws balance_insufficient (race simulation). */
         volatile boolean failBalanceInsufficient = false;
+        /** When set, payouts().create throws a TRANSPORT error (socket/read timeout). */
+        volatile boolean failApiConnection = false;
         /** When false, accounts().retrieve reports NO external bank account. */
         volatile boolean hasBank = true;
 
@@ -87,7 +91,9 @@ class PostEventPayoutServiceTest {
             payoutCount.set(0);
             lastPayoutAmount.set(null);
             lastPayoutId.set(null);
+            lastIdempotencyKey.set(null);
             failBalanceInsufficient = false;
+            failApiConnection = false;
             hasBank = true;
         }
 
@@ -103,6 +109,15 @@ class PostEventPayoutServiceTest {
                 return (T) ApiResource.GSON.fromJson(json, Balance.class);
             }
             if (path != null && path.startsWith("/v1/payouts")) {
+                if (req.getOptions() != null) {
+                    lastIdempotencyKey.set(req.getOptions().getIdempotencyKey());
+                }
+                if (failApiConnection) {
+                    // The read timed out. Stripe MAY have created the payout — we never saw
+                    // the response. ApiConnectionException extends StripeException, so the
+                    // service's single catch used to record this as FAILED.
+                    throw new ApiConnectionException("IOException during API request: read timed out");
+                }
                 if (failBalanceInsufficient) {
                     // InvalidRequestException(message, param, requestId, code, statusCode, cause)
                     // — getCode() reads the 4th arg.
@@ -376,6 +391,67 @@ class PostEventPayoutServiceTest {
                 .as("retry bumps attempt → a fresh idempotency key")
                 .isEqualTo(2);
         assertThat(submitted.getIdempotencyKey()).isEqualTo("evt:" + e.getId() + ":attempt:2");
+    }
+
+    // ── stripe-2 — a TRANSPORT failure must NOT bump the attempt (double-pay) ──────
+    @Test
+    void transport_failure_parks_run_retrying_and_replays_the_same_idempotency_key() {
+        Event e = newEndedEvent(org);
+        order(e, 10_000, 1_000);            // net 9_000
+        fake.availableMinor.set(50_000L);
+        fake.failApiConnection = true;
+
+        // ── tick 1: Stripe accepted and minted po_A for 9_000, but the read timed out.
+        service.payOneEvent(e.getId());
+
+        List<PayoutRun> afterTick1 = payoutRuns.findByEventId(e.getId());
+        assertThat(afterTick1).hasSize(1);
+        PayoutRun parked = afterTick1.get(0);
+        assertThat(parked.getStatus())
+                .as("a timeout is NOT a rejection — the outcome is unknown, so the run parks RETRYING")
+                .isEqualTo(PayoutRunStatus.RETRYING);
+        assertThat(parked.getAttempt()).isEqualTo(1);
+        assertThat(parked.getIdempotencyKey()).isEqualTo("evt:" + e.getId() + ":attempt:1");
+        assertThat(parked.getAmountMinor()).isEqualTo(9_000L);
+
+        // ── tick 2: the event re-candidates. It must REPLAY key attempt:1, which Stripe
+        // answers with the original po_ — NOT mint attempt:2 and a second 9_000 payout.
+        fake.failApiConnection = false;
+        service.payOneEvent(e.getId());
+
+        assertThat(fake.payoutCount.get())
+                .as("exactly ONE payout request reached Stripe with a fresh key")
+                .isEqualTo(1);
+        assertThat(fake.lastIdempotencyKey.get())
+                .as("the replay reuses attempt:1's key so Stripe returns the ORIGINAL po_ "
+                        + "(a bumped attempt would be 18_000 out the door on 9_000 of net)")
+                .isEqualTo("evt:" + e.getId() + ":attempt:1");
+        assertThat(fake.lastPayoutAmount.get()).isEqualTo(9_000L);
+
+        List<PayoutRun> afterTick2 = payoutRuns.findByEventId(e.getId());
+        assertThat(afterTick2)
+                .as("one event, one payout unit — no attempt:2 row")
+                .hasSize(1);
+        assertThat(afterTick2.get(0).getStatus()).isEqualTo(PayoutRunStatus.SUBMITTED);
+        assertThat(afterTick2.get(0).getAttempt()).isEqualTo(1);
+    }
+
+    @Test
+    void definitive_4xx_rejection_still_bumps_the_attempt() {
+        Event e = newEndedEvent(org);
+        order(e, 6_000, 600);   // net 5_400
+        fake.availableMinor.set(50_000L);
+        fake.failBalanceInsufficient = true;
+
+        service.payOneEvent(e.getId());
+        assertThat(payoutRuns.findByEventId(e.getId()).get(0).getStatus())
+                .as("a 400 from Stripe means no po_ exists — a fresh attempt is safe")
+                .isEqualTo(PayoutRunStatus.FAILED);
+
+        fake.failBalanceInsufficient = false;
+        service.payOneEvent(e.getId());
+
+        assertThat(fake.lastIdempotencyKey.get()).isEqualTo("evt:" + e.getId() + ":attempt:2");
     }
 
     @Test

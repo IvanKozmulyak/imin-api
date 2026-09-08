@@ -55,6 +55,15 @@ public interface PayoutRunRepository extends JpaRepository<PayoutRun, UUID> {
     List<PayoutRun> findByEventId(UUID eventId);
 
     /**
+     * The unresolved run to REPLAY for an event, if any. A {@code RETRYING} run is one
+     * whose {@code Payout.create} failed at the transport level (timeout / rate limit /
+     * 5xx), so Stripe MAY already hold a {@code po_} for its idempotency key. The next
+     * tick must reuse that row's {@code attempt} — and therefore its key — so the replay
+     * converges on the original payout instead of minting a second one.
+     */
+    Optional<PayoutRun> findFirstByEventIdAndStatusOrderByAttemptDesc(UUID eventId, PayoutRunStatus status);
+
+    /**
      * Highest {@code attempt} recorded for an event, or {@code 0} when there are no runs.
      * Used to compute the next attempt (a fresh idempotency key after a FAILED run) without
      * loading every row.
