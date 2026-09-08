@@ -81,6 +81,15 @@ class PosterOrchestratorTest {
                 /*maxReferences*/ 3, /*maxConcurrent*/ 6);
     }
 
+    /** Same wiring as {@link #orchestrator()} but with a caller-supplied style gate. */
+    private PosterOrchestrator orchestratorWithStyleGate(PosterStyleValidationService gate) {
+        return new PosterOrchestrator(ideogram, vibeLibrary, styleCardLibrary, referenceLibrary,
+                textSpecFactory, textValidation, gate, storage, logoCompositor, repo,
+                /*maxRegenerations*/ 2, /*remixImageWeight*/ 70,
+                /*paletteRegradeEnabled*/ true, /*paletteRegradeWeight*/ 85,
+                /*maxReferences*/ 3, /*maxConcurrent*/ 6);
+    }
+
     private static Vibe brutalist() {
         return new Vibe("brutalist_techno", "Brutalist Techno", List.of("techno"), "vs",
                 List.of("#000"), "typo", "comp", List.of(), List.of(), null, List.of(), null,
@@ -186,6 +195,29 @@ class PosterOrchestratorTest {
         PosterOrchestrator.OrchestrationResult r =
                 orchestrator().run(UUID.randomUUID(), req(), concept());
 
+        assertThat(r.posters()).allSatisfy(p -> assertThat(p.status()).isEqualTo("COMPLETE"));
+        verify(ideogram, never()).remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any());
+    }
+
+    /**
+     * poster-3: the SOFT style gate throwing must not fail a text-accepted variant. With the real
+     * service wrapping a throwing client, all three renders still ship (best-effort).
+     */
+    @Test
+    void styleGateThrows_textAcceptedVariantsStillShip() {
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 1L));
+        when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
+
+        PosterStyleValidationClient throwingClient = mock(PosterStyleValidationClient.class);
+        when(throwingClient.validate(any(), any(), any()))
+                .thenThrow(new IllegalStateException("style validation returned malformed JSON"));
+
+        PosterOrchestrator.OrchestrationResult r = orchestratorWithStyleGate(
+                new PosterStyleValidationService(throwingClient, true))
+                .run(UUID.randomUUID(), req(), concept());
+
+        assertThat(r.posters()).hasSize(3);
         assertThat(r.posters()).allSatisfy(p -> assertThat(p.status()).isEqualTo("COMPLETE"));
         verify(ideogram, never()).remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any());
     }
