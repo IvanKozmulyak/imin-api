@@ -9,6 +9,7 @@ import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.stripe.StripeRefundService;
+import com.stripe.exception.ApiConnectionException;
 import com.imin.iminapi.model.UserRole;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -343,6 +344,102 @@ class RefundServiceTest {
                 .isInstanceOf(ApiException.class).actual();
             assertThat(ex.code()).isEqualTo(ErrorCode.ORDER_NOT_REFUNDABLE);
             verifyNoInteractions(stripeRefunds);
+        }
+    }
+
+    /**
+     * refund-1: the Stripe idempotency key must be a function of durable inputs. The whole
+     * createRefund transaction rolls back when the Stripe call fails, so the refund row id
+     * is NOT durable — deriving the key from it makes every retry a brand-new Stripe request.
+     *
+     * <p>Worked example used throughout: order total 9000 minor (3 x 3000 face tickets),
+     * applicationFeeMinor 450. Refunding ONE 3000 ticket = round(9000 * 3000 / 9000) = 3000;
+     * app-fee refund = round(450 * 3000 / 9000) = 150.
+     */
+    @org.junit.jupiter.api.Nested
+    class StripeIdempotencyKeyStability {
+
+        private Order order9000() {
+            Order o = new Order();
+            o.setId(orderId);
+            o.setOrgId(orgId);
+            o.setStripePaymentIntentId("pi_x");
+            o.setTotalMinor(9000);
+            o.setCurrency("eur");
+            o.setApplicationFeeMinor(450);
+            return o;
+        }
+
+        private void stubOneTicketRefund(Order o, Ticket t1, Ticket t2, Ticket t3, List<UUID> ids) {
+            when(orders.findById(orderId)).thenReturn(Optional.of(o));
+            when(refunds.findByOrderIdAndIdempotencyKey(eq(orderId), anyString()))
+                .thenReturn(Optional.empty());
+            when(tickets.findByIdInAndOrderId(any(), eq(orderId))).thenAnswer(inv -> {
+                List<UUID> asked = inv.getArgument(0);
+                return List.of(t1, t2, t3).stream().filter(t -> asked.contains(t.getId())).toList();
+            });
+            when(tickets.findByOrderId(orderId)).thenReturn(List.of(t1, t2, t3));
+            when(refundTickets.findRefundedTicketIds(any())).thenReturn(Set.of());
+            when(refunds.sumActiveAmountByOrderId(orderId)).thenReturn(0L);
+            // Each attempt mints a fresh in-memory row id, exactly as @GeneratedValue does.
+            when(refunds.save(any(Refund.class))).thenAnswer(inv -> {
+                Refund r = inv.getArgument(0);
+                if (r.getId() == null) r.setId(UUID.randomUUID());
+                return r;
+            });
+        }
+
+        @Test
+        void retry_after_a_rolled_back_attempt_reuses_the_same_stripe_key() throws Exception {
+            Order o = order9000();
+            Ticket t1 = ticket(3000);
+            Ticket t2 = ticket(3000);
+            Ticket t3 = ticket(3000);
+            List<UUID> ids = List.of(t1.getId());
+            stubOneTicketRefund(o, t1, t2, t3, ids);
+            // Stripe created the refund but the response was lost -> our tx rolls back.
+            when(stripeRefunds.create(eq("pi_x"), eq(3000L), eq("eur"), any(), eq(150L), anyString()))
+                .thenThrow(new ApiConnectionException("connection reset"));
+
+            for (int attempt = 0; attempt < 2; attempt++) {
+                assertThatThrownBy(() ->
+                    service.createRefund(orderId, principal, "idem-retry", ids, RefundReason.OTHER))
+                    .isInstanceOf(ApiException.class)
+                    .extracting(e -> ((ApiException) e).code())
+                    .isEqualTo(ErrorCode.STRIPE_REFUND_FAILED);
+            }
+
+            ArgumentCaptor<String> keys = ArgumentCaptor.forClass(String.class);
+            org.mockito.Mockito.verify(stripeRefunds, org.mockito.Mockito.times(2))
+                .create(eq("pi_x"), eq(3000L), eq("eur"), any(), eq(150L), keys.capture());
+            assertThat(keys.getAllValues().get(0))
+                .as("a retry must replay the SAME Stripe idempotency key, or Stripe refunds 3000 twice")
+                .isEqualTo(keys.getAllValues().get(1));
+        }
+
+        @Test
+        void a_different_ticket_selection_gets_a_different_stripe_key() throws Exception {
+            Order o = order9000();
+            Ticket t1 = ticket(3000);
+            Ticket t2 = ticket(3000);
+            Ticket t3 = ticket(3000);
+            stubOneTicketRefund(o, t1, t2, t3, List.of(t1.getId()));
+            when(stripeRefunds.create(eq("pi_x"), eq(3000L), eq("eur"), any(), eq(150L), anyString()))
+                .thenThrow(new ApiConnectionException("connection reset"));
+
+            assertThatThrownBy(() -> service.createRefund(
+                orderId, principal, "idem-same", List.of(t1.getId()), RefundReason.OTHER))
+                .isInstanceOf(ApiException.class);
+            assertThatThrownBy(() -> service.createRefund(
+                orderId, principal, "idem-same", List.of(t2.getId()), RefundReason.OTHER))
+                .isInstanceOf(ApiException.class);
+
+            ArgumentCaptor<String> keys = ArgumentCaptor.forClass(String.class);
+            org.mockito.Mockito.verify(stripeRefunds, org.mockito.Mockito.times(2))
+                .create(eq("pi_x"), eq(3000L), eq("eur"), any(), eq(150L), keys.capture());
+            assertThat(keys.getAllValues().get(0))
+                .as("refunding a different ticket is a different refund and must not replay")
+                .isNotEqualTo(keys.getAllValues().get(1));
         }
     }
 }
