@@ -211,10 +211,20 @@ public class EventReminderSender {
      * a reminder to attend on a refunded ticket is worse than silence.
      */
     private static boolean hasLiveTicket(List<Ticket> orderTickets) {
-        return orderTickets.stream().anyMatch(t -> {
+        return !live(orderTickets).isEmpty();
+    }
+
+    /**
+     * The tickets the door will actually honour. Extracted because the count in
+     * the mail has to be this one: {@link #hasLiveTicket} deliberately lets an
+     * order through on a single live ticket among refunded ones, and counting the
+     * unfiltered list there told that buyer their refunded tickets were "ready".
+     */
+    private static List<Ticket> live(List<Ticket> orderTickets) {
+        return orderTickets.stream().filter(t -> {
             TicketState state = TicketState.fromWire(t.getState());
             return state != TicketState.REFUNDED && state != TicketState.REVOKED;
-        });
+        }).toList();
     }
 
     /**
@@ -245,7 +255,7 @@ public class EventReminderSender {
         values.put("eventName", nullSafe(event.getName()));
         values.put("eventWhen", formatWhen(event));
         values.put("eventWhere", formatWhere(event));
-        values.put("ticketCount", String.valueOf(orderTickets.size()));
+        values.put("ticketCount", String.valueOf(live(orderTickets).size()));
         values.put("orderUrl", orderUrl);
 
         String locale = localeFor(order);
