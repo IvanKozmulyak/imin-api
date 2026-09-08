@@ -366,6 +366,74 @@ class ConceptStudioServiceTest {
         assertThat(bcap.getValue()).isNull();
     }
 
+    // ---- create-request snapshot carried into regenerate (poster-5) ------------------------------
+
+    @Test
+    void create_snapshotsTheRequestOntoTheStagingRow() {
+        AuthPrincipal p = owner();
+        stubPipeline();
+        when(vibeLibrary.hasVibe("brutalist_techno")).thenReturn(true);
+
+        sut.create(p, new ConceptRequest(
+                "Moody warehouse techno brief here", "Techno", "Berlin", 400, "brutalist_techno",
+                "ANTRUM VII", LocalDate.of(2026, 11, 14), "Void Club",
+                List.of("Nina Kraviz", "Rrose"), "12 Rue Test", "https://rsvp.example",
+                Boolean.TRUE, null));
+
+        ArgumentCaptor<GeneratedEvent> cap = ArgumentCaptor.forClass(GeneratedEvent.class);
+        verify(repo, atLeastOnce()).save(cap.capture());
+        GeneratedEvent row = cap.getValue();
+        assertThat(row.getRequestTitle()).isEqualTo("ANTRUM VII");
+        assertThat(row.getRequestVenue()).isEqualTo("Void Club");
+        assertThat(row.getRequestLineup()).isEqualTo("Nina Kraviz,Rrose");
+        assertThat(row.getRequestAddress()).isEqualTo("12 Rue Test");
+        assertThat(row.getRequestRsvpUrl()).isEqualTo("https://rsvp.example");
+        assertThat(row.getRequestVibeId()).isEqualTo("brutalist_techno");
+        assertThat(row.getRequestEventDate()).isEqualTo(LocalDate.of(2026, 11, 14));
+        assertThat(row.getRequestCapacity()).isEqualTo(400);
+        assertThat(row.getRequestLogoOnPosters()).isTrue();
+    }
+
+    @Test
+    void regenerate_rebuildsTheRequestFromTheStoredSnapshot() {
+        AuthPrincipal p = owner();
+        UUID conceptId = UUID.randomUUID();
+        GeneratedEvent prior = priorConcept(p, conceptId);
+        prior.setRequestTitle("ANTRUM VII");
+        prior.setRequestVenue("Void Club");
+        prior.setRequestLineup("Nina Kraviz,Rrose");
+        prior.setRequestAddress("12 Rue Test");
+        prior.setRequestRsvpUrl("https://rsvp.example");
+        prior.setRequestVibeId("brutalist_techno");
+        prior.setRequestEventDate(LocalDate.of(2026, 11, 14));
+        prior.setRequestCapacity(400);
+        prior.setRequestLogoOnPosters(Boolean.FALSE);
+        stubPipeline();
+        when(vibeLibrary.hasVibe("brutalist_techno")).thenReturn(true);
+        when(vibeLibrary.byId("brutalist_techno")).thenReturn(java.util.Optional.of(vibeNamed("brutalist_techno")));
+
+        sut.regenerate(p, conceptId, List.of());
+
+        ArgumentCaptor<EventCreatorRequest> cap = ArgumentCaptor.forClass(EventCreatorRequest.class);
+        verify(descService).generateConcept(cap.capture(), anyLong(), anyBoolean());
+        EventCreatorRequest legacy = cap.getValue();
+        assertThat(legacy.title()).isEqualTo("ANTRUM VII");
+        assertThat(legacy.location()).isEqualTo("Void Club");
+        assertThat(legacy.djName()).isEqualTo("Nina Kraviz, Rrose");
+        assertThat(legacy.address()).isEqualTo("12 Rue Test");
+        assertThat(legacy.rsvpUrl()).isEqualTo("https://rsvp.example");
+        assertThat(legacy.date()).isEqualTo(LocalDate.of(2026, 11, 14));
+        // The vibe the organizer pinned at create time drives the render again, not the genre default.
+        assertThat(legacy.subStyleTag()).isEqualTo("brutalist_techno");
+        verify(vibeLibrary, never()).suggestForGenre(any());
+    }
+
+    private static Vibe vibeNamed(String id) {
+        return new Vibe(id, id, List.of("techno"), "vs", List.of("#000"), "typ", "comp",
+                List.of(), List.of(), "recraft", List.of(), null, "tpl", false,
+                "subject", com.imin.iminapi.dto.StyleMode.CURATED_SUBSTYLE, "urban_drama");
+    }
+
     // ---- lock list on regenerate (poster-4) ------------------------------------------------------
 
     /** A prior generation whose three variants carry the posters an organizer may lock. */

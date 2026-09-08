@@ -117,17 +117,37 @@ public class ConceptStudioService {
                 .map(PosterGeneration::getDjPhotoUrl)
                 .map(this::resolveDjPhotoFromUrl)
                 .orElse(null);
+        // Rebuild from the snapshot stored at create time (V108), not from nulls: without the event
+        // text the regenerated posters carried neither title nor venue, and without the pinned
+        // vibeId a genre default silently replaced the aesthetic the organizer chose.
         ConceptRequest req = new ConceptRequest(
                 prior.getVibe() == null ? "rerun" : prior.getVibe(),
                 prior.getGenre(), prior.getCity(),
-                /* capacity */ null, /* vibeId */ null,
-                /* title */ null, /* eventDate */ null, /* venue */ null,
-                /* lineup */ null, /* address */ null, /* rsvpUrl */ null,
-                /* logoOnPosters: brand default applies on regenerate */ null,
-                /* eventId */ null);
+                prior.getRequestCapacity(), prior.getRequestVibeId(),
+                prior.getRequestTitle(), prior.getRequestEventDate(), prior.getRequestVenue(),
+                splitLineup(prior.getRequestLineup()), prior.getRequestAddress(),
+                prior.getRequestRsvpUrl(),
+                prior.getRequestLogoOnPosters(),
+                prior.getRequestEventId());
         List<PosterVariantEntity> lockedPosters =
                 locks.contains(LOCK_POSTER) ? priorVariants(conceptId) : List.of();
         return run(p, req, djPhoto, prior, locks, lockedPosters);
+    }
+
+    /** Inverse of {@link #joinLineup}: null/blank → null, so an absent lineup stays absent. */
+    private static List<String> splitLineup(String joined) {
+        if (joined == null || joined.isBlank()) return null;
+        return java.util.Arrays.stream(joined.split(","))
+                .map(String::trim)
+                .filter(v -> !v.isEmpty())
+                .toList();
+    }
+
+    /** Comma-joined, the same convention as {@code platforms} and {@code palette_hexes}. */
+    private static String joinLineup(List<String> lineup) {
+        if (lineup == null || lineup.isEmpty()) return null;
+        return String.join(",", lineup.stream().filter(Objects::nonNull).map(String::trim)
+                .filter(v -> !v.isEmpty()).toList());
     }
 
     /** Wire lock values, trimmed and lower-cased; unknown entries are simply never matched. */
@@ -289,6 +309,19 @@ public class ConceptStudioService {
         g.setEventDate(LocalDate.now().plusMonths(2));
         g.setPlatforms(String.join(",", DEFAULT_PLATFORMS));
         g.setStatus(GeneratedEventStatus.DRAFT);
+        // Snapshot the request (V108) so a later regenerate reproduces the same event text and the
+        // same pinned vibe. eventDate above stays the pricing horizon; the asked-for date is its own
+        // column so nothing that already reads event_date changes meaning.
+        g.setRequestTitle(req.title());
+        g.setRequestVenue(req.venue());
+        g.setRequestLineup(joinLineup(req.lineup()));
+        g.setRequestAddress(req.address());
+        g.setRequestRsvpUrl(req.rsvpUrl());
+        g.setRequestVibeId(req.vibeId());
+        g.setRequestEventId(req.eventId());
+        g.setRequestEventDate(req.eventDate());
+        g.setRequestCapacity(req.capacity());
+        g.setRequestLogoOnPosters(req.logoOnPosters());
         return g;
     }
 
