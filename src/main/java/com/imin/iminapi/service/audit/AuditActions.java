@@ -29,7 +29,6 @@ public final class AuditActions {
     public static final String ATTENDEES_EXPORTED = "ATTENDEES_EXPORTED";
 
     // ---- Audience / Consent / DSAR (Tier C) ----
-    public static final String AUDIENCE_TAG_ADDED       = "AUDIENCE_TAG_ADDED";
     public static final String SEGMENT_CREATED          = "SEGMENT_CREATED";
     public static final String SEGMENT_DELETED          = "SEGMENT_DELETED";
     public static final String SEGMENT_SNAPSHOT         = "SEGMENT_SNAPSHOT";
