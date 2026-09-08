@@ -14,16 +14,19 @@ import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.security.ApiException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.HttpStatus;
 
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @SpringBootTest
 @Import(TestRateLimitConfig.class)
@@ -37,6 +40,7 @@ class TicketRedeemServiceTest {
     @Autowired UserRepository users;
     @Autowired QrPayloadSigner signer;
 
+    private Organization org;
     private Event event;
     private Order order;
 
@@ -48,7 +52,7 @@ class TicketRedeemServiceTest {
         users.deleteAll();
         orgs.deleteAll();
 
-        Organization org = new Organization();
+        org = new Organization();
         org.setName("Redeem Org");
         org.setSlug("redeem-org-" + UUID.randomUUID().toString().substring(0, 8));
         org.setContactEmail("redeem@example.com");
@@ -97,11 +101,11 @@ class TicketRedeemServiceTest {
         UUID userId = UUID.randomUUID();
         String payload = signer.sign(t.getToken());
 
-        TicketRedeemService.Result first = service.redeem(event.getId(), payload, userId);
+        TicketRedeemService.Result first = service.redeem(org.getId(), event.getId(), payload, userId);
         assertThat(first.outcome()).isEqualTo(TicketRedeemService.Outcome.REDEEMED);
         assertThat(first.ticket().getRedeemedAt()).isNotNull();
 
-        TicketRedeemService.Result second = service.redeem(event.getId(), payload, userId);
+        TicketRedeemService.Result second = service.redeem(org.getId(), event.getId(), payload, userId);
         assertThat(second.outcome()).isEqualTo(TicketRedeemService.Outcome.ALREADY_REDEEMED);
     }
 
@@ -111,7 +115,7 @@ class TicketRedeemServiceTest {
         UUID userId = UUID.randomUUID();
         String payload = signer.sign(t.getToken());
 
-        TicketRedeemService.Result r = service.redeem(event.getId(), payload, userId);
+        TicketRedeemService.Result r = service.redeem(org.getId(), event.getId(), payload, userId);
         assertThat(r.outcome()).isEqualTo(TicketRedeemService.Outcome.REDEEMED);
     }
 
@@ -119,7 +123,7 @@ class TicketRedeemServiceTest {
     void invalid_signature_returns_invalid_without_state_change() {
         Ticket t = persistTicket("issued");
 
-        TicketRedeemService.Result r = service.redeem(event.getId(),
+        TicketRedeemService.Result r = service.redeem(org.getId(), event.getId(),
                 "imin1." + t.getToken() + ".BADSIGAAAAAAAAAAAAAAAA", UUID.randomUUID());
 
         assertThat(r.outcome()).isEqualTo(TicketRedeemService.Outcome.INVALID);
@@ -129,27 +133,75 @@ class TicketRedeemServiceTest {
 
     @Test
     void unknown_token_is_invalid_not_404() {
-        TicketRedeemService.Result r = service.redeem(event.getId(),
+        TicketRedeemService.Result r = service.redeem(org.getId(), event.getId(),
                 signer.sign("NEVER_ISSUED_TOKEN"), UUID.randomUUID());
         assertThat(r.outcome()).isEqualTo(TicketRedeemService.Outcome.INVALID);
     }
 
     @Test
     void wrong_event_returns_wrong_event() {
+        // A sibling event in the SAME org — the gate is at the wrong door, which is
+        // what wrong_event means. (A foreign event id is an authorization failure,
+        // not a wrong door; see cross_org_event_is_not_found below.)
         Ticket t = persistTicket("issued");
+        Event sibling = new Event();
+        sibling.setOrgId(org.getId());
+        sibling.setName("Sibling Event");
+        sibling.setSlug("sibling-event-" + UUID.randomUUID().toString().substring(0, 8));
+        sibling.setVisibility(EventVisibility.PUBLIC);
+        sibling.setStatus(EventStatus.LIVE);
+        sibling.setCurrency("EUR");
+        sibling.setCreatedBy(event.getCreatedBy());
+        sibling = events.save(sibling);
 
-        TicketRedeemService.Result r = service.redeem(UUID.randomUUID(),
+        TicketRedeemService.Result r = service.redeem(org.getId(), sibling.getId(),
                 signer.sign(t.getToken()), UUID.randomUUID());
 
         assertThat(r.outcome()).isEqualTo(TicketRedeemService.Outcome.WRONG_EVENT);
         assertThat(r.ticket()).isNull(); // no leak of event id
     }
 
+    /**
+     * The gate credential is org-scoped and carries no event scope, so the event
+     * named in the path has to be loaded and owned. Answering 404 (rather than a
+     * distinct code) matches every other org-scoped service and keeps the response
+     * from confirming that the event exists.
+     */
+    @Test
+    void cross_org_event_is_not_found_and_leaves_the_ticket_alone() {
+        Ticket t = persistTicket("issued");
+
+        Organization otherOrg = new Organization();
+        otherOrg.setName("Other Redeem Org");
+        otherOrg.setSlug("other-redeem-" + UUID.randomUUID().toString().substring(0, 8));
+        otherOrg.setContactEmail("other-redeem@example.com");
+        otherOrg.setCountry("DE");
+        otherOrg = orgs.save(otherOrg);
+
+        UUID otherOrgId = otherOrg.getId();
+        assertThatThrownBy(() -> service.redeem(otherOrgId, event.getId(),
+                signer.sign(t.getToken()), UUID.randomUUID()))
+                .isInstanceOf(ApiException.class)
+                .satisfies(e -> assertThat(((ApiException) e).status()).isEqualTo(HttpStatus.NOT_FOUND));
+
+        assertThat(tickets.findByToken(t.getToken()).orElseThrow().getState()).isEqualTo("issued");
+    }
+
+    @Test
+    void unknown_event_is_not_found() {
+        Ticket t = persistTicket("issued");
+        UUID orgId = org.getId();
+
+        assertThatThrownBy(() -> service.redeem(orgId, UUID.randomUUID(),
+                signer.sign(t.getToken()), UUID.randomUUID()))
+                .isInstanceOf(ApiException.class);
+    }
+
     @Test
     void revoked_returns_revoked() {
         Ticket t = persistTicket("revoked");
 
-        TicketRedeemService.Result r = service.redeem(event.getId(),
+        TicketRedeemService.Result r = service.redeem(org.getId(), event.getId(),
                 signer.sign(t.getToken()), UUID.randomUUID());
 
         assertThat(r.outcome()).isEqualTo(TicketRedeemService.Outcome.REVOKED);
@@ -159,7 +211,7 @@ class TicketRedeemServiceTest {
     void refunded_returns_refunded() {
         Ticket t = persistTicket("refunded");
 
-        TicketRedeemService.Result r = service.redeem(event.getId(),
+        TicketRedeemService.Result r = service.redeem(org.getId(), event.getId(),
                 signer.sign(t.getToken()), UUID.randomUUID());
 
         assertThat(r.outcome()).isEqualTo(TicketRedeemService.Outcome.REFUNDED);
@@ -177,7 +229,7 @@ class TicketRedeemServiceTest {
         // The next scan should report REFUNDED, not ALREADY_REDEEMED.
         Ticket t = persistTicket("refunded");
 
-        TicketRedeemService.Result r = service.redeem(event.getId(),
+        TicketRedeemService.Result r = service.redeem(org.getId(), event.getId(),
                 signer.sign(t.getToken()), UUID.randomUUID());
 
         assertThat(r.outcome())

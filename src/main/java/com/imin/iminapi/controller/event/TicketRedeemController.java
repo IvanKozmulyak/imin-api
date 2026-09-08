@@ -67,7 +67,7 @@ public class TicketRedeemController {
         // whom was unreconstructable — a GDPR accountability gap, an
         // internal-fraud blind spot, and worse for having been documented as a
         // control that was there. The trail is written below, for real.
-        TicketRedeemService.Result r = service.redeem(eventId, req.qrPayload(), me.userId());
+        TicketRedeemService.Result r = service.redeem(me.orgId(), eventId, req.qrPayload(), me.userId());
         if (r.outcome() == TicketRedeemService.Outcome.REDEEMED && r.ticket() != null) {
             recordAdmission(me, eventId, r);
         }

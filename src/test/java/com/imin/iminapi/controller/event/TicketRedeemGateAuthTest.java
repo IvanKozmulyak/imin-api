@@ -260,6 +260,78 @@ class TicketRedeemGateAuthTest {
                 .andExpect(jsonPath("$.error.code").value("FORBIDDEN"));
     }
 
+    /**
+     * A gate token is ORG-scoped, never event-scoped: {@code AuthPrincipal.forGate}
+     * carries an org id and nothing else. The controller only compared the path
+     * {@code orgId} to the principal's, and the service only compared the ticket's
+     * event id to the path's — so org A's own token, on org A's path, with org B's
+     * event id and a copy of org B's QR string, reached the atomic UPDATE and flipped
+     * a foreign ticket to {@code redeemed}. The event has to be loaded and owned.
+     *
+     * <p>Cross-org answers with the same {@code 404 NOT_FOUND} every other org-scoped
+     * service gives (see {@code TicketTierService.loadOwnedEvent}) — it must not
+     * confirm that the event exists.
+     */
+    @Test
+    void gate_token_cannot_redeem_a_ticket_from_another_orgs_event() throws Exception {
+        Organization otherOrg = new Organization();
+        otherOrg.setName("Victim Org");
+        otherOrg.setSlug("victim-" + UUID.randomUUID().toString().substring(0, 8));
+        otherOrg.setContactEmail("victim@example.test");
+        otherOrg.setCountry("DE");
+        otherOrg = orgs.save(otherOrg);
+
+        User otherOwner = new User();
+        otherOwner.setOrgId(otherOrg.getId());
+        otherOwner.setEmail("victim-owner-" + UUID.randomUUID() + "@example.test");
+        otherOwner.setRole(UserRole.OWNER);
+        otherOwner = users.save(otherOwner);
+
+        Event otherEvent = new Event();
+        otherEvent.setOrgId(otherOrg.getId());
+        otherEvent.setName("Victim Event");
+        otherEvent.setSlug("victim-event-" + UUID.randomUUID().toString().substring(0, 8));
+        otherEvent.setVisibility(EventVisibility.PUBLIC);
+        otherEvent.setStatus(EventStatus.LIVE);
+        otherEvent.setCurrency("EUR");
+        otherEvent.setCreatedBy(otherOwner.getId());
+        otherEvent = events.save(otherEvent);
+
+        Order otherOrder = new Order();
+        otherOrder.setToken("ORD_" + UUID.randomUUID());
+        otherOrder.setEventId(otherEvent.getId());
+        otherOrder.setOrgId(otherOrg.getId());
+        otherOrder.setEmail("victim-buyer@example.test");
+        otherOrder.setTotalMinor(2500L);
+        otherOrder.setCurrency("EUR");
+        otherOrder.setPaymentMethod("stripe");
+        otherOrder = orders.save(otherOrder);
+
+        Ticket otherTicket = new Ticket();
+        otherTicket.setToken("TKT_" + UUID.randomUUID());
+        otherTicket.setOrderId(otherOrder.getId());
+        otherTicket.setEventId(otherEvent.getId());
+        otherTicket.setTierId(UUID.randomUUID());
+        otherTicket.setTierName("GA");
+        otherTicket.setState("issued");
+        otherTicket = tickets.save(otherTicket);
+
+        long auditsBefore = auditLogs.count();
+        // Path orgId is OUR org (so the controller's membership check passes);
+        // the event id and the QR both belong to the other org.
+        mvc.perform(post("/api/v1/orgs/" + org.getId() + "/events/" + otherEvent.getId() + "/tickets/redeem")
+                        .header("Authorization", "Bearer " + gateToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("qrPayload", signer.sign(otherTicket.getToken())))))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
+
+        assertThat(tickets.findByToken(otherTicket.getToken()).orElseThrow().getState())
+                .as("a foreign ticket must not be redeemable with our gate token")
+                .isEqualTo("issued");
+        assertThat(auditLogs.count()).isEqualTo(auditsBefore);
+    }
+
     @Test
     void gate_token_is_rejected_on_organizer_dashboard_endpoint() throws Exception {
         // /api/v1/org is in the organizer dashboard subtree — must reject the gate token
