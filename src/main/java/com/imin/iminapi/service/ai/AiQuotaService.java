@@ -5,12 +5,14 @@ import com.imin.iminapi.model.AiGenerationUsage;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.AiGenerationUsageRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.util.Times;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -24,6 +26,11 @@ import java.util.UUID;
  *
  * <p>Attempts are recorded BEFORE the paid provider is called, because abuse is measured in
  * attempts, not successes — a caller that grinds a failing endpoint still burns quota.
+ *
+ * <p>The check-then-insert runs in one transaction behind a row lock on the caller's own user row.
+ * Without it, concurrent requests from the same user all read {@code used = limit - 1}, all passed
+ * the guard and all inserted, so the ceiling could be exceeded by the request concurrency. The
+ * transaction is three short statements long and holds no provider call.
  */
 @Service
 public class AiQuotaService {
@@ -35,11 +42,14 @@ public class AiQuotaService {
 
     private final AiGenerationUsageRepository usage;
     private final OrganizationRepository orgs;
+    private final UserRepository users;
     private final AiQuotaProperties props;
 
-    public AiQuotaService(AiGenerationUsageRepository usage, OrganizationRepository orgs, AiQuotaProperties props) {
+    public AiQuotaService(AiGenerationUsageRepository usage, OrganizationRepository orgs,
+                          UserRepository users, AiQuotaProperties props) {
         this.usage = usage;
         this.orgs = orgs;
+        this.users = users;
         this.props = props;
     }
 
@@ -49,6 +59,7 @@ public class AiQuotaService {
      * the limit, throw 429 {@code AI_QUOTA_EXCEEDED} with {@code {limit, used, resetAt}}; else
      * insert a usage row and allow.
      */
+    @Transactional
     public void checkAndRecordImage(AuthPrincipal p) {
         checkAndRecord(p, KIND_IMAGE, props.getImagePerDay());
     }
@@ -59,6 +70,7 @@ public class AiQuotaService {
      * benchmark-only (kill-switch) renders are free. Same 429 {@code AI_QUOTA_EXCEEDED}
      * envelope as the image quota.
      */
+    @Transactional
     public void checkAndRecordScore(AuthPrincipal p) {
         checkAndRecord(p, KIND_SCORE, props.getScorePerDay());
     }
@@ -68,6 +80,11 @@ public class AiQuotaService {
             return; // record nothing, allow
         }
         UUID userId = p.userId();
+        // Serialise this user's check-then-insert. Taken before the count so the count below runs
+        // on a snapshot that already includes any row a concurrent caller just committed.
+        if (userId != null) {
+            users.lockForUpdate(userId);
+        }
         Instant windowStart = Times.nowMicros().minus(WINDOW);
         long used = usage.countByUserIdAndKindAndCreatedAtAfter(userId, kind, windowStart);
         if (used >= limit) {
