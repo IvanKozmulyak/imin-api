@@ -261,6 +261,68 @@ class RefundServiceTest {
         verifyNoInteractions(stripeRefunds);
     }
 
+    /**
+     * refund-3: a refund that Stripe ends at FAILED/CANCELED moved no money, so its tickets
+     * must become refundable again. The refund_tickets rows are what makes them refundable,
+     * and UNIQUE(ticket_id) means a stale row blocks every retry with 409
+     * TICKET_ALREADY_REFUNDED — permanently, since nothing else ever deletes it.
+     */
+    @org.junit.jupiter.api.Nested
+    class WebhookTerminalFailure {
+
+        private Refund pendingRefund() {
+            Refund r = new Refund();
+            r.setId(UUID.randomUUID());
+            r.setOrderId(orderId);
+            r.setStripeRefundId("re_fail");
+            r.setAmountMinor(3000);
+            r.setStatus(RefundStatus.PENDING);
+            return r;
+        }
+
+        @Test
+        void failed_webhook_releases_the_refund_tickets() {
+            Refund r = pendingRefund();
+            when(refunds.findByStripeRefundId("re_fail")).thenReturn(Optional.of(r));
+            when(refunds.updateStatusIfCurrent(r.getId(), RefundStatus.PENDING, RefundStatus.FAILED))
+                .thenReturn(1);
+            when(refunds.findById(r.getId())).thenReturn(Optional.of(r));
+
+            service.handleWebhookStatusChange("re_fail", RefundStatus.FAILED,
+                "expired_or_canceled_card", "The card has expired.");
+
+            org.mockito.Mockito.verify(refundTickets).deleteByRefundId(r.getId());
+            assertThat(r.getFailureCode()).isEqualTo("expired_or_canceled_card");
+        }
+
+        @Test
+        void canceled_webhook_releases_the_refund_tickets() {
+            Refund r = pendingRefund();
+            when(refunds.findByStripeRefundId("re_fail")).thenReturn(Optional.of(r));
+            when(refunds.updateStatusIfCurrent(r.getId(), RefundStatus.PENDING, RefundStatus.CANCELED))
+                .thenReturn(1);
+
+            service.handleWebhookStatusChange("re_fail", RefundStatus.CANCELED, null, null);
+
+            org.mockito.Mockito.verify(refundTickets).deleteByRefundId(r.getId());
+        }
+
+        @Test
+        void succeeded_webhook_keeps_the_refund_tickets() {
+            Refund r = pendingRefund();
+            when(refunds.findByStripeRefundId("re_fail")).thenReturn(Optional.of(r));
+            when(refunds.updateStatusIfCurrent(r.getId(), RefundStatus.PENDING, RefundStatus.SUCCEEDED))
+                .thenReturn(1);
+            when(refundTickets.findTicketIdsByRefundId(r.getId())).thenReturn(List.of());
+            when(tickets.findAllById(List.of())).thenReturn(List.of());
+
+            service.handleWebhookStatusChange("re_fail", RefundStatus.SUCCEEDED, null, null);
+
+            org.mockito.Mockito.verify(refundTickets, org.mockito.Mockito.never())
+                .deleteByRefundId(any());
+        }
+    }
+
     @org.junit.jupiter.api.Nested
     class PromoCodeAmountAllocation {
 

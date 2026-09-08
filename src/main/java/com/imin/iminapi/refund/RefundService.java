@@ -275,15 +275,26 @@ public class RefundService {
             finalizeSucceeded(refund);
             log.info("[refund-webhook] refund {} SUCCEEDED — inventory released, email queued",
                 refund.getId());
-        } else if (newStatus == RefundStatus.FAILED) {
-            // Conditional UPDATE only flipped status; persist failure detail separately.
-            Refund reloaded = refunds.findById(refund.getId()).orElseThrow();
-            reloaded.setFailureCode(failureCode);
-            reloaded.setFailureMessage(failureMessage);
-            refunds.save(reloaded);
-            publisher.publishEvent(new RefundFailedEvent(refund.getId()));
-            log.warn("[refund-webhook] refund {} FAILED code={} message={}",
-                refund.getId(), failureCode, failureMessage);
+        } else if (newStatus == RefundStatus.FAILED || newStatus == RefundStatus.CANCELED) {
+            // No money moved, so the tickets must become refundable again. The
+            // refund_tickets rows are the claim — UNIQUE(ticket_id) means leaving them
+            // behind blocks every retry with 409 TICKET_ALREADY_REFUNDED forever, while
+            // the money side (sumActiveAmountByOrderId) already treats the refund as
+            // inactive. Same transaction as the status flip, so the two never disagree.
+            long released = refundTickets.deleteByRefundId(refund.getId());
+            if (newStatus == RefundStatus.FAILED) {
+                // Conditional UPDATE only flipped status; persist failure detail separately.
+                Refund reloaded = refunds.findById(refund.getId()).orElseThrow();
+                reloaded.setFailureCode(failureCode);
+                reloaded.setFailureMessage(failureMessage);
+                refunds.save(reloaded);
+                publisher.publishEvent(new RefundFailedEvent(refund.getId()));
+                log.warn("[refund-webhook] refund {} FAILED code={} message={} — released {} ticket claim(s)",
+                    refund.getId(), failureCode, failureMessage, released);
+            } else {
+                log.info("[refund-webhook] refund {} CANCELED — released {} ticket claim(s)",
+                    refund.getId(), released);
+            }
         }
     }
 
