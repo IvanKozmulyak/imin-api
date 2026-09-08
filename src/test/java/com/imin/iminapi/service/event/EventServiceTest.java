@@ -261,6 +261,34 @@ class EventServiceTest {
                 .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.INVALID_STATE);
     }
 
+    /**
+     * events-19: a buyer sitting on a hosted Stripe Checkout page holds a HELD
+     * reservation — reserved > 0 while sold is still 0 — and nothing in the webhook path
+     * re-checks status, so within the session TTL they pay and get tickets for an event
+     * the organizer has just hidden believing it had no sales.
+     */
+    @Test
+    void unpublish_blocked_when_a_checkout_is_in_flight() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setStatus(EventStatus.LIVE);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+
+        TicketTier held = new TicketTier();
+        held.setEventId(e.getId());
+        held.setName("GA");
+        held.setQuantity(100);
+        held.setSold(0);
+        held.setReserved(2);
+        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of(held));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> sut.unpublish(p, e.getId()))
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.INVALID_STATE)
+                .hasMessageContaining("checkout");
+        verify(events, never()).save(any(Event.class));
+    }
+
     @Test
     void unpublish_404_when_event_in_other_org() {
         AuthPrincipal p = principal();

@@ -306,11 +306,19 @@ public class EventService {
         if (e.getStatus() != EventStatus.LIVE) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE, "Event is not published");
         }
-        boolean anySold = tiers.findByEventIdOrderBySortOrderAsc(e.getId()).stream()
-                .anyMatch(t -> t.getSold() > 0);
-        if (anySold) {
+        List<TicketTier> eventTiers = tiers.findByEventIdOrderBySortOrderAsc(e.getId());
+        if (eventTiers.stream().anyMatch(t -> t.getSold() > 0)) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
                     "Cannot unpublish: tickets have been sold. Cancel the event and refund buyers first.");
+        }
+        // A buyer on a hosted Stripe Checkout page holds reserved > 0 with sold still 0, and
+        // nothing in the webhook path re-checks status — so within the session TTL they would
+        // pay and get tickets for an event the organizer believes had no sales (events-19).
+        // Distinct message: a hold just needs them to retry once it expires.
+        if (eventTiers.stream().anyMatch(t -> t.getReserved() > 0)) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                    "Cannot unpublish: a checkout is in progress. Try again once the "
+                            + "checkout session expires.");
         }
         e.setStatus(EventStatus.DRAFT);
         e.setUpdatedAt(Instant.now());
