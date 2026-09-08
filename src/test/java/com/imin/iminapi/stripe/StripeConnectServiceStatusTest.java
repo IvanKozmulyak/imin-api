@@ -120,7 +120,7 @@ class StripeConnectServiceStatusTest {
     }
 
     @Test
-    void getStatusLive_forces_refresh_when_state_not_active() {
+    void getStatusLive_forces_refresh_when_state_not_active_and_mirror_is_stale() {
         OrganizationRepository orgs = mock(OrganizationRepository.class);
         StripeConnectStatusMirror mirror = mock(StripeConnectStatusMirror.class);
         UUID orgId = UUID.randomUUID();
@@ -128,7 +128,8 @@ class StripeConnectServiceStatusTest {
         org.setId(orgId);
         org.setStripeAccountId("acct_live1");
         org.setStripeConnectState(StripeConnectState.ONBOARDING);
-        org.setStripeConnectStatusUpdatedAt(java.time.Instant.now()); // fresh, but not ACTIVE
+        // Outside the short non-ACTIVE window: the org might have just been verified.
+        org.setStripeConnectStatusUpdatedAt(java.time.Instant.now().minusSeconds(120));
         when(orgs.findById(orgId)).thenReturn(Optional.of(org));
 
         StripeConnectService svc = new StripeConnectService(
@@ -136,8 +137,37 @@ class StripeConnectServiceStatusTest {
 
         svc.getStatusLive(orgId);
 
-        // A not-ready org might have just been verified — always re-check live before gating money.
+        // A not-ready org might have just been verified — re-check live before gating money.
         verify(mirror).syncFromStripe("acct_live1");
+    }
+
+    // ── stripe-14 — the checkout path must not re-sync on literally every checkout ──
+    @Test
+    void getStatusLive_skips_refresh_for_a_just_synced_non_active_org() {
+        OrganizationRepository orgs = mock(OrganizationRepository.class);
+        StripeConnectStatusMirror mirror = mock(StripeConnectStatusMirror.class);
+        UUID orgId = UUID.randomUUID();
+        Organization org = new Organization();
+        org.setId(orgId);
+        org.setStripeAccountId("acct_restricted");
+        // The real shape of this bug: transfers capability active (so it SELLS) but a
+        // currently_due entry pins derive() at RESTRICTED, which is not ACTIVE.
+        org.setStripeConnectState(StripeConnectState.RESTRICTED);
+        org.setStripePayoutsEnabled(true);
+        org.setStripeDetailsSubmitted(true);
+        org.setStripeRequirementsCurrentlyDue(java.util.List.of("individual.verification.document"));
+        org.setStripeConnectStatusUpdatedAt(java.time.Instant.now());
+        when(orgs.findById(orgId)).thenReturn(Optional.of(org));
+
+        StripeConnectService svc = new StripeConnectService(
+                mock(StripeClient.class), orgs, new StripeProperties(), null, mirror);
+
+        StripeConnectService.StatusResult r = svc.getStatusLive(orgId);
+
+        assertThat(r.readyToReceivePayments())
+                .as("this org sells normally — it just owes Stripe a document")
+                .isTrue();
+        verify(mirror, never()).syncFromStripe(any());
     }
 
     @Test
