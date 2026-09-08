@@ -108,12 +108,18 @@ public class TicketTierValidator {
             }
         }
 
-        // quantity: > 0 and (when reducing) ≥ existing.sold
+        // quantity: > 0 and (when reducing) ≥ what is already committed — sold seats plus
+        // outstanding HELD checkout holds. Ignoring `reserved` let a live tier be shrunk
+        // below its in-flight holds, and TierAvailability.remaining clamps the resulting
+        // negative at 0, so it failed silently (events-21).
         if (req.quantity() != null) {
+            int committed = existing.getSold() + existing.getReserved();
             if (req.quantity() <= 0) {
                 errors.put("quantity", "must be > 0");
-            } else if (req.quantity() < existing.getSold()) {
-                errors.put("quantity", "must be ≥ sold (" + existing.getSold() + ")");
+            } else if (req.quantity() < committed) {
+                errors.put("quantity", existing.getReserved() > 0
+                        ? "must be ≥ sold + checkouts in progress (" + committed + ")"
+                        : "must be ≥ sold (" + existing.getSold() + ")");
             }
         }
 

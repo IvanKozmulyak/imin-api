@@ -281,6 +281,21 @@ class TicketTierValidatorTest {
         assertThat(errors.get("quantity")).isEqualTo("must be ≥ sold (10)");
     }
 
+    /**
+     * events-21(1): shrinking a live tier below its outstanding HELD holds was accepted —
+     * TierAvailability.remaining clamps the resulting negative at 0, so it failed silently.
+     */
+    @Test
+    void validatePatch_quantity_below_sold_plus_reserved_rejected() {
+        TicketTier tier = existingTier(10);
+        tier.setQuantity(100);
+        tier.setReserved(5);
+        TicketTierPatchRequest req = new TicketTierPatchRequest(null, null, 12, null, null, null, null, null, null);
+        Map<String, String> errors = sut.validatePatch(req, tier, eventNoEndsAt());
+        assertThat(errors).containsKey("quantity");
+        assertThat(errors.get("quantity")).contains("15");
+    }
+
     @Test
     void validateEmbeddedPatch_quantity_below_sold_rejected_on_update_branch() {
         TicketTier tier = existingTier(8);
