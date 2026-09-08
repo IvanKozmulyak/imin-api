@@ -13,6 +13,9 @@ import com.imin.iminapi.model.TicketTier;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.PromoCodeRepository;
 import com.imin.iminapi.repository.TicketRepository;
+import com.imin.iminapi.security.ApiException;
+import com.imin.iminapi.security.ErrorCode;
+import org.springframework.http.HttpStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -178,10 +181,16 @@ public class FreeCheckoutService {
         orders.save(order);
 
         // Increment promo usage inline. The paid path does this on the
-        // checkout.session.completed webhook; here we have to fold it into the
-        // same transaction so a free-checkout race can't over-redeem.
-        if (appliedPromo != null) {
-            promos.incrementUsedCount(appliedPromo.getId());
+        // payment_intent.succeeded webhook; here it is folded into this transaction.
+        // What makes the race safe is the conditional UPDATE (used_count < max_uses),
+        // not the shared transaction — nothing locks the promo row. Losing that UPDATE
+        // means another redeemer took the last use between our check and this write, so
+        // we refuse with the same 400 the pre-check raises and let the rollback return
+        // the order, the tickets and the seats.
+        if (appliedPromo != null && promos.incrementUsedCount(appliedPromo.getId()) == 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
+                    "Promo code has reached its usage limit",
+                    java.util.Map.of("promoCode", "exhausted"));
         }
 
         for (int i = 0; i < quantity; i++) {

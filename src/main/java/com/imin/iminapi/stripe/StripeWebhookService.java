@@ -404,7 +404,12 @@ public class StripeWebhookService {
                     UUID promoId = UUID.fromString(promoIdRaw);
                     int rows = promos.incrementUsedCount(promoId);
                     if (rows == 0) {
-                        log.warn("Promo code {} not found when handling payment_intent {} — skipped",
+                        // Either the code is gone or it is already at its cap — the capped
+                        // UPDATE (events-8) refuses both. The ticket is issued regardless:
+                        // money moved, and a redemption we cannot record is not the buyer's
+                        // problem.
+                        log.warn("Promo code {} not incremented for payment_intent {} — not found "
+                                        + "or already at its usage cap; skipped",
                                 promoId, pi.getId());
                     } else {
                         log.info("Incremented usedCount on promo {} after payment_intent {}",
