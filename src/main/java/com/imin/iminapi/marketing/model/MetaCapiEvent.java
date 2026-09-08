@@ -39,7 +39,12 @@ public class MetaCapiEvent {
     @Column(name = "event_name", nullable = false)
     private String eventName = "Purchase";
 
-    @Column(name = "email_sha256", nullable = false)
+    /**
+     * SHA-256 of the buyer address. Nullable since V103 <b>only</b> so an Art.17
+     * erasure can redact a sent row in place — the writer always supplies it, and
+     * a null means "redacted", never "never had one".
+     */
+    @Column(name = "email_sha256")
     private String emailSha256;
 
     @Column(name = "value_minor", nullable = false)

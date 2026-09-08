@@ -231,14 +231,19 @@ public class AudienceController {
      * Art.15 export. Carries {@code consentHistory} — the proof rows the export
      * has to contain to be worth anything: a DSAR answer that says
      * "subscribed, basis soft_opt_in" without the record of when, through what,
-     * and on what proof is not an answer.
+     * and on what proof is not an answer — and {@code dsarRecords}, the orders,
+     * tickets, /track beacons, Meta CAPI sends and notify-me rows the audience
+     * projection never mentioned.
+     *
+     * <p>OWNER/ADMIN only; a MEMBER gets 403 (enforced in {@code DsarService}).
      */
     @PostMapping("/members/{id}/export")
     public MemberDto dsarExport(@AuthenticationPrincipal AuthPrincipal principal,
                                  @PathVariable UUID id) {
         Membership m = dsarService.export(principal.orgId(), id, principal);
         return audienceService.getMember(principal.orgId(), id)
-                .withConsentHistory(dsarService.consentHistory(principal.orgId(), id));
+                .withDsar(dsarService.consentHistory(principal.orgId(), id),
+                        dsarService.exportRecords(principal.orgId(), id, principal));
     }
 
     /**

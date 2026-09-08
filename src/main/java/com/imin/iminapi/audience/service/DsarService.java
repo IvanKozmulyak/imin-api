@@ -3,12 +3,14 @@ package com.imin.iminapi.audience.service;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsentRecordRepository;
 import com.imin.iminapi.audience.dto.ConsentHistoryEntry;
+import com.imin.iminapi.audience.dto.DsarRecords;
 import com.imin.iminapi.audience.model.ErasedAddress;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.ErasedAddressRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.repository.SuppressionRepository;
 import com.imin.iminapi.repository.NotifySubscriptionRepository;
+import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.service.audit.AuditActions;
@@ -51,6 +53,7 @@ public class DsarService {
     private final NotifySubscriptionRepository notifySubscriptionRepo;
     private final com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository buyerAccountEmailRepo;
     private final ErasedAddressRepository erasedAddressRepo;
+    private final DsarScopeService scopeService;
 
     public DsarService(MembershipRepository membershipRepo,
                        ConsumerRepository consumerRepo,
@@ -61,7 +64,8 @@ public class DsarService {
                        com.imin.iminapi.marketing.repository.CampaignRecipientRepository campaignRecipientRepo,
                        NotifySubscriptionRepository notifySubscriptionRepo,
                        com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository buyerAccountEmailRepo,
-                       ErasedAddressRepository erasedAddressRepo) {
+                       ErasedAddressRepository erasedAddressRepo,
+                       DsarScopeService scopeService) {
         this.membershipRepo = membershipRepo;
         this.consumerRepo = consumerRepo;
         this.consentRepo = consentRepo;
@@ -72,6 +76,7 @@ public class DsarService {
         this.notifySubscriptionRepo = notifySubscriptionRepo;
         this.buyerAccountEmailRepo = buyerAccountEmailRepo;
         this.erasedAddressRepo = erasedAddressRepo;
+        this.scopeService = scopeService;
     }
 
     /** Art.15 access — returns the membership (caller maps to DTO). Audited. */
@@ -82,12 +87,54 @@ public class DsarService {
         return m;
     }
 
-    /** Art.15 export — returns the membership for export. Audited. */
+    /**
+     * Art.15 export — the membership. Pair with {@link #exportRecords} for the
+     * rest of what this org holds.
+     *
+     * <p><b>Role-gated.</b> An export is a complete dossier on one person —
+     * orders, tickets, browsing beacons, the address disclosed to Meta — and
+     * until now any MEMBER of the org could produce one, and any MEMBER could
+     * schedule an erasure. Owners and admins only, matching how
+     * {@code OrgService.delete} guards the other irreversible org-level action.
+     *
+     * <p>Enforced in code rather than with {@code @PreAuthorize}: this
+     * application does not enable method security, so the annotation would be
+     * silently inert — a guard that looks present and admits everyone is worse
+     * than none.
+     */
     @Transactional(readOnly = true)
     public Membership export(UUID orgId, UUID membershipId, AuthPrincipal principal) {
+        requirePrivilegedRole(principal, "export a data subject's record");
         Membership m = require(orgId, membershipId);
         auditLogger.record(principal, AuditActions.DSAR_EXPORT, "membership", membershipId, "DSAR export");
         return m;
+    }
+
+    /**
+     * Art.15(1)(b)-(h): the records behind the projection — orders, tickets, the
+     * /track beacons joined through {@code orders.anon_id}, the Meta CAPI sends,
+     * and the notify-me registrations.
+     */
+    @Transactional(readOnly = true)
+    public DsarRecords exportRecords(UUID orgId, UUID membershipId, AuthPrincipal principal) {
+        requirePrivilegedRole(principal, "export a data subject's record");
+        Membership m = require(orgId, membershipId);
+        String normalizedEmail = consumerRepo.findByConsumerId(m.getConsumerId())
+                .map(c -> c.getNormalizedEmail())
+                .orElse(null);
+        return scopeService.collect(orgId, normalizedEmail);
+    }
+
+    /**
+     * OWNER or ADMIN. MEMBER (and a gate device, which carries MEMBER) is refused.
+     */
+    private static void requirePrivilegedRole(AuthPrincipal principal, String what) {
+        UserRole role = principal == null ? null : principal.role();
+        boolean privileged = principal != null && !principal.isGate()
+                && (role == UserRole.OWNER || role == UserRole.ADMIN);
+        if (!privileged) {
+            throw ApiException.forbidden("Only an org owner or admin can " + what);
+        }
     }
 
     /**
@@ -139,6 +186,7 @@ public class DsarService {
      */
     @Transactional
     public void requestErase(UUID orgId, UUID membershipId, AuthPrincipal principal) {
+        requirePrivilegedRole(principal, "erase a data subject's record");
         Membership m = require(orgId, membershipId);
         m.setStatus("erase_pending");
         m.setEraseAt(Instant.now().plus(30, ChronoUnit.DAYS));
@@ -182,6 +230,13 @@ public class DsarService {
                 .orElse(null);
         if (normalizedEmail != null) {
             notifySubscriptionRepo.deleteByOrgIdAndEmail(orgId, normalizedEmail);
+            // 3a. Everything outside the audience projection: funnel beacons deleted,
+            // Meta CAPI identifiers stripped, audit actor address dropped. Orders and
+            // tickets are deliberately RETAINED under the accounting exemption — the
+            // retained set is documented in docs/privacy/retained-after-erasure.md.
+            // Must run before step 4/5, which can delete the Consumer this address
+            // was read from.
+            scopeService.eraseOutOfScopeRecords(orgId, normalizedEmail);
             // 3b. Erasure ledger (V99). orders.email is retained under the invoicing
             // exemption, so AudienceBackfillJob would otherwise walk it at 03:00 — and on
             // every application start — and rebuild the Consumer + Membership this method

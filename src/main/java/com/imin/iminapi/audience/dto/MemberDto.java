@@ -46,7 +46,13 @@ public record MemberDto(
          * with it — so it is null (and omitted from the JSON) everywhere else.
          */
         @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
-        List<ConsentHistoryEntry> consentHistory
+        List<ConsentHistoryEntry> consentHistory,
+        /**
+         * The records behind the projection — orders, tickets, /track beacons,
+         * Meta CAPI sends, notify-me rows. Art.15 export only, null elsewhere.
+         */
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        DsarRecords dsarRecords
 ) {
     public record SuppressionInfo(String scope, String reason, Instant since) {}
     public record RfmInfo(int r, int f, int m) {}
@@ -83,16 +89,22 @@ public record MemberDto(
                 m.getNotes(),
                 m.getLifecycle(),
                 new RfmInfo(m.getRfmR(), m.getRfmF(), m.getRfmM()),
+                null,
                 null
         );
     }
 
     /** Same member, with the DSAR consent trail attached. */
     public MemberDto withConsentHistory(List<ConsentHistoryEntry> history) {
+        return withDsar(history, dsarRecords);
+    }
+
+    /** Same member, as the Art.15 export sees it: consent trail plus the records. */
+    public MemberDto withDsar(List<ConsentHistoryEntry> history, DsarRecords records) {
         return new MemberDto(membershipId, name, email, city, genres, events, attended, noShow,
                 orders, spendMinor, aovMinor, firstSeenAt, lastPurchaseAt, lastAttendedAt,
                 recencyDays, firstTouchSource, lawfulBasis, subscriptionStatus, suppression,
                 lastEmailOpenAt, lastEmailClickAt, nps, vibe, quote, tags, notes, lifecycle,
-                rfm, history);
+                rfm, history, records);
     }
 }

@@ -108,7 +108,7 @@ class AudienceControllerWebTest {
                 null, null, null, null, null,
                 List.of("vip"), "", "repeat",
                 new MemberDto.RfmInfo(4, 3, 5),
-                null
+                null, null
         );
     }
 
@@ -921,7 +921,7 @@ class AudienceControllerWebTest {
                 null, null, null, null, null,
                 List.of("tag1"), "", "repeat",
                 new MemberDto.RfmInfo(3, 2, 4),
-                null
+                null, null
         );
         when(audienceService.exportMembersCsv(eq(ORG_A), isNull(), isNull()))
                 .thenReturn(List.of(tricky));
