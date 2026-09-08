@@ -130,9 +130,9 @@ public class RefundService {
                 "Refund amount must be positive");
         }
 
-        // Application-fee refund stays proportional to refund amount over order total.
-        // Total app-fee refunds across all refunds equal the original fee when the
-        // order is fully refunded (within at most N−1 cents drift over N refunds).
+        // Application-fee refund stays proportional to refund amount over order total, and is
+        // clamped to the fee not yet refunded on this order — per-refund rounding otherwise
+        // makes N refunds sum ABOVE the original fee, which Stripe rejects outright.
         long appFeeRefundMinor = computeAppFeeRefundMinor(order, refundAmountMinor);
 
         Refund r = new Refund();
@@ -335,9 +335,23 @@ public class RefundService {
         return Math.min(proposed, remaining);
     }
 
+    /**
+     * The application-fee share to refund alongside {@code refundAmountMinor}, CLAMPED to the
+     * fee not yet refunded on this order.
+     *
+     * <p>The proportion is rounded per refund, so the shares can sum to more than the original
+     * fee: three equal tickets on total 1000 with fee 149 each refund 333, and each fee share
+     * rounds to 50 — 150 against a 149 fee. Stripe rejects that third
+     * {@code applicationFees().refunds().create} with an invalid_request_error, and no retry
+     * fixes it because the arithmetic is deterministic. The clamp mirrors the one
+     * {@link #computeRefundAmountMinor} already applies to the principal.
+     */
     long computeAppFeeRefundMinor(Order order, long refundAmountMinor) {
         if (order.getTotalMinor() <= 0 || order.getApplicationFeeMinor() <= 0) return 0;
-        return Math.round(
+        long proportional = Math.round(
             (double) order.getApplicationFeeMinor() * refundAmountMinor / order.getTotalMinor());
+        long remainingFee = order.getApplicationFeeMinor()
+            - refunds.sumActiveApplicationFeeRefundMinorByOrderId(order.getId());
+        return Math.max(0, Math.min(proportional, remainingFee));
     }
 }

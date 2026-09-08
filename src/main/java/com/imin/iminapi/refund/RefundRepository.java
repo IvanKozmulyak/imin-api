@@ -98,4 +98,21 @@ public interface RefundRepository extends JpaRepository<Refund, UUID> {
                            com.imin.iminapi.refund.RefundStatus.SUCCEEDED)
     """)
     long sumActiveAmountByOrderId(java.util.UUID orderId);
+
+    /**
+     * Application-fee refunds already committed for an order (REQUESTED/PENDING/SUCCEEDED),
+     * the fee-side mirror of {@link #sumActiveAmountByOrderId}. The per-refund fee share is a
+     * rounded proportion, so N refunds of one order can sum to MORE than the original fee
+     * (three thirds of 149 round to 50+50+50 = 150); Stripe then rejects the last
+     * applicationFees().refunds().create with an invalid_request_error. Subtracting this from
+     * the order's fee gives the remaining unrefunded fee to clamp against.
+     */
+    @Query("""
+        select coalesce(sum(r.applicationFeeRefundMinor), 0) from Refund r
+        where r.orderId = :orderId
+          and r.status in (com.imin.iminapi.refund.RefundStatus.REQUESTED,
+                           com.imin.iminapi.refund.RefundStatus.PENDING,
+                           com.imin.iminapi.refund.RefundStatus.SUCCEEDED)
+    """)
+    long sumActiveApplicationFeeRefundMinorByOrderId(java.util.UUID orderId);
 }

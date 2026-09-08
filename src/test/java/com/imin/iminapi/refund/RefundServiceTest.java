@@ -223,6 +223,50 @@ class RefundServiceTest {
         assertThat(out.getInitiatedByUserId()).isEqualTo(userId);
     }
 
+    // ── stripe-15 — the fee refunds must never sum above the original fee ─────────
+    @Test
+    void app_fee_refunds_are_clamped_to_the_remaining_unrefunded_fee() {
+        // Three equal tickets on a 1000 total with a 149 fee. Each ticket refunds
+        // round(1000 × f / 3f) = 333, and each fee share rounds to
+        // round(149 × 333 / 1000) = round(49.617) = 50. Unclamped that is 50+50+50 = 150
+        // against a 149 fee, so the third applicationFees().refunds().create asks Stripe for
+        // 50 when only 49 is unrefunded and Stripe rejects it with an invalid_request_error —
+        // deterministically, on every retry.
+        Order o = paidOrder();
+        o.setTotalMinor(1000);
+        o.setApplicationFeeMinor(149);
+
+        when(refunds.sumActiveApplicationFeeRefundMinorByOrderId(orderId)).thenReturn(0L);
+        long first = service.computeAppFeeRefundMinor(o, 333);
+        assertThat(first).isEqualTo(50L);
+
+        when(refunds.sumActiveApplicationFeeRefundMinorByOrderId(orderId)).thenReturn(50L);
+        long second = service.computeAppFeeRefundMinor(o, 333);
+        assertThat(second).isEqualTo(50L);
+
+        when(refunds.sumActiveApplicationFeeRefundMinorByOrderId(orderId)).thenReturn(100L);
+        long third = service.computeAppFeeRefundMinor(o, 333);
+        assertThat(third)
+                .as("only 149 − 100 = 49 of the fee is still unrefunded")
+                .isEqualTo(49L);
+
+        assertThat(first + second + third)
+                .as("the three fee refunds sum to EXACTLY the original fee")
+                .isEqualTo(149L);
+    }
+
+    @Test
+    void app_fee_refund_is_zero_once_the_whole_fee_is_already_refunded() {
+        Order o = paidOrder();
+        o.setTotalMinor(1000);
+        o.setApplicationFeeMinor(149);
+        when(refunds.sumActiveApplicationFeeRefundMinorByOrderId(orderId)).thenReturn(149L);
+
+        assertThat(service.computeAppFeeRefundMinor(o, 333))
+                .as("never a negative fee refund, and never a request Stripe must reject")
+                .isZero();
+    }
+
     @org.junit.jupiter.api.Nested
     class PromoCodeAmountAllocation {
 
