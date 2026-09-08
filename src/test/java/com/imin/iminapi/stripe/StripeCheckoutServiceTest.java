@@ -501,7 +501,6 @@ class StripeCheckoutServiceTest {
                 any(), nullable(String.class), nullable(String.class),
                 any(com.imin.iminapi.model.CheckoutConsent.class)))
                 .thenReturn(order);
-        when(freeCheckoutService.findOrderTickets(order.getId())).thenReturn(java.util.List.of());
         when(freeCheckoutService.orderUrl(order)).thenReturn("http://localhost:3000/order/ord_abc");
 
         String url = svc.createCheckoutSession(eventId, tierId, 1, null, 0, "free@example.com");
@@ -640,7 +639,6 @@ class StripeCheckoutServiceTest {
                 any(), nullable(String.class), nullable(String.class),
                 any(com.imin.iminapi.model.CheckoutConsent.class)))
                 .thenReturn(order);
-        when(freeCheckoutService.findOrderTickets(order.getId())).thenReturn(java.util.List.of());
         when(freeCheckoutService.orderUrl(order)).thenReturn("http://localhost:3000/order/ord_zeroed");
 
         String url = svc.createCheckoutSession(eventId, tierId, 1, "ALLFREE", 1000, "buyer@example.com");

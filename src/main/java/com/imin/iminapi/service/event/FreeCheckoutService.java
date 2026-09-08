@@ -2,7 +2,6 @@ package com.imin.iminapi.service.event;
 
 import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.email.EmailProperties;
-import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.model.CheckoutAttribution;
 import com.imin.iminapi.model.CheckoutConsent;
 import com.imin.iminapi.model.Event;
@@ -51,7 +50,6 @@ public class FreeCheckoutService {
     private final TicketRepository tickets;
     private final PromoCodeRepository promos;
     private final InventoryService inventory;
-    private final EmailService email;
     private final EmailProperties emailProps;
     private final Clock clock;
     private final org.springframework.context.ApplicationEventPublisher publisher;
@@ -60,7 +58,6 @@ public class FreeCheckoutService {
                                 TicketRepository tickets,
                                 PromoCodeRepository promos,
                                 InventoryService inventory,
-                                EmailService email,
                                 EmailProperties emailProps,
                                 Clock clock,
                                 org.springframework.context.ApplicationEventPublisher publisher) {
@@ -68,7 +65,6 @@ public class FreeCheckoutService {
         this.tickets = tickets;
         this.promos = promos;
         this.inventory = inventory;
-        this.email = email;
         this.emailProps = emailProps;
         this.clock = clock;
         this.publisher = publisher;
@@ -76,9 +72,10 @@ public class FreeCheckoutService {
 
     /**
      * Atomically reserves + confirms inventory, creates one Order and N Tickets,
-     * and returns the public order URL the buyer should be redirected to. Email
-     * delivery is fired AFTER this method returns (caller-side); see
-     * {@link #sendConfirmation(Order, Event, List)}.
+     * and returns the public order URL the buyer should be redirected to. The ticket
+     * email is not sent here and not sent by the caller either: this method publishes
+     * {@code TicketsIssuedEvent}, whose AFTER_COMMIT listener ({@code TicketIssuanceEmailer})
+     * renders the same branded, localized template the paid path uses.
      *
      * @param appliedPromo the promo whose discount zeroed the total. Pass {@code null}
      *                     when the tier itself was already free. When non-null, the
@@ -223,40 +220,6 @@ public class FreeCheckoutService {
     }
 
     /**
-     * Fire-and-log confirmation email. Any failure is logged but not propagated —
-     * the buyer already has the redirect URL in hand.
-     */
-    public void sendConfirmation(Order order, Event event, List<Ticket> issued) {
-        try {
-            String url = orderUrl(order);
-            String ticketCount = issued.size() + (issued.size() == 1 ? " ticket" : " tickets");
-            String subject = "Your " + event.getName() + " " + ticketCount;
-            StringBuilder text = new StringBuilder();
-            text.append("Hi,\n\n");
-            text.append("You're in for ").append(event.getName()).append(".\n\n");
-            text.append("Open your order: ").append(url).append("\n\n");
-            text.append("Each ticket can also be viewed directly:\n");
-            String base = emailProps.getBuyerSiteBaseUrl();
-            if (base.endsWith("/")) base = base.substring(0, base.length() - 1);
-            for (Ticket t : issued) {
-                text.append("- ").append(base).append("/tickets/").append(t.getToken()).append("\n");
-            }
-            text.append("\nSee you there,\nimin\n");
-            String html = "<p>You're in for <strong>" + escape(event.getName()) + "</strong>.</p>"
-                    + "<p><a href=\"" + url + "\">Open your order</a></p>";
-            email.send(order.getEmail(), subject, html, text.toString());
-        } catch (Exception e) {
-            log.warn("Free-ticket confirmation email failed for order {}: {}",
-                    order.getId(), e.getMessage());
-        }
-    }
-
-    /** Convenience used by callers + the controller path. */
-    public List<Ticket> findOrderTickets(UUID orderId) {
-        return tickets.findByOrderIdOrderByCreatedAtAsc(orderId);
-    }
-
-    /**
      * The order a previous free checkout with this {@code Idempotency-Key} already
      * produced for this buyer on this event, or empty when there is none.
      *
@@ -293,9 +256,5 @@ public class FreeCheckoutService {
         byte[] bytes = new byte[24];
         RNG.nextBytes(bytes);
         return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
-    }
-
-    private static String escape(String s) {
-        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 }
