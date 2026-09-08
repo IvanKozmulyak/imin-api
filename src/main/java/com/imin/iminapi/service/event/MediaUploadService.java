@@ -129,7 +129,7 @@ public class MediaUploadService {
         // succeeded — never delete the old object before the new one is durable.
         if (oldUrl != null && !oldUrl.equals(url)) {
             String oldKey = storage.keyFor(oldUrl);
-            if (oldKey != null && !oldKey.equals(key)) {
+            if (oldKey != null && !oldKey.equals(key) && isOwnUploadKey(e.getId(), oldKey)) {
                 try { storage.delete(oldKey); } catch (Exception ignored) {}
             }
         }
@@ -146,7 +146,7 @@ public class MediaUploadService {
         };
         if (url == null) return;
         String key = storage.keyFor(url);
-        if (key != null) {
+        if (key != null && isOwnUploadKey(e.getId(), key)) {
             try { storage.delete(key); } catch (Exception ignored) {}
         }
         switch (kind) {
@@ -163,6 +163,23 @@ public class MediaUploadService {
             }
         }
         events.save(e);
+    }
+
+    /**
+     * True only for objects this event's own multipart uploads wrote, i.e. keys under
+     * {@code events/{eventId}/}.
+     *
+     * <p>{@code MediaStorage.keyFor} resolves a key for ANY URL under the bucket's public
+     * prefix, and the destructive delete used to fire on whatever it returned. AI posters
+     * are written through the same bucket under the shared {@code ai-posters/} prefix
+     * ({@code PosterImageStorage.AI_POSTER_KEY_PREFIX}) and are referenced by the concept
+     * gallery, by every event promoted from that concept, and by already-sent emails and
+     * social posts — and a URL can equally belong to another event. Deleting either is
+     * unrecoverable; leaving an object behind costs bounded storage. So anything outside
+     * this event's own namespace is left alone.
+     */
+    private static boolean isOwnUploadKey(UUID eventId, String key) {
+        return key.startsWith("events/" + eventId + "/");
     }
 
     private Event loadOwned(AuthPrincipal p, UUID eventId) {

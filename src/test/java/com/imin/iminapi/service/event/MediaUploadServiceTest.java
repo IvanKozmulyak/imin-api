@@ -197,6 +197,64 @@ class MediaUploadServiceTest {
         assertThat(storage.blobs().keySet()).containsExactly(storage.keyFor(r2.url()));
     }
 
+    /**
+     * events-5: an AI-studio poster lives under the shared {@code ai-posters/} prefix and is
+     * referenced by the concept gallery, by every event promoted from that concept, and by
+     * already-sent emails. Replacing it with an organizer upload must never delete it — the
+     * cost of an orphaned object is bounded storage, the cost of a wrong delete is
+     * unrecoverable shared data.
+     */
+    @Test
+    void reupload_over_an_ai_poster_keeps_the_shared_object() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        String aiKey = "ai-posters/" + UUID.randomUUID() + ".png";
+        storage.put(aiKey, new byte[1], "image/png");
+        e.setPosterUrl("https://media.test/" + aiKey);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        MediaUploadResponse r = sut.upload(owner(orgId), e.getId(), MediaKind.POSTER,
+                pngBytes(1024), "image/png", "own.png");
+
+        assertThat(e.getPosterUrl()).isEqualTo(r.url());
+        assertThat(storage.blobs()).containsKey(aiKey);
+    }
+
+    /** Same guard on the explicit DELETE path — the field clears, the shared object stays. */
+    @Test
+    void delete_of_an_ai_poster_clears_the_url_but_keeps_the_shared_object() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        String aiKey = "ai-posters/" + UUID.randomUUID() + ".png";
+        storage.put(aiKey, new byte[1], "image/png");
+        e.setPosterUrl("https://media.test/" + aiKey);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        sut.delete(owner(orgId), e.getId(), MediaKind.POSTER);
+
+        assertThat(e.getPosterUrl()).isNull();
+        assertThat(storage.blobs()).containsKey(aiKey);
+    }
+
+    /** A URL owned by a different event is equally off-limits. */
+    @Test
+    void delete_of_another_events_object_keeps_it() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        String otherKey = "events/" + UUID.randomUUID() + "/poster-deadbeefdeadbeef.png";
+        storage.put(otherKey, new byte[1], "image/png");
+        e.setPosterUrl("https://media.test/" + otherKey);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        sut.delete(owner(orgId), e.getId(), MediaKind.POSTER);
+
+        assertThat(e.getPosterUrl()).isNull();
+        assertThat(storage.blobs()).containsKey(otherKey);
+    }
+
     @Test
     void reupload_with_identical_bytes_is_idempotent() {
         UUID orgId = UUID.randomUUID();
