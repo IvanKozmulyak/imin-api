@@ -39,7 +39,14 @@ public record MemberDto(
         List<String> tags,
         String notes,
         String lifecycle,
-        RfmInfo rfm
+        RfmInfo rfm,
+        /**
+         * The member's consent trail, newest last. Populated only on the DSAR
+         * export path — a list of 50 members must not drag 50 consent tables
+         * with it — so it is null (and omitted from the JSON) everywhere else.
+         */
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        List<ConsentHistoryEntry> consentHistory
 ) {
     public record SuppressionInfo(String scope, String reason, Instant since) {}
     public record RfmInfo(int r, int f, int m) {}
@@ -75,7 +82,17 @@ public record MemberDto(
                 m.getTags(),
                 m.getNotes(),
                 m.getLifecycle(),
-                new RfmInfo(m.getRfmR(), m.getRfmF(), m.getRfmM())
+                new RfmInfo(m.getRfmR(), m.getRfmF(), m.getRfmM()),
+                null
         );
+    }
+
+    /** Same member, with the DSAR consent trail attached. */
+    public MemberDto withConsentHistory(List<ConsentHistoryEntry> history) {
+        return new MemberDto(membershipId, name, email, city, genres, events, attended, noShow,
+                orders, spendMinor, aovMinor, firstSeenAt, lastPurchaseAt, lastAttendedAt,
+                recencyDays, firstTouchSource, lawfulBasis, subscriptionStatus, suppression,
+                lastEmailOpenAt, lastEmailClickAt, nps, vibe, quote, tags, notes, lifecycle,
+                rfm, history);
     }
 }

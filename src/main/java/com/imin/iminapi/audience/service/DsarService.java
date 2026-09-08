@@ -2,6 +2,7 @@ package com.imin.iminapi.audience.service;
 
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsentRecordRepository;
+import com.imin.iminapi.audience.dto.ConsentHistoryEntry;
 import com.imin.iminapi.audience.model.ErasedAddress;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.ErasedAddressRepository;
@@ -17,6 +18,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -86,6 +88,23 @@ public class DsarService {
         Membership m = require(orgId, membershipId);
         auditLogger.record(principal, AuditActions.DSAR_EXPORT, "membership", membershipId, "DSAR export");
         return m;
+    }
+
+    /**
+     * Art.15 consent trail — the proof rows behind {@code consent_status} /
+     * {@code consent_basis}, chronological.
+     *
+     * <p>Not audited separately: it is a read of the same data
+     * {@link #access} and {@link #export} already record, and every call site
+     * either is one of those or is the organizer looking at the member they
+     * already have access to.
+     */
+    @Transactional(readOnly = true)
+    public List<ConsentHistoryEntry> consentHistory(UUID orgId, UUID membershipId) {
+        require(orgId, membershipId);
+        return consentRepo.findByMembershipId(membershipId).stream()
+                .map(ConsentHistoryEntry::from)
+                .toList();
     }
 
     /** Art.16 rectification — updates display_name/city/notes fields. Audited. */
