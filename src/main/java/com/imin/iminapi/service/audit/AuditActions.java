@@ -23,6 +23,8 @@ public final class AuditActions {
     public static final String STRIPE_ONBOARDED = "STRIPE_ONBOARDED";
     /** Irreversible and cascading — the one action whose trail has to outlive its subject. */
     public static final String ORG_DELETED = "ORG_DELETED";
+    /** One row per ticket actually admitted, naming the door that admitted it. */
+    public static final String TICKET_REDEEMED = "TICKET_REDEEMED";
 
     // ---- Audience / Consent / DSAR (Tier C) ----
     public static final String AUDIENCE_TAG_ADDED       = "AUDIENCE_TAG_ADDED";

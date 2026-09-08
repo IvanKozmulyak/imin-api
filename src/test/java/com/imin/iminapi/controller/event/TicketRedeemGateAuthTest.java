@@ -67,6 +67,7 @@ class TicketRedeemGateAuthTest {
     @Autowired OrderRepository orders;
     @Autowired TicketRepository tickets;
     @Autowired QrPayloadSigner signer;
+    @Autowired com.imin.iminapi.repository.AuditLogRepository auditLogs;
 
     final ObjectMapper om = new ObjectMapper();
 
@@ -79,6 +80,7 @@ class TicketRedeemGateAuthTest {
     void seed() {
         gateSessions.deleteAll();
         gateCredentials.deleteAll();
+        auditLogs.deleteAll();
         tickets.deleteAll();
         orders.deleteAll();
         events.deleteAll();
@@ -163,6 +165,62 @@ class TicketRedeemGateAuthTest {
         assertThat(after.getRedeemedAt()).isNotNull();
         // Gate-token redemptions store null userId (gate phones aren't tied to a user).
         assertThat(after.getRedeemedByUserId()).isNull();
+    }
+
+    /**
+     * {@code TicketRedeemController} carried a comment claiming the audit/log
+     * trail used {@code me.actorLabel()}. There was no audit write and
+     * {@code TicketRedeemService} had no log statement at all, so nobody could
+     * reconstruct which door admitted whom — a GDPR accountability gap and an
+     * internal-fraud blind spot, made worse by being a control that documentation
+     * said existed.
+     *
+     * <p>The row lands in {@code audit_logs} rather than on new {@code tickets}
+     * columns: it is the redemption log row the card offers as the alternative, it
+     * is already org-scoped and already readable through {@code GET /orgs/{id}/audit},
+     * and one row per scan records the repeat attempts that a single "redeemed by"
+     * column would overwrite.
+     */
+    @Test
+    void a_gate_redemption_is_recorded_against_the_gate_session_that_did_it() throws Exception {
+        long before = auditLogs.count();
+        UUID sessionId = gateSessions.findAll().get(0).getId();
+        String qr = signer.sign(ticket.getToken());
+
+        mvc.perform(post("/api/v1/orgs/" + org.getId() + "/events/" + event.getId() + "/tickets/redeem")
+                        .header("Authorization", "Bearer " + gateToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("qrPayload", qr))))
+                .andExpect(status().isOk());
+
+        assertThat(auditLogs.count()).isEqualTo(before + 1);
+        var row = auditLogs.findAll().stream()
+                .filter(a -> "TICKET_REDEEMED".equals(a.getAction()))
+                .findFirst().orElseThrow();
+        assertThat(row.getOrgId()).isEqualTo(org.getId());
+        assertThat(row.getTargetType()).isEqualTo("ticket");
+        assertThat(row.getTargetId()).isEqualTo(ticket.getId());
+        // Which door: the gate session id and the actor label, both reconstructable.
+        assertThat(row.getSummary()).contains(sessionId.toString());
+        assertThat(row.getSummary()).contains("gate:" + org.getId());
+        assertThat(row.getSummary()).contains(event.getId().toString());
+        // Never the buyer's address — the row says which door, not who walked through it.
+        assertThat(row.getSummary()).doesNotContain("buyer@example.test");
+    }
+
+    /** A scan that admitted nobody is not an admission and must not read like one. */
+    @Test
+    void a_failed_scan_writes_no_redemption_row() throws Exception {
+        long before = auditLogs.count();
+
+        mvc.perform(post("/api/v1/orgs/" + org.getId() + "/events/" + event.getId() + "/tickets/redeem")
+                        .header("Authorization", "Bearer " + gateToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("qrPayload", "not-a-signed-payload"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.result").value("invalid"));
+
+        assertThat(auditLogs.count()).isEqualTo(before);
     }
 
     @Test
