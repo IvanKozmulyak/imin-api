@@ -10,6 +10,7 @@ import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.email.EmailTemplateRenderer;
+import com.imin.iminapi.marketing.unsubscribe.UnsubscribeTokenService;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.EventVisibility;
@@ -90,6 +91,7 @@ public class NotifyReleaseSender {
     private final BuyerPushDeviceRepository pushDevices;
     private final BuyerAccountEmailRepository buyerEmails;
     private final BuyerNotificationPreferenceRepository pushPrefs;
+    private final UnsubscribeTokenService unsubscribeTokens;
 
     public NotifyReleaseSender(NotifySubscriptionRepository subscriptions,
                                EventRepository events,
@@ -103,7 +105,8 @@ public class NotifyReleaseSender {
                                ExpoPushSender push,
                                BuyerPushDeviceRepository pushDevices,
                                BuyerAccountEmailRepository buyerEmails,
-                               BuyerNotificationPreferenceRepository pushPrefs) {
+                               BuyerNotificationPreferenceRepository pushPrefs,
+                               UnsubscribeTokenService unsubscribeTokens) {
         this.subscriptions = subscriptions;
         this.events = events;
         this.tiers = tiers;
@@ -117,6 +120,7 @@ public class NotifyReleaseSender {
         this.pushDevices = pushDevices;
         this.buyerEmails = buyerEmails;
         this.pushPrefs = pushPrefs;
+        this.unsubscribeTokens = unsubscribeTokens;
     }
 
     @Scheduled(fixedDelay = 60_000, initialDelay = 30_000)
@@ -184,7 +188,16 @@ public class NotifyReleaseSender {
                 EmailTemplateRenderer.Rendered rendered =
                         byLocale.computeIfAbsent(locale, l -> render(event, l));
                 String subject = subject(event, locale);
-                email.send(sub.getEmail(), subject, rendered.html(), rendered.text());
+                // The opt-out link is the one part of the body that differs per
+                // subscriber, and it must not cost a render each: the per-locale
+                // cache above exists because a headliner has thousands of pending
+                // rows and at most four bodies. So the template is rendered with a
+                // sentinel and the token is spliced in here.
+                String unsubscribeUrl = buyerSiteBase() + "/notify/unsubscribe/"
+                        + unsubscribeTokens.signNotify(sub.getId());
+                email.send(sub.getEmail(), subject,
+                        rendered.html().replace(UNSUBSCRIBE_SENTINEL, unsubscribeUrl),
+                        rendered.text().replace(UNSUBSCRIBE_SENTINEL, unsubscribeUrl));
                 mark(sub);
                 sent++;
             } catch (Exception e) {
@@ -274,6 +287,10 @@ public class NotifyReleaseSender {
         values.put("eventWhen", formatWhen(event));
         values.put("eventWhere", formatWhere(event));
         values.put("eventUrl", buyerSiteBase() + "/e/" + event.getId());
+        // Placeholder, replaced per subscriber — see the send loop. It contains no
+        // characters the HTML escaper touches, so the spliced URL is the one built
+        // here and not a re-escaped copy of it.
+        values.put("unsubscribeUrl", UNSUBSCRIBE_SENTINEL);
         return renderer.render("notify-release", locale, values);
     }
 
@@ -285,6 +302,9 @@ public class NotifyReleaseSender {
                 "Des billets sont disponibles pour " + name,
                 "Квитки на " + name + " уже доступні");
     }
+
+    /** Opaque, HTML-escape-neutral marker swapped for each subscriber's opt-out URL. */
+    private static final String UNSUBSCRIBE_SENTINEL = "IMIN-UNSUBSCRIBE-URL-PLACEHOLDER";
 
     private String buyerSiteBase() {
         String s = emailProps.getBuyerSiteBaseUrl();

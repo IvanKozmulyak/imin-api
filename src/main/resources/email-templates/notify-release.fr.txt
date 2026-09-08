@@ -12,4 +12,6 @@ Obtenez vos billets : {{eventUrl}}
 
 Les billets partent dans l'ordre des achats — cet e-mail n'en réserve aucun pour vous. Vous ne recevrez pas d'autre e-mail à propos de cet événement sauf si vous vous réinscrivez.
 
+Arrêter ces alertes : {{unsubscribeUrl}}
+
 imin.wtf · mise en vente des billets pour {{eventName}}

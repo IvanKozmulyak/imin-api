@@ -57,7 +57,11 @@ class BuyerEmailLocaleVariantsTest {
                 "eventName", "Warehouse 7",
                 "eventWhen", "Friday, 5 Jun 2026 · 23:00",
                 "eventWhere", "Sala Apolo, Barcelona",
-                "eventUrl", "https://app.imin.wtf/e/abc"));
+                "eventUrl", "https://app.imin.wtf/e/abc",
+                // The guest opt-out (CPCE L34-5): a subscriber with no account has no
+                // other way out, so a locale that dropped this placeholder would ship
+                // a drop alert nobody can stop.
+                "unsubscribeUrl", "https://app.imin.wtf/notify/unsubscribe/tok"));
 
         // ---- Buyer accounts ----
         // R1.2's three templates were localized but never registered here, so a

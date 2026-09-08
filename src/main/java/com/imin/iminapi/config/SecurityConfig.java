@@ -155,6 +155,10 @@ public class SecurityConfig {
                         // signed-token-verified inside the handler.
                         .requestMatchers(HttpMethod.GET, "/api/v1/public/unsubscribe/**").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/public/unsubscribe/**").permitAll()
+                        // Notify-me opt-out — unauthenticated, signed-token-verified in the
+                        // handler. POST only: a guest subscriber has no account, so this link
+                        // in the email is their only way out (CPCE L34-5).
+                        .requestMatchers(HttpMethod.POST, "/api/v1/public/notify/unsubscribe/**").permitAll()
                         // ── Buyer accounts (imin-public / app.imin.wtf) ──────────────
                         // A separate namespace from /api/v1/public/**, which is blanket
                         // permitAll on GET (:102 above): keeping the two disjoint makes

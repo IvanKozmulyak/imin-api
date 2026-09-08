@@ -107,6 +107,9 @@ class DropAlertFanOutTest {
     Organization org;
     User owner;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    com.imin.iminapi.marketing.unsubscribe.UnsubscribeTokenService unsubscribeTokens;
+
     @BeforeEach
     void setUp() {
         emailService = mock(EmailService.class);
@@ -115,7 +118,7 @@ class DropAlertFanOutTest {
         pushProps.setEnabled(true);
         sender = new NotifyReleaseSender(subscriptions, events, tiers, suppressions,
                 emailService, renderer, emailProps, CLOCK,
-                pushProps, push, pushDevices, buyerEmails, pushPrefs);
+                pushProps, push, pushDevices, buyerEmails, pushPrefs, unsubscribeTokens);
 
         org = new Organization();
         org.setName("Fanout Org");
