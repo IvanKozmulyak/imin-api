@@ -263,7 +263,6 @@ public class PosterOrchestrator {
 
         long seed = baseSeed;
         byte[] image = null;
-        String url = null;
         String correction = null;
 
         for (int attempt = 0; attempt <= maxRegenerations; attempt++) {
@@ -278,8 +277,9 @@ public class PosterOrchestrator {
                     : ideogramClient.remix(image, correction, remixImageWeight, seed, style.parts(), style.preset(),
                             brandPalette, characterRef);
             image = render.imageBytes();
-            url = storage.writePng(image);
-            entity.setRawUrl(url);
+            // Deliberately NOT stored yet: every superseded retry render used to leave an
+            // unreferenced, immutable R2 object that nothing ever reclaimed. accept() performs the
+            // single raw write, for the one render that actually ships.
             entity.setStatus(PosterVariantStatus.RAW_READY);
 
             PosterTextValidationService.ValidationDecision text = textValidation.validateOrExplain(image, spec);
@@ -288,7 +288,7 @@ public class PosterOrchestrator {
                 if (last) {
                     log.warn("Text gate still failing after {} regenerations; accepting best-effort: {}",
                             maxRegenerations, text.reason());
-                    return accept(entity, url, image, VERDICT_BEST_EFFORT, attempts, brand);
+                    return accept(entity, image, VERDICT_BEST_EFFORT, attempts, brand);
                 }
                 correction = buildCorrectionPrompt(variant.ideogramPrompt(), text);
                 seed = nextSeed(seed);
@@ -299,23 +299,18 @@ public class PosterOrchestrator {
             // combination), so apply the brand palette in a separate regrade pass BEFORE the
             // style gate, so the gate judges the colours that actually ship.
             if (characterRef != null && paletteRegradeEnabled && !brandPalette.isEmpty()) {
-                byte[] regraded = paletteRegrade(image, seed, brandPalette, spec, attempts);
-                if (regraded != image) {
-                    image = regraded;
-                    url = storage.writePng(image);
-                    entity.setRawUrl(url);
-                }
+                image = paletteRegrade(image, seed, brandPalette, spec, attempts);
             }
 
             PosterStyleValidationService.ValidationDecision styleDecision =
                     styleValidation.validateOrExplain(image, ctx.card(), heroType);
             attempts.add(attemptJson(attempt, seed, attempt == 0 ? "generate" : "remix", text, styleDecision));
             if (styleDecision.accepted()) {
-                return accept(entity, url, image, VERDICT_ACCEPTED, attempts, brand);
+                return accept(entity, image, VERDICT_ACCEPTED, attempts, brand);
             }
             // Text is correct; style is soft — accept best-effort without spending more renders.
             log.warn("Style gate soft-failed (text OK); accepting best-effort: {}", styleDecision.reason());
-            return accept(entity, url, image, VERDICT_BEST_EFFORT, attempts, brand);
+            return accept(entity, image, VERDICT_BEST_EFFORT, attempts, brand);
         }
         throw new IllegalStateException("render-with-validation loop exhausted");
     }
@@ -361,14 +356,18 @@ public class PosterOrchestrator {
     }
 
     /**
-     * The single funnel that sets final_url for every acceptance path. Composites the brand logo
-     * when the snapshot says to, as a SECOND storage write (final_url = composited URL; raw_url keeps
-     * the un-composited render). Failure isolation is absolute: any composite error → final_url =
+     * The single funnel that stores the accepted render and sets raw_url/final_url for every
+     * acceptance path. This is the ONLY raw write: retry and regrade renders that were superseded
+     * are never stored, so no unreferenced objects accumulate. Composites the brand logo when the
+     * snapshot says to, as a SECOND storage write (final_url = composited URL; raw_url keeps the
+     * un-composited render). Failure isolation is absolute: any composite error → final_url =
      * raw_url + Sentry warning + status FAILED. Generation never fails over the logo.
      */
-    private GeneratedPoster accept(PosterVariantEntity entity, String rawUrl, byte[] rawBytes,
+    private GeneratedPoster accept(PosterVariantEntity entity, byte[] rawBytes,
                                    String verdict, List<Map<String, Object>> attempts,
                                    BrandSnapshot brand) {
+        String rawUrl = storage.writePng(rawBytes);
+        entity.setRawUrl(rawUrl);
         entity.setValidationVerdict(verdict);
         entity.setValidationAttemptsJson(serialize(attempts));
         entity.setStatus(PosterVariantStatus.COMPLETE);

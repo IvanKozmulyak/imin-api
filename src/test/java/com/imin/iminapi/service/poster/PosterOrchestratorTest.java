@@ -185,6 +185,28 @@ class PosterOrchestratorTest {
         assertThat(v.getValidationAttemptsJson()).contains("remix");
     }
 
+    /**
+     * poster-18: every text-gate retry used to write a fresh immutable R2 object that nothing ever
+     * referenced or reclaimed — up to 3 orphans per variant at maxRegenerations=2. Only the render
+     * that actually ships gets written.
+     */
+    @Test
+    void supersededRetryRenders_areNeverWritten_onlyTheAcceptedOne() {
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{1}, 1L));
+        when(ideogram.remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{1}, 2L));
+        when(textValidation.validateOrExplain(any(), any())).thenReturn(textFail());
+
+        PosterOrchestrator.OrchestrationResult r =
+                orchestrator().run(UUID.randomUUID(), req(), concept());
+
+        // 3 attempts x 3 variants rendered, but exactly one stored object per variant.
+        verify(ideogram, times(6)).remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any());
+        verify(storage, times(3)).writePng(any());
+        assertThat(r.posters()).allSatisfy(p -> assertThat(p.rawUrl()).isNotNull());
+    }
+
     @Test
     void textPasses_styleSoftFails_acceptsBestEffort_noRemix() {
         when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
