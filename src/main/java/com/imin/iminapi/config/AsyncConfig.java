@@ -7,6 +7,7 @@ import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import java.util.concurrent.Executor;
+import java.util.concurrent.ThreadPoolExecutor;
 
 /**
  * Dedicated executor for post-issuance async work so a burst of Stripe
@@ -17,6 +18,26 @@ import java.util.concurrent.Executor;
 @EnableAsync
 public class AsyncConfig {
 
+    /**
+     * Overflow runs on the CALLER, deliberately.
+     *
+     * <p>{@code TicketIssuanceEmailer.onTicketsIssued} is
+     * {@code @TransactionalEventListener(AFTER_COMMIT)} + {@code @Async} on this pool,
+     * so the submit happens inside the afterCommit synchronization — on the Stripe
+     * webhook's thread, after the Order and the {@code processed_webhook_events} dedup
+     * row have already committed. Under the default {@code AbortPolicy} a full queue
+     * threw {@code TaskRejectedException} out of {@code commit()} into the webhook
+     * response, and Stripe's retry then short-circuited at the dedup marker: the
+     * buyer's ticket email was lost, permanently. The pool is shared with
+     * {@code SalesMilestoneNotifier} and {@code RefundConfirmationEmailer}, so a
+     * refund or milestone burst is enough to fill it.
+     *
+     * <p>Note the asymmetry with {@code venueGeocodingExecutor} below, which discards:
+     * a dropped map pin leaves a NULL every consumer handles, a dropped ticket email
+     * leaves a paying buyer with nothing. Back-pressuring the commit thread is the
+     * cheaper failure. (The durable fix is an outbox row written inside the issuance
+     * transaction and drained by a job; this closes the loss until then.)
+     */
     @Bean(name = "ticketEmailExecutor")
     public Executor ticketEmailExecutor() {
         ThreadPoolTaskExecutor exec = new ThreadPoolTaskExecutor();
@@ -24,6 +45,7 @@ public class AsyncConfig {
         exec.setMaxPoolSize(4);
         exec.setQueueCapacity(64);
         exec.setThreadNamePrefix("ticket-email-");
+        exec.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
         exec.initialize();
         return exec;
     }
