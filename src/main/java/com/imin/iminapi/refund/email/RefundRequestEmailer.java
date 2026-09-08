@@ -19,8 +19,10 @@ import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.context.event.EventListener;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.event.TransactionPhase;
+import org.springframework.transaction.event.TransactionalEventListener;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -75,7 +77,12 @@ public class RefundRequestEmailer {
         this.users = users;
     }
 
-    @EventListener
+    // AFTER_COMMIT + @Async, matching the sibling RefundConfirmationEmailer: a plain
+    // @EventListener ran these Resend round-trips synchronously inside the submit/reject
+    // database transaction, holding it open for the network call and mailing the buyer
+    // about a request that a later rollback would have erased.
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    @Async("ticketEmailExecutor")
     public void onSubmitted(RefundRequestSubmittedEvent ev) {
         RefundRequest rr = requests.findById(ev.requestId()).orElse(null);
         if (rr == null) {
@@ -138,7 +145,8 @@ public class RefundRequestEmailer {
         safeSend(props.resolveRefundRequestInbox(), "[imin] new refund request", imin);
     }
 
-    @EventListener
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    @Async("ticketEmailExecutor")
     public void onRejected(RefundRequestRejectedEvent ev) {
         RefundRequest rr = requests.findById(ev.requestId()).orElse(null);
         if (rr == null) {
