@@ -382,6 +382,15 @@ public class StripeWebhookService {
         UUID reservationId = parseReservationId(meta);
         log.info("[stripe-webhook] payment_intent.succeeded paymentIntentId={} reservationId={} amount={} currency={}",
                 pi.getId(), reservationId, pi.getAmount(), pi.getCurrency());
+
+        // Resolve the buyer from Stripe BEFORE taking the tier lock. confirmSold below runs a
+        // SELECT … FOR UPDATE on the ticket tier inside this transaction and holds it to commit,
+        // and issuance needs up to two blocking Stripe round trips to find the buyer address.
+        // Doing them under the lock queued every concurrent buyer of that tier behind Stripe's
+        // latency (80s default read timeout) and could exhaust the pool during an on-sale. These
+        // reads are pure lookups with no DB dependency, so hoisting them changes no ordering.
+        PaidCheckoutService.BuyerResolution buyer = paidCheckoutService.prepareIssuance(pi);
+
         if (reservationId != null) {
             inventoryService.confirmSold(reservationId);
         } else {
@@ -392,7 +401,7 @@ public class StripeWebhookService {
         // Persist Order + N Ticket rows for the buyer. Idempotent on PI id, so a Stripe retry is a
         // noop. Publishes TicketsIssuedEvent on success; the @Async listener emails the buyer with
         // the tickets and QR. Returns true ONLY on the first successful issuance for this PI.
-        boolean issued = paidCheckoutService.issuePaidOrder(pi);
+        boolean issued = paidCheckoutService.issuePaidOrder(pi, buyer);
 
         // Increment promo usage ONLY on first issuance, tying it to the same idempotency boundary
         // as Order creation — so a second, distinct-event-id delivery for the same PI that slips
