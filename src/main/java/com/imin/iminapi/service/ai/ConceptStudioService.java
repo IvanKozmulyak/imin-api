@@ -236,7 +236,7 @@ public class ConceptStudioService {
             AiEventDescriptionService.GeneratedConcept generated = descService.generateConcept(legacy, creativeSeed, djPhoto != null);
             // Pin the resolved vibe (legacy.subStyleTag is the selected vibe, or one auto-suggested
             // from genre) as the concept's style tag, so the orchestrator resolves that vibe's curated
-            // reference flyers (forTag) regardless of what the LLM echoed.
+            // reference flyers regardless of what the LLM echoed.
             poster = new PosterConcept(legacy.subStyleTag(),
                     generated.concept().colorPaletteDescription(), generated.concept().variants());
             // A locked poster must not spend three Ideogram renders to hand back different art.

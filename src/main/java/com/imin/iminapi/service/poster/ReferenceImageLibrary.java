@@ -1,6 +1,5 @@
 package com.imin.iminapi.service.poster;
 
-import com.imin.iminapi.dto.ReferenceImageSet;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -9,13 +8,11 @@ import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 import org.springframework.stereotype.Component;
-import org.yaml.snakeyaml.Yaml;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Base64;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -23,15 +20,16 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Loads curated reference flyer images keyed by sub-style tag / vibe id and exposes them as
- * data URIs (for style_reference_images) or raw bytes (for Recraft training / OpenAI edits).
+ * Loads curated reference flyer images keyed by vibe id and exposes them as raw bytes (Ideogram
+ * {@code style_reference_images}, Recraft style training).
  *
- * Sources, merged into one {@code byTag} map at startup:
- *   - {@code poster-references.yaml} — the legacy 7 aesthetic tags (explicit files or folders).
- *   - {@code vibes.yaml} (via {@link VibeLibrary}) — each curated vibe's reference folder, keyed
- *     by vibe id, so {@code forTag(vibeId)} resolves the vibe's flyers. Text-only vibes are skipped.
+ * <p>The single source is {@code vibes.yaml} (via {@link VibeLibrary}): each curated vibe's
+ * reference folder, keyed by vibe id. Text-only vibes are skipped. A legacy
+ * {@code poster-references.yaml} branch used to run first, but that file has not existed in the
+ * tree for some time and no property pointed at another one, so it only ever logged a WARN on
+ * every boot; it has been removed.
  *
- * Folder / glob locators are expanded over the classpath, sorted by filename and capped at
+ * <p>Folder / glob locators are expanded over the classpath, sorted by filename and capped at
  * {@code poster.references.max-per-tag}. This component does no LLM / network work.
  */
 @Component
@@ -42,42 +40,24 @@ public class ReferenceImageLibrary {
     private final ResourceLoader resourceLoader;
     private final PathMatchingResourcePatternResolver patternResolver;
     private final VibeLibrary vibeLibrary;
-    private final String configFile;
     private final int maxPerTag;
     private Map<String, List<LoadedReference>> byTag = Collections.emptyMap();
 
     public ReferenceImageLibrary(
             ResourceLoader resourceLoader,
             VibeLibrary vibeLibrary,
-            @Value("${poster.references.config-file:classpath:poster-references.yaml}") String configFile,
             @Value("${poster.references.max-per-tag:4}") int maxPerTag) {
         this.resourceLoader = resourceLoader;
         this.patternResolver = new PathMatchingResourcePatternResolver(resourceLoader);
         this.vibeLibrary = vibeLibrary;
-        this.configFile = configFile;
         this.maxPerTag = maxPerTag;
     }
 
     @PostConstruct
     void load() {
         Map<String, List<LoadedReference>> resolved = new LinkedHashMap<>();
-        Resource resource = resourceLoader.getResource(configFile);
-        if (resource.exists()) {
-            try (InputStream in = resource.getInputStream()) {
-                Yaml yaml = new Yaml();
-                Map<String, Object> root = yaml.load(in);
-                Object raw = root == null ? null : root.get("references");
-                if (raw instanceof Map<?, ?> refs) {
-                    resolved.putAll(resolveAll(refs));
-                }
-            } catch (IOException e) {
-                log.error("Failed to load reference image config {}", configFile, e);
-            }
-        } else {
-            log.warn("Reference image config not found at {} — only vibe references will be used", configFile);
-        }
-        // Curated vibes (vibes.yaml) contribute references keyed by vibe id, so forTag(vibeId)
-        // resolves the vibe's flyers. Text-only vibes (empty references) are skipped.
+        // Curated vibes (vibes.yaml) contribute references keyed by vibe id. Text-only vibes
+        // (empty references) are skipped.
         mergeVibeReferences(resolved);
         byTag = resolved;
 
@@ -148,46 +128,17 @@ public class ReferenceImageLibrary {
         return l.endsWith(".jpg") || l.endsWith(".jpeg") || l.endsWith(".png") || l.endsWith(".webp");
     }
 
-    private Map<String, List<LoadedReference>> resolveAll(Map<?, ?> src) {
-        Map<String, List<LoadedReference>> out = new LinkedHashMap<>();
-        for (Map.Entry<?, ?> e : src.entrySet()) {
-            String tag = String.valueOf(e.getKey());
-            List<LoadedReference> resolved = new ArrayList<>();
-            if (e.getValue() instanceof List<?> list) {
-                for (Object item : list) {
-                    if (item == null) continue;
-                    for (String locator : expandEntry(item.toString())) {
-                        try {
-                            resolved.add(resolveOne(locator));
-                        } catch (IOException ioe) {
-                            log.warn("Failed to load reference '{}' for tag '{}': {}", locator, tag, ioe.getMessage());
-                        }
-                    }
-                }
-            }
-            out.put(tag, resolved);
-        }
-        return out;
-    }
-
     private LoadedReference resolveOne(String entry) throws IOException {
         String trimmed = entry.trim();
         if (trimmed.startsWith("http://") || trimmed.startsWith("https://") || trimmed.startsWith("data:")) {
-            return new LoadedReference(shortIdFromUrl(trimmed), trimmed, trimmed);
+            return new LoadedReference(shortIdFromUrl(trimmed), trimmed);
         }
         String locator = trimmed.startsWith("classpath:") ? trimmed : "classpath:" + trimmed;
         Resource r = resourceLoader.getResource(locator);
         if (!r.exists()) {
             throw new IOException("classpath resource not found: " + locator);
         }
-        byte[] bytes;
-        try (InputStream in = r.getInputStream()) {
-            bytes = in.readAllBytes();
-        }
-        String mime = guessMime(trimmed);
-        String dataUri = "data:" + mime + ";base64," + Base64.getEncoder().encodeToString(bytes);
-        String id = shortIdFromPath(trimmed);
-        return new LoadedReference(id, dataUri, locator);
+        return new LoadedReference(shortIdFromPath(trimmed), locator);
     }
 
     private String guessMime(String path) {
@@ -207,17 +158,6 @@ public class ReferenceImageLibrary {
         String clean = q >= 0 ? url.substring(0, q) : url;
         int slash = clean.lastIndexOf('/');
         return slash >= 0 && slash < clean.length() - 1 ? clean.substring(slash + 1) : clean;
-    }
-
-    public ReferenceImageSet forTag(String subStyleTag) {
-        List<LoadedReference> loaded = byTag.getOrDefault(subStyleTag, List.of());
-        List<String> urls = loaded.stream().map(LoadedReference::urlOrDataUri).toList();
-        List<String> ids = loaded.stream().map(LoadedReference::id).toList();
-        return new ReferenceImageSet(subStyleTag, urls, ids);
-    }
-
-    public boolean hasTag(String subStyleTag) {
-        return byTag.containsKey(subStyleTag);
     }
 
     public List<String> tags() {
@@ -312,5 +252,5 @@ public class ReferenceImageLibrary {
         }
     }
 
-    private record LoadedReference(String id, String urlOrDataUri, String sourceLocator) {}
+    private record LoadedReference(String id, String sourceLocator) {}
 }
