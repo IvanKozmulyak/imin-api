@@ -130,10 +130,11 @@ public class QuoteService {
         // 2. Event must be publicly visible (draft/private/deleted → 404).
         Event event = events.findPublic(eventId).orElseThrow(() -> ApiException.notFound("Event"));
 
-        // 3. Tier must belong to the event and be on sale right now. Same predicate
+        // 3. Event must be on sale right now (status + event-level window) and the tier
+        //    must belong to it and be on sale too. Same predicate
         //    StripeCheckoutService uses — see PublicTierEligibility for details.
         Instant now = clock.instant();
-        TicketTier tier = PublicTierEligibility.loadBuyableTier(tiers, eventId, tierId, now);
+        TicketTier tier = PublicTierEligibility.loadBuyableTier(tiers, event, tierId, now);
 
         // 3a. Price-drift guard. No-op when the client didn't send `expectedPriceMinor`.
         PublicTierEligibility.assertExpectedPriceMatches(tier, request.expectedPriceMinor());

@@ -1,5 +1,7 @@
 package com.imin.iminapi.service.event;
 
+import com.imin.iminapi.model.Event;
+import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.TicketTier;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.security.ApiException;
@@ -32,14 +34,34 @@ public final class PublicTierEligibility {
     private PublicTierEligibility() {}
 
     /**
-     * Loads the tier, asserts it belongs to the event, and asserts it is currently
-     * within its sale window and enabled. Returns the loaded {@link TicketTier}.
+     * Loads the tier, asserts it belongs to {@code event}, and asserts both the
+     * <b>event</b> and the tier are currently buyable. Returns the loaded {@link TicketTier}.
      *
-     * @throws ApiException 404 NOT_FOUND on any failure (tier missing, on a different
-     *                      event, disabled, sale not yet open, sale closed)
+     * <p>The event-level half mirrors {@link TierAvailability#isPurchasable} — status is
+     * neither PAST nor CANCELLED, and {@code event.onSaleAt} / {@code event.saleClosesAt}
+     * bracket {@code now}. {@code EventRepository.findPublic} is deliberately
+     * CANCELLED-tolerant (a cancelled event must stay reachable by share-link so the
+     * detail page can render its banner), so without this the buy path would reserve
+     * inventory and charge for a cancelled, past or not-yet-on-sale event.
+     *
+     * <p>Remaining stock is deliberately NOT checked here: quote must still price a
+     * sold-out tier, and {@code InventoryService.reserve} already refuses the checkout.
+     *
+     * @throws ApiException 404 NOT_FOUND on any failure (event past/cancelled, event sale
+     *                      window not open, tier missing, on a different event, disabled,
+     *                      tier sale not yet open, tier sale closed)
      */
-    public static TicketTier loadBuyableTier(TicketTierRepository tiers, UUID eventId, UUID tierId, Instant now) {
-        TicketTier tier = tiers.findByIdAndEventId(tierId, eventId)
+    public static TicketTier loadBuyableTier(TicketTierRepository tiers, Event event, UUID tierId, Instant now) {
+        if (event.getStatus() == EventStatus.PAST || event.getStatus() == EventStatus.CANCELLED) {
+            throw ApiException.notFound("Event");
+        }
+        if (event.getOnSaleAt() != null && now.isBefore(event.getOnSaleAt())) {
+            throw ApiException.notFound("Event");
+        }
+        if (event.getSaleClosesAt() != null && !now.isBefore(event.getSaleClosesAt())) {
+            throw ApiException.notFound("Event");
+        }
+        TicketTier tier = tiers.findByIdAndEventId(tierId, event.getId())
                 .orElseThrow(() -> ApiException.notFound("Event"));
         if (!tier.isEnabled()) throw ApiException.notFound("Event");
         if (tier.getSaleStartsAt() != null && tier.getSaleStartsAt().isAfter(now)) {
