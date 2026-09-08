@@ -240,7 +240,8 @@ public class ConceptStudioService {
                     generated.concept().colorPaletteDescription(), generated.concept().variants());
             // A locked poster must not spend three Ideogram renders to hand back different art.
             render = lockedPosters.isEmpty()
-                    ? orchestrator.run(staging.getId(), legacy, poster, creativeSeed, generated.directions(), brand, djPhoto)
+                    ? orchestrator.run(staging.getId(), legacy, poster, creativeSeed, generated.directions(), brand,
+                            djPhoto, p.userId())
                     : null;
             overview = overviewLlm.generate(req, poster);
         } catch (Exception e) {

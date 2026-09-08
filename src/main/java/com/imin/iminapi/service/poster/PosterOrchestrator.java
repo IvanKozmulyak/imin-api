@@ -129,11 +129,18 @@ public class PosterOrchestrator {
 
     private record RenderContext(Vibe vibe, StyleCard card, StyleControl style) {}
 
+    /**
+     * @param organizerId the user this paid render is attributed to (may be null in tests). Stamped
+     *                    on the generation row: {@code poster_generations.organizer_id} has existed
+     *                    since V3 with no writer, so every row carried no actor at all, while the
+     *                    AI-Act provenance work already stamps model_id per variant.
+     */
     public OrchestrationResult run(UUID generatedEventId, EventCreatorRequest request, PosterConcept concept,
                                    long creativeSeed, List<CreativeDirection> directions, BrandSnapshot brand,
-                                   DjPhotoSnapshot djPhoto) {
+                                   DjPhotoSnapshot djPhoto, UUID organizerId) {
         PosterGeneration generation = new PosterGeneration();
         generation.setGeneratedEventId(generatedEventId);
+        generation.setOrganizerId(organizerId);
         generation.setStatus(PosterGenerationStatus.PENDING);
         generation.setSubStyleTag(concept.subStyleTag());
         generation.setCreativeSeed(creativeSeed);

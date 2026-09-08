@@ -87,7 +87,7 @@ class ConceptStudioServiceTest {
                         new GeneratedPoster(UUID.randomUUID(), "people", "https://cdn/raw1.png", "https://cdn/p1.png", 1L, "prompt", List.of(), Map.of(), "COMPLETE", null),
                         new GeneratedPoster(UUID.randomUUID(), "object",     "https://cdn/raw2.png", "https://cdn/p2.png", 2L, "prompt", List.of(), Map.of(), "COMPLETE", null),
                         new GeneratedPoster(UUID.randomUUID(), "typographic",     "https://cdn/raw3.png", "https://cdn/p3.png", 3L, "prompt", List.of(), Map.of(), "COMPLETE", null)));
-        when(orchestrator.run(any(), any(), any(), anyLong(), any(), any(), any())).thenReturn(result);
+        when(orchestrator.run(any(), any(), any(), anyLong(), any(), any(), any(), any())).thenReturn(result);
 
         when(pricing.recommend(any(), any(), any())).thenReturn(
                 new PricingRecommendation(new BigDecimal("12.00"), new BigDecimal("24.00"), "ok"));
@@ -137,7 +137,7 @@ class ConceptStudioServiceTest {
                         new PosterVariant("minimal", "Large event prompt text here one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four twenty-five twenty-six twenty-seven twenty-eight twenty-nine thirty more words here", "4:5", "Design")));
         when(descService.generateConcept(any(), anyLong(), anyBoolean()))
                 .thenReturn(new AiEventDescriptionService.GeneratedConcept(concept, List.of()));
-        when(orchestrator.run(any(), any(), any(), anyLong(), any(), any(), any())).thenReturn(new OrchestrationResult(
+        when(orchestrator.run(any(), any(), any(), anyLong(), any(), any(), any(), any())).thenReturn(new OrchestrationResult(
                 UUID.randomUUID(), "flat_graphic",
                 List.of(new GeneratedPoster(UUID.randomUUID(), "people", "raw", "url1", 1L, "p", List.of(), Map.of(), "COMPLETE", null),
                         new GeneratedPoster(UUID.randomUUID(), "object",     "raw", "url2", 2L, "p", List.of(), Map.of(), "COMPLETE", null),
@@ -174,7 +174,7 @@ class ConceptStudioServiceTest {
                                 new PosterVariant("object", body, "1:1", "Design"),
                                 new PosterVariant("typographic", body, "9:16", "Design"))),
                 List.of()));
-        when(orchestrator.run(any(), any(), any(), anyLong(), any(), any(), any())).thenReturn(new OrchestrationResult(
+        when(orchestrator.run(any(), any(), any(), anyLong(), any(), any(), any(), any())).thenReturn(new OrchestrationResult(
                 UUID.randomUUID(), "brutalist_techno",
                 List.of(new GeneratedPoster(UUID.randomUUID(), "people", "raw", "u1", 1L, "p", List.of(), Map.of(), "COMPLETE", null))));
         when(pricing.recommend(any(), any(), any())).thenReturn(
@@ -189,7 +189,7 @@ class ConceptStudioServiceTest {
 
         // The concept handed to the orchestrator carries the pinned vibe id, not the LLM's echo.
         ArgumentCaptor<PosterConcept> cap = ArgumentCaptor.forClass(PosterConcept.class);
-        verify(orchestrator).run(any(), any(), cap.capture(), anyLong(), any(), any(), any());
+        verify(orchestrator).run(any(), any(), cap.capture(), anyLong(), any(), any(), any(), any());
         assertThat(cap.getValue().subStyleTag()).isEqualTo("brutalist_techno");
     }
 
@@ -247,7 +247,7 @@ class ConceptStudioServiceTest {
                                         new PosterVariant("object", body, "1:1", "Design"),
                                         new PosterVariant("typographic", body, "9:16", "Design"))),
                         List.of()));
-        when(orchestrator.run(any(), any(), any(), anyLong(), any(), any(), any())).thenReturn(new OrchestrationResult(
+        when(orchestrator.run(any(), any(), any(), anyLong(), any(), any(), any(), any())).thenReturn(new OrchestrationResult(
                 UUID.randomUUID(), "neon_underground",
                 List.of(new GeneratedPoster(UUID.randomUUID(), "people", "raw", "u1", 1L, "p", List.of(), Map.of(), "COMPLETE", null))));
         when(pricing.recommend(any(), any(), any())).thenReturn(
@@ -306,7 +306,7 @@ class ConceptStudioServiceTest {
 
         ArgumentCaptor<com.imin.iminapi.service.poster.BrandSnapshot> cap =
                 ArgumentCaptor.forClass(com.imin.iminapi.service.poster.BrandSnapshot.class);
-        verify(orchestrator).run(any(), any(), any(), anyLong(), any(), cap.capture(), any());
+        verify(orchestrator).run(any(), any(), any(), anyLong(), any(), cap.capture(), any(), any());
         assertThat(cap.getValue().logoOn()).isFalse();
     }
 
@@ -326,8 +326,20 @@ class ConceptStudioServiceTest {
         assertThat(cap.getValue().accentColor()).isNull();
         ArgumentCaptor<com.imin.iminapi.service.poster.BrandSnapshot> bcap =
                 ArgumentCaptor.forClass(com.imin.iminapi.service.poster.BrandSnapshot.class);
-        verify(orchestrator).run(any(), any(), any(), anyLong(), any(), bcap.capture(), any());
+        verify(orchestrator).run(any(), any(), any(), anyLong(), any(), bcap.capture(), any(), any());
         assertThat(bcap.getValue()).isNull();
+    }
+
+    @Test
+    void create_attributesTheRenderToTheCallingOrganizer() {
+        AuthPrincipal p = owner();
+        stubPipeline();
+
+        sut.create(p, new ConceptRequest(
+                "Moody warehouse techno brief here", "Techno", "Berlin", null, null,
+                null, null, null, null, null, null, null, null));
+
+        verify(orchestrator).run(any(), any(), any(), anyLong(), any(), any(), any(), eq(p.userId()));
     }
 
     // ---- create-request snapshot carried into regenerate (poster-5) ------------------------------
@@ -443,7 +455,7 @@ class ConceptStudioServiceTest {
         ConceptResponse r = sut.regenerate(p, conceptId, List.of("poster"));
 
         // No Ideogram spend at all, and the prior posters come back unchanged.
-        verify(orchestrator, never()).run(any(), any(), any(), anyLong(), any(), any(), any());
+        verify(orchestrator, never()).run(any(), any(), any(), anyLong(), any(), any(), any(), any());
         assertThat(r.posters()).extracting("url")
                 .containsExactly("https://cdn/prior-1.png", "https://cdn/prior-2.png", "https://cdn/prior-3.png");
     }
@@ -470,7 +482,7 @@ class ConceptStudioServiceTest {
 
         ConceptResponse r = sut.regenerate(p, conceptId, List.of());
 
-        verify(orchestrator).run(any(), any(), any(), anyLong(), any(), any(), any());
+        verify(orchestrator).run(any(), any(), any(), anyLong(), any(), any(), any(), any());
         assertThat(r.name()).isEqualTo("N");
         assertThat(r.description()).isEqualTo("d");
     }
@@ -501,7 +513,7 @@ class ConceptStudioServiceTest {
 
         // snapshot forwarded to orchestrator with the correct URL
         verify(orchestrator).run(any(), any(), any(), anyLong(), any(), any(),
-                argThat(snap -> snap != null && djUrl.equals(snap.url())));
+                argThat(snap -> snap != null && djUrl.equals(snap.url())), any());
         // descService called with djMode=true
         verify(descService).generateConcept(any(), anyLong(), eq(true));
         // response reflects DJ photo was used
