@@ -2,6 +2,7 @@ package com.imin.iminapi.repository;
 
 import com.imin.iminapi.model.FunnelEvent;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.data.rest.core.annotation.RepositoryRestResource;
@@ -128,4 +129,17 @@ public interface FunnelEventRepository extends JpaRepository<FunnelEvent, UUID> 
                and fe.stage = 'CHECKOUT_START'
             """)
     long countAttributedCheckoutSessions(@Param("campaign") String campaign);
+
+    /**
+     * Retention purge (see {@code FunnelRetentionJob}). Strictly-before so a run
+     * is idempotent at the boundary, and a bulk JPQL delete rather than
+     * load-then-delete: nothing else reads these rows and there is no cascade to
+     * honour, so pulling millions of entities into the persistence context to
+     * delete them one by one would be the only risk here.
+     *
+     * @return rows removed
+     */
+    @Modifying
+    @Query("delete from FunnelEvent e where e.createdAt < :cutoff")
+    int deleteCreatedBefore(@Param("cutoff") java.time.Instant cutoff);
 }
