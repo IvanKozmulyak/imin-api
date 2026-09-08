@@ -1,6 +1,7 @@
 package com.imin.iminapi.stripe;
 
 import com.imin.iminapi.model.CheckoutAttribution;
+import com.imin.iminapi.model.CheckoutConsent;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.security.RateLimiter;
@@ -8,6 +9,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.Size;
 import jakarta.validation.constraints.NotNull;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -71,11 +73,19 @@ public class StripePaymentIntentController {
         CheckoutAttribution attribution = new CheckoutAttribution(
                 body.utmSource(), body.utmMedium(), body.utmCampaign(), body.anonId());
 
+        // Consent evidence captured on the native buy sheet (V97), threaded exactly as
+        // StripeCheckoutController does for the hosted flow. Without it a native order recorded
+        // marketing_opt_in = true with terms_accepted_at and marketing_opt_in_proof both NULL.
+        // Both fields optional: an absent one means "not recorded", never "declined", and
+        // nothing here gates the purchase.
+        CheckoutConsent consent = new CheckoutConsent(
+                Boolean.TRUE.equals(body.acceptedTerms()), body.marketingOptInProofText());
+
         StripePaymentIntentService.NativeIntent intent = intents.create(
                 eventId, body.tierId(), quantity, body.promoCode(), body.expectedPriceMinor(),
                 body.email(), Boolean.TRUE.equals(body.adsConsent()),
                 Boolean.TRUE.equals(body.marketingOptIn()), attribution, body.locale(),
-                idempotencyKey);
+                idempotencyKey, consent);
 
         return ResponseEntity.ok()
                 .header(HttpHeaders.CACHE_CONTROL, "private, no-store")
@@ -94,5 +104,10 @@ public class StripePaymentIntentController {
                                         String utmMedium,
                                         String utmCampaign,
                                         String anonId,
-                                        String locale) {}
+                                        String locale,
+                                        // V97 consent evidence, mirroring CheckoutRequest.
+                                        // Optional: a client that sends neither is recorded as
+                                        // "not captured", which is what every pre-V97 order is.
+                                        Boolean acceptedTerms,
+                                        @Size(max = 500) String marketingOptInProofText) {}
 }

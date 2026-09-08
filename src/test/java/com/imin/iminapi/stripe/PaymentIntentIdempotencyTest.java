@@ -142,7 +142,7 @@ class PaymentIntentIdempotencyTest {
         verify(paymentIntents, times(1)).create(any(PaymentIntentCreateParams.class));
         verify(checkoutService, times(1)).reserveAndBuildMetadata(
                 any(), any(), any(), anyInt(), any(), anyBoolean(), anyBoolean(),
-                any(), any(), anyBoolean());
+                any(), any(), anyBoolean(), any());
         // Nothing was released: the first hold is the one the buyer still has.
         verify(inventory, never()).releaseReservation(any(), any());
     }
@@ -292,7 +292,7 @@ class PaymentIntentIdempotencyTest {
 
         when(checkoutService.reserveAndBuildMetadata(
                 any(), any(), any(), anyInt(), any(), anyBoolean(), anyBoolean(),
-                any(), any(), anyBoolean()))
+                any(), any(), anyBoolean(), any()))
                 .thenReturn(new StripeCheckoutService.PaidPrelude(
                         null, null, org, null, reservationId, java.time.Instant.now(),
                         subtotal, 0L, subtotal, fee, "eur", metadata));

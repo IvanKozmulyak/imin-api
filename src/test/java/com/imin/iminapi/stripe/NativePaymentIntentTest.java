@@ -1,6 +1,7 @@
 package com.imin.iminapi.stripe;
 
 import com.imin.iminapi.model.CheckoutAttribution;
+import com.imin.iminapi.model.CheckoutConsent;
 import com.imin.iminapi.security.ApiException;
 import com.stripe.model.PaymentIntent;
 import com.stripe.param.PaymentIntentCreateParams;
@@ -178,6 +179,42 @@ class NativePaymentIntentTest {
         verify(inventory).attachSessionId(RESERVATION, "pi_test_123");
     }
 
+    // ── stripe-16 — consent evidence, and no opt-in without it ────────────────────
+
+    @Test
+    void threadsConsentEvidenceIntoTheSharedPrelude() throws Exception {
+        stubPrelude(5000L, 0L, 5000L, 448L, null);
+        CheckoutConsent consent = new CheckoutConsent(true, "Email me about future events");
+
+        service.create(EVENT, TIER, 2, null, null, "buyer@example.test",
+                false, true, CheckoutAttribution.NONE, "en", null, consent);
+
+        ArgumentCaptor<CheckoutConsent> captured = ArgumentCaptor.forClass(CheckoutConsent.class);
+        verify(checkoutService).reserveAndBuildMetadata(
+                any(), any(), any(), anyInt(), any(), anyBoolean(),
+                org.mockito.ArgumentMatchers.eq(true),
+                any(), any(), anyBoolean(), captured.capture());
+        assertThat(captured.getValue().acceptedTerms()).isTrue();
+        assertThat(captured.getValue().marketingOptInProofText())
+                .as("the verbatim sentence the buyer read IS the Art. 7(1) evidence")
+                .isEqualTo("Email me about future events");
+    }
+
+    @Test
+    void refusesToRecordAMarketingOptInWithNoProofText() throws Exception {
+        stubPrelude(5000L, 0L, 5000L, 448L, null);
+
+        // A bare boolean with no evidence: the hosted path would have carried the sentence.
+        service.create(EVENT, TIER, 2, null, null, "buyer@example.test",
+                false, true, CheckoutAttribution.NONE, "en", null,
+                new CheckoutConsent(true, null));
+
+        verify(checkoutService).reserveAndBuildMetadata(
+                any(), any(), any(), anyInt(), any(), anyBoolean(),
+                org.mockito.ArgumentMatchers.eq(false),
+                any(), any(), anyBoolean(), any());
+    }
+
     // ── helpers ────────────────────────────────────────────────────────────
 
     private void stubPrelude(long subtotal, long discount, long net, long fee, String promoId) {
@@ -202,7 +239,7 @@ class NativePaymentIntentTest {
 
         when(checkoutService.reserveAndBuildMetadata(
                 any(), any(), any(), anyInt(), any(), anyBoolean(), anyBoolean(),
-                any(), any(), anyBoolean()))
+                any(), any(), anyBoolean(), any()))
                 .thenReturn(new StripeCheckoutService.PaidPrelude(
                         null, null, org, null, RESERVATION, java.time.Instant.now(),
                         subtotal, discount, net, fee, "eur", metadata));
