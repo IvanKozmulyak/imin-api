@@ -322,6 +322,40 @@ class StripeCheckoutServiceTest {
         ord.verify(inventoryService).releaseReservation(eq(reservationId), eq("STRIPE_CREATE_FAILED"));
     }
 
+    // ── stripe-10 — a coupon failure must not strand the seats ────────────────────
+    @Test
+    void createCheckoutSession_releasesReservation_whenCouponCreateFails() throws Exception {
+        com.imin.iminapi.model.PromoCode promo = new com.imin.iminapi.model.PromoCode();
+        promo.setId(UUID.randomUUID());
+        promo.setEventId(eventId);
+        promo.setCode("VECHIRKA20");
+        promo.setDiscountPct(20);
+        promo.setMaxUses(50);
+        promo.setUsedCount(0);
+        promo.setEnabled(true);
+        when(promos.findByEventId(eventId)).thenReturn(java.util.List.of(promo));
+
+        com.stripe.service.CouponService coupons = mock(com.stripe.service.CouponService.class);
+        when(stripeClient.coupons()).thenReturn(coupons);
+        when(coupons.create(any(com.stripe.param.CouponCreateParams.class)))
+                .thenThrow(new ApiConnectionException("simulated coupon outage"));
+
+        assertThatThrownBy(() -> svc.createCheckoutSession(eventId, tierId, 2, "VECHIRKA20"))
+                .isInstanceOf(ApiException.class)
+                .satisfies(ex -> assertThat(((ApiException) ex).status()).isEqualTo(HttpStatus.BAD_GATEWAY));
+
+        // createCheckout is NOT transactional, so without an explicit release these 2 seats
+        // stayed held for the full 30-minute session TTL — a short Stripe blip on a hot tier
+        // during a promo drop reads to buyers as sold out.
+        InOrder ord = inOrder(inventoryService, coupons);
+        ord.verify(inventoryService).reserve(eq(tierId), eq(2), any(Instant.class),
+                nullable(String.class));
+        ord.verify(coupons).create(any(com.stripe.param.CouponCreateParams.class));
+        ord.verify(inventoryService).releaseReservation(eq(reservationId), eq("STRIPE_COUPON_FAILED"));
+        // The session was never attempted, so nothing else needs unwinding.
+        verify(sessionService, never()).create(any(SessionCreateParams.class));
+    }
+
     @Test
     void createCheckoutSession_rejectsQuantityOutOfRange() {
         assertThatThrownBy(() -> svc.createCheckoutSession(eventId, tierId, 0, null))
