@@ -154,7 +154,12 @@ public class RefundService {
         try {
             List<RefundTicket> rows = new ArrayList<>(selected.size());
             for (Ticket t : selected) rows.add(new RefundTicket(r.getId(), t.getId()));
-            refundTickets.saveAll(rows);
+            // saveAllAndFlush, not saveAll: RefundTicket carries an application-assigned
+            // @IdClass id, so save() merges and only QUEUES the INSERT. Without this flush
+            // UNIQUE(refund_tickets.ticket_id) is not consulted until commit — i.e. after
+            // the Stripe call below has already moved real money — and the catch under it
+            // is unreachable. Flushing claims the tickets before we spend anything.
+            refundTickets.saveAllAndFlush(rows);
         } catch (DataIntegrityViolationException race) {
             // UNIQUE(refund_tickets.ticket_id) raced. A concurrent refund grabbed
             // a ticket between our pre-check and INSERT. Surface as ALREADY_REFUNDED.

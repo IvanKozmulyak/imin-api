@@ -224,6 +224,43 @@ class RefundServiceTest {
         assertThat(out.getInitiatedByUserId()).isEqualTo(userId);
     }
 
+    /**
+     * refund-2: the refund_tickets INSERTs must reach the database BEFORE the Stripe call,
+     * so UNIQUE(ticket_id) rejects the loser of a race while the money is still ours.
+     * With a plain saveAll() the INSERT is only queued (RefundTicket has an
+     * application-assigned @IdClass id, so save() merges), the violation surfaces at commit
+     * — after Stripe already refunded — and this catch is unreachable.
+     */
+    @Test
+    void concurrent_claim_on_a_ticket_is_rejected_before_stripe_is_called() throws Exception {
+        Order o = paidOrder();
+        Ticket t1 = ticket(2500);
+        Ticket t2 = ticket(2500);
+        List<UUID> ids = List.of(t1.getId());
+        when(orders.findById(orderId)).thenReturn(Optional.of(o));
+        when(refunds.findByOrderIdAndIdempotencyKey(any(), any())).thenReturn(Optional.empty());
+        when(tickets.findByIdInAndOrderId(any(), eq(orderId))).thenReturn(List.of(t1));
+        when(tickets.findByOrderId(orderId)).thenReturn(List.of(t1, t2));
+        when(refundTickets.findRefundedTicketIds(any())).thenReturn(Set.of());
+        when(refunds.sumActiveAmountByOrderId(orderId)).thenReturn(0L);
+        when(refunds.save(any(Refund.class))).thenAnswer(inv -> {
+            Refund r = inv.getArgument(0);
+            if (r.getId() == null) r.setId(UUID.randomUUID());
+            return r;
+        });
+        // The other request won the UNIQUE(ticket_id) index a moment earlier.
+        when(refundTickets.saveAllAndFlush(any()))
+            .thenThrow(new org.springframework.dao.DataIntegrityViolationException(
+                "refund_tickets_ticket_id_unique"));
+
+        ApiException ex = (ApiException) assertThatThrownBy(() ->
+            service.createRefund(orderId, principal, "k", ids, RefundReason.OTHER))
+            .isInstanceOf(ApiException.class).actual();
+
+        assertThat(ex.code()).isEqualTo(ErrorCode.TICKET_ALREADY_REFUNDED);
+        verifyNoInteractions(stripeRefunds);
+    }
+
     @org.junit.jupiter.api.Nested
     class PromoCodeAmountAllocation {
 
