@@ -85,6 +85,9 @@ class PostEventPayoutServiceTest {
         volatile boolean failApiConnection = false;
         /** When false, accounts().retrieve reports NO external bank account. */
         volatile boolean hasBank = true;
+        /** Status the reconciliation poll (GET /v1/payouts/{id}) reports back. */
+        volatile String retrievedStatus = "paid";
+        volatile String retrievedFailureCode = null;
 
         void reset() {
             availableMinor.set(0L);
@@ -95,6 +98,8 @@ class PostEventPayoutServiceTest {
             failBalanceInsufficient = false;
             failApiConnection = false;
             hasBank = true;
+            retrievedStatus = "paid";
+            retrievedFailureCode = null;
         }
 
         @SuppressWarnings("unchecked")
@@ -107,6 +112,19 @@ class PostEventPayoutServiceTest {
                       "pending": [] }
                     """.formatted(availableMinor.get());
                 return (T) ApiResource.GSON.fromJson(json, Balance.class);
+            }
+            // GET /v1/payouts/{id} — the reconciliation poll. Distinguished from the
+            // create (POST /v1/payouts) by the id segment in the path.
+            if (path != null && path.startsWith("/v1/payouts/")) {
+                String json = """
+                    { "object": "payout", "id": "%s", "amount": %d, "currency": "eur",
+                      "status": "%s", "arrival_date": %d, "failure_code": %s }
+                    """.formatted(path.substring("/v1/payouts/".length()),
+                        lastPayoutAmount.get() == null ? 0L : lastPayoutAmount.get(),
+                        retrievedStatus,
+                        java.time.Instant.now().getEpochSecond(),
+                        retrievedFailureCode == null ? "null" : "\"" + retrievedFailureCode + "\"");
+                return (T) ApiResource.GSON.fromJson(json, Payout.class);
             }
             if (path != null && path.startsWith("/v1/payouts")) {
                 if (req.getOptions() != null) {
@@ -505,6 +523,75 @@ class PostEventPayoutServiceTest {
         service.payOneEvent(e.getId());
 
         assertThat(fake.lastIdempotencyKey.get()).isEqualTo("evt:" + e.getId() + ":attempt:2");
+    }
+
+    // ── stripe-4 — a SUBMITTED run must not freeze the org forever ─────────────────
+    @Test
+    void stale_submitted_run_is_reconciled_from_stripe_and_unblocks_the_org() {
+        Event e1 = newEndedEvent(org);
+        Event e2 = newEndedEvent(org);   // SAME org — blocked by e1's in-flight run
+        order(e1, 5_000, 500);           // net 4_500
+        order(e2, 7_000, 700);           // net 6_300
+        fake.availableMinor.set(100_000L);
+
+        service.payOneEvent(e1.getId());
+        PayoutRun submitted = payoutRuns.findByEventId(e1.getId()).get(0);
+        assertThat(submitted.getStatus()).isEqualTo(PayoutRunStatus.SUBMITTED);
+
+        // No payout.* webhook ever arrives (STRIPE_WEBHOOK_SECRET_CONNECT blank, or Stripe
+        // gave up retrying). Every event for the org is frozen behind this one row.
+        service.payOneEvent(e2.getId());
+        assertThat(payoutRuns.findByEventId(e2.getId()))
+                .as("the org-level in-flight guard blocks the sibling event")
+                .isEmpty();
+
+        // The reconciliation poll reads the payout Stripe actually holds and closes the run.
+        fake.retrievedStatus = "paid";
+        service.reconcileSubmittedRun(submitted.getId());
+
+        PayoutRun reconciled = payoutRuns.findById(submitted.getId()).orElseThrow();
+        assertThat(reconciled.getStatus()).isEqualTo(PayoutRunStatus.PAID);
+        assertThat(reconciled.getPaidAt()).isNotNull();
+
+        // …and the org is free again, so the sibling event is paid on the next tick.
+        service.payOneEvent(e2.getId());
+        assertThat(fake.lastPayoutAmount.get()).isEqualTo(6_300L);
+        assertThat(payoutRuns.findByEventId(e2.getId())).hasSize(1);
+    }
+
+    @Test
+    void reconcile_marks_a_failed_payout_failed_so_the_event_can_retry() {
+        Event e = newEndedEvent(org);
+        order(e, 5_000, 500);   // net 4_500
+        fake.availableMinor.set(100_000L);
+
+        service.payOneEvent(e.getId());
+        PayoutRun submitted = payoutRuns.findByEventId(e.getId()).get(0);
+
+        fake.retrievedStatus = "failed";
+        fake.retrievedFailureCode = "account_closed";
+        service.reconcileSubmittedRun(submitted.getId());
+
+        PayoutRun reconciled = payoutRuns.findById(submitted.getId()).orElseThrow();
+        assertThat(reconciled.getStatus()).isEqualTo(PayoutRunStatus.FAILED);
+        assertThat(reconciled.getFailureReason()).isEqualTo("account_closed");
+    }
+
+    @Test
+    void reconcile_leaves_a_still_in_transit_payout_submitted() {
+        Event e = newEndedEvent(org);
+        order(e, 5_000, 500);
+        fake.availableMinor.set(100_000L);
+
+        service.payOneEvent(e.getId());
+        PayoutRun submitted = payoutRuns.findByEventId(e.getId()).get(0);
+
+        fake.retrievedStatus = "in_transit";
+        service.reconcileSubmittedRun(submitted.getId());
+
+        assertThat(payoutRuns.findById(submitted.getId()).orElseThrow().getStatus())
+                .as("a payout genuinely still in flight stays SUBMITTED — never guess it settled")
+                .isEqualTo(PayoutRunStatus.SUBMITTED);
     }
 
     @Test

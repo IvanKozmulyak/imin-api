@@ -27,6 +27,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
@@ -357,6 +358,73 @@ public class PostEventPayoutService {
                 log.error("[payout] FAILED event {} org {} acct {} amount={} {} — {}",
                         eventId, org.getId(), acct, createMinor, cur, code, e);
             }
+        }
+    }
+
+    /**
+     * Re-read one {@code SUBMITTED} run's payout from Stripe and apply the same transition
+     * {@code SettlementIngestService.ingestPayout} would, so the trigger ledger closes even
+     * when no {@code payout.*} webhook ever arrives.
+     *
+     * <p>This is not belt-and-braces: a SUBMITTED run blocks EVERY event for its org via the
+     * org-level in-flight guard, and its only other exit is a connected-account-scoped
+     * {@code payout.paid}/{@code payout.failed} delivery — which is dark whenever the OPTIONAL
+     * {@code STRIPE_WEBHOOK_SECRET_CONNECT} is blank, and which Stripe abandons after ~3 days
+     * of retries. Without this poll one missed delivery freezes the org's payouts permanently
+     * with no signal but a 75-day retention WARN.
+     *
+     * <p>Own {@code REQUIRES_NEW} transaction so one unreadable payout can't roll back the
+     * batch. A payout Stripe still reports as pending/in_transit is LEFT SUBMITTED (it really
+     * is in flight); it is logged loudly once it is older than four reconcile windows.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void reconcileSubmittedRun(UUID runId) {
+        PayoutRun run = payoutRuns.findById(runId).orElse(null);
+        if (run == null || run.getStatus() != PayoutRunStatus.SUBMITTED) return;
+
+        String poId = run.getStripePayoutId();
+        if (poId == null || poId.isBlank()) {
+            // SUBMITTED is only ever written together with the po_ id, so this is a corrupted
+            // row rather than a real in-flight payout. Never guess — it would risk a re-pay.
+            log.error("[payout-recon] run {} (event {} org {}) is SUBMITTED with NO stripe_payout_id — "
+                            + "cannot reconcile; this row is blocking every payout for acct {}",
+                    run.getId(), run.getEventId(), run.getOrgId(), run.getStripeAccountId());
+            return;
+        }
+
+        Payout po;
+        try {
+            po = stripeClient.payouts().retrieve(poId,
+                    RequestOptions.builder().setStripeAccount(run.getStripeAccountId()).build());
+        } catch (StripeException e) {
+            log.warn("[payout-recon] could not retrieve payout {} on acct {} — {} (retrying next tick)",
+                    poId, run.getStripeAccountId(), e.getCode());
+            return;
+        }
+
+        String status = po.getStatus();
+        if ("paid".equals(status)) {
+            // Same rule as the webhook path: a clamped run settles PARTIAL, not PAID, so the
+            // event stays eligible for its top-up.
+            run.setStatus(run.getRemainingMinor() > 0L ? PayoutRunStatus.PARTIAL : PayoutRunStatus.PAID);
+            run.setPaidAt(po.getArrivalDate() == null ? Instant.now() : Instant.ofEpochSecond(po.getArrivalDate()));
+            payoutRuns.save(run);
+            log.info("[payout-recon] polled payout {} -> run {} {} (event {})",
+                    poId, run.getId(), run.getStatus(), run.getEventId());
+        } else if ("failed".equals(status) || "canceled".equals(status)) {
+            run.setStatus(PayoutRunStatus.FAILED);
+            String reason = po.getFailureCode() != null ? po.getFailureCode() : status;
+            run.setFailureReason(reason);
+            payoutRuns.save(run);
+            log.warn("[payout-recon] polled payout {} -> run {} FAILED ({}) (event {})",
+                    poId, run.getId(), reason, run.getEventId());
+        } else if (run.getSubmittedAt() != null
+                && run.getSubmittedAt().isBefore(Instant.now().minus(
+                        Duration.ofHours(4L * Math.max(1, props.getPayoutReconcileAfterHours()))))) {
+            log.error("[payout-recon] payout {} for event {} org {} has been {} since {} — every payout "
+                            + "for acct {} is blocked until it settles; check the Stripe dashboard",
+                    poId, run.getEventId(), run.getOrgId(), status, run.getSubmittedAt(),
+                    run.getStripeAccountId());
         }
     }
 

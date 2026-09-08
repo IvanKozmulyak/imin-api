@@ -5,6 +5,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 
+import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
@@ -70,6 +71,15 @@ public interface PayoutRunRepository extends JpaRepository<PayoutRun, UUID> {
      */
     @Query("select coalesce(max(r.attempt), 0) from PayoutRun r where r.eventId = :eventId")
     int maxAttemptByEventId(@Param("eventId") UUID eventId);
+
+    /**
+     * Reconciliation sweep: runs left {@code SUBMITTED} since before {@code cutoff}. A
+     * SUBMITTED run blocks EVERY event for its org (the org-level in-flight guard), and
+     * its only other exit is a {@code payout.*} webhook — which is dark whenever
+     * {@code STRIPE_WEBHOOK_SECRET_CONNECT} is unset and which Stripe stops retrying
+     * after ~3 days. These are the rows to re-read from Stripe directly.
+     */
+    List<PayoutRun> findByStatusAndSubmittedAtBefore(PayoutRunStatus status, Instant cutoff);
 
     /**
      * Retention monitor (plan §7): is there a settled ({@code PAID}) payout run for

@@ -175,6 +175,12 @@ imin:
     # Days after event.endsAt before the post-event payout job fires (EU card
     # availability lag). Default 3.
     payout-buffer-days: ${STRIPE_PAYOUT_BUFFER_DAYS:3}
+    # Age at which a SUBMITTED payout run is re-read from Stripe rather than waiting
+    # for a payout.* webhook. The connect-scoped signing secret is OPTIONAL (blank =>
+    # payout.* reconciliation is dark) and Stripe stops retrying a delivery after ~3
+    # days, so without this poll one undelivered event freezes every payout for the
+    # org forever. Default 6h = "left over from a previous daily tick".
+    payout-reconcile-after-hours: ${STRIPE_PAYOUT_RECONCILE_AFTER_HOURS:6}
     # Timezone for resolving the payout buffer deadline (the business deadline,
     # not the event's local zone). Default Europe/Amsterdam.
     payout-zone: ${STRIPE_PAYOUT_ZONE:Europe/Amsterdam}
