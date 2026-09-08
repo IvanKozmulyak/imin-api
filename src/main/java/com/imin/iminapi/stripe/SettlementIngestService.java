@@ -84,7 +84,8 @@ public class SettlementIngestService {
      * @param reversedEvent   true when the source event is {@code transfer.reversed}.
      */
     @Transactional(propagation = Propagation.MANDATORY)
-    public void ingestTransfer(Transfer transfer, String connectedAccount, boolean reversedEvent) {
+    public void ingestTransfer(Transfer transfer, String connectedAccount, boolean reversedEvent,
+                               Instant eventAt) {
         if (transfer == null) return;
         String acctId = firstNonBlank(transfer.getDestination(), connectedAccount);
         Organization org = resolveOrg(acctId, "transfer", transfer.getId());
@@ -97,7 +98,7 @@ public class SettlementIngestService {
 
         upsert(org.getId(), transfer.getId(), SettlementObjectType.TRANSFER,
                 nz(transfer.getAmount()), currency(transfer.getCurrency()),
-                status, null, null, null, eventIdOf(transfer.getMetadata()));
+                status, null, null, null, eventIdOf(transfer.getMetadata()), eventAt);
 
         log.info("[settlement-ingest] transfer {} org={} amount={} {} status={}",
                 transfer.getId(), org.getId(), nz(transfer.getAmount()),
@@ -127,7 +128,7 @@ public class SettlementIngestService {
      * @param connectedAccount the {@code event.getAccount()} id this payout settled on; may be null.
      */
     @Transactional(propagation = Propagation.MANDATORY)
-    public void ingestPayout(Payout payout, String connectedAccount) {
+    public void ingestPayout(Payout payout, String connectedAccount, Instant eventAt) {
         if (payout == null) return;
         Organization org = resolveOrg(connectedAccount, "payout", payout.getId());
         if (org == null) return;
@@ -152,7 +153,7 @@ public class SettlementIngestService {
 
         upsert(org.getId(), payout.getId(), SettlementObjectType.PAYOUT,
                 nz(payout.getAmount()), currency(payout.getCurrency()),
-                status, arrival, paidAt, failure, eventIds);
+                status, arrival, paidAt, failure, eventIds, eventAt);
 
         if (run != null) {
             if (status == SettlementStatus.PAID) {
@@ -209,7 +210,8 @@ public class SettlementIngestService {
      * @param eventType        the canonical {@code charge.dispute.*} type, to branch behaviour.
      */
     @Transactional(propagation = Propagation.MANDATORY)
-    public void ingestDispute(Dispute dispute, String connectedAccount, String eventType) {
+    public void ingestDispute(Dispute dispute, String connectedAccount, String eventType,
+                              Instant eventAt) {
         if (dispute == null) return;
 
         // Resolve the disputed charge → its backing transfer (tr_...). The Dispute carries no
@@ -248,8 +250,10 @@ public class SettlementIngestService {
         SettlementStatus status = reinstated ? SettlementStatus.PAID : SettlementStatus.FAILED;
         String reason = firstNonBlank(dispute.getReason(), dispute.getStatus());
 
+        if (isStale(existing, eventAt, "dispute " + dispute.getId())) return;
         existing.setStatus(status);
         if (reason != null) existing.setFailureReason(reason);
+        stamp(existing, eventAt);
         settlements.save(existing);
 
         log.info("[settlement-ingest] dispute {} ({}) org={} sourceTransfer={} status={} reason={} "
@@ -292,7 +296,7 @@ public class SettlementIngestService {
      * @param connectedAccount the {@code event.getAccount()} fallback for org resolution; may be null.
      */
     @Transactional(propagation = Propagation.MANDATORY)
-    public void ingestChargeRefunded(Charge charge, String connectedAccount) {
+    public void ingestChargeRefunded(Charge charge, String connectedAccount, Instant eventAt) {
         if (charge == null) return;
         // `transfer` on the platform copy of a destination charge; `source_transfer` on the
         // connected account's copy. The settlement row is keyed on the tr_ id ingestTransfer
@@ -319,6 +323,7 @@ public class SettlementIngestService {
             return;
         }
 
+        if (isStale(existing, eventAt, "charge.refunded " + charge.getId())) return;
         boolean fullyRefunded = Boolean.TRUE.equals(charge.getRefunded());
         if (fullyRefunded) {
             // Status only — amountMinor keeps mirroring the real transfer.
@@ -328,6 +333,7 @@ public class SettlementIngestService {
             // Partial refund: do NOT change status or amount; annotate the reason only.
             existing.setFailureReason("partially_refunded");
         }
+        stamp(existing, eventAt);
         settlements.save(existing);
 
         log.info("[settlement-ingest] charge.refunded {} sourceTransfer={} org={} fullyRefunded={} status={} "
@@ -385,25 +391,65 @@ public class SettlementIngestService {
      * type — the first ingest establishes those. {@code eventIds} only overwrites when the new
      * value is non-null, so a later metadata-less delivery doesn't wipe an attribution we
      * previously captured.
+     *
+     * <p><b>The status write is MONOTONIC.</b> Stripe does not guarantee delivery order, and the
+     * {@code processed_webhook_events} marker is written in the same transaction as the handler
+     * — so a handler that fails rolls its marker back and Stripe's retry re-processes that event
+     * id from scratch, hours later. Two guards keep a late delivery from rewriting settled state:
+     * an event older than the one that last wrote the row (V111 {@code last_event_at}) is dropped
+     * outright, and a row that has already left {@code PENDING} is never dragged back into it
+     * (PENDING is only ever an initial state — nothing legitimately transitions INTO it).
      */
     private void upsert(UUID orgId, String stripeObjectId, SettlementObjectType type,
                         long amountMinor, String currency, SettlementStatus status,
-                        Instant arrivalAt, Instant paidAt, String failureReason, String eventIds) {
-        Settlement s = settlements.findByStripeObjectId(stripeObjectId).orElseGet(() -> {
-            Settlement fresh = new Settlement();
-            fresh.setStripeObjectId(stripeObjectId);
-            fresh.setOrgId(orgId);
-            fresh.setObjectType(type);
-            return fresh;
-        });
+                        Instant arrivalAt, Instant paidAt, String failureReason, String eventIds,
+                        Instant eventAt) {
+        Settlement existing = settlements.findByStripeObjectId(stripeObjectId).orElse(null);
+        if (existing != null && isStale(existing, eventAt, type.toWire() + " " + stripeObjectId)) return;
+
+        Settlement s = existing;
+        if (s == null) {
+            s = new Settlement();
+            s.setStripeObjectId(stripeObjectId);
+            s.setOrgId(orgId);
+            s.setObjectType(type);
+        }
         s.setAmountMinor(amountMinor);
         s.setCurrency(currency);
-        s.setStatus(status);
+        if (status == SettlementStatus.PENDING && s.getStatus() != null
+                && s.getStatus() != SettlementStatus.PENDING) {
+            // A replayed transfer.created after a charge.refunded, or a payout.created after
+            // payout.paid. Keep the settled status — never regress the read-model.
+            log.info("[settlement-ingest] {} {} arrived PENDING but the row is already {} — "
+                            + "keeping the settled status (out-of-order delivery)",
+                    type.toWire(), stripeObjectId, s.getStatus().toWire());
+        } else {
+            s.setStatus(status);
+        }
         if (arrivalAt != null) s.setArrivalAt(arrivalAt);
         if (paidAt != null) s.setPaidAt(paidAt);
         if (failureReason != null) s.setFailureReason(failureReason);
         if (eventIds != null) s.setEventIds(eventIds);
+        stamp(s, eventAt);
         settlements.save(s);
+    }
+
+    /**
+     * True when {@code eventAt} predates the delivery that last wrote {@code row} — i.e. Stripe
+     * handed us an older event after a newer one. Rows written before V111 carry no stamp and
+     * are never considered stale (no ordering information to act on).
+     */
+    private boolean isStale(Settlement row, Instant eventAt, String label) {
+        if (eventAt == null || row.getLastEventAt() == null) return false;
+        if (!eventAt.isBefore(row.getLastEventAt())) return false;
+        log.info("[settlement-ingest] {} ignored — event created {} predates the row's last write {} "
+                + "(out-of-order delivery)", label, eventAt, row.getLastEventAt());
+        return true;
+    }
+
+    /** Record which Stripe delivery last wrote this row, for the ordering guard above. */
+    private static void stamp(Settlement row, Instant eventAt) {
+        if (eventAt != null) row.setLastEventAt(eventAt);
     }
 
     /** Resolve the org for a connected-account id; logs + returns null (skip) when unattributable. */

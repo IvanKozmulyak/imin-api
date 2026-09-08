@@ -523,7 +523,7 @@ public class StripeWebhookService {
         com.stripe.model.Transfer transfer = extractTransfer(event,
                 reversed ? "transfer.reversed" : "transfer.created");
         if (transfer == null) return;
-        settlementIngest.ingestTransfer(transfer, event.getAccount(), reversed);
+        settlementIngest.ingestTransfer(transfer, event.getAccount(), reversed, createdAt(event));
     }
 
     /**
@@ -535,7 +535,7 @@ public class StripeWebhookService {
     private void onPayout(com.stripe.model.Event event) {
         com.stripe.model.Payout payout = extractPayout(event, "payout.*");
         if (payout == null) return;
-        settlementIngest.ingestPayout(payout, event.getAccount());
+        settlementIngest.ingestPayout(payout, event.getAccount(), createdAt(event));
     }
 
     /**
@@ -546,7 +546,7 @@ public class StripeWebhookService {
     private void onChargeRefunded(com.stripe.model.Event event) {
         com.stripe.model.Charge charge = extractCharge(event, "charge.refunded");
         if (charge == null) return;
-        settlementIngest.ingestChargeRefunded(charge, event.getAccount());
+        settlementIngest.ingestChargeRefunded(charge, event.getAccount(), createdAt(event));
     }
 
     /**
@@ -558,7 +558,16 @@ public class StripeWebhookService {
     private void onDispute(com.stripe.model.Event event, String eventType) {
         com.stripe.model.Dispute dispute = extractDispute(event, eventType);
         if (dispute == null) return;
-        settlementIngest.ingestDispute(dispute, event.getAccount(), eventType);
+        settlementIngest.ingestDispute(dispute, event.getAccount(), eventType, createdAt(event));
+    }
+
+    /**
+     * The Stripe {@code event.created} timestamp, used by the settlements read-model to drop an
+     * out-of-order delivery instead of letting it rewrite settled state. Null when Stripe
+     * omitted it (no ordering information — the ingest then falls back to its terminal guards).
+     */
+    private static java.time.Instant createdAt(com.stripe.model.Event event) {
+        return event.getCreated() == null ? null : java.time.Instant.ofEpochSecond(event.getCreated());
     }
 
     private com.stripe.model.Transfer extractTransfer(com.stripe.model.Event event, String label) {

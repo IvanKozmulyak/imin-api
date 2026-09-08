@@ -263,6 +263,14 @@ class SettlementIngestWebhookTest {
      */
     private String payoutEvent(String eventId, String payoutId, String type,
                                long amount, String status, long arrivalDate, String failureMessage) {
+        return payoutEvent(eventId, payoutId, type, amount, status, arrivalDate, failureMessage,
+                Instant.now().getEpochSecond());
+    }
+
+    /** As above with an explicit Stripe {@code event.created}, to drive out-of-order delivery. */
+    private String payoutEvent(String eventId, String payoutId, String type,
+                               long amount, String status, long arrivalDate, String failureMessage,
+                               long createdAt) {
         return """
             {
               "id": "%s",
@@ -283,7 +291,7 @@ class SettlementIngestWebhookTest {
                 }
               }
             }
-            """.formatted(eventId, type, Instant.now().getEpochSecond(), acctId,
+            """.formatted(eventId, type, createdAt, acctId,
                 payoutId, amount, status, arrivalDate,
                 failureMessage == null ? "null" : "\"" + failureMessage + "\"");
     }
@@ -557,6 +565,58 @@ class SettlementIngestWebhookTest {
 
         assertThat(settlements.findByStripeObjectId(transferId).orElseThrow().getStatus())
                 .isEqualTo(SettlementStatus.REVERSED);
+    }
+
+    // ── stripe-8 — out-of-order deliveries must not rewrite settled state ────────
+
+    @Test
+    void lateTransferCreated_doesNotDragARefundedRowBackToPending() throws Exception {
+        // transfer.created 500s on first delivery. Its dedup marker is written in the SAME
+        // transaction as the handler, so the rollback removes it and Stripe re-delivers later.
+        String transferId = "tr_" + UUID.randomUUID().toString().substring(0, 12);
+        String created = transferCreatedEvent("evt_ooo_seed", transferId, acctId, 4200, "eur");
+        webhook.handleV1Endpoint(created, sign(created));
+
+        // Meanwhile the refund lands and reverses the row.
+        String chargeId = "ch_" + UUID.randomUUID().toString().substring(0, 12);
+        String refund = chargeRefundedEvent("evt_ooo_refund", chargeId, transferId, acctId, 4200, true);
+        webhook.handleV1Endpoint(refund, sign(refund));
+        assertThat(settlements.findByStripeObjectId(transferId).orElseThrow().getStatus())
+                .isEqualTo(SettlementStatus.REVERSED);
+
+        // Now the retried transfer.created arrives under a DIFFERENT event id, so the
+        // processed_webhook_events dedup does not stop it.
+        String retry = transferCreatedEvent("evt_ooo_retry", transferId, acctId, 4200, "eur");
+        webhook.handleV1Endpoint(retry, sign(retry));
+
+        assertThat(settlements.findByStripeObjectId(transferId).orElseThrow().getStatus())
+                .as("PENDING is only ever an initial state — a late transfer.created must never "
+                        + "un-reverse a refunded row (it is the bucket the pending tile sums)")
+                .isEqualTo(SettlementStatus.REVERSED);
+    }
+
+    @Test
+    void olderPayoutEvent_deliveredLast_doesNotOverwriteTheNewerStatus() throws Exception {
+        String payoutId = "po_" + UUID.randomUUID().toString().substring(0, 12);
+        long arrival = Instant.now().getEpochSecond();
+        long tPaid = Instant.now().getEpochSecond();
+        long tFailed = tPaid - 600;   // the FAILED event was created 10 minutes EARLIER
+
+        String paid = payoutEvent("evt_ooo_paid", payoutId, "payout.paid", 7_200, "paid",
+                arrival, null, tPaid);
+        webhook.handleV1Endpoint(paid, sign(paid));
+        assertThat(settlements.findByStripeObjectId(payoutId).orElseThrow().getStatus())
+                .isEqualTo(SettlementStatus.PAID);
+
+        // Stripe re-delivers the OLDER payout.failed afterwards. Neither status is PENDING, so
+        // only the event-created ordering stamp can tell which one is authoritative.
+        String failed = payoutEvent("evt_ooo_failed", payoutId, "payout.failed", 7_200, "failed",
+                arrival, "account_closed", tFailed);
+        webhook.handleV1Endpoint(failed, sign(failed));
+
+        assertThat(settlements.findByStripeObjectId(payoutId).orElseThrow().getStatus())
+                .as("the row keeps the state written by the NEWER event")
+                .isEqualTo(SettlementStatus.PAID);
     }
 
     // ── charge.dispute.* ────────────────────────────────────────────────────────
