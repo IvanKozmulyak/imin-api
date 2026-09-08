@@ -9,7 +9,7 @@ package com.imin.iminapi.payout;
  * uppercase constant name — mirroring the Track A {@code SettlementStatus}
  * approach.
  *
- * <p>Transitions: {@code PLANNED -> SUBMITTED -> PAID | FAILED}, plus the
+ * <p>Transitions: {@code PLANNED -> SUBMITTED -> PAID | PARTIAL | FAILED}, plus the
  * {@code PLANNED -> RETRYING -> SUBMITTED} transport-failure loop. A row is written
  * {@code PLANNED} BEFORE the Stripe {@code Payout.create} call (the pre-call
  * double-pay guard), moves to {@code SUBMITTED} once Stripe accepts (carrying the
@@ -33,6 +33,13 @@ public enum PayoutRunStatus {
     /** Transport-level failure — outcome UNKNOWN. Same key is replayed; attempt NOT bumped. */
     RETRYING,
     PAID,
+    /**
+     * Settled, but CLAMPED below the event's owed net (see {@code PayoutRun.remainingMinor}).
+     * Deliberately not {@code PAID}: the per-event candidate guard excludes {@code PAID}, so a
+     * clamped run reconciled to {@code PAID} would strand the remainder forever with no alert.
+     * {@code PARTIAL} lets the next sweep top the event up on a fresh attempt.
+     */
+    PARTIAL,
     FAILED;
 
     /** Stable wire/DB form: lowercase (e.g. {@code submitted}). */

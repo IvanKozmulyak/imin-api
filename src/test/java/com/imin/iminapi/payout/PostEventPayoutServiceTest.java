@@ -242,7 +242,60 @@ class PostEventPayoutServiceTest {
         assertThat(fake.lastPayoutAmount.get())
                 .as("min(net=9000, available=4000)")
                 .isEqualTo(4_000L);
-        assertThat(payoutRuns.findByEventId(e.getId()).get(0).getAmountMinor()).isEqualTo(4_000L);
+        PayoutRun clamped = payoutRuns.findByEventId(e.getId()).get(0);
+        assertThat(clamped.getAmountMinor()).isEqualTo(4_000L);
+        assertThat(clamped.getRemainingMinor())
+                .as("the clamp left 5_000 of the organizer's net unpaid — record it so the run "
+                        + "settles PARTIAL and the event stays toppable-up")
+                .isEqualTo(5_000L);
+    }
+
+    // ── stripe-3 — a clamped payout must be topped up, never silently written off ──
+    @Test
+    void clamped_payout_settles_partial_and_the_next_sweep_pays_the_remainder() {
+        Event e = newEndedEvent(org);
+        order(e, 10_000, 1_000);            // net 9_000
+        fake.availableMinor.set(4_000L);    // balance short: only 4_000 can move today
+
+        // ── tick 1: pay what the balance allows.
+        service.payOneEvent(e.getId());
+        assertThat(fake.lastPayoutAmount.get()).isEqualTo(4_000L);
+
+        // The payout.paid webhook reconciles a clamped run to PARTIAL (asserted end-to-end in
+        // SettlementIngestWebhookTest); apply that same transition here.
+        PayoutRun first = payoutRuns.findByEventId(e.getId()).get(0);
+        assertThat(first.getRemainingMinor()).isEqualTo(5_000L);
+        first.setStatus(PayoutRunStatus.PARTIAL);
+        payoutRuns.save(first);
+
+        // ── tick 2: the balance has caught up. The event must re-candidate and receive
+        // EXACTLY the 5_000 remainder — not the full 9_000 net again, and not nothing.
+        fake.availableMinor.set(50_000L);
+        service.payOneEvent(e.getId());
+
+        assertThat(fake.payoutCount.get()).isEqualTo(2);
+        assertThat(fake.lastPayoutAmount.get())
+                .as("net 9_000 − already triggered 4_000 = 5_000 owed")
+                .isEqualTo(5_000L);
+
+        List<PayoutRun> runs = payoutRuns.findByEventId(e.getId());
+        assertThat(runs).hasSize(2);
+        PayoutRun topUp = runs.stream().filter(r -> r.getAttempt() == 2).findFirst().orElseThrow();
+        assertThat(topUp.getAmountMinor()).isEqualTo(5_000L);
+        assertThat(topUp.getRemainingMinor())
+                .as("the top-up covers the rest, so this run settles PAID")
+                .isZero();
+        assertThat(runs.stream().mapToLong(PayoutRun::getAmountMinor).sum())
+                .as("the organizer is paid their whole net across the two runs — never more")
+                .isEqualTo(9_000L);
+
+        // ── tick 3: nothing is owed any more, so no third payout is created.
+        topUp.setStatus(PayoutRunStatus.PAID);
+        payoutRuns.save(topUp);
+        service.payOneEvent(e.getId());
+        assertThat(fake.payoutCount.get())
+                .as("a fully-paid event never pays again")
+                .isEqualTo(2);
     }
 
     @Test

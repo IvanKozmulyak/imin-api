@@ -53,6 +53,17 @@ public class PayoutRun {
     @Column(name = "amount_minor", nullable = false)
     private long amountMinor;
 
+    /**
+     * What the available-balance clamp left UNPAID of the event's owed net at the moment
+     * this run was created (V110). {@code 0} means the run covers the whole outstanding
+     * amount. A settled run with {@code remainingMinor > 0} reconciles to
+     * {@link PayoutRunStatus#PARTIAL} rather than {@code PAID}, which is what lets a later
+     * sweep top the event up — {@code PAID} is excluded by the candidate guard and would
+     * strand the remainder forever.
+     */
+    @Column(name = "remaining_minor", nullable = false)
+    private long remainingMinor = 0L;
+
     @Column(nullable = false, length = 8)
     private String currency;
 

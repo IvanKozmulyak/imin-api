@@ -106,8 +106,10 @@ public class SettlementIngestService {
      *
      * <p><b>Track B reconciliation (plan §6):</b> after upserting the settlement
      * row, find the {@link PayoutRun} this {@code po_} belongs to (an imin-TRIGGERED
-     * payout) and flip it to {@code PAID}/{@code FAILED} so the trigger ledger closes
-     * the loop. The run's {@code event_id} is the per-event attribution payouts
+     * payout) and flip it to {@code PAID}/{@code PARTIAL}/{@code FAILED} so the trigger
+     * ledger closes the loop. A run clamped to the available balance
+     * ({@code remaining_minor > 0}) settles as {@code PARTIAL} so the post-event sweep
+     * can still top the event up. The run's {@code event_id} is the per-event attribution payouts
      * otherwise lack (they carry no metadata) — it is written into the settlement
      * row's {@code event_ids} so {@code /payouts} history can label the event. A
      * payout with no matching run (e.g. a Stripe-auto payout, or one not triggered by
@@ -146,11 +148,18 @@ public class SettlementIngestService {
 
         if (run != null) {
             if (status == SettlementStatus.PAID) {
-                run.setStatus(PayoutRunStatus.PAID);
+                // A run whose amount was CLAMPED to the available balance (V110
+                // remaining_minor > 0) settles as PARTIAL, never PAID: the per-event payout
+                // candidate guard excludes PAID, so marking a clamped run PAID would strand
+                // the remainder forever with no alert. PARTIAL keeps the event eligible for
+                // a top-up on the next sweep.
+                boolean clamped = run.getRemainingMinor() > 0L;
+                run.setStatus(clamped ? PayoutRunStatus.PARTIAL : PayoutRunStatus.PAID);
                 run.setPaidAt(arrival != null ? arrival : Instant.now());
                 payoutRuns.save(run);
-                log.info("[payout-recon] run {} -> PAID (po={} event={} paidAt={})",
-                        run.getId(), payout.getId(), run.getEventId(), run.getPaidAt());
+                log.info("[payout-recon] run {} -> {} (po={} event={} paidAt={} remaining={})",
+                        run.getId(), run.getStatus(), payout.getId(), run.getEventId(),
+                        run.getPaidAt(), run.getRemainingMinor());
             } else if (status == SettlementStatus.FAILED) {
                 run.setStatus(PayoutRunStatus.FAILED);
                 if (failure != null) run.setFailureReason(failure);

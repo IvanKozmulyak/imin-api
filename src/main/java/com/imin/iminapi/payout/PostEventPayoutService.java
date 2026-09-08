@@ -60,8 +60,13 @@ import java.util.UUID;
  *       organizer's net.</li>
  *   <li><b>step 3 — live available balance</b> ON the connected account, matched to
  *       the event currency (Stripe reports lowercase; the event stores uppercase).</li>
- *   <li><b>step 4 — clamp</b> {@code payoutMinor = min(net, available)}; skip if
- *       {@code <= 0} (funds not yet available — rolls to the next tick).</li>
+ *   <li><b>step 4 — subtract what already moved, then clamp.</b>
+ *       {@code owed = net − already triggered (SUBMITTED/PAID/PARTIAL)};
+ *       {@code payoutMinor = min(owed, available)}; skip if {@code <= 0} (nothing left,
+ *       or funds not yet available — rolls to the next tick). What the clamp leaves
+ *       behind is recorded on the run as {@code remaining_minor}, so the settled run
+ *       reconciles to {@code PARTIAL} rather than {@code PAID} and the event stays a
+ *       candidate for a top-up instead of being silently short forever.</li>
  *   <li><b>step 5 — write the {@code payout_runs} row FIRST</b> (insert-or-find on
  *       the deterministic idempotency key) BEFORE any Stripe call. The
  *       {@code UNIQUE(idempotency_key)} is the pre-call guard that makes concurrent
@@ -99,6 +104,15 @@ public class PostEventPayoutService {
     /** In-flight statuses for the org-level one-payout-per-tick guard. */
     private static final List<PayoutRunStatus> IN_FLIGHT =
             List.of(PayoutRunStatus.PLANNED, PayoutRunStatus.SUBMITTED);
+
+    /**
+     * Statuses whose amount HAS been handed to Stripe for this event. Subtracted from the
+     * event's net so a top-up after a clamped payout can never re-pay what already moved.
+     * RETRYING is excluded on purpose — its outcome is unknown and it is resolved by
+     * replaying its own idempotency key, never by a fresh payout.
+     */
+    private static final List<PayoutRunStatus> ALREADY_TRIGGERED =
+            List.of(PayoutRunStatus.SUBMITTED, PayoutRunStatus.PAID, PayoutRunStatus.PARTIAL);
 
     private final StripeClient stripeClient;
     private final StripeProperties props;
@@ -217,13 +231,27 @@ public class PostEventPayoutService {
             return;
         }
 
-        // ── step 4 — clamp ──
-        long payoutMinor = Math.min(perEventNetMinor, availableMinor);
-        if (payoutMinor <= 0L) {
-            log.info("[payout] skip event {} org {} — net {} but available {} ({}); rolling to next tick",
-                    eventId, org.getId(), perEventNetMinor, availableMinor, cur);
+        // ── step 4 — subtract what already moved for this event, then clamp ──
+        // A previous tick may have paid a CLAMPED amount (available balance short of the
+        // net). That run carries remaining_minor and reconciles to PARTIAL, which keeps the
+        // event a candidate; here we pay only the outstanding difference, never the net again.
+        long alreadyTriggered = payoutRuns.sumAmountByEventAndStatusIn(eventId, ALREADY_TRIGGERED);
+        long owedMinor = Math.max(0L, perEventNetMinor - alreadyTriggered);
+        if (owedMinor <= 0L) {
+            log.info("[payout] skip event {} org {} — net {} already fully triggered ({})",
+                    eventId, org.getId(), perEventNetMinor, alreadyTriggered);
             return;
         }
+        long payoutMinor = Math.min(owedMinor, availableMinor);
+        if (payoutMinor <= 0L) {
+            log.info("[payout] skip event {} org {} — owed {} (net {} − triggered {}) but available {} ({}); "
+                            + "rolling to next tick",
+                    eventId, org.getId(), owedMinor, perEventNetMinor, alreadyTriggered, availableMinor, cur);
+            return;
+        }
+        // What the clamp leaves unpaid. Recorded on the row so the payout.paid
+        // reconciliation lands on PARTIAL (top-up-able) rather than PAID (terminal).
+        long remainingMinor = owedMinor - payoutMinor;
 
         // ── step 5 — write payout_runs row FIRST (insert-or-find on the deterministic key) ──
         // attempt 1 normally; a fresh attempt (new key) is used ONLY after a FAILED run.
@@ -237,6 +265,7 @@ public class PostEventPayoutService {
             r.setEventId(eventId);
             r.setStripeAccountId(acct);
             r.setAmountMinor(payoutMinor);
+            r.setRemainingMinor(remainingMinor);
             r.setCurrency(cur);
             r.setStatus(PayoutRunStatus.PLANNED);
             r.setAttempt(attempt);
@@ -249,7 +278,9 @@ public class PostEventPayoutService {
 
         // If a prior crashed run already reached SUBMITTED, the candidate/step-0 guards
         // would have excluded it — but guard defensively against re-creating a payout.
-        if (run.getStatus() == PayoutRunStatus.SUBMITTED || run.getStatus() == PayoutRunStatus.PAID) {
+        if (run.getStatus() == PayoutRunStatus.SUBMITTED
+                || run.getStatus() == PayoutRunStatus.PAID
+                || run.getStatus() == PayoutRunStatus.PARTIAL) {
             return;
         }
 
@@ -279,8 +310,15 @@ public class PostEventPayoutService {
             run.setStatus(PayoutRunStatus.SUBMITTED);
             run.setSubmittedAt(Instant.now());
             payoutRuns.save(run);
-            log.info("[payout] SUBMITTED event {} org {} acct {} amount={} {} po={} attempt={}",
-                    eventId, org.getId(), acct, createMinor, cur, po.getId(), run.getAttempt());
+            log.info("[payout] SUBMITTED event {} org {} acct {} amount={} {} po={} attempt={} remaining={}",
+                    eventId, org.getId(), acct, createMinor, cur, po.getId(), run.getAttempt(),
+                    run.getRemainingMinor());
+            if (run.getRemainingMinor() > 0L) {
+                log.warn("[payout] event {} org {} was CLAMPED to the available balance — {} {} of the "
+                                + "owed net is still outstanding and will be topped up once the balance "
+                                + "covers it (run reconciles to PARTIAL, not PAID)",
+                        eventId, org.getId(), run.getRemainingMinor(), cur);
+            }
         } catch (StripeException e) {
             // ── step 7 — failure handling ──
             String code = e.getCode();

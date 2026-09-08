@@ -260,7 +260,13 @@ class SettlementIngestWebhookTest {
 
     /** Seed a SUBMITTED payout_runs row (as the post-event job would leave it) for a po_ id. */
     private PayoutRun seedSubmittedRun(UUID eventId, String payoutId, long amount) {
+        return seedSubmittedRun(eventId, payoutId, amount, 0L);
+    }
+
+    /** As above, with the V110 clamp remainder the post-event job records on a short balance. */
+    private PayoutRun seedSubmittedRun(UUID eventId, String payoutId, long amount, long remaining) {
         PayoutRun r = new PayoutRun();
+        r.setRemainingMinor(remaining);
         r.setOrgId(org.getId());
         r.setEventId(eventId);
         r.setStripeAccountId(acctId);
@@ -274,6 +280,28 @@ class SettlementIngestWebhookTest {
     }
 
     // ── tests ────────────────────────────────────────────────────────────────
+
+    @Test
+    void payoutPaid_onAClampedRun_settlesPartialSoTheRemainderCanBeToppedUp() throws Exception {
+        UUID eventId = insertEvent();
+        String payoutId = "po_" + UUID.randomUUID().toString().substring(0, 12);
+        // Net was 9_000 but only 4_000 was available at payout time.
+        seedSubmittedRun(eventId, payoutId, 4_000, 5_000);
+
+        long arrival = Instant.now().getEpochSecond();
+        String body = payoutEvent("evt_payout_paid_partial", payoutId, "payout.paid", 4_000, "paid", arrival, null);
+        webhook.handleV1Endpoint(body, sign(body));
+
+        PayoutRun run = payoutRuns.findByStripePayoutId(payoutId).orElseThrow();
+        assertThat(run.getStatus())
+                .as("PAID is excluded by the per-event candidate guard — a clamped run marked PAID "
+                        + "would leave the organizer 5_000 short forever")
+                .isEqualTo(PayoutRunStatus.PARTIAL);
+        assertThat(run.getPaidAt()).isNotNull();
+        // The settlement read-model still mirrors Stripe's own status verbatim.
+        assertThat(settlements.findByStripeObjectId(payoutId).orElseThrow().getStatus())
+                .isEqualTo(SettlementStatus.PAID);
+    }
 
     @Test
     void payoutPaid_reconcilesRunToPaid_andCopiesEventIdOntoSettlement() throws Exception {
