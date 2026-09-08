@@ -132,6 +132,30 @@ class EventServiceTest {
         assertThat(dto.promoCodes()).isNotNull();
     }
 
+    /**
+     * events-2: the If-Match header reached the service and was thrown away, so two
+     * organizer tabs could silently clobber each other. Same guarantee OrgService.patch
+     * has already made (409 STALE_WRITE).
+     */
+    @Test
+    void patch_with_mismatched_ifMatch_throws_STALE_WRITE() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setName("X"); e.setSlug("x");
+        e.setUpdatedAt(Instant.parse("2026-04-23T10:00:00Z"));
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                sut.patch(p, e.getId(), "\"2026-01-01T00:00:00Z\"",
+                        new EventPatchRequest("New name", null, null, null, null, null, null, null, null,
+                                null, null, null, null, null, null, null, null)))
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.STALE_WRITE);
+
+        // The stale write must not reach the repository at all.
+        verify(events, never()).save(any(Event.class));
+    }
+
     @Test
     void patch_with_duplicate_slug_throws_DUPLICATE() {
         AuthPrincipal p = principal();

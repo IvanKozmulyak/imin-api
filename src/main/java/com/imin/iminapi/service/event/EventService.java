@@ -188,6 +188,11 @@ public class EventService {
     @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
     public EventDto patch(AuthPrincipal p, UUID id, String ifMatchHeader, EventPatchRequest body) {
         Event e = loadOwned(p, id);
+        // Optimistic concurrency, same contract as OrgService.patch: a null/blank header is
+        // the FE opting out, a stale one is 409 STALE_WRITE. Without this the ETag half of
+        // the protocol was maintained (see the setUpdatedAt below) while the check half was
+        // absent, so two organizer tabs silently clobbered each other.
+        ifMatch.requireMatch(ifMatchHeader, e.getUpdatedAt());
         String addressBefore = venueAddressKey(e);
         boolean changed = applyPatch(e, body);
         String addressAfter = venueAddressKey(e);
