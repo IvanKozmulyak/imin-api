@@ -155,6 +155,12 @@ public class EventService {
         stampConceptProvenance(p, e, body);
         try {
             Event saved = events.save(e);
+            // Flush inside the try. Event ids come from an in-VM generator
+            // (GenerationType.UUID), so save() emits no SQL and Hibernate defers the INSERT
+            // to commit — i.e. outside this catch, where the uq_events_org_slug violation
+            // reached GlobalExceptionHandler as a generic DUPLICATE with no `fields` map and
+            // the wizard could not attach the error to the slug input (events-9).
+            events.flush();
             audit(p, AuditActions.EVENT_CREATED, "event", saved.getId(),
                     "Created event \"" + eventLabel(saved) + "\"");
             // A draft created WITH an address geocodes straight away (V80). Empty
@@ -199,6 +205,9 @@ public class EventService {
         e.setUpdatedAt(Instant.now()); // ensure ETag changes even when @PreUpdate doesn't fire
         try {
             events.save(e);
+            // Same reason as createDraft: save() on an already-managed entity emits no SQL,
+            // so without this flush the slug violation escapes the catch (events-17).
+            events.flush();
         } catch (DataIntegrityViolationException ex) {
             throw ApiException.duplicate("slug", "Event slug already taken in this organization");
         }
