@@ -244,7 +244,10 @@ public class ReferenceImageLibrary {
     private byte[] bytesFor(LoadedReference ref) throws IOException {
         String locator = ref.sourceLocator();
         if (locator.startsWith("http://") || locator.startsWith("https://") || locator.startsWith("data:")) {
-            return locator.getBytes();
+            // Consistent with loadBytes (throws) and topReferenceParts (skips): a remote or data
+            // locator is not materialisable here. It used to return the UTF-8 bytes of the URL
+            // STRING, which would have been uploaded to Recraft as if it were image bytes.
+            throw new IOException("remote reference is not materializable: " + locator);
         }
         Resource r = resourceLoader.getResource(locator);
         try (InputStream in = r.getInputStream()) {
