@@ -89,7 +89,9 @@ public class PublicEventService {
         var stream = tierRepository
                 .findByEventIdAndEnabledTrueOrderBySortOrderAsc(id)
                 .stream()
-                .map(t -> PublicTierDto.from(t, event, now));
+                .map(t -> PublicTierDto.from(t, event, now,
+                        stripeProperties.getApplicationFeeBps(),
+                        stripeProperties.getApplicationFeeFixedMinor()));
         if (!includeUnavailable) {
             stream = stream.filter(PublicTierDto::onSale);
         }

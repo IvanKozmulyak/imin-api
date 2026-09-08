@@ -182,6 +182,99 @@ class TicketIssuanceEmailerTest {
         assertThat(sent.text()).contains("ВИ У СПИСКУ");
     }
 
+    // ── Price breakdown (Code conso. L112-1 / CRD Art.6(1)(e)) ────────────────
+    //
+    // Until this landed the itemised price existed only as a "Service fee" line on
+    // the Stripe page the buyer had already left — the receipt they keep showed no
+    // fee at all. These assert the numbers are the ones actually charged (derived
+    // from the order, never recomputed) and that every locale carries the block.
+
+    @Test
+    void receipt_itemises_tickets_booking_fee_and_total() {
+        SentEmail sent = sendPriced(null, "priced@example.com", 5198L, 199L);
+
+        assertThat(sent.text())
+                .contains("WHAT YOU PAID")
+                .contains("Tickets: 49.99 EUR")
+                .contains("Booking fee: 1.99 EUR")
+                .contains("Total: 51.98 EUR");
+        assertThat(sent.html())
+                .contains("WHAT YOU PAID")
+                .contains("49.99 EUR")
+                .contains("1.99 EUR")
+                .contains("51.98 EUR");
+    }
+
+    @Test
+    void receipt_price_breakdown_is_localised() {
+        assertThat(sendPriced("fr", "fr@example.com", 5198L, 199L).text())
+                .contains("CE QUE VOUS AVEZ PAYÉ")
+                .contains("Frais de réservation : 1.99 EUR");
+        assertThat(sendPriced("es", "es@example.com", 5198L, 199L).text())
+                .contains("LO QUE PAGASTE")
+                .contains("Gastos de gestión: 1.99 EUR");
+        assertThat(sendPriced("uk", "uk@example.com", 5198L, 199L).text())
+                .contains("СКІЛЬКИ ВИ СПЛАТИЛИ")
+                .contains("Сервісний збір: 1.99 EUR");
+    }
+
+    /** A free order really is free — no invented fee line. */
+    @Test
+    void receipt_shows_zero_for_a_free_order() {
+        SentEmail sent = sendPriced(null, "free@example.com", 0L, 0L);
+        assertThat(sent.text())
+                .contains("Tickets: 0.00 EUR")
+                .contains("Booking fee: 0.00 EUR")
+                .contains("Total: 0.00 EUR");
+    }
+
+    /** One-ticket issuance for an order with real money on it. */
+    private SentEmail sendPriced(String locale, String buyerEmail, long totalMinor, long feeMinor) {
+        EmailService email = mock(EmailService.class);
+        EmailTemplateRenderer renderer = new EmailTemplateRenderer();
+        OrderRepository orders = mock(OrderRepository.class);
+        TicketRepository tickets = mock(TicketRepository.class);
+        EventRepository events = mock(EventRepository.class);
+        EmailProperties emailProps = new EmailProperties();
+        emailProps.setBuyerSiteBaseUrl("https://app.imin.wtf");
+
+        UUID orderId = UUID.randomUUID();
+        UUID eventId = UUID.randomUUID();
+        Order order = new Order();
+        order.setId(orderId);
+        order.setToken("ORDER_PRICE");
+        order.setEventId(eventId);
+        order.setEmail(buyerEmail);
+        order.setBuyerLocale(locale);
+        order.setTotalMinor(totalMinor);
+        order.setApplicationFeeMinor(feeMinor);
+        order.setCurrency("EUR");
+
+        Event event = new Event();
+        event.setId(eventId);
+        event.setName("Helios");
+
+        Ticket t = new Ticket();
+        t.setToken("TKT_SOLO");
+        t.setTierName("GA");
+
+        when(orders.findById(orderId)).thenReturn(Optional.of(order));
+        when(events.findById(eventId)).thenReturn(Optional.of(event));
+        when(tickets.findByOrderIdOrderByCreatedAtAsc(orderId)).thenReturn(List.of(t));
+
+        TicketProperties ticketProps = new TicketProperties();
+        ticketProps.setSigningSecret("x".repeat(32));
+        ticketProps.setApiPublicBaseUrl("https://api.imin.test");
+        new TicketIssuanceEmailer(orders, tickets, events, email, renderer, emailProps,
+                ticketProps, offers(false, false)).send(orderId);
+
+        ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<String> text = ArgumentCaptor.forClass(String.class);
+        verify(email).send(eq(buyerEmail), subject.capture(), html.capture(), text.capture());
+        return new SentEmail(subject.getValue(), html.getValue(), text.getValue());
+    }
+
     private record SentEmail(String subject, String html, String text) {}
 
     /** One-ticket issuance for an order carrying {@code locale}. */

@@ -6,6 +6,13 @@
 ВАШІ КВИТКИ
 
 {{ticketBlocks}}
+
+СКІЛЬКИ ВИ СПЛАТИЛИ
+
+Квитки: {{priceTicketsMinor}}
+Сервісний збір: {{priceBookingFeeMinor}}
+Разом: {{priceTotalMinor}}
+
 Переглянути замовлення онлайн: {{orderUrl}}
 
 Загубили цей лист? Відновіть свої квитки: {{recoverUrl}}

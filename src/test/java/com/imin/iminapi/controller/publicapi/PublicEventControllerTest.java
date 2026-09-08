@@ -55,7 +55,7 @@ class PublicEventControllerTest {
         PublicVenueDto venue = new PublicVenueDto("Venue X", "123 Main St", "Berlin", "10115", "DE", 52.5200d, 13.4050d);
         PublicOrganizationDto org = new PublicOrganizationDto("Acme Events", "acme-events");
         PublicTierDto tier = new PublicTierDto(
-                TIER_ID, "General Admission", 2500, "EUR",
+                TIER_ID, "General Admission", 2500, 2724L, "EUR",
                 null, Instant.parse("2026-06-01T00:00:00Z"), 1, 100, true, false, false);
 
         return new PublicEventResponse(
@@ -176,7 +176,7 @@ class PublicEventControllerTest {
         JsonNode tier0 = root.get("tiers").get(0);
         Set<String> actualTierKeys = fieldNames(tier0);
         Set<String> expectedTierKeys = Set.of(
-                "id", "name", "priceMinor", "currency",
+                "id", "name", "priceMinor", "priceAllInMinor", "currency",
                 "saleStartsAt", "saleClosesAt", "sortOrder", "remaining",
                 "onSale", "soldOut", "closed"
         );

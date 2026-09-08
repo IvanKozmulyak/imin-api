@@ -6,6 +6,13 @@ Ya tienes tu entrada para {{eventName}}.
 TUS ENTRADAS
 
 {{ticketBlocks}}
+
+LO QUE PAGASTE
+
+Entradas: {{priceTicketsMinor}}
+Gastos de gestión: {{priceBookingFeeMinor}}
+Total: {{priceTotalMinor}}
+
 Ver tu pedido online: {{orderUrl}}
 
 ¿Has perdido este correo? Recupera tus entradas: {{recoverUrl}}

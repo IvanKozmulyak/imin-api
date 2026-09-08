@@ -38,7 +38,10 @@ class BuyerEmailLocaleVariantsTest {
                 "eventWhere", "Sala Apolo, Barcelona",
                 "ticketBlocks", "__TICKETS_BLOCK_PLACEHOLDER__",
                 "orderUrl", "https://app.imin.wtf/order/abc",
-                "recoverUrl", "https://app.imin.wtf/recover"));
+                "recoverUrl", "https://app.imin.wtf/recover",
+                "priceTicketsMinor", "49.99 EUR",
+                "priceBookingFeeMinor", "1.99 EUR",
+                "priceTotalMinor", "51.98 EUR"));
 
         TEMPLATES.put("order-recovery", Map.of(
                 "links", "__LINKS_PLACEHOLDER__"));
