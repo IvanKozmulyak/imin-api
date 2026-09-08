@@ -40,7 +40,7 @@ class SecurityPerimeterTest {
     // settings would pass while production served the whole API map.
 
     @Test
-    void springdoc_is_disabled_under_the_prod_profile() throws IOException {
+    void swagger_ui_is_disabled_and_api_docs_stay_on_under_the_prod_profile() throws IOException {
         String prod = Files.readString(
                 Path.of("src/main/resources/application-prod.yaml"), StandardCharsets.UTF_8);
 
@@ -48,11 +48,17 @@ class SecurityPerimeterTest {
         String springdoc = prod.substring(prod.indexOf("springdoc:"));
         springdoc = springdoc.substring(0, springdoc.indexOf("\nserver:"));
 
-        assertThat(springdoc)
-                .as("CLAUDE.md has always claimed Swagger is dev-only; it was not")
-                .contains("api-docs:")
-                .contains("swagger-ui:")
+        // Swagger UI must be off; /v3/api-docs stays on because imin-webapp's
+        // api:sync reads the contract from production (docs/API_SYNC.md).
+        String swaggerUi = springdoc.substring(springdoc.indexOf("swagger-ui:"));
+        assertThat(swaggerUi)
+                .as("CLAUDE.md has always claimed Swagger UI is dev-only; it was not")
+                .contains("enabled: false")
                 .doesNotContain("enabled: true");
+        String apiDocs = springdoc.substring(springdoc.indexOf("api-docs:"), springdoc.indexOf("swagger-ui:"));
+        assertThat(apiDocs)
+                .as("/v3/api-docs is the FE contract source; keep it reachable in prod")
+                .contains("enabled: true");
     }
 
     @Test

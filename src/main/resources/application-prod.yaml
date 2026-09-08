@@ -21,12 +21,13 @@ logging:
 # to anyone, and SecurityConfig permits both paths. A machine-readable map of
 # the attack surface is not a secret worth keeping on its own, but publishing it
 # is a free gift and the doc claimed otherwise — a control that people believed
-# existed. imin-webapp's api:sync pulls the contract from the production URL, so
-# leaving api-docs reachable had a real consumer; that consumer now needs the
-# spec from a build artifact or a non-prod deploy instead.
+# existed. Swagger UI is off in prod. /v3/api-docs stays ON on purpose:
+# imin-webapp's `api:sync` pulls the OpenAPI contract from the production URL
+# (docs/API_SYNC.md) and every endpoint it describes is already reachable, so
+# the spec adds no attack surface that the running API does not expose itself.
 springdoc:
   api-docs:
-    enabled: false
+    enabled: true
   swagger-ui:
     enabled: false
 
