@@ -21,7 +21,6 @@ import com.stripe.param.checkout.SessionListParams;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -186,15 +185,15 @@ public class PaidCheckoutService {
             }
         }
 
-        try {
-            orders.save(order);
-        } catch (DataIntegrityViolationException dup) {
-            // Race: another concurrent delivery raced us between the read at the top
-            // and this save. Treat as success — the other deliverer is finishing the job.
-            log.info("PaymentIntent {} hit duplicate-key on Order insert — treating as success",
-                    pi.getId());
-            return false; // another concurrent delivery created it — not OUR first issuance
-        }
+        // No duplicate-key catch here, deliberately. Order uses GenerationType.UUID,
+        // so Hibernate defers the INSERT to flush/commit (FreeCheckoutService spells
+        // this out for the same entity) — the orders_stripe_payment_intent_id_unique
+        // constraint added in V26 therefore fires at the first auto-flush below or at
+        // commit, never at this call. A catch here could not run, and swallowing the
+        // violation would be wrong anyway: rolling the losing delivery back is what
+        // makes it correct. Stripe retries, and the retry lands on the idempotent
+        // short-circuit at the top of this method.
+        orders.save(order);
 
         for (int i = 0; i < qty; i++) {
             Ticket t = new Ticket();
