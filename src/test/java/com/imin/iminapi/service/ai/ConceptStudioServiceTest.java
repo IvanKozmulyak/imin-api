@@ -366,6 +366,83 @@ class ConceptStudioServiceTest {
         assertThat(bcap.getValue()).isNull();
     }
 
+    // ---- lock list on regenerate (poster-4) ------------------------------------------------------
+
+    /** A prior generation whose three variants carry the posters an organizer may lock. */
+    private PosterGeneration priorGenerationWithVariants() {
+        PosterGeneration gen = new PosterGeneration();
+        gen.setSubStyleTag("flat_graphic");
+        for (String[] v : new String[][]{
+                {"people", "https://cdn/prior-1.png"},
+                {"object", "https://cdn/prior-2.png"},
+                {"typographic", "https://cdn/prior-3.png"}}) {
+            com.imin.iminapi.model.PosterVariantEntity e = new com.imin.iminapi.model.PosterVariantEntity();
+            e.setVariantStyle(v[0]);
+            e.setFinalUrl(v[1]);
+            e.setRawUrl(v[1].replace("prior", "raw"));
+            gen.getVariants().add(e);
+        }
+        return gen;
+    }
+
+    private GeneratedEvent priorConcept(AuthPrincipal p, UUID conceptId) {
+        GeneratedEvent existing = new GeneratedEvent();
+        existing.setId(conceptId);
+        existing.setOrgId(p.orgId());
+        existing.setVibe("Old vibe text");
+        existing.setGenre("House");
+        existing.setCity("Paris");
+        existing.setName("KEPT NAME");
+        existing.setDescription("kept description");
+        existing.setStatus(GeneratedEventStatus.COMPLETE);
+        when(repo.findByIdAndOrgId(conceptId, p.orgId())).thenReturn(java.util.Optional.of(existing));
+        return existing;
+    }
+
+    @Test
+    void regenerate_withPosterLocked_skipsRenderAndReusesPriorPosters() {
+        AuthPrincipal p = owner();
+        UUID conceptId = UUID.randomUUID();
+        priorConcept(p, conceptId);
+        when(generationRepo.findWithVariantsByGeneratedEventId(conceptId))
+                .thenReturn(List.of(priorGenerationWithVariants()));
+        stubPipeline();
+
+        ConceptResponse r = sut.regenerate(p, conceptId, List.of("poster"));
+
+        // No Ideogram spend at all, and the prior posters come back unchanged.
+        verify(orchestrator, never()).run(any(), any(), any(), anyLong(), any(), any(), any());
+        assertThat(r.posters()).extracting("url")
+                .containsExactly("https://cdn/prior-1.png", "https://cdn/prior-2.png", "https://cdn/prior-3.png");
+    }
+
+    @Test
+    void regenerate_withNameAndDescriptionLocked_carriesThePriorValues() {
+        AuthPrincipal p = owner();
+        UUID conceptId = UUID.randomUUID();
+        priorConcept(p, conceptId);
+        stubPipeline(); // overview LLM returns name "N", description "d"
+
+        ConceptResponse r = sut.regenerate(p, conceptId, List.of("name", "description"));
+
+        assertThat(r.name()).isEqualTo("KEPT NAME");
+        assertThat(r.description()).isEqualTo("kept description");
+    }
+
+    @Test
+    void regenerate_withEmptyLock_stillRendersAndTakesTheFreshOverview() {
+        AuthPrincipal p = owner();
+        UUID conceptId = UUID.randomUUID();
+        priorConcept(p, conceptId);
+        stubPipeline();
+
+        ConceptResponse r = sut.regenerate(p, conceptId, List.of());
+
+        verify(orchestrator).run(any(), any(), any(), anyLong(), any(), any(), any());
+        assertThat(r.name()).isEqualTo("N");
+        assertThat(r.description()).isEqualTo("d");
+    }
+
     // ---- DJ photo read-back on regenerate -------------------------------------------------------
 
     @Test

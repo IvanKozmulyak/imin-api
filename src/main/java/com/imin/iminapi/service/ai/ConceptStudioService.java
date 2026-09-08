@@ -11,6 +11,7 @@ import com.imin.iminapi.model.GeneratedEvent;
 import com.imin.iminapi.model.GeneratedEventStatus;
 import com.imin.iminapi.model.ImageProvider;
 import com.imin.iminapi.model.PosterGeneration;
+import com.imin.iminapi.model.PosterVariantEntity;
 import org.springframework.beans.factory.annotation.Value;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.EventRepository;
@@ -37,7 +38,10 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Service
 public class ConceptStudioService {
@@ -45,6 +49,10 @@ public class ConceptStudioService {
     private static final Logger log = LoggerFactory.getLogger(ConceptStudioService.class);
     private static final List<String> DEFAULT_PLATFORMS = List.of("instagram");
     private static final String DEFAULT_TONE = "energetic";
+    // Wire values of ConceptRegenerateRequest.lock (API_CONTRACT.md §"POST /ai/events/concept/regenerate").
+    private static final String LOCK_NAME = "name";
+    private static final String LOCK_DESCRIPTION = "description";
+    private static final String LOCK_POSTER = "poster";
 
     private final AiEventDescriptionService descService;
     private final PosterOrchestrator orchestrator;
@@ -92,10 +100,17 @@ public class ConceptStudioService {
         return run(p, req, resolveDjPhotoFromEvent(p, req.eventId()));
     }
 
-    /** Deliberately NOT {@code @Transactional} — see {@link #run}. */
+    /**
+     * Deliberately NOT {@code @Transactional} — see {@link #run}.
+     *
+     * @param lock the fields the organizer pinned ({@code name} | {@code description} |
+     *             {@code poster}). A locked poster skips the render entirely and re-serves the prior
+     *             generation's images; a locked name/description carries the stored value through.
+     */
     public ConceptResponse regenerate(AuthPrincipal p, UUID conceptId, List<String> lock) {
         GeneratedEvent prior = repo.findByIdAndOrgId(conceptId, p.orgId())
                 .orElseThrow(() -> ApiException.notFound("Concept"));
+        Set<String> locks = normalizeLocks(lock);
         // Snapshot read-back: use the DJ photo URL from the original generation row, not the live event.
         // This means a photo swap between create and regenerate doesn't silently change the mode.
         DjPhotoSnapshot djPhoto = generationRepo.findTopByGeneratedEventIdOrderByCreatedAtDesc(conceptId)
@@ -110,7 +125,34 @@ public class ConceptStudioService {
                 /* lineup */ null, /* address */ null, /* rsvpUrl */ null,
                 /* logoOnPosters: brand default applies on regenerate */ null,
                 /* eventId */ null);
-        return run(p, req, djPhoto);
+        List<PosterVariantEntity> lockedPosters =
+                locks.contains(LOCK_POSTER) ? priorVariants(conceptId) : List.of();
+        return run(p, req, djPhoto, prior, locks, lockedPosters);
+    }
+
+    /** Wire lock values, trimmed and lower-cased; unknown entries are simply never matched. */
+    private static Set<String> normalizeLocks(List<String> lock) {
+        if (lock == null || lock.isEmpty()) return Set.of();
+        return lock.stream()
+                .filter(Objects::nonNull)
+                .map(v -> v.trim().toLowerCase(Locale.ROOT))
+                .filter(v -> !v.isEmpty())
+                .collect(Collectors.toUnmodifiableSet());
+    }
+
+    /**
+     * Variants of the newest generation that actually produced an image. Empty when there is
+     * nothing to reuse (no prior generation, or every variant failed) — the caller then renders
+     * afresh rather than answering with zero posters.
+     */
+    private List<PosterVariantEntity> priorVariants(UUID conceptId) {
+        for (PosterGeneration g : generationRepo.findWithVariantsByGeneratedEventId(conceptId)) {
+            List<PosterVariantEntity> usable = g.getVariants().stream()
+                    .filter(v -> posterUrl(v) != null)
+                    .toList();
+            if (!usable.isEmpty()) return usable;
+        }
+        return List.of();
     }
 
     /**
@@ -154,6 +196,12 @@ public class ConceptStudioService {
      * unit; each {@code repo.save} opens its own short transaction.
      */
     private ConceptResponse run(AuthPrincipal p, ConceptRequest req, DjPhotoSnapshot djPhoto) {
+        return run(p, req, djPhoto, null, Set.of(), List.of());
+    }
+
+    private ConceptResponse run(AuthPrincipal p, ConceptRequest req, DjPhotoSnapshot djPhoto,
+                                GeneratedEvent prior, Set<String> locks,
+                                List<PosterVariantEntity> lockedPosters) {
         if (req.vibeId() != null && !req.vibeId().isBlank() && !vibeLibrary.hasVibe(req.vibeId())) {
             throw new ApiException(org.springframework.http.HttpStatus.BAD_REQUEST,
                     com.imin.iminapi.security.ErrorCode.FIELD_INVALID,
@@ -178,7 +226,10 @@ public class ConceptStudioService {
             // reference flyers (forTag) regardless of what the LLM echoed.
             poster = new PosterConcept(legacy.subStyleTag(),
                     generated.concept().colorPaletteDescription(), generated.concept().variants());
-            render = orchestrator.run(staging.getId(), legacy, poster, creativeSeed, generated.directions(), brand, djPhoto);
+            // A locked poster must not spend three Ideogram renders to hand back different art.
+            render = lockedPosters.isEmpty()
+                    ? orchestrator.run(staging.getId(), legacy, poster, creativeSeed, generated.directions(), brand, djPhoto)
+                    : null;
             overview = overviewLlm.generate(req, poster);
         } catch (Exception e) {
             staging.setStatus(GeneratedEventStatus.FAILED);
@@ -195,11 +246,17 @@ public class ConceptStudioService {
                 LocalDate.now().plusMonths(2));
 
         List<SuggestedTierDto> tiers = buildTiers(prices, overview.suggestedCapacity());
-        List<PosterDto> posterDtos = mapPosters(render.posters(), overview.paletteHexes());
+        List<PosterDto> posterDtos = render != null
+                ? mapPosters(render.posters(), overview.paletteHexes())
+                : mapVariants(lockedPosters, overview.paletteHexes());
+
+        String name = lockedValue(prior, locks, LOCK_NAME, GeneratedEvent::getName, overview.name());
+        String description = lockedValue(prior, locks, LOCK_DESCRIPTION,
+                GeneratedEvent::getDescription, overview.description());
 
         // Persist V1 fields onto the staging row
-        staging.setName(overview.name());
-        staging.setDescription(overview.description());
+        staging.setName(name);
+        staging.setDescription(description);
         staging.setPaletteHexes(String.join(",", overview.paletteHexes() == null ? List.of() : overview.paletteHexes()));
         staging.setConfidencePct(overview.confidencePct());
         staging.setStatus(GeneratedEventStatus.COMPLETE);
@@ -207,8 +264,8 @@ public class ConceptStudioService {
 
         return new ConceptResponse(
                 staging.getId(),
-                overview.name(),
-                overview.description(),
+                name,
+                description,
                 posterDtos,
                 overview.paletteHexes(),
                 tiers,
@@ -297,6 +354,28 @@ public class ConceptStudioService {
             log.warn("Brand lookup failed; generating brandless: {}", e.getMessage());
             return null;
         }
+    }
+
+    /** The stored value when the organizer locked this field and one exists; otherwise the fresh one. */
+    private static String lockedValue(GeneratedEvent prior, Set<String> locks, String lockKey,
+                                      java.util.function.Function<GeneratedEvent, String> read,
+                                      String fresh) {
+        if (prior == null || !locks.contains(lockKey)) return fresh;
+        String kept = read.apply(prior);
+        return kept == null || kept.isBlank() ? fresh : kept;
+    }
+
+    /** Re-serve a prior generation's images (poster lock) in the same shape as a fresh render. */
+    private static List<PosterDto> mapVariants(List<PosterVariantEntity> variants, List<String> palette) {
+        return variants.stream()
+                .map(v -> new PosterDto(posterUrl(v), v.getVariantStyle(), gradientFor(palette)))
+                .toList();
+    }
+
+    /** The composited image when there is one, else the raw render, else null (nothing shippable). */
+    private static String posterUrl(PosterVariantEntity v) {
+        if (v.getFinalUrl() != null && !v.getFinalUrl().isBlank()) return v.getFinalUrl();
+        return v.getRawUrl() == null || v.getRawUrl().isBlank() ? null : v.getRawUrl();
     }
 
     private static List<PosterDto> mapPosters(List<GeneratedPoster> posters, List<String> palette) {
