@@ -4,7 +4,13 @@ import com.imin.iminapi.dto.OrganizationDto;
 import com.imin.iminapi.dto.org.OrgPatchRequest;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.UserRole;
+import com.imin.iminapi.payout.PayoutRunRepository;
+import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.repository.TicketRepository;
+import com.imin.iminapi.service.audit.AuditActions;
+import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.settlement.SettlementRepository;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.web.IfMatchSupport;
@@ -17,13 +23,20 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 class OrgServiceTest {
 
     OrganizationRepository orgs = mock(OrganizationRepository.class);
+    OrderRepository orders = mock(OrderRepository.class);
+    TicketRepository tickets = mock(TicketRepository.class);
+    SettlementRepository settlements = mock(SettlementRepository.class);
+    PayoutRunRepository payouts = mock(PayoutRunRepository.class);
+    AuditLogger audit = mock(AuditLogger.class);
     IfMatchSupport ifMatch = new IfMatchSupport();
-    OrgService sut = new OrgService(orgs, ifMatch);
+    OrgService sut = new OrgService(orgs, ifMatch, orders, tickets, settlements, payouts, audit);
 
     private AuthPrincipal owner(UUID orgId) {
         return new AuthPrincipal(UUID.randomUUID(), orgId, UserRole.OWNER, UUID.randomUUID());
@@ -127,5 +140,73 @@ class OrgServiceTest {
         when(orgs.existsById(orgId)).thenReturn(true);
         sut.delete(owner(orgId));
         verify(orgs).deleteById(orgId);
+    }
+
+    /**
+     * organizations → events → orders → tickets are all ON DELETE CASCADE
+     * (V6:3, V24:15), so one call used to destroy every buyer's ticket and every
+     * record imin is required to keep for tax. Refuse instead.
+     */
+    @Test
+    void delete_is_refused_once_the_org_has_taken_an_order() {
+        UUID orgId = UUID.randomUUID();
+        when(orgs.existsById(orgId)).thenReturn(true);
+        when(orders.existsByOrgId(orgId)).thenReturn(true);
+
+        assertThatThrownBy(() -> sut.delete(owner(orgId)))
+                .hasFieldOrPropertyWithValue("code", ErrorCode.ORG_HAS_RECORDS)
+                .hasFieldOrPropertyWithValue("status", org.springframework.http.HttpStatus.CONFLICT);
+        verify(orgs, never()).deleteById(any());
+    }
+
+    @Test
+    void delete_is_refused_once_a_ticket_exists() {
+        UUID orgId = UUID.randomUUID();
+        when(orgs.existsById(orgId)).thenReturn(true);
+        when(tickets.existsByOrgId(orgId)).thenReturn(true);
+
+        assertThatThrownBy(() -> sut.delete(owner(orgId)))
+                .hasFieldOrPropertyWithValue("code", ErrorCode.ORG_HAS_RECORDS);
+        verify(orgs, never()).deleteById(any());
+    }
+
+    @Test
+    void delete_is_refused_once_money_has_moved() {
+        UUID orgId = UUID.randomUUID();
+        when(orgs.existsById(orgId)).thenReturn(true);
+        when(settlements.existsByOrgId(orgId)).thenReturn(true);
+
+        assertThatThrownBy(() -> sut.delete(owner(orgId)))
+                .hasFieldOrPropertyWithValue("code", ErrorCode.ORG_HAS_RECORDS);
+
+        reset(orgs, settlements);
+        when(orgs.existsById(orgId)).thenReturn(true);
+        when(payouts.existsByOrgId(orgId)).thenReturn(true);
+
+        assertThatThrownBy(() -> sut.delete(owner(orgId)))
+                .hasFieldOrPropertyWithValue("code", ErrorCode.ORG_HAS_RECORDS);
+        verify(orgs, never()).deleteById(any());
+    }
+
+    /** A destructive, irreversible action with no trail is not auditable. */
+    @Test
+    void a_successful_delete_writes_an_audit_row() {
+        UUID orgId = UUID.randomUUID();
+        AuthPrincipal p = owner(orgId);
+        when(orgs.existsById(orgId)).thenReturn(true);
+
+        sut.delete(p);
+
+        verify(audit).record(eq(p), eq(AuditActions.ORG_DELETED), eq("org"), eq(orgId), anyString());
+    }
+
+    @Test
+    void a_refused_delete_writes_no_audit_row() {
+        UUID orgId = UUID.randomUUID();
+        when(orgs.existsById(orgId)).thenReturn(true);
+        when(orders.existsByOrgId(orgId)).thenReturn(true);
+
+        assertThatThrownBy(() -> sut.delete(owner(orgId))).isNotNull();
+        verifyNoInteractions(audit);
     }
 }

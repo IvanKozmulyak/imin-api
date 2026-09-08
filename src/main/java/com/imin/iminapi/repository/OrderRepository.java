@@ -45,6 +45,9 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
     /** Number of orders (= completed payments) for an event. Drives the funnel's PAYMENTS_COMPLETED stage. */
     long countByEventId(UUID eventId);
 
+    /** Has this org ever taken an order? Gate on org deletion — see {@code OrgService.delete}. */
+    boolean existsByOrgId(UUID orgId);
+
     /**
      * Org-wide order count (= completed payments) since a cutoff. Drives the
      * PAYMENTS_COMPLETED stage of the org-wide Meta signal-health funnel (spec §8).

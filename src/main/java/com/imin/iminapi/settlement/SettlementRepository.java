@@ -32,6 +32,9 @@ public interface SettlementRepository extends JpaRepository<Settlement, UUID> {
     Optional<Settlement> findByStripeObjectId(String stripeObjectId);
 
     /** Org-scoped payout history, newest first, paginated. */
+    /** Any settlement row at all — the money-has-moved gate on org deletion. */
+    boolean existsByOrgId(UUID orgId);
+
     Page<Settlement> findByOrgIdOrderByCreatedAtDesc(UUID orgId, Pageable pageable);
 
     /** Org-scoped payout history, newest first (unpaged convenience). */

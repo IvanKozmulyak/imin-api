@@ -55,6 +55,13 @@ public enum ErrorCode {
     IMPORT_EMAIL_COLUMN_MISSING,
     IMPORT_INVALID_CSV,
 
+    /**
+     * DELETE /api/v1/orgs refused: the organization holds records imin cannot
+     * legally destroy on request — orders, tickets, settlements or payouts.
+     * 409, and terminal from the API's side: there is no force flag.
+     */
+    ORG_HAS_RECORDS,
+
     // ---- Buyer accounts ----
     /**
      * Unlinking this identity would leave the account with no way to sign in —

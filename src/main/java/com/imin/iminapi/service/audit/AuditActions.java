@@ -21,6 +21,8 @@ public final class AuditActions {
     public static final String MEMBER_INVITED = "MEMBER_INVITED";
     public static final String MEMBER_REMOVED = "MEMBER_REMOVED";
     public static final String STRIPE_ONBOARDED = "STRIPE_ONBOARDED";
+    /** Irreversible and cascading — the one action whose trail has to outlive its subject. */
+    public static final String ORG_DELETED = "ORG_DELETED";
 
     // ---- Audience / Consent / DSAR (Tier C) ----
     public static final String AUDIENCE_TAG_ADDED       = "AUDIENCE_TAG_ADDED";

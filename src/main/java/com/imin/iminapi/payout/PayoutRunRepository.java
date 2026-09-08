@@ -23,6 +23,9 @@ import java.util.UUID;
 @RepositoryRestResource(exported = false)
 public interface PayoutRunRepository extends JpaRepository<PayoutRun, UUID> {
 
+    /** Any payout row at all — the money-has-moved gate on org deletion. */
+    boolean existsByOrgId(UUID orgId);
+
     /**
      * Insert-or-find key for the per-event payout unit: the deterministic
      * {@code "evt:<eventId>:attempt:<attempt>"} idempotency key. UNIQUE in the DB,
