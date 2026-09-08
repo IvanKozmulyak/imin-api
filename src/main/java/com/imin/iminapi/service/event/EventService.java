@@ -371,13 +371,18 @@ public class EventService {
         // Venue is applied BEFORE the timezone so a same-request country can seed the derived zone.
         if (b.venue() != null) {
             VenueDto v = b.venue();
-            e.setVenueName(v.name());
+            // Every venue field is null-guarded: VenueDto has no required fields and the
+            // request contract is "null = leave unchanged", so a partial venue patch used to
+            // erase the name and the country outright (events-11). Losing the country also
+            // moved venueAddressKey, which fires a spurious re-geocode and disables the
+            // CountryTimeZones derivation applyTimezone depends on.
+            if (v.name() != null) e.setVenueName(v.name());
             if (v.street() != null) e.setVenueStreet(v.street());
             // City keeps its typed case (see EventNormalization) — only whitespace is cleaned.
             // The case-insensitive merge happens on the derived venue_city_key.
             if (v.city() != null) e.setVenueCity(EventNormalization.city(v.city()));
             if (v.postalCode() != null) e.setVenuePostalCode(v.postalCode());
-            e.setVenueCountry(normalizedCountry(v.country()));
+            if (v.country() != null) e.setVenueCountry(normalizedCountry(v.country()));
             changed = true;
         }
         changed |= applyTimezone(e, b);

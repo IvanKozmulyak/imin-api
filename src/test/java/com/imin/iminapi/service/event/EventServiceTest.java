@@ -637,6 +637,38 @@ class EventServiceTest {
         assertThat(dto.timezone()).isEqualTo("Europe/Amsterdam");
     }
 
+    /**
+     * events-11: VenueDto has no required fields and EventPatchRequest's contract is
+     * "null = leave unchanged", but venueName and venueCountry were applied
+     * unconditionally while street/city/postalCode were null-guarded. A partial venue
+     * patch therefore silently erased the name and the country — and losing the country
+     * also moves venueAddressKey, which fires a spurious re-geocode.
+     */
+    @Test
+    void patch_partial_venue_leaves_unsent_name_and_country_alone() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setName("X"); e.setSlug("x");
+        e.setVenueName("Le Club"); e.setVenueCountry("FR");
+        e.setVenueStreet("1 Rue"); e.setVenueCity("Paris"); e.setVenuePostalCode("75001");
+        Instant updated = Instant.parse("2026-04-23T10:00:00Z");
+        e.setUpdatedAt(updated);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
+        when(promos.findByEventId(e.getId())).thenReturn(List.of());
+        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
+
+        sut.patch(p, e.getId(), "\"" + updated + "\"",
+                bodyWith(null, new VenueDto(null, "2 Rue X", null, null, null)));
+
+        assertThat(e.getVenueStreet()).isEqualTo("2 Rue X");
+        assertThat(e.getVenueName()).isEqualTo("Le Club");
+        assertThat(e.getVenueCountry()).isEqualTo("FR");
+        assertThat(e.getVenueCity()).isEqualTo("Paris");
+    }
+
     @Test
     void patch_does_not_overwrite_previously_set_zone_on_later_venue_change() {
         AuthPrincipal p = principal();
