@@ -1,5 +1,6 @@
 package com.imin.iminapi.buyer.service;
 
+import com.imin.iminapi.buyer.BuyerTerms;
 import com.imin.iminapi.buyer.model.BuyerAccount;
 import com.imin.iminapi.buyer.model.BuyerIdentity;
 import com.imin.iminapi.buyer.model.BuyerNotificationPreference;
@@ -129,6 +130,9 @@ public class BuyerProfileService {
     public BuyerAccount completeOnboarding(UUID accountId,
                                            Map<String, Object> patch,
                                            boolean acceptedTerms,
+                                           // Accepted so the buyer site keeps compiling
+                                           // against the same shape; deliberately unused —
+                                           // see BuyerTerms.
                                            String termsVersion,
                                            boolean productNews,
                                            String productNewsProof) {
@@ -142,7 +146,14 @@ public class BuyerProfileService {
         // a reason to rewrite when the original one happened.
         if (account.getTermsAcceptedAt() == null) {
             account.setTermsAcceptedAt(Times.nowMicros());
-            account.setTermsVersion(termsVersion);
+            // Server-canonical, NOT the client's string. Whatever the browser sent
+            // used to become the audit fact, which is the one property a consent
+            // record must not have — a client can be old, wrong or hostile. The
+            // field is still accepted on the wire so the buyer site keeps working;
+            // it is simply not believed. The wording is stored alongside because a
+            // version is only evidence if the text it names can be produced later.
+            account.setTermsVersion(BuyerTerms.CURRENT_VERSION);
+            account.setTermsProof(BuyerTerms.acceptanceText(account.getLocale()));
             accounts.save(account);
         }
 

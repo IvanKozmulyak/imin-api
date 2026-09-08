@@ -465,7 +465,8 @@ class StripeCheckoutServiceTest {
         when(freeCheckoutService.issueFreeOrder(any(), any(), eq(1), eq("free@example.com"),
                 org.mockito.ArgumentMatchers.isNull(),
                 org.mockito.ArgumentMatchers.anyBoolean(), org.mockito.ArgumentMatchers.anyBoolean(),
-                any(), nullable(String.class), nullable(String.class)))
+                any(), nullable(String.class), nullable(String.class),
+                any(com.imin.iminapi.model.CheckoutConsent.class)))
                 .thenReturn(order);
         when(freeCheckoutService.findOrderTickets(order.getId())).thenReturn(java.util.List.of());
         when(freeCheckoutService.orderUrl(order)).thenReturn("http://localhost:3000/order/ord_abc");
@@ -476,7 +477,8 @@ class StripeCheckoutServiceTest {
         verify(freeCheckoutService).issueFreeOrder(any(), any(), eq(1), eq("free@example.com"),
                 org.mockito.ArgumentMatchers.isNull(),
                 org.mockito.ArgumentMatchers.anyBoolean(), org.mockito.ArgumentMatchers.anyBoolean(),
-                any(), nullable(String.class), nullable(String.class));
+                any(), nullable(String.class), nullable(String.class),
+                any(com.imin.iminapi.model.CheckoutConsent.class));
         // Branded email + downstream side effects now ride TicketsIssuedEvent published
         // inside issueFreeOrder — no inline confirmation call to verify here.
         // Stripe must NOT be called for free orders.
@@ -499,7 +501,8 @@ class StripeCheckoutServiceTest {
         when(freeCheckoutService.issueFreeOrder(any(), any(), eq(1), eq("free@example.com"),
                 org.mockito.ArgumentMatchers.isNull(),
                 org.mockito.ArgumentMatchers.anyBoolean(), org.mockito.ArgumentMatchers.anyBoolean(),
-                any(), nullable(String.class), nullable(String.class)))
+                any(), nullable(String.class), nullable(String.class),
+                any(com.imin.iminapi.model.CheckoutConsent.class)))
                 .thenReturn(order);
         when(freeCheckoutService.orderUrl(order)).thenReturn("http://localhost:3000/order/ord_fr");
 
@@ -509,7 +512,8 @@ class StripeCheckoutServiceTest {
         verify(freeCheckoutService).issueFreeOrder(any(), any(), eq(1), eq("free@example.com"),
                 org.mockito.ArgumentMatchers.isNull(),
                 org.mockito.ArgumentMatchers.anyBoolean(), org.mockito.ArgumentMatchers.anyBoolean(),
-                any(), eq("fr"), nullable(String.class));
+                any(), eq("fr"), nullable(String.class),
+                any(com.imin.iminapi.model.CheckoutConsent.class));
     }
 
     /** Junk locale never reaches the column — it collapses to null ("no preference"). */
@@ -525,7 +529,8 @@ class StripeCheckoutServiceTest {
         when(freeCheckoutService.issueFreeOrder(any(), any(), eq(1), eq("free@example.com"),
                 org.mockito.ArgumentMatchers.isNull(),
                 org.mockito.ArgumentMatchers.anyBoolean(), org.mockito.ArgumentMatchers.anyBoolean(),
-                any(), nullable(String.class), nullable(String.class)))
+                any(), nullable(String.class), nullable(String.class),
+                any(com.imin.iminapi.model.CheckoutConsent.class)))
                 .thenReturn(order);
         when(freeCheckoutService.orderUrl(order)).thenReturn("http://localhost:3000/order/ord_junk");
 
@@ -535,7 +540,8 @@ class StripeCheckoutServiceTest {
         verify(freeCheckoutService).issueFreeOrder(any(), any(), eq(1), eq("free@example.com"),
                 org.mockito.ArgumentMatchers.isNull(),
                 org.mockito.ArgumentMatchers.anyBoolean(), org.mockito.ArgumentMatchers.anyBoolean(),
-                any(), isNull(), nullable(String.class));
+                any(), isNull(), nullable(String.class),
+                any(com.imin.iminapi.model.CheckoutConsent.class));
     }
 
     @Test
@@ -555,7 +561,8 @@ class StripeCheckoutServiceTest {
         verify(freeCheckoutService, never()).issueFreeOrder(any(), any(),
                 org.mockito.ArgumentMatchers.anyInt(), any(), any(),
                 org.mockito.ArgumentMatchers.anyBoolean(), org.mockito.ArgumentMatchers.anyBoolean(),
-                any(), nullable(String.class), nullable(String.class));
+                any(), nullable(String.class), nullable(String.class),
+                any(com.imin.iminapi.model.CheckoutConsent.class));
     }
 
     @Test
@@ -567,7 +574,8 @@ class StripeCheckoutServiceTest {
         when(freeCheckoutService.issueFreeOrder(any(), any(),
                 org.mockito.ArgumentMatchers.anyInt(), any(), any(),
                 org.mockito.ArgumentMatchers.anyBoolean(), org.mockito.ArgumentMatchers.anyBoolean(),
-                any(), nullable(String.class), nullable(String.class)))
+                any(), nullable(String.class), nullable(String.class),
+                any(com.imin.iminapi.model.CheckoutConsent.class)))
                 .thenThrow(new ApiException(HttpStatus.CONFLICT,
                         com.imin.iminapi.security.ErrorCode.INVALID_STATE,
                         "Not enough tickets available"));
@@ -596,7 +604,8 @@ class StripeCheckoutServiceTest {
         order.setToken("ord_zeroed");
         when(freeCheckoutService.issueFreeOrder(any(), any(), eq(1), eq("buyer@example.com"), eq(promo),
                 org.mockito.ArgumentMatchers.anyBoolean(), org.mockito.ArgumentMatchers.anyBoolean(),
-                any(), nullable(String.class), nullable(String.class)))
+                any(), nullable(String.class), nullable(String.class),
+                any(com.imin.iminapi.model.CheckoutConsent.class)))
                 .thenReturn(order);
         when(freeCheckoutService.findOrderTickets(order.getId())).thenReturn(java.util.List.of());
         when(freeCheckoutService.orderUrl(order)).thenReturn("http://localhost:3000/order/ord_zeroed");
@@ -606,7 +615,8 @@ class StripeCheckoutServiceTest {
         assertThat(url).isEqualTo("http://localhost:3000/order/ord_zeroed");
         verify(freeCheckoutService).issueFreeOrder(any(), any(), eq(1), eq("buyer@example.com"), eq(promo),
                 org.mockito.ArgumentMatchers.anyBoolean(), org.mockito.ArgumentMatchers.anyBoolean(),
-                any(), nullable(String.class), nullable(String.class));
+                any(), nullable(String.class), nullable(String.class),
+                any(com.imin.iminapi.model.CheckoutConsent.class));
         verify(sessionService, never()).create(any(SessionCreateParams.class));
     }
 }

@@ -219,7 +219,13 @@ class BuyerProfileTest {
 
         var account = accounts.findById(accountId).orElseThrow();
         assertThat(account.getTermsAcceptedAt()).isNotNull();
-        assertThat(account.getTermsVersion()).isEqualTo("2026-08-14");
+        // The CLIENT sent "2026-08-14" and it is deliberately not believed: whatever
+        // the browser said used to become the audit fact, which is the one property
+        // a consent record must not have. The field is still accepted on the wire.
+        assertThat(account.getTermsVersion())
+                .isEqualTo(com.imin.iminapi.buyer.BuyerTerms.CURRENT_VERSION);
+        // A version is only evidence if the text it names can be produced later.
+        assertThat(account.getTermsProof()).isNotBlank();
     }
 
     /** Not a toggle the client may send false for — the screen cannot continue without it. */
@@ -283,7 +289,9 @@ class BuyerProfileTest {
 
         var again = accounts.findById(accountId).orElseThrow();
         assertThat(again.getTermsAcceptedAt()).isEqualTo(stampedAt);
-        assertThat(again.getTermsVersion()).isEqualTo("v1");
+        // Neither "v1" nor "v2" — the version has never come from the client.
+        assertThat(again.getTermsVersion())
+                .isEqualTo(com.imin.iminapi.buyer.BuyerTerms.CURRENT_VERSION);
     }
 
     @Test

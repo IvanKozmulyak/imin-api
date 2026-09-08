@@ -1,5 +1,6 @@
 package com.imin.iminapi.buyer.service;
 
+import com.imin.iminapi.util.Times;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MarketingOptOutRepository;
@@ -170,7 +171,18 @@ public class BuyerPreferencesService {
             rowFor(accountId).setEventReminders(bool(patch.get("eventReminders"), "eventReminders"));
         }
         if (patch.containsKey("productNews")) {
-            rowFor(accountId).setProductNews(bool(patch.get("productNews"), "productNews"));
+            // V91 gave this flag a timestamp and a proof column and only the
+            // onboarding step ever wrote them, so a later toggle moved the flag
+            // and left the evidence behind: an account could read productNews=false
+            // with a product_news_at and a proof text still sitting beside it,
+            // asserting a consent that had been withdrawn. Both are now written on
+            // EVERY transition, and cleared on OFF — the record of a withdrawn
+            // consent is the withdrawal, not a stale acceptance.
+            boolean on = bool(patch.get("productNews"), "productNews");
+            BuyerNotificationPreference prefs = rowFor(accountId);
+            prefs.setProductNews(on);
+            prefs.setProductNewsAt(on ? Times.nowMicros() : null);
+            prefs.setProductNewsProof(on ? productNewsProof(patch, localeOf(accountId)) : null);
         }
         if (patch.containsKey("pushDropAlerts")) {
             rowFor(accountId).setPushDropAlerts(bool(patch.get("pushDropAlerts"), "pushDropAlerts"));
@@ -187,6 +199,25 @@ public class BuyerPreferencesService {
         return new BuyerPreferencesResponse(
                 row.isEventReminders(), reach.anySubscribed(), reach.locked(), row.isProductNews(),
                 row.isPushDropAlerts());
+    }
+
+    /**
+     * The proof stored for an imin product-news opt-in.
+     *
+     * <p>Prefers the verbatim sentence the client sends — the buyer site owns the
+     * copy and {@code POST /buyer/me/onboarding} already passes it — because Art.
+     * 7(1) proof is proof of the sentence the data subject actually read. When it
+     * is absent the record falls back to a description of the act itself, which
+     * is a true statement rather than a guess at someone else's screen copy.
+     */
+    private static String productNewsProof(Map<String, Object> patch, String locale) {
+        Object supplied = patch.get("productNewsProof");
+        if (supplied instanceof String text && !text.isBlank()) {
+            String trimmed = text.trim();
+            return trimmed.length() > 2000 ? trimmed.substring(0, 2000) : trimmed;
+        }
+        return "Turned on 'News from imin' in the buyer account notification settings"
+                + (locale == null ? "" : " (locale " + locale + ")");
     }
 
     private void fanOut(UUID accountId, Reach reach, boolean on) {

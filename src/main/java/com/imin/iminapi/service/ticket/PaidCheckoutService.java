@@ -3,6 +3,7 @@ package com.imin.iminapi.service.ticket;
 import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.marketing.service.MetaCapiOutboxWriter;
 import com.imin.iminapi.model.CheckoutAttribution;
+import com.imin.iminapi.model.CheckoutConsent;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Ticket;
@@ -158,6 +159,10 @@ public class PaidCheckoutService {
         // still in flight at deploy, and organic buyers who arrived with no tags at all.
         // This is what makes per-campaign revenue a true per-order sum rather than an estimate.
         CheckoutAttribution.fromMetadata(meta).applyTo(order);
+        // Terms acceptance + the verbatim marketing-checkbox sentence the buyer read
+        // (V97), stamped into the metadata at checkout. Missing keys → not recorded,
+        // which is what every order placed before the buyer site sent them has.
+        CheckoutConsent.fromMetadata(meta).applyTo(order);
         // Buyer's UI language (V78), stamped into the session/PI metadata at checkout.
         // Absent key (pre-V78 sessions in flight at deploy, or a buyer whose language we
         // don't support) → null ⇒ English emails, same as every historical order.

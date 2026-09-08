@@ -4,6 +4,7 @@ import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.model.CheckoutAttribution;
+import com.imin.iminapi.model.CheckoutConsent;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.PromoCode;
@@ -133,6 +134,16 @@ public class FreeCheckoutService {
                                  String buyerEmail, PromoCode appliedPromo, boolean adsConsent,
                                  boolean marketingOptIn, CheckoutAttribution attribution,
                                  String buyerLocale, String idempotencyKey) {
+        return issueFreeOrder(event, tier, quantity, buyerEmail, appliedPromo, adsConsent,
+                marketingOptIn, attribution, buyerLocale, idempotencyKey, CheckoutConsent.NONE);
+    }
+
+    /** As above, plus the V97 consent evidence captured on the buy page. */
+    @Transactional
+    public Order issueFreeOrder(Event event, TicketTier tier, int quantity,
+                                 String buyerEmail, PromoCode appliedPromo, boolean adsConsent,
+                                 boolean marketingOptIn, CheckoutAttribution attribution,
+                                 String buyerLocale, String idempotencyKey, CheckoutConsent consent) {
         // Reserve + confirm atomically in the same transaction. expires_at is a
         // short fallback that the sweeper would only see if the surrounding
         // transaction crashed between reserve() and confirmSold() — both calls
@@ -159,6 +170,7 @@ public class FreeCheckoutService {
         order.setMarketingOptIn(marketingOptIn);
         order.setBuyerLocale(EmailLocale.normalizeOrNull(buyerLocale));
         (attribution == null ? CheckoutAttribution.NONE : attribution).applyTo(order);
+        (consent == null ? CheckoutConsent.NONE : consent).applyTo(order);
         if (appliedPromo != null) {
             order.setPromoCodeId(appliedPromo.getId());
         }

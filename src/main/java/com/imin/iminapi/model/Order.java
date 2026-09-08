@@ -123,6 +123,23 @@ public class Order {
     private boolean marketingOptIn = false;
 
     /**
+     * The sentence the buyer actually read next to the marketing checkbox, sent
+     * verbatim by the buyer site (V97). Null ⇒ the server's own description of
+     * the act is used as the consent proof instead, which is what every order
+     * before this column has.
+     */
+    @Column(name = "marketing_opt_in_proof", length = 500)
+    private String marketingOptInProof;
+
+    /**
+     * When the buyer accepted the terms of sale at checkout (V97). Null for every
+     * order placed before the buyer site started sending it — absence means "not
+     * recorded", never "declined".
+     */
+    @Column(name = "terms_accepted_at")
+    private Instant termsAcceptedAt;
+
+    /**
      * Last-touch UTM attribution snapshot (V62): the utm_* the buyer's browser landed
      * with, forwarded by imin-public on POST /checkout and carried through the Stripe
      * session/PaymentIntent metadata to fulfilment. All nullable — an organic buyer

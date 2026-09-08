@@ -1,6 +1,7 @@
 package com.imin.iminapi.stripe;
 
 import com.imin.iminapi.model.CheckoutAttribution;
+import com.imin.iminapi.model.CheckoutConsent;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.security.RateLimiter;
@@ -8,6 +9,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 
@@ -63,9 +65,14 @@ public class StripeCheckoutController {
         // normalizes blank to null, so a hostile or over-long param can't break the insert.
         CheckoutAttribution attribution = new CheckoutAttribution(
                 body.utmSource(), body.utmMedium(), body.utmCampaign(), body.anonId());
+        // Consent evidence captured on the buy page (V97). Both optional: imin-public
+        // has not shipped its half, and an absent field must mean "not recorded"
+        // rather than "declined" — nothing here gates the purchase.
+        CheckoutConsent consent = new CheckoutConsent(
+                Boolean.TRUE.equals(body.acceptedTerms()), body.marketingOptInProofText());
         StripeCheckoutService.CheckoutResult result = checkout.createCheckout(eventId, body.tierId(), quantity,
                 promoCode, body.expectedPriceMinor(), body.email(), adsConsent, marketingOptIn,
-                attribution, body.locale(), idempotencyKey);
+                attribution, body.locale(), idempotencyKey, consent);
         return new CheckoutResponse(result.url(), result.kind(), result.sessionId(), result.orderToken());
     }
 
@@ -110,7 +117,21 @@ public class StripeCheckoutController {
                                    // stored as null ⇒ English email. Never a validation error.
                                    // Snapshotted onto orders.buyer_locale (V78) — the buyer has no
                                    // account, so the order is the only place it can live.
-                                   String locale) {}
+                                   String locale,
+                                   // Did the buyer tick the terms-of-sale box? Optional and
+                                   // NOT enforced: the buyer site has not shipped it yet, and
+                                   // a checkout that started failing on a missing field would
+                                   // be an outage. true ⇒ orders.terms_accepted_at is stamped;
+                                   // absent ⇒ "not recorded", never "declined". Enforcement is
+                                   // a follow-up, once the buy page sends it.
+                                   Boolean acceptedTerms,
+                                   // The verbatim sentence printed next to the marketing
+                                   // checkbox, in the language the buyer actually read it in.
+                                   // Art. 7(1) proof has to be of THAT sentence, and the buyer
+                                   // site owns the copy — so it sends it rather than the server
+                                   // guessing. Absent ⇒ the server's own description of the act
+                                   // is stored instead. Capped to the column width.
+                                   @Size(max = 500) String marketingOptInProofText) {}
 
     /**
      * {@code url} is unchanged and still first — imin-public reads only that.

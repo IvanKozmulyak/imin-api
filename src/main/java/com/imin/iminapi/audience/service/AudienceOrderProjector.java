@@ -67,7 +67,7 @@ public class AudienceOrderProjector {
             String normalizedEmail = EmailNormalizer.normalize(order.getEmail());
             upsertMembership(order.getOrgId(), normalizedEmail, order.getEmail(),
                     order.getBuyerPhone(), order.isSmsMarketingOptIn(),
-                    order.isMarketingOptIn(), order.getId());
+                    order.isMarketingOptIn(), order.getId(), order.getMarketingOptInProof());
         } catch (Exception e) {
             log.error("AudienceOrderProjector failed for order {}: {}", event.orderId(), e.getMessage(), e);
         }
@@ -102,6 +102,22 @@ public class AudienceOrderProjector {
     public void upsertMembership(java.util.UUID orgId, String normalizedEmail, String displayName,
                                  String phoneE164, boolean smsOptIn,
                                  boolean emailOptIn, java.util.UUID orderIdForProof) {
+        upsertMembership(orgId, normalizedEmail, displayName, phoneE164, smsOptIn,
+                emailOptIn, orderIdForProof, null);
+    }
+
+    /**
+     * @param proofTextOverride the verbatim sentence the buyer read next to the
+     *        marketing checkbox, sent by the buyer site and stored on the order
+     *        (V97). Null for every order that predates it, and for internal
+     *        callers, in which case the server sentence below is used — which is
+     *        exactly the previous behaviour.
+     */
+    @Transactional
+    public void upsertMembership(java.util.UUID orgId, String normalizedEmail, String displayName,
+                                 String phoneE164, boolean smsOptIn,
+                                 boolean emailOptIn, java.util.UUID orderIdForProof,
+                                 String proofTextOverride) {
         // 1. Upsert Consumer (INSERT-first, catch DuplicateKeyException — idempotent)
         Consumer consumer = consumerRepo.findByNormalizedEmail(normalizedEmail).orElse(null);
         if (consumer == null) {
@@ -163,11 +179,18 @@ public class AudienceOrderProjector {
         // unsubscribed), but skip when the member already unsubscribed — a later ticket
         // purchase is not a re-consent to marketing email, and a default-on box must never
         // resurrect someone who opted out. Unsubscribed beats default-on, always.
+        //
+        // The sentence stored is the one the buyer actually READ when the buyer site
+        // sent it (V97) — Art. 7(1) proof is proof of that sentence, in that language,
+        // and the copy lives on the buy page, not here. The hardcoded English below is
+        // the fallback for every order that predates it.
         if (emailOptIn && !"unsubscribed".equals(m.getConsentStatus())) {
+            String proof = proofTextOverride != null && !proofTextOverride.isBlank()
+                    ? proofTextOverride
+                    : "Left the pre-ticked 'We'll email you about similar events from this "
+                      + "organiser' box ticked at checkout";
             consentService.capture(orgId, m.getMembershipId(), "soft_opt_in", "checkout",
-                    "Left the pre-ticked 'We'll email you about similar events from this "
-                            + "organiser' box ticked at checkout"
-                            + (orderIdForProof != null ? ", order " + orderIdForProof : ""),
+                    proof + (orderIdForProof != null ? ", order " + orderIdForProof : ""),
                     "email", null);
         }
     }

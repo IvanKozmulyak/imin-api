@@ -66,6 +66,8 @@ class BuyerPreferencesTest {
     @Autowired MarketingOptOutRepository optOuts;
     @Autowired OrganizationRepository organizations;
     @Autowired ConsentService consentService;
+    @Autowired com.imin.iminapi.buyer.repository.BuyerNotificationPreferenceRepository preferences;
+    @Autowired com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository accountEmails;
     @MockitoBean EmailService email;
 
     private String address;
@@ -174,6 +176,42 @@ class BuyerPreferencesTest {
                 .andExpect(jsonPath("$.productNews").value(false));
     }
 
+    /**
+     * V91 gave the product-news flag a timestamp and a proof column, and only
+     * the onboarding step ever wrote them — so a later toggle moved the flag and
+     * left the evidence behind. An account could read {@code productNews=false}
+     * with a {@code product_news_at} and a proof sentence still beside it,
+     * asserting a consent that had been withdrawn.
+     */
+    @Test
+    void togglingProductNewsWritesTheProofAndClearsItOnOff() throws Exception {
+        patchPrefs("{\"productNews\":true}").andExpect(status().isOk())
+                .andExpect(jsonPath("$.productNews").value(true));
+
+        var on = preferences.findById(accountId()).orElseThrow();
+        assertThat(on.isProductNews()).isTrue();
+        assertThat(on.getProductNewsAt()).isNotNull();
+        assertThat(on.getProductNewsProof()).isNotBlank();
+
+        patchPrefs("{\"productNews\":false}").andExpect(status().isOk())
+                .andExpect(jsonPath("$.productNews").value(false));
+
+        var off = preferences.findById(accountId()).orElseThrow();
+        assertThat(off.isProductNews()).isFalse();
+        assertThat(off.getProductNewsAt()).isNull();
+        assertThat(off.getProductNewsProof()).isNull();
+    }
+
+    /** The buyer site owns the copy, so a supplied sentence is stored verbatim. */
+    @Test
+    void aClientSuppliedProofSentenceIsStoredVerbatim() throws Exception {
+        patchPrefs("{\"productNews\":true,\"productNewsProof\":\"Envíame novedades de imin\"}")
+                .andExpect(status().isOk());
+
+        assertThat(preferences.findById(accountId()).orElseThrow().getProductNewsProof())
+                .isEqualTo("Envíame novedades de imin");
+    }
+
     @Test
     void patchingOneSwitchLeavesTheOtherAlone() throws Exception {
         patchPrefs("{\"eventReminders\":false}").andExpect(status().isOk());
@@ -228,6 +266,11 @@ class BuyerPreferencesTest {
     }
 
     // ── plumbing ───────────────────────────────────────────────────────────
+
+    private UUID accountId() {
+        return accountEmails.findByVerifiedKey(address.toLowerCase())
+                .orElseThrow().getBuyerAccountId();
+    }
 
     private ResultActions readPrefs() throws Exception {
         return mvc.perform(get("/api/v1/buyer/preferences").cookie(cookie(cookie)));

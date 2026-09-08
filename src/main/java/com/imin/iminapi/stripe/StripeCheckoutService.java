@@ -2,6 +2,7 @@ package com.imin.iminapi.stripe;
 
 import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.model.CheckoutAttribution;
+import com.imin.iminapi.model.CheckoutConsent;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.PromoCode;
@@ -243,6 +244,23 @@ public class StripeCheckoutService {
                                          boolean adsConsent, boolean marketingOptIn,
                                          CheckoutAttribution attribution, String rawLocale,
                                          String rawIdempotencyKey) {
+        return createCheckout(eventId, tierId, quantity, promoCode, expectedPriceMinor, buyerEmail,
+                adsConsent, marketingOptIn, attribution, rawLocale, rawIdempotencyKey,
+                CheckoutConsent.NONE);
+    }
+
+    /**
+     * @param consent the terms acceptance and the verbatim marketing-checkbox
+     *                sentence the buyer read (V97). {@link CheckoutConsent#NONE}
+     *                for internal callers and for anything that predates it —
+     *                which is byte-identical to the previous behaviour.
+     */
+    public CheckoutResult createCheckout(UUID eventId, UUID tierId, int quantity,
+                                         String promoCode, Integer expectedPriceMinor, String buyerEmail,
+                                         boolean adsConsent, boolean marketingOptIn,
+                                         CheckoutAttribution attribution, String rawLocale,
+                                         String rawIdempotencyKey, CheckoutConsent consent) {
+        if (consent == null) consent = CheckoutConsent.NONE;
         // Normalize first, so a malformed header is a 400 before anything is priced,
         // reserved or charged — and so both public checkout endpoints reject the same
         // header the same way.
@@ -287,7 +305,7 @@ public class StripeCheckoutService {
             Order order;
             try {
                 order = freeCheckoutService.issueFreeOrder(event, tier, quantity, email, promo, adsConsent,
-                        marketingOptIn, attribution, buyerLocale, idempotencyKey);
+                        marketingOptIn, attribution, buyerLocale, idempotencyKey, consent);
             } catch (ApiException e) {
                 // Inventory shortage → collapse to leak-safe 404 like the paid path.
                 if (e.status() == HttpStatus.CONFLICT) {
@@ -332,7 +350,7 @@ public class StripeCheckoutService {
         // shared with the native PaymentIntent flow so the readiness gate, the inventory
         // hold, the platform fee and the metadata the webhook reads cannot drift apart.
         PaidPrelude prelude = reserveAndBuildMetadata(priced, eventId, tierId, quantity, buyerEmail,
-                adsConsent, marketingOptIn, attribution, rawLocale, false);
+                adsConsent, marketingOptIn, attribution, rawLocale, false, consent);
         Organization org = prelude.org();
         UUID reservationId = prelude.reservationId();
         Instant expiresAt = prelude.expiresAt();
@@ -558,6 +576,15 @@ public class StripeCheckoutService {
                                                String buyerEmail, boolean adsConsent, boolean marketingOptIn,
                                                CheckoutAttribution attribution, String rawLocale,
                                                boolean nativeClient) {
+        return reserveAndBuildMetadata(priced, eventId, tierId, quantity, buyerEmail, adsConsent,
+                marketingOptIn, attribution, rawLocale, nativeClient, CheckoutConsent.NONE);
+    }
+
+    /** As above, plus the V97 consent evidence to ride the metadata to fulfilment. */
+    public PaidPrelude reserveAndBuildMetadata(Priced priced, UUID eventId, UUID tierId, int quantity,
+                                               String buyerEmail, boolean adsConsent, boolean marketingOptIn,
+                                               CheckoutAttribution attribution, String rawLocale,
+                                               boolean nativeClient, CheckoutConsent consent) {
         if (attribution == null) attribution = CheckoutAttribution.NONE;
         String buyerLocale = EmailLocale.normalizeOrNull(rawLocale);
         Event event = priced.event();
@@ -634,6 +661,10 @@ public class StripeCheckoutService {
         // turns per-campaign revenue from a visit-share estimate into a true per-order sum.
         // Absent fields are omitted rather than written as "null".
         attribution.putInto(metadata);
+        // Same round trip for the V97 consent evidence: the Order only exists at
+        // webhook fulfilment, so a fact captured on the buy page has no other way
+        // to reach it. Absent fields are omitted, never written as "false"/"null".
+        (consent == null ? CheckoutConsent.NONE : consent).putInto(metadata);
         // Buyer's UI language (V78). The Order is only created at webhook fulfilment, so
         // the locale has to survive the Stripe round-trip like every other checkout-time
         // fact; PaidCheckoutService reads it back onto orders.buyer_locale. Omitted when
