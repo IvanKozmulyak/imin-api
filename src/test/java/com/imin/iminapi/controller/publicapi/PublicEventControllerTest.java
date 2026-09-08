@@ -55,7 +55,7 @@ class PublicEventControllerTest {
         PublicVenueDto venue = new PublicVenueDto("Venue X", "123 Main St", "Berlin", "10115", "DE", 52.5200d, 13.4050d);
         PublicOrganizationDto org = new PublicOrganizationDto("Acme Events", "acme-events");
         PublicTierDto tier = new PublicTierDto(
-                TIER_ID, "General Admission", 2500, "EUR",
+                TIER_ID, "General Admission", 2500, 2724L, "EUR",
                 null, Instant.parse("2026-06-01T00:00:00Z"), 1, 100, true, false, false);
 
         return new PublicEventResponse(
@@ -72,6 +72,7 @@ class PublicEventControllerTest {
                 "Europe/Berlin",
                 venue,
                 "https://cdn.example.com/poster.jpg",
+                true,
                 null,
                 "EUR",
                 Instant.parse("2026-02-01T00:00:00Z"),
@@ -146,7 +147,7 @@ class PublicEventControllerTest {
         Set<String> expectedRootKeys = Set.of(
                 "id", "slug", "name", "status", "publishedAt",
                 "genre", "type", "description", "startsAt", "endsAt",
-                "timezone", "venue", "posterUrl", "videoUrl",
+                "timezone", "venue", "posterUrl", "posterAiGenerated", "videoUrl",
                 "currency", "onSaleAt", "saleClosesAt",
                 "organization", "tiers", "metaPixelId"
         );
@@ -176,7 +177,7 @@ class PublicEventControllerTest {
         JsonNode tier0 = root.get("tiers").get(0);
         Set<String> actualTierKeys = fieldNames(tier0);
         Set<String> expectedTierKeys = Set.of(
-                "id", "name", "priceMinor", "currency",
+                "id", "name", "priceMinor", "priceAllInMinor", "currency",
                 "saleStartsAt", "saleClosesAt", "sortOrder", "remaining",
                 "onSale", "soldOut", "closed"
         );
@@ -245,6 +246,7 @@ class PublicEventControllerTest {
                 "Berlin",
                 "DE",
                 "https://cdn.example.com/cover.jpg",
+                false,
                 "EUR",
                 2500,
                 false,
@@ -378,7 +380,7 @@ class PublicEventControllerTest {
         Set<String> expectedItemKeys = Set.of(
                 "id", "slug", "name", "status", "publishedAt",
                 "genre", "type", "startsAt", "endsAt", "timezone",
-                "venueName", "venueCity", "venueCountry", "posterUrl", "currency",
+                "venueName", "venueCity", "venueCountry", "posterUrl", "posterAiGenerated", "currency",
                 "priceFromMinor", "soldOut", "lowStock", "organization"
         );
         assertThat(actualItemKeys)

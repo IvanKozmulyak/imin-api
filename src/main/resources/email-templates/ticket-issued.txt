@@ -6,6 +6,13 @@ You're in for {{eventName}}.
 YOUR TICKETS
 
 {{ticketBlocks}}
+
+WHAT YOU PAID
+
+Tickets: {{priceTicketsMinor}}
+Booking fee: {{priceBookingFeeMinor}}
+Total: {{priceTotalMinor}}
+
 View your order online: {{orderUrl}}
 
 Lost this email? Recover your tickets: {{recoverUrl}}

@@ -176,6 +176,11 @@ public class StyleCardGenerator implements CommandLineRunner {
 
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", model);
+        // Restrict routing to providers that do not store or train on what we send.
+        // This request carries a rendered poster, which for a DJ-mode generation
+        // contains a real person's likeness. See OpenRouterPrivacy.
+        body.put(com.imin.iminapi.config.OpenRouterPrivacy.PROVIDER_FIELD,
+                com.imin.iminapi.config.OpenRouterPrivacy.providerPolicy());
         body.put("temperature", 0.4);
         // No response_format=json_object: we want raw YAML text back, not JSON.
         body.put("messages", List.of(userMessage));

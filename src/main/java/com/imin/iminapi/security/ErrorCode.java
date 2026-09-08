@@ -47,6 +47,14 @@ public enum ErrorCode {
     REFUND_APPROVAL_NOT_CONFIRMED,
     META_UPSTREAM_ERROR,
 
+    /**
+     * A DJ-photo upload arrived without {@code rightsAttested=true}. A third
+     * party's face is about to enter an AI pipeline (Ideogram character
+     * reference, OpenRouter vision gate) and nobody has claimed the right to
+     * put it there — droit à l'image (C. civ. 9), CPI L122-4.
+     */
+    RIGHTS_ATTESTATION_REQUIRED,
+
     // ---- Audience CSV import ----
     IMPORT_ATTESTATION_REQUIRED,
     IMPORT_FILE_REQUIRED,

@@ -1,0 +1,9 @@
+SOLICITUD DE REEMBOLSO
+
+Has pedido iniciar una solicitud de reembolso en imin. Abre el enlace de
+abajo para rellenar el formulario. Caduca en {{ttlMinutes}} minutos.
+
+{{link}}
+
+Si no has solicitado esto, puedes ignorar este correo sin problema: no ha
+cambiado nada en tu pedido.

@@ -123,6 +123,52 @@ class AudienceDsarTest {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // Art.15: consent trail
+    //
+    // consent_records has been written faithfully since Tier C and read by
+    // nothing but a COUNT(*) metrics tile. A proof nobody can produce is not a
+    // proof, so these assert the trail comes back with the fields that make it
+    // one — when, on what basis, through which source, with what proof text.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Test
+    void consent_history_returns_the_proof_rows_in_order() {
+        UUID mid = seedMembership(orgA, "trail@d.com");
+        consentService.capture(orgA, mid, "soft_opt_in", "checkout",
+                "Left the pre-ticked box ticked at checkout", principalA);
+        consentService.unsubscribe(orgA, mid, "one_click", "email",
+                ConsentOrigin.DATA_SUBJECT, principalA);
+
+        List<com.imin.iminapi.audience.dto.ConsentHistoryEntry> history =
+                dsarService.consentHistory(orgA, mid);
+
+        assertThat(history).hasSize(2);
+        assertThat(history.get(0).granted()).isTrue();
+        assertThat(history.get(0).lawfulBasis()).isEqualTo("soft_opt_in");
+        assertThat(history.get(0).source()).isEqualTo("checkout");
+        assertThat(history.get(0).channel()).isEqualTo("email");
+        assertThat(history.get(0).proofText())
+                .isEqualTo("Left the pre-ticked box ticked at checkout");
+        assertThat(history.get(0).at()).isNotNull();
+        assertThat(history.get(1).granted()).isFalse();
+        assertThat(history.get(1).source()).isEqualTo("one_click");
+    }
+
+    @Test
+    void consent_history_is_empty_for_a_member_who_never_consented() {
+        UUID mid = seedMembership(orgA, "notrail@d.com");
+        assertThat(dsarService.consentHistory(orgA, mid)).isEmpty();
+    }
+
+    @Test
+    void consent_history_cross_org_returns_404() {
+        UUID mid = seedSubscribed(orgB, "trailb@d.com", "explicit");
+        assertThatThrownBy(() -> dsarService.consentHistory(orgA, mid))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("not found");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // Art.16: rectify
     // ─────────────────────────────────────────────────────────────────────────
 

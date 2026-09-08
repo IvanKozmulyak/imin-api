@@ -161,6 +161,18 @@ public class Event {
     @Column(name = "poster_ai_generated")
     private Boolean posterAiGenerated;
 
+    /**
+     * When the organizer attested they hold the rights to the DJ photo (V101).
+     * NULL means no attestation is on file — for a photo uploaded before the
+     * gate existed, not for one uploaded without it, which is now refused.
+     */
+    @Column(name = "dj_photo_rights_attested_at")
+    private java.time.Instant djPhotoRightsAttestedAt;
+
+    /** Which wording was attested to — see {@code RightsAttestation}. */
+    @Column(name = "dj_photo_rights_attestation_version", length = 32)
+    private String djPhotoRightsAttestationVersion;
+
     @PrePersist
     void onPersist() {
         venueCityKey = com.imin.iminapi.util.EventNormalization.cityKey(venueCity);

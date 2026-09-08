@@ -133,6 +133,13 @@ recraft:
   base-style: ${RECRAFT_BASE_STYLE:realistic_image}
 
 imin:
+  analytics:
+    # Days of /track funnel-beacon history kept in event_funnel_events. The rows
+    # carry anon_id, which V62 also stamps on the order, so they are joinable to a
+    # named purchaser and are not anonymous audience measurement. 0 disables the
+    # purge. Every funnel/attribution reader defaults an absent stage to zero, so
+    # purged history reads as 0 rather than failing.
+    funnel-retention-days: ${IMIN_ANALYTICS_FUNNEL_RETENTION_DAYS:90}
   stripe:
     # STRIPE_SECRET_KEY (sk_test_... locally, sk_live_... in prod). Required — see README.
     secret-key: ${STRIPE_SECRET_KEY:}

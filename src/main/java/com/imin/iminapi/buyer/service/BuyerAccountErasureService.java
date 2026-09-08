@@ -219,6 +219,16 @@ public class BuyerAccountErasureService {
             }
         }
 
+        // ── 5b. Erasure ledger (V99), platform-wide. ────────────────────────
+        // The rows above are gone, but orders.email is retained under the
+        // invoicing exemption — and AudienceBackfillJob rebuilds a Consumer +
+        // Membership from exactly that, at 03:00 and on every application start.
+        // A buyer-initiated erasure is not org-scoped, so these entries carry a
+        // NULL org: no organizer may reconstruct this person from order history.
+        for (String address : addressSet) {
+            dsarService.recordErasure(null, address);
+        }
+
         // ── 6. Tombstone (§7.2 step 6). ─────────────────────────────────────
         boolean tombstoned = writeTombstone(accountId, orgs, addressSet.size(), membershipsErased);
 

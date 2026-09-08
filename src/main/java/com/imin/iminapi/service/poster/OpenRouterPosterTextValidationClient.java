@@ -94,6 +94,11 @@ public class OpenRouterPosterTextValidationClient implements PosterTextValidatio
 
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", model);
+        // Restrict routing to providers that do not store or train on what we send.
+        // This request carries a rendered poster, which for a DJ-mode generation
+        // contains a real person's likeness. See OpenRouterPrivacy.
+        body.put(com.imin.iminapi.config.OpenRouterPrivacy.PROVIDER_FIELD,
+                com.imin.iminapi.config.OpenRouterPrivacy.providerPolicy());
         body.put("temperature", 0);
         // Bound the response so a runaway OCR transcription (texture-heavy posters can make the model
         // enumerate garbled "text" until it overruns and truncates the JSON mid-string) can't produce an

@@ -2,10 +2,15 @@ package com.imin.iminapi.audience.service;
 
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsentRecordRepository;
+import com.imin.iminapi.audience.dto.ConsentHistoryEntry;
+import com.imin.iminapi.audience.dto.DsarRecords;
+import com.imin.iminapi.audience.model.ErasedAddress;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
+import com.imin.iminapi.audience.repository.ErasedAddressRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.repository.SuppressionRepository;
 import com.imin.iminapi.repository.NotifySubscriptionRepository;
+import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.service.audit.AuditActions;
@@ -15,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -46,6 +52,8 @@ public class DsarService {
     private final com.imin.iminapi.marketing.repository.CampaignRecipientRepository campaignRecipientRepo;
     private final NotifySubscriptionRepository notifySubscriptionRepo;
     private final com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository buyerAccountEmailRepo;
+    private final ErasedAddressRepository erasedAddressRepo;
+    private final DsarScopeService scopeService;
 
     public DsarService(MembershipRepository membershipRepo,
                        ConsumerRepository consumerRepo,
@@ -55,7 +63,9 @@ public class DsarService {
                        AuditLogger auditLogger,
                        com.imin.iminapi.marketing.repository.CampaignRecipientRepository campaignRecipientRepo,
                        NotifySubscriptionRepository notifySubscriptionRepo,
-                       com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository buyerAccountEmailRepo) {
+                       com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository buyerAccountEmailRepo,
+                       ErasedAddressRepository erasedAddressRepo,
+                       DsarScopeService scopeService) {
         this.membershipRepo = membershipRepo;
         this.consumerRepo = consumerRepo;
         this.consentRepo = consentRepo;
@@ -65,6 +75,8 @@ public class DsarService {
         this.campaignRecipientRepo = campaignRecipientRepo;
         this.notifySubscriptionRepo = notifySubscriptionRepo;
         this.buyerAccountEmailRepo = buyerAccountEmailRepo;
+        this.erasedAddressRepo = erasedAddressRepo;
+        this.scopeService = scopeService;
     }
 
     /** Art.15 access — returns the membership (caller maps to DTO). Audited. */
@@ -75,12 +87,71 @@ public class DsarService {
         return m;
     }
 
-    /** Art.15 export — returns the membership for export. Audited. */
+    /**
+     * Art.15 export — the membership. Pair with {@link #exportRecords} for the
+     * rest of what this org holds.
+     *
+     * <p><b>Role-gated.</b> An export is a complete dossier on one person —
+     * orders, tickets, browsing beacons, the address disclosed to Meta — and
+     * until now any MEMBER of the org could produce one, and any MEMBER could
+     * schedule an erasure. Owners and admins only, matching how
+     * {@code OrgService.delete} guards the other irreversible org-level action.
+     *
+     * <p>Enforced in code rather than with {@code @PreAuthorize}: this
+     * application does not enable method security, so the annotation would be
+     * silently inert — a guard that looks present and admits everyone is worse
+     * than none.
+     */
     @Transactional(readOnly = true)
     public Membership export(UUID orgId, UUID membershipId, AuthPrincipal principal) {
+        requirePrivilegedRole(principal, "export a data subject's record");
         Membership m = require(orgId, membershipId);
         auditLogger.record(principal, AuditActions.DSAR_EXPORT, "membership", membershipId, "DSAR export");
         return m;
+    }
+
+    /**
+     * Art.15(1)(b)-(h): the records behind the projection — orders, tickets, the
+     * /track beacons joined through {@code orders.anon_id}, the Meta CAPI sends,
+     * and the notify-me registrations.
+     */
+    @Transactional(readOnly = true)
+    public DsarRecords exportRecords(UUID orgId, UUID membershipId, AuthPrincipal principal) {
+        requirePrivilegedRole(principal, "export a data subject's record");
+        Membership m = require(orgId, membershipId);
+        String normalizedEmail = consumerRepo.findByConsumerId(m.getConsumerId())
+                .map(c -> c.getNormalizedEmail())
+                .orElse(null);
+        return scopeService.collect(orgId, normalizedEmail);
+    }
+
+    /**
+     * OWNER or ADMIN. MEMBER (and a gate device, which carries MEMBER) is refused.
+     */
+    private static void requirePrivilegedRole(AuthPrincipal principal, String what) {
+        UserRole role = principal == null ? null : principal.role();
+        boolean privileged = principal != null && !principal.isGate()
+                && (role == UserRole.OWNER || role == UserRole.ADMIN);
+        if (!privileged) {
+            throw ApiException.forbidden("Only an org owner or admin can " + what);
+        }
+    }
+
+    /**
+     * Art.15 consent trail — the proof rows behind {@code consent_status} /
+     * {@code consent_basis}, chronological.
+     *
+     * <p>Not audited separately: it is a read of the same data
+     * {@link #access} and {@link #export} already record, and every call site
+     * either is one of those or is the organizer looking at the member they
+     * already have access to.
+     */
+    @Transactional(readOnly = true)
+    public List<ConsentHistoryEntry> consentHistory(UUID orgId, UUID membershipId) {
+        require(orgId, membershipId);
+        return consentRepo.findByMembershipId(membershipId).stream()
+                .map(ConsentHistoryEntry::from)
+                .toList();
     }
 
     /** Art.16 rectification — updates display_name/city/notes fields. Audited. */
@@ -115,6 +186,7 @@ public class DsarService {
      */
     @Transactional
     public void requestErase(UUID orgId, UUID membershipId, AuthPrincipal principal) {
+        requirePrivilegedRole(principal, "erase a data subject's record");
         Membership m = require(orgId, membershipId);
         m.setStatus("erase_pending");
         m.setEraseAt(Instant.now().plus(30, ChronoUnit.DAYS));
@@ -158,6 +230,19 @@ public class DsarService {
                 .orElse(null);
         if (normalizedEmail != null) {
             notifySubscriptionRepo.deleteByOrgIdAndEmail(orgId, normalizedEmail);
+            // 3a. Everything outside the audience projection: funnel beacons deleted,
+            // Meta CAPI identifiers stripped, audit actor address dropped. Orders and
+            // tickets are deliberately RETAINED under the accounting exemption — the
+            // retained set is documented in docs/privacy/retained-after-erasure.md.
+            // Must run before step 4/5, which can delete the Consumer this address
+            // was read from.
+            scopeService.eraseOutOfScopeRecords(orgId, normalizedEmail);
+            // 3b. Erasure ledger (V99). orders.email is retained under the invoicing
+            // exemption, so AudienceBackfillJob would otherwise walk it at 03:00 — and on
+            // every application start — and rebuild the Consumer + Membership this method
+            // just deleted, thirty minutes after deleting them. Scoped to this org, because
+            // that is the scope of the erasure being performed.
+            recordErasure(orgId, normalizedEmail);
         }
 
         // 4. Delete membership (consent_records cascade via FK ON DELETE CASCADE)
@@ -185,6 +270,27 @@ public class DsarService {
         // 6. Tombstone in audit_logs (immutable, REQUIRES_NEW inside AuditLogger)
         auditLogger.record(principal, AuditActions.DSAR_ERASE_EXECUTED, "membership", membershipId,
                 "DSAR erase executed — org=" + orgId);
+    }
+
+    /**
+     * Append one erasure-ledger row, unless this org already has one for the
+     * address. Idempotent so a re-run of {@code executeErase} cannot pile up rows.
+     *
+     * <p>Public so {@link com.imin.iminapi.buyer.service.BuyerAccountErasureService}
+     * can record the platform-wide ({@code orgId == null}) variant through the same
+     * seam instead of reaching for the repository itself.
+     */
+    @Transactional
+    public void recordErasure(UUID orgId, String normalizedEmail) {
+        if (normalizedEmail == null || normalizedEmail.isBlank()) return;
+        boolean already = orgId == null
+                ? erasedAddressRepo.existsPlatformWide(normalizedEmail)
+                : erasedAddressRepo.existsForOrg(orgId, normalizedEmail);
+        if (already) return;
+        ErasedAddress entry = new ErasedAddress();
+        entry.setOrgId(orgId);
+        entry.setEmailNormalized(normalizedEmail);
+        erasedAddressRepo.save(entry);
     }
 
     /**

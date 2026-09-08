@@ -1,0 +1,9 @@
+DEMANDE DE REMBOURSEMENT
+
+Vous avez demandé à ouvrir une demande de remboursement sur imin. Ouvrez le
+lien ci-dessous pour remplir le formulaire. Il expire dans {{ttlMinutes}} minutes.
+
+{{link}}
+
+Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer cet
+e-mail : rien n'a changé sur votre commande.

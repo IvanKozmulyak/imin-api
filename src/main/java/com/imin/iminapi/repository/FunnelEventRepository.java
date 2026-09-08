@@ -2,6 +2,7 @@ package com.imin.iminapi.repository;
 
 import com.imin.iminapi.model.FunnelEvent;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.data.rest.core.annotation.RepositoryRestResource;
@@ -128,4 +129,45 @@ public interface FunnelEventRepository extends JpaRepository<FunnelEvent, UUID> 
                and fe.stage = 'CHECKOUT_START'
             """)
     long countAttributedCheckoutSessions(@Param("campaign") String campaign);
+
+    /**
+     * Retention purge (see {@code FunnelRetentionJob}). Strictly-before so a run
+     * is idempotent at the boundary, and a bulk JPQL delete rather than
+     * load-then-delete: nothing else reads these rows and there is no cascade to
+     * honour, so pulling millions of entities into the persistence context to
+     * delete them one by one would be the only risk here.
+     *
+     * @return rows removed
+     */
+    @Modifying
+    @Query("delete from FunnelEvent e where e.createdAt < :cutoff")
+    int deleteCreatedBefore(@Param("cutoff") java.time.Instant cutoff);
+
+    // ── DSAR (Art.15 / Art.17) ───────────────────────────────────────────────
+    //
+    // Funnel rows are reached through orders.anon_id (V62): the beacon writes the
+    // session id and checkout stamps the same id on the order, so a row is
+    // joinable to a named purchaser. That join is what makes these rows the data
+    // subject's personal data and puts them in DSAR scope in both directions.
+    // Scoped to the org's own events — a DSAR is org-scoped.
+
+    @Query("""
+            select fe from FunnelEvent fe, Event ev
+             where fe.eventId = ev.id
+               and ev.orgId = :orgId
+               and fe.anonId in :anonIds
+             order by fe.createdAt asc
+            """)
+    List<FunnelEvent> findByOrgAndAnonIds(@Param("orgId") UUID orgId,
+                                          @Param("anonIds") java.util.Collection<String> anonIds);
+
+    @Modifying
+    @Query("""
+            delete from FunnelEvent fe
+             where fe.anonId in :anonIds
+               and fe.eventId in (select ev.id from Event ev where ev.orgId = :orgId)
+            """)
+    int deleteByOrgAndAnonIds(@Param("orgId") UUID orgId,
+                              @Param("anonIds") java.util.Collection<String> anonIds);
 }
+

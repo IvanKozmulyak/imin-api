@@ -121,7 +121,7 @@ class OrgBrandControllerTest {
     @Test
     @WithStubUser
     void post_logo_multipart_returns_url() throws Exception {
-        when(mediaService.uploadLogo(any(AuthPrincipal.class), any(), any(), any()))
+        when(mediaService.uploadLogo(any(AuthPrincipal.class), any(), any(), any(), any()))
                 .thenReturn(new LogoUploadResponse("https://cdn/orgs/x/brand/logo-aabbccdd.png"));
         MockMultipartFile file = new MockMultipartFile("file", "logo.png", "image/png", new byte[]{1, 2, 3});
         mvc.perform(multipart("/api/v1/org/brand/logo").file(file))

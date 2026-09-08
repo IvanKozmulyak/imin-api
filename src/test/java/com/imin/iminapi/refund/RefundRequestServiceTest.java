@@ -57,7 +57,7 @@ class RefundRequestServiceTest {
         emailProps.setBuyerSiteBaseUrl("https://app.test");
         emailProps.setFromAddress("noreply@test");
         ticketProps.setRecoveryMaxPerHour(5);
-        when(renderer.render(anyString(), any()))
+        when(renderer.render(anyString(), any(), any()))
             .thenReturn(new EmailTemplateRenderer.Rendered("<html/>", "txt"));
         service = new RefundRequestService(orders, events, attempts, tokens, requests,
             email, renderer, emailProps, ticketProps, publisher,

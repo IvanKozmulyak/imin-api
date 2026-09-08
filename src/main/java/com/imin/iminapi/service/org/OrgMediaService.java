@@ -51,7 +51,18 @@ public class OrgMediaService {
         this.logoCompositor = logoCompositor;
     }
 
-    public LogoUploadResponse uploadLogo(AuthPrincipal p, byte[] bytes, String contentType, String originalFilename) {
+    /** Back-compat overload: no rights attestation supplied. */
+    public LogoUploadResponse uploadLogo(AuthPrincipal p, byte[] bytes, String contentType,
+                                         String originalFilename) {
+        return uploadLogo(p, bytes, contentType, originalFilename, null);
+    }
+
+    /**
+     * @param rightsAttested optional (V101) — recorded, never required. See
+     *        {@link OrgBrandService#setLogoUrl(AuthPrincipal, String, Boolean)}.
+     */
+    public LogoUploadResponse uploadLogo(AuthPrincipal p, byte[] bytes, String contentType,
+                                         String originalFilename, Boolean rightsAttested) {
         Organization o = orgs.findById(p.orgId()).orElseThrow(() -> ApiException.notFound("Organization"));
         validate(bytes, contentType);
 
@@ -62,7 +73,7 @@ public class OrgMediaService {
 
         // Persist the URL first (retry-safe: if the put below throws, a retry re-puts to the same
         // deterministic key). setLogoUrl re-loads and saves the org in its own @Transactional.
-        brandService.setLogoUrl(p, url);
+        brandService.setLogoUrl(p, url, rightsAttested);
         storage.put(key, bytes, contentType);
 
         // Best-effort cleanup of the previously stored object — only after the new put succeeded.

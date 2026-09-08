@@ -1,5 +1,7 @@
 package com.imin.iminapi.audience.service;
 
+import com.imin.iminapi.audience.model.ErasedAddress;
+import com.imin.iminapi.audience.repository.ErasedAddressRepository;
 import com.imin.iminapi.util.LogSafe;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.repository.OrderRepository;
@@ -10,7 +12,9 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * One-shot backfill: iterates all orders with a stripe_payment_intent_id (paid orders)
@@ -27,10 +31,14 @@ public class AudienceBackfillJob {
 
     private final OrderRepository orderRepo;
     private final AudienceOrderProjector projector;
+    private final ErasedAddressRepository erasedAddressRepo;
 
-    public AudienceBackfillJob(OrderRepository orderRepo, AudienceOrderProjector projector) {
+    public AudienceBackfillJob(OrderRepository orderRepo,
+                               AudienceOrderProjector projector,
+                               ErasedAddressRepository erasedAddressRepo) {
         this.orderRepo = orderRepo;
         this.projector = projector;
+        this.erasedAddressRepo = erasedAddressRepo;
     }
 
     /**
@@ -55,11 +63,32 @@ public class AudienceBackfillJob {
         log.info("AudienceBackfillJob: starting");
         // Fetch all orgs via distinct orgId from orders — then process per buyer email per org
         List<Object[]> pairs = orderRepo.findDistinctOrgAndEmailPairs();
+
+        // The erasure ledger (V99), loaded once. Orders are retained under the
+        // invoicing exemption, so every erased person is still in `pairs` — without
+        // this filter the job re-creates the Consumer + Membership that
+        // AudienceErasureJob deleted an hour earlier, and Art.17 erasure becomes a
+        // pause rather than a deletion. A NEW purchase after erasure is new data and
+        // is projected by AudienceOrderProjector on the live event path; only this
+        // replay-from-history path is filtered.
+        Set<String> erasedPlatformWide = new HashSet<>();
+        Set<String> erasedPerOrg = new HashSet<>();
+        for (ErasedAddress e : erasedAddressRepo.findAllEntries()) {
+            if (e.getOrgId() == null) erasedPlatformWide.add(e.getEmailNormalized());
+            else erasedPerOrg.add(e.getOrgId() + "|" + e.getEmailNormalized());
+        }
+
         int processed = 0;
+        int skippedErased = 0;
         for (Object[] pair : pairs) {
             java.util.UUID orgId = (java.util.UUID) pair[0];
             String email = (String) pair[1];
             String normalizedEmail = EmailNormalizer.normalize(email);
+            if (erasedPlatformWide.contains(normalizedEmail)
+                    || erasedPerOrg.contains(orgId + "|" + normalizedEmail)) {
+                skippedErased++;
+                continue;
+            }
             try {
                 projector.upsertMembership(orgId, normalizedEmail, email);
                 processed++;
@@ -68,6 +97,7 @@ public class AudienceBackfillJob {
                         LogSafe.redact(e.getMessage()));
             }
         }
-        log.info("AudienceBackfillJob: done — {} memberships processed", processed);
+        log.info("AudienceBackfillJob: done — {} memberships processed, {} skipped (erased)",
+                processed, skippedErased);
     }
 }

@@ -9,6 +9,7 @@ import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.predictor.service.EventOutcomeService;
 import com.imin.iminapi.service.audit.AuditActions;
+import com.imin.iminapi.service.poster.PosterImageStorage;
 import com.imin.iminapi.service.audit.AuditLogger;
 import com.imin.iminapi.stripe.StripeConnectService;
 import com.imin.iminapi.util.CountryTimeZones;
@@ -368,10 +369,17 @@ public class EventService {
         changed |= applyTimezone(e, b);
         if (b.description() != null) { e.setDescription(b.description()); changed = true; }
         if (b.posterUrl() != null) {
-            // Provenance (V71): a PATCH that CHANGES the poster URL has unknown origin (could be
-            // an AI-studio poster or a pasted link) — reset the stamp to NULL rather than let a
-            // stale true/false claim ride along. The manual-upload path re-stamps false itself.
-            if (!b.posterUrl().equals(e.getPosterUrl())) e.setPosterAiGenerated(null);
+            // Provenance (V71 + AI Act Art.50). A PATCH that CHANGES the poster URL either
+            // points at something this API rendered — an ai-posters/ object key or the local
+            // /images/ fallback, which nothing but PosterImageStorage ever writes — or at a
+            // URL of unknown origin. The first case is the writer poster_ai_generated never
+            // had, and it is decided from the URL rather than from a client-supplied flag.
+            // The second stays NULL: "we do not know" is a different claim from "a human made
+            // this", and only the multipart upload path can honestly assert the latter.
+            if (!b.posterUrl().equals(e.getPosterUrl())) {
+                e.setPosterAiGenerated(
+                        PosterImageStorage.isAiGeneratedPosterUrl(b.posterUrl()) ? Boolean.TRUE : null);
+            }
             e.setPosterUrl(b.posterUrl());
             changed = true;
         }

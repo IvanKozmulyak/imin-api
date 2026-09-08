@@ -1,5 +1,6 @@
 package com.imin.iminapi.audience.service;
 
+import com.imin.iminapi.audience.repository.ErasedAddressRepository;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.service.ticket.TicketRedeemedEvent;
@@ -27,11 +28,14 @@ public class AudienceRedeemProjector {
 
     private final OrderRepository orderRepo;
     private final AudienceOrderProjector orderProjector;
+    private final ErasedAddressRepository erasedAddressRepo;
 
     public AudienceRedeemProjector(OrderRepository orderRepo,
-                                    AudienceOrderProjector orderProjector) {
+                                    AudienceOrderProjector orderProjector,
+                                    ErasedAddressRepository erasedAddressRepo) {
         this.orderRepo = orderRepo;
         this.orderProjector = orderProjector;
+        this.erasedAddressRepo = erasedAddressRepo;
     }
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
@@ -45,6 +49,16 @@ public class AudienceRedeemProjector {
                 return;
             }
             String normalizedEmail = EmailNormalizer.normalize(order.getEmail());
+            // Erasure ledger (V99). A door scan replays an OLD order — it is not new
+            // data — so for an erased address it would silently rebuild the Consumer +
+            // Membership that Art.17 removed. The ticket itself still scans and admits
+            // the holder; only the audience profile is not resurrected.
+            if (erasedAddressRepo.existsPlatformWide(normalizedEmail)
+                    || erasedAddressRepo.existsForOrg(order.getOrgId(), normalizedEmail)) {
+                log.info("AudienceRedeemProjector: address erased — skipping projection for order {}",
+                        event.orderId());
+                return;
+            }
             // Reuse upsertMembership which calls recompute() — derives attended from redeemed tickets (S1)
             orderProjector.upsertMembership(order.getOrgId(), normalizedEmail, order.getEmail());
         } catch (Exception e) {

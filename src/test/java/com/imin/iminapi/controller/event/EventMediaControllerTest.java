@@ -25,6 +25,8 @@ import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -62,7 +64,7 @@ class EventMediaControllerTest {
     void post_poster_returns_url() throws Exception {
         UUID id = UUID.randomUUID();
         MockMultipartFile file = new MockMultipartFile("file", "p.png", "image/png", new byte[]{(byte) 0x89, 'P','N','G'});
-        when(uploadService.upload(any(), eq(id), eq(MediaKind.POSTER), any(), eq("image/png"), eq("p.png")))
+        when(uploadService.upload(any(), eq(id), eq(MediaKind.POSTER), any(), eq("image/png"), eq("p.png"), isNull(), isNull()))
                 .thenReturn(new MediaUploadResponse("https://media.test/events/" + id + "/poster.png", 4, "image/png", null));
 
         mvc.perform(multipart("/api/v1/events/" + id + "/media/poster").file(file))
@@ -76,7 +78,7 @@ class EventMediaControllerTest {
     void post_video_returns_url_and_duration() throws Exception {
         UUID id = UUID.randomUUID();
         MockMultipartFile file = new MockMultipartFile("file", "v.mp4", "video/mp4", new byte[]{0,0,0,0});
-        when(uploadService.upload(any(), eq(id), eq(MediaKind.VIDEO), any(), eq("video/mp4"), eq("v.mp4")))
+        when(uploadService.upload(any(), eq(id), eq(MediaKind.VIDEO), any(), eq("video/mp4"), eq("v.mp4"), isNull(), isNull()))
                 .thenReturn(new MediaUploadResponse("https://media.test/events/" + id + "/video.mp4", 4, "video/mp4", 12));
 
         mvc.perform(multipart("/api/v1/events/" + id + "/media/video").file(file))
@@ -87,12 +89,77 @@ class EventMediaControllerTest {
     @Test
     @WithStubUser
     void uploadsDjPhotoKind() throws Exception {
-        when(uploadService.upload(any(), eq(eventId), eq(MediaKind.DJ_PHOTO), any(), eq("image/png"), eq("dj.png")))
+        when(uploadService.upload(any(), eq(eventId), eq(MediaKind.DJ_PHOTO), any(), eq("image/png"), eq("dj.png"), isNull(), eq(Boolean.TRUE)))
                 .thenReturn(new MediaUploadResponse("https://cdn.example/dj.png", 123L, "image/png", null));
         mvc.perform(multipart("/api/v1/events/" + eventId + "/media/dj-photo")
-                        .file(new MockMultipartFile("file", "dj.png", "image/png", new byte[]{(byte) 0x89, 0x50, 0x4E, 0x47})))
+                        .file(new MockMultipartFile("file", "dj.png", "image/png", new byte[]{(byte) 0x89, 0x50, 0x4E, 0x47}))
+                        .param("rightsAttested", "true"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.url").value("https://cdn.example/dj.png"));
+    }
+
+    /**
+     * AI Act Art.50: the Poster Studio uploads its own output through this same
+     * endpoint, and the bytes cannot tell AI art from an organizer's artwork —
+     * so the flag has to reach the service, not stop at the controller.
+     */
+    @Test
+    @WithStubUser
+    void poster_upload_forwards_the_ai_generated_flag() throws Exception {
+        UUID id = UUID.randomUUID();
+        MockMultipartFile file = new MockMultipartFile("file", "p.png", "image/png",
+                new byte[]{(byte) 0x89, 'P', 'N', 'G'});
+        when(uploadService.upload(any(), eq(id), eq(MediaKind.POSTER), any(), eq("image/png"),
+                eq("p.png"), eq(Boolean.TRUE), isNull()))
+                .thenReturn(new MediaUploadResponse("https://media.test/p.png", 4, "image/png", null));
+
+        mvc.perform(multipart("/api/v1/events/" + id + "/media/poster")
+                        .file(file)
+                        .param("aiGenerated", "true"))
+                .andExpect(status().isOk());
+
+        verify(uploadService).upload(any(), eq(id), eq(MediaKind.POSTER), any(), eq("image/png"),
+                eq("p.png"), eq(Boolean.TRUE), isNull());
+    }
+
+    /**
+     * Rights attestation (droit à l'image). The gate itself lives in the service
+     * — this asserts the flag survives the wire, which is the half a controller
+     * can get wrong.
+     */
+    @Test
+    @WithStubUser
+    void dj_photo_upload_forwards_the_rights_attestation() throws Exception {
+        when(uploadService.upload(any(), eq(eventId), eq(MediaKind.DJ_PHOTO), any(),
+                eq("image/png"), eq("dj.png"), isNull(), eq(Boolean.TRUE)))
+                .thenReturn(new MediaUploadResponse("https://cdn.example/dj.png", 123L, "image/png", null));
+
+        mvc.perform(multipart("/api/v1/events/" + eventId + "/media/dj-photo")
+                        .file(new MockMultipartFile("file", "dj.png", "image/png",
+                                new byte[]{(byte) 0x89, 0x50, 0x4E, 0x47}))
+                        .param("rightsAttested", "true"))
+                .andExpect(status().isOk());
+
+        verify(uploadService).upload(any(), eq(eventId), eq(MediaKind.DJ_PHOTO), any(),
+                eq("image/png"), eq("dj.png"), isNull(), eq(Boolean.TRUE));
+    }
+
+    /** No param at all still reaches the service, which is what refuses it. */
+    @Test
+    @WithStubUser
+    void dj_photo_upload_without_the_param_passes_null_through() throws Exception {
+        when(uploadService.upload(any(), eq(eventId), eq(MediaKind.DJ_PHOTO), any(),
+                eq("image/png"), eq("dj.png"), isNull(), isNull()))
+                .thenThrow(new com.imin.iminapi.security.ApiException(
+                        org.springframework.http.HttpStatus.BAD_REQUEST,
+                        com.imin.iminapi.security.ErrorCode.RIGHTS_ATTESTATION_REQUIRED,
+                        "You must confirm you hold the rights to this image"));
+
+        mvc.perform(multipart("/api/v1/events/" + eventId + "/media/dj-photo")
+                        .file(new MockMultipartFile("file", "dj.png", "image/png",
+                                new byte[]{(byte) 0x89, 0x50, 0x4E, 0x47})))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("RIGHTS_ATTESTATION_REQUIRED"));
     }
 
     @Test

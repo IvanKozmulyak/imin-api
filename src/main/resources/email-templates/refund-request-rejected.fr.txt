@@ -1,0 +1,11 @@
+SUIVI DE VOTRE REMBOURSEMENT
+
+Bonjour,
+
+L'organisateur a examiné votre demande de remboursement et n'a pas pu
+l'approuver. Son message :
+
+  {{decisionNote}}
+
+Pour en discuter, répondez à cet e-mail : votre réponse arrive chez
+l'organisateur.
