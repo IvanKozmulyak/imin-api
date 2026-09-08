@@ -632,6 +632,62 @@ imin:
       # not an account.
       capacity: 20
       window-minutes: 5
+    # ---- Open endpoints that shipped with no bucket at all ---------------
+    # Found by the 2026-09 legal/security audit. Every one of these is
+    # reachable without a credential.
+    verify-email:
+      # POST /api/v1/auth/verify-email, keyed per lowercase address. A correct
+      # guess returns a live organizer session, so this is a credential
+      # endpoint, and it had no limit while resend-verification kept minting
+      # fresh codes. The control that has to hold is the DB-counted lockout in
+      # EmailVerificationService — this file does not apply under the test
+      # profile — but the bucket is what stops the volume in production.
+      capacity: 10
+      window-minutes: 15
+    signup:
+      # POST /api/v1/auth/signup, keyed per client IP. Mirrors buyer-signup:
+      # per-IP and not per-email, or an attacker could burn a stranger's bucket
+      # and stop them registering. Each accepted call also sends a real email
+      # from our sending domain, so the cap protects the domain reputation too.
+      capacity: 10
+      window-minutes: 60
+    reset-password-token:
+      # POST /api/v1/auth/reset-password, keyed per client IP — the only key
+      # available before the opaque token is resolved. The sibling
+      # forgot-password endpoint has been metered per address since it shipped;
+      # the consume half had nothing.
+      capacity: 10
+      window-minutes: 15
+    buyer-reset-password-token:
+      # POST /api/v1/buyer/auth/reset-password. Separate from the organizer
+      # bucket for the same reason every other buyer bucket is: two surfaces,
+      # two abuse profiles, and buyer traffic must not throttle organizers.
+      capacity: 10
+      window-minutes: 15
+    unsubscribe:
+      # GET and POST /api/v1/public/unsubscribe/**, keyed per client IP.
+      # Deliberately loose. An opt-out is the one request that must never be
+      # hard to complete, and a mail client may fire RFC 8058 one-click for
+      # several messages at once; what this bounds is somebody probing the HMAC
+      # by grinding tokens, which is cheap for us to serve and useless to them.
+      capacity: 60
+      window-minutes: 5
+    ai-content:
+      # POST /api/v1/events/ai-content, keyed per client IP. Unauthenticated
+      # (SecurityConfig permits it explicitly) and every call spends an LLM
+      # budget imin pays for — the only endpoint on this API where an anonymous
+      # caller can bill us. Tighter than ai-concept, which at least requires a
+      # session.
+      capacity: 10
+      window-minutes: 60
+    public-track:
+      # POST /api/v1/public/events/{id}/track, keyed per client IP. Sized for a
+      # real buyer's whole session across a few events rather than a single page
+      # view. A full bucket DROPS the beacon and still answers 204 — the
+      # always-204 contract is what stops this endpoint leaking whether an event
+      # exists, so it must not turn into a 429.
+      capacity: 120
+      window-minutes: 5
   push:
     # Outbound push to the native fan app, via Expo's push service.
     # Dark by default: until the app ships there are no tokens to send to, and a

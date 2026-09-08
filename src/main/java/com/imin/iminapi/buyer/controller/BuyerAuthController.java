@@ -150,7 +150,12 @@ public class BuyerAuthController {
      * behaviour the notification email describes.
      */
     @PostMapping("/api/v1/buyer/auth/reset-password")
-    public ResponseEntity<Void> resetPassword(@Valid @RequestBody BuyerAuthRequests.ResetPassword req) {
+    public ResponseEntity<Void> resetPassword(@Valid @RequestBody BuyerAuthRequests.ResetPassword req,
+                                              HttpServletRequest http) {
+        // Per client IP — the only key available before the token resolves. The
+        // sibling forgot-password endpoint is metered per address; the consume
+        // half shipped with no bucket at all.
+        rateLimiter.consume("buyer-reset-password-token", "ip:" + http.getRemoteAddr());
         credentials.resetPassword(req.token(), req.password());
         return noContent();
     }

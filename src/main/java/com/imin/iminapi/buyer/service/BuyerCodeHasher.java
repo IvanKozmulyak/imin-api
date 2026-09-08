@@ -19,16 +19,14 @@ import java.util.Locale;
  *
  * <h2>Why six digits and not the organizer's four</h2>
  *
- * <p>The organizer code ({@code EmailVerificationService:58}) is four digits in
- * plaintext with five attempts per code and three resends per fifteen minutes —
- * roughly fifteen guesses per fifteen minutes against a 10,000-value space. On
- * that side the code confirms an address on an account that owns nothing yet.
- * On the buyer side the same code is the gate on <b>joining someone else's
- * purchase history</b>, and {@code GET /buyer/orders} hands back an
- * {@code orderToken} per order — a bearer credential that opens tickets. Six
- * digits (10⁶), five attempts per code, and the DB-counted per-address lockout
- * in {@link BuyerEmailVerificationService} put the expected time-to-hit in
- * centuries.
+ * <p>The organizer code used to be four digits in plaintext with five attempts
+ * per code and three resends per fifteen minutes — roughly fifteen guesses per
+ * fifteen minutes against a 10,000-value space, and a hit there returns a live
+ * session. The 2026-09 security audit closed that: {@code
+ * EmailVerificationService} now issues six digits through this same class and
+ * enforces its own cross-code lockout, so both surfaces share one shape. Six
+ * digits (10⁶), five attempts per code, and a DB-counted per-address lockout
+ * put the expected time-to-hit in centuries.
  *
  * <h2>Why HMAC and not a bare digest</h2>
  *

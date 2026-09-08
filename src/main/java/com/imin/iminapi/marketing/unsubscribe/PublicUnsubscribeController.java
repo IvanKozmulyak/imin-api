@@ -3,6 +3,8 @@ package com.imin.iminapi.marketing.unsubscribe;
 import com.imin.iminapi.audience.service.ConsentOrigin;
 import com.imin.iminapi.audience.service.ConsentService;
 import com.imin.iminapi.security.ApiException;
+import com.imin.iminapi.security.RateLimiter;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -23,15 +25,22 @@ public class PublicUnsubscribeController {
 
     private final UnsubscribeTokenService tokens;
     private final ConsentService consentService;
+    private final RateLimiter rateLimiter;
 
-    public PublicUnsubscribeController(UnsubscribeTokenService tokens, ConsentService consentService) {
+    public PublicUnsubscribeController(UnsubscribeTokenService tokens, ConsentService consentService,
+                                       RateLimiter rateLimiter) {
         this.tokens = tokens;
         this.consentService = consentService;
+        this.rateLimiter = rateLimiter;
     }
 
     @PostMapping("/{token}")
     @ResponseBody
-    public String oneClick(@PathVariable String token) {
+    public String oneClick(@PathVariable String token, HttpServletRequest http) {
+        // Per client IP. Generous: a mail client may fire one-click for several
+        // messages at once, and an opt-out is the one request we must never make
+        // hard to complete. It bounds signature-probing, not real recipients.
+        rateLimiter.consume("unsubscribe", "ip:" + http.getRemoteAddr());
         UnsubscribeTokenService.Claims claims = tokens.verify(token)
                 .orElseThrow(() -> ApiException.notFound("Unsubscribe link"));
         // The recipient clicked their own mail client's unsubscribe control (RFC 8058) —
@@ -43,7 +52,8 @@ public class PublicUnsubscribeController {
 
     @GetMapping(value = "/{token}", produces = MediaType.TEXT_HTML_VALUE)
     @ResponseBody
-    public String confirmPage(@PathVariable String token) {
+    public String confirmPage(@PathVariable String token, HttpServletRequest http) {
+        rateLimiter.consume("unsubscribe", "ip:" + http.getRemoteAddr());
         UnsubscribeTokenService.Claims claims = tokens.verify(token)
                 .orElseThrow(() -> ApiException.notFound("Unsubscribe link"));
         // GET also honors the opt-out (footer-link click) — same channel-aware write.
