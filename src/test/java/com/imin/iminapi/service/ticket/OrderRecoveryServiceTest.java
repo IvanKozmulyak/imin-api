@@ -36,7 +36,7 @@ class OrderRecoveryServiceTest {
         tp.setRecoveryWindowDays(90);
         tp.setRecoveryMaxPerHour(5);
         return new OrderRecoveryService(orders, email, new EmailTemplateRenderer(),
-                ep, tp, attempts);
+                ep, tp, attempts, new com.imin.iminapi.security.IpHasher("test-ip-hash-secret"));
     }
 
     @Test

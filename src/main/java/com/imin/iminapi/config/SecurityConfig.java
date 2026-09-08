@@ -37,6 +37,14 @@ public class SecurityConfig {
     @Value("${imin.cors.allowed-origin-patterns:}")
     private String[] allowedOriginPatterns;
 
+    /**
+     * Preview-deployment origins, empty by default. Kept as a separate property
+     * so the standing allow-list stays readable as "the production origins" and
+     * a temporary grant is visibly temporary.
+     */
+    @Value("${imin.cors.preview-origin-patterns:}")
+    private String[] previewOriginPatterns;
+
     @Bean
     public BCryptPasswordEncoder bCryptPasswordEncoder() {
         return new BCryptPasswordEncoder(12);
@@ -45,8 +53,11 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource(BuyerProperties buyerProps) {
         CorsConfiguration config = new CorsConfiguration();
-        List<String> patterns = Arrays.stream(allowedOriginPatterns)
+        List<String> patterns = java.util.stream.Stream
+                .concat(Arrays.stream(allowedOriginPatterns), Arrays.stream(previewOriginPatterns))
                 .filter(p -> p != null && !p.isBlank())
+                .map(String::trim)
+                .distinct()
                 .toList();
         config.setAllowedOriginPatterns(patterns);
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
@@ -90,6 +101,12 @@ public class SecurityConfig {
                 .csrf(csrf -> csrf.disable())
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/images/**").permitAll()
+                        // Liveness only. management.endpoints.web.exposure.include
+                        // narrows what Boot registers; this denies the rest even if
+                        // that widens, because the chain ends in permitAll() and an
+                        // exposed endpoint would otherwise be exposed to everyone.
+                        .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
+                        .requestMatchers("/actuator/**").denyAll()
                         .requestMatchers("/swagger-ui/**", "/v3/api-docs/**").permitAll()
                         // Public AI content (event copy) generation + style-reference images.
                         .requestMatchers(HttpMethod.POST, "/api/v1/events/ai-content").permitAll()

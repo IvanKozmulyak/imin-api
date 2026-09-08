@@ -25,6 +25,8 @@ public final class AuditActions {
     public static final String ORG_DELETED = "ORG_DELETED";
     /** One row per ticket actually admitted, naming the door that admitted it. */
     public static final String TICKET_REDEEMED = "TICKET_REDEEMED";
+    /** A copy of an event's attendee list — names, addresses — left the platform. */
+    public static final String ATTENDEES_EXPORTED = "ATTENDEES_EXPORTED";
 
     // ---- Audience / Consent / DSAR (Tier C) ----
     public static final String AUDIENCE_TAG_ADDED       = "AUDIENCE_TAG_ADDED";

@@ -1,5 +1,6 @@
 package com.imin.iminapi.service.ticket;
 
+import com.imin.iminapi.security.IpHasher;
 import com.imin.iminapi.util.LogSafe;
 import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.email.EmailProperties;
@@ -42,19 +43,22 @@ public class OrderRecoveryService {
     private final EmailProperties emailProps;
     private final TicketProperties ticketProps;
     private final OrderRecoveryAttemptRepository attempts;
+    private final IpHasher ipHasher;
 
     public OrderRecoveryService(OrderRepository orders,
                                  EmailService email,
                                  EmailTemplateRenderer renderer,
                                  EmailProperties emailProps,
                                  TicketProperties ticketProps,
-                                 OrderRecoveryAttemptRepository attempts) {
+                                 OrderRecoveryAttemptRepository attempts,
+                                 IpHasher ipHasher) {
         this.orders = orders;
         this.email = email;
         this.renderer = renderer;
         this.emailProps = emailProps;
         this.ticketProps = ticketProps;
         this.attempts = attempts;
+        this.ipHasher = ipHasher;
     }
 
     @Transactional
@@ -131,14 +135,12 @@ public class OrderRecoveryService {
         attempts.save(a);
     }
 
-    private static String hashIp(String ip) {
-        try {
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
-            byte[] bytes = md.digest((ip == null ? "" : ip).getBytes(StandardCharsets.UTF_8));
-            return HexFormat.of().formatHex(bytes);
-        } catch (Exception e) {
-            return "";
-        }
+    /**
+     * Keyed, not a bare digest: IPv4 is 2³² values, so an unsalted SHA-256 is a
+     * reversible record of who asked about which order. See {@link IpHasher}.
+     */
+    private String hashIp(String ip) {
+        return ipHasher.hash(ip);
     }
 
     private String baseUrl() {

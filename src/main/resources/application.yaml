@@ -361,7 +361,20 @@ imin:
     # see GoogleWalletProperties#origins.
     origins: ${GOOGLE_WALLET_ORIGINS:}
   cors:
-    allowed-origin-patterns: ${CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:3000,http://localhost:5173,https://imin-webapp.vercel.app,https://imin-webapp-*.vercel.app,https://dashboard.imin.wtf,https://imin.wtf,https://www.imin.wtf,https://imin-public.vercel.app,https://imin-public-*.vercel.app,https://t.imin.wtf}
+    # EXACT origins. The two `https://imin-webapp-*.vercel.app` /
+    # `https://imin-public-*.vercel.app` wildcards used to sit here next to
+    # setAllowCredentials(true): Vercel project names are first-come, so anyone
+    # who registered `imin-webapp-anything` owned a credentialed origin against
+    # this API. The buyer namespace was carved out for exactly that reason
+    # (imin.buyer.allowed-origins, §2.6); this closes it for the rest.
+    #
+    # dashboard.imin.wtf is the organizer app, app.imin.wtf the buyer site — the
+    # two are routinely confused, and both belong here.
+    allowed-origin-patterns: ${CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:3000,http://localhost:5173,https://imin-webapp.vercel.app,https://dashboard.imin.wtf,https://app.imin.wtf,https://imin.wtf,https://www.imin.wtf,https://imin-public.vercel.app,https://t.imin.wtf}
+    # Preview deployments, when someone needs them. Empty by default and merged
+    # with the list above, so a preview origin is a deliberate, temporary,
+    # named act rather than a standing wildcard nobody remembers granting.
+    preview-origin-patterns: ${CORS_PREVIEW_ORIGIN_PATTERNS:}
   api:
     base-path: /api/v1
   # Mobile force-upgrade gate, served by GET /api/v1/public/app-config.

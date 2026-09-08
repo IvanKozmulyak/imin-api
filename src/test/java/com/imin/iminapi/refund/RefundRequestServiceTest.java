@@ -61,7 +61,8 @@ class RefundRequestServiceTest {
             .thenReturn(new EmailTemplateRenderer.Rendered("<html/>", "txt"));
         service = new RefundRequestService(orders, events, attempts, tokens, requests,
             email, renderer, emailProps, ticketProps, publisher,
-            tickets, refundTickets, tiers, refundService, references);
+            tickets, refundTickets, tiers, refundService, references,
+            new com.imin.iminapi.security.IpHasher("test-ip-hash-secret"));
     }
 
     @Test

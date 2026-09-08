@@ -1,5 +1,6 @@
 package com.imin.iminapi.refund;
 
+import com.imin.iminapi.security.IpHasher;
 import com.imin.iminapi.util.LogSafe;
 import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.email.EmailService;
@@ -83,6 +84,7 @@ public class RefundRequestService {
     private final TicketTierRepository tiers;
     private final RefundService refundService;
     private final RefundReferenceGenerator references;
+    private final IpHasher ipHasher;
 
     public RefundRequestService(OrderRepository orders,
                                 EventRepository events,
@@ -98,7 +100,8 @@ public class RefundRequestService {
                                 RefundTicketRepository refundTickets,
                                 TicketTierRepository tiers,
                                 RefundService refundService,
-                                RefundReferenceGenerator references) {
+                                RefundReferenceGenerator references,
+                                IpHasher ipHasher) {
         this.orders = orders;
         this.events = events;
         this.attempts = attempts;
@@ -114,6 +117,7 @@ public class RefundRequestService {
         this.tiers = tiers;
         this.refundService = refundService;
         this.references = references;
+        this.ipHasher = ipHasher;
     }
 
     @Transactional
@@ -673,7 +677,13 @@ public class RefundRequestService {
         }
     }
 
-    private static String hashIp(String ip) {
-        return sha256Hex(ip);
+    /**
+     * Keyed, not a bare digest: IPv4 is 2³² values, so an unsalted SHA-256 is a
+     * reversible record of who asked for a refund link. See {@link IpHasher}.
+     * The token hashes above stay unkeyed — those are 24 bytes of entropy, where
+     * a rainbow table is not a threat.
+     */
+    private String hashIp(String ip) {
+        return ipHasher.hash(ip);
     }
 }
