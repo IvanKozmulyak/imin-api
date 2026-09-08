@@ -502,6 +502,15 @@ public class EventService {
      * reconcile (and the surrounding @Transactional rolls back the event update too).
      */
     private void reconcilePromoCodes(UUID eventId, List<PromoCodeEmbeddedPatch> patches) {
+        // Loaded up front so validation can compare against what has already been redeemed:
+        // patch() has no status check, so this whole-list replace is reachable on a LIVE
+        // event despite the draft-only precondition the callers document (events-10/18).
+        List<PromoCode> existing = promos.findByEventId(eventId);
+        Map<String, PromoCode> existingByCode = new LinkedHashMap<>();
+        for (PromoCode pc : existing) {
+            existingByCode.put(pc.getCode().toUpperCase(Locale.ROOT), pc);
+        }
+
         Map<String, String> fieldErrors = new LinkedHashMap<>();
         Set<String> seenCodes = new HashSet<>();
         for (int i = 0; i < patches.size(); i++) {
@@ -524,6 +533,15 @@ public class EventService {
                 fieldErrors.put(prefix + "maxUses", "required");
             } else if (p.maxUses() < 1) {
                 fieldErrors.put(prefix + "maxUses", "must be ≥ 1");
+            } else if (code != null && !code.isEmpty()) {
+                // Same rule the per-id path enforces (PromoCodeService.validateMaxUses):
+                // dropping the cap under what has been redeemed makes the code read as
+                // exhausted at quote and checkout for everyone.
+                PromoCode current = existingByCode.get(code.toUpperCase(Locale.ROOT));
+                if (current != null && p.maxUses() < current.getUsedCount()) {
+                    fieldErrors.put(prefix + "maxUses",
+                            "must be ≥ " + current.getUsedCount() + " (already used)");
+                }
             }
         }
         if (!fieldErrors.isEmpty()) {
@@ -532,11 +550,6 @@ public class EventService {
         }
 
         // Upsert by uppercase code. Existing rows keep their id and usedCount.
-        List<PromoCode> existing = promos.findByEventId(eventId);
-        Map<String, PromoCode> existingByCode = new LinkedHashMap<>();
-        for (PromoCode pc : existing) {
-            existingByCode.put(pc.getCode().toUpperCase(Locale.ROOT), pc);
-        }
         Set<String> patchedCodes = new HashSet<>();
         for (PromoCodeEmbeddedPatch p : patches) {
             String upper = p.code().trim().toUpperCase(Locale.ROOT);
@@ -553,7 +566,15 @@ public class EventService {
             promos.save(pc);
         }
         for (PromoCode pc : existing) {
-            if (!patchedCodes.contains(pc.getCode().toUpperCase(Locale.ROOT))) {
+            if (patchedCodes.contains(pc.getCode().toUpperCase(Locale.ROOT))) continue;
+            if (pc.getUsedCount() > 0) {
+                // orders.promo_code_id is a bare UUID column with no REFERENCES clause, so
+                // deleting a redeemed code leaves every order that used it pointing at a row
+                // that no longer exists. Retire it instead — it stops being offerable, and the
+                // redemption history survives.
+                pc.setEnabled(false);
+                promos.save(pc);
+            } else {
                 promos.delete(pc);
             }
         }
