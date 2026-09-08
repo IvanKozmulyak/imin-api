@@ -263,7 +263,8 @@ public class RefundRequestService {
      * list it describes the moment either copy is edited; a subtraction cannot. Whatever
      * {@link #eligibilityFor} excludes and for whatever reason, the count is exactly that.
      */
-    private record RefundEligibility(List<Ticket> refundable, int nonRefundableCount) {}
+    private record RefundEligibility(List<Ticket> all, List<Ticket> refundable,
+                                     int nonRefundableCount) {}
 
     /**
      * Splits an order's tickets into refundable and not.
@@ -272,8 +273,10 @@ public class RefundRequestService {
      * when it has been redeemed at the door. Note what is NOT excluded: a {@code revoked}
      * ticket, and a ticket for an event that has already ended, both stay refundable —
      * see the class notes on this in the branch that introduced the count. This method is
-     * the single definition of that rule for the buyer-facing form; changing it changes
-     * what is refundable, which is out of scope for a reporting field.
+     * the single definition of that rule — for the buyer-facing form and for every
+     * organizer surface below; changing it changes what is refundable, which is out of
+     * scope for a reporting field. {@code all} rides along because the organizer views
+     * also render the non-refundable lines.
      */
     private RefundEligibility eligibilityFor(Order order) {
         List<Ticket> all = tickets.findByOrderId(order.getId());
@@ -284,7 +287,7 @@ public class RefundRequestService {
             .filter(t -> !alreadyRefunded.contains(t.getId()))
             .filter(t -> !Ticket.STATE_REDEEMED.equals(t.getState()))
             .toList();
-        return new RefundEligibility(refundable, all.size() - refundable.size());
+        return new RefundEligibility(all, refundable, all.size() - refundable.size());
     }
 
     private List<Ticket> refundableTicketsFor(Order order) {
@@ -428,14 +431,9 @@ public class RefundRequestService {
         Order order = orders.findById(rr.getOrderId())
             .orElseThrow(() -> ApiException.notFound("Order"));
 
-        List<Ticket> all = tickets.findByOrderId(order.getId());
-        Set<UUID> alreadyRefunded = all.isEmpty()
-            ? Set.of()
-            : refundTickets.findRefundedTicketIds(all.stream().map(Ticket::getId).toList());
-        List<Ticket> refundable = all.stream()
-            .filter(t -> !alreadyRefunded.contains(t.getId()))
-            .filter(t -> !Ticket.STATE_REDEEMED.equals(t.getState()))
-            .toList();
+        RefundEligibility eligibility = eligibilityFor(order);
+        List<Ticket> all = eligibility.all();
+        List<Ticket> refundable = eligibility.refundable();
 
         Map<UUID, String> tierNames = new HashMap<>();
         for (Ticket t : all) {
@@ -539,17 +537,10 @@ public class RefundRequestService {
             // ticketCount and estimatedRefundMinor are best-effort live
             // computations. We accept the per-row cost for now and add caching
             // if it bites.
-            List<Ticket> all = tickets.findByOrderId(rr.getOrderId());
-            Set<UUID> alreadyRefunded = all.isEmpty()
-                ? Set.of()
-                : refundTickets.findRefundedTicketIds(all.stream().map(Ticket::getId).toList());
-            List<Ticket> refundable = all.stream()
-                .filter(t -> !alreadyRefunded.contains(t.getId()))
-                .filter(t -> !Ticket.STATE_REDEEMED.equals(t.getState()))
-                .toList();
+            Order order = orders.findById(rr.getOrderId()).orElse(null);
+            List<Ticket> refundable = order == null ? List.of() : eligibilityFor(order).refundable();
             long estimated = 0;
             String currency = null;
-            Order order = orders.findById(rr.getOrderId()).orElse(null);
             if (order != null && !refundable.isEmpty()) {
                 estimated = refundService.computeRefundAmountMinor(order, refundable);
                 currency = order.getCurrency();
@@ -615,14 +606,7 @@ public class RefundRequestService {
         Order order = orders.findById(rr.getOrderId())
             .orElseThrow(() -> ApiException.notFound("Order"));
 
-        List<Ticket> all = tickets.findByOrderId(order.getId());
-        Set<UUID> alreadyRefunded = all.isEmpty()
-            ? Set.of()
-            : refundTickets.findRefundedTicketIds(all.stream().map(Ticket::getId).toList());
-        List<Ticket> refundable = all.stream()
-            .filter(t -> !alreadyRefunded.contains(t.getId()))
-            .filter(t -> !Ticket.STATE_REDEEMED.equals(t.getState()))
-            .toList();
+        List<Ticket> refundable = eligibilityFor(order).refundable();
         if (refundable.isEmpty()) {
             throw new ApiException(
                 HttpStatus.CONFLICT,
