@@ -133,11 +133,14 @@ class SettlementIngestWebhookTest {
     }
 
     /**
-     * A real {@code charge.refunded} V1 envelope for a DESTINATION charge: the connected account
-     * lives on {@code transfer_data.destination}, and the backing transfer on {@code source_transfer}.
-     * {@code refunded} toggles full vs partial.
+     * A real {@code charge.refunded} V1 envelope as the "Your account" (PLATFORM) endpoint
+     * delivers it for a destination charge: the connected account is on
+     * {@code transfer_data.destination} and the backing transfer is on {@code transfer}.
+     * {@code source_transfer} is absent — it exists only on the connected account's copy of
+     * the charge, and a payload carrying BOTH (which the old fixture hand-wrote) is a shape
+     * no real webhook has. {@code refunded} toggles full vs partial.
      */
-    private String chargeRefundedEvent(String eventId, String chargeId, String sourceTransfer,
+    private String chargeRefundedEvent(String eventId, String chargeId, String backingTransfer,
                                        String destination, long amount, boolean fullyRefunded) {
         return """
             {
@@ -154,14 +157,45 @@ class SettlementIngestWebhookTest {
                   "amount": %d,
                   "currency": "eur",
                   "refunded": %b,
-                  "source_transfer": "%s",
+                  "transfer": "%s",
                   "transfer_data": { "destination": "%s" },
                   "metadata": {}
                 }
               }
             }
             """.formatted(eventId, Instant.now().getEpochSecond(), destination,
-                chargeId, amount, fullyRefunded, sourceTransfer, destination);
+                chargeId, amount, fullyRefunded, backingTransfer, destination);
+    }
+
+    /**
+     * The CONNECTED-account copy of the same charge: {@code source_transfer} only, no
+     * {@code transfer} and no {@code transfer_data}. Proves the fallback still works if the
+     * event is ever re-scoped to the "Connected accounts" endpoint.
+     */
+    private String connectedChargeRefundedEvent(String eventId, String chargeId, String sourceTransfer,
+                                                long amount) {
+        return """
+            {
+              "id": "%s",
+              "object": "event",
+              "type": "charge.refunded",
+              "api_version": "2026-04-22.dahlia",
+              "created": %d,
+              "account": "%s",
+              "data": {
+                "object": {
+                  "id": "%s",
+                  "object": "charge",
+                  "amount": %d,
+                  "currency": "eur",
+                  "refunded": true,
+                  "source_transfer": "%s",
+                  "metadata": {}
+                }
+              }
+            }
+            """.formatted(eventId, Instant.now().getEpochSecond(), acctId,
+                chargeId, amount, sourceTransfer);
     }
 
     /**
@@ -485,6 +519,20 @@ class SettlementIngestWebhookTest {
         assertThat(s.getStatus()).isEqualTo(SettlementStatus.REVERSED);  // status flipped
         assertThat(s.getAmountMinor()).isEqualTo(4200L);                 // amount untouched
         assertThat(settlements.findByOrgIdOrderByCreatedAtDesc(org.getId())).hasSize(1);
+    }
+
+    @Test
+    void fullRefund_onTheConnectedAccountCopy_stillResolvesViaSourceTransfer() throws Exception {
+        String transferId = "tr_" + UUID.randomUUID().toString().substring(0, 12);
+        String created = transferCreatedEvent("evt_cfr_seed", transferId, acctId, 4200, "eur");
+        webhook.handleV1Endpoint(created, sign(created));
+
+        String chargeId = "ch_" + UUID.randomUUID().toString().substring(0, 12);
+        String refund = connectedChargeRefundedEvent("evt_cfr_refund", chargeId, transferId, 4200);
+        webhook.handleV1Endpoint(refund, sign(refund));
+
+        assertThat(settlements.findByStripeObjectId(transferId).orElseThrow().getStatus())
+                .isEqualTo(SettlementStatus.REVERSED);
     }
 
     // ── charge.dispute.* ────────────────────────────────────────────────────────

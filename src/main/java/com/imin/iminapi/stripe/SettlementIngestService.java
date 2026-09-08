@@ -33,8 +33,10 @@ import java.util.UUID;
  *
  * <p>{@code charge.refunded} and {@code charge.dispute.*} are NOT payout objects — they NEVER
  * mint a row. They only annotate the status of an EXISTING transfer row (found via the charge's
- * {@code source_transfer}), and never overwrite its amount; if no such row exists they log and
- * skip. This keeps the read-model from ever surfacing refund/dispute markers as payouts.
+ * BACKING TRANSFER — {@code transfer} on the platform copy of a destination charge,
+ * {@code source_transfer} on the connected account's copy), and never overwrite its amount; if no
+ * such row exists they log and skip. This keeps the read-model from ever surfacing refund/dispute
+ * markers as payouts.
  *
  * <p>This service moves NO money and holds no ledger. It is a projection of Stripe's own
  * payout/transfer state so the {@code /payouts} endpoints can read from our DB. Org
@@ -239,12 +241,21 @@ public class SettlementIngestService {
     /**
      * Annotate the read-model on a {@link Charge} {@code charge.refunded}. A refund must ONLY
      * update an EXISTING settlement row for the charge's backing destination-charge transfer
-     * ({@code source_transfer}, tr_...) — it must NEVER mint a new row and NEVER overwrite the
-     * amount (the row keeps mirroring the real transfer's amount; the refund lives in the status).
+     * (tr_...) — it must NEVER mint a new row and NEVER overwrite the amount (the row keeps
+     * mirroring the real transfer's amount; the refund lives in the status).
+     *
+     * <p><b>Which field carries the transfer depends on the endpoint scope.</b> imin subscribes
+     * {@code charge.refunded} on the "Your account" (platform) endpoint, so {@code data.object} is
+     * the PLATFORM copy of the destination charge — that object carries {@code transfer} (tr_...)
+     * and {@code transfer_data.destination}, and {@code source_transfer} is NULL. Only the
+     * connected account's copy of the charge carries {@code source_transfer}. Reading
+     * {@code source_transfer} alone therefore skipped every real refund. We read
+     * {@link #backingTransferOf(Charge)} — {@code transfer} first, {@code source_transfer} as the
+     * fallback — so the handler works under either scope.
      *
      * <p>Behaviour:
      * <ul>
-     *   <li>no {@code source_transfer} (non-destination charge) → log + skip;</li>
+     *   <li>no backing transfer at all (non-destination charge) → log + skip;</li>
      *   <li>no existing settlement row for that transfer → log + skip (do NOT create one — a
      *       refund clawback only makes sense against a transfer we already mirror);</li>
      *   <li>fully refunded ({@code charge.refunded==true}) → set status REVERSED only, leaving
@@ -264,10 +275,13 @@ public class SettlementIngestService {
     @Transactional(propagation = Propagation.MANDATORY)
     public void ingestChargeRefunded(Charge charge, String connectedAccount) {
         if (charge == null) return;
-        String sourceTransfer = charge.getSourceTransfer();
-        if (sourceTransfer == null || sourceTransfer.isBlank()) {
-            log.info("[settlement-ingest] charge.refunded {} has no source_transfer — not a destination charge, skipping",
-                    charge.getId());
+        // `transfer` on the platform copy of a destination charge; `source_transfer` on the
+        // connected account's copy. The settlement row is keyed on the tr_ id ingestTransfer
+        // wrote, and both fields name that same transfer, so either resolves the lookup.
+        String sourceTransfer = backingTransferOf(charge);
+        if (sourceTransfer == null) {
+            log.info("[settlement-ingest] charge.refunded {} has no transfer/source_transfer — "
+                    + "not a destination charge, skipping", charge.getId());
             return;
         }
 
@@ -303,6 +317,18 @@ public class SettlementIngestService {
     }
 
     // ── internals ────────────────────────────────────────────────────────────────
+
+    /**
+     * The {@code tr_} id backing a destination charge, whichever endpoint scope delivered it.
+     * The PLATFORM copy of the charge (the "Your account" webhook, which is what imin
+     * subscribes) carries it on {@code transfer}; the connected account's copy carries it on
+     * {@code source_transfer}. Both name the SAME transfer object, which is the key
+     * {@code ingestTransfer} wrote the settlement row under. Null when the charge is not a
+     * destination charge at all.
+     */
+    private static String backingTransferOf(Charge charge) {
+        return firstNonBlank(charge.getTransfer(), charge.getSourceTransfer());
+    }
 
     /**
      * Insert-or-update the one {@link Settlement} row for {@code stripeObjectId}. The
