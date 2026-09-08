@@ -23,6 +23,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.security.SecureRandom;
 import java.util.Base64;
@@ -37,9 +38,15 @@ import java.util.UUID;
  * short-circuit + the {@code orders_stripe_payment_intent_id_unique}
  * constraint added in V26.
  *
- * <p>Runs inside the webhook's existing transaction (default propagation
- * REQUIRED) — its writes commit alongside the dedup INSERT and the inventory
- * confirmation, or all roll back together and Stripe retries.
+ * <p><b>Transactional in its own right.</b> On the webhook path REQUIRED joins the
+ * caller's transaction, so the writes still commit alongside the dedup INSERT and
+ * the inventory confirmation or roll back together and Stripe retries. On the
+ * {@link PaidFulfilmentReconciler} path — a bare {@code @Scheduled} method — there
+ * is no ambient transaction, and without one here every {@code save} committed
+ * separately (a crash mid-loop left a ticket-less Order that every later tick skips)
+ * and {@code publishEvent} fired with no synchronization active, so Spring dropped
+ * {@link TicketsIssuedEvent} for all three {@code AFTER_COMMIT} listeners. The buyer
+ * the reconciler exists to rescue got rows and no ticket email.
  */
 @Service
 public class PaidCheckoutService {
@@ -77,6 +84,7 @@ public class PaidCheckoutService {
      *         metadata, duplicate-key race). Callers use the boolean to gate side effects that
      *         must happen exactly once per paid order — e.g. incrementing promo usage.
      */
+    @Transactional
     public boolean issuePaidOrder(PaymentIntent pi) {
         if (pi == null || pi.getId() == null) {
             log.warn("issuePaidOrder called with null PI — skipping");

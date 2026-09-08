@@ -91,8 +91,10 @@ public class PaidFulfilmentReconciler {
                     log.warn("[fulfilment-reconciler] confirmSold failed for PI {} — {}", pi.getId(), e.getMessage());
                 }
                 try {
-                    paidCheckoutService.issuePaidOrder(pi); // idempotent on PI id
-                    backfilled++;
+                    // Only THIS call creating the Order counts as a back-fill. Counting
+                    // every attempt made a metadata-less or already-raced PI look rescued
+                    // and hid that it would be re-driven every 15 min for the whole 96 h.
+                    if (paidCheckoutService.issuePaidOrder(pi)) backfilled++; // idempotent on PI id
                 } catch (Exception e) {
                     log.error("[fulfilment-reconciler] issuePaidOrder failed for PI {} — {}",
                             pi.getId(), e.getMessage(), e);
