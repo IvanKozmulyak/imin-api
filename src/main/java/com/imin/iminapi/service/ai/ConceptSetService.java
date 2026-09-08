@@ -19,8 +19,6 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -104,7 +102,7 @@ public class ConceptSetService {
             Integer cap = c.suggestedCapacity() == null ? null
                     : Math.min(2000, Math.max(50, c.suggestedCapacity()));
 
-            List<SuggestedTierDto> tiers = buildTiers(prices, cap);
+            List<SuggestedTierDto> tiers = SuggestedTiers.build(prices, cap);
             cards.add(new ConceptCardDto(null, c.name(), c.description(),
                     new CaptionsDto(ig, tt, x),
                     c.suggestedGenre(), type, cap, tiers));
@@ -222,15 +220,4 @@ public class ConceptSetService {
         }
     }
 
-    /** Mirrors ConceptStudioService.buildTiers — three tiers from a pricing recommendation + capacity. */
-    private static List<SuggestedTierDto> buildTiers(PricingRecommendation prices, Integer capacity) {
-        BigDecimal min = prices.suggestedMinPrice() == null ? new BigDecimal("12") : prices.suggestedMinPrice();
-        BigDecimal max = prices.suggestedMaxPrice() == null ? new BigDecimal("24") : prices.suggestedMaxPrice();
-        BigDecimal mid = min.add(max).divide(new BigDecimal("2"), 2, RoundingMode.HALF_UP);
-        int cap = capacity == null ? 250 : capacity;
-        return List.of(
-                new SuggestedTierDto("Early Bird", min.movePointRight(2).intValueExact(), Math.max(1, cap / 5)),
-                new SuggestedTierDto("Standard",   mid.movePointRight(2).intValueExact(), Math.max(1, cap * 3 / 5)),
-                new SuggestedTierDto("Door",       max.movePointRight(2).intValueExact(), Math.max(1, cap / 5)));
-    }
 }

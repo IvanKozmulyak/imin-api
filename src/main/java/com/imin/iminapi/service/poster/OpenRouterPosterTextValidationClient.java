@@ -59,17 +59,8 @@ public class OpenRouterPosterTextValidationClient implements PosterTextValidatio
         this.objectMapper = new ObjectMapper();
         this.model = model;
         this.maxTokens = maxTokens;
-        this.restClient = RestClient.builder()
-                .baseUrl(normalizeOpenRouterV1BaseUrl(baseUrl))
-                .requestInterceptor((request, body, execution) -> {
-                    if (apiKey == null || apiKey.isBlank()) {
-                        throw new IllegalStateException(
-                                "OPENROUTER_API_KEY is not configured. Set it before enabling poster text validation.");
-                    }
-                    request.getHeaders().setBearerAuth(apiKey);
-                    return execution.execute(request, body);
-                })
-                .build();
+        this.restClient = com.imin.iminapi.config.OpenRouterRestClients.v1(
+                baseUrl, apiKey, "enabling poster text validation");
     }
 
     @Override
@@ -117,20 +108,6 @@ public class OpenRouterPosterTextValidationClient implements PosterTextValidatio
                 .body(ChatCompletionResponse.class);
 
         return parseValidationResult(extractContent(response));
-    }
-
-    static String normalizeOpenRouterV1BaseUrl(String rawBaseUrl) {
-        String normalized = rawBaseUrl == null ? "" : rawBaseUrl.trim();
-        while (normalized.endsWith("/")) {
-            normalized = normalized.substring(0, normalized.length() - 1);
-        }
-        if (normalized.isBlank()) {
-            throw new IllegalStateException("openrouter.base-url is not configured");
-        }
-        if (normalized.endsWith("/v1")) {
-            return normalized;
-        }
-        return normalized + "/v1";
     }
 
     private String validationPrompt(PosterTextSpec spec) {

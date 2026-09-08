@@ -32,7 +32,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Locale;
@@ -258,7 +257,7 @@ public class ConceptStudioService {
                 req.city() == null ? "" : req.city(),
                 LocalDate.now().plusMonths(2));
 
-        List<SuggestedTierDto> tiers = buildTiers(prices, overview.suggestedCapacity());
+        List<SuggestedTierDto> tiers = SuggestedTiers.build(prices, overview.suggestedCapacity());
         List<PosterDto> posterDtos = render != null
                 ? mapPosters(render.posters(), overview.paletteHexes())
                 : mapVariants(lockedPosters, overview.paletteHexes());
@@ -402,15 +401,4 @@ public class ConceptStudioService {
         return "linear-gradient(135deg," + palette.get(0) + "," + palette.get(1) + ")";
     }
 
-    private static List<SuggestedTierDto> buildTiers(PricingRecommendation prices, Integer capacity) {
-        BigDecimal min = prices.suggestedMinPrice() == null ? new BigDecimal("12") : prices.suggestedMinPrice();
-        BigDecimal max = prices.suggestedMaxPrice() == null ? new BigDecimal("24") : prices.suggestedMaxPrice();
-        BigDecimal mid = min.add(max).divide(new BigDecimal("2"), 2, java.math.RoundingMode.HALF_UP);
-        int cap = capacity == null ? 250 : capacity;
-        return List.of(
-                new SuggestedTierDto("Early Bird", min.movePointRight(2).intValueExact(), Math.max(1, cap / 5)),
-                new SuggestedTierDto("Standard",   mid.movePointRight(2).intValueExact(), Math.max(1, cap * 3 / 5)),
-                new SuggestedTierDto("Door",       max.movePointRight(2).intValueExact(), Math.max(1, cap / 5))
-        );
-    }
 }
