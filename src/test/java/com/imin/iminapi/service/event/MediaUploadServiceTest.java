@@ -41,6 +41,47 @@ class MediaUploadServiceTest {
         return e;
     }
 
+    // ── AI Act Art.50 provenance ─────────────────────────────────────────────
+
+    @Test
+    void plain_poster_upload_records_not_ai_generated() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        sut.upload(owner(orgId), e.getId(), MediaKind.POSTER, pngBytes(1024), "image/png", "p.png");
+
+        assertThat(e.getPosterAiGenerated()).isFalse();
+    }
+
+    @Test
+    void poster_upload_flagged_by_the_studio_records_ai_generated() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        sut.upload(owner(orgId), e.getId(), MediaKind.POSTER, pngBytes(1024), "image/png",
+                "p.png", Boolean.TRUE);
+
+        assertThat(e.getPosterAiGenerated()).isTrue();
+    }
+
+    /** A later plain upload replacing an AI poster must clear the claim. */
+    @Test
+    void a_plain_upload_over_an_ai_poster_clears_the_flag() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        e.setPosterAiGenerated(true);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        sut.upload(owner(orgId), e.getId(), MediaKind.POSTER, pngBytes(2048), "image/png", "p2.png");
+
+        assertThat(e.getPosterAiGenerated()).isFalse();
+    }
+
     @Test
     void poster_png_under_5mb_uploads_and_sets_url() {
         UUID orgId = UUID.randomUUID();

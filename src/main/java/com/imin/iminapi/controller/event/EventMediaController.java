@@ -23,15 +23,25 @@ public class EventMediaController {
         this.uploadService = uploadService;
     }
 
+    /**
+     * @param aiGenerated optional, POSTER only (AI Act Art.50). The Poster Studio
+     *        uploads an image it generated through this same endpoint, and a file
+     *        upload is otherwise indistinguishable from an organizer's own artwork
+     *        — so the studio says so. Absent or false keeps the historic meaning
+     *        of a multipart upload: the organizer's own asset.
+     */
     @PostMapping(path = "/{kind}", consumes = "multipart/form-data")
     public MediaUploadResponse upload(@CurrentUser AuthPrincipal p,
                                       @PathVariable UUID eventId,
                                       @PathVariable String kind,
-                                      @RequestPart("file") MultipartFile file) throws IOException {
+                                      @RequestPart("file") MultipartFile file,
+                                      @RequestParam(name = "aiGenerated", required = false)
+                                      Boolean aiGenerated) throws IOException {
         MediaKind k = kindOr404(kind);
         return uploadService.upload(p, eventId, k, file.getBytes(),
                 file.getContentType() == null ? "application/octet-stream" : file.getContentType(),
-                file.getOriginalFilename() == null ? "upload.bin" : file.getOriginalFilename());
+                file.getOriginalFilename() == null ? "upload.bin" : file.getOriginalFilename(),
+                aiGenerated);
     }
 
     @DeleteMapping("/{kind}")

@@ -222,6 +222,9 @@ public class PosterOrchestrator {
         entity.setReferenceImagesUsed(String.join(",", ctx.style().ids()));
         entity.setSeed(seed);
         entity.setCreativeDirectionJson(serialize(direction));
+        // AI Act Art.50 provenance (V100): stamped at creation, alongside the
+        // prompt and seed, so it is recorded even for a variant that then fails.
+        entity.setModelId(IdeogramV3Client.MODEL_ID);
         entity.setStatus(PosterVariantStatus.PENDING);
         synchronized (generation) {
             generation.getVariants().add(entity);

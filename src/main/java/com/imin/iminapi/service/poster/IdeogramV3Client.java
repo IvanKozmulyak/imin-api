@@ -48,6 +48,14 @@ public class IdeogramV3Client {
 
     private static final Logger log = LoggerFactory.getLogger(IdeogramV3Client.class);
 
+    /**
+     * The renderer identifier persisted on every variant (V100, AI Act Art.50).
+     * Ideogram carries no model field in the request or the response — the
+     * version is the path segment below — so this constant and that path must
+     * move together.
+     */
+    public static final String MODEL_ID = "ideogram-v3";
+
     static final String GENERATE_PATH = "/v1/ideogram-v3/generate";
     static final String REMIX_PATH = "/v1/ideogram-v3/remix";
     static final String ASPECT_RATIO = "4x5";   // native uses NxM

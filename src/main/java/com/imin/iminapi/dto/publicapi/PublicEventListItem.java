@@ -18,6 +18,8 @@ public record PublicEventListItem(
         String venueCity,
         String venueCountry,
         String posterUrl,
+        /** AI Act Art.50 — see {@link PublicEventResponse#posterAiGenerated()}. */
+        boolean posterAiGenerated,
         String currency,
         Integer priceFromMinor,
         boolean soldOut,

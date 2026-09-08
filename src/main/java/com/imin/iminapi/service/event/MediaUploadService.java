@@ -40,9 +40,24 @@ public class MediaUploadService {
         this.videoMetadata = videoMetadata;
     }
 
+    /** Back-compat overload: an upload that makes no AI-provenance claim. */
     @Transactional
     public MediaUploadResponse upload(AuthPrincipal p, UUID eventId, MediaKind kind,
                                       byte[] bytes, String contentType, String originalFilename) {
+        return upload(p, eventId, kind, bytes, contentType, originalFilename, null);
+    }
+
+    /**
+     * @param aiGenerated POSTER only. {@code TRUE} when the caller (the Poster
+     *        Studio) is uploading an image it generated; anything else means the
+     *        organizer's own file. Ignored for other media kinds — there is no
+     *        column to put it in, and inventing one from a query parameter would
+     *        be worse than dropping it.
+     */
+    @Transactional
+    public MediaUploadResponse upload(AuthPrincipal p, UUID eventId, MediaKind kind,
+                                      byte[] bytes, String contentType, String originalFilename,
+                                      Boolean aiGenerated) {
         Event e = loadOwned(p, eventId);
         validate(kind, bytes, contentType);
         Integer durationSec = null;
@@ -70,9 +85,11 @@ public class MediaUploadService {
         switch (kind) {
             case POSTER -> {
                 e.setPosterUrl(url);
-                // Provenance (V71): a multipart file upload is the organizer's own asset —
-                // the one poster path whose manual origin is verifiable server-side.
-                e.setPosterAiGenerated(false);
+                // Provenance (V71 / AI Act Art.50). A multipart upload is the organizer's
+                // own asset unless the uploader says otherwise: the Poster Studio pushes
+                // AI output through this same endpoint, and the bytes alone cannot tell
+                // the two apart. Absent or false keeps the original meaning.
+                e.setPosterAiGenerated(Boolean.TRUE.equals(aiGenerated));
             }
             case VIDEO -> e.setVideoUrl(url);
             case DJ_PHOTO -> e.setDjPhotoUrl(url);
