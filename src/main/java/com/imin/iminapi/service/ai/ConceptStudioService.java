@@ -32,7 +32,6 @@ import io.sentry.SentryLevel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -85,12 +84,15 @@ public class ConceptStudioService {
         this.generationRepo = generationRepo;
     }
 
-    @Transactional
+    /**
+     * Deliberately NOT {@code @Transactional} — see {@link #run}. Each repository write below opens
+     * its own short transaction.
+     */
     public ConceptResponse create(AuthPrincipal p, ConceptRequest req) {
         return run(p, req, resolveDjPhotoFromEvent(p, req.eventId()));
     }
 
-    @Transactional
+    /** Deliberately NOT {@code @Transactional} — see {@link #run}. */
     public ConceptResponse regenerate(AuthPrincipal p, UUID conceptId, List<String> lock) {
         GeneratedEvent prior = repo.findByIdAndOrgId(conceptId, p.orgId())
                 .orElseThrow(() -> ApiException.notFound("Concept"));
@@ -143,6 +145,14 @@ public class ConceptStudioService {
         }
     }
 
+    /**
+     * Runs the pipeline OUTSIDE any transaction, on purpose. The Ideogram renders, the vision gates
+     * and the R2 puts take minutes; holding a pooled JDBC connection across them starved the pool,
+     * and — worse — the {@code status = FAILED} write in the catch block below was rolled back by
+     * the very {@link ApiException} it precedes, so a failed generation left no forensic trace.
+     * The three writes here are independent (staging row → poster rows → overview), not one atomic
+     * unit; each {@code repo.save} opens its own short transaction.
+     */
     private ConceptResponse run(AuthPrincipal p, ConceptRequest req, DjPhotoSnapshot djPhoto) {
         if (req.vibeId() != null && !req.vibeId().isBlank() && !vibeLibrary.hasVibe(req.vibeId())) {
             throw new ApiException(org.springframework.http.HttpStatus.BAD_REQUEST,
