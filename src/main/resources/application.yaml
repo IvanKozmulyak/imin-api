@@ -14,6 +14,19 @@ spring:
         jdbc:
           time_zone: UTC
 
+  # @Scheduled pool. Spring's default is ONE thread for every scheduled job in the
+  # app, and this key was previously unset — PushConfig documents the consequence:
+  # a single slow job stalls every other one, including the ReservationSweeper that
+  # CLAUDE.md calls the source of truth for inventory holds. PaidFulfilmentReconciler
+  # pages up to 1000 PaymentIntents through the Stripe SDK every 15 min and
+  # EventReminderSender does ~80s of synchronous sends per tick, so that is not
+  # hypothetical. Four threads let those run without blocking the 60-second sweeps;
+  # ShedLock remains the cross-replica guard, this is only the in-JVM one.
+  task:
+    scheduling:
+      pool:
+        size: 4
+
   ai:
     openai:
       api-key: ${OPENAI_API_KEY}
