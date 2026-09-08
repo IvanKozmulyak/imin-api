@@ -1,5 +1,6 @@
 package com.imin.iminapi.refund;
 
+import com.imin.iminapi.util.LogSafe;
 import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.email.EmailTemplateRenderer;
@@ -147,7 +148,7 @@ public class RefundRequestService {
             .findFirst()
             .orElse(null);
         if (chosen == null) {
-            log.info("[refund-request] no refundable order for {}", normalized);
+            log.info("[refund-request] no refundable order for {}", LogSafe.email(normalized));
             return;
         }
 
@@ -173,7 +174,7 @@ public class RefundRequestService {
             log.info("[refund-request] token-issued orderId={} emailHash={}",
                 chosen.getId(), sha256Hex(normalized));
         } catch (Exception e) {
-            log.warn("[refund-request] link email failed for {}: {}", normalized, e.getMessage());
+            log.warn("[refund-request] link email failed for {}: {}", LogSafe.email(normalized), LogSafe.redact(e.getMessage()));
         }
     }
 

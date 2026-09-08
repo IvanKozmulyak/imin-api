@@ -1,5 +1,6 @@
 package com.imin.iminapi.audience.service;
 
+import com.imin.iminapi.util.LogSafe;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.repository.OrderRepository;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
@@ -63,7 +64,8 @@ public class AudienceBackfillJob {
                 projector.upsertMembership(orgId, normalizedEmail, email);
                 processed++;
             } catch (Exception e) {
-                log.error("Backfill failed for org={} email={}: {}", orgId, normalizedEmail, e.getMessage());
+                log.error("Backfill failed for org={} email={}: {}", orgId, LogSafe.email(normalizedEmail),
+                        LogSafe.redact(e.getMessage()));
             }
         }
         log.info("AudienceBackfillJob: done — {} memberships processed", processed);

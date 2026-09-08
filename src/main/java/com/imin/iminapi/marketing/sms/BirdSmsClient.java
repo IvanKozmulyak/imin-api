@@ -1,5 +1,6 @@
 package com.imin.iminapi.marketing.sms;
 
+import com.imin.iminapi.util.LogSafe;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
@@ -82,8 +83,11 @@ public class BirdSmsClient {
             HttpStatus status = HttpStatus.resolve(e.getStatusCode().value());
             if (status != null && status.is4xxClientError()) {
                 // Per-message rejection (bad number, unregistered sender, etc.) — do NOT retry.
+                // The provider echoes the destination number (and sometimes a
+                // contact address) back inside its error body, which defeated the
+                // mask on the line above until this went through LogSafe.
                 log.warn("[sms-bird] rejected to={} status={} body={}",
-                        mask(toE164), e.getStatusCode(), e.getResponseBodyAsString());
+                        mask(toE164), e.getStatusCode(), LogSafe.redact(e.getResponseBodyAsString()));
                 return Result.rejected("provider_" + e.getStatusCode().value());
             }
             throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, ErrorCode.UPSTREAM_UNAVAILABLE,
@@ -96,7 +100,6 @@ public class BirdSmsClient {
 
     /** Log phones partially — never emit a full attendee number to logs. */
     private static String mask(String phone) {
-        if (phone == null || phone.length() < 5) return "***";
-        return phone.substring(0, 3) + "***" + phone.substring(phone.length() - 2);
+        return LogSafe.phone(phone);
     }
 }

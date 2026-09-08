@@ -1,5 +1,6 @@
 package com.imin.iminapi.audience.service;
 
+import com.imin.iminapi.util.LogSafe;
 import com.imin.iminapi.audience.dto.ImportResultResponse;
 import com.imin.iminapi.audience.dto.ImportResultResponse.ImportError;
 import com.imin.iminapi.audience.model.Consumer;
@@ -118,7 +119,8 @@ public class AudienceImportService {
                     case SKIPPED_UNSUBSCRIBED -> skippedUnsubscribed++;
                 }
             } catch (RuntimeException ex) {
-                log.error("Import row {} ({}) failed: {}", row.rowNumber(), email, ex.getMessage(), ex);
+                log.error("Import row {} ({}) failed: {}", row.rowNumber(), LogSafe.email(email),
+                        LogSafe.redact(ex.getMessage()), ex);
                 addError(errors, row.rowNumber(), email, "processing error");
             }
         }

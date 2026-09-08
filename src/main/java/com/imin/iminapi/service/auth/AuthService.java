@@ -1,5 +1,6 @@
 package com.imin.iminapi.service.auth;
 
+import com.imin.iminapi.util.LogSafe;
 import com.imin.iminapi.dto.OrganizationDto;
 import com.imin.iminapi.dto.UserDto;
 import com.imin.iminapi.dto.auth.AuthResponse;
@@ -192,7 +193,7 @@ public class AuthService {
         try {
             accountEmail.sendWelcome(user);
         } catch (RuntimeException e) {
-            log.warn("Welcome email send failed for {}: {}", user.getEmail(), e.getMessage());
+            log.warn("Welcome email send failed for {}: {}", LogSafe.email(user.getEmail()), LogSafe.redact(e.getMessage()));
         }
         return new AuthResponse(token, UserDto.from(user), OrganizationDto.from(org));
     }
@@ -219,7 +220,7 @@ public class AuthService {
         try {
             accountEmail.sendPasswordReset(user, resetUrl, PasswordResetService.EXPIRES_IN_MINUTES);
         } catch (RuntimeException e) {
-            log.error("Password-reset email send failed for {}: {}", user.getEmail(), e.getMessage(), e);
+            log.error("Password-reset email send failed for {}: {}", LogSafe.email(user.getEmail()), LogSafe.redact(e.getMessage()), e);
         }
     }
 
@@ -230,7 +231,7 @@ public class AuthService {
         try {
             accountEmail.sendPasswordChangedNotification(user);
         } catch (RuntimeException e) {
-            log.warn("Password-changed notification failed for {}: {}", user.getEmail(), e.getMessage());
+            log.warn("Password-changed notification failed for {}: {}", LogSafe.email(user.getEmail()), LogSafe.redact(e.getMessage()));
         }
     }
 
@@ -255,7 +256,7 @@ public class AuthService {
         try {
             accountEmail.sendPasswordChangedNotification(user);
         } catch (RuntimeException e) {
-            log.warn("Password-changed notification failed for {}: {}", user.getEmail(), e.getMessage());
+            log.warn("Password-changed notification failed for {}: {}", LogSafe.email(user.getEmail()), LogSafe.redact(e.getMessage()));
         }
         Organization org = orgs.findById(user.getOrgId())
                 .orElseThrow(() -> new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, ErrorCode.INTERNAL, "Org missing"));

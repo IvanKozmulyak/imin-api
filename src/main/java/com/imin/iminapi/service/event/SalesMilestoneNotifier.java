@@ -1,5 +1,6 @@
 package com.imin.iminapi.service.event;
 
+import com.imin.iminapi.util.LogSafe;
 import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.email.EmailService;
@@ -146,7 +147,7 @@ public class SalesMilestoneNotifier {
 
         EmailTemplateRenderer.Rendered r = renderer.render("sales-milestone-" + threshold, locale, values);
         email.send(to, emailSubject(threshold, tierName, locale), r.html(), r.text());
-        log.info("[milestone] sent {}% notification for tier {} to {}", threshold, tier.getId(), to);
+        log.info("[milestone] sent {}% notification for tier {} to {}", threshold, tier.getId(), LogSafe.email(to));
     }
 
     private static String inAppTitle(int t, String tier) {

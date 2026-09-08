@@ -1,5 +1,6 @@
 package com.imin.iminapi.service.ticket;
 
+import com.imin.iminapi.util.LogSafe;
 import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.email.EmailService;
@@ -149,7 +150,7 @@ public class TicketIssuanceEmailer {
 
         email.send(order.getEmail(), subject, html, text);
         log.info("Sent issuance email for order {} ({} ticket(s)) to {}",
-                order.getId(), issued.size(), order.getEmail());
+                order.getId(), issued.size(), LogSafe.email(order.getEmail()));
     }
 
     private String renderHtmlBlocks(List<Ticket> issued, String siteBase, String apiBase) {

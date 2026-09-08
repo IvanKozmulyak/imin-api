@@ -1,5 +1,6 @@
 package com.imin.iminapi.email;
 
+import com.imin.iminapi.util.LogSafe;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
 import com.resend.Resend;
@@ -25,12 +26,12 @@ public class ResendEmailService implements EmailService {
     @Override
     public void send(String to, String subject, String html, String text) {
         if (props.getApiKey() == null || props.getApiKey().isBlank()) {
-            log.error("RESEND_API_KEY not configured; cannot send email to {}", to);
+            log.error("RESEND_API_KEY not configured; cannot send email to {}", LogSafe.email(to));
             throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, ErrorCode.INTERNAL,
                     "Email service not configured");
         }
         if (props.getFromAddress() == null || props.getFromAddress().isBlank()) {
-            log.error("IMIN_EMAIL_FROM_ADDRESS not configured; cannot send email to {}", to);
+            log.error("IMIN_EMAIL_FROM_ADDRESS not configured; cannot send email to {}", LogSafe.email(to));
             throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, ErrorCode.INTERNAL,
                     "Email service not configured");
         }
@@ -46,7 +47,7 @@ public class ResendEmailService implements EmailService {
         try {
             resend.emails().send(b.build());
         } catch (ResendException e) {
-            log.error("Resend API call failed for {}: {}", to, e.getMessage(), e);
+            log.error("Resend API call failed for {}: {}", LogSafe.email(to), LogSafe.redact(e.getMessage()), e);
             throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, ErrorCode.UPSTREAM_UNAVAILABLE,
                     "Email service unavailable", e);
         }

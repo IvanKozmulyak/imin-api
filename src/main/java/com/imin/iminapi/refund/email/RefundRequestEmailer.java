@@ -1,5 +1,6 @@
 package com.imin.iminapi.refund.email;
 
+import com.imin.iminapi.util.LogSafe;
 import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.email.EmailService;
@@ -154,7 +155,7 @@ public class RefundRequestEmailer {
         try {
             email.send(to, subject, r.html(), r.text());
         } catch (Exception e) {
-            log.warn("[refund-request-email] send failed to={}: {}", to, e.getMessage());
+            log.warn("[refund-request-email] send failed to={}: {}", LogSafe.email(to), LogSafe.redact(e.getMessage()));
         }
     }
 }

@@ -1,5 +1,6 @@
 package com.imin.iminapi.service.ticket;
 
+import com.imin.iminapi.util.LogSafe;
 import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.email.EmailService;
@@ -75,7 +76,7 @@ public class OrderRecoveryService {
         int cap = ticketProps.getRecoveryMaxPerHour();
         if (byEmail > cap || byIp > cap) {
             log.info("Recovery rate-limited (email={} byEmail={} byIp={})",
-                    normalized, byEmail, byIp);
+                    LogSafe.email(normalized), byEmail, byIp);
             return;
         }
 
@@ -83,7 +84,7 @@ public class OrderRecoveryService {
                 .minus(Duration.ofDays(ticketProps.getRecoveryWindowDays()));
         List<Order> found = orders.findRecentForRecovery(normalized, eventIdOrNull, recoveryCutoff);
         if (found.isEmpty()) {
-            log.info("Recovery: no orders found for {}", normalized);
+            log.info("Recovery: no orders found for {}", LogSafe.email(normalized));
             return;
         }
 
@@ -117,9 +118,9 @@ public class OrderRecoveryService {
 
         try {
             email.send(normalized, subject, html, text);
-            log.info("Recovery: sent {} order link(s) to {}", found.size(), normalized);
+            log.info("Recovery: sent {} order link(s) to {}", found.size(), LogSafe.email(normalized));
         } catch (Exception e) {
-            log.warn("Recovery email failed for {}: {}", normalized, e.getMessage());
+            log.warn("Recovery email failed for {}: {}", LogSafe.email(normalized), LogSafe.redact(e.getMessage()));
         }
     }
 

@@ -1,5 +1,6 @@
 package com.imin.iminapi.refund.email;
 
+import com.imin.iminapi.util.LogSafe;
 import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.email.EmailTemplateRenderer;
@@ -110,6 +111,6 @@ public class RefundConfirmationEmailer {
             "Remboursement confirmé pour " + eventName,
             "Повернення коштів підтверджено · " + eventName);
         email.send(order.getEmail(), subject, r.html(), r.text());
-        log.info("[refund-email] sent for refund {} to {}", refundId, order.getEmail());
+        log.info("[refund-email] sent for refund {} to {}", refundId, LogSafe.email(order.getEmail()));
     }
 }
