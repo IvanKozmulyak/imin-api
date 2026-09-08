@@ -19,13 +19,24 @@ import java.util.UUID;
 @Component
 public class ProviderEventDedupService {
 
+    /**
+     * {@code payload} is deliberately absent from the column list, so it stays
+     * NULL. It used to carry the raw Resend and Bird bodies — recipient
+     * addresses and originating phone numbers — and <b>nothing has ever read
+     * it</b>: the complaint-rate breaker counts rows, it does not open them. The
+     * 2026-09 legal audit called that indefinite retention of personal data with
+     * no purpose and no purge. Not writing it is smaller and safer than a purge
+     * job for the same reason: a body that was never stored cannot be missed by
+     * an erasure request. The columns kept are exactly the ones something reads —
+     * the ids, the type, and the timestamp.
+     */
     private static final String INSERT_SQL = """
             INSERT INTO provider_events
               (id, provider, provider_event_id, provider_message_id,
-               campaign_id, recipient_id, type, payload, occurred_at)
+               campaign_id, recipient_id, type, occurred_at)
             VALUES
               (:id, :provider, :eventId, :messageId,
-               :campaignId, :recipientId, :type, :payload, now())
+               :campaignId, :recipientId, :type, now())
             """;
 
     private final NamedParameterJdbcTemplate jdbc;
@@ -39,7 +50,7 @@ public class ProviderEventDedupService {
      *         time (proceed with projection); {@code false} on replay (skip).
      */
     public boolean tryClaim(String provider, String eventId, String messageId,
-                            UUID campaignId, UUID recipientId, String type, String payload) {
+                            UUID campaignId, UUID recipientId, String type) {
         if (eventId == null || eventId.isBlank()) {
             return true; // can't dedup a missing id — treat as fresh
         }
@@ -51,8 +62,7 @@ public class ProviderEventDedupService {
                     .addValue("messageId", messageId)
                     .addValue("campaignId", campaignId)
                     .addValue("recipientId", recipientId)
-                    .addValue("type", type)
-                    .addValue("payload", payload));
+                    .addValue("type", type));
             return true;
         } catch (DuplicateKeyException dup) {
             return false;

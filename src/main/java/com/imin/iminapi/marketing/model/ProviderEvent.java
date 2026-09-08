@@ -54,6 +54,12 @@ public class ProviderEvent {
     @Column(length = 64)
     private String type;
 
+    /**
+     * Legacy raw webhook body. <b>Never written</b> since the 2026-09 audit —
+     * it held recipient addresses and phone numbers that nothing read — and
+     * {@code PersonalDataRetentionSweeper} nulls whatever earlier deploys left
+     * behind. Kept as a field only so the column stays mapped.
+     */
     @Column(columnDefinition = "text")
     private String payload;
 

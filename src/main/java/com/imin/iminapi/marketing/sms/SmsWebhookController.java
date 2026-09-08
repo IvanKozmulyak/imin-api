@@ -86,7 +86,7 @@ public class SmsWebhookController {
 
         // Idempotent claim on (provider=bird, provider_event_id). Duplicate ⇒ ack + skip.
         boolean fresh = dedup.tryClaim(ProviderEvent.PROVIDER_BIRD, eventId, null,
-                null, null, type, body);
+                null, null, type);
         if (!fresh) {
             log.info("[sms-webhook] duplicate eventId={} — acked", eventId);
             return ResponseEntity.ok().build();

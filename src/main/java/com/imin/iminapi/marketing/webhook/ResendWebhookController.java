@@ -95,7 +95,7 @@ public class ResendWebhookController {
 
         // Idempotent claim keyed on the svix message id (the provider_event_id).
         boolean fresh = dedup.tryClaim(ProviderEvent.PROVIDER_RESEND, svixId, messageId,
-                campaignId, recipientId, type, body);
+                campaignId, recipientId, type);
         if (!fresh) {
             log.info("[resend-webhook] duplicate svixId={} — acked", svixId);
             return ResponseEntity.ok().build();
