@@ -29,6 +29,12 @@ public class EventMediaController {
      *        upload is otherwise indistinguishable from an organizer's own artwork
      *        — so the studio says so. Absent or false keeps the historic meaning
      *        of a multipart upload: the organizer's own asset.
+     * @param rightsAttested <b>required for DJ_PHOTO</b> — that photo becomes an
+     *        Ideogram character reference and is uploaded to the OpenRouter vision
+     *        gate inside the finished poster, so somebody has to have claimed the
+     *        right to put a third party's face there. Missing or false ⇒ 400
+     *        {@code RIGHTS_ATTESTATION_REQUIRED}. Optional and recorded for other
+     *        kinds.
      */
     @PostMapping(path = "/{kind}", consumes = "multipart/form-data")
     public MediaUploadResponse upload(@CurrentUser AuthPrincipal p,
@@ -36,12 +42,14 @@ public class EventMediaController {
                                       @PathVariable String kind,
                                       @RequestPart("file") MultipartFile file,
                                       @RequestParam(name = "aiGenerated", required = false)
-                                      Boolean aiGenerated) throws IOException {
+                                      Boolean aiGenerated,
+                                      @RequestParam(name = "rightsAttested", required = false)
+                                      Boolean rightsAttested) throws IOException {
         MediaKind k = kindOr404(kind);
         return uploadService.upload(p, eventId, k, file.getBytes(),
                 file.getContentType() == null ? "application/octet-stream" : file.getContentType(),
                 file.getOriginalFilename() == null ? "upload.bin" : file.getOriginalFilename(),
-                aiGenerated);
+                aiGenerated, rightsAttested);
     }
 
     @DeleteMapping("/{kind}")

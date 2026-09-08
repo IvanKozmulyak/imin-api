@@ -41,6 +41,80 @@ class MediaUploadServiceTest {
         return e;
     }
 
+    // ── Rights attestation (droit à l'image, C. civ. 9 / CPI L122-4) ─────────
+    //
+    // A DJ photo becomes an Ideogram character_reference_image and rides inside
+    // the finished poster up to the OpenRouter vision gate. Nothing captured a
+    // claim that the uploader had the right to send a third party's face there.
+
+    @Test
+    void dj_photo_without_attestation_is_rejected() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+
+        assertThatThrownBy(() -> sut.upload(owner(orgId), e.getId(), MediaKind.DJ_PHOTO,
+                realPngUnchecked(600, 800), "image/png", "dj.png", null, null))
+                .isInstanceOf(ApiException.class)
+                .satisfies(ex -> assertThat(((ApiException) ex).code())
+                        .isEqualTo(ErrorCode.RIGHTS_ATTESTATION_REQUIRED));
+
+        assertThat(e.getDjPhotoUrl()).as("nothing is stored on a refused upload").isNull();
+    }
+
+    @Test
+    void dj_photo_with_attestation_false_is_rejected() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+
+        assertThatThrownBy(() -> sut.upload(owner(orgId), e.getId(), MediaKind.DJ_PHOTO,
+                realPngUnchecked(600, 800), "image/png", "dj.png", null, false))
+                .isInstanceOf(ApiException.class);
+    }
+
+    @Test
+    void dj_photo_with_attestation_records_the_timestamp_and_wording_version() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        sut.upload(owner(orgId), e.getId(), MediaKind.DJ_PHOTO, realPngUnchecked(600, 800), "image/png",
+                "dj.png", null, true);
+
+        assertThat(e.getDjPhotoRightsAttestedAt()).isNotNull();
+        assertThat(e.getDjPhotoRightsAttestationVersion())
+                .isEqualTo(RightsAttestation.CURRENT_VERSION);
+    }
+
+    /** A poster does not depict a third party — the gate is DJ-photo only. */
+    @Test
+    void poster_upload_needs_no_attestation() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        assertThat(sut.upload(owner(orgId), e.getId(), MediaKind.POSTER, pngBytes(1024),
+                "image/png", "p.png").url()).isNotBlank();
+    }
+
+    @Test
+    void deleting_the_dj_photo_clears_the_attestation() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        sut.upload(owner(orgId), e.getId(), MediaKind.DJ_PHOTO, realPngUnchecked(600, 800), "image/png",
+                "dj.png", null, true);
+        sut.delete(owner(orgId), e.getId(), MediaKind.DJ_PHOTO);
+
+        assertThat(e.getDjPhotoRightsAttestedAt()).isNull();
+        assertThat(e.getDjPhotoRightsAttestationVersion()).isNull();
+    }
+
     // ── AI Act Art.50 provenance ─────────────────────────────────────────────
 
     @Test
@@ -253,6 +327,15 @@ class MediaUploadServiceTest {
 
     // --- DJ photo kind ---
 
+    /** {@link #realPng} without the checked exception, for lambda-heavy tests. */
+    private static byte[] realPngUnchecked(int w, int h) {
+        try {
+            return realPng(w, h);
+        } catch (IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+    }
+
     private static byte[] realPng(int w, int h) throws IOException {
         BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
         ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -268,7 +351,7 @@ class MediaUploadServiceTest {
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
 
         byte[] png = realPng(600, 800);
-        MediaUploadResponse res = sut.upload(owner(orgId), e.getId(), MediaKind.DJ_PHOTO, png, "image/png", "dj.png");
+        MediaUploadResponse res = sut.upload(owner(orgId), e.getId(), MediaKind.DJ_PHOTO, png, "image/png", "dj.png", null, true);
         assertThat(res.url()).contains("/events/" + e.getId() + "/dj-photo-");
         assertThat(e.getDjPhotoUrl()).isEqualTo(res.url());
     }
@@ -280,7 +363,7 @@ class MediaUploadServiceTest {
         when(events.findActive(e.getId())).thenReturn(Optional.of(e));
 
         byte[] png = realPng(200, 800); // short side 200 < 256
-        assertThatThrownBy(() -> sut.upload(owner(orgId), e.getId(), MediaKind.DJ_PHOTO, png, "image/png", "dj.png"))
+        assertThatThrownBy(() -> sut.upload(owner(orgId), e.getId(), MediaKind.DJ_PHOTO, png, "image/png", "dj.png", null, true))
                 .isInstanceOf(ApiException.class)
                 .hasFieldOrPropertyWithValue("code", ErrorCode.FIELD_INVALID);
     }
@@ -293,7 +376,7 @@ class MediaUploadServiceTest {
 
         byte[] big = new byte[(int) (5 * 1024 * 1024) + 1];
         big[0] = (byte) 0x89; big[1] = 0x50; big[2] = 0x4E; big[3] = 0x47;
-        assertThatThrownBy(() -> sut.upload(owner(orgId), e.getId(), MediaKind.DJ_PHOTO, big, "image/png", "dj.png"))
+        assertThatThrownBy(() -> sut.upload(owner(orgId), e.getId(), MediaKind.DJ_PHOTO, big, "image/png", "dj.png", null, true))
                 .isInstanceOf(ApiException.class)
                 .hasFieldOrPropertyWithValue("code", ErrorCode.FIELD_INVALID);
     }
@@ -305,7 +388,7 @@ class MediaUploadServiceTest {
         when(events.findActive(e.getId())).thenReturn(Optional.of(e));
 
         byte[] png = realPng(600, 800);
-        assertThatThrownBy(() -> sut.upload(owner(orgId), e.getId(), MediaKind.DJ_PHOTO, png, "image/webp", "dj.webp"))
+        assertThatThrownBy(() -> sut.upload(owner(orgId), e.getId(), MediaKind.DJ_PHOTO, png, "image/webp", "dj.webp", null, true))
                 .isInstanceOf(ApiException.class)
                 .hasFieldOrPropertyWithValue("code", ErrorCode.FIELD_INVALID);
     }
@@ -318,7 +401,7 @@ class MediaUploadServiceTest {
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
 
         byte[] png = realPng(600, 800);
-        sut.upload(owner(orgId), e.getId(), MediaKind.DJ_PHOTO, png, "image/png", "dj.png");
+        sut.upload(owner(orgId), e.getId(), MediaKind.DJ_PHOTO, png, "image/png", "dj.png", null, true);
         sut.delete(owner(orgId), e.getId(), MediaKind.DJ_PHOTO);
         assertThat(e.getDjPhotoUrl()).isNull();
         assertThat(storage.blobs()).isEmpty();

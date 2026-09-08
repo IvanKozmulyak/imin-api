@@ -55,8 +55,25 @@ public class OrgBrandService {
 
     @Transactional
     public void setLogoUrl(AuthPrincipal p, String url) {
+        setLogoUrl(p, url, null);
+    }
+
+    /**
+     * @param rightsAttested optional (V101). A logo is normally the organizer's
+     *        own mark, so this is recorded rather than required — unlike the DJ
+     *        photo, where a third party's face is at stake. False/null leaves any
+     *        existing record alone rather than clearing it: not re-attesting is
+     *        not a withdrawal.
+     */
+    @Transactional
+    public void setLogoUrl(AuthPrincipal p, String url, Boolean rightsAttested) {
         Organization o = load(p);
         o.setBrandLogoUrl(url);
+        if (Boolean.TRUE.equals(rightsAttested)) {
+            o.setLogoRightsAttestedAt(java.time.Instant.now());
+            o.setLogoRightsAttestationVersion(
+                    com.imin.iminapi.service.event.RightsAttestation.CURRENT_VERSION);
+        }
         orgs.save(o); // @PreUpdate stamps updated_at on flush
     }
 
@@ -64,6 +81,9 @@ public class OrgBrandService {
     public void clearLogoUrl(AuthPrincipal p) {
         Organization o = load(p);
         o.setBrandLogoUrl(null); // toggle (brandLogoOnPosters) intentionally left untouched
+        // No logo, no attestation: the record described an image that is gone.
+        o.setLogoRightsAttestedAt(null);
+        o.setLogoRightsAttestationVersion(null);
         orgs.save(o); // @PreUpdate stamps updated_at on flush
     }
 

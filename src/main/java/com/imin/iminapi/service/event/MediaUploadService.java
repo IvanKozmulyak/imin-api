@@ -18,6 +18,7 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
 import java.util.HexFormat;
 import java.util.Map;
 import java.util.Set;
@@ -47,6 +48,14 @@ public class MediaUploadService {
         return upload(p, eventId, kind, bytes, contentType, originalFilename, null);
     }
 
+    /** Back-compat overload: no rights attestation supplied. */
+    @Transactional
+    public MediaUploadResponse upload(AuthPrincipal p, UUID eventId, MediaKind kind,
+                                      byte[] bytes, String contentType, String originalFilename,
+                                      Boolean aiGenerated) {
+        return upload(p, eventId, kind, bytes, contentType, originalFilename, aiGenerated, null);
+    }
+
     /**
      * @param aiGenerated POSTER only. {@code TRUE} when the caller (the Poster
      *        Studio) is uploading an image it generated; anything else means the
@@ -57,8 +66,19 @@ public class MediaUploadService {
     @Transactional
     public MediaUploadResponse upload(AuthPrincipal p, UUID eventId, MediaKind kind,
                                       byte[] bytes, String contentType, String originalFilename,
-                                      Boolean aiGenerated) {
+                                      Boolean aiGenerated, Boolean rightsAttested) {
         Event e = loadOwned(p, eventId);
+        // Rights gate BEFORE validation or any write: a DJ photo is a third
+        // party's face on its way into an AI pipeline (Ideogram character
+        // reference, OpenRouter vision gate). Droit à l'image (C. civ. 9) and
+        // CPI L122-4 make that the uploader's claim to make, and refusing the
+        // upload is the only point at which it can still be captured. Same shape
+        // as the audience CSV import's consent attestation.
+        if (kind == MediaKind.DJ_PHOTO && !Boolean.TRUE.equals(rightsAttested)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.RIGHTS_ATTESTATION_REQUIRED,
+                    "You must confirm you hold the rights to this image and the consent of "
+                            + "anyone depicted (rightsAttested=true)");
+        }
         validate(kind, bytes, contentType);
         Integer durationSec = null;
         if (kind == MediaKind.VIDEO) {
@@ -92,7 +112,13 @@ public class MediaUploadService {
                 e.setPosterAiGenerated(Boolean.TRUE.equals(aiGenerated));
             }
             case VIDEO -> e.setVideoUrl(url);
-            case DJ_PHOTO -> e.setDjPhotoUrl(url);
+            case DJ_PHOTO -> {
+                e.setDjPhotoUrl(url);
+                // Stamped with the wording version, not just the time: a timestamp
+                // without the text that was agreed to proves nothing later.
+                e.setDjPhotoRightsAttestedAt(Instant.now());
+                e.setDjPhotoRightsAttestationVersion(RightsAttestation.CURRENT_VERSION);
+            }
         }
         events.save(e);
         // Upload to remote storage — if this throws, the DB row already has the correct URL
@@ -129,7 +155,12 @@ public class MediaUploadService {
                 e.setPosterAiGenerated(null); // no poster → no provenance claim (V71)
             }
             case VIDEO -> e.setVideoUrl(null);
-            case DJ_PHOTO -> e.setDjPhotoUrl(null);
+            case DJ_PHOTO -> {
+                e.setDjPhotoUrl(null);
+                // No photo, no attestation: the record described an image that is gone.
+                e.setDjPhotoRightsAttestedAt(null);
+                e.setDjPhotoRightsAttestationVersion(null);
+            }
         }
         events.save(e);
     }

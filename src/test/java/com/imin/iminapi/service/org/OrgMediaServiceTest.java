@@ -19,6 +19,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.*;
 
 class OrgMediaServiceTest {
@@ -63,7 +64,7 @@ class OrgMediaServiceTest {
                 .startsWith("https://media.test/orgs/" + id + "/brand/logo-")
                 .endsWith(".png")
                 .matches("https://media\\.test/orgs/" + id + "/brand/logo-[0-9a-f]{16}\\.png");
-        verify(brandService).setLogoUrl(any(AuthPrincipal.class), eq(r.logoUrl()));
+        verify(brandService).setLogoUrl(any(AuthPrincipal.class), eq(r.logoUrl()), isNull());
         assertThat(storage.blobs()).hasSize(1);
     }
 

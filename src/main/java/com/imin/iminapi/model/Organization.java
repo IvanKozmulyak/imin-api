@@ -53,6 +53,17 @@ public class Organization {
     @Column(name = "brand_logo_url", columnDefinition = "TEXT")
     private String brandLogoUrl;
 
+    /**
+     * When the organizer attested they hold the rights to the brand logo (V101).
+     * Optional, unlike the DJ photo: a logo is normally the organizer's own mark.
+     */
+    @Column(name = "logo_rights_attested_at")
+    private java.time.Instant logoRightsAttestedAt;
+
+    /** Which wording was attested to — see {@code RightsAttestation}. */
+    @Column(name = "logo_rights_attestation_version", length = 32)
+    private String logoRightsAttestationVersion;
+
     /** Up to 3 ordered accent colours, lowercase hex (#rrggbb). Index 0 = primary ("AI leads with the first"). */
     @Convert(converter = StringListJsonConverter.class)
     @Column(name = "brand_accent_colors", nullable = false, columnDefinition = "TEXT")
