@@ -13,7 +13,6 @@ import com.imin.iminapi.repository.OrderRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -61,7 +60,17 @@ public class OrderRecoveryService {
         this.ipHasher = ipHasher;
     }
 
-    @Transactional
+    /**
+     * <b>Deliberately NOT {@code @Transactional}.</b> The Resend send at the end is a
+     * synchronous outbound HTTP call, and this endpoint is unauthenticated with no
+     * rate-limit bucket — its only cap is the in-DB counter below. Wrapping the method
+     * pinned a pooled JDBC connection (prod max 20) for the duration of a third party's
+     * round trip, on a path an attacker picks the rate of. Nothing here needs a shared
+     * atomic unit: the only write is the attempt row, which {@code attempts.save()}
+     * commits in its own repository transaction, and it must survive on its own anyway
+     * so a failed lookup still counts against the limit. Same reasoning, same emailer,
+     * as {@code BuyerOrderActionsController}'s deliberately-outside-the-transaction send.
+     */
     public void requestRecovery(String rawEmail, UUID eventIdOrNull, String clientIp) {
         if (rawEmail == null) return;
         String normalized = rawEmail.trim().toLowerCase(Locale.ROOT);
