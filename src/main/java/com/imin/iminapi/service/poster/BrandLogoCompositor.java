@@ -11,7 +11,9 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * Composites an org's logo onto a generated poster with pure Java2D (the same BufferedImage /
@@ -32,8 +34,24 @@ public class BrandLogoCompositor {
     private static final double MARGIN_FRACTION = 0.04;     // 4% of poster width
     private static final double LOGO_MAX_FRACTION = 0.18;   // 18% of poster width
 
+    /**
+     * Cap on distinct decoded logos held in memory. The key is a content-addressed URL, so an
+     * unbounded map gained one permanent entry per distinct logo of every org that ever composited
+     * a poster — and the retained value is the DECODED image (width*height*4 bytes), not the 2 MB
+     * upload. Decoding again costs nothing next to the Ideogram render that precedes it.
+     */
+    static final int MAX_CACHED_LOGOS = 32;
+
     private final PosterImageStorage storage;
-    private final ConcurrentHashMap<String, BufferedImage> logoCache = new ConcurrentHashMap<>();
+
+    /** Access-ordered LRU, bounded by {@link #MAX_CACHED_LOGOS}; see {@link #invalidate(String)}. */
+    private final Map<String, BufferedImage> logoCache = Collections.synchronizedMap(
+            new LinkedHashMap<>(16, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, BufferedImage> eldest) {
+                    return size() > MAX_CACHED_LOGOS;
+                }
+            });
 
     public BrandLogoCompositor(PosterImageStorage storage) {
         this.storage = storage;
@@ -50,7 +68,13 @@ public class BrandLogoCompositor {
      */
     public byte[] composite(byte[] posterPng, String logoUrl) {
         BufferedImage poster = decode(posterPng);
-        BufferedImage logo = logoCache.computeIfAbsent(logoUrl, k -> decode(storage.download(logoUrl)));
+        // Download outside the map lock: a miss must not serialise concurrent generations for
+        // different orgs. A racing duplicate download is harmless — the decode is idempotent.
+        BufferedImage logo = logoCache.get(logoUrl);
+        if (logo == null) {
+            logo = decode(storage.download(logoUrl));
+            logoCache.put(logoUrl, logo);
+        }
 
         int pw = poster.getWidth();
         int ph = poster.getHeight();
