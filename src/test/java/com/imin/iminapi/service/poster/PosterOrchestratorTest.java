@@ -133,7 +133,7 @@ class PosterOrchestratorTest {
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
 
         PosterOrchestrator.OrchestrationResult r =
-                orchestrator().run(UUID.randomUUID(), req(), concept());
+                orchestrator().run(UUID.randomUUID(), req(), concept(), 1L, List.of(), null, null);
 
         assertThat(r.posters()).hasSize(3);
         assertThat(r.posters()).allSatisfy(p -> assertThat(p.status()).isEqualTo("COMPLETE"));
@@ -155,7 +155,7 @@ class PosterOrchestratorTest {
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
 
         PosterOrchestrator.OrchestrationResult r =
-                orchestrator().run(UUID.randomUUID(), req(), concept());
+                orchestrator().run(UUID.randomUUID(), req(), concept(), 1L, List.of(), null, null);
 
         assertThat(r.posters()).allSatisfy(p -> assertThat(p.status()).isEqualTo("COMPLETE"));
         verify(ideogram, times(3)).remix(any(), any(), eq(70), anyLong(), any(), any(), any(), any());
@@ -173,7 +173,7 @@ class PosterOrchestratorTest {
         when(textValidation.validateOrExplain(any(), any())).thenReturn(textFail());
 
         PosterOrchestrator.OrchestrationResult r =
-                orchestrator().run(UUID.randomUUID(), req(), concept());
+                orchestrator().run(UUID.randomUUID(), req(), concept(), 1L, List.of(), null, null);
 
         // 2 remixes (maxRegenerations=2) per variant, then best-effort COMPLETE
         verify(ideogram, times(6)).remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any());
@@ -199,7 +199,7 @@ class PosterOrchestratorTest {
         when(textValidation.validateOrExplain(any(), any())).thenReturn(textFail());
 
         PosterOrchestrator.OrchestrationResult r =
-                orchestrator().run(UUID.randomUUID(), req(), concept());
+                orchestrator().run(UUID.randomUUID(), req(), concept(), 1L, List.of(), null, null);
 
         // 3 attempts x 3 variants rendered, but exactly one stored object per variant.
         verify(ideogram, times(6)).remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any());
@@ -215,7 +215,7 @@ class PosterOrchestratorTest {
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleFail());
 
         PosterOrchestrator.OrchestrationResult r =
-                orchestrator().run(UUID.randomUUID(), req(), concept());
+                orchestrator().run(UUID.randomUUID(), req(), concept(), 1L, List.of(), null, null);
 
         assertThat(r.posters()).allSatisfy(p -> assertThat(p.status()).isEqualTo("COMPLETE"));
         verify(ideogram, never()).remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any());
@@ -237,7 +237,7 @@ class PosterOrchestratorTest {
 
         PosterOrchestrator.OrchestrationResult r = orchestratorWithStyleGate(
                 new PosterStyleValidationService(throwingClient, true))
-                .run(UUID.randomUUID(), req(), concept());
+                .run(UUID.randomUUID(), req(), concept(), 1L, List.of(), null, null);
 
         assertThat(r.posters()).hasSize(3);
         assertThat(r.posters()).allSatisfy(p -> assertThat(p.status()).isEqualTo("COMPLETE"));
@@ -258,7 +258,7 @@ class PosterOrchestratorTest {
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
 
         BrandSnapshot brand = new BrandSnapshot(List.of("#ec4899", "#f6c04a"), null, false);
-        orchestrator().run(UUID.randomUUID(), req(), concept(), 123L, List.of(), brand);
+        orchestrator().run(UUID.randomUUID(), req(), concept(), 123L, List.of(), brand, null);
 
         verify(ideogram, times(3)).generate(any(), anyLong(), any(), any(),
                 eq(List.of("#ec4899", "#f6c04a")), any());
@@ -273,7 +273,7 @@ class PosterOrchestratorTest {
         when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
 
-        orchestrator().run(UUID.randomUUID(), req(), concept());
+        orchestrator().run(UUID.randomUUID(), req(), concept(), 1L, List.of(), null, null);
 
         verify(ideogram, times(3)).generate(any(), anyLong(), any(), any(), eq(List.of()), any());
     }
@@ -286,7 +286,7 @@ class PosterOrchestratorTest {
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
 
         PosterOrchestrator.OrchestrationResult r =
-                orchestrator().run(UUID.randomUUID(), req(), concept());
+                orchestrator().run(UUID.randomUUID(), req(), concept(), 1L, List.of(), null, null);
 
         // No second writePng beyond the one raw write per variant; compositor never called.
         verify(logoCompositor, never()).composite(any(), any());
@@ -313,7 +313,7 @@ class PosterOrchestratorTest {
 
         BrandSnapshot brand = new BrandSnapshot(java.util.List.of("#ec4899"), "https://cdn/logo.png", true);
         PosterOrchestrator.OrchestrationResult r = orchestrator().run(
-                UUID.randomUUID(), req(), concept(), 123L, java.util.List.of(), brand);
+                UUID.randomUUID(), req(), concept(), 123L, java.util.List.of(), brand, null);
 
         // Assert across ALL variants (not .get(0)) — placement among the 3 parallel results is not ordered.
         assertThat(r.posters()).allSatisfy(p -> {
@@ -349,7 +349,7 @@ class PosterOrchestratorTest {
 
         BrandSnapshot brand = new BrandSnapshot(List.of("#ec4899"), "https://cdn/logo.png", true);
         PosterOrchestrator.OrchestrationResult r = orchestrator().run(
-                UUID.randomUUID(), req(), concept(), 123L, List.of(), brand);
+                UUID.randomUUID(), req(), concept(), 123L, List.of(), brand, null);
 
         assertThat(r.posters()).allSatisfy(p ->
                 assertThat(p.finalUrl()).isEqualTo("https://img/composited.png"));
@@ -368,7 +368,7 @@ class PosterOrchestratorTest {
 
         BrandSnapshot brand = new BrandSnapshot(java.util.List.of("#ec4899"), "https://cdn/logo.png", true);
         PosterOrchestrator.OrchestrationResult r = orchestrator().run(
-                UUID.randomUUID(), req(), concept(), 123L, java.util.List.of(), brand);
+                UUID.randomUUID(), req(), concept(), 123L, java.util.List.of(), brand, null);
 
         // Generation still succeeds; final_url falls back to raw_url; status FAILED for every variant.
         assertThat(r.posters()).allSatisfy(p -> {

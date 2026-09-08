@@ -34,7 +34,6 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -74,7 +73,6 @@ public class PosterOrchestrator {
     private final boolean paletteRegradeEnabled;
     private final int paletteRegradeWeight;
     private final int maxReferences;
-    private final Semaphore renderCap;
     private final ExecutorService variantPool;
 
     public PosterOrchestrator(
@@ -93,7 +91,7 @@ public class PosterOrchestrator {
             @Value("${poster.palette-regrade.enabled:true}") boolean paletteRegradeEnabled,
             @Value("${poster.palette-regrade.image-weight:85}") int paletteRegradeWeight,
             @Value("${ideogram.max-references:3}") int maxReferences,
-            @Value("${poster.render.max-concurrent:${replicate.max-concurrent:6}}") int maxConcurrent) {
+            @Value("${poster.render.max-concurrent:6}") int maxConcurrent) {
         this.ideogramClient = ideogramClient;
         this.vibeLibrary = vibeLibrary;
         this.styleCardLibrary = styleCardLibrary;
@@ -109,7 +107,9 @@ public class PosterOrchestrator {
         this.paletteRegradeEnabled = paletteRegradeEnabled;
         this.paletteRegradeWeight = paletteRegradeWeight;
         this.maxReferences = Math.max(0, maxReferences);
-        this.renderCap = new Semaphore(maxConcurrent, true);
+        // maxConcurrent sizes the variant pool and nothing else: the pool is capped at 3 (one thread
+        // per concept variant) and never exceeds maxConcurrent, so a second per-render permit could
+        // not block for ANY value and only pretended to cap in-flight renders.
         this.variantPool = Executors.newFixedThreadPool(
                 Math.min(VARIANT_POOL_SIZE, Math.max(1, maxConcurrent)),
                 r -> {
@@ -128,20 +128,6 @@ public class PosterOrchestrator {
     }
 
     private record RenderContext(Vibe vibe, StyleCard card, StyleControl style) {}
-
-    public OrchestrationResult run(UUID generatedEventId, EventCreatorRequest request, PosterConcept concept) {
-        return run(generatedEventId, request, concept, deriveSeed(generatedEventId), List.of(), null);
-    }
-
-    public OrchestrationResult run(UUID generatedEventId, EventCreatorRequest request, PosterConcept concept,
-                                   long creativeSeed, List<CreativeDirection> directions) {
-        return run(generatedEventId, request, concept, creativeSeed, directions, null);
-    }
-
-    public OrchestrationResult run(UUID generatedEventId, EventCreatorRequest request, PosterConcept concept,
-                                   long creativeSeed, List<CreativeDirection> directions, BrandSnapshot brand) {
-        return run(generatedEventId, request, concept, creativeSeed, directions, brand, null);
-    }
 
     public OrchestrationResult run(UUID generatedEventId, EventCreatorRequest request, PosterConcept concept,
                                    long creativeSeed, List<CreativeDirection> directions, BrandSnapshot brand,
@@ -231,22 +217,12 @@ public class PosterOrchestrator {
         }
 
         try {
-            renderCap.acquire();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            entity.setStatus(PosterVariantStatus.FAILED);
-            entity.setFailureReason("interrupted while waiting for render slot");
-            return toDto(entity);
-        }
-        try {
             return renderWithValidation(entity, variant, seed, request, ctx, brand, characterRef);
         } catch (RuntimeException e) {
             log.error("Variant generation failed: hero_type={}, seed={}", variant.heroType(), seed, e);
             entity.setStatus(PosterVariantStatus.FAILED);
             entity.setFailureReason(e.getMessage());
             return toDto(entity);
-        } finally {
-            renderCap.release();
         }
     }
 
@@ -455,10 +431,6 @@ public class PosterOrchestrator {
     private static long deriveSeed(long creativeSeed, int index) {
         long s = creativeSeed * 1_000_003L + index;
         return Math.floorMod(s, 1_000_000_000L) + 1L;
-    }
-
-    private static long deriveSeed(UUID id) {
-        return id == null ? 1L : Math.abs(id.getMostSignificantBits() ^ id.getLeastSignificantBits());
     }
 
     private static long nextSeed(long seed) {
