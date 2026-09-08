@@ -60,6 +60,18 @@ public class User {
     @Column(name = "verified_at")
     private Instant verifiedAt;
 
+    /**
+     * When this organizer accepted the terms of use, and which version (V98).
+     * Null on every account created before the dashboard sent the field — and
+     * that absence means "not recorded", not "declined". Nothing enforces it
+     * yet; see {@code OrganizerTerms}.
+     */
+    @Column(name = "terms_accepted_at")
+    private Instant termsAcceptedAt;
+
+    @Column(name = "terms_version", length = 32)
+    private String termsVersion;
+
     public void setEmail(String email) {
         this.email = email;
         this.emailLower = email == null ? null : email.toLowerCase();

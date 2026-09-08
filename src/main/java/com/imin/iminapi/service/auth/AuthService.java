@@ -132,6 +132,14 @@ public class AuthService {
         user.setPasswordHash(hasher.hash(req.password()));
         user.setRole(UserRole.OWNER);
         user.setAvatarInitials(deriveInitials(firstName, lastName));
+        // Terms acceptance evidence (V98). Optional and unenforced — the dashboard
+        // has no legal pages to link yet — and the version is server-canonical, not
+        // the string the client sent. Absent ⇒ both columns stay null, which reads
+        // as "not recorded" and must never be read as "declined".
+        if (Boolean.TRUE.equals(req.acceptedTerms())) {
+            user.setTermsAcceptedAt(Instant.now());
+            user.setTermsVersion(OrganizerTerms.CURRENT_VERSION);
+        }
         // verifiedAt left null until /verify-email succeeds
         User savedUser = users.save(user);
 
