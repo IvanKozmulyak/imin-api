@@ -441,8 +441,6 @@ public class StripeConnectService {
                 && e.getMessage().contains("is currently unavailable in");
     }
 
-    /** @noinspection unused — used by tests + reflection-friendly */
-    static List<String> readyStatuses() { return List.of("active"); }
 
     // ── DTOs returned to controllers ───────────────────────────────────────
 

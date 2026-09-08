@@ -341,17 +341,4 @@ public class InventoryService {
         reservations.saveAndFlush(r);
     }
 
-    /** Same shape as {@link #releaseReservationBySessionId} but for the success path. */
-    @Transactional
-    public boolean confirmSoldBySessionId(String stripeSessionId) {
-        if (stripeSessionId == null || stripeSessionId.isBlank()) return false;
-        Optional<TicketReservation> r = reservations.findByStripeSessionId(stripeSessionId);
-        if (r.isEmpty()) {
-            log.info("confirmSoldBySessionId: no reservation for session {} — pre-V27 event, skipping",
-                    stripeSessionId);
-            return false;
-        }
-        confirmSold(r.get().getId());
-        return true;
-    }
 }
