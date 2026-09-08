@@ -389,7 +389,22 @@ public class EventService {
             changed = true;
         }
         if (b.videoUrl() != null) { e.setVideoUrl(b.videoUrl()); changed = true; }
-        if (b.currency() != null) { e.setCurrency(b.currency()); changed = true; }
+        if (b.currency() != null) {
+            // events-4: a Stripe Price is minted in the currency the event had at sync time,
+            // and the checkout Session mixes that stored Price with an inline service-fee line
+            // item built from event.currency — Stripe requires one currency per Session, so a
+            // change after any tier is synced breaks checkout outright. Refuse instead.
+            // (A new draft has no id and therefore no tiers; re-sending the same value —
+            // in any casing, as autosave does — is a no-op, not a conflict.)
+            if (e.getId() != null && !b.currency().equalsIgnoreCase(e.getCurrency())
+                    && tiers.existsSyncedStripePrice(e.getId())) {
+                throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                        "Currency cannot be changed once tickets are synced to Stripe",
+                        Map.of("currency", "already synced to Stripe as " + e.getCurrency()));
+            }
+            e.setCurrency(b.currency());
+            changed = true;
+        }
         if (b.onSaleAt() != null) { e.setOnSaleAt(b.onSaleAt()); changed = true; }
         if (b.saleClosesAt() != null) { e.setSaleClosesAt(b.saleClosesAt()); changed = true; }
         return changed;

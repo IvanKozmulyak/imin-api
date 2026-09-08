@@ -272,6 +272,56 @@ class EventServiceTest {
                 .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.NOT_FOUND);
     }
 
+    /**
+     * events-4: the ticket line item at checkout is the stored Stripe Price (minted in the
+     * OLD currency) while the service-fee line item is built inline from event.currency, and
+     * Stripe requires one currency per Session. Changing the currency after tiers are synced
+     * therefore kills checkout for the event, so it is refused.
+     */
+    @Test
+    void patch_currency_change_throws_INVALID_STATE_when_a_tier_has_a_stripe_price() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setName("X"); e.setSlug("x"); e.setCurrency("EUR");
+        Instant updated = Instant.parse("2026-04-23T10:00:00Z");
+        e.setUpdatedAt(updated);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(tiers.existsSyncedStripePrice(e.getId())).thenReturn(true);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                sut.patch(p, e.getId(), "\"" + updated + "\"",
+                        new EventPatchRequest(null, null, null, null, null, null, null, null, null,
+                                null, null, null, "GBP", null, null, null, null)))
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.INVALID_STATE);
+
+        assertThat(e.getCurrency()).isEqualTo("EUR");
+        verify(events, never()).save(any(Event.class));
+    }
+
+    /** Re-sending the same currency is a no-op, not a conflict — autosave does exactly that. */
+    @Test
+    void patch_same_currency_is_allowed_even_when_tiers_are_synced() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setName("X"); e.setSlug("x"); e.setCurrency("EUR");
+        Instant updated = Instant.parse("2026-04-23T10:00:00Z");
+        e.setUpdatedAt(updated);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(tiers.existsSyncedStripePrice(e.getId())).thenReturn(true);
+        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
+        when(promos.findByEventId(e.getId())).thenReturn(List.of());
+        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
+
+        sut.patch(p, e.getId(), "\"" + updated + "\"",
+                new EventPatchRequest(null, null, null, null, null, null, null, null, null,
+                        null, null, null, "eur", null, null, null, null));
+
+        assertThat(e.getCurrency()).isEqualTo("eur");
+    }
+
     @Test
     void patch_invokes_reconcileEmbedded_when_tiers_provided() {
         AuthPrincipal p = principal();
