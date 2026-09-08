@@ -2,7 +2,9 @@ package com.imin.iminapi.audience.service;
 
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsentRecordRepository;
+import com.imin.iminapi.audience.model.ErasedAddress;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
+import com.imin.iminapi.audience.repository.ErasedAddressRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.repository.SuppressionRepository;
 import com.imin.iminapi.repository.NotifySubscriptionRepository;
@@ -46,6 +48,7 @@ public class DsarService {
     private final com.imin.iminapi.marketing.repository.CampaignRecipientRepository campaignRecipientRepo;
     private final NotifySubscriptionRepository notifySubscriptionRepo;
     private final com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository buyerAccountEmailRepo;
+    private final ErasedAddressRepository erasedAddressRepo;
 
     public DsarService(MembershipRepository membershipRepo,
                        ConsumerRepository consumerRepo,
@@ -55,7 +58,8 @@ public class DsarService {
                        AuditLogger auditLogger,
                        com.imin.iminapi.marketing.repository.CampaignRecipientRepository campaignRecipientRepo,
                        NotifySubscriptionRepository notifySubscriptionRepo,
-                       com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository buyerAccountEmailRepo) {
+                       com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository buyerAccountEmailRepo,
+                       ErasedAddressRepository erasedAddressRepo) {
         this.membershipRepo = membershipRepo;
         this.consumerRepo = consumerRepo;
         this.consentRepo = consentRepo;
@@ -65,6 +69,7 @@ public class DsarService {
         this.campaignRecipientRepo = campaignRecipientRepo;
         this.notifySubscriptionRepo = notifySubscriptionRepo;
         this.buyerAccountEmailRepo = buyerAccountEmailRepo;
+        this.erasedAddressRepo = erasedAddressRepo;
     }
 
     /** Art.15 access — returns the membership (caller maps to DTO). Audited. */
@@ -158,6 +163,12 @@ public class DsarService {
                 .orElse(null);
         if (normalizedEmail != null) {
             notifySubscriptionRepo.deleteByOrgIdAndEmail(orgId, normalizedEmail);
+            // 3b. Erasure ledger (V99). orders.email is retained under the invoicing
+            // exemption, so AudienceBackfillJob would otherwise walk it at 03:00 — and on
+            // every application start — and rebuild the Consumer + Membership this method
+            // just deleted, thirty minutes after deleting them. Scoped to this org, because
+            // that is the scope of the erasure being performed.
+            recordErasure(orgId, normalizedEmail);
         }
 
         // 4. Delete membership (consent_records cascade via FK ON DELETE CASCADE)
@@ -185,6 +196,27 @@ public class DsarService {
         // 6. Tombstone in audit_logs (immutable, REQUIRES_NEW inside AuditLogger)
         auditLogger.record(principal, AuditActions.DSAR_ERASE_EXECUTED, "membership", membershipId,
                 "DSAR erase executed — org=" + orgId);
+    }
+
+    /**
+     * Append one erasure-ledger row, unless this org already has one for the
+     * address. Idempotent so a re-run of {@code executeErase} cannot pile up rows.
+     *
+     * <p>Public so {@link com.imin.iminapi.buyer.service.BuyerAccountErasureService}
+     * can record the platform-wide ({@code orgId == null}) variant through the same
+     * seam instead of reaching for the repository itself.
+     */
+    @Transactional
+    public void recordErasure(UUID orgId, String normalizedEmail) {
+        if (normalizedEmail == null || normalizedEmail.isBlank()) return;
+        boolean already = orgId == null
+                ? erasedAddressRepo.existsPlatformWide(normalizedEmail)
+                : erasedAddressRepo.existsForOrg(orgId, normalizedEmail);
+        if (already) return;
+        ErasedAddress entry = new ErasedAddress();
+        entry.setOrgId(orgId);
+        entry.setEmailNormalized(normalizedEmail);
+        erasedAddressRepo.save(entry);
     }
 
     /**
