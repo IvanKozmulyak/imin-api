@@ -79,6 +79,24 @@ class ResendWebhookProjectorTest {
         return new Fixture(orgId, c.getId(), m.getMembershipId(), r.getId(), email);
     }
 
+    /**
+     * mkt-core-14 (P3): provider_events.type is nullable, so a signed Resend body with no
+     * "type" field reached {@code switch (type)} — a String switch on null throws NPE. The
+     * controller's @Transactional rolled the dedup claim back with it, so every Resend retry
+     * of that event repeated the 500 instead of being deduped away. An unknown shape is
+     * ignored, not fatal.
+     */
+    @Test
+    void nullEventTypeIsIgnoredInsteadOfThrowing() {
+        Fixture f = seed("null-type@example.com");
+        org.assertj.core.api.Assertions.assertThatCode(() ->
+                projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
+                        f.email(), null, Instant.now()))
+                .doesNotThrowAnyException();
+        assertThat(recipientRepo.findById(f.recipientId()).orElseThrow().getStatus())
+                .isEqualTo("sent");   // untouched
+    }
+
     @Test
     void deliveredMarksRecipientDelivered() {
         Fixture f = seed("a@example.com");

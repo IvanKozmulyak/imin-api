@@ -11,6 +11,8 @@ import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.marketing.service.ComplaintRateBreaker;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.AuthPrincipal;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -37,6 +39,8 @@ public class ResendWebhookProjector {
 
     private final CampaignRecipientRepository recipientRepo;
     private final CampaignRepository campaignRepo;
+    private static final Logger log = LoggerFactory.getLogger(ResendWebhookProjector.class);
+
     private final MembershipRepository membershipRepo;
     private final SuppressionService suppressionService;
     private final ComplaintRateBreaker complaintRateBreaker;
@@ -56,6 +60,14 @@ public class ResendWebhookProjector {
     @Transactional
     public void project(UUID campaignId, UUID recipientId, UUID membershipId,
                         String email, String type, Instant occurredAt) {
+        // A signed body with no "type" is malformed, not fatal (mkt-core-14). provider_events.type
+        // is nullable so the dedup claim succeeds, and a String switch on null throws NPE — which
+        // rolled that claim back with it, so every Resend retry repeated the 500 for ever instead
+        // of being deduped away. Treat it exactly like an unknown type: ignore and ack.
+        if (type == null || type.isBlank()) {
+            log.info("[resend-projector] event with no type for recipient {} — ignored", recipientId);
+            return;
+        }
         CampaignRecipient r = recipientId == null ? null
                 : recipientRepo.findById(recipientId).orElse(null);
         switch (type) {
