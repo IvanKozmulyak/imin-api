@@ -173,4 +173,63 @@ class StripeConnectServiceTest {
         o.setCountry(country);
         return o;
     }
+    /**
+     * api-14: returnUrl/refreshUrl come off the request body and were forwarded to Stripe with no
+     * scheme check at all, so a {@code javascript:} or {@code data:} URL would have been handed
+     * to Stripe as the destination it bounces the organizer's browser to at the end of hosted
+     * onboarding. The endpoint is authenticated and org-scoped, so the caller can only redirect
+     * themselves — but "the upstream probably rejects it" is not a control we own.
+     */
+    @Test
+    void createOnboardingLink_ignores_a_non_http_returnUrl_and_uses_the_configured_default()
+            throws Exception {
+        Organization org = org("FR");
+        org.setStripeAccountId("acct_fr_xyz");
+        when(orgs.findById(orgId)).thenReturn(Optional.of(org));
+        props.setReturnUrlBase("https://dashboard.example.test");
+
+        com.stripe.service.v2.core.AccountLinkService links =
+                mock(com.stripe.service.v2.core.AccountLinkService.class);
+        when(coreService.accountLinks()).thenReturn(links);
+        com.stripe.model.v2.core.AccountLink created = mock(com.stripe.model.v2.core.AccountLink.class);
+        when(created.getUrl()).thenReturn("https://connect.stripe.com/setup/x");
+        when(links.create(any(com.stripe.param.v2.core.AccountLinkCreateParams.class))).thenReturn(created);
+
+        svc.createOnboardingLink(principal, orgId,
+                "javascript:alert(document.cookie)", "data:text/html,<script>1</script>");
+
+        ArgumentCaptor<com.stripe.param.v2.core.AccountLinkCreateParams> captor =
+                ArgumentCaptor.forClass(com.stripe.param.v2.core.AccountLinkCreateParams.class);
+        verify(links).create(captor.capture());
+        var onboarding = captor.getValue().getUseCase().getAccountOnboarding();
+        assertThat(onboarding.getReturnUrl()).startsWith("https://dashboard.example.test/");
+        assertThat(onboarding.getRefreshUrl()).startsWith("https://dashboard.example.test/");
+    }
+
+    /** A normal https URL from the dashboard must still be honoured verbatim. */
+    @Test
+    void createOnboardingLink_keeps_an_https_returnUrl() throws Exception {
+        Organization org = org("FR");
+        org.setStripeAccountId("acct_fr_xyz");
+        when(orgs.findById(orgId)).thenReturn(Optional.of(org));
+
+        com.stripe.service.v2.core.AccountLinkService links =
+                mock(com.stripe.service.v2.core.AccountLinkService.class);
+        when(coreService.accountLinks()).thenReturn(links);
+        com.stripe.model.v2.core.AccountLink created = mock(com.stripe.model.v2.core.AccountLink.class);
+        when(created.getUrl()).thenReturn("https://connect.stripe.com/setup/x");
+        when(links.create(any(com.stripe.param.v2.core.AccountLinkCreateParams.class))).thenReturn(created);
+
+        svc.createOnboardingLink(principal, orgId,
+                "https://dashboard.imin.wtf/settings/payments?stripe=ok",
+                "https://dashboard.imin.wtf/settings/payments?stripe=refresh");
+
+        ArgumentCaptor<com.stripe.param.v2.core.AccountLinkCreateParams> captor =
+                ArgumentCaptor.forClass(com.stripe.param.v2.core.AccountLinkCreateParams.class);
+        verify(links).create(captor.capture());
+        var onboarding = captor.getValue().getUseCase().getAccountOnboarding();
+        assertThat(onboarding.getReturnUrl())
+                .isEqualTo("https://dashboard.imin.wtf/settings/payments?stripe=ok");
+    }
+
 }

@@ -22,6 +22,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.net.URI;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
@@ -249,9 +250,9 @@ public class StripeConnectService {
                     "Stripe connected account not yet created — call /stripe/connect first");
         }
 
-        String effectiveReturn = nonBlank(returnUrl)
+        String effectiveReturn = usableRedirect(returnUrl)
                 ? returnUrl : props.getReturnUrlBase() + "/settings/payments?stripe=return";
-        String effectiveRefresh = nonBlank(refreshUrl)
+        String effectiveRefresh = usableRedirect(refreshUrl)
                 ? refreshUrl : props.getReturnUrlBase() + "/settings/payments?stripe=refresh";
 
         AccountLinkCreateParams params = AccountLinkCreateParams.builder()
@@ -423,6 +424,37 @@ public class StripeConnectService {
     }
 
     private static boolean nonBlank(String s) { return s != null && !s.isBlank(); }
+
+    /**
+     * A caller-supplied onboarding redirect we are willing to hand to Stripe.
+     *
+     * <p>These two come straight off the request body and become the destination Stripe bounces
+     * the organizer's browser to at the end of hosted onboarding — previously with no check of
+     * any kind, so {@code javascript:} and {@code data:} were as acceptable as https. The
+     * endpoint is authenticated and org-scoped (loadOwnedOrg above), so a caller can only
+     * redirect themselves and this is not an attacker-to-victim open redirect; but "Stripe
+     * probably rejects it" is not a control we own, and this is the money path. An unusable
+     * value falls back to the configured default rather than 400, so no working flow breaks.
+     *
+     * <p>What is deliberately NOT enforced here is an origin allowlist against
+     * {@code props.getReturnUrlBase()}. The dashboard sends {@code window.location.origin}, and
+     * that base is an environment variable whose production value this change cannot verify — a
+     * mismatch would silently land every onboarding organizer on the wrong host, which is a
+     * worse failure than the hygiene issue being closed. Tightening to a same-origin rule wants
+     * the deployed STRIPE_RETURN_URL_BASE checked first.
+     */
+    private static boolean usableRedirect(String url) {
+        if (!nonBlank(url)) return false;
+        try {
+            URI u = URI.create(url.trim());
+            String scheme = u.getScheme();
+            return u.isAbsolute()
+                    && ("https".equalsIgnoreCase(scheme) || "http".equalsIgnoreCase(scheme))
+                    && u.getHost() != null;
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+    }
 
     private ApiException upstream(String message, Throwable cause) {
         return new ApiException(HttpStatus.BAD_GATEWAY, ErrorCode.UPSTREAM_UNAVAILABLE, message, cause);
