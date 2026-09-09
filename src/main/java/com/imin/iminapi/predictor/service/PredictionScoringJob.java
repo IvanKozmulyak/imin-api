@@ -20,9 +20,11 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -92,15 +94,45 @@ public class PredictionScoringJob {
     // ---- pass 1: outcome join + per-render Brier / APE ---------------------------
 
     private void joinAndScore(Instant now) {
-        List<PredictionLedger> unjoined = ledger.findByOutcomeJoinedAtIsNull(PageRequest.of(0, PAGE));
+        // Page until the joinable set is exhausted. The query returns only rows whose outcome is
+        // already finalized, in a stable order, and a joined row leaves the set — so re-reading
+        // the head of the set is the next page. Rows that FAIL stay in the set, so they are
+        // remembered here and skipped on the next read: one bad render cannot re-serve the same
+        // page and starve the backlog behind it (it is retried on the next monthly pass).
+        Set<UUID> attempted = new HashSet<>();
         int joined = 0;
-        for (PredictionLedger row : unjoined) {
-            EventOutcome o = outcomes.findById(row.getEventId()).orElse(null);
-            if (o == null || o.getFinalizedAt() == null) continue; // outcome not finalized yet
-            PredictionResult r = parse(row);
-            service.joinOutcome(row.getId(), o.getSoldTotal(), o.getAttendance(), now,
-                    brierComponent(r, o), ape(r, o));
-            joined++;
+        int failed = 0;
+        List<PredictionLedger> batch;
+        boolean progressed;
+        do {
+            batch = ledger.findJoinable(PageRequest.of(0, PAGE));
+            progressed = false;
+            for (PredictionLedger row : batch) {
+                if (!attempted.add(row.getId())) continue;
+                progressed = true;
+                EventOutcome o = outcomes.findById(row.getEventId()).orElse(null);
+                // Belt and braces: the query already excludes these, but never score a render
+                // against an outcome that is not final.
+                if (o == null || o.getFinalizedAt() == null) {
+                    failed++;
+                    continue;
+                }
+                PredictionResult r = parse(row);
+                try {
+                    service.joinOutcome(row.getId(), o.getSoldTotal(), o.getAttendance(), now,
+                            brierComponent(r, o), ape(r, o));
+                    joined++;
+                } catch (Exception ex) {
+                    failed++;
+                    log.error("PredictionScoringJob: join failed for ledger row={}: {}", row.getId(), ex.getMessage(), ex);
+                }
+            }
+            if (batch.size() == PAGE) {
+                log.info("PredictionScoringJob: a full page of {} joinable render(s) — backlog, continuing", PAGE);
+            }
+        } while (progressed && batch.size() == PAGE);
+        if (failed > 0) {
+            log.warn("PredictionScoringJob: {} render(s) could not be joined this pass", failed);
         }
         if (joined > 0) {
             log.info("PredictionScoringJob: joined+scored {} ledger render(s)", joined);
