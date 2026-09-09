@@ -94,6 +94,37 @@ class SegmentLiveCountTest {
         assertThat(segmentService.liveCount(orgId, broken)).isZero();
     }
 
+    /**
+     * audience-20: numeric-vs-string was chosen by whether the VALUE parsed as a long, so a
+     * rule on an enum field with a numeric-looking value took the numeric branch, where an
+     * unknown field fell through to 0 — and {@code consent_status == 0} matched everyone.
+     */
+    @Test
+    void an_enum_rule_with_a_numeric_value_matches_nobody() {
+        when(membershipRepo.findRuleRowsByOrgId(orgId)).thenReturn(List.of(row(1), row(2)));
+
+        Segment seg = new Segment();
+        seg.setOrgId(orgId);
+        seg.setName("Enum rule");
+        seg.setKind("dynamic");
+        seg.setRulesJson("[{\"field\":\"consent_status\",\"operator\":\"==\",\"value\":\"0\"}]");
+
+        assertThat(segmentService.liveCount(orgId, seg)).isZero();
+    }
+
+    @Test
+    void an_enum_rule_with_a_real_value_still_matches() {
+        when(membershipRepo.findRuleRowsByOrgId(orgId)).thenReturn(List.of(row(1), row(2)));
+
+        Segment seg = new Segment();
+        seg.setOrgId(orgId);
+        seg.setName("Subscribed");
+        seg.setKind("dynamic");
+        seg.setRulesJson("[{\"field\":\"consent_status\",\"operator\":\"==\",\"value\":\"subscribed\"}]");
+
+        assertThat(segmentService.liveCount(orgId, seg)).isEqualTo(2);
+    }
+
     private Segment prebuilt(PrebuiltSegment key) {
         Segment s = new Segment();
         s.setOrgId(orgId);

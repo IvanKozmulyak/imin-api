@@ -268,35 +268,49 @@ public class SegmentService {
         return true;
     }
 
+    /**
+     * Numeric or string comparison is decided by the FIELD, not by whether the value
+     * happens to parse as a long. It used to be the latter: a rule on an enum field with a
+     * numeric-looking value took the numeric branch, where an unknown field fell through to
+     * {@code default -> 0}, so {@code consent_status == 0} matched every member in the org.
+     * An unknown field or a non-numeric value on a numeric field now matches nobody.
+     */
     private boolean matchRule(SegmentRuleRow row, String field, String op, String val) {
-        try {
-            long v = Long.parseLong(val);
-            long actual = switch (field) {
-                case "events"      -> row.events();
-                case "spend_minor" -> row.spendMinor();
-                case "recency"     -> row.recencyDays() == null ? Long.MAX_VALUE : row.recencyDays();
-                case "no_show"     -> row.noShow();
-                case "nps"         -> row.nps() == null ? Long.MIN_VALUE : row.nps();
-                default            -> 0;
-            };
-            return switch (op) {
-                case ">="  -> actual >= v;
-                case "<="  -> actual <= v;
-                case ">"   -> actual > v;
-                case "<"   -> actual < v;
-                case "=="  -> actual == v;
-                default    -> false;
-            };
-        } catch (NumberFormatException e) {
-            // String comparison for non-numeric fields
+        if (field == null || op == null || val == null) return false;
+        if (STRING_FIELDS.contains(field)) {
             String actual = switch (field) {
-                case "lifecycle"       -> row.lifecycle();
-                case "consent_status"  -> row.consentStatus();
-                case "consent_basis"   -> row.consentBasis();
-                default                -> "";
+                case "lifecycle"      -> row.lifecycle();
+                case "consent_status" -> row.consentStatus();
+                case "consent_basis"  -> row.consentBasis();
+                default               -> null;
             };
-            return val != null && val.equals(actual);
+            // Only equality is meaningful on these; ordering operators are accepted at
+            // create time but have never meant anything here.
+            return val.equals(actual);
         }
+        if (!NUMERIC_FIELDS.contains(field)) return false;
+        long v;
+        try {
+            v = Long.parseLong(val.trim());
+        } catch (NumberFormatException e) {
+            return false;
+        }
+        long actual = switch (field) {
+            case "events"      -> row.events();
+            case "spend_minor" -> row.spendMinor();
+            case "recency"     -> row.recencyDays() == null ? Long.MAX_VALUE : row.recencyDays();
+            case "no_show"     -> row.noShow();
+            case "nps"         -> row.nps() == null ? Long.MIN_VALUE : row.nps();
+            default            -> 0;
+        };
+        return switch (op) {
+            case ">="  -> actual >= v;
+            case "<="  -> actual <= v;
+            case ">"   -> actual > v;
+            case "<"   -> actual < v;
+            case "=="  -> actual == v;
+            default    -> false;
+        };
     }
 
     /**
