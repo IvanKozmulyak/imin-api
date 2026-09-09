@@ -26,9 +26,10 @@ import java.util.Set;
  * rate-limited refresh), so there is no network hit at construction time and
  * repeated verifications reuse the cached keys.
  *
- * <p>The signature, {@code exp}/{@code nbf} and required claims are checked by
- * Nimbus; issuer and audience are then asserted explicitly (issuer against an
- * allow-set so Google's two issuer spellings both pass).
+ * <p>The signature and the required claims — {@code iss} and {@code exp}, the
+ * latter required rather than merely honoured — are checked by Nimbus, along with
+ * {@code nbf} when present; issuer and audience are then asserted explicitly
+ * (issuer against an allow-set so Google's two issuer spellings both pass).
  */
 public class OidcJwtVerifier {
 
@@ -46,12 +47,17 @@ public class OidcJwtVerifier {
             JWKSource<SecurityContext> keySource = JWKSourceBuilder.create(url).build();
             DefaultJWTProcessor<SecurityContext> p = new DefaultJWTProcessor<>();
             p.setJWSKeySelector(new JWSVerificationKeySelector<>(JWSAlgorithm.RS256, keySource));
-            // exp/nbf are checked automatically when present. Only require `iss`,
-            // which both ID tokens and Apple's server-to-server notification JWTs
-            // carry (the latter has no top-level `sub` — it lives inside `events`).
+            // `exp` is REQUIRED, not merely honoured: DefaultJWTClaimsVerifier
+            // validates an expiry only when the claim is present, so requiring
+            // `iss` alone meant a signed token with no exp verified for ever —
+            // and this verifier is the sole gate on the native sign-in lanes,
+            // which take a raw ID token with no state, no nonce and no code
+            // exchange. `sub` is deliberately NOT required: the set is shared
+            // with Apple's server-to-server notification JWT, which has no
+            // top-level subject (it lives inside `events`).
             p.setJWTClaimsSetVerifier(new DefaultJWTClaimsVerifier<>(
                     new JWTClaimsSet.Builder().build(),
-                    new HashSet<>(List.of("iss"))));
+                    new HashSet<>(List.of("iss", "exp"))));
             this.processor = p;
         } catch (Exception e) {
             throw new IllegalStateException("Bad JWKS URL: " + jwkSetUrl, e);
