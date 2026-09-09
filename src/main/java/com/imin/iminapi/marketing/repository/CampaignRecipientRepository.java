@@ -167,6 +167,31 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
                                 @Param("since") java.time.Instant since);
 
     /**
+     * Project an owned opt-out onto the recipient row it came from (mkt-core-3). The
+     * unsubscribe token carries the campaign id, so the row is addressable; without this
+     * the campaign's {@code unsubscribed} stat and the "Issues" chip were structurally
+     * always 0 because nothing ever wrote that status.
+     *
+     * <p>Only rows whose email actually left are advanced, and deliberately NOT
+     * {@code bounced}/{@code complained}: a complaint is the stronger signal and must not
+     * be walked back by a later opt-out on the same row.
+     *
+     * @return rows projected (0 when the campaign/membership pair has no row)
+     */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query("""
+            UPDATE CampaignRecipient r
+               SET r.status = 'unsubscribed', r.lastEventAt = :now
+             WHERE r.campaignId = :campaignId
+               AND r.membershipId = :membershipId
+               AND r.status in ('sent', 'delivered', 'opened', 'clicked')
+            """)
+    int markUnsubscribed(@Param("campaignId") UUID campaignId,
+                         @Param("membershipId") UUID membershipId,
+                         @Param("now") java.time.Instant now);
+
+    /**
      * Retire the rows that burned their whole attempt budget: {@code pending} with
      * {@code attempt_count >= :maxAttempts} becomes {@code failed} with an
      * {@code error_code}. Without this the drain simply stopped claiming them and they

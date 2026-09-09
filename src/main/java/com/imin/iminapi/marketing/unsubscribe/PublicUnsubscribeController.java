@@ -2,9 +2,12 @@ package com.imin.iminapi.marketing.unsubscribe;
 
 import com.imin.iminapi.audience.service.ConsentOrigin;
 import com.imin.iminapi.audience.service.ConsentService;
+import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.RateLimiter;
 import jakarta.servlet.http.HttpServletRequest;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -13,6 +16,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseBody;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.util.HtmlUtils;
+
+import java.time.Instant;
 
 /**
  * Owned opt-out endpoint (spec §2.4/§3/§7). Shared by email List-Unsubscribe headers +
@@ -40,15 +45,20 @@ import org.springframework.web.util.HtmlUtils;
 @RequestMapping("/api/v1/public/unsubscribe")
 public class PublicUnsubscribeController {
 
+    private static final Logger log = LoggerFactory.getLogger(PublicUnsubscribeController.class);
+
     private final UnsubscribeTokenService tokens;
     private final ConsentService consentService;
     private final RateLimiter rateLimiter;
+    private final CampaignRecipientRepository campaignRecipients;
 
     public PublicUnsubscribeController(UnsubscribeTokenService tokens, ConsentService consentService,
-                                       RateLimiter rateLimiter) {
+                                       RateLimiter rateLimiter,
+                                       CampaignRecipientRepository campaignRecipients) {
         this.tokens = tokens;
         this.consentService = consentService;
         this.rateLimiter = rateLimiter;
+        this.campaignRecipients = campaignRecipients;
     }
 
     @PostMapping("/{token}")
@@ -65,7 +75,26 @@ public class PublicUnsubscribeController {
         // a decision about one sender as exists, so it is sticky (§6.3).
         consentService.unsubscribe(claims.orgId(), claims.membershipId(),
                 "one_click", claims.channel(), ConsentOrigin.DATA_SUBJECT, null);
+        projectOntoCampaignRow(claims);
         return "unsubscribed";
+    }
+
+    /**
+     * Record the opt-out on the campaign_recipients row the token came from, so the
+     * campaign's {@code unsubscribed} stat is a real count instead of a structural 0
+     * (nothing else in the tree ever writes that status). Strictly best-effort and
+     * failure-isolated: the consent record is the authority and an opt-out must never
+     * fail because a stat could not be projected.
+     */
+    private void projectOntoCampaignRow(UnsubscribeTokenService.Claims claims) {
+        if (claims.campaignId() == null || claims.membershipId() == null) return;
+        try {
+            campaignRecipients.markUnsubscribed(
+                    claims.campaignId(), claims.membershipId(), Instant.now());
+        } catch (RuntimeException e) {
+            log.warn("[unsubscribe] could not project opt-out onto campaign {}: {}",
+                    claims.campaignId(), e.getMessage());
+        }
     }
 
     /**
