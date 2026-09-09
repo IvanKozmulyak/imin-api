@@ -6,6 +6,8 @@ import com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository;
 import com.imin.iminapi.buyer.repository.BuyerAccountRepository;
 import com.imin.iminapi.buyer.repository.BuyerIdentityRepository;
 import com.imin.iminapi.buyer.service.BuyerOAuthService;
+import com.imin.iminapi.oauth.GoogleOAuthService;
+import com.imin.iminapi.oauth.OAuthStateService;
 import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.oauth.OAuthUserInfo;
 import com.imin.iminapi.repository.OrganizationRepository;
@@ -17,12 +19,17 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Instant;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.when;
 
 /**
  * {@link BuyerOAuthService}'s resolution matrix, exercised over an
@@ -45,6 +52,8 @@ class BuyerGoogleSignInTest {
     @Autowired BuyerIdentityRepository identities;
     @Autowired OrganizationRepository organizations;
     @Autowired UserRepository users;
+    @Autowired OAuthStateService states;
+    @MockitoBean GoogleOAuthService googleTokens;
 
     private String address;
     private String subject;
@@ -70,6 +79,40 @@ class BuyerGoogleSignInTest {
         assertThat(users.count())
                 .as("a buyer signing in with Google must never become a User")
                 .isEqualTo(usersBefore);
+    }
+
+    /**
+     * The Google token exchange must not hold a pooled database connection.
+     *
+     * <p>Hikari runs with {@code auto-commit=true} and nothing sets
+     * {@code hibernate.connection.provider_disables_autocommit}, so Hibernate
+     * takes its JDBC connection at transaction <i>begin</i>, not at first
+     * statement. A transactional web callback therefore pins one of production's
+     * twenty connections for as long as Google takes to answer — with no upper
+     * bound, since the OAuth {@code RestClient} carried no timeouts either. This
+     * is the failure mode {@code BuyerOrderActionsController.resend} documents
+     * and deliberately avoids, and the shape the native lanes already have:
+     * verify first, then call the transactional resolve.
+     */
+    @Test
+    void the_google_token_exchange_never_runs_inside_a_transaction() {
+        AtomicBoolean insideTransaction = new AtomicBoolean(true);
+        when(googleTokens.exchangeCode(anyString(), anyString())).thenAnswer(invocation -> {
+            insideTransaction.set(TransactionSynchronizationManager.isActualTransactionActive());
+            return info(address, true);
+        });
+
+        String nonce = states.newBrowserNonce();
+        String state = states.sign("google", OAuthStateService.AUDIENCE_BUYER, nonce);
+
+        var userInfo = google.exchange("an-authorization-code", state, nonce);
+        var signedIn = google.resolve(userInfo, "JUnit/1.0");
+
+        assertThat(insideTransaction)
+                .as("an outbound HTTP call must not be made while a database connection is pinned")
+                .isFalse();
+        assertThat(signedIn.session().rawToken()).isNotBlank();
+        assertNoOrganizerRowsWereCreated();
     }
 
     // ── (5) Create ─────────────────────────────────────────────────────────

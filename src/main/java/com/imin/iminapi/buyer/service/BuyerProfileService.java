@@ -211,9 +211,15 @@ public class BuyerProfileService {
      * would leave the account with no way back in — no password hash and no
      * other identity. Locking someone out of their own tickets is not a valid
      * outcome of a settings toggle.
+     *
+     * <p>Revokes every OTHER session on success — unlinking Google is one of
+     * §2.2's five mandatory revocation events, and it is the whole point of the
+     * control: "remove this sign-in method" that leaves the sessions it minted
+     * alive for the remaining 180 days does not remove access. The acting
+     * session is spared for the same reason {@link #changePassword} spares it.
      */
     @Transactional
-    public void unlinkIdentity(UUID accountId, String provider) {
+    public void unlinkIdentity(UUID accountId, UUID actingSessionId, String provider) {
         BuyerAccount account = accounts.findById(accountId)
                 .orElseThrow(() -> ApiException.notFound("Account"));
 
@@ -231,6 +237,8 @@ public class BuyerProfileService {
         }
 
         identities.delete(target);
+
+        sessions.revokeAllExcept(accountId, actingSessionId);
     }
 
     /** "First Last", or whichever half exists, or null when neither does. */

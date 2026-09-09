@@ -4,7 +4,6 @@ import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.ConsentOrigin;
-import com.imin.iminapi.audience.service.ConsentService;
 import com.imin.iminapi.buyer.email.BuyerAccountEmailer;
 import com.imin.iminapi.buyer.model.BuyerAccount;
 import com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository;
@@ -75,7 +74,7 @@ public class BuyerAccountDeletionService {
     private final BuyerAccountEmailRepository emails;
     private final ConsumerRepository consumers;
     private final MembershipRepository memberships;
-    private final ConsentService consentService;
+    private final BuyerUnsubscribeRunner unsubscribeRunner;
     private final BuyerSessionService sessions;
     private final AuditLogger auditLogger;
     private final BuyerAccountEmailer emailer;
@@ -84,7 +83,7 @@ public class BuyerAccountDeletionService {
                                        BuyerAccountEmailRepository emails,
                                        ConsumerRepository consumers,
                                        MembershipRepository memberships,
-                                       ConsentService consentService,
+                                       BuyerUnsubscribeRunner unsubscribeRunner,
                                        BuyerSessionService sessions,
                                        AuditLogger auditLogger,
                                        BuyerAccountEmailer emailer) {
@@ -92,7 +91,7 @@ public class BuyerAccountDeletionService {
         this.emails = emails;
         this.consumers = consumers;
         this.memberships = memberships;
-        this.consentService = consentService;
+        this.unsubscribeRunner = unsubscribeRunner;
         this.sessions = sessions;
         this.auditLogger = auditLogger;
         this.emailer = emailer;
@@ -222,7 +221,14 @@ public class BuyerAccountDeletionService {
                     try {
                         // The buyer asked for deletion themselves, so this is an Art. 21
                         // objection by the data subject and writes a sticky opt-out row.
-                        consentService.unsubscribe(m.getOrgId(), m.getMembershipId(),
+                        //
+                        // Through the REQUIRES_NEW runner, never straight at
+                        // ConsentService: unsubscribe is @Transactional(REQUIRED), so a
+                        // direct call would participate in THIS transaction and its throw
+                        // would mark the whole deletion rollback-only before the catch
+                        // below ever ran. The catch stays outside that boundary so it
+                        // also covers whatever the proxy raises at the inner commit.
+                        unsubscribeRunner.unsubscribeOne(m.getOrgId(), m.getMembershipId(),
                                 CONSENT_SOURCE, channel, ConsentOrigin.DATA_SUBJECT, principal);
                         count++;
                     } catch (RuntimeException e) {

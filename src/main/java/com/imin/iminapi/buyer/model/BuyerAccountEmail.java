@@ -27,8 +27,8 @@ import java.util.UUID;
  * exist because neither H2 (PG-compat, what the test suite runs) nor a
  * table-level UNIQUE takes a WHERE clause. They must stay in sync with
  * {@code verified_at} / primary-ness, which is why the only supported way to
- * change either is {@link #markVerified(Instant)}, {@link #makePrimary()} and
- * {@link #clearPrimary()} rather than raw setters. Invariants:
+ * change either is {@link #markVerified(Instant)} and {@link #makePrimary()}
+ * rather than raw setters. Invariants:
  * <pre>
  *   verifiedKey != null   &lt;=&gt;  verifiedAt != null
  *   primaryMarker != null  =&gt;  verifiedAt != null
@@ -128,10 +128,6 @@ public class BuyerAccountEmail {
             throw new IllegalStateException("primary address must be verified first");
         }
         this.primaryMarker = buyerAccountId;
-    }
-
-    public void clearPrimary() {
-        this.primaryMarker = null;
     }
 
     @PrePersist

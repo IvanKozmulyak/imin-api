@@ -51,13 +51,6 @@ public interface BuyerSessionRepository extends JpaRepository<BuyerSession, UUID
                                   @Param("keepSessionId") UUID keepSessionId,
                                   @Param("now") Instant now);
 
-    /** Revokes one session by id. Idempotent — a second call matches nothing. */
-    @Transactional
-    @Modifying
-    @Query("update BuyerSession s set s.revokedAt = :now " +
-           "where s.id = :sessionId and s.revokedAt is null")
-    int revokeById(@Param("sessionId") UUID sessionId, @Param("now") Instant now);
-
     /**
      * Revokes by credential rather than by id, because {@code POST /buyer/auth/logout}
      * is permit-listed and must work for a session that has already expired —

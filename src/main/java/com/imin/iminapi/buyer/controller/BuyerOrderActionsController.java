@@ -11,7 +11,6 @@ import com.imin.iminapi.security.RateLimiter;
 import com.imin.iminapi.service.ticket.TicketIssuanceEmailer;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -62,10 +61,13 @@ public class BuyerOrderActionsController {
 
         UUID orderId = authorize(buyer.accountId(), token);
 
-        // Deliberately OUTSIDE the transaction above. TicketIssuanceEmailer.send
-        // makes a synchronous Resend API call, and holding a pooled connection
-        // open across an outbound HTTP request is how a slow third party turns
-        // into an exhausted connection pool.
+        // This controller opens NO transaction, which is what keeps the send
+        // below off a pooled connection: TicketIssuanceEmailer.send makes a
+        // synchronous Resend API call, and holding a connection open across an
+        // outbound HTTP request is how a slow third party turns into an
+        // exhausted pool. Keep it that way — authorize() is two indexed reads
+        // that need no shared transaction, and the moment one is opened around
+        // them this call is inside it.
         emailer.send(orderId);
 
         return ResponseEntity.noContent().header(HttpHeaders.CACHE_CONTROL, NO_STORE).build();
@@ -77,9 +79,15 @@ public class BuyerOrderActionsController {
      * <p>404 and not 403: an order the caller does not own must be
      * indistinguishable from one that does not exist, or the endpoint becomes a
      * way to ask whether a given token is real.
+     *
+     * <p>No {@code @Transactional} here, and not by omission: the only call is a
+     * this-call from {@link #resend}, which never passes through the Spring
+     * proxy, so the annotation this method used to carry created no boundary at
+     * all — it only described one that resend's own comment then relied on. Two
+     * indexed reads need no shared transaction; leaving the annotation off keeps
+     * the code and the comment saying the same thing.
      */
-    @Transactional(readOnly = true)
-    protected UUID authorize(UUID accountId, String token) {
+    private UUID authorize(UUID accountId, String token) {
         Order order = orders.findByToken(token).orElseThrow(() -> ApiException.notFound("Order"));
 
         List<String> verified = emails.findByBuyerAccountIdOrderByCreatedAtAsc(accountId).stream()

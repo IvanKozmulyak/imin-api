@@ -30,7 +30,7 @@ import java.util.UUID;
  * (epic §2.4), and the separation is the point.
  *
  * <p>The browser flow this class drives end-to-end ({@link #authorizeUrl()},
- * {@link #callback}) is Google's. {@link #resolve} is <b>provider-agnostic</b>
+ * {@link #exchange}) is Google's. {@link #resolve} is <b>provider-agnostic</b>
  * and is the shared entry point for every buyer identity: the web Google
  * callback, native Google, and native Apple all land there with an
  * already-verified {@code OAuthUserInfo}, so no two of them can diverge on who
@@ -146,18 +146,26 @@ public class BuyerOAuthService {
     }
 
     /**
-     * Verifies the state (audience <b>and</b> browser binding), exchanges the
-     * code against the <b>buyer</b> redirect URI, and resolves the identity.
+     * Verifies the state (audience <b>and</b> browser binding) and exchanges the
+     * code against the <b>buyer</b> redirect URI. The caller then hands the
+     * result to {@link #resolve} — the same two-step shape as the native lanes,
+     * and for the same reason.
+     *
+     * <p><b>Deliberately NOT {@code @Transactional}.</b> The exchange is a
+     * synchronous POST to Google. Hibernate takes its JDBC connection at
+     * transaction begin (nothing here sets
+     * {@code hibernate.connection.provider_disables_autocommit}), so running it
+     * inside one pins a pooled connection for as long as Google takes to answer
+     * — the failure mode {@code BuyerOrderActionsController.resend} documents.
+     * The transaction starts at {@link #resolve}, once the network is done.
      *
      * <p>An organizer-audience state is rejected here, and a buyer-audience
      * state is rejected by {@code GoogleOAuthService.exchange} on the organizer
      * callback. Both directions are tested; the second is the dangerous one.
      */
-    @Transactional
-    public SignedInBuyer callback(String code, String state, String browserNonce, String userAgent) {
+    public OAuthUserInfo exchange(String code, String state, String browserNonce) {
         states.verify(state, PROVIDER, OAuthStateService.AUDIENCE_BUYER, browserNonce);
-        OAuthUserInfo info = google.exchangeCode(code, props.getGoogle().getBuyerRedirectUri());
-        return resolve(info, userAgent);
+        return google.exchangeCode(code, props.getGoogle().getBuyerRedirectUri());
     }
 
     /** A signed-in buyer. Same shape as the password flow's result, on purpose. */

@@ -4,6 +4,7 @@ import com.imin.iminapi.buyer.model.BuyerAccount;
 import com.imin.iminapi.buyer.model.BuyerAccountEmail;
 import com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository;
 import com.imin.iminapi.buyer.repository.BuyerAccountRepository;
+import com.imin.iminapi.buyer.repository.BuyerEmailVerificationCodeRepository;
 import com.imin.iminapi.buyer.repository.BuyerSessionRepository;
 import com.imin.iminapi.buyer.security.BuyerSessionCookie;
 import com.imin.iminapi.config.TestRateLimitConfig;
@@ -22,6 +23,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -29,6 +31,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.doThrow;
@@ -68,6 +71,7 @@ class BuyerCredentialFlowTest {
     @Autowired BuyerAccountRepository accounts;
     @Autowired BuyerAccountEmailRepository emails;
     @Autowired BuyerSessionRepository sessions;
+    @Autowired BuyerEmailVerificationCodeRepository codes;
     @MockitoBean EmailService email;
 
     private String address;
@@ -193,6 +197,63 @@ class BuyerCredentialFlowTest {
     }
 
     @Test
+    void a_later_signup_on_the_same_address_cannot_steal_the_code_the_first_buyer_received()
+            throws Exception {
+        // The mirror image of the test above, and the ordering that was never
+        // pinned: the real owner signs up FIRST and the squatter second. A code
+        // belongs to the account that asked for it, so the code the owner
+        // received must still verify the OWNER's account. Resolving "the live
+        // code for this address" by recency instead would hand her address —
+        // and every order joined to it — to whoever signed up last.
+        signup(address).andExpect(status().isNoContent());   // real owner
+        UUID owner = onlyRowFor(address).getBuyerAccountId();
+        String ownerCode = codeSentTo(address);
+        reset(email);
+
+        signup(address).andExpect(status().isNoContent());   // squatter, afterwards
+        UUID squatter = rowsFor(address).stream()
+                .map(BuyerAccountEmail::getBuyerAccountId)
+                .filter(id -> !id.equals(owner))
+                .findFirst()
+                .orElseThrow();
+
+        verifyEmail(address, ownerCode).andExpect(status().isOk());
+
+        List<BuyerAccountEmail> after = rowsFor(address);
+        assertThat(after).hasSize(1);
+        assertThat(after.get(0).getBuyerAccountId())
+                .as("the account that received the code is the one that gets verified")
+                .isEqualTo(owner);
+        assertThat(after.get(0).isVerified()).isTrue();
+        assertThat(after.get(0).isPrimary()).isTrue();
+        assertThat(sessions.findByBuyerAccountIdAndRevokedAtIsNull(squatter))
+                .as("redeeming a code must never sign anybody into the later claimant's account")
+                .isEmpty();
+        assertThat(sessions.findByBuyerAccountIdAndRevokedAtIsNull(owner)).isNotEmpty();
+    }
+
+    @Test
+    void resend_sends_nothing_while_two_accounts_hold_a_live_claim_on_one_address() throws Exception {
+        // resend-verification is unauthenticated and carries only an address, so
+        // once a second account claims it there is nothing in the request that
+        // says which claim the caller is completing. Picking one would mail the
+        // squatter's code to the owner's inbox. The neutral 204 is unchanged;
+        // the owner's own code simply keeps working.
+        signup(address).andExpect(status().isNoContent());   // real owner
+        UUID owner = onlyRowFor(address).getBuyerAccountId();
+        String ownerCode = codeSentTo(address);
+
+        signup(address).andExpect(status().isNoContent());   // squatter
+        reset(email);
+
+        resendVerification(address).andExpect(status().isNoContent());
+        verify(email, never()).send(anyString(), anyString(), anyString(), anyString());
+
+        verifyEmail(address, ownerCode).andExpect(status().isOk());
+        assertThat(onlyRowFor(address).getBuyerAccountId()).isEqualTo(owner);
+    }
+
+    @Test
     void a_wrong_code_is_a_neutral_INVALID_CODE() throws Exception {
         signup(address).andExpect(status().isNoContent());
 
@@ -257,6 +318,35 @@ class BuyerCredentialFlowTest {
         resendVerification(address).andExpect(status().isNoContent());
 
         verify(email, never()).send(anyString(), anyString(), anyString(), anyString());
+    }
+
+    /**
+     * The per-code attempt counter must be its own gate.
+     *
+     * <p>{@code consume} reads {@code attempts} and then increments it in a
+     * separate {@code REQUIRES_NEW} transaction, so N concurrent wrong guesses
+     * against one fresh code all read the same value, all pass the check, and
+     * the increments serialise — and the sixth write violates
+     * {@code chk_bevc_attempts_range}, which escapes as a 500 instead of the
+     * neutral {@code INVALID_CODE} this flow promises, and skips the hourly
+     * lockout counter on the way out. {@code POST /buyer/auth/verify-email} has
+     * no bucket at all, so nothing bounds the concurrency. Driving the writes
+     * directly is the deterministic version of that burst.
+     */
+    @Test
+    void a_burst_of_wrong_guesses_cannot_push_attempts_past_the_check_constraint() throws Exception {
+        signup(address).andExpect(status().isNoContent());
+        UUID codeId = codes.findByEmailNormalizedAndConsumedAtIsNullAndExpiresAtAfterOrderByCreatedAtDesc(
+                        address.toLowerCase(), Instant.now()).get(0).getId();
+
+        assertThatCode(() -> {
+            for (int i = 0; i < 8; i++) codes.incrementAttempts(codeId, 5);
+        }).as("the counter must refuse to overrun rather than 500 the request").doesNotThrowAnyException();
+
+        assertThat(codes.findById(codeId).orElseThrow().getAttempts()).isEqualTo(5);
+        verifyEmail(address, "000000")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_CODE"));
     }
 
     // ── Login: one generic 401, and D-2's ordering ─────────────────────────
@@ -362,6 +452,36 @@ class BuyerCredentialFlowTest {
         resetPassword(token, "another-new-password")
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("INVALID_TOKEN"));
+    }
+
+    /**
+     * A second reset link retires the first.
+     *
+     * <p>The one flow whose premise is "somebody else may have my credential"
+     * has to actually close. An earlier link that is still live — forwarded,
+     * leaked out of a shared or compromised inbox, sitting in a proxy log —
+     * could be redeemed straight after the owner's own recovery, take the
+     * account back, and revoke the fresh sessions on its way through. Only the
+     * newest link may work.
+     */
+    @Test
+    void asking_for_a_new_reset_link_retires_the_previous_one() throws Exception {
+        signupAndVerify(address);
+        reset(email);
+
+        forgotPassword(address).andExpect(status().isNoContent());
+        String first = resetTokenSentTo(address);
+        reset(email);
+        forgotPassword(address).andExpect(status().isNoContent());
+        String second = resetTokenSentTo(address);
+        assertThat(second).isNotBlank().isNotEqualTo(first);
+
+        resetPassword(second, "brand-new-password").andExpect(status().isNoContent());
+
+        resetPassword(first, "attacker-chosen-password")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_TOKEN"));
+        login(address, "brand-new-password").andExpect(status().isOk());
     }
 
     @Test

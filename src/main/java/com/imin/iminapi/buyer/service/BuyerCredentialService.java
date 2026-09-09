@@ -23,6 +23,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -172,29 +173,37 @@ public class BuyerCredentialService {
     /**
      * Always returns normally — 204 on every branch.
      *
-     * <p>When several accounts hold unverified claims on one address the
-     * <b>newest claim wins</b>. That is the deterministic reading of an
-     * ambiguous request (§15 D-10): the person who most recently asked is the
-     * person waiting on the mail, and {@code invalidateActiveForEmail} means
-     * only one code is ever live for an address anyway. An address that is
-     * already verified gets nothing — there is nothing to resend, and mailing
-     * its owner on a stranger's request would be a nuisance amplifier.
+     * <p>This request is unauthenticated and carries nothing but an address, so
+     * it can only be honoured when the address has exactly <b>one</b> claimant.
+     * Several accounts may hold unverified claims on one address (§2.3 rule 1),
+     * and there is then no fact in the request that says which of them the
+     * caller is completing. "Newest wins" looked like the deterministic reading
+     * of an ambiguous request and was in fact an account-takeover primitive: a
+     * stranger signing up after the real owner became the newest claim, and the
+     * owner's next resend mailed <i>his</i> code to <i>her</i> inbox — which,
+     * redeemed, verified her address onto his account. Contested addresses
+     * therefore get the same silent 204, and the owner's existing code, which is
+     * still bound to her own account, keeps working.
+     *
+     * <p>An address that is already verified gets nothing either — there is
+     * nothing to resend, and mailing its owner on a stranger's request would be
+     * a nuisance amplifier.
      */
     @Transactional
     public void resendVerification(String rawEmail) {
         String normalized = EmailNormalizer.normalize(rawEmail);
         if (emails.findByVerifiedKey(normalized).isPresent()) return;
 
-        Optional<BuyerAccountEmail> claim =
-                emails.findFirstByEmailNormalizedAndVerifiedAtIsNullOrderByCreatedAtDesc(normalized);
-        if (claim.isEmpty()) return;
+        List<BuyerAccountEmail> pending = emails.findByEmailNormalizedAndVerifiedAtIsNull(normalized);
+        if (pending.stream().map(BuyerAccountEmail::getBuyerAccountId).distinct().count() != 1) return;
 
-        Optional<BuyerAccount> account = accounts.findById(claim.get().getBuyerAccountId());
+        BuyerAccountEmail claim = pending.get(0);
+        Optional<BuyerAccount> account = accounts.findById(claim.getBuyerAccountId());
         if (account.isEmpty()) return;
 
         String code = verification.issue(account.get().getId(), normalized);
         swallow("verification code (resend)", () -> emailer.sendVerificationCode(
-                claim.get().getEmail(), account.get().getLocale(), code, verification.codeTtlMinutes()));
+                claim.getEmail(), account.get().getLocale(), code, verification.codeTtlMinutes()));
     }
 
     // ── Login ──────────────────────────────────────────────────────────────
@@ -252,6 +261,10 @@ public class BuyerCredentialService {
      * <p>A reset link is sent only to a <b>verified</b> address, so it can never
      * hand control of an account to someone who merely typed its address.
      *
+     * <p>Issuing retires the account's outstanding links first: only the newest
+     * one may work, exactly as {@code BuyerEmailVerificationService.issue}
+     * retires outstanding codes.
+     *
      * <p>A Google-only account (NULL {@code password_hash}) can acquire a
      * password this way. That is correct and standard — the link goes to an
      * address the buyer has proved they control — and it is the escape hatch for
@@ -268,11 +281,16 @@ public class BuyerCredentialService {
         if (maybe.isEmpty()) return;
         BuyerAccount account = maybe.get();
 
+        // Only the newest link may work. Anything still outstanding is retired
+        // before the new one is minted — see consumeAllForAccount.
+        Instant now = Instant.now();
+        resetTokens.consumeAllForAccount(account.getId(), now);
+
         TokenService.IssuedToken issued = tokens.issue();
         BuyerPasswordResetToken token = new BuyerPasswordResetToken();
         token.setBuyerAccountId(account.getId());
         token.setTokenHash(issued.tokenHash());
-        token.setExpiresAt(Instant.now().plus(Duration.ofMinutes(props.getPasswordResetTtlMinutes())));
+        token.setExpiresAt(now.plus(Duration.ofMinutes(props.getPasswordResetTtlMinutes())));
         resetTokens.save(token);
 
         swallow("password reset", () -> emailer.sendPasswordReset(
@@ -305,6 +323,8 @@ public class BuyerCredentialService {
         accounts.save(account);
         token.setConsumedAt(now);
         resetTokens.save(token);
+        // And any link minted in parallel with the one just used dies with it.
+        resetTokens.consumeAllForAccount(account.getId(), now);
 
         sessions.revokeAll(account.getId());
 
