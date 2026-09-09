@@ -9,6 +9,7 @@ import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.security.RoleGuard;
 import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.service.audit.AuditLogger;
 import org.springframework.http.HttpStatus;
@@ -45,8 +46,25 @@ public class TeamService {
         return users.findByOrgIdOrderByCreatedAtAsc(p.orgId()).stream().map(TeamMemberDto::from).toList();
     }
 
+    /**
+     * Invites a new team member.
+     *
+     * <p>Both gates run before anything else. The role gate is first because a
+     * MEMBER minting an ADMIN was full privilege escalation: the invited row is
+     * created unverified and with no password hash, so whoever controls the
+     * address completes it through the public verify-email flow and walks away
+     * with a persistent ADMIN the org never approved. The grant gate is second
+     * because "may invite" and "may invite <i>at this level</i>" are different
+     * questions — an ADMIN inviting an OWNER would grow a peer above them.
+     *
+     * <p>Both fire before {@code existsByEmailLower}, so a caller who may not
+     * invite cannot use the 409-vs-200 split as an account-existence oracle.
+     */
     @Transactional
     public InviteResponse invite(AuthPrincipal p, InviteRequest req) {
+        RoleGuard.requireAtLeast(p, UserRole.ADMIN, "invite team members");
+        UserRole granted = UserRole.fromWire(req.role());
+        RoleGuard.requireCanGrant(p, granted, "invite a team member");
         String emailLower = req.email().toLowerCase();
         if (users.existsByEmailLower(emailLower)) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.DUPLICATE,
@@ -57,7 +75,7 @@ public class TeamService {
         u.setEmail(req.email());
         u.setFirstName("");
         u.setLastName("");
-        u.setRole(UserRole.fromWire(req.role()));
+        u.setRole(granted);
         u.setAvatarInitials(initialsOf(req.email()));
         u.setPasswordHash(null); // pending until invite-accept (post-V1)
         User saved = users.save(u);
@@ -66,11 +84,23 @@ public class TeamService {
         return new InviteResponse(saved.getId(), saved.getEmail(), saved.getRole().wireValue());
     }
 
+    /**
+     * Removes a team member.
+     *
+     * <p>The role gate comes before the lookup so a MEMBER gets the same 403 for
+     * every id and learns nothing about who exists. Cross-org targets keep the
+     * leak-safe 404 the rest of the organizer surface returns
+     * ({@code CrossOrgScopingTest}), and no OWNER may be removed at all — which
+     * is what stops the org being left without one.
+     */
     @Transactional
     public void remove(AuthPrincipal p, UUID userId) {
+        RoleGuard.requireAtLeast(p, UserRole.ADMIN, "remove team members");
         User target = users.findById(userId).orElseThrow(() -> ApiException.notFound("User"));
         if (!target.getOrgId().equals(p.orgId())) throw ApiException.notFound("User");
         if (target.getRole() == UserRole.OWNER) throw ApiException.forbidden("Cannot remove the org owner");
+        // An ADMIN may not remove a peer ADMIN — only an OWNER outranks one.
+        RoleGuard.requireCanGrant(p, target.getRole(), "remove a team member");
         String removedEmail = target.getEmail();
         UUID removedId = target.getId();
         users.delete(target);
