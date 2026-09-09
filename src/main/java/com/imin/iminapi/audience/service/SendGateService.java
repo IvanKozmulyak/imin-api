@@ -56,6 +56,9 @@ public class SendGateService {
         this.auditLogger = auditLogger;
     }
 
+    /** {@code Membership.status} for an accepted, not yet executed Art.17 erasure. */
+    private static final String ERASE_PENDING = "erase_pending";
+
     public record GateResult(List<UUID> sendable, List<ExclusionReason> excluded) {}
 
     /**
@@ -68,8 +71,15 @@ public class SendGateService {
             return new GateResult(List.of(), List.of());
         }
 
-        // Load only memberships belonging to this org — tenant isolation
-        List<Membership> memberships = membershipRepo.findByIdsAndOrgId(membershipIds, orgId);
+        // Load only memberships belonging to this org — tenant isolation. A membership with
+        // an accepted Art.17 erasure request is dropped here for the same reason and in the
+        // same way: silently, with no exclusion reason, because it is no longer part of the
+        // audience at all. It used to stay fully sendable for the whole 30-day grace window
+        // — the id can still reach this method from a static segment snapshot or a
+        // campaign recipient row materialized before the request.
+        List<Membership> memberships = membershipRepo.findByIdsAndOrgId(membershipIds, orgId).stream()
+                .filter(m -> !ERASE_PENDING.equals(m.getStatus()))
+                .toList();
 
         // Batch: marketing suppressions for this org
         List<UUID> candidateIds = memberships.stream()

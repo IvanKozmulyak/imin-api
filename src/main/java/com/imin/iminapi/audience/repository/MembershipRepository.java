@@ -71,6 +71,12 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
     @Query("select m from Membership m where m.consumerId in :consumerIds")
     List<Membership> findAllOrgsByConsumerIdIn(@Param("consumerIds") Collection<UUID> consumerIds);
 
+    // A membership with an accepted Art.17 erasure request is not part of the audience for
+    // the whole 30-day grace window: the listing, the export, every segment and the send
+    // gate must already behave as if it were gone. Only the single-record reads
+    // (findByIdAndOrgId, findErasureDue) still see it — DSAR itself has to keep working.
+    // See ERASE_PENDING_EXCLUDED below and SendGateService.evaluate.
+
     // ---- keyset pagination (S2): sort by (created_at DESC, membership_id DESC) ----
     // search is split into its own methods: a nullable String fed into concat()/lower()
     // is bound by Hibernate as bytea when null, and Postgres rejects lower(bytea)
@@ -79,6 +85,7 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
     @Query("""
             select m from Membership m
              where m.orgId = :orgId
+               and m.status <> 'erase_pending'
                and (:lifecycle is null or m.lifecycle = :lifecycle)
              order by m.createdAt desc, m.membershipId desc
             """)
@@ -89,6 +96,7 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
     @Query("""
             select m from Membership m
              where m.orgId = :orgId
+               and m.status <> 'erase_pending'
                and (:lifecycle is null or m.lifecycle = :lifecycle)
                and (lower(m.displayName) like lower(concat('%', :search, '%'))
                     or lower(cast(m.membershipId as string)) like lower(concat('%', :search, '%')))
@@ -105,6 +113,7 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
     @Query("""
             select m from Membership m
              where m.orgId = :orgId
+               and m.status <> 'erase_pending'
                and (:lifecycle is null or m.lifecycle = :lifecycle)
                and (m.createdAt < :cursorAt
                     or (m.createdAt = :cursorAt and m.membershipId < :cursorId))
@@ -119,6 +128,7 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
     @Query("""
             select m from Membership m
              where m.orgId = :orgId
+               and m.status <> 'erase_pending'
                and (:lifecycle is null or m.lifecycle = :lifecycle)
                and (lower(m.displayName) like lower(concat('%', :search, '%'))
                     or lower(cast(m.membershipId as string)) like lower(concat('%', :search, '%')))
@@ -135,25 +145,25 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
 
     // ---- segment resolution ----
 
-    @Query("select m from Membership m where m.orgId = :orgId and m.events >= 2")
+    @Query("select m from Membership m where m.orgId = :orgId and m.status <> 'erase_pending' and m.events >= 2")
     List<Membership> findRepeats(@Param("orgId") UUID orgId);
 
-    @Query("select m from Membership m where m.orgId = :orgId and m.spendMinor >= 20000 and m.events >= 4")
+    @Query("select m from Membership m where m.orgId = :orgId and m.status <> 'erase_pending' and m.spendMinor >= 20000 and m.events >= 4")
     List<Membership> findVips(@Param("orgId") UUID orgId);
 
-    @Query("select m from Membership m where m.orgId = :orgId and m.recencyDays >= 90 and m.consentStatus = 'subscribed'")
+    @Query("select m from Membership m where m.orgId = :orgId and m.status <> 'erase_pending' and m.recencyDays >= 90 and m.consentStatus = 'subscribed'")
     List<Membership> findLapsed(@Param("orgId") UUID orgId);
 
-    @Query("select m from Membership m where m.orgId = :orgId and m.events = 1")
+    @Query("select m from Membership m where m.orgId = :orgId and m.status <> 'erase_pending' and m.events = 1")
     List<Membership> findFirstTimers(@Param("orgId") UUID orgId);
 
-    @Query("select m from Membership m where m.orgId = :orgId and m.nps >= 9")
+    @Query("select m from Membership m where m.orgId = :orgId and m.status <> 'erase_pending' and m.nps >= 9")
     List<Membership> findPromoters(@Param("orgId") UUID orgId);
 
-    @Query("select m from Membership m where m.orgId = :orgId and m.noShow > 0")
+    @Query("select m from Membership m where m.orgId = :orgId and m.status <> 'erase_pending' and m.noShow > 0")
     List<Membership> findBoughtNoShowed(@Param("orgId") UUID orgId);
 
-    @Query("select m from Membership m where m.orgId = :orgId and m.recencyDays <= 30 and m.events <= 1")
+    @Query("select m from Membership m where m.orgId = :orgId and m.status <> 'erase_pending' and m.recencyDays <= 30 and m.events <= 1")
     List<Membership> findNewest30d(@Param("orgId") UUID orgId);
 
     @Query("select m from Membership m where m.membershipId in :ids and m.orgId = :orgId")
@@ -203,7 +213,7 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
     long countSmsSubscribedByOrgId(@Param("orgId") UUID orgId);
 
     /** All membership ids for an org — feeds the hub Send-Gate evaluation over ALL members. */
-    @Query("select m.membershipId from Membership m where m.orgId = :orgId")
+    @Query("select m.membershipId from Membership m where m.orgId = :orgId and m.status <> 'erase_pending'")
     List<UUID> findAllMembershipIdsByOrgId(@Param("orgId") UUID orgId);
 
     /** List-growth: count of new memberships per week over 8 weeks */
@@ -263,6 +273,7 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
     @Query("""
             select m from Membership m
              where m.orgId = :orgId
+               and m.status <> 'erase_pending'
                and m.consentStatus = 'subscribed'
                and m.consentBasis is not null
                and m.membershipId in :membershipIds
@@ -273,7 +284,7 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
     // ---- backfill ----
 
     /** All memberships for backfill/recompute — admin use, always scoped */
-    @Query("select m from Membership m where m.orgId = :orgId")
+    @Query("select m from Membership m where m.orgId = :orgId and m.status <> 'erase_pending'")
     List<Membership> findAllByOrgId(@Param("orgId") UUID orgId);
 
     // ---- erasure job ----

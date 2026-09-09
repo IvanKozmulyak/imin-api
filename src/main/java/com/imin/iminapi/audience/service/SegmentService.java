@@ -178,7 +178,12 @@ public class SegmentService {
     public List<Membership> resolveMembers(UUID orgId, Segment segment) {
         if ("static".equals(segment.getKind()) && segment.getSnapshotIds() != null) {
             List<UUID> ids = parseSnapshotIds(segment.getSnapshotIds());
-            return ids.isEmpty() ? List.of() : membershipRepo.findByIdsAndOrgId(ids, orgId);
+            if (ids.isEmpty()) return List.of();
+            // A snapshot taken before an Art.17 request must not carry that member forward:
+            // findByIdsAndOrgId is id-keyed and status-blind, unlike the dynamic queries.
+            return membershipRepo.findByIdsAndOrgId(ids, orgId).stream()
+                    .filter(m -> !"erase_pending".equals(m.getStatus()))
+                    .collect(Collectors.toList());
         }
         return applyRules(orgId, segment);
     }
