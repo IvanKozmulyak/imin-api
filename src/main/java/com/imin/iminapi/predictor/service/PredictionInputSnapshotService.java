@@ -115,7 +115,7 @@ public class PredictionInputSnapshotService {
                 iso(startsAt),
                 startsAt == null ? null : startsAt.atZone(zone).getDayOfWeek().getValue(),
                 season == null ? null : season.name(),
-                leadTimeDays(eventDay),
+                leadTimeDays(eventDay, zone),
                 e.getCurrency(),
                 tierLines,
                 promoLines,
@@ -126,11 +126,16 @@ public class PredictionInputSnapshotService {
                 corpusLine(cc));
     }
 
-    /** Whole days from the scoring day to the event day (coarse on purpose — see record doc). */
-    private Integer leadTimeDays(LocalDate eventDay) {
+    /**
+     * Whole days from the scoring day to the event day (coarse on purpose — see record doc).
+     * BOTH sides are read in the EVENT's zone: {@code eventDay} already is, so taking "today" in
+     * UTC would subtract two different calendars and be off by one for part of every UTC day —
+     * which also flips the snapshot hash (and forces a re-score) at a boundary that has nothing
+     * to do with the event's own day rolling over. Mirrors {@code ReforecastService.daysOut}.
+     */
+    private Integer leadTimeDays(LocalDate eventDay, ZoneId zone) {
         if (eventDay == null) return null;
-        LocalDate today = LocalDate.ofInstant(clock.instant(), ZoneId.of("UTC"));
-        return (int) ChronoUnit.DAYS.between(today, eventDay);
+        return (int) ChronoUnit.DAYS.between(LocalDate.ofInstant(clock.instant(), zone), eventDay);
     }
 
     /**
