@@ -129,7 +129,7 @@ public class ReforecastService {
         }
 
         Prior prior = latestReforecast(eventId);
-        Double velocity = velocity(eventId, startsAt, zone, currentSold);
+        Double velocity = velocity(eventId, zone, currentSold);
 
         ReforecastResult result;
         ProjectionBand newBand;
@@ -189,7 +189,7 @@ public class ReforecastService {
                     w == null ? null : w.precipProbabilityMaxPct(), w == null ? null : w.tempMaxC()));
         }
 
-        ReforecastResult.Alert alert = alertFor(prior, newBand, p.finalLow(), p.finalHigh());
+        ReforecastResult.Alert alert = alertFor(prior, newBand);
         return new ReforecastResult("ready", 1, newBand.wire(), range, revenue, velocity, eta, pacing,
                 narration, alert, null, clock.instant());
     }
@@ -216,7 +216,7 @@ public class ReforecastService {
         ProjectionBand band = ProjectionBand.classify((rawLow + rawHigh) / 2.0, capacity);
         ReforecastResult.Range range = new ReforecastResult.Range(low, high);
         ReforecastResult.RevenueRange revenue = revenueRange(eventId, currentSold, range);
-        ReforecastResult.Alert alert = alertFor(prior, band, low, high);
+        ReforecastResult.Alert alert = alertFor(prior, band);
         return new ReforecastResult("ready", 0, band.wire(), range, revenue, velocity, null, null,
                 null, alert, null, at);
     }
@@ -242,7 +242,7 @@ public class ReforecastService {
                 Math.round(range.low() * avg), Math.round(range.high() * avg));
     }
 
-    private Double velocity(UUID eventId, Instant startsAt, ZoneId zone, int currentSold) {
+    private Double velocity(UUID eventId, ZoneId zone, int currentSold) {
         if (currentSold <= 0) return 0.0;
         LocalDate asOf = LocalDate.ofInstant(clock.instant(), zone);
         return trajectories.velocityPerDayLast7(eventId, asOf);
@@ -273,8 +273,13 @@ public class ReforecastService {
         return out;
     }
 
-    /** Carry the prior alert forward unless this recompute crossed a band, in which case replace it. */
-    private ReforecastResult.Alert alertFor(Prior prior, ProjectionBand newBand, int low, int high) {
+    /**
+     * Carry the prior alert forward unless this recompute crossed a band, in which case replace
+     * it. The projected RANGE is deliberately not an input: the alert carries only the band
+     * phrases, and the range text a reader sees is added later by {@code ReforecastAlertNotifier}
+     * from the result itself.
+     */
+    private ReforecastResult.Alert alertFor(Prior prior, ProjectionBand newBand) {
         if (prior != null && prior.band() != null && newBand != null && !prior.band().equals(newBand)) {
             String tone = newBand.ordinal() > prior.band().ordinal() ? "up" : "down";
             return new ReforecastResult.Alert(tone, prior.band().phrase(), newBand.phrase(), clock.instant().toString());
