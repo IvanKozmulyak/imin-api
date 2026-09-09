@@ -81,10 +81,10 @@ public class BuyerProfileController {
     public ResponseEntity<BuyerMeResponse> onboarding(@CurrentBuyer BuyerPrincipal buyer,
                                                       @Valid @RequestBody OnboardingRequest body) {
         Map<String, Object> profile = new LinkedHashMap<>();
-        profile.put("firstName", body.firstName());
-        profile.put("lastName", body.lastName());
-        profile.put("city", body.city());
-        profile.put("dateOfBirth", body.dateOfBirth());
+        putIfSupplied(profile, "firstName", body.firstName());
+        putIfSupplied(profile, "lastName", body.lastName());
+        putIfSupplied(profile, "city", body.city());
+        putIfSupplied(profile, "dateOfBirth", body.dateOfBirth());
 
         BuyerAccount account = service.completeOnboarding(
                 buyer.accountId(), profile,
@@ -94,6 +94,21 @@ public class BuyerProfileController {
         var payload = BuyerMeResponse.of(
                 account, emails.findByBuyerAccountIdOrderByCreatedAtAsc(account.getId()));
         return ResponseEntity.ok().header(HttpHeaders.CACHE_CONTROL, NO_STORE).body(payload);
+    }
+
+    /**
+     * Onboarding only ever SETS. A field the buyer left empty must not reach
+     * {@code updateProfile}, whose contract is that a present key with a null
+     * value clears the column: the finish-registration screen starts every
+     * input empty and posts the untouched ones as explicit nulls, so putting
+     * them unconditionally wiped the name a Google or Apple sign-in supplied —
+     * and, through the display-name rebuild, the display name with them.
+     * Clearing a field stays {@code PATCH /buyer/me}'s job.
+     */
+    private static void putIfSupplied(Map<String, Object> profile, String key, String value) {
+        if (value != null) {
+            profile.put(key, value);
+        }
     }
 
     /**
