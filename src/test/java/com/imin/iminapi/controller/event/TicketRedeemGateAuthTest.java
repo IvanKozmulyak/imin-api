@@ -208,6 +208,23 @@ class TicketRedeemGateAuthTest {
         assertThat(row.getSummary()).doesNotContain("buyer@example.test");
     }
 
+    /**
+     * api-17: {@code Req} carries {@code @NotBlank} but the parameter is bound without
+     * {@code @Valid}, so the constraint never ran — the behaviour was correct only because the
+     * handler repeats the check by hand. The two disagree on the wire: bean validation answers
+     * FIELD_INVALID, the hand-rolled check answers INVALID_REQUEST. This pins which one the gate
+     * PWA actually sees, so the annotation cannot be "cleaned up" into a silent contract change.
+     */
+    @Test
+    void a_blank_qrPayload_is_INVALID_REQUEST() throws Exception {
+        mvc.perform(post("/api/v1/orgs/" + org.getId() + "/events/" + event.getId() + "/tickets/redeem")
+                        .header("Authorization", "Bearer " + gateToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("qrPayload", "  "))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_REQUEST"));
+    }
+
     /** A scan that admitted nobody is not an admission and must not read like one. */
     @Test
     void a_failed_scan_writes_no_redemption_row() throws Exception {

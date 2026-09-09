@@ -7,7 +7,6 @@ import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.service.audit.AuditLogger;
 import com.imin.iminapi.service.ticket.TicketRedeemService;
-import jakarta.validation.constraints.NotBlank;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -31,7 +30,16 @@ import java.util.UUID;
 @RestController
 public class TicketRedeemController {
 
-    public record Req(@NotBlank String qrPayload) {}
+    /**
+     * No {@code @NotBlank} here on purpose. It used to carry one, but the parameter is bound
+     * without {@code @Valid} (see redeem below), so the constraint never ran — the endpoint read
+     * as validated-by-annotation while the hand-rolled check twenty lines down was what actually
+     * enforced it. The two do not agree on the wire: bean validation answers FIELD_INVALID, the
+     * explicit check answers INVALID_REQUEST, and INVALID_REQUEST is what the gate PWA has
+     * always been given. Dropping the dead annotation, rather than adding {@code @Valid},
+     * is what keeps that contract; TicketRedeemGateAuthTest pins the code.
+     */
+    public record Req(String qrPayload) {}
 
     private static final Logger log = LoggerFactory.getLogger(TicketRedeemController.class);
 
