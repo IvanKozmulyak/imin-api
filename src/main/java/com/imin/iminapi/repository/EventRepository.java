@@ -102,11 +102,6 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
         "AND e.status = com.imin.iminapi.model.EventStatus.PAST")
     long countPast(@Param("orgId") UUID orgId);
 
-    @Query(
-        "SELECT COALESCE(SUM(e.revenueMinor), 0), COALESCE(SUM(e.sold), 0) " +
-        "FROM Event e WHERE e.orgId = :orgId AND e.deletedAt IS NULL")
-    List<Object[]> sumRevenueAndSold(@Param("orgId") UUID orgId);
-
     @Query("""
         SELECT e FROM Event e
          WHERE e.id = :id
