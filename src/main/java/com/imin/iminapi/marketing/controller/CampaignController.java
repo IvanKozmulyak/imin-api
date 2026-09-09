@@ -141,7 +141,11 @@ public class CampaignController {
 
     /**
      * Recipient log for one campaign — org-scoped via the auth principal (404 no-leak for
-     * another org's campaign), unchanged from before.
+     * another org's campaign).
+     *
+     * <p><b>OWNER/ADMIN only</b> (mkt-edge-1): the rows carry every targeted contact's raw
+     * address, so a MEMBER now gets {@code 403 FORBIDDEN}. Opening page 0 writes one
+     * {@code CAMPAIGN_RECIPIENTS_VIEWED} audit row.
      *
      * <p>Response is {@code items}/{@code page}/{@code size} (original shape) plus additive
      * {@code total} (real aggregate over the active filter) and {@code counts} (real aggregates

@@ -59,4 +59,16 @@ public final class AuditActions {
     public static final String CAMPAIGN_DUPLICATED = "CAMPAIGN_DUPLICATED";
     public static final String CAMPAIGN_TEST_SENT = "CAMPAIGN_TEST_SENT";
     public static final String CAMPAIGN_DELETED = "CAMPAIGN_DELETED";
+    /**
+     * Bulk mail was dispatched to this org's audience — the marketing analogue of
+     * {@link #ATTENDEES_EXPORTED}: irreversible, visible to third parties, and previously
+     * the only campaign mutation that left no record of who did it.
+     */
+    public static final String CAMPAIGN_SENT = "CAMPAIGN_SENT";
+    /**
+     * The recipient log — every targeted contact's raw address — was opened. Written once per
+     * read of the FIRST page only: the log is paged and polled, so a row per page would bury
+     * the trail rather than be one.
+     */
+    public static final String CAMPAIGN_RECIPIENTS_VIEWED = "CAMPAIGN_RECIPIENTS_VIEWED";
 }

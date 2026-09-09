@@ -15,8 +15,10 @@ import com.imin.iminapi.marketing.service.CampaignService;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.service.audit.AuditLogger;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpStatus;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
@@ -29,6 +31,11 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 /**
  * Contract of {@code GET /api/v1/marketing/campaigns/{id}/recipients} against REAL repositories —
@@ -353,5 +360,38 @@ class CampaignRecipientLogTest {
         RecipientPage page = service.listRecipients(c.getId(), principal(org), null, null, 0, 50);
         assertThat(page.items()).hasSize(1);
         assertThat(page.items().get(0).name()).isNull();
+    }
+
+    // ---- 6. role gate + audit trail (mkt-edge-1) ----
+
+    @Test
+    void aMemberCannotReadTheRecipientLog() {
+        // The log hands back every targeted contact's raw address, page after page — the same
+        // disclosure SalesDashboardController.exportAttendees gates on ADMIN. A within-org role
+        // refusal is a 403 (RoleGuard), not the cross-org 404.
+        UUID org = UUID.randomUUID();
+        Campaign c = campaign(org);
+        recipient(c.getId(), null, "delivered", null, null);
+
+        AuthPrincipal member = new AuthPrincipal(UUID.randomUUID(), org, UserRole.MEMBER, UUID.randomUUID());
+        assertThatThrownBy(() -> service.listRecipients(c.getId(), member, null, null, 0, 50))
+                .isInstanceOf(ApiException.class)
+                .extracting(e -> ((ApiException) e).status())
+                .isEqualTo(HttpStatus.FORBIDDEN);
+    }
+
+    @Test
+    void theLogWritesOneAuditRowOnTheFirstPageOnly() {
+        // The log is paged AND polled by the dashboard; a row per page would bury the trail.
+        UUID org = UUID.randomUUID();
+        Campaign c = campaign(org);
+        for (int i = 0; i < 4; i++) recipient(c.getId(), null, "delivered", null, null);
+
+        service.listRecipients(c.getId(), principal(org), null, null, 0, 2);
+        service.listRecipients(c.getId(), principal(org), null, null, 1, 2);
+
+        verify(auditLogger, times(1)).record(
+                any(), eq(AuditActions.CAMPAIGN_RECIPIENTS_VIEWED), eq("campaign"),
+                eq(c.getId()), anyString());
     }
 }

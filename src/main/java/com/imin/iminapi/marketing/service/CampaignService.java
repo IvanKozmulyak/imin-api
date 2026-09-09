@@ -385,6 +385,12 @@ public class CampaignService {
             String status, String engagement, int page, int size) {
         campaigns.findByIdAndOrgId(campaignId, principal.orgId())
                 .orElseThrow(() -> ApiException.notFound("Campaign"));
+        // mkt-edge-1: this hands back every targeted contact's raw address, 200 rows a page over
+        // unlimited pages — the same class of disclosure SalesDashboardController.exportAttendees
+        // gates on ADMIN. The org-scope 404 above runs FIRST so a foreign campaign stays a 404
+        // (no existence leak) rather than becoming a role-shaped 403.
+        com.imin.iminapi.security.RoleGuard.requireAtLeast(
+                principal, com.imin.iminapi.model.UserRole.ADMIN, "read the campaign recipient log");
 
         List<String> statuses = parseStatuses(status);
         Engagement eng = parseEngagement(engagement);
@@ -422,6 +428,14 @@ public class CampaignService {
         List<com.imin.iminapi.marketing.dto.RecipientDto> items = rows.stream()
                 .map(r -> com.imin.iminapi.marketing.dto.RecipientDto.from(r, displayName(names, r)))
                 .toList();
+
+        // One row per opening of the log, not per page: the dashboard pages and polls this
+        // endpoint, so auditing every call would drown the trail it exists to leave. Written
+        // after the rows are loaded, so a 403/404 never reads as a disclosure that happened.
+        if (page == 0) {
+            audit.record(principal, AuditActions.CAMPAIGN_RECIPIENTS_VIEWED, "campaign", campaignId,
+                    "Campaign recipient log opened (" + total + " row(s) under the active filter)");
+        }
 
         return new com.imin.iminapi.marketing.dto.RecipientPage(items, page, size, total,
                 campaignRecipientRepository.chipCounts(campaignId));
