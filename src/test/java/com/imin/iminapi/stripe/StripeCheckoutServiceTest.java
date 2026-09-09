@@ -287,6 +287,39 @@ class StripeCheckoutServiceTest {
         verify(inventoryService).attachSessionId(eq(reservationId), eq("cs_test"));
     }
 
+    /**
+     * events-1: the tier-level sale window was the only gate on the buy path, so a buyer
+     * holding a tierId could reserve inventory and be charged before the event-level
+     * on-sale time. Leak-safe 404, same shape the tier-level checks use.
+     */
+    @Test
+    void createCheckoutSession_returns404_whenEventOnSaleAtIsInTheFuture() throws Exception {
+        Event notYetOnSale = event();
+        notYetOnSale.setOnSaleAt(NOW.plusSeconds(3600));
+        when(events.findPublic(eventId)).thenReturn(Optional.of(notYetOnSale));
+
+        assertThatThrownBy(() -> svc.createCheckoutSession(eventId, tierId, 1, null))
+                .isInstanceOf(ApiException.class)
+                .satisfies(ex -> assertThat(((ApiException) ex).status()).isEqualTo(HttpStatus.NOT_FOUND));
+
+        verify(inventoryService, never()).reserve(any(UUID.class), anyInt(),
+                any(Instant.class), nullable(String.class));
+        verify(sessionService, never()).create(any(SessionCreateParams.class));
+    }
+
+    @Test
+    void createCheckoutSession_returns404_whenEventIsCancelled() throws Exception {
+        Event cancelled = event();
+        cancelled.setStatus(EventStatus.CANCELLED);
+        when(events.findPublic(eventId)).thenReturn(Optional.of(cancelled));
+
+        assertThatThrownBy(() -> svc.createCheckoutSession(eventId, tierId, 1, null))
+                .isInstanceOf(ApiException.class)
+                .satisfies(ex -> assertThat(((ApiException) ex).status()).isEqualTo(HttpStatus.NOT_FOUND));
+
+        verify(sessionService, never()).create(any(SessionCreateParams.class));
+    }
+
     @Test
     void createCheckoutSession_remapsConflictFromReserveTo404() throws Exception {
         // InventoryService throws CONFLICT when there aren't enough tickets — we collapse
@@ -468,7 +501,6 @@ class StripeCheckoutServiceTest {
                 any(), nullable(String.class), nullable(String.class),
                 any(com.imin.iminapi.model.CheckoutConsent.class)))
                 .thenReturn(order);
-        when(freeCheckoutService.findOrderTickets(order.getId())).thenReturn(java.util.List.of());
         when(freeCheckoutService.orderUrl(order)).thenReturn("http://localhost:3000/order/ord_abc");
 
         String url = svc.createCheckoutSession(eventId, tierId, 1, null, 0, "free@example.com");
@@ -607,7 +639,6 @@ class StripeCheckoutServiceTest {
                 any(), nullable(String.class), nullable(String.class),
                 any(com.imin.iminapi.model.CheckoutConsent.class)))
                 .thenReturn(order);
-        when(freeCheckoutService.findOrderTickets(order.getId())).thenReturn(java.util.List.of());
         when(freeCheckoutService.orderUrl(order)).thenReturn("http://localhost:3000/order/ord_zeroed");
 
         String url = svc.createCheckoutSession(eventId, tierId, 1, "ALLFREE", 1000, "buyer@example.com");

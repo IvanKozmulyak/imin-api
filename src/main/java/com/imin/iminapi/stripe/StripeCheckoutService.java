@@ -522,10 +522,11 @@ public class StripeCheckoutService {
         // 1. Load + validate event (must be publicly visible).
         Event event = events.findPublic(eventId).orElseThrow(() -> ApiException.notFound("Event"));
 
-        // 2. Load + validate tier (belongs to event, enabled, in sale window, has price+quantity).
+        // 2. Load + validate the event window (status, on-sale/close) and the tier
+        //    (belongs to event, enabled, in sale window, has price+quantity).
         // Shared eligibility predicate so quote and checkout never disagree on buyability — see PublicTierEligibility.
         Instant now = clock.instant();
-        TicketTier tier = PublicTierEligibility.loadBuyableTier(tiers, eventId, tierId, now);
+        TicketTier tier = PublicTierEligibility.loadBuyableTier(tiers, event, tierId, now);
 
         // 2a. Price-drift guard. No-op when the client didn't send `expectedPriceMinor`.
         // When supplied and mismatched → 409 PRICE_CHANGED with `currentPriceMinor` in fields.

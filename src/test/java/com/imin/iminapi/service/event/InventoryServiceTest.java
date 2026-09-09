@@ -11,6 +11,7 @@ import com.imin.iminapi.security.ErrorCode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
 
@@ -25,6 +26,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -166,6 +168,27 @@ class InventoryServiceTest {
         assertThat(saved.getValue().getReserved()).isEqualTo(4);
     }
 
+    /**
+     * events-3: reserve() and confirmSold() both lock ticket_tiers first and touch
+     * ticket_reservations second; releaseReservation used to do the reverse, which is a
+     * real PostgreSQL deadlock between the sweeper and the payment_intent.succeeded
+     * webhook. All three transitions must take the two row locks in the same order.
+     */
+    @Test
+    void release_locksTierBeforeTouchingTheReservationRow() {
+        TicketTier t = tier(100, 7, 0);
+        TicketReservation r = held(t.getId(), 3);
+        when(reservations.findById(r.getId())).thenReturn(Optional.of(r));
+        when(reservations.markReleased(eq(r.getId()), eq(NOW), anyString())).thenReturn(1);
+        when(tiers.findByIdForUpdate(t.getId())).thenReturn(Optional.of(t));
+
+        svc.releaseReservation(r.getId(), "SWEEPER");
+
+        InOrder ord = inOrder(tiers, reservations);
+        ord.verify(tiers).findByIdForUpdate(t.getId());
+        ord.verify(reservations).markReleased(eq(r.getId()), eq(NOW), anyString());
+    }
+
     @Test
     void release_unknownReservation_isNoOp() {
         UUID unknown = UUID.randomUUID();
@@ -197,6 +220,7 @@ class InventoryServiceTest {
         TicketReservation r = held(t.getId(), 3);
         when(reservations.findById(r.getId())).thenReturn(Optional.of(r));
         when(reservations.markReleased(eq(r.getId()), eq(NOW), anyString())).thenReturn(0);
+        when(tiers.findByIdForUpdate(t.getId())).thenReturn(Optional.of(t));
 
         svc.releaseReservation(r.getId(), "WEBHOOK_EXPIRED");
 

@@ -7,12 +7,14 @@ import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.EventVisibility;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.model.PromoCode;
 import com.imin.iminapi.model.TicketTier;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.repository.PromoCodeRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.TicketReservationRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
@@ -70,6 +72,7 @@ class FreeCheckoutConcurrencyTest {
     @Autowired TicketReservationRepository reservations;
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
+    @Autowired PromoCodeRepository promos;
     @Autowired UserRepository users;
 
     private Event event;
@@ -187,6 +190,47 @@ class FreeCheckoutConcurrencyTest {
                 CheckoutAttribution.NONE, "en", null);
 
         assertThat(orders.findByEventIdOrderByCreatedAtDesc(event.getId())).hasSize(2);
+    }
+
+    // ── The promo cap, against the real UPDATE ─────────────────────────────
+
+    /**
+     * events-8: the cap was a check-then-act. {@code resolvePromoCode} compared
+     * {@code usedCount >= maxUses} on a plain read and the increment was an unconditional
+     * {@code SET used_count = used_count + 1}, so two callers holding the last remaining use
+     * both passed the check and both incremented, landing at {@code maxUses + 1}. The
+     * predicate now lives in the UPDATE, and the free path — which issues inside the
+     * request — has to treat a lost race as "exhausted" and roll the order back.
+     */
+    @Test
+    void aPromoAtItsCapCannotBeRedeemedAndCostsNoInventory() {
+        PromoCode atCap = seedPromo("MAXED", 1, 1);
+
+        assertThatThrownBy(() -> freeCheckout.issueFreeOrder(event, freeTier, QUANTITY, BUYER,
+                atCap, false, false, CheckoutAttribution.NONE, "en", "capped-key"))
+                .isInstanceOf(com.imin.iminapi.security.ApiException.class)
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.INVALID_REQUEST);
+
+        assertThat(orders.findByEventIdOrderByCreatedAtDesc(event.getId())).isEmpty();
+        assertThat(tickets.findAll()).isEmpty();
+        TicketTier reloaded = tiers.findById(freeTier.getId()).orElseThrow();
+        assertThat(reloaded.getSold()).as("no seats consumed by the refused order").isZero();
+        assertThat(reloaded.getReserved()).isZero();
+        assertThat(promos.findById(atCap.getId()).orElseThrow().getUsedCount())
+                .as("the cap is not exceeded")
+                .isEqualTo(1);
+    }
+
+    /** The last remaining use still redeems — the predicate must not be off by one. */
+    @Test
+    void aPromoWithOneUseLeftStillRedeems() {
+        PromoCode last = seedPromo("LASTONE", 2, 1);
+
+        freeCheckout.issueFreeOrder(event, freeTier, 1, BUYER, last, false, false,
+                CheckoutAttribution.NONE, "en", "last-key");
+
+        assertThat(orders.findByEventIdOrderByCreatedAtDesc(event.getId())).hasSize(1);
+        assertThat(promos.findById(last.getId()).orElseThrow().getUsedCount()).isEqualTo(2);
     }
 
     // ── The namespace is scoped, against the real index ────────────────────
@@ -361,9 +405,21 @@ class FreeCheckoutConcurrencyTest {
         return tiers.save(t);
     }
 
+    private PromoCode seedPromo(String code, int maxUses, int usedCount) {
+        PromoCode p = new PromoCode();
+        p.setEventId(event.getId());
+        p.setCode(code);
+        p.setDiscountPct(100);
+        p.setMaxUses(maxUses);
+        p.setUsedCount(usedCount);
+        p.setEnabled(true);
+        return promos.save(p);
+    }
+
     private void cleanUp() {
         tickets.deleteAll();
         orders.deleteAll();
+        promos.deleteAll();
         reservations.deleteAll();
         tiers.deleteAll();
         events.deleteAll();

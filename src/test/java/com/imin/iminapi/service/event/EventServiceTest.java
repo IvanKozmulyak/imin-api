@@ -3,6 +3,7 @@ package com.imin.iminapi.service.event;
 import com.imin.iminapi.dto.PageResponse;
 import com.imin.iminapi.dto.event.EventDto;
 import com.imin.iminapi.dto.event.EventPatchRequest;
+import com.imin.iminapi.dto.event.PromoCodeEmbeddedPatch;
 import com.imin.iminapi.dto.event.TicketTierEmbeddedPatch;
 import com.imin.iminapi.dto.event.VenueDto;
 import com.imin.iminapi.model.*;
@@ -132,6 +133,30 @@ class EventServiceTest {
         assertThat(dto.promoCodes()).isNotNull();
     }
 
+    /**
+     * events-2: the If-Match header reached the service and was thrown away, so two
+     * organizer tabs could silently clobber each other. Same guarantee OrgService.patch
+     * has already made (409 STALE_WRITE).
+     */
+    @Test
+    void patch_with_mismatched_ifMatch_throws_STALE_WRITE() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setName("X"); e.setSlug("x");
+        e.setUpdatedAt(Instant.parse("2026-04-23T10:00:00Z"));
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                sut.patch(p, e.getId(), "\"2026-01-01T00:00:00Z\"",
+                        new EventPatchRequest("New name", null, null, null, null, null, null, null, null,
+                                null, null, null, null, null, null, null, null)))
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.STALE_WRITE);
+
+        // The stale write must not reach the repository at all.
+        verify(events, never()).save(any(Event.class));
+    }
+
     @Test
     void patch_with_duplicate_slug_throws_DUPLICATE() {
         AuthPrincipal p = principal();
@@ -236,6 +261,34 @@ class EventServiceTest {
                 .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.INVALID_STATE);
     }
 
+    /**
+     * events-19: a buyer sitting on a hosted Stripe Checkout page holds a HELD
+     * reservation — reserved > 0 while sold is still 0 — and nothing in the webhook path
+     * re-checks status, so within the session TTL they pay and get tickets for an event
+     * the organizer has just hidden believing it had no sales.
+     */
+    @Test
+    void unpublish_blocked_when_a_checkout_is_in_flight() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setStatus(EventStatus.LIVE);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+
+        TicketTier held = new TicketTier();
+        held.setEventId(e.getId());
+        held.setName("GA");
+        held.setQuantity(100);
+        held.setSold(0);
+        held.setReserved(2);
+        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of(held));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> sut.unpublish(p, e.getId()))
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.INVALID_STATE)
+                .hasMessageContaining("checkout");
+        verify(events, never()).save(any(Event.class));
+    }
+
     @Test
     void unpublish_404_when_event_in_other_org() {
         AuthPrincipal p = principal();
@@ -246,6 +299,146 @@ class EventServiceTest {
 
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> sut.unpublish(p, other.getId()))
                 .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.NOT_FOUND);
+    }
+
+    /**
+     * events-4: the ticket line item at checkout is the stored Stripe Price (minted in the
+     * OLD currency) while the service-fee line item is built inline from event.currency, and
+     * Stripe requires one currency per Session. Changing the currency after tiers are synced
+     * therefore kills checkout for the event, so it is refused.
+     */
+    @Test
+    void patch_currency_change_throws_INVALID_STATE_when_a_tier_has_a_stripe_price() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setName("X"); e.setSlug("x"); e.setCurrency("EUR");
+        Instant updated = Instant.parse("2026-04-23T10:00:00Z");
+        e.setUpdatedAt(updated);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(tiers.existsSyncedStripePrice(e.getId())).thenReturn(true);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                sut.patch(p, e.getId(), "\"" + updated + "\"",
+                        new EventPatchRequest(null, null, null, null, null, null, null, null, null,
+                                null, null, null, "GBP", null, null, null, null)))
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.INVALID_STATE);
+
+        assertThat(e.getCurrency()).isEqualTo("EUR");
+        verify(events, never()).save(any(Event.class));
+    }
+
+    /** Re-sending the same currency is a no-op, not a conflict — autosave does exactly that. */
+    @Test
+    void patch_same_currency_is_allowed_even_when_tiers_are_synced() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setName("X"); e.setSlug("x"); e.setCurrency("EUR");
+        Instant updated = Instant.parse("2026-04-23T10:00:00Z");
+        e.setUpdatedAt(updated);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(tiers.existsSyncedStripePrice(e.getId())).thenReturn(true);
+        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
+        when(promos.findByEventId(e.getId())).thenReturn(List.of());
+        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
+
+        sut.patch(p, e.getId(), "\"" + updated + "\"",
+                new EventPatchRequest(null, null, null, null, null, null, null, null, null,
+                        null, null, null, "eur", null, null, null, null));
+
+        assertThat(e.getCurrency()).isEqualTo("eur");
+    }
+
+    // ---- promo whole-list reconcile on a LIVE event (events-10 / events-18) ----
+
+    private Event patchableEvent(AuthPrincipal p, Instant updated) {
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setName("X"); e.setSlug("x");
+        e.setStatus(EventStatus.LIVE);
+        e.setUpdatedAt(updated);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
+        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
+        return e;
+    }
+
+    private PromoCode redeemedPromo(UUID eventId, String code, int maxUses, int usedCount) {
+        PromoCode pc = new PromoCode();
+        pc.setId(UUID.randomUUID());
+        pc.setEventId(eventId);
+        pc.setCode(code);
+        pc.setDiscountPct(10);
+        pc.setMaxUses(maxUses);
+        pc.setUsedCount(usedCount);
+        pc.setEnabled(true);
+        return pc;
+    }
+
+    /**
+     * The whole-list replace documents itself as "safe because PATCH only operates on
+     * drafts", but patch() never checks status. Lowering maxUses below what has already
+     * been redeemed makes the code read as exhausted everywhere, so it is rejected with
+     * the same message the per-id path uses.
+     */
+    @Test
+    void patch_promoCodes_rejects_maxUses_below_usedCount() {
+        AuthPrincipal p = principal();
+        Instant updated = Instant.parse("2026-04-23T10:00:00Z");
+        Event e = patchableEvent(p, updated);
+        when(promos.findByEventId(e.getId()))
+                .thenReturn(List.of(redeemedPromo(e.getId(), "EARLY", 50, 3)));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                sut.patch(p, e.getId(), "\"" + updated + "\"",
+                        new EventPatchRequest(null, null, null, null, null, null, null, null, null,
+                                null, null, null, null, null, null, null,
+                                List.of(new PromoCodeEmbeddedPatch("EARLY", 10, 1)))))
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.INVALID_REQUEST)
+                .satisfies(ex -> assertThat(((com.imin.iminapi.security.ApiException) ex).fields())
+                        .containsKey("promoCodes[0].maxUses"));
+
+        verify(promos, never()).save(any(PromoCode.class));
+    }
+
+    /**
+     * orders.promo_code_id is a bare UUID column with no FK, so hard-deleting a redeemed
+     * code leaves every order that used it pointing at nothing. Disable instead — the
+     * whole-list contract still holds for the draft case the wizard actually uses.
+     */
+    @Test
+    void patch_promoCodes_disables_rather_than_deletes_a_redeemed_code() {
+        AuthPrincipal p = principal();
+        Instant updated = Instant.parse("2026-04-23T10:00:00Z");
+        Event e = patchableEvent(p, updated);
+        PromoCode redeemed = redeemedPromo(e.getId(), "EARLY", 50, 3);
+        when(promos.findByEventId(e.getId())).thenReturn(List.of(redeemed));
+
+        sut.patch(p, e.getId(), "\"" + updated + "\"",
+                new EventPatchRequest(null, null, null, null, null, null, null, null, null,
+                        null, null, null, null, null, null, null, List.of()));
+
+        verify(promos, never()).delete(any(PromoCode.class));
+        assertThat(redeemed.isEnabled()).isFalse();
+    }
+
+    /** An unredeemed code absent from the list is still removed — the contract is unchanged. */
+    @Test
+    void patch_promoCodes_still_deletes_an_unredeemed_code() {
+        AuthPrincipal p = principal();
+        Instant updated = Instant.parse("2026-04-23T10:00:00Z");
+        Event e = patchableEvent(p, updated);
+        PromoCode unused = redeemedPromo(e.getId(), "NEVERUSED", 50, 0);
+        when(promos.findByEventId(e.getId())).thenReturn(List.of(unused));
+
+        sut.patch(p, e.getId(), "\"" + updated + "\"",
+                new EventPatchRequest(null, null, null, null, null, null, null, null, null,
+                        null, null, null, null, null, null, null, List.of()));
+
+        verify(promos).delete(unused);
     }
 
     @Test
@@ -470,6 +663,38 @@ class EventServiceTest {
         EventDto dto = sut.patch(p, e.getId(), "\"" + updated + "\"", bodyWith(null, venue("NL")));
 
         assertThat(dto.timezone()).isEqualTo("Europe/Amsterdam");
+    }
+
+    /**
+     * events-11: VenueDto has no required fields and EventPatchRequest's contract is
+     * "null = leave unchanged", but venueName and venueCountry were applied
+     * unconditionally while street/city/postalCode were null-guarded. A partial venue
+     * patch therefore silently erased the name and the country — and losing the country
+     * also moves venueAddressKey, which fires a spurious re-geocode.
+     */
+    @Test
+    void patch_partial_venue_leaves_unsent_name_and_country_alone() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setName("X"); e.setSlug("x");
+        e.setVenueName("Le Club"); e.setVenueCountry("FR");
+        e.setVenueStreet("1 Rue"); e.setVenueCity("Paris"); e.setVenuePostalCode("75001");
+        Instant updated = Instant.parse("2026-04-23T10:00:00Z");
+        e.setUpdatedAt(updated);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
+        when(promos.findByEventId(e.getId())).thenReturn(List.of());
+        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
+
+        sut.patch(p, e.getId(), "\"" + updated + "\"",
+                bodyWith(null, new VenueDto(null, "2 Rue X", null, null, null)));
+
+        assertThat(e.getVenueStreet()).isEqualTo("2 Rue X");
+        assertThat(e.getVenueName()).isEqualTo("Le Club");
+        assertThat(e.getVenueCountry()).isEqualTo("FR");
+        assertThat(e.getVenueCity()).isEqualTo("Paris");
     }
 
     @Test

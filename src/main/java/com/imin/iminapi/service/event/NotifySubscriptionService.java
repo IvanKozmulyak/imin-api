@@ -118,6 +118,11 @@ public class NotifySubscriptionService {
         applyProvenance(sub, sourceIp, userAgent, locale);
         try {
             subscriptionRepository.save(sub);
+            // Flush inside the try. NotifySubscription ids come from an in-VM generator, so
+            // save() persists only into the session and the uk_notify_event_email violation
+            // would otherwise be raised at commit — outside this catch — and reach the buyer
+            // as a 409 DUPLICATE, contradicting the idempotent-200 promise above (events-12).
+            subscriptionRepository.flush();
         } catch (DataIntegrityViolationException dupe) {
             // Concurrent insert lost the race — that's fine, idempotent.
             return NotifySubscriptionResponse.ok();

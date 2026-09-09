@@ -30,7 +30,8 @@ import java.util.UUID;
  *   <li>does <b>not</b> hit Stripe (no Session, no Coupon, no PaymentIntent),</li>
  *   <li>does <b>not</b> reserve inventory (no row lock, no holds),</li>
  *   <li>does <b>not</b> increment {@code promo_codes.used_count} — that only fires
- *       on a paid {@code checkout.session.completed} webhook.</li>
+ *       on a paid {@code payment_intent.succeeded} webhook (or inline on the free
+ *       path). {@code checkout.session.completed} is deliberately a no-op.</li>
  * </ul>
  *
  * <p>It exists so the buyer sees the discount preview and any "promo invalid" reason
@@ -130,10 +131,11 @@ public class QuoteService {
         // 2. Event must be publicly visible (draft/private/deleted → 404).
         Event event = events.findPublic(eventId).orElseThrow(() -> ApiException.notFound("Event"));
 
-        // 3. Tier must belong to the event and be on sale right now. Same predicate
+        // 3. Event must be on sale right now (status + event-level window) and the tier
+        //    must belong to it and be on sale too. Same predicate
         //    StripeCheckoutService uses — see PublicTierEligibility for details.
         Instant now = clock.instant();
-        TicketTier tier = PublicTierEligibility.loadBuyableTier(tiers, eventId, tierId, now);
+        TicketTier tier = PublicTierEligibility.loadBuyableTier(tiers, event, tierId, now);
 
         // 3a. Price-drift guard. No-op when the client didn't send `expectedPriceMinor`.
         PublicTierEligibility.assertExpectedPriceMatches(tier, request.expectedPriceMinor());
@@ -178,7 +180,8 @@ public class QuoteService {
      * still produces a 200 — the buyer needs to see "Expired" or "Invalid code" inline.
      *
      * <p>{@code used_count} is NOT incremented here. It increments only on a paid
-     * {@code checkout.session.completed} webhook.
+     * {@code payment_intent.succeeded} webhook — the PI is what proves money moved —
+     * or inline on the free path.
      */
     private PromoEval evaluatePromo(UUID eventId, String code, long subtotal) {
         Optional<PromoCode> match = promos.findByEventIdAndCodeIgnoreCase(eventId, code);
