@@ -181,11 +181,20 @@ public class AudienceController {
 
     // ── Bulk action ────────────────────────────────────────────────────────
 
+    /**
+     * Not built yet — and it says so. This was a stub that accepted any body, wrote
+     * nothing and answered 200, which the dashboard rendered as "Tagged N members" /
+     * "Export queued" / "Handed off to marketing" and a navigate away: three organizer
+     * actions reporting success over a no-op, with no way to find out. Answering
+     * 501 is the smaller honest change than deleting a route the FE already calls —
+     * the toast cannot fire on a non-2xx, and the route stays available for Tier D.
+     */
     @PostMapping("/members/bulk-action")
     public ResponseEntity<Void> bulkAction(@AuthenticationPrincipal AuthPrincipal principal,
                                             @RequestBody Map<String, Object> body) {
-        // Tier C stub — tag/export/hand-to-marketing wired in Tier D
-        return ResponseEntity.ok().build();
+        throw new ApiException(HttpStatus.NOT_IMPLEMENTED, ErrorCode.INVALID_STATE,
+                "Bulk actions are not available yet. Use the segment CSV export or the "
+                        + "handoff to marketing instead.");
     }
 
     // ── Suppression ────────────────────────────────────────────────────────
