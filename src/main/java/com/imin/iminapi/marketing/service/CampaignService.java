@@ -332,6 +332,14 @@ public class CampaignService {
         // Org-scope + existence check (404 leak-safe if not this org's campaign).
         Campaign c = campaigns.findByIdAndOrgId(campaignId, principal.orgId())
                 .orElseThrow(() -> ApiException.notFound("Campaign"));
+        // Fail fast on a channel nothing drains (mkt-core-7). CampaignRepository.claimDue
+        // filters WHERE channel='email', so a scheduled SMS campaign was never claimed,
+        // never failed and never timed out — it sat 'scheduled' for ever with no signal.
+        // Refusing here keeps the state machine honest: the campaign stays a draft.
+        if (!"email".equals(c.getChannel())) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                    "SMS campaigns cannot be sent yet — no SMS dispatcher exists");
+        }
         Instant when = scheduledAt != null ? scheduledAt : Instant.now();
         int updated = campaigns.markScheduledIfDraft(campaignId, principal.orgId(), when);
         if (updated == 0) {

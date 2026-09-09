@@ -69,6 +69,25 @@ class CampaignServiceTest {
         USER = users.save(u).getId();                     // adopt the generated id as the caller id
     }
 
+    /**
+     * mkt-core-7: 'sms' is an accepted channel, but CampaignRepository.claimDue filters
+     * WHERE channel='email', so a scheduled SMS campaign was never claimed, never failed and
+     * never timed out — it sat 'scheduled' for ever with no signal to the organizer. Refuse
+     * the send instead of manufacturing a terminal-looking state that cannot progress.
+     */
+    @Test
+    void send_refuses_an_sms_campaign_while_no_sms_dispatcher_exists() {
+        CampaignDto d = service.create(principal(ORG),
+                new CreateCampaignRequest("sms", "Text blast", null, null, null, null, null, null));
+
+        assertThatThrownBy(() -> service.send(d.id(), principal(ORG), "idem-" + UUID.randomUUID(), null))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("SMS");
+
+        // Still a draft — nothing was moved into a state nothing can drain.
+        assertThat(service.get(principal(ORG), d.id()).status()).isEqualTo("draft");
+    }
+
     @Test
     void create_persists_a_draft_and_returns_detail() {
         CampaignDto d = service.create(principal(ORG),
