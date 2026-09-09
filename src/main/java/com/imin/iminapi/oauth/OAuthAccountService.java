@@ -132,7 +132,25 @@ public class OAuthAccountService {
             return loginExisting(user);
         }
 
-        // (5) Brand-new email — auto-provision org + owner, then link.
+        // (5) Brand-new email — but only from a provider that verified it. Without
+        // this gate provisioning ran on an unverified address and produced a fresh
+        // Organization with an OWNER user whose verifiedAt we stamped ourselves, on
+        // the strength of a claim the provider declined to make. The buyer twin
+        // refuses the same input before both of its branches
+        // (BuyerOAuthService: 409 OAUTH_EMAIL_UNVERIFIED) and this closes the
+        // asymmetry. Google is the only provider it binds today —
+        // GoogleOAuthService reads the real email_verified claim, while
+        // AppleOAuthService hardcodes true. Provider-neutral wording, because this
+        // message can reach an Apple user too. The existing-email branch above
+        // keeps its own OAUTH_EMAIL_CONFLICT message, which tells that user
+        // something more useful.
+        if (!info.emailVerified()) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.OAUTH_EMAIL_UNVERIFIED,
+                    "Your sign-in provider has not verified this email address. "
+                            + "Sign up with a password instead.");
+        }
+
+        // Auto-provision org + owner, then link.
         User created = provision(info, email);
         linkIdentity(created, info);
         log.info("OAuth signup: provider={} provisioned new user {} / org {}",

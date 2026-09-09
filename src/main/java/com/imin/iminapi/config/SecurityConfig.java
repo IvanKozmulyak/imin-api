@@ -107,7 +107,12 @@ public class SecurityConfig {
                         // exposed endpoint would otherwise be exposed to everyone.
                         .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
                         .requestMatchers("/actuator/**").denyAll()
-                        .requestMatchers("/swagger-ui/**", "/v3/api-docs/**").permitAll()
+                        // /v3/api-docs.yaml is named explicitly: a trailing /** matches zero
+                        // segments, so "/v3/api-docs/**" covers /v3/api-docs — but not the
+                        // .yaml sibling, which is the URL imin-webapp's api:sync pulls and
+                        // which application-prod.yaml keeps springdoc serving in production.
+                        // It was public only via the chain's closing .anyRequest().permitAll().
+                        .requestMatchers("/swagger-ui/**", "/v3/api-docs/**", "/v3/api-docs.yaml").permitAll()
                         // Public AI content (event copy) generation + style-reference images.
                         .requestMatchers(HttpMethod.POST, "/api/v1/events/ai-content").permitAll()
                         .requestMatchers("/api/v1/posters/**").permitAll()

@@ -129,7 +129,7 @@ public class TicketTierService {
     }
 
     @Transactional
-    @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
+    @CacheEvict(value = "dashboard", allEntries = true)
     public TicketTierDto create(AuthPrincipal p, UUID eventId, TicketTierCreateRequest req) {
         Event event = loadOwnedEvent(p, eventId);
         Map<String, String> errors = validator.validateCreate(req, event);
@@ -159,7 +159,7 @@ public class TicketTierService {
     }
 
     @Transactional
-    @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
+    @CacheEvict(value = "dashboard", allEntries = true)
     public TicketTierDto patch(AuthPrincipal p, UUID eventId, UUID tierId, TicketTierPatchRequest req) {
         Event event = loadOwnedEvent(p, eventId);
         TicketTier tier = loadOwnedTier(eventId, tierId);
@@ -179,7 +179,7 @@ public class TicketTierService {
     }
 
     @Transactional
-    @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
+    @CacheEvict(value = "dashboard", allEntries = true)
     public void delete(AuthPrincipal p, UUID eventId, UUID tierId) {
         Event event = loadOwnedEvent(p, eventId);
         TicketTier tier = loadOwnedTier(eventId, tierId);

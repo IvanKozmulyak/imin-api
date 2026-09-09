@@ -11,6 +11,8 @@ import com.imin.iminapi.oauth.OAuthProperties;
 import com.imin.iminapi.oauth.OAuthUserInfo;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.security.RateLimiter;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -41,15 +43,32 @@ public class OAuthController {
     private final GoogleOAuthService google;
     private final AppleOAuthService apple;
     private final OAuthAccountService accounts;
+    private final RateLimiter rateLimiter;
 
     public OAuthController(OAuthProperties props,
                            GoogleOAuthService google,
                            AppleOAuthService apple,
-                           OAuthAccountService accounts) {
+                           OAuthAccountService accounts,
+                           RateLimiter rateLimiter) {
         this.props = props;
         this.google = google;
         this.apple = apple;
         this.accounts = accounts;
+        this.rateLimiter = rateLimiter;
+    }
+
+    /**
+     * Both callbacks below are permitAll and each drives an outbound POST to the
+     * provider's token endpoint, so unmetered they are a free amplifier pointed at
+     * Google and Apple — bounded only by {@code oauthRestClient}'s 10s read timeout.
+     * One bucket for both, keyed per client IP: the same act with the same cost, and
+     * two buckets would only hand an attacker twice the budget for alternating
+     * providers (the reasoning {@code buyer-native-signin} already uses). Keyed on
+     * {@code getRemoteAddr()}, proxy-resolved via forward-headers-strategy, never the
+     * client-controllable {@code X-Forwarded-For}.
+     */
+    private void meterCallback(HttpServletRequest http) {
+        rateLimiter.consume("oauth-callback", "ip:" + http.getRemoteAddr());
     }
 
     @GetMapping("/providers")
@@ -66,7 +85,11 @@ public class OAuthController {
     }
 
     @PostMapping("/google/callback")
-    public AuthResponse googleCallback(@Valid @RequestBody GoogleCallbackRequest req) {
+    public AuthResponse googleCallback(@Valid @RequestBody GoogleCallbackRequest req,
+                                       HttpServletRequest http) {
+        // Metered before the config gate, like the buyer native lanes: probing a
+        // disabled provider must not be free either.
+        meterCallback(http);
         requireEnabled(props.getGoogle().isEnabled(), "google");
         OAuthUserInfo info = google.exchange(req.code(), req.state());
         return accounts.resolve(info);
@@ -91,7 +114,9 @@ public class OAuthController {
             @RequestParam(required = false) String code,
             @RequestParam(required = false) String state,
             @RequestParam(name = "user", required = false) String user,
-            @RequestParam(name = "error", required = false) String error) {
+            @RequestParam(name = "error", required = false) String error,
+            HttpServletRequest http) {
+        meterCallback(http);
         String frontend = props.getFrontendBaseUrl();
         if (!props.getApple().isEnabled() || error != null || code == null || code.isBlank()) {
             if (error != null) log.info("Apple return with error param: {}", error);

@@ -15,11 +15,17 @@ import java.util.UUID;
 
 /**
  * {@code @RepositoryRestResource(exported = false)} is not optional anywhere in
- * this tree: Spring Data REST is on the classpath with {@code base-path:
- * /api/v1} and no detection-strategy override, so an unguarded repository is
- * auto-published under a path that {@code SecurityConfig} only requires
- * {@code .authenticated()} on — no tenant check, no buyer check.
+ * this tree: Spring Data REST is on the classpath, so an unguarded repository is
+ * auto-published with no tenant check and no buyer check.
  * {@code RepositoryExportGuardTest} fails the build if any repository loses it.
+ *
+ * <p>Two config keys stand behind that test (both set in application.yaml, and
+ * repeated in the test config that shadows it): {@code spring.data.rest.base-path:
+ * /api/v1} puts anything that does get exported behind {@code SecurityConfig}'s
+ * {@code .authenticated()} rule instead of on the permitAll servlet root, and
+ * {@code spring.data.rest.detection-strategy: annotated} means a repository is
+ * exported only when it explicitly asks to be. Neither was set until 2026-09; the
+ * key that was there, {@code imin.api.base-path}, bound to nothing at all.
  */
 @RepositoryRestResource(exported = false)
 public interface BuyerSessionRepository extends JpaRepository<BuyerSession, UUID> {

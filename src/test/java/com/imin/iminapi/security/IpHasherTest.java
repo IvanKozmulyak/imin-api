@@ -1,6 +1,14 @@
 package com.imin.iminapi.security;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.env.YamlPropertySourceLoader;
+import org.springframework.core.env.PropertySource;
+import org.springframework.core.env.StandardEnvironment;
+import org.springframework.core.env.SystemEnvironmentPropertySource;
+import org.springframework.core.io.FileSystemResource;
+
+import java.io.IOException;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -43,5 +51,35 @@ class IpHasherTest {
     void a_blank_secret_degrades_rather_than_throwing() {
         assertThat(new IpHasher("").hash("203.0.113.7")).hasSize(64);
         assertThat(new IpHasher(null).hash("203.0.113.7")).hasSize(64);
+    }
+
+    /**
+     * infra-8: the javadoc above documents the knob as {@code IMIN_IP_HASH_SECRET},
+     * but Boot's {@code SystemEnvironmentPropertySource} only ever resolves
+     * {@code imin.security.ip-hash-secret} from {@code IMIN_SECURITY_IP_HASH_SECRET}
+     * — {@code IMIN_IP_HASH_SECRET} can satisfy {@code imin.ip-hash-secret}, which
+     * nothing reads. An operator following the doc to rotate away from the ticket
+     * signing secret got no error and kept HMAC-ing with the old key. The fix is a
+     * yaml line, so this resolves the real placeholder against the real file.
+     */
+    @Test
+    void the_documented_env_var_rotates_the_key() throws IOException {
+        StandardEnvironment env = new StandardEnvironment();
+        env.getPropertySources().addFirst(new SystemEnvironmentPropertySource(
+                StandardEnvironment.SYSTEM_ENVIRONMENT_PROPERTY_SOURCE_NAME,
+                Map.of("IMIN_IP_HASH_SECRET", "rotated-key",
+                        "IMIN_TICKET_SIGNING_SECRET", "the-old-ticket-key")));
+        for (PropertySource<?> source : new YamlPropertySourceLoader().load(
+                "application", new FileSystemResource("src/main/resources/application.yaml"))) {
+            env.getPropertySources().addLast(source);
+        }
+
+        // The exact placeholder IpHasher's constructor is annotated with.
+        String resolved = env.resolvePlaceholders(
+                "${imin.security.ip-hash-secret:${imin.ticket.signing-secret:}}");
+
+        assertThat(resolved)
+                .as("IMIN_IP_HASH_SECRET is documented as the rotation knob; it has to bind")
+                .isEqualTo("rotated-key");
     }
 }

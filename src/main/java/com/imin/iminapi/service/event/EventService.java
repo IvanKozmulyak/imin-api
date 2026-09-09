@@ -145,7 +145,7 @@ public class EventService {
     }
 
     @Transactional
-    @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
+    @CacheEvict(value = "dashboard", allEntries = true)
     public EventDto createDraft(AuthPrincipal p, EventPatchRequest body) {
         Event e = new Event();
         e.setOrgId(p.orgId());
@@ -191,7 +191,7 @@ public class EventService {
     }
 
     @Transactional
-    @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
+    @CacheEvict(value = "dashboard", allEntries = true)
     public EventDto patch(AuthPrincipal p, UUID id, String ifMatchHeader, EventPatchRequest body) {
         Event e = loadOwned(p, id);
         // Optimistic concurrency, same contract as OrgService.patch: a null/blank header is
@@ -265,7 +265,7 @@ public class EventService {
     }
 
     @Transactional
-    @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
+    @CacheEvict(value = "dashboard", allEntries = true)
     public EventDto publish(AuthPrincipal p, UUID id) {
         Event e = loadOwned(p, id);
         if (e.getStatus() == EventStatus.LIVE) {
@@ -300,7 +300,7 @@ public class EventService {
      * the money and disappear the event page.
      */
     @Transactional
-    @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
+    @CacheEvict(value = "dashboard", allEntries = true)
     public EventDto unpublish(AuthPrincipal p, UUID id) {
         Event e = loadOwned(p, id);
         if (e.getStatus() != EventStatus.LIVE) {

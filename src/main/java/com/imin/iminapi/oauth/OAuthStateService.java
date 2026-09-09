@@ -50,6 +50,32 @@ import java.util.Base64;
  * harvesting order history. Binding is <b>mandatory</b> for the buyer audience
  * and optional for the organizer one, which has never had it.
  *
+ * <h2>The organizer lane is unbound, and that is a live hole (infra-15)</h2>
+ *
+ * <p>{@link #sign(String)} mints organizer states with {@code browserNonce = null}
+ * and {@link #verify(String, String)} passes {@code null} back, so the
+ * {@code bindingRequired} branch below lets an unbound organizer state verify. The
+ * attack is the same one the buyer lane already blocks: the attacker completes a
+ * Google authorization themselves, hands the victim the SPA callback URL, and
+ * {@code POST /api/v1/auth/google/callback} returns the ATTACKER's session, which
+ * imin-webapp stores as {@code imin.token} — every event, poster and attendee
+ * export the victim creates afterwards lands in the attacker's org.
+ *
+ * <p><b>Why it is still open.</b> Closing it is a two-repo change, not a
+ * backend one. imin-webapp's {@code apiFetch} does not set
+ * {@code credentials: 'include'}, so a cookie set on {@code /google/url} is
+ * neither stored nor sent by the SPA's cross-origin fetch — shipping a mandatory
+ * binding here alone would not harden the flow, it would break every organizer
+ * Google sign-in. Apple is worse: it {@code form_post}s to
+ * {@code /api/v1/auth/apple/return} cross-site, where a {@code SameSite=Lax}
+ * cookie is not sent at all, so that lane needs {@code SameSite=None; Secure}.
+ * The order has to be: imin-webapp sends credentials on the two OAuth calls →
+ * this service mints and requires bound organizer states (an
+ * {@code imin_oauth_nonce} cookie scoped to {@code /api/v1/auth}, mirroring
+ * {@code BuyerOAuthNonceCookie}) → delete the {@code bindingRequired} special
+ * case in {@link #verify} so an unbound state is invalid for every audience.
+ * Until then the callbacks are at least metered ({@code oauth-callback} bucket).
+ *
  * <h2>Backward compatibility, and when to delete it</h2>
  *
  * <p>{@link #verify} still accepts the old three-field payload and reads it as

@@ -123,6 +123,54 @@ class SecurityPerimeterTest {
                 .andExpect(header().string("X-Content-Type-Options", "nosniff"));
     }
 
+    /**
+     * infra-18: the permit rule reads {@code "/swagger-ui/**", "/v3/api-docs/**"}.
+     * A trailing {@code /**} does match zero segments, so {@code /v3/api-docs} is
+     * covered — but {@code /v3/api-docs.yaml} is a different final segment and is
+     * not. That URL is the one imin-webapp's {@code api:sync} pulls, and
+     * application-prod.yaml keeps springdoc's api-docs on in production precisely
+     * for it; today it is public only because the chain ends in
+     * {@code .anyRequest().permitAll()}. So the rule that documents the decision is
+     * not the rule that implements it, and tightening the catch-all later would
+     * break api:sync with no obvious cause.
+     */
+    @Test
+    void the_openapi_yaml_the_frontend_syncs_from_is_permitted_by_name() throws Exception {
+        String config = Files.readString(
+                Path.of("src/main/java/com/imin/iminapi/config/SecurityConfig.java"),
+                StandardCharsets.UTF_8);
+        String springdocRule = config.lines()
+                .filter(l -> l.contains("\"/swagger-ui/**\""))
+                .findFirst().orElseThrow();
+        assertThat(springdocRule)
+                .as("the FE contract URL must be permitted by name, not by the closing catch-all")
+                .contains("\"/v3/api-docs.yaml\"");
+
+        mvc.perform(get("/v3/api-docs.yaml"))
+                .andExpect(result -> assertThat(result.getResponse().getStatus()).isEqualTo(200));
+    }
+
+    // ── Spring Data REST ───────────────────────────────────────────────────
+
+    /**
+     * Spring Data REST is on the classpath and, with no {@code spring.data.rest.base-path},
+     * it mounts its own {@code RepositoryController}/{@code ProfileController} at the servlet
+     * root — outside the {@code /api/v1/**} {@code .authenticated()} rule and therefore under
+     * the chain's closing {@code .anyRequest().permitAll()}. The repository export guard is the
+     * control that holds today; this pins the second line of defence so a repository that ever
+     * loses {@code @RepositoryRestResource(exported = false)} becomes an authenticated resource
+     * rather than an unauthenticated public CRUD surface.
+     */
+    @Test
+    void spring_data_rest_publishes_nothing_at_the_servlet_root() throws Exception {
+        for (String path : new String[] {"/", "/profile", "/orders"}) {
+            mvc.perform(get(path)).andExpect(result ->
+                    assertThat(result.getResponse().getStatus())
+                            .as("Spring Data REST must not answer %s", path)
+                            .isNotEqualTo(200));
+        }
+    }
+
     // ── actuator ───────────────────────────────────────────────────────────
 
     private void assertDenied(String path) throws Exception {
