@@ -356,6 +356,24 @@ public class EventService {
     }
 
     /**
+     * {@code EventVisibility.fromWire} is a bare {@code valueOf}, so {"visibility":"unlisted"}
+     * threw IllegalArgumentException out of applyPatch and landed on the global Throwable
+     * handler as a 500 INTERNAL. There is no upstream guard to lean on: EventPatchRequest
+     * declares {@code String visibility} with no constraint and the controller binds the body
+     * without {@code @Valid} (deliberately — drafts are allowed to be incomplete and are only
+     * validated on publish), so the enum boundary is where this has to be caught.
+     */
+    private static EventVisibility visibilityOr400(String visibility) {
+        try {
+            return EventVisibility.fromWire(visibility);
+        } catch (IllegalArgumentException e) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID,
+                    "Unknown event visibility",
+                    Map.of("visibility", "must be one of: public, private"));
+        }
+    }
+
+    /**
      * Applies the patch and returns {@code true} when at least one direct
      * event field was provided (so an "Updated event" audit row makes sense).
      * The tier and promo-code reconcile paths are intentionally excluded —
@@ -366,7 +384,7 @@ public class EventService {
         boolean changed = false;
         if (b.name() != null) { e.setName(b.name()); changed = true; }
         if (b.slug() != null) { e.setSlug(b.slug().toLowerCase(Locale.ROOT)); changed = true; }
-        if (b.visibility() != null) { e.setVisibility(EventVisibility.fromWire(b.visibility())); changed = true; }
+        if (b.visibility() != null) { e.setVisibility(visibilityOr400(b.visibility())); changed = true; }
         // Genre keeps its typed case (V82) — only whitespace is cleaned, exactly like the city
         // below. The case-insensitive merge that makes "Techno" and "techno" one facet chip and
         // one ?genre= query happens on the derived genre_key, never on the display string: both

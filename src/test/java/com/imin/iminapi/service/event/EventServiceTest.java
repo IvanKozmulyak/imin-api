@@ -157,6 +157,33 @@ class EventServiceTest {
         verify(events, never()).save(any(Event.class));
     }
 
+    /**
+     * api-6, the body half: {@code EventVisibility.fromWire} is a bare {@code valueOf}, so
+     * {"visibility":"unlisted"} threw IllegalArgumentException out of applyPatch and landed on
+     * the global Throwable handler — 500 INTERNAL. EventPatchRequest carries no bean-validation
+     * constraint on the field and the controller binds the body without @Valid, so there is no
+     * upstream guard either; the enum boundary is the only place this can be caught.
+     */
+    @Test
+    void patch_with_unknown_visibility_throws_FIELD_INVALID_not_IllegalArgument() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setName("X"); e.setSlug("x");
+        Instant updated = Instant.parse("2026-04-23T10:00:00Z");
+        e.setUpdatedAt(updated);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                sut.patch(p, e.getId(), "\"" + updated + "\"",
+                        new EventPatchRequest(null, null, "unlisted", null, null, null, null, null, null,
+                                null, null, null, null, null, null, null, null)))
+                .isInstanceOf(com.imin.iminapi.security.ApiException.class)
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.FIELD_INVALID);
+
+        verify(events, never()).save(any(Event.class));
+    }
+
     @Test
     void patch_with_duplicate_slug_throws_DUPLICATE() {
         AuthPrincipal p = principal();

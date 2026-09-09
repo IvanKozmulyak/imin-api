@@ -106,6 +106,21 @@ class EventControllerTest {
                 .andExpect(status().isOk());
     }
 
+    /**
+     * api-6: {@code EventStatus.fromWire} is a bare {@code valueOf}, so a stale bookmark or a
+     * typo'd deep link threw IllegalArgumentException, which nothing handled — a 500 INTERNAL
+     * plus a log.error for what is a client typo. The FE expects the FIELD_INVALID envelope.
+     */
+    @Test
+    @WithStubUser
+    void get_events_with_unknown_status_is_a_400_not_a_500() throws Exception {
+        mvc.perform(get("/api/v1/events?status=archived"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
+                .andExpect(jsonPath("$.error.fields.status").exists());
+        verify(eventService, org.mockito.Mockito.never()).list(any(), any(), org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt());
+    }
+
     @Test
     @WithStubUser
     void patch_event_passes_ifMatch() throws Exception {
