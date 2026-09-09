@@ -131,6 +131,21 @@ public interface FunnelEventRepository extends JpaRepository<FunnelEvent, UUID> 
     long countAttributedCheckoutSessions(@Param("campaign") String campaign);
 
     /**
+     * Batched {@link #countAttributedCheckoutSessions} — ONE grouped query for many campaigns,
+     * so the Marketing hub does not issue a funnel query per campaign on every page view
+     * (mkt-core-12). Campaigns with no beacons are simply absent from the result; the caller
+     * seeds them to 0.
+     */
+    @Query("""
+            select fe.utmCampaign, count(distinct fe.anonId) from FunnelEvent fe
+             where fe.utmCampaign in :campaigns
+               and fe.stage = 'CHECKOUT_START'
+             group by fe.utmCampaign
+            """)
+    java.util.List<Object[]> countAttributedCheckoutSessionsIn(
+            @Param("campaigns") java.util.Collection<String> campaigns);
+
+    /**
      * Retention purge (see {@code FunnelRetentionJob}). Strictly-before so a run
      * is idempotent at the boundary, and a bulk JPQL delete rather than
      * load-then-delete: nothing else reads these rows and there is no cascade to

@@ -126,16 +126,22 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
      * Claim up to :limit pending, retryable (attempt_count < 3) rows for one campaign,
      * skipping rows another sender thread already holds (spec §2.5). Native so we can
      * use FOR UPDATE SKIP LOCKED, which Spring Data does not express portably.
+     *
+     * <p>{@code next_attempt_at} (V117) is the per-row backoff: a row whose last attempt
+     * failed is not claimable again until its delay elapses, so a provider outage no longer
+     * means the identical batch is re-POSTed within milliseconds. NULL = claimable now.
      */
     @Query(value = """
         SELECT * FROM campaign_recipients
         WHERE campaign_id = :campaignId AND status = 'pending' AND attempt_count < 3
+          AND (next_attempt_at IS NULL OR next_attempt_at <= :now)
         ORDER BY id
         LIMIT :limit
         FOR UPDATE SKIP LOCKED
         """, nativeQuery = true)
     List<CampaignRecipient> claimPendingBatch(@Param("campaignId") UUID campaignId,
-                                              @Param("limit") int limit);
+                                              @Param("limit") int limit,
+                                              @Param("now") java.time.Instant now);
 
     /**
      * Count recent sends for a membership across all campaigns — backs the per-member
@@ -165,6 +171,82 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
             """)
     long countRecentSendsForOrg(@Param("orgId") UUID orgId,
                                 @Param("since") java.time.Instant since);
+
+    /**
+     * Project an owned opt-out onto the recipient row it came from (mkt-core-3). The
+     * unsubscribe token carries the campaign id, so the row is addressable; without this
+     * the campaign's {@code unsubscribed} stat and the "Issues" chip were structurally
+     * always 0 because nothing ever wrote that status.
+     *
+     * <p>Only rows whose email actually left are advanced, and deliberately NOT
+     * {@code bounced}/{@code complained}: a complaint is the stronger signal and must not
+     * be walked back by a later opt-out on the same row.
+     *
+     * @return rows projected (0 when the campaign/membership pair has no row)
+     */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query("""
+            UPDATE CampaignRecipient r
+               SET r.status = 'unsubscribed', r.lastEventAt = :now
+             WHERE r.campaignId = :campaignId
+               AND r.membershipId = :membershipId
+               AND r.status in ('sent', 'delivered', 'opened', 'clicked')
+            """)
+    int markUnsubscribed(@Param("campaignId") UUID campaignId,
+                         @Param("membershipId") UUID membershipId,
+                         @Param("now") java.time.Instant now);
+
+    /**
+     * Retire the rows that burned their whole attempt budget: {@code pending} with
+     * {@code attempt_count >= :maxAttempts} becomes {@code failed} with an
+     * {@code error_code}. Without this the drain simply stopped claiming them and they
+     * sat 'pending' for ever while the campaign was stamped 'sent' (mkt-core-2), so the
+     * organizer saw 0 sent against a non-zero recipientCount and no reason why.
+     *
+     * @return rows retired
+     */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query("""
+            UPDATE CampaignRecipient r
+               SET r.status = 'failed', r.errorCode = :errorCode, r.lastEventAt = :now
+             WHERE r.campaignId = :campaignId
+               AND r.status = 'pending'
+               AND r.attemptCount >= :maxAttempts
+            """)
+    int failExhaustedPending(@Param("campaignId") UUID campaignId,
+                             @Param("maxAttempts") short maxAttempts,
+                             @Param("errorCode") String errorCode,
+                             @Param("now") java.time.Instant now);
+
+    /**
+     * Put a failed campaign's dead rows back in the queue so {@code POST /retry} actually
+     * re-sends them: {@code failed} becomes {@code pending} with the attempt budget reset.
+     * Only rows this campaign owns, and never a row that already left (sent/delivered/…).
+     *
+     * @return rows requeued
+     */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query("""
+            UPDATE CampaignRecipient r
+               SET r.status = 'pending', r.attemptCount = 0, r.errorCode = null,
+                   r.nextAttemptAt = null
+             WHERE r.campaignId = :campaignId
+               AND r.status = 'failed'
+            """)
+    int requeueFailed(@Param("campaignId") UUID campaignId);
+
+    /** Rows still claimable for this campaign — pending and inside the attempt budget. */
+    @Query("""
+            select count(r) from CampaignRecipient r
+             where r.campaignId = :campaignId
+               and r.status = 'pending'
+               and r.attemptCount < :maxAttempts
+            """)
+    long countRetryablePending(@Param("campaignId") UUID campaignId,
+                               @Param("maxAttempts") short maxAttempts);
 
     /**
      * DSAR (spec §7): null the recipient PII (email/phone/rendered body) for every row belonging

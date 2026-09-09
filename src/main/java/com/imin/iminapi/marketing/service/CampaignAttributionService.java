@@ -48,6 +48,36 @@ public class CampaignAttributionService {
     }
 
     /**
+     * Batched {@link #attributedPurchaseCount} — ONE grouped funnel query for many campaigns,
+     * mirroring {@link #attributedRevenueMinorByCampaign}. The Marketing hub summed this once
+     * per campaign created in the last 30 days, i.e. N queries per page view (mkt-core-12).
+     * Campaigns with no attributed sessions map to 0 rather than being omitted.
+     */
+    @Transactional(readOnly = true)
+    public Map<UUID, Long> attributedPurchaseCountByCampaign(Collection<UUID> campaignIds) {
+        Map<UUID, Long> out = new HashMap<>();
+        if (campaignIds == null) return out;
+        for (UUID id : campaignIds) {
+            if (id != null) out.put(id, 0L);
+        }
+        // IN () is invalid SQL — skip the round-trip entirely when there is nothing to ask for.
+        if (out.isEmpty()) return out;
+
+        List<String> keys = out.keySet().stream().map(UUID::toString).toList();
+        for (Object[] row : funnel.countAttributedCheckoutSessionsIn(keys)) {
+            String key = (String) row[0];
+            long sessions = ((Number) row[1]).longValue();
+            try {
+                out.put(UUID.fromString(key), sessions);
+            } catch (IllegalArgumentException ignored) {
+                // utm_campaign is buyer-supplied and free-form — only values that parse back to
+                // a campaign id we asked for are counted, exactly as the revenue twin does.
+            }
+        }
+        return out;
+    }
+
+    /**
      * Real attributed revenue (minor units) for ONE campaign: the sum of the org's orders
      * whose {@code utm_campaign} is this campaign's id. Lifetime, not windowed.
      *
