@@ -15,6 +15,7 @@ import com.imin.iminapi.audience.service.SendGateService;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.marketing.service.CampaignTemplateService;
+import com.imin.iminapi.marketing.service.MarketingGuardProperties;
 import com.imin.iminapi.marketing.template.ResolvedTemplate;
 import com.imin.iminapi.marketing.unsubscribe.UnsubscribeTokenService;
 import com.imin.iminapi.model.Event;
@@ -29,6 +30,7 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.UUID;
 import java.util.Map;
 import java.util.HashMap;
@@ -47,6 +49,8 @@ public class EmailChannelSender {
 
     private static final Logger log = LoggerFactory.getLogger(EmailChannelSender.class);
     static final int BATCH_SIZE = 100;
+    /** Rolling window the per-org daily cap is measured over — matches CampaignDispatcher. */
+    private static final long DAILY_CAP_WINDOW_HOURS = 24;
 
     private final CampaignRecipientRepository recipients;
     private final CampaignRepository campaigns;
@@ -60,6 +64,7 @@ public class EmailChannelSender {
     private final MembershipRepository memberships;
     private final ConsumerRepository consumers;
     private final SendGateService sendGate;
+    private final MarketingGuardProperties guardProps;
 
     public EmailChannelSender(CampaignRecipientRepository recipients, CampaignRepository campaigns,
                               CampaignEmailRenderer renderer, CampaignEmailProvider provider,
@@ -67,7 +72,7 @@ public class EmailChannelSender {
                               CampaignTemplateService templateService,
                               OrganizationRepository organizations, EventRepository events,
                               MembershipRepository memberships, ConsumerRepository consumers,
-                              SendGateService sendGate) {
+                              SendGateService sendGate, MarketingGuardProperties guardProps) {
         this.recipients = recipients;
         this.campaigns = campaigns;
         this.renderer = renderer;
@@ -80,6 +85,7 @@ public class EmailChannelSender {
         this.memberships = memberships;
         this.consumers = consumers;
         this.sendGate = sendGate;
+        this.guardProps = guardProps;
     }
 
     /**
@@ -93,6 +99,17 @@ public class EmailChannelSender {
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public boolean sendNextBatch(Campaign c) {
+        // Per-org daily cap (spec §7), re-checked PER BATCH. Checking it only at claim time
+        // capped which campaigns start, not how much they send: a single 200k campaign
+        // admitted under a 10,000/day cap then drained all 200k. Stopping here leaves the
+        // campaign 'sending' with rows queued, so it resumes when the window rolls forward.
+        if (recipients.countRecentSendsForOrg(c.getOrgId(),
+                Instant.now().minus(DAILY_CAP_WINDOW_HOURS, ChronoUnit.HOURS))
+                >= guardProps.getDailyCap()) {
+            log.info("[email-sender] org {} at daily cap — pausing campaign {}",
+                    c.getOrgId(), c.getId());
+            return false;
+        }
         List<CampaignRecipient> batch = new ArrayList<>(recipients.claimPendingBatch(c.getId(), BATCH_SIZE));
         if (batch.isEmpty()) return false;
         // Idempotence belt-and-braces: only rows still 'pending' may be sent. The claim

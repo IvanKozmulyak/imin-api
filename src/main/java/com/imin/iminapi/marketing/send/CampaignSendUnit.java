@@ -89,6 +89,15 @@ public class CampaignSendUnit {
     private void finish(Campaign c) {
         newTx.executeWithoutResult(st -> recipients.failExhaustedPending(
                 c.getId(), MAX_RECIPIENT_ATTEMPTS, "send_failed", Instant.now()));
+        // Rows still inside their attempt budget mean the drive stopped early — the per-org
+        // daily cap bit, or a provider failure put the batch into backoff. Leave the campaign
+        // 'sending' with a stale heartbeat so the dispatcher's stale-sending reclaim resumes
+        // it; stamping it 'sent' here would strand every remaining recipient for good.
+        long queued = recipients.countRetryablePending(c.getId(), MAX_RECIPIENT_ATTEMPTS);
+        if (queued > 0) {
+            log.info("[send-unit] campaign {} paused with {} recipients still queued", c.getId(), queued);
+            return;
+        }
         long left = recipients.countByCampaignIdAndStatusIn(c.getId(), LEFT_THE_BUILDING);
         long dead = recipients.countByCampaignIdAndStatus(c.getId(), "failed");
         if (left == 0 && dead > 0) {
