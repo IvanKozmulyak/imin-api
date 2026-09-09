@@ -81,6 +81,11 @@ class AudienceComputeIngestionTest {
         ev.setGenre("techno");
         ev.setType("club");
         ev.setCreatedBy(owner.getId());
+        // The event is in the PAST: an unscanned ticket only becomes a no-show once the
+        // event it was bought for has ended (audience-3). An undated fixture would now
+        // (correctly) project no_show = 0 and say nothing about the no-show rule.
+        ev.setStartsAt(Instant.now().minus(30, ChronoUnit.DAYS));
+        ev.setEndsAt(Instant.now().minus(30, ChronoUnit.DAYS).plus(6, ChronoUnit.HOURS));
         ev = eventRepo.save(ev);
         eventId = ev.getId();
     }
