@@ -100,6 +100,54 @@ class ConceptControllerTest {
                 .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"));
     }
 
+    /**
+     * api-10: the `ai-concept` bucket caps how OFTEN an organizer can spend our LLM budget;
+     * nothing capped how MUCH any one of those calls could carry. `lineup` is joined straight
+     * into the render prompt, so an unbounded list is an unbounded OpenRouter bill from a single
+     * authenticated MEMBER — and both the bucket and the AI quota are consumed after the body
+     * is bound, so neither of them sees it.
+     */
+    @Test
+    @WithStubUser
+    void post_concept_with_an_oversized_lineup_is_rejected_before_the_service() throws Exception {
+        mvc.perform(post("/api/v1/ai/events/concept")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of(
+                                "vibe", "Moody Berlin techno warehouse vibe",
+                                "lineup", java.util.Collections.nCopies(200, "DJ")))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
+                .andExpect(jsonPath("$.error.fields.lineup").exists());
+        org.mockito.Mockito.verify(studio, org.mockito.Mockito.never()).create(any(), any());
+    }
+
+    @Test
+    @WithStubUser
+    void post_concept_with_a_megabyte_lineup_entry_is_rejected_before_the_service() throws Exception {
+        mvc.perform(post("/api/v1/ai/events/concept")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of(
+                                "vibe", "Moody Berlin techno warehouse vibe",
+                                "lineup", List.of("x".repeat(300_000))))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"));
+        org.mockito.Mockito.verify(studio, org.mockito.Mockito.never()).create(any(), any());
+    }
+
+    @Test
+    @WithStubUser
+    void post_concept_with_an_unbounded_free_text_field_is_rejected_before_the_service() throws Exception {
+        mvc.perform(post("/api/v1/ai/events/concept")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of(
+                                "vibe", "Moody Berlin techno warehouse vibe",
+                                "venue", "v".repeat(50_000)))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
+                .andExpect(jsonPath("$.error.fields.venue").exists());
+        org.mockito.Mockito.verify(studio, org.mockito.Mockito.never()).create(any(), any());
+    }
+
     @Test
     @WithStubUser
     void post_concept_regenerate_passes_through() throws Exception {
