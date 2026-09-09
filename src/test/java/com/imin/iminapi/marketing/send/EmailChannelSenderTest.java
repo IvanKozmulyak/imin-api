@@ -105,6 +105,33 @@ class EmailChannelSenderTest {
         assertThat(sent.html().toLowerCase()).contains("unsubscribe");
     }
 
+    /**
+     * mkt-core-16 (P3): provider ids are matched to recipients purely by position, and
+     * CampaignEmailProvider returns whatever Resend's data array held with no assertion that
+     * it is the same length. A short list left the tail rows 'sent' with a null
+     * provider_message_id, so findByProviderMessageId could never resolve their
+     * delivery/bounce/complaint events — permanently invisible to the stats and to the
+     * complaint breaker. The row must at least say so.
+     */
+    @Test
+    void aShortProviderIdListMarksTheUntrackableTail() {
+        Campaign c = campaignWithPending(2);
+        when(provider.sendBatch(anyList())).thenReturn(List.of("id-only-one"));
+
+        sender.sendNextBatch(c);
+
+        List<CampaignRecipient> sent = recipients.findByCampaignIdAndStatus(c.getId(), "sent");
+        assertThat(sent).hasSize(2);   // the mail left; we do not pretend otherwise
+        assertThat(sent).anySatisfy(r -> {
+            assertThat(r.getProviderMessageId()).isNull();
+            assertThat(r.getErrorCode()).isEqualTo("no_provider_id");
+        });
+        assertThat(sent).anySatisfy(r -> {
+            assertThat(r.getProviderMessageId()).isEqualTo("id-only-one");
+            assertThat(r.getErrorCode()).isNull();
+        });
+    }
+
     @Test
     void providerFailureLeavesRowsPendingAndIncrementsAttempt() {
         Campaign c = campaignWithPending(1);

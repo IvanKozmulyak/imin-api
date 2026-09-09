@@ -163,10 +163,21 @@ public class EmailChannelSender {
 
         try {
             List<String> ids = provider.sendBatch(outgoing);
+            if (ids.size() < batch.size()) {
+                // Ids are matched to recipients by POSITION and the provider gives no guarantee
+                // the list is the same length. The mail left, so these rows stay 'sent' — but
+                // without a provider_message_id no delivery/bounce/complaint event can ever be
+                // resolved back to them, so say so on the row instead of leaving them silently
+                // invisible to the stats and to the complaint breaker (mkt-core-16).
+                log.warn("[email-sender] campaign {}: provider returned {} ids for {} emails — "
+                        + "{} recipients will be untrackable", c.getId(), ids.size(), batch.size(),
+                        batch.size() - ids.size());
+            }
             for (int i = 0; i < batch.size(); i++) {
                 CampaignRecipient r = batch.get(i);
                 r.setStatus("sent");
                 r.setProviderMessageId(i < ids.size() ? ids.get(i) : null);
+                if (i >= ids.size()) r.setErrorCode("no_provider_id");
                 r.setAttemptCount((short) (r.getAttemptCount() + 1));
                 r.setLastEventAt(Instant.now());
                 recipients.save(r);
