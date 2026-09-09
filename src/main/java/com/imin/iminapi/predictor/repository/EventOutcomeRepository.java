@@ -30,8 +30,22 @@ import java.util.UUID;
 @RepositoryRestResource(exported = false)
 public interface EventOutcomeRepository extends JpaRepository<EventOutcome, UUID> {
 
-    /** Outcomes still awaiting the post-event finalize pass. Drives the finalize job. */
-    List<EventOutcome> findByFinalizedAtIsNull(Pageable pageable);
+    /**
+     * Outcomes still awaiting the post-event finalize pass, oldest freeze first. Drives the
+     * finalize job.
+     *
+     * <p>The ORDER BY is not cosmetic. This is a capped scan whose caller does NOT finalize
+     * everything it fetches — {@code EventOutcomeFinalizeJob} skips every outcome whose event has
+     * not yet ended past the grace window. A frozen row is written at publish and stays
+     * unfinalized until well after the event, so the unfinalized set is dominated by future
+     * events and grows with the published-event count; once it exceeds the page size, an
+     * unordered page can be filled entirely with not-yet-due rows while a genuinely due one is
+     * never selected, every tick. Oldest-first is the order that drains, and the eventId (the
+     * @Id) is the deterministic tiebreaker that keeps the page stable when frozenAt ties.
+     * {@code EventRepository.findPayoutCandidates} and {@code OrderRepository.findDue24hReminder}
+     * carry an explicit ORDER BY for exactly this reason.
+     */
+    List<EventOutcome> findByFinalizedAtIsNullOrderByFrozenAtAscEventIdAsc(Pageable pageable);
 
     /**
      * Number of an org's events already snapshotted at publish. Used at freeze time to

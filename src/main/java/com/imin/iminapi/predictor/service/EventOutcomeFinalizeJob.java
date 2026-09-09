@@ -53,7 +53,8 @@ public class EventOutcomeFinalizeJob {
     public void run() {
         Instant now = clock.instant();
         Instant cutoff = now.minus(props.getFinalizeGraceDays(), ChronoUnit.DAYS);
-        List<EventOutcome> due = outcomes.findByFinalizedAtIsNull(PageRequest.of(0, PAGE));
+        List<EventOutcome> due = outcomes.findByFinalizedAtIsNullOrderByFrozenAtAscEventIdAsc(
+                PageRequest.of(0, PAGE));
         int finalized = 0;
         for (EventOutcome o : due) {
             Event e = events.findById(o.getEventId()).orElse(null);

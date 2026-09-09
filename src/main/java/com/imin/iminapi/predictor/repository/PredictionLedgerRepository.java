@@ -18,8 +18,17 @@ public interface PredictionLedgerRepository extends JpaRepository<PredictionLedg
     /** All renders for an event, newest first — the audit trail behind the calibration view. */
     List<PredictionLedger> findByEventIdOrderByCreatedAtDesc(UUID eventId);
 
-    /** Renders not yet joined to their event's outcome. Drives the monthly scoring job. */
-    List<PredictionLedger> findByOutcomeJoinedAtIsNull(Pageable pageable);
+    /**
+     * Renders not yet joined to their event's outcome, oldest first. Drives the monthly scoring
+     * job.
+     *
+     * <p>Same starvation shape as
+     * {@code EventOutcomeRepository.findByFinalizedAtIsNullOrderByFrozenAtAscEventIdAsc}, and for
+     * the same reason: {@code PredictionScoringJob} skips every row whose outcome is not
+     * finalized yet, so an unordered capped page can be filled entirely with rows it will skip
+     * while a joinable one is never picked. The id is the deterministic tiebreaker.
+     */
+    List<PredictionLedger> findByOutcomeJoinedAtIsNullOrderByCreatedAtAscIdAsc(Pageable pageable);
 
     /**
      * All outcome-joined renders — the scored evaluation set behind segment aggregation and

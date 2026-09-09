@@ -92,7 +92,8 @@ public class PredictionScoringJob {
     // ---- pass 1: outcome join + per-render Brier / APE ---------------------------
 
     private void joinAndScore(Instant now) {
-        List<PredictionLedger> unjoined = ledger.findByOutcomeJoinedAtIsNull(PageRequest.of(0, PAGE));
+        List<PredictionLedger> unjoined = ledger.findByOutcomeJoinedAtIsNullOrderByCreatedAtAscIdAsc(
+                PageRequest.of(0, PAGE));
         int joined = 0;
         for (PredictionLedger row : unjoined) {
             EventOutcome o = outcomes.findById(row.getEventId()).orElse(null);

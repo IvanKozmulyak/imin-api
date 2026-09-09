@@ -54,7 +54,7 @@ class EventOutcomeFinalizeJobTest {
         UUID tooRecent = UUID.randomUUID(); // ended 1 day ago -> within grace, skip
         UUID noEnd = UUID.randomUUID();     // null endsAt -> skip
 
-        when(outcomes.findByFinalizedAtIsNull(any()))
+        when(outcomes.findByFinalizedAtIsNullOrderByFrozenAtAscEventIdAsc(any()))
                 .thenReturn(List.of(outcome(due), outcome(tooRecent), outcome(noEnd)));
         when(events.findById(due)).thenReturn(Optional.of(event(due, now.minus(5, ChronoUnit.DAYS))));
         when(events.findById(tooRecent)).thenReturn(Optional.of(event(tooRecent, now.minus(1, ChronoUnit.DAYS))));

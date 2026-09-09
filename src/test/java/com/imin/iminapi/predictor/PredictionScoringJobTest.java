@@ -65,7 +65,7 @@ class PredictionScoringJobTest {
         UUID rPending = UUID.randomUUID();
         UUID rNoOutcome = UUID.randomUUID();
 
-        when(ledger.findByOutcomeJoinedAtIsNull(any()))
+        when(ledger.findByOutcomeJoinedAtIsNullOrderByCreatedAtAscIdAsc(any()))
                 .thenReturn(List.of(render(rDone, doneEvent), render(rPending, pendingEvent), render(rNoOutcome, noOutcomeEvent)));
         when(outcomes.findById(doneEvent)).thenReturn(Optional.of(finalized(doneEvent, 240, 198)));
         when(outcomes.findById(pendingEvent)).thenReturn(Optional.of(notFinalized(pendingEvent)));

@@ -105,7 +105,7 @@ class PredictionLedgerServiceTest {
         assertThat(row.getBrierComponent()).isEqualByComparingTo("0.040000");
         assertThat(row.getApe()).isEqualByComparingTo("0.175000");
         // the row drops out of the scoring-job candidate query
-        assertThat(ledger.findByOutcomeJoinedAtIsNull(org.springframework.data.domain.PageRequest.of(0, 10)))
+        assertThat(ledger.findByOutcomeJoinedAtIsNullOrderByCreatedAtAscIdAsc(org.springframework.data.domain.PageRequest.of(0, 10)))
                 .isEmpty();
     }
 

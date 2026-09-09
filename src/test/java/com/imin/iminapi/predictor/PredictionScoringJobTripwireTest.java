@@ -52,7 +52,7 @@ class PredictionScoringJobTripwireTest {
         outcomes = mock(EventOutcomeRepository.class);
         segments = mock(PredictorSegmentStatusRepository.class);
         sut = new PredictionScoringJob(ledger, outcomes, mock(PredictionLedgerService.class), segments, clock);
-        when(ledger.findByOutcomeJoinedAtIsNull(any())).thenReturn(List.of());
+        when(ledger.findByOutcomeJoinedAtIsNullOrderByCreatedAtAscIdAsc(any())).thenReturn(List.of());
         when(outcomes.findById(any())).thenAnswer(inv -> Optional.ofNullable(outcomeByEvent.get(inv.getArgument(0))));
         when(segments.findById(any())).thenReturn(Optional.empty());
     }
