@@ -18,6 +18,22 @@ public interface BuyerPasswordResetTokenRepository extends JpaRepository<BuyerPa
     /** Lookup by SHA-256 hex; the raw token exists only in the buyer's inbox. */
     Optional<BuyerPasswordResetToken> findByTokenHash(String tokenHash);
 
+    /**
+     * Retires every outstanding reset token for an account.
+     *
+     * <p>The mirror of {@code BuyerEmailVerificationService.issue}: only the
+     * newest link may work. A reset happens because somebody else may hold the
+     * credential, so an older link still live inside the 30-minute TTL —
+     * forwarded, leaked from a shared inbox, sitting in a proxy log — could be
+     * redeemed right after the owner's own recovery and take the account back,
+     * revoking their fresh sessions on the way through.
+     */
+    @Transactional
+    @Modifying
+    @Query("update BuyerPasswordResetToken t set t.consumedAt = :now " +
+           "where t.buyerAccountId = :accountId and t.consumedAt is null")
+    int consumeAllForAccount(@Param("accountId") UUID accountId, @Param("now") Instant now);
+
     @Transactional
     @Modifying
     @Query("delete from BuyerPasswordResetToken t where t.expiresAt < :cutoff")

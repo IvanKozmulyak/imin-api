@@ -261,6 +261,10 @@ public class BuyerCredentialService {
      * <p>A reset link is sent only to a <b>verified</b> address, so it can never
      * hand control of an account to someone who merely typed its address.
      *
+     * <p>Issuing retires the account's outstanding links first: only the newest
+     * one may work, exactly as {@code BuyerEmailVerificationService.issue}
+     * retires outstanding codes.
+     *
      * <p>A Google-only account (NULL {@code password_hash}) can acquire a
      * password this way. That is correct and standard — the link goes to an
      * address the buyer has proved they control — and it is the escape hatch for
@@ -277,11 +281,16 @@ public class BuyerCredentialService {
         if (maybe.isEmpty()) return;
         BuyerAccount account = maybe.get();
 
+        // Only the newest link may work. Anything still outstanding is retired
+        // before the new one is minted — see consumeAllForAccount.
+        Instant now = Instant.now();
+        resetTokens.consumeAllForAccount(account.getId(), now);
+
         TokenService.IssuedToken issued = tokens.issue();
         BuyerPasswordResetToken token = new BuyerPasswordResetToken();
         token.setBuyerAccountId(account.getId());
         token.setTokenHash(issued.tokenHash());
-        token.setExpiresAt(Instant.now().plus(Duration.ofMinutes(props.getPasswordResetTtlMinutes())));
+        token.setExpiresAt(now.plus(Duration.ofMinutes(props.getPasswordResetTtlMinutes())));
         resetTokens.save(token);
 
         swallow("password reset", () -> emailer.sendPasswordReset(
@@ -314,6 +323,8 @@ public class BuyerCredentialService {
         accounts.save(account);
         token.setConsumedAt(now);
         resetTokens.save(token);
+        // And any link minted in parallel with the one just used dies with it.
+        resetTokens.consumeAllForAccount(account.getId(), now);
 
         sessions.revokeAll(account.getId());
 

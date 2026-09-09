@@ -421,6 +421,36 @@ class BuyerCredentialFlowTest {
                 .andExpect(jsonPath("$.error.code").value("INVALID_TOKEN"));
     }
 
+    /**
+     * A second reset link retires the first.
+     *
+     * <p>The one flow whose premise is "somebody else may have my credential"
+     * has to actually close. An earlier link that is still live — forwarded,
+     * leaked out of a shared or compromised inbox, sitting in a proxy log —
+     * could be redeemed straight after the owner's own recovery, take the
+     * account back, and revoke the fresh sessions on its way through. Only the
+     * newest link may work.
+     */
+    @Test
+    void asking_for_a_new_reset_link_retires_the_previous_one() throws Exception {
+        signupAndVerify(address);
+        reset(email);
+
+        forgotPassword(address).andExpect(status().isNoContent());
+        String first = resetTokenSentTo(address);
+        reset(email);
+        forgotPassword(address).andExpect(status().isNoContent());
+        String second = resetTokenSentTo(address);
+        assertThat(second).isNotBlank().isNotEqualTo(first);
+
+        resetPassword(second, "brand-new-password").andExpect(status().isNoContent());
+
+        resetPassword(first, "attacker-chosen-password")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_TOKEN"));
+        login(address, "brand-new-password").andExpect(status().isOk());
+    }
+
     @Test
     void an_unknown_reset_token_is_INVALID_TOKEN() throws Exception {
         resetPassword("not-a-real-token", "brand-new-password")
