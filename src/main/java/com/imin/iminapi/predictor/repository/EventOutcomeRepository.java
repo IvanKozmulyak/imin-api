@@ -9,6 +9,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -32,6 +33,26 @@ public interface EventOutcomeRepository extends JpaRepository<EventOutcome, UUID
 
     /** Outcomes still awaiting the post-event finalize pass. Drives the finalize job. */
     List<EventOutcome> findByFinalizedAtIsNull(Pageable pageable);
+
+    /**
+     * Outcomes that are actually DUE for the post-event finalize pass: not yet finalized AND
+     * belonging to an event that ended before {@code cutoff}. The due predicate lives in the
+     * query rather than in a Java skip after the page is read, because every published event
+     * gets a {@code finalizedAt = null} row at publish: live events, future events and events
+     * with no end time can never satisfy it, and would otherwise occupy the single page forever
+     * and starve the rows that can. Ordered (event date, then id) so paging is total and
+     * repeatable rather than a heap-order slice.
+     */
+    @Query("""
+            select o from EventOutcome o
+             where o.finalizedAt is null
+               and exists (select 1 from Event e
+                            where e.id = o.eventId
+                              and e.endsAt is not null
+                              and e.endsAt < :cutoff)
+             order by o.eventDate asc, o.eventId asc
+            """)
+    List<EventOutcome> findDueForFinalize(@Param("cutoff") Instant cutoff, Pageable pageable);
 
     /**
      * Number of an org's events already snapshotted at publish. Used at freeze time to
