@@ -216,7 +216,11 @@ public class PredictionScoringJob {
             s.setSegmentKey(key);
             return s;
         });
-        status.setScoredCount(rows.size());
+        // What was MEASURED, not what was joined: a joined row whose output carries no sell-out
+        // band and no attendance range (a re-forecast row parses into a PredictionResult with
+        // both null) contributes to neither mean, and counting it would overstate how much
+        // evidence the segment's Brier/MAPE rest on. The tripwires already count per metric.
+        status.setScoredCount(Math.max(brierRows.size(), apeRows.size()));
         status.setBrier(meanBrier);
         status.setBaseRateBrier(baseRateBrier);
         status.setMape(meanApe);
