@@ -510,6 +510,11 @@ public class CampaignService {
         c.setScheduledAt(Instant.now());
         c.setUpdatedAt(Instant.now());
         Campaign saved = campaigns.save(c);
+        // Put the dead rows back in the queue (mkt-core-2). Recipients that burned their
+        // attempt budget are 'failed', and the dispatcher only claims 'pending' — without
+        // this the retry re-claimed a campaign with nothing left to send and failed again.
+        // Rows that already left (sent/delivered/…) are untouched, so nobody is re-emailed.
+        campaignRecipientRepository.requeueFailed(campaignId);
         audit.record(principal, "CAMPAIGN_RETRIED", "campaign", c.getId(), "Campaign retry queued");
         return saved;
     }

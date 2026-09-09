@@ -1,6 +1,7 @@
 package com.imin.iminapi.marketing.send;
 
 import com.imin.iminapi.marketing.model.Campaign;
+import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.predictor.service.PredictorMarketingEvents;
 import org.slf4j.Logger;
@@ -13,6 +14,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Instant;
+import java.util.List;
 
 /**
  * Per-campaign send unit (spec §2.5). A dedicated bean so its transaction boundaries
@@ -35,17 +37,26 @@ public class CampaignSendUnit {
 
     private static final Logger log = LoggerFactory.getLogger(CampaignSendUnit.class);
 
+    /** Attempt budget per recipient row — mirrors claimPendingBatch's `attempt_count < 3`. */
+    static final short MAX_RECIPIENT_ATTEMPTS = 3;
+    /** Every status a row can hold once its email actually left. */
+    private static final List<String> LEFT_THE_BUILDING = List.of(
+            "sent", "delivered", "opened", "clicked", "bounced", "complained", "unsubscribed");
+
     private final CampaignRepository campaigns;
+    private final CampaignRecipientRepository recipients;
     private final RecipientMaterializer materializer;
     private final EmailChannelSender emailSender;
     private final ApplicationEventPublisher eventPublisher;
     /** REQUIRES_NEW template: the campaign status flips commit on their own, like the batches. */
     private final TransactionTemplate newTx;
 
-    public CampaignSendUnit(CampaignRepository campaigns, RecipientMaterializer materializer,
+    public CampaignSendUnit(CampaignRepository campaigns, CampaignRecipientRepository recipients,
+                            RecipientMaterializer materializer,
                             EmailChannelSender emailSender, ApplicationEventPublisher eventPublisher,
                             PlatformTransactionManager txManager) {
         this.campaigns = campaigns;
+        this.recipients = recipients;
         this.materializer = materializer;
         this.emailSender = emailSender;
         this.eventPublisher = eventPublisher;
@@ -64,6 +75,25 @@ public class CampaignSendUnit {
         int guard = 0;
         while (emailSender.sendNextBatch(c) && guard++ < 10_000) {
             // keep sending
+        }
+        finish(c);
+    }
+
+    /**
+     * Terminal state for a drained campaign (mkt-core-2). Rows that burned their attempt
+     * budget are retired to 'failed' with an error_code first, so the outcome is read off
+     * real row state. A campaign where NOTHING left and something died is 'failed', not
+     * 'sent': stamping it 'sent' reported 0 sent against a non-zero recipientCount and made
+     * POST /retry (which requires 'failed') refuse the only campaign that needed it.
+     */
+    private void finish(Campaign c) {
+        newTx.executeWithoutResult(st -> recipients.failExhaustedPending(
+                c.getId(), MAX_RECIPIENT_ATTEMPTS, "send_failed", Instant.now()));
+        long left = recipients.countByCampaignIdAndStatusIn(c.getId(), LEFT_THE_BUILDING);
+        long dead = recipients.countByCampaignIdAndStatus(c.getId(), "failed");
+        if (left == 0 && dead > 0) {
+            newTx.executeWithoutResult(st -> markFailed(c, "no recipients could be sent"));
+            return;
         }
         newTx.executeWithoutResult(st -> {
             c.setStatus("sent");
