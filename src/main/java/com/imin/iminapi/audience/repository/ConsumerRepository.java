@@ -28,6 +28,17 @@ public interface ConsumerRepository extends Repository<Consumer, UUID> {
 
     Consumer save(Consumer consumer);
 
+    /**
+     * save() with the INSERT forced out to the database.
+     *
+     * <p>Consumer ids are {@code GenerationType.UUID}, i.e. assigned in memory, so persist()
+     * issues no statement and a plain save() cannot raise the duplicate-key violation on
+     * ux_consumers_normalized_email that the INSERT-first upserts say they catch — it
+     * arrives at the next auto-flush or at commit, outside their try. Same reason
+     * MarketingOptOutRecorder uses saveAndFlush.
+     */
+    Consumer saveAndFlush(Consumer consumer);
+
     /** Batch fetch by consumerIds — used by SendGateService for email resolution. */
     @Query("select c from Consumer c where c.consumerId in :ids")
     List<Consumer> findAllByConsumerIdIn(@Param("ids") Collection<UUID> ids);
