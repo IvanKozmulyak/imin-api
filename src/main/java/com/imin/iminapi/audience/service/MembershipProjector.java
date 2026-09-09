@@ -73,7 +73,7 @@ public class MembershipProjector {
         for (com.imin.iminapi.model.Order o : buyerOrders) {
             eventByOrderId.put(o.getId(), o.getEventId());
         }
-        long attended = 0;
+        long redeemedTickets = 0;
         Instant lastAttended = null;
         Set<UUID> attendedEventIds = new HashSet<>();
         Set<UUID> unscannedEventIds = new HashSet<>();
@@ -82,7 +82,7 @@ public class MembershipProjector {
             for (com.imin.iminapi.model.Ticket t : tickets) {
                 UUID ticketEventId = eventByOrderId.get(t.getOrderId());
                 if (com.imin.iminapi.model.Ticket.STATE_REDEEMED.equals(t.getState())) {
-                    attended++;
+                    redeemedTickets++;
                     if (ticketEventId != null) attendedEventIds.add(ticketEventId);
                     if (lastAttended == null || t.getRedeemedAt() != null && t.getRedeemedAt().isAfter(lastAttended)) {
                         lastAttended = t.getRedeemedAt();
@@ -92,6 +92,11 @@ public class MembershipProjector {
                 }
             }
         }
+        // attended is EVENTS attended, the counterpart of `events` (events bought for) and
+        // the number "repeat attendee" is read off. Counting redeemed tickets made two
+        // tickets to one gig a repeat attendee and could push attended above events.
+        // A redeemed ticket on an order with no event id still counts as one attendance.
+        long attended = attendedEventIds.isEmpty() ? redeemedTickets : attendedEventIds.size();
         // no_show is "events bought for but not attended", which is what the rule engine and
         // the AI segment prompt both promise. Three things follow, and none of them held
         // before: an unscanned ticket for an event that has not ENDED is not a miss (it used

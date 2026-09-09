@@ -268,6 +268,23 @@ class AudienceMetricsTest {
         assertThat(dto.repeatAttendeePct()).isLessThanOrEqualTo(100.0);
     }
 
+    /**
+     * audience-2: the numerator used to be taken from the 56-day list-growth window
+     * while the denominator was every buyer, so an org whose members all joined more
+     * than eight weeks ago reported 0.0% repeat attendance however loyal they were.
+     */
+    @Test
+    void repeat_attendee_pct_counts_buyers_older_than_the_growth_window() {
+        Membership old = seedAged(orgA, "oldrepeat@m.com", 100);
+        old.setEvents(3);
+        old.setAttended(2);
+        membershipRepo.save(old);
+
+        AudienceMetricsDto dto = metricsService.compute(orgA);
+
+        assertThat(dto.repeatAttendeePct()).isEqualTo(100.0);
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // unsubRatePct
     // ─────────────────────────────────────────────────────────────────────────
@@ -320,6 +337,23 @@ class AudienceMetricsTest {
 
     private UUID seedMembership(UUID orgId, String email) {
         return seedAndGet(orgId, email).getMembershipId();
+    }
+
+    /** Seed a membership whose created_at is {@code ageDays} in the past. */
+    private Membership seedAged(UUID orgId, String email, int ageDays) {
+        String normalized = EmailNormalizer.normalize(email);
+        Consumer consumer = consumerRepo.findByNormalizedEmail(normalized).orElse(null);
+        if (consumer == null) {
+            consumer = new Consumer();
+            consumer.setNormalizedEmail(normalized);
+            consumer.setDisplayName(email);
+            consumer = consumerRepo.save(consumer);
+        }
+        Membership m = new Membership();
+        m.setOrgId(orgId);
+        m.setConsumerId(consumer.getConsumerId());
+        m.setCreatedAt(java.time.Instant.now().minus(ageDays, java.time.temporal.ChronoUnit.DAYS));
+        return membershipRepo.save(m);
     }
 
     private Membership seedAndGet(UUID orgId, String email) {

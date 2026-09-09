@@ -157,6 +157,30 @@ class MembershipProjectorTest {
         assertThat(m.getNoShow()).isZero();
     }
 
+    /**
+     * audience-2 (secondary): {@code attended} counts EVENTS attended, not redeemed
+     * tickets — otherwise two tickets to one gig already read as a repeat attendee,
+     * and {@code attended} could exceed {@code events}.
+     */
+    @Test
+    void two_redeemed_tickets_to_one_event_count_as_one_attended_event() {
+        UUID eventId = UUID.randomUUID();
+        Order order = order(eventId);
+        Ticket first = ticket(order, Ticket.STATE_REDEEMED);
+        first.setRedeemedAt(Instant.now().minus(9, ChronoUnit.DAYS));
+        Ticket second = ticket(order, Ticket.STATE_REDEEMED);
+        second.setRedeemedAt(Instant.now().minus(9, ChronoUnit.DAYS));
+        stubOrder(order);
+        stubTickets(first, second);
+        stubEvents(event(eventId, Instant.now().minus(10, ChronoUnit.DAYS), null));
+
+        Membership m = membership();
+        projector.recompute(m, "buyer@x.com");
+
+        assertThat(m.getAttended()).isEqualTo(1);
+        assertThat(m.getLastAttended()).isNotNull();
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
 
     private void stubOrder(Order... orders) {

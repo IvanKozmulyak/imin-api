@@ -174,6 +174,15 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
     @Query("select count(m) from Membership m where m.orgId = :orgId and m.consentStatus = 'subscribed'")
     long countSubscribedByOrgId(@Param("orgId") UUID orgId);
 
+    /**
+     * Buyers who attended more than one event — the repeat-attendee numerator.
+     * Org-scoped and unbounded in time on purpose: the denominator is every buyer,
+     * so taking the numerator from the 56-day list-growth window (as the metrics
+     * service used to) reported 0% for any org whose members joined earlier.
+     */
+    @Query("select count(m) from Membership m where m.orgId = :orgId and m.attended > 1")
+    long countRepeatAttendeesByOrgId(@Param("orgId") UUID orgId);
+
     @Query("select count(m) from Membership m where m.orgId = :orgId and m.consentBasis = 'explicit'")
     long countExplicitConsentByOrgId(@Param("orgId") UUID orgId);
 
