@@ -6,10 +6,12 @@ import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.render.CampaignEmailRenderer;
 import com.imin.iminapi.marketing.render.MergeTags;
+import com.imin.iminapi.audience.dto.ExclusionReason;
 import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
+import com.imin.iminapi.audience.service.SendGateService;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.marketing.service.CampaignTemplateService;
@@ -32,6 +34,7 @@ import java.util.Map;
 import java.util.HashMap;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Spec §2.5 step 3: per-row email worker over campaign_recipients. Claims a batch of
@@ -56,13 +59,15 @@ public class EmailChannelSender {
     private final EventRepository events;
     private final MembershipRepository memberships;
     private final ConsumerRepository consumers;
+    private final SendGateService sendGate;
 
     public EmailChannelSender(CampaignRecipientRepository recipients, CampaignRepository campaigns,
                               CampaignEmailRenderer renderer, CampaignEmailProvider provider,
                               UnsubscribeTokenService tokens, MarketingEmailProperties props,
                               CampaignTemplateService templateService,
                               OrganizationRepository organizations, EventRepository events,
-                              MembershipRepository memberships, ConsumerRepository consumers) {
+                              MembershipRepository memberships, ConsumerRepository consumers,
+                              SendGateService sendGate) {
         this.recipients = recipients;
         this.campaigns = campaigns;
         this.renderer = renderer;
@@ -74,6 +79,7 @@ public class EmailChannelSender {
         this.events = events;
         this.memberships = memberships;
         this.consumers = consumers;
+        this.sendGate = sendGate;
     }
 
     /**
@@ -96,6 +102,14 @@ public class EmailChannelSender {
         // Unreachable while the claim filters on status; stop the drive rather than spin
         // if it ever is reached — the dispatcher re-claims the campaign either way.
         if (batch.isEmpty()) return false;
+        // The gate snapshot was taken at materialisation, and a large campaign drains for
+        // minutes-to-hours after that. Re-run it over THIS batch so someone who unsubscribed,
+        // complained or was deliverability-suppressed in the meantime is diverted rather than
+        // emailed — SendGateService is "THE ONLY path that yields sendable recipients".
+        divertNoLongerSendable(c, batch);
+        if (batch.isEmpty()) {
+            return recipients.countByCampaignIdAndStatus(c.getId(), "pending") > 0;
+        }
 
         // Template, org brand name, and event poster are constant for the whole campaign —
         // resolve them ONCE per batch, not per recipient. Only the unsubscribe URL varies.
@@ -157,6 +171,42 @@ public class EmailChannelSender {
         campaigns.touch(c.getId(), Instant.now());
 
         return recipients.countByCampaignIdAndStatus(c.getId(), "pending") > 0;
+    }
+
+    /**
+     * Re-runs the Send Gate for a claimed batch and diverts every row that no longer passes
+     * to {@code skipped} with the gate's own exclusion reason, removing it from the batch.
+     * Read-only and tenant-scoped (SendGateService.evaluate), four batched queries per call.
+     *
+     * <p>Rows with a null membership_id (DSAR-erased) cannot be gated and are left alone —
+     * they carry no consent state to re-check.
+     */
+    private void divertNoLongerSendable(Campaign c, List<CampaignRecipient> batch) {
+        List<UUID> membershipIds = batch.stream()
+                .map(CampaignRecipient::getMembershipId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (membershipIds.isEmpty()) return;
+        SendGateService.GateResult gate = sendGate.evaluate(c.getOrgId(), membershipIds);
+        if (gate.excluded().isEmpty()) return;
+        Map<UUID, String> reasonByMembership = new HashMap<>();
+        for (ExclusionReason ex : gate.excluded()) {
+            reasonByMembership.put(ex.membershipId(), ex.reason());
+        }
+        Instant now = Instant.now();
+        batch.removeIf(r -> {
+            String reason = r.getMembershipId() == null
+                    ? null : reasonByMembership.get(r.getMembershipId());
+            if (reason == null) return false;
+            r.setStatus("skipped");
+            r.setSkipReason(reason);
+            r.setLastEventAt(now);
+            recipients.save(r);
+            log.info("[email-sender] campaign {} recipient {} no longer sendable ({}) — skipping",
+                    c.getId(), r.getId(), reason);
+            return true;
+        });
     }
 
     /**
