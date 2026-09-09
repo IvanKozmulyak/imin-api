@@ -141,8 +141,12 @@ public class RefundRequestService {
         long byIp = attempts.countByIpHashAndAttemptedAtAfter(hashIp(clientIp), cutoff);
         int cap = ticketProps.getRecoveryMaxPerHour();
         if (byEmail > cap || byIp > cap) {
+            // Masked, like the "no refundable order" branch below and the identical line in
+            // OrderRecoveryService. This branch is the one an anonymous caller can drive at
+            // will (just exceed recoveryMaxPerHour), so a raw address here is a buyer address
+            // written into the log pipeline on demand.
             log.info("[refund-request] rate-limited email={} byEmail={} byIp={}",
-                normalized, byEmail, byIp);
+                LogSafe.email(normalized), byEmail, byIp);
             return;
         }
 

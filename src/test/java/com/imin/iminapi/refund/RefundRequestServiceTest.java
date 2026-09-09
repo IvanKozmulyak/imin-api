@@ -10,6 +10,8 @@ import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.service.ticket.TicketProperties;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.ApplicationEventPublisher;
@@ -120,6 +122,44 @@ class RefundRequestServiceTest {
         verify(attempts).save(any(OrderRecoveryAttempt.class));
         verify(tokens, never()).save(any());
         verify(email, never()).send(anyString(), anyString(), anyString(), anyString());
+    }
+
+    /**
+     * api-12: this branch logged the buyer's address verbatim while the branch fourteen lines
+     * below it (and the structurally identical OrderRecoveryService line) went through
+     * LogSafe.email. The endpoint that reaches it is unauthenticated, and this is precisely the
+     * branch an attacker drives at will by exceeding recoveryMaxPerHour — so raw addresses
+     * landed in the Railway log pipeline on demand.
+     */
+    @Test
+    void requestLink_rate_limited_does_not_log_the_raw_address() {
+        when(attempts.countByEmailAndAttemptedAtAfter(eq("buyer@example.com"), any()))
+            .thenReturn(100L);
+
+        List<ILoggingEvent> logged = captureWhile(
+            () -> service.requestLink("buyer@example.com", "1.2.3.4"));
+
+        assertThat(logged).isNotEmpty();
+        assertThat(logged).extracting(ILoggingEvent::getFormattedMessage)
+            .allSatisfy(m -> assertThat(m).doesNotContain("buyer@example.com"));
+        assertThat(logged).extracting(ILoggingEvent::getFormattedMessage)
+            .anySatisfy(m -> assertThat(m).contains(com.imin.iminapi.util.LogSafe.email("buyer@example.com")));
+    }
+
+    /** Runs {@code work} with a listening appender attached to the service's logger. */
+    private static List<ILoggingEvent> captureWhile(Runnable work) {
+        ch.qos.logback.classic.Logger logger =
+            (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(RefundRequestService.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            work.run();
+            return List.copyOf(appender.list);
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
     }
 
     @org.junit.jupiter.api.Nested
