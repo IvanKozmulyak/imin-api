@@ -176,6 +176,62 @@ class CampaignControllerTest {
                 .andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
     }
 
+    /**
+     * mkt-edge-7 (P2): neither request record carried a constraint and neither @RequestBody
+     * was @Valid, so a 201-character subject reached Postgres as a VARCHAR(200) overflow —
+     * SQLSTATE 22001 — which GlobalExceptionHandler renders as a FIELDLESS
+     * "Request violates a data constraint". The composer could not say which field was wrong.
+     */
+    @Test
+    @WithStubOrganizer
+    void create_overlong_subject_is_a_fielded_400() throws Exception {
+        String body = om.writeValueAsString(Map.of(
+                "channel", "email", "name", "Launch", "subject", "x".repeat(201)));
+        mvc.perform(post("/api/v1/marketing/campaigns")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
+                .andExpect(jsonPath("$.error.fields.subject").exists());
+        org.mockito.Mockito.verifyNoInteractions(service);
+    }
+
+    @Test
+    @WithStubOrganizer
+    void patch_overlong_preheader_is_a_fielded_400() throws Exception {
+        String body = om.writeValueAsString(Map.of("preheader", "y".repeat(201)));
+        mvc.perform(patch("/api/v1/marketing/campaigns/{id}", CAMP)
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.fields.preheader").exists());
+        org.mockito.Mockito.verifyNoInteractions(service);
+    }
+
+    @Test
+    @WithStubOrganizer
+    void create_overlong_templateKey_is_a_fielded_400() throws Exception {
+        String body = om.writeValueAsString(Map.of(
+                "channel", "email", "name", "Launch", "templateKey", "t".repeat(65)));
+        mvc.perform(post("/api/v1/marketing/campaigns")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.fields.templateKey").exists());
+    }
+
+    /**
+     * name is deliberately NOT constrained: CampaignService.truncateName silently clips it
+     * today, so a @Size there would turn a currently-succeeding request into a 400.
+     */
+    @Test
+    @WithStubOrganizer
+    void create_overlong_name_still_succeeds() throws Exception {
+        when(service.create(any(), any())).thenReturn(sampleDto());
+        String body = om.writeValueAsString(Map.of(
+                "channel", "email", "name", "n".repeat(300)));
+        mvc.perform(post("/api/v1/marketing/campaigns")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isCreated());
+    }
+
     @Test
     @WithStubOrganizer
     void delete_non_draft_returns_409() throws Exception {

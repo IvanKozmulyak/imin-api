@@ -356,7 +356,9 @@ public class MomentumService {
      * Clamp model copy to the column it lands in (V52: name VARCHAR(120), subject and
      * preheader VARCHAR(200)). MomentumCopyGenerator only ASKS the model for 60/90 chars, so
      * an over-long subject was a varchar overflow -> DataIntegrityViolationException -> a 500
-     * on the organizer's Approve click. CampaignService.create clamps the same column.
+     * on the organizer's Approve click. CampaignService.create does NOT clamp subject or
+     * preheader — it only truncates `name` — so this clamp is the only guard on the momentum
+     * path; the manual path is bounded by @Size on CampaignRequests instead (mkt-edge-7).
      */
     private static String clamp(String s, int max) {
         return s == null || s.length() <= max ? s : s.substring(0, max);

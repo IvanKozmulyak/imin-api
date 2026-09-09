@@ -1,8 +1,20 @@
 package com.imin.iminapi.marketing.dto;
 
+import jakarta.validation.constraints.Size;
+
 import java.util.UUID;
 
-/** Request bodies for the campaign endpoints (spec §2.4). */
+/**
+ * Request bodies for the campaign endpoints (spec §2.4).
+ *
+ * <p>mkt-edge-7: the {@code @Size} bounds below mirror the columns these land in
+ * (V52 {@code subject}/{@code preheader} VARCHAR(200), V66 {@code template_key} VARCHAR(64)).
+ * Without them an over-long value reached Postgres as a 22001 string-data overflow, which
+ * {@code GlobalExceptionHandler} can only render as a fieldless 400 — the composer could not
+ * point at the offending field. {@code name} is deliberately unconstrained: CampaignService
+ * silently truncates it to 120 today, so a bound here would turn a request that currently
+ * succeeds into a 400.
+ */
 public final class CampaignRequests {
 
     private CampaignRequests() {}
@@ -13,11 +25,11 @@ public final class CampaignRequests {
             String name,
             UUID segmentId,
             UUID eventId,
-            String subject,
-            String preheader,
+            @Size(max = 200, message = "must be at most 200 characters") String subject,
+            @Size(max = 200, message = "must be at most 200 characters") String preheader,
             String bodyMd,
             /** Email template key (V66): builtin key or saved-template UUID. Null → 'classic'. */
-            String templateKey
+            @Size(max = 64, message = "must be at most 64 characters") String templateKey
     ) {}
 
     /** PATCH /campaigns/{id} — partial; only non-null fields are applied. Draft-only. */
@@ -25,11 +37,11 @@ public final class CampaignRequests {
             String name,
             UUID segmentId,
             UUID eventId,
-            String subject,
-            String preheader,
+            @Size(max = 200, message = "must be at most 200 characters") String subject,
+            @Size(max = 200, message = "must be at most 200 characters") String preheader,
             String bodyMd,
             /** Email template key (V66) — applied only when non-null (draft-only, like the rest). */
-            String templateKey
+            @Size(max = 64, message = "must be at most 64 characters") String templateKey
     ) {}
 
     /** POST /campaigns/{id}/test-send. When email is null the caller's own address is used. */

@@ -56,7 +56,7 @@ public class CampaignController {
     @PostMapping
     public ResponseEntity<CampaignDto> create(
             @AuthenticationPrincipal AuthPrincipal principal,
-            @RequestBody CreateCampaignRequest req) {
+            @jakarta.validation.Valid @RequestBody CreateCampaignRequest req) {
         return ResponseEntity.status(HttpStatus.CREATED).body(service.create(principal, req));
     }
 
@@ -70,7 +70,7 @@ public class CampaignController {
     public CampaignDto patch(
             @AuthenticationPrincipal AuthPrincipal principal,
             @PathVariable UUID id,
-            @RequestBody PatchCampaignRequest req) {
+            @jakarta.validation.Valid @RequestBody PatchCampaignRequest req) {
         return service.patch(principal, id, req);
     }
 
