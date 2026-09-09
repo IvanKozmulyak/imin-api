@@ -296,6 +296,16 @@ imin:
     # Blank => every inbound webhook fails signature verification (fail closed).
     webhook-secret: ${IMIN_SMS_WEBHOOK_SECRET:}
     webhook-tolerance-seconds: 300
+  security:
+    # Key for IpHasher's HMAC over the IP addresses stored beside rate-limit
+    # counters. IpHasher's javadoc documents the knob as IMIN_IP_HASH_SECRET, but
+    # Boot only ever resolves imin.security.ip-hash-secret from
+    # IMIN_SECURITY_IP_HASH_SECRET — IMIN_IP_HASH_SECRET binds to
+    # imin.ip-hash-secret, which nothing reads. Without this line the documented
+    # rotation is silently inert: no error, and the old key stays in use. The
+    # default preserves today's behaviour (the ticket signing secret, already set
+    # in production), so setting IMIN_IP_HASH_SECRET is a clean rotation.
+    ip-hash-secret: ${IMIN_IP_HASH_SECRET:${IMIN_TICKET_SIGNING_SECRET:}}
   ticket:
     # HMAC-SHA256 secret used to tamper-evidence QR payloads. 32+ bytes of entropy.
     # Required at boot — QrPayloadSigner throws if blank.
