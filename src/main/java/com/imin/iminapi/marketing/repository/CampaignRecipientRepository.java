@@ -249,10 +249,30 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
                                @Param("maxAttempts") short maxAttempts);
 
     /**
+     * DSAR (mkt-edge-4): an erased membership's rows that are still QUEUED must leave the queue,
+     * not merely lose their address. {@link #redactPiiByMembershipId} nulls {@code email} on every
+     * row, {@code pending} ones included, so an in-flight campaign was left holding work the
+     * sender would claim and could never deliver. Divert those to {@code skipped}/{@code
+     * dsar_erased} — the same anonymous-aggregate shape the redaction preserves elsewhere — and
+     * clear any backoff so nothing re-claims them. Called immediately BEFORE the redaction.
+     */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @org.springframework.data.jpa.repository.Query(
+        "UPDATE CampaignRecipient r SET r.status='skipped', r.skipReason='dsar_erased', "
+        + "r.nextAttemptAt=null WHERE r.membershipId=:membershipId AND r.status='pending'")
+    int divertPendingForErasedMembership(
+            @org.springframework.data.repository.query.Param("membershipId") UUID membershipId);
+
+    /**
      * DSAR (spec §7): null the recipient PII (email/phone/rendered body) for every row belonging
      * to an erased membership, keeping status/skip_reason as an anonymous audit aggregate. Called
      * from {@code DsarService.executeErase} BEFORE the membership hard-delete; V53's
      * {@code ON DELETE SET NULL} FK then nulls {@code membership_id} when the delete proceeds.
+     *
+     * <p>Deliberately unconditional on status, so "an erased membership's rows carry no PII"
+     * holds however this is ordered; {@link #divertPendingForErasedMembership} runs first and
+     * leaves nothing pending behind for it to strand.
      */
     @org.springframework.data.jpa.repository.Modifying
     @org.springframework.transaction.annotation.Transactional

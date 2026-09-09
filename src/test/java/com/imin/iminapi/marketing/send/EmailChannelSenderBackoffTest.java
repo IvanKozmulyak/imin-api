@@ -84,4 +84,59 @@ class EmailChannelSenderBackoffTest {
         sender.sendNextBatch(c);
         verify(provider, times(1)).sendBatch(anyList());
     }
+
+    /**
+     * mkt-edge-4 (P1): a 4xx from Resend fails identically on every retry, so backing the rows
+     * off three times only delays the truth and keeps the campaign 'sending'. Mark them failed
+     * with the reason on the row — /retry (which requeues 'failed') is the recovery path.
+     */
+    @Test
+    void aTerminalProviderRejectionFailsTheRowsInsteadOfBackingThemOff() {
+        Campaign c = campaignWithPending(2);
+        when(provider.sendBatch(anyList())).thenThrow(
+                new CampaignEmailProvider.TerminalBatchFailure("Invalid `to` field", 422, null));
+
+        boolean more = sender.sendNextBatch(c);
+        assertThat(more).isFalse();
+
+        assertThat(recipients.findByCampaignIdAndStatus(c.getId(), "pending")).isEmpty();
+        assertThat(recipients.findByCampaignIdAndStatus(c.getId(), "failed"))
+                .hasSize(2)
+                .allSatisfy(r -> {
+                    assertThat(r.getErrorCode()).isEqualTo("provider_rejected");
+                    assertThat(r.getAttemptCount()).isEqualTo((short) 1);
+                });
+    }
+
+    /**
+     * mkt-edge-4: DSAR erasure nulls campaign_recipients.email for every row of an erased
+     * membership, 'pending' rows included, and the sender then built an OutgoingEmail with a
+     * null address. resend-java wraps a null `to` into a one-null list rather than throwing,
+     * so the failure happened on the wire and took the whole batch (and the campaign) with it.
+     * An address-less row is never sendable: divert it before the batch is assembled.
+     */
+    @Test
+    void aRowWithNoAddressIsSkippedNotSent() {
+        Campaign c = campaignWithPending(1);
+        CampaignRecipient orphan = new CampaignRecipient();
+        orphan.setId(UUID.randomUUID());
+        orphan.setCampaignId(c.getId());
+        orphan.setMembershipId(null);
+        orphan.setEmail(null);              // DSAR-redacted while still pending
+        orphan.setStatus("pending");
+        recipients.save(orphan);
+
+        when(provider.sendBatch(anyList())).thenReturn(java.util.List.of("id-a"));
+        sender.sendNextBatch(c);
+
+        assertThat(recipients.findByCampaignIdAndStatus(c.getId(), "skipped"))
+                .hasSize(1)
+                .allSatisfy(r -> assertThat(r.getSkipReason()).isEqualTo("no_email"));
+        // Only the addressable row reached the provider.
+        org.mockito.ArgumentCaptor<java.util.List<CampaignEmailProvider.OutgoingEmail>> captor =
+                org.mockito.ArgumentCaptor.forClass(java.util.List.class);
+        verify(provider).sendBatch(captor.capture());
+        assertThat(captor.getValue()).hasSize(1);
+        assertThat(captor.getValue().get(0).to()).isNotBlank();
+    }
 }

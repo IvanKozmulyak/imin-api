@@ -224,6 +224,10 @@ public class DsarService {
         // Spec §7: null campaign_recipients PII BEFORE the membership hard-delete, keeping
         // status/skip_reason as an anonymous audit record. V53's ON DELETE SET NULL then
         // lets the membership delete proceed instead of blocking AudienceErasureJob forever.
+        // mkt-edge-4: rows still QUEUED for an in-flight campaign leave the queue first —
+        // redacting them in place would hand the sender an address-less row it can never
+        // deliver. Order matters: divert (status), then redact (PII).
+        campaignRecipientRepo.divertPendingForErasedMembership(membershipId);
         campaignRecipientRepo.redactPiiByMembershipId(membershipId);
 
         // 3. Notify-me subscriptions. These live outside the consumer/membership graph —
