@@ -118,6 +118,11 @@ public class RateLimitConfig {
     @Value("${imin.ratelimit.public-track.window-minutes}")
     private int publicTrackWindow;
 
+    @Value("${imin.ratelimit.oauth-callback.capacity}")
+    private int oauthCallbackCapacity;
+    @Value("${imin.ratelimit.oauth-callback.window-minutes}")
+    private int oauthCallbackWindow;
+
     @Bean
     public RedisClient redisClient(@Value("${spring.data.redis.url}") String url) {
         return RedisClient.create(url);
@@ -271,6 +276,13 @@ public class RateLimitConfig {
         // 204 — see FunnelTrackingController for why the status must not change.
         configs.put("public-track", BucketConfiguration.builder()
                 .addLimit(Bandwidth.simple(publicTrackCapacity, Duration.ofMinutes(publicTrackWindow)))
+                .build());
+        // Organizer OAuth callbacks (Google callback + Apple return), keyed per
+        // client IP. Both are permitAll and each drives an outbound POST to the
+        // provider's token endpoint; one bucket for both providers, for the same
+        // reason buyer-native-signin shares one.
+        configs.put("oauth-callback", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(oauthCallbackCapacity, Duration.ofMinutes(oauthCallbackWindow)))
                 .build());
 
         return (bucketName, key) -> {

@@ -741,6 +741,23 @@ imin:
       # exists, so it must not turn into a 429.
       capacity: 120
       window-minutes: 5
+    oauth-callback:
+      # POST /api/v1/auth/google/callback and POST /api/v1/auth/apple/return,
+      # keyed per client IP. Both are permitAll and each one drives an outbound
+      # POST to the provider's token endpoint, so unmetered they are a free
+      # amplifier aimed at Google and Apple, bounded only by oauthRestClient's
+      # 10s read timeout.
+      #
+      # ONE bucket for both providers, like buyer-native-signin: same act, same
+      # cost, and splitting would hand an attacker twice the budget for
+      # alternating between them. Per IP because nothing else exists before the
+      # code is exchanged.
+      #
+      # 20 per 5 minutes is sized for an office or a venue behind one NAT —
+      # organizer sign-in is rare, so this is roughly an order of magnitude of
+      # headroom for real use while capping a script at 240/hour.
+      capacity: 20
+      window-minutes: 5
   push:
     # Outbound push to the native fan app, via Expo's push service.
     # Dark by default: until the app ships there are no tokens to send to, and a
