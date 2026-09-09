@@ -5,7 +5,6 @@ import com.imin.iminapi.buyer.dto.BuyerSavedResponse;
 import com.imin.iminapi.buyer.security.BuyerPrincipal;
 import com.imin.iminapi.buyer.security.CurrentBuyer;
 import com.imin.iminapi.buyer.service.BuyerSavedService;
-import jakarta.validation.constraints.NotNull;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -39,8 +38,17 @@ public class BuyerSavedController {
         this.service = service;
     }
 
-    /** The merge body. A null list is rejected; an empty one is a legal no-op. */
-    public record MergeRequest(@NotNull List<UUID> eventIds) {}
+    /**
+     * The merge body. A null list and an empty one are both a legal no-op.
+     *
+     * <p>{@code eventIds} carried a {@code @NotNull} and this said "a null list
+     * is rejected". Neither was true: the handler takes the body without
+     * {@code @Valid}, so the constraint never ran, and it coalesces null to
+     * empty anyway. Adding {@code @Valid} would turn a request that answers 200
+     * today into a 400 — a wire-visible change for no gain — so the doc moved to
+     * the behaviour rather than the other way round.
+     */
+    public record MergeRequest(List<UUID> eventIds) {}
 
     /**
      * Answers {@code {items, nextCursor}}, not a bare array — a top-level array

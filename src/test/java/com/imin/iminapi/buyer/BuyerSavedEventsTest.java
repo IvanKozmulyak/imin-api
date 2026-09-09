@@ -139,6 +139,21 @@ class BuyerSavedEventsTest {
                 .andExpect(jsonPath("$[0].eventId").value(eventId.toString()));
     }
 
+    /** Null and empty mean the same thing here — the merge only ever adds. */
+    @Test
+    void mergeTreatsAnExplicitlyNullListAsEmpty() throws Exception {
+        save(eventId).andExpect(status().isNoContent());
+
+        mvc.perform(post("/api/v1/buyer/saved/merge")
+                        .header(HttpHeaders.ORIGIN, ORIGIN)
+                        .cookie(cookie(cookie))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"eventIds\":null}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].eventId").value(eventId.toString()));
+    }
+
     @Test
     void savedEventsAreScopedToTheAccount() throws Exception {
         save(eventId).andExpect(status().isNoContent());
