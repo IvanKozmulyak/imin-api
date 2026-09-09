@@ -46,6 +46,7 @@ class AudienceComputeIngestionTest {
 
     // ── Services under test
     @Autowired AudienceOrderProjector orderProjector;
+    @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
     @Autowired MembershipProjector membershipProjector;
     @Autowired AudienceBackfillJob backfillJob;
 
@@ -352,7 +353,11 @@ class AudienceComputeIngestionTest {
         // Now wipe ONLY the audience projection (leave source data intact)
         wipeMemberships();
 
-        // Backfill path: runs through the same upsertMembership
+        // Backfill path: runs through the same upsertMembership.
+        // onStartup already ran the job THROUGH the ShedLock proxy (lockAtLeastFor=PT1M),
+        // so a direct run() here would be a silent no-op while that lock is held. Hand the
+        // lock back (expire, never delete: a deleted row makes every later acquire fail).
+        jdbc.update("update shedlock set lock_until = locked_at where name = 'audience_backfill'");
         backfillJob.run();
 
         Consumer c2 = consumerRepo.findByNormalizedEmail("replay@x.com").orElseThrow();
