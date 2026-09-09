@@ -52,6 +52,23 @@ class PredictionGuardrailValidatorTest {
         assertThat(sut.validate(valid(), ctx())).isEmpty();
     }
 
+    @Test
+    void missingSelloutBandRejected() {
+        // Silently omitting a requested estimate is not a pass: without this rule the output is
+        // stamped benchmarkOnly=false and served as `ready`, which claims a sell-out assessment
+        // the model never made.
+        Stage0Output out = new Stage0Output(null, new PredictionResult.Range(120, 210),
+                null, goodFactors(), List.of());
+        assertThat(sut.validate(out, ctx())).anyMatch(e -> e.contains("selloutBand is required"));
+    }
+
+    @Test
+    void missingAttendanceRangeRejectedWhenTheDraftHasCapacity() {
+        Stage0Output out = new Stage0Output(new PredictionResult.Band(80, 95), null,
+                null, goodFactors(), List.of());
+        assertThat(sut.validate(out, ctx())).anyMatch(e -> e.contains("attendanceRange is required"));
+    }
+
     // ---- adversarial fixtures ----------------------------------------------------
 
     @Test

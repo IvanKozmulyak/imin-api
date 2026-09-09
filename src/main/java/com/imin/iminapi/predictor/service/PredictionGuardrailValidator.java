@@ -130,8 +130,21 @@ public class PredictionGuardrailValidator {
             }
         }
 
-        // ---- A: attendance range bounds
+        // ---- P: the estimates must be PRESENT. Every coherence rule below is conditioned on
+        // presence, so an output that simply omits a requested field would sail through them and
+        // be served as `ready` — a status that claims an assessment the model never made. The
+        // rejection routes through the single retry and then benchmark-only, which is the honest
+        // "we have no number" surface. Never fill a missing field in.
         PredictionResult.Range att = out.attendanceRange();
+        if (out.selloutBand() == null) {
+            errors.add("selloutBand is required - a scored result must carry a sell-out probability band");
+        }
+        if (att == null && ctx.capacity() > 0) {
+            errors.add("attendanceRange is required when the draft has capacity (" + ctx.capacity()
+                    + ") - the sell-out band must be anchored to an attendance range");
+        }
+
+        // ---- A: attendance range bounds
         if (att != null) {
             if (att.low() < 0) errors.add("attendanceRange.low must be >= 0, got " + att.low());
             if (att.high() < att.low()) errors.add("attendanceRange.high (" + att.high() + ") < low (" + att.low() + ")");
