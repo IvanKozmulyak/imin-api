@@ -343,14 +343,6 @@ public class ReforecastService {
         return p == null ? 0 : p.soldNow();
     }
 
-    /** True once at least one re-forecast row exists for the event. */
-    public boolean hasReforecast(UUID eventId) {
-        for (PredictionLedger row : ledgerRepo.findByEventIdOrderByCreatedAtDesc(eventId)) {
-            if (row.getSurface() == PredictionSurface.REFORECAST) return true;
-        }
-        return false;
-    }
-
     /**
      * Serve the latest re-forecast for an event (GET path): parse the newest reforecast ledger
      * row and stamp its ledger identity on. {@code none} when the event was never re-forecast.
