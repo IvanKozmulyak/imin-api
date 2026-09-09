@@ -133,6 +133,21 @@ class PacingEngineTest {
     }
 
     @Test
+    void projectIsInsufficientWhenTheSlowPaceEndIsUnknown() {
+        // Healthy median (0.4) and fast end (p75 0.5), but a quarter of the comparables had no sale
+        // at this horizon so p25 is 0 — the SLOW-pace end, i.e. the top of the range, is unknown.
+        // Capacity is not an observation, so it must not stand in for it: no range at all.
+        Curve c = new Curve(12, List.of(
+                new PacingEngine.CurvePoint(10, 0.4, 0.0, 0.5),
+                new PacingEngine.CurvePoint(0, 1.0, 1.0, 1.0)));
+
+        Projection p = engine.project(c, 100, 10, 300);
+        assertThat(p.insufficient()).isTrue();
+        assertThat(p.finalHigh()).isNotEqualTo(300);   // the capacity ceiling was never a projection
+        assertThat(p.sellOutEarliestDaysOut()).isNull();
+    }
+
+    @Test
     void projectIsDeterministic() {
         assertThat(engine.project(curve(), 30, 5, 40)).isEqualTo(engine.project(curve(), 30, 5, 40));
     }

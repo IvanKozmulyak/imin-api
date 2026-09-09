@@ -139,10 +139,15 @@ public class PacingEngine {
         // Too few comparables had sold anything by this horizon for the division below to mean
         // anything (the median pace IS that count, expressed as a fraction): not projectable.
         if (medNow < MIN_PROJECTABLE_PACE) return Projection.insufficientResult();
+        // The slow-pace end (P25) is what sets the TOP of the range. When a quarter or more of the
+        // comparables had no sale at this horizon it is 0, i.e. the upper bound is unobserved —
+        // and capacity is a tier sum, not a pace, so it must never stand in for it (§5 "computed,
+        // not generated"). An unknown upper bound makes the whole projection unprojectable.
+        if (p25Now <= 0) return Projection.insufficientResult();
 
         // Fast pace (higher pct-of-final now) → smaller final; slow pace → larger final.
         double rawLow = p75Now > 0 ? currentSold / p75Now : currentSold;
-        double rawHigh = p25Now > 0 ? currentSold / p25Now : capacity; // p25==0 → unbounded, cap at capacity
+        double rawHigh = currentSold / p25Now; // p25 > 0 guaranteed by the guard above
         if (rawHigh < rawLow) rawHigh = rawLow;
 
         int finalLow = clamp((int) Math.round(rawLow), currentSold, Math.max(currentSold, capacity));
