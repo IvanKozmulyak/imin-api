@@ -29,6 +29,8 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -38,6 +40,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -95,6 +98,28 @@ class PredictionRequestServiceTest {
     private PredictionResult benchmark() {
         return new PredictionResult("pre_publish", 0, "C", null, null, null,
                 List.of(), List.of(), null, true, "m", "1.0.0", Instant.now());
+    }
+
+    @Test
+    void aSecondTriggerDuringTheFirstSetupDoesNotStartASecondRun() {
+        // The interleave the in-memory registry has to survive: a second POST for the same event
+        // arrives while the first is still building its snapshot and probing the cache. Without a
+        // claim taken up front, both see nothing in flight, both burn a daily score from the org's
+        // allowance, and both dispatch the same LLM run.
+        AtomicReference<PredictionRequestService.Trigger> second = new AtomicReference<>();
+        AtomicBoolean interleaved = new AtomicBoolean(false);
+        when(pipeline.snapshot(event)).thenAnswer(inv -> {
+            if (interleaved.compareAndSet(false, true)) second.set(sut.trigger(principal, eventId));
+            return snap;
+        });
+
+        PredictionRequestService.Trigger first = sut.trigger(principal, eventId);
+
+        assertThat(first.httpStatus()).isEqualTo(202);
+        assertThat(second.get().httpStatus()).isEqualTo(202);
+        assertThat(second.get().body().predictionId()).isEqualTo(first.body().predictionId());
+        verify(quota, times(1)).checkAndRecordScore(any());
+        verify(pipeline, times(1)).score(any(), any(), any());
     }
 
     @Test

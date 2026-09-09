@@ -91,45 +91,52 @@ public class PredictionRequestService {
     public Trigger trigger(AuthPrincipal p, UUID eventId) {
         Event e = loadOwned(p, eventId);
 
-        Pending inFlight = pending.get(eventId);
+        // The registry entry IS the claim, and it is taken BEFORE any of the setup work. Reading
+        // the flag first and writing it after the snapshot build, the cache probe, the throttle
+        // and the quota call left a wide window in which two POSTs for the same event both saw
+        // nothing in flight: both burned a daily score from the org's allowance and both
+        // dispatched the same run. The hash is not known yet, so the claim carries none; it is
+        // replaced with the hash-carrying entry below so GET keeps reporting inputHash.
+        UUID predictionId = UUID.randomUUID();
+        Pending inFlight = pending.putIfAbsent(eventId, new Pending(predictionId, null));
         if (inFlight != null) {
             return new Trigger(202, new PredictionTriggerResponse(
                     inFlight.predictionId(), PredictionStatusResponse.STATUS_PENDING, null, null));
         }
 
-        PredictionInputSnapshot snap = pipeline.snapshot(e);
-        String hash = snap.sha256();
-
-        PredictionLedger latest = latestRow(eventId);
-        if (latest != null && hash.equals(latest.getInputSnapshotHash())) {
-            PredictionResult cached = parseResult(latest);
-            if (cached != null) {
-                // Unchanged input → the prior ledger row IS the answer. No LLM, no new row.
-                // Dismissal memory still applies at serve time (task 86cav47a5).
-                RecommendationEngine.Filtered f = recommendations.applyDismissals(eventId, cached.recommendations());
-                PredictionResult served = cached.withRecommendations(f.recommendations());
-                return new Trigger(200, new PredictionTriggerResponse(
-                        latest.getId(), PredictionStatusResponse.STATUS_READY, true, served, f.dismissedCount()));
-            }
-        }
-
-        rateLimiter.consume("predictor-rescore", p.userId().toString());
-        if (!pipeline.killSwitchActive()) {
-            quota.checkAndRecordScore(p); // only a REAL llm run burns quota
-        }
-
-        UUID predictionId = UUID.randomUUID();
-        pending.put(eventId, new Pending(predictionId, hash));
+        // Every path that does NOT hand the event to the executor must release the claim.
+        boolean dispatched = false;
         try {
-            executor.execute(() -> runScore(e, snap, eventId));
-        } catch (RuntimeException ex) {
-            pending.remove(eventId);
-            throw ex;
-        }
-        return new Trigger(202, new PredictionTriggerResponse(
-                predictionId, PredictionStatusResponse.STATUS_PENDING, null, null));
-    }
+            PredictionInputSnapshot snap = pipeline.snapshot(e);
+            String hash = snap.sha256();
 
+            PredictionLedger latest = latestRow(eventId);
+            if (latest != null && hash.equals(latest.getInputSnapshotHash())) {
+                PredictionResult cached = parseResult(latest);
+                if (cached != null) {
+                    // Unchanged input → the prior ledger row IS the answer. No LLM, no new row.
+                    // Dismissal memory still applies at serve time (task 86cav47a5).
+                    RecommendationEngine.Filtered f = recommendations.applyDismissals(eventId, cached.recommendations());
+                    PredictionResult served = cached.withRecommendations(f.recommendations());
+                    return new Trigger(200, new PredictionTriggerResponse(
+                            latest.getId(), PredictionStatusResponse.STATUS_READY, true, served, f.dismissedCount()));
+                }
+            }
+
+            rateLimiter.consume("predictor-rescore", p.userId().toString());
+            if (!pipeline.killSwitchActive()) {
+                quota.checkAndRecordScore(p); // only a REAL llm run burns quota
+            }
+
+            pending.put(eventId, new Pending(predictionId, hash));
+            executor.execute(() -> runScore(e, snap, eventId));
+            dispatched = true;
+            return new Trigger(202, new PredictionTriggerResponse(
+                    predictionId, PredictionStatusResponse.STATUS_PENDING, null, null));
+        } finally {
+            if (!dispatched) pending.remove(eventId);
+        }
+    }
     private void runScore(Event e, PredictionInputSnapshot snap, UUID eventId) {
         try {
             // Ledger write happens INSIDE the pipeline before it returns (write-before-render);
