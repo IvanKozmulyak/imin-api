@@ -37,7 +37,18 @@ public class BuyerVerificationAttemptRecorder {
         attempts.save(row);
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW, readOnly = true)
+    /**
+     * Plain {@code readOnly}, joining whatever transaction the caller has.
+     *
+     * <p>The {@code REQUIRES_NEW} above is {@link #record}'s requirement, not
+     * this bean's: a row has to survive the caller's rollback, a COUNT has
+     * nothing to survive. Propagating a new transaction here only suspended the
+     * caller's and took a second connection out of the pool for the duration of
+     * one query — on the first statement of every
+     * {@code POST /buyer/auth/verify-email}. Nothing depends on the isolation:
+     * the count is read before any write in that request.
+     */
+    @Transactional(readOnly = true)
     public long countFailuresSince(String emailNormalized, Instant since) {
         return attempts.countByEmailNormalizedAndSucceededFalseAndAttemptedAtAfter(emailNormalized, since);
     }
