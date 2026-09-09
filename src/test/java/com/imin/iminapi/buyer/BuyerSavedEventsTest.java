@@ -69,16 +69,22 @@ class BuyerSavedEventsTest {
     @Autowired UserRepository users;
     @MockitoBean EmailService email;
 
+    /** Buyer account mail is sent AFTER_COMMIT on this pool — see {@link BuyerMailSync}. */
+    @Autowired @org.springframework.beans.factory.annotation.Qualifier("ticketEmailExecutor")
+    java.util.concurrent.Executor mailExecutor;
+
     private String cookie;
     private UUID eventId;
     private UUID otherEventId;
 
     @BeforeEach
     void signedInBuyer() throws Exception {
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
         cookie = signUpAndSignIn(address());
         eventId = event("Vechirka").getId();
         otherEventId = event("Second Night").getId();
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
     }
 
@@ -216,6 +222,7 @@ class BuyerSavedEventsTest {
     }
 
     private String codeSentTo(String to) {
+        BuyerMailSync.drain(mailExecutor);
         ArgumentCaptor<String> recipient = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);

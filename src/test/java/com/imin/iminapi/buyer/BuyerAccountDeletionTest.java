@@ -80,16 +80,22 @@ class BuyerAccountDeletionTest {
     @Autowired OrganizationRepository orgs;
     @MockitoBean EmailService email;
 
+    /** Buyer account mail is sent AFTER_COMMIT on this pool — see {@link BuyerMailSync}. */
+    @Autowired @org.springframework.beans.factory.annotation.Qualifier("ticketEmailExecutor")
+    java.util.concurrent.Executor mailExecutor;
+
     private String primary;
     private String cookie;
     private UUID accountId;
 
     @BeforeEach
     void signedInBuyer() throws Exception {
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
         primary = address();
         cookie = signUpAndSignIn(primary);
         accountId = accountFor(primary);
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
     }
 
@@ -216,6 +222,7 @@ class BuyerAccountDeletionTest {
         assertThat(emails.findVerifiedEmailsByBuyerAccountId(accountId))
                 .as("both addresses must be verified before the notice can prove anything")
                 .hasSize(2);
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
 
         requestDeletion().andExpect(status().isOk());
@@ -512,6 +519,7 @@ class BuyerAccountDeletionTest {
     }
 
     private Optional<String> bodySentTo(String to) {
+        BuyerMailSync.drain(mailExecutor);
         ArgumentCaptor<String> recipients = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);

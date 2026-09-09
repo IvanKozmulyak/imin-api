@@ -78,6 +78,10 @@ class BuyerCredentialRateLimitTest {
     @Autowired BuyerAccountRepository accounts;
     @Autowired BuyerAccountEmailRepository emailRows;
     @MockitoBean EmailService email;
+
+    /** Buyer account mail is sent AFTER_COMMIT on this pool — see {@link BuyerMailSync}. */
+    @Autowired @org.springframework.beans.factory.annotation.Qualifier("ticketEmailExecutor")
+    java.util.concurrent.Executor mailExecutor;
     @MockitoBean RateLimiter rateLimiter;
     @MockitoBean GoogleOAuthService googleIdTokens;
     @MockitoBean AppleNativeIdentityService apple;
@@ -88,6 +92,7 @@ class BuyerCredentialRateLimitTest {
 
     @BeforeEach
     void signedInBuyer() throws Exception {
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
         address = address();
         cookie = signUpAndSignIn(address);
@@ -279,6 +284,7 @@ class BuyerCredentialRateLimitTest {
     }
 
     private String codeSentTo(String to) {
+        BuyerMailSync.drain(mailExecutor);
         ArgumentCaptor<String> recipient = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);

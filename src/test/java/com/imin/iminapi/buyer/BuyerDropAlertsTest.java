@@ -68,6 +68,10 @@ class BuyerDropAlertsTest {
     @Autowired UserRepository users;
     @MockitoBean EmailService email;
 
+    /** Buyer account mail is sent AFTER_COMMIT on this pool — see {@link BuyerMailSync}. */
+    @Autowired @org.springframework.beans.factory.annotation.Qualifier("ticketEmailExecutor")
+    java.util.concurrent.Executor mailExecutor;
+
     private String address;
     private String cookie;
     private Event eventA;
@@ -75,11 +79,13 @@ class BuyerDropAlertsTest {
 
     @BeforeEach
     void signedInBuyer() throws Exception {
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
         address = address();
         cookie = signUpAndSignIn(address);
         eventA = event("Alpha");
         eventB = event("Beta");
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
     }
 
@@ -217,6 +223,7 @@ class BuyerDropAlertsTest {
     }
 
     private String codeSentTo(String to) {
+        BuyerMailSync.drain(mailExecutor);
         ArgumentCaptor<String> recipient = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);

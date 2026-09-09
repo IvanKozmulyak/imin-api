@@ -82,6 +82,10 @@ class BuyerOrdersTest {
     @Autowired UserRepository users;
     @MockitoBean EmailService email;
 
+    /** Buyer account mail is sent AFTER_COMMIT on this pool — see {@link BuyerMailSync}. */
+    @Autowired @org.springframework.beans.factory.annotation.Qualifier("ticketEmailExecutor")
+    java.util.concurrent.Executor mailExecutor;
+
     final ObjectMapper json = new ObjectMapper();
 
     private String primary;
@@ -89,9 +93,11 @@ class BuyerOrdersTest {
 
     @BeforeEach
     void signedInBuyer() throws Exception {
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
         primary = address();
         cookie = signUpAndSignIn(primary);
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
     }
 
@@ -467,6 +473,7 @@ class BuyerOrdersTest {
     }
 
     private Optional<String> bodySentTo(String to) {
+        BuyerMailSync.drain(mailExecutor);
         ArgumentCaptor<String> recipients = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);

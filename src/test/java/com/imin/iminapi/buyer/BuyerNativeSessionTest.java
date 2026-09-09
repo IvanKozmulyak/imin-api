@@ -38,6 +38,7 @@ class BuyerNativeSessionTest extends NativeBuyerTestBase {
 
     @BeforeEach
     void anAddressPerTest() {
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
         address = newAddress();
     }

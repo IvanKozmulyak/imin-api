@@ -74,6 +74,10 @@ class BuyerCredentialFlowTest {
     @Autowired BuyerEmailVerificationCodeRepository codes;
     @MockitoBean EmailService email;
 
+    /** Buyer account mail is sent AFTER_COMMIT on this pool — see {@link BuyerMailSync}. */
+    @Autowired @org.springframework.beans.factory.annotation.Qualifier("ticketEmailExecutor")
+    java.util.concurrent.Executor mailExecutor;
+
     private String address;
 
     @BeforeEach
@@ -81,6 +85,7 @@ class BuyerCredentialFlowTest {
         // uq_bae_verified_email is a real platform-wide UNIQUE and these tests
         // share one database, so every test needs its own address.
         address = "ada+" + UUID.randomUUID() + "@example.com";
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
     }
 
@@ -105,6 +110,7 @@ class BuyerCredentialFlowTest {
         // "exists" here would mail them "sign in or reset your password" for an
         // account that is not theirs, with no diagnosable error.
         signup(address).andExpect(status().isNoContent());
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
 
         signup(address).andExpect(status().isNoContent());
@@ -119,6 +125,7 @@ class BuyerCredentialFlowTest {
     void signup_to_a_verified_address_creates_nothing_and_sends_the_neutral_notice() throws Exception {
         signupAndVerify(address);
         long accountsBefore = accounts.count();
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
 
         signup(address).andExpect(status().isNoContent());
@@ -184,6 +191,7 @@ class BuyerCredentialFlowTest {
     void verifying_an_address_deletes_every_unverified_claim_on_it_elsewhere() throws Exception {
         // §2.3 rule 3: whoever proves control wins. The squatter's row goes.
         signup(address).andExpect(status().isNoContent());   // squatter
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
         signup(address).andExpect(status().isNoContent());   // real owner
         String code = codeSentTo(address);
@@ -208,6 +216,7 @@ class BuyerCredentialFlowTest {
         signup(address).andExpect(status().isNoContent());   // real owner
         UUID owner = onlyRowFor(address).getBuyerAccountId();
         String ownerCode = codeSentTo(address);
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
 
         signup(address).andExpect(status().isNoContent());   // squatter, afterwards
@@ -244,9 +253,11 @@ class BuyerCredentialFlowTest {
         String ownerCode = codeSentTo(address);
 
         signup(address).andExpect(status().isNoContent());   // squatter
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
 
         resendVerification(address).andExpect(status().isNoContent());
+        BuyerMailSync.drain(mailExecutor);
         verify(email, never()).send(anyString(), anyString(), anyString(), anyString());
 
         verifyEmail(address, ownerCode).andExpect(status().isOk());
@@ -292,6 +303,7 @@ class BuyerCredentialFlowTest {
     void resend_mails_a_fresh_code_and_retires_the_previous_one() throws Exception {
         signup(address).andExpect(status().isNoContent());
         String first = codeSentTo(address);
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
 
         resendVerification(address).andExpect(status().isNoContent());
@@ -307,16 +319,19 @@ class BuyerCredentialFlowTest {
     @Test
     void resend_is_204_and_silent_for_an_address_nobody_claimed() throws Exception {
         resendVerification(address).andExpect(status().isNoContent());
+        BuyerMailSync.drain(mailExecutor);
         verify(email, never()).send(anyString(), anyString(), anyString(), anyString());
     }
 
     @Test
     void resend_is_204_and_silent_for_an_already_verified_address() throws Exception {
         signupAndVerify(address);
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
 
         resendVerification(address).andExpect(status().isNoContent());
 
+        BuyerMailSync.drain(mailExecutor);
         verify(email, never()).send(anyString(), anyString(), anyString(), anyString());
     }
 
@@ -402,6 +417,7 @@ class BuyerCredentialFlowTest {
     @Test
     void forgot_password_is_204_and_silent_for_an_unknown_address() throws Exception {
         forgotPassword(address).andExpect(status().isNoContent());
+        BuyerMailSync.drain(mailExecutor);
         verify(email, never()).send(anyString(), anyString(), anyString(), anyString());
     }
 
@@ -410,10 +426,12 @@ class BuyerCredentialFlowTest {
         // An unverified row grants nothing (§2.3 rule 4) — including the ability
         // to be sent a reset link for somebody else's future account.
         signup(address).andExpect(status().isNoContent());
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
 
         forgotPassword(address).andExpect(status().isNoContent());
 
+        BuyerMailSync.drain(mailExecutor);
         verify(email, never()).send(anyString(), anyString(), anyString(), anyString());
     }
 
@@ -423,6 +441,7 @@ class BuyerCredentialFlowTest {
         MvcResult signedIn = login(address, PASSWORD).andExpect(status().isOk()).andReturn();
         String liveCookie = sessionCookieValue(signedIn);
         UUID accountId = onlyRowFor(address).getBuyerAccountId();
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
 
         forgotPassword(address).andExpect(status().isNoContent());
@@ -444,6 +463,7 @@ class BuyerCredentialFlowTest {
     @Test
     void a_reset_token_is_single_use() throws Exception {
         signupAndVerify(address);
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
         forgotPassword(address).andExpect(status().isNoContent());
         String token = resetTokenSentTo(address);
@@ -467,10 +487,12 @@ class BuyerCredentialFlowTest {
     @Test
     void asking_for_a_new_reset_link_retires_the_previous_one() throws Exception {
         signupAndVerify(address);
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
 
         forgotPassword(address).andExpect(status().isNoContent());
         String first = resetTokenSentTo(address);
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
         forgotPassword(address).andExpect(status().isNoContent());
         String second = resetTokenSentTo(address);
@@ -624,6 +646,7 @@ class BuyerCredentialFlowTest {
     private record Sends(List<String> to, List<String> subject, List<String> text) {}
 
     private Sends capture() {
+        BuyerMailSync.drain(mailExecutor);
         ArgumentCaptor<String> to = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);

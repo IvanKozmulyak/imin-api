@@ -66,6 +66,10 @@ class BuyerProfileTest {
     @Autowired com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository emailRows;
     @MockitoBean EmailService email;
 
+    /** Buyer account mail is sent AFTER_COMMIT on this pool — see {@link BuyerMailSync}. */
+    @Autowired @org.springframework.beans.factory.annotation.Qualifier("ticketEmailExecutor")
+    java.util.concurrent.Executor mailExecutor;
+
     private String address;
     private String cookie;
     /** This test's own account. The suite shares one H2 instance, so every
@@ -74,10 +78,12 @@ class BuyerProfileTest {
 
     @BeforeEach
     void signedInBuyer() throws Exception {
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
         address = address();
         cookie = signUpAndSignIn(address);
         accountId = accountIdOf(address);
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
     }
 
@@ -536,6 +542,7 @@ class BuyerProfileTest {
     }
 
     private String codeSentTo(String to) {
+        BuyerMailSync.drain(mailExecutor);
         ArgumentCaptor<String> recipient = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);

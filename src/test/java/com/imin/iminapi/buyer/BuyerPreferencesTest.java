@@ -70,6 +70,10 @@ class BuyerPreferencesTest {
     @Autowired com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository accountEmails;
     @MockitoBean EmailService email;
 
+    /** Buyer account mail is sent AFTER_COMMIT on this pool — see {@link BuyerMailSync}. */
+    @Autowired @org.springframework.beans.factory.annotation.Qualifier("ticketEmailExecutor")
+    java.util.concurrent.Executor mailExecutor;
+
     private String address;
     private String cookie;
     private UUID orgA;
@@ -79,6 +83,7 @@ class BuyerPreferencesTest {
 
     @BeforeEach
     void signedInBuyerWithTwoOrganizers() throws Exception {
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
         address = address();
         cookie = signUpAndSignIn(address);
@@ -88,6 +93,7 @@ class BuyerPreferencesTest {
         orgB = org("Beta");
         membershipA = membership(orgA, consumerId, "subscribed");
         membershipB = membership(orgB, consumerId, "subscribed");
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
     }
 
@@ -341,6 +347,7 @@ class BuyerPreferencesTest {
     }
 
     private String codeSentTo(String to) {
+        BuyerMailSync.drain(mailExecutor);
         ArgumentCaptor<String> recipient = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
