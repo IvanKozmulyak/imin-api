@@ -23,6 +23,7 @@ import com.imin.iminapi.security.ApiException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
@@ -75,10 +76,25 @@ public class EmailChannelSender {
         this.consumers = consumers;
     }
 
-    /** Sends one batch. Returns true if there are (likely) more pending rows to process. */
-    @Transactional
+    /**
+     * Sends one batch. Returns true if there are (likely) more claimable rows to process.
+     *
+     * <p>REQUIRES_NEW is load-bearing: the provider send is irreversible, so this batch's
+     * 'sent' flips and provider_message_ids must be durable BEFORE the next batch is
+     * claimed. Sharing one transaction with the whole drive (the previous shape) meant a
+     * later crash rolled the record of already-delivered mail back and the dispatcher
+     * re-sent it.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public boolean sendNextBatch(Campaign c) {
-        List<CampaignRecipient> batch = recipients.claimPendingBatch(c.getId(), BATCH_SIZE);
+        List<CampaignRecipient> batch = new ArrayList<>(recipients.claimPendingBatch(c.getId(), BATCH_SIZE));
+        if (batch.isEmpty()) return false;
+        // Idempotence belt-and-braces: only rows still 'pending' may be sent. The claim
+        // already filters on it, but a row that changed underneath us must never be
+        // re-emailed just because it was in the claimed page.
+        batch.removeIf(r -> !"pending".equals(r.getStatus()));
+        // Unreachable while the claim filters on status; stop the drive rather than spin
+        // if it ever is reached — the dispatcher re-claims the campaign either way.
         if (batch.isEmpty()) return false;
 
         // Template, org brand name, and event poster are constant for the whole campaign —

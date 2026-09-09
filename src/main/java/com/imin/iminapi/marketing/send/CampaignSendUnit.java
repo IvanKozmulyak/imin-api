@@ -7,17 +7,28 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Instant;
 
 /**
- * Per-campaign send unit (spec §2.5). A dedicated bean so its @Transactional boundary
- * engages via the Spring proxy when called from CampaignDispatcher — self-invocation
- * on the dispatcher would make @Transactional inert. processOne flips status→sending,
- * materializes recipients, drives the per-row sender to drain, then flips status→sent
- * WITHIN one transaction, so a mid-drive crash rolls the status flip back (the campaign
- * stays reclaimable) rather than leaving a half-committed `sent` with pending rows.
+ * Per-campaign send unit (spec §2.5). A dedicated bean so its transaction boundaries
+ * engage via the Spring proxy when called from CampaignDispatcher — self-invocation on
+ * the dispatcher would make @Transactional inert.
+ *
+ * <p><b>processOne is deliberately NOT transactional.</b> Emails leave irreversibly one
+ * batch at a time, so the record of what left has to be durable at the same granularity:
+ * the status flip, the materialisation and every batch commit in their own transaction
+ * (materialize / sendNextBatch are REQUIRES_NEW; the campaign status flips run through
+ * {@link #newTx}). A pod restart or a statement timeout mid-drive therefore leaves the
+ * already-sent rows recorded as sent — the dispatcher re-claims the campaign, the
+ * materializer no-ops because rows exist, and only the still-pending rows are sent.
+ * Wrapping the whole drive in one transaction (the shape this class had) rolled back
+ * every 'sent' flip and every materialised row, so the automatic re-claim re-sent the
+ * whole audience — up to three times, and without any ceiling on the scheduled arm.
  */
 @Component
 public class CampaignSendUnit {
@@ -28,30 +39,37 @@ public class CampaignSendUnit {
     private final RecipientMaterializer materializer;
     private final EmailChannelSender emailSender;
     private final ApplicationEventPublisher eventPublisher;
+    /** REQUIRES_NEW template: the campaign status flips commit on their own, like the batches. */
+    private final TransactionTemplate newTx;
 
     public CampaignSendUnit(CampaignRepository campaigns, RecipientMaterializer materializer,
-                            EmailChannelSender emailSender, ApplicationEventPublisher eventPublisher) {
+                            EmailChannelSender emailSender, ApplicationEventPublisher eventPublisher,
+                            PlatformTransactionManager txManager) {
         this.campaigns = campaigns;
         this.materializer = materializer;
         this.emailSender = emailSender;
         this.eventPublisher = eventPublisher;
+        this.newTx = new TransactionTemplate(txManager);
+        this.newTx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
-    @Transactional
     public void processOne(Campaign c) {
         if (!"sending".equals(c.getStatus())) {
             c.setStatus("sending");
-            campaigns.save(c);
+            newTx.executeWithoutResult(st -> campaigns.save(c));
         }
         materializer.materialize(c);
-        // Drive batches until nothing pending remains. Bounded loop; each call heartbeats.
+        // Drive batches until nothing claimable remains. Bounded loop; each call commits
+        // its own batch and heartbeats.
         int guard = 0;
         while (emailSender.sendNextBatch(c) && guard++ < 10_000) {
             // keep sending
         }
-        c.setStatus("sent");
-        c.setSentAt(Instant.now());
-        campaigns.save(c);
+        newTx.executeWithoutResult(st -> {
+            c.setStatus("sent");
+            c.setSentAt(Instant.now());
+            campaigns.save(c);
+        });
         // Predictor trigger (task §4): a completed send may have moved sales — re-forecast.
         // AFTER_COMMIT + debounced in ReforecastTriggerService, so it never rides this send tx.
         if (c.getEventId() != null) {
