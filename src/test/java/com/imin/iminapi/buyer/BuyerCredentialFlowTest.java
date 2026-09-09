@@ -4,6 +4,7 @@ import com.imin.iminapi.buyer.model.BuyerAccount;
 import com.imin.iminapi.buyer.model.BuyerAccountEmail;
 import com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository;
 import com.imin.iminapi.buyer.repository.BuyerAccountRepository;
+import com.imin.iminapi.buyer.repository.BuyerEmailVerificationCodeRepository;
 import com.imin.iminapi.buyer.repository.BuyerSessionRepository;
 import com.imin.iminapi.buyer.security.BuyerSessionCookie;
 import com.imin.iminapi.config.TestRateLimitConfig;
@@ -22,6 +23,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -29,6 +31,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.doThrow;
@@ -68,6 +71,7 @@ class BuyerCredentialFlowTest {
     @Autowired BuyerAccountRepository accounts;
     @Autowired BuyerAccountEmailRepository emails;
     @Autowired BuyerSessionRepository sessions;
+    @Autowired BuyerEmailVerificationCodeRepository codes;
     @MockitoBean EmailService email;
 
     private String address;
@@ -314,6 +318,35 @@ class BuyerCredentialFlowTest {
         resendVerification(address).andExpect(status().isNoContent());
 
         verify(email, never()).send(anyString(), anyString(), anyString(), anyString());
+    }
+
+    /**
+     * The per-code attempt counter must be its own gate.
+     *
+     * <p>{@code consume} reads {@code attempts} and then increments it in a
+     * separate {@code REQUIRES_NEW} transaction, so N concurrent wrong guesses
+     * against one fresh code all read the same value, all pass the check, and
+     * the increments serialise — and the sixth write violates
+     * {@code chk_bevc_attempts_range}, which escapes as a 500 instead of the
+     * neutral {@code INVALID_CODE} this flow promises, and skips the hourly
+     * lockout counter on the way out. {@code POST /buyer/auth/verify-email} has
+     * no bucket at all, so nothing bounds the concurrency. Driving the writes
+     * directly is the deterministic version of that burst.
+     */
+    @Test
+    void a_burst_of_wrong_guesses_cannot_push_attempts_past_the_check_constraint() throws Exception {
+        signup(address).andExpect(status().isNoContent());
+        UUID codeId = codes.findByEmailNormalizedAndConsumedAtIsNullAndExpiresAtAfterOrderByCreatedAtDesc(
+                        address.toLowerCase(), Instant.now()).get(0).getId();
+
+        assertThatCode(() -> {
+            for (int i = 0; i < 8; i++) codes.incrementAttempts(codeId, 5);
+        }).as("the counter must refuse to overrun rather than 500 the request").doesNotThrowAnyException();
+
+        assertThat(codes.findById(codeId).orElseThrow().getAttempts()).isEqualTo(5);
+        verifyEmail(address, "000000")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_CODE"));
     }
 
     // ── Login: one generic 401, and D-2's ordering ─────────────────────────

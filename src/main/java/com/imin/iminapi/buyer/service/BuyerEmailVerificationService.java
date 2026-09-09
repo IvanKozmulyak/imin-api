@@ -139,7 +139,10 @@ public class BuyerEmailVerificationService {
         }
 
         if (matched == null) {
-            if (chargeable != null) codes.incrementAttempts(chargeable.getId());
+            // DB_ATTEMPT_CEILING, not maxAttempts(): the predicate exists to stop
+            // the CHECK constraint being violated by a concurrent burst, and the
+            // configured cap is already enforced by the loop above.
+            if (chargeable != null) codes.incrementAttempts(chargeable.getId(), DB_ATTEMPT_CEILING);
             attempts.record(emailNormalized, false);
             throw invalidCode();
         }

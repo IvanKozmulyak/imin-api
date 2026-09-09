@@ -54,11 +54,25 @@ public interface BuyerEmailVerificationCodeRepository extends JpaRepository<Buye
      * trick {@code EmailVerificationCodeRepository.incrementAttempts} uses.
      * Without it the brute-force counter would be undone by the very failure it
      * is counting.
+     *
+     * <p><b>The {@code attempts < :max} predicate is the gate, not the caller's
+     * read.</b> {@code consume} tests the counter in its own transaction and
+     * increments here in another, so N concurrent wrong guesses against one
+     * fresh code all read the same value and all pass — and the write past
+     * {@code chk_bevc_attempts_range} (V84) then raises a
+     * {@code DataIntegrityViolationException} that escapes as a 500 instead of
+     * the neutral {@code INVALID_CODE}, without counting toward the hourly
+     * lockout. Bounding the UPDATE itself makes the overrun a no-op: 0 rows
+     * updated means "this code is already burnt", which is the same answer.
+     *
+     * @return 1 when the attempt was counted, 0 when the code was already at the
+     *         cap — both mean the guess failed
      */
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.REQUIRES_NEW)
     @Modifying
-    @Query("update BuyerEmailVerificationCode c set c.attempts = c.attempts + 1 where c.id = :id")
-    int incrementAttempts(@Param("id") UUID id);
+    @Query("update BuyerEmailVerificationCode c set c.attempts = c.attempts + 1 " +
+           "where c.id = :id and c.attempts < :max")
+    int incrementAttempts(@Param("id") UUID id, @Param("max") int max);
 
     @Transactional
     @Modifying
