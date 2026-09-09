@@ -110,7 +110,7 @@ public class EmailChannelSender {
                     c.getOrgId(), c.getId());
             return false;
         }
-        List<CampaignRecipient> batch = new ArrayList<>(recipients.claimPendingBatch(c.getId(), BATCH_SIZE));
+        List<CampaignRecipient> batch = new ArrayList<>(recipients.claimPendingBatch(c.getId(), BATCH_SIZE, Instant.now()));
         if (batch.isEmpty()) return false;
         // Idempotence belt-and-braces: only rows still 'pending' may be sent. The claim
         // already filters on it, but a row that changed underneath us must never be
@@ -174,11 +174,20 @@ public class EmailChannelSender {
         } catch (ApiException ex) {
             log.warn("[email-sender] batch failed for campaign {} — leaving {} rows pending: {}",
                     c.getId(), batch.size(), ex.getMessage());
+            Instant now = Instant.now();
             for (CampaignRecipient r : batch) {
-                r.setAttemptCount((short) (r.getAttemptCount() + 1));
-                r.setLastEventAt(Instant.now());
+                short attempt = (short) (r.getAttemptCount() + 1);
+                r.setAttemptCount(attempt);
+                r.setLastEventAt(now);
+                r.setNextAttemptAt(now.plusSeconds(backoffSeconds(attempt)));
                 recipients.save(r);
             }
+            campaigns.touch(c.getId(), now);
+            // Bail out of the drive instead of looping straight back into a provider that just
+            // refused us: claimPendingBatch would re-claim these exact rows (ORDER BY id) and
+            // re-POST the identical batch within milliseconds. The dispatcher's stale-`sending`
+            // reclaim resumes the campaign once the backoff has elapsed.
+            return false;
         }
 
         // Heartbeat: bump campaigns.updated_at so the dispatcher's stale-`sending` reclaim
@@ -188,6 +197,19 @@ public class EmailChannelSender {
         campaigns.touch(c.getId(), Instant.now());
 
         return recipients.countByCampaignIdAndStatus(c.getId(), "pending") > 0;
+    }
+
+    /**
+     * Attempt-based delay before a failed row may be claimed again. Deliberately coarser than
+     * the dispatcher's 30s tick and no shorter than its 5-minute stale-`sending` reclaim from
+     * attempt 2 on, so a sustained outage backs off instead of hammering.
+     */
+    private static long backoffSeconds(short attempt) {
+        return switch (attempt) {
+            case 0, 1 -> 60L;
+            case 2 -> 300L;
+            default -> 900L;
+        };
     }
 
     /**

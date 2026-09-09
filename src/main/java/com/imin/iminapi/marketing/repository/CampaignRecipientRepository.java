@@ -126,16 +126,22 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
      * Claim up to :limit pending, retryable (attempt_count < 3) rows for one campaign,
      * skipping rows another sender thread already holds (spec §2.5). Native so we can
      * use FOR UPDATE SKIP LOCKED, which Spring Data does not express portably.
+     *
+     * <p>{@code next_attempt_at} (V117) is the per-row backoff: a row whose last attempt
+     * failed is not claimable again until its delay elapses, so a provider outage no longer
+     * means the identical batch is re-POSTed within milliseconds. NULL = claimable now.
      */
     @Query(value = """
         SELECT * FROM campaign_recipients
         WHERE campaign_id = :campaignId AND status = 'pending' AND attempt_count < 3
+          AND (next_attempt_at IS NULL OR next_attempt_at <= :now)
         ORDER BY id
         LIMIT :limit
         FOR UPDATE SKIP LOCKED
         """, nativeQuery = true)
     List<CampaignRecipient> claimPendingBatch(@Param("campaignId") UUID campaignId,
-                                              @Param("limit") int limit);
+                                              @Param("limit") int limit,
+                                              @Param("now") java.time.Instant now);
 
     /**
      * Count recent sends for a membership across all campaigns — backs the per-member
@@ -225,7 +231,8 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
     @org.springframework.transaction.annotation.Transactional
     @Query("""
             UPDATE CampaignRecipient r
-               SET r.status = 'pending', r.attemptCount = 0, r.errorCode = null
+               SET r.status = 'pending', r.attemptCount = 0, r.errorCode = null,
+                   r.nextAttemptAt = null
              WHERE r.campaignId = :campaignId
                AND r.status = 'failed'
             """)

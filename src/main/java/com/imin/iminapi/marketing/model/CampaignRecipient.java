@@ -58,6 +58,14 @@ public class CampaignRecipient {
     @Column(name = "attempt_count", nullable = false)
     private short attemptCount = 0;
 
+    /**
+     * Earliest time this row may be claimed again (V117). Null = claimable now. Set when a
+     * batch fails so the drain does not re-POST the identical batch to the provider within
+     * milliseconds, three times over.
+     */
+    @Column(name = "next_attempt_at")
+    private Instant nextAttemptAt;
+
     @Column(name = "error_code")
     private String errorCode;
 }
