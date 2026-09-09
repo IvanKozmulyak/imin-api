@@ -324,6 +324,18 @@ class AudienceDsarTest {
         assertThat(m.getConsentBasis()).isNull();
     }
 
+    /**
+     * audience-12: a mangled keyset cursor is client input. It threw
+     * IllegalArgumentException, which has no handler and fell through to the catch-all as
+     * a 500 — the dashboard could not tell a bad link from a broken server.
+     */
+    @Test
+    void a_malformed_cursor_is_a_400_not_a_500() {
+        assertThatThrownBy(() -> audienceService.listMembers(orgA, "not-a-cursor", 50, null, null))
+                .isInstanceOfSatisfying(ApiException.class, e ->
+                        assertThat(e.status()).isEqualTo(org.springframework.http.HttpStatus.BAD_REQUEST));
+    }
+
     @Test
     void erase_pending_member_is_not_sendable() {
         UUID mid = seedSubscribed(orgA, "erasegate@d.com", "explicit");
