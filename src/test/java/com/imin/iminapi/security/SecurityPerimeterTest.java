@@ -123,6 +123,27 @@ class SecurityPerimeterTest {
                 .andExpect(header().string("X-Content-Type-Options", "nosniff"));
     }
 
+    // ── Spring Data REST ───────────────────────────────────────────────────
+
+    /**
+     * Spring Data REST is on the classpath and, with no {@code spring.data.rest.base-path},
+     * it mounts its own {@code RepositoryController}/{@code ProfileController} at the servlet
+     * root — outside the {@code /api/v1/**} {@code .authenticated()} rule and therefore under
+     * the chain's closing {@code .anyRequest().permitAll()}. The repository export guard is the
+     * control that holds today; this pins the second line of defence so a repository that ever
+     * loses {@code @RepositoryRestResource(exported = false)} becomes an authenticated resource
+     * rather than an unauthenticated public CRUD surface.
+     */
+    @Test
+    void spring_data_rest_publishes_nothing_at_the_servlet_root() throws Exception {
+        for (String path : new String[] {"/", "/profile", "/orders"}) {
+            mvc.perform(get(path)).andExpect(result ->
+                    assertThat(result.getResponse().getStatus())
+                            .as("Spring Data REST must not answer %s", path)
+                            .isNotEqualTo(200));
+        }
+    }
+
     // ── actuator ───────────────────────────────────────────────────────────
 
     private void assertDenied(String path) throws Exception {

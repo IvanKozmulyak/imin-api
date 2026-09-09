@@ -1,4 +1,11 @@
 spring:
+  data:
+    # Mirrors src/main/resources/application.yaml — the test config shadows it
+    # rather than extending it, so the Spring Data REST perimeter has to be
+    # repeated here for SecurityPerimeterTest to exercise the real shape.
+    rest:
+      base-path: /api/v1
+      detection-strategy: annotated
   profiles:
     active: test
   docker:
@@ -71,8 +78,6 @@ imin:
     # Dummy AES-256 key (base64 of 32 bytes) — CapiTokenCipher fails fast without it.
     # Any valid 32-byte base64 works; tests never persist a real CAPI token.
     enc-key: AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=
-  api:
-    base-path: /api/v1
   auth:
     session-ttl-days: 30
   gate:

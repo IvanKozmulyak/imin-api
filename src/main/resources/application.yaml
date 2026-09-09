@@ -31,6 +31,17 @@ spring:
     openai:
       api-key: ${OPENAI_API_KEY}
   data:
+    # Spring Data REST is on the classpath (spring-boot-starter-data-rest). With no
+    # base-path it mounts its RepositoryController/ProfileController at the servlet
+    # ROOT — outside the `/api/v1/**` .authenticated() rule in SecurityConfig and so
+    # under the chain's closing .anyRequest().permitAll(). `imin.api.base-path` used
+    # to sit here in spirit but bound to nothing. These two keys are the second line
+    # of defence behind RepositoryExportGuardTest: `annotated` means a repository is
+    # exported only if it explicitly asks to be (none do), and the base path puts
+    # anything that ever is behind authentication instead of on the public root.
+    rest:
+      base-path: /api/v1
+      detection-strategy: annotated
     redis:
       url: ${REDIS_URL:redis://localhost:6380}
       repositories:
@@ -393,8 +404,6 @@ imin:
     # with the list above, so a preview origin is a deliberate, temporary,
     # named act rather than a standing wildcard nobody remembers granting.
     preview-origin-patterns: ${CORS_PREVIEW_ORIGIN_PATTERNS:}
-  api:
-    base-path: /api/v1
   # Mobile force-upgrade gate, served by GET /api/v1/public/app-config.
   # Bound to env so gating a shipped binary off is a Railway env edit, not a
   # deploy. DEFAULT 0.0.0 = gate OFF: no build in the field is below it, so an
