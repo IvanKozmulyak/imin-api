@@ -592,6 +592,41 @@ class AudienceSegmentTest {
                 });
     }
 
+    /**
+     * audience-5: an unreadable rules_json used to resolve to the ENTIRE org audience.
+     * The failure mode of a rule the engine cannot read must be "nobody", not "everybody"
+     * — this list feeds RecipientMaterializer.
+     */
+    @Test
+    void a_segment_whose_rules_cannot_be_parsed_matches_nobody() {
+        Membership anyone = seedMembership(orgA, "unparseable@s.com");
+        anyone.setEvents(4);
+        membershipRepo.save(anyone);
+
+        // The shape a truncated TEXT value has; createSegment would reject it today.
+        Segment broken = new Segment();
+        broken.setOrgId(orgA);
+        broken.setName("Truncated rules");
+        broken.setKind("dynamic");
+        broken.setRulesJson("[{\"field\":\"events\",\"operator\":\">=\",\"val");
+        broken = segmentRepo.save(broken);
+
+        assertThat(segmentService.resolveMembers(orgA, broken)).isEmpty();
+        assertThat(segmentService.resolve(orgA, broken.getId()).matched()).isZero();
+    }
+
+    /** A blank rules_json still means "everyone" — that is documented, not a parse failure. */
+    @Test
+    void a_segment_with_no_rules_still_matches_everyone() {
+        Membership anyone = seedMembership(orgA, "norules@s.com");
+        membershipRepo.save(anyone);
+
+        Segment all = segmentService.createSegment(orgA, "Everyone", "dynamic", null, principalA);
+
+        assertThat(segmentService.resolveMembers(orgA, all))
+                .extracting(Membership::getMembershipId).contains(anyone.getMembershipId());
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Ensure 7 prebuilt segments are provisioned exactly once
     // ─────────────────────────────────────────────────────────────────────────

@@ -28,6 +28,8 @@ import java.util.stream.Collectors;
 @Service
 public class SegmentService {
 
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(SegmentService.class);
+
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final TypeReference<List<Map<String, String>>> RULES_TYPE = new TypeReference<>() {};
 
@@ -228,12 +230,29 @@ public class SegmentService {
         // Generic rule evaluation — load all memberships and filter in Java
         // For Tier C with reasonable org sizes this is acceptable
         List<Membership> all = membershipRepo.findAllByOrgId(orgId);
-        if (rulesJson == null || rulesJson.isBlank()) return all;
+        List<Map<String, String>> rules = parseRules(rulesJson);
+        if (rules == null) return List.of();
+        if (rules.isEmpty()) return all;
+        return all.stream().filter(m -> rulesMatch(m, rules)).collect(Collectors.toList());
+    }
+
+    /**
+     * Parsed rules: an EMPTY list for "no rules" (matches everyone, the documented meaning
+     * of a blank rules_json) and {@code null} for a rule set the engine could not read.
+     *
+     * <p>Those two must not collapse into one another. An unreadable rule set used to fall
+     * back to "the entire audience" — the wrong direction by a mile for a list that feeds
+     * RecipientMaterializer. validateRulesJson guards the create path, but rows written
+     * before it, a truncated TEXT value or any future writer all land here.
+     */
+    private List<Map<String, String>> parseRules(String rulesJson) {
+        if (rulesJson == null || rulesJson.isBlank()) return List.of();
         try {
-            List<Map<String, String>> rules = MAPPER.readValue(rulesJson, RULES_TYPE);
-            return all.stream().filter(m -> rulesMatch(m, rules)).collect(Collectors.toList());
+            return MAPPER.readValue(rulesJson, RULES_TYPE);
         } catch (Exception e) {
-            return all;
+            log.warn("Segment rules_json could not be parsed; the segment matches nobody: {}",
+                    e.getMessage());
+            return null;
         }
     }
 
