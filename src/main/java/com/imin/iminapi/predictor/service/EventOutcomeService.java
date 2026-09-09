@@ -235,7 +235,9 @@ public class EventOutcomeService {
         long refundCount = tickets.countByEventIdAndState(e.getId(), "refunded");
         o.setRefundCount((int) refundCount);
         long issued = soldTotal + refundCount;
-        o.setRefundRate(issued == 0 ? BigDecimal.ZERO
+        // Nothing issued → the refund RATE is undefined. NULL says that; 0.0000 would claim the
+        // event issued tickets and none came back (§6.1 honesty columns).
+        o.setRefundRate(issued == 0 ? null
                 : BigDecimal.valueOf(refundCount).divide(BigDecimal.valueOf(issued), 4, RoundingMode.HALF_UP));
 
         // Attendance: door-scan truth when ANY scan exists; else the sales fallback (recorded, not hidden).
@@ -247,7 +249,10 @@ public class EventOutcomeService {
             o.setAttendanceSource(AttendanceSource.SALES);
         }
 
-        int views = 0, checkoutStarts = 0;
+        // Null until a beacon row for that stage says otherwise: an event with no funnel data at
+        // all recorded NOTHING, which is not the same claim as "this event got zero page views".
+        // A real stage row carrying 0 still records 0 — presence is tracked, not just the value.
+        Integer views = null, checkoutStarts = null;
         for (Object[] row : funnel.countDistinctAnonByStage(e.getId())) {
             String stage = (String) row[0];
             int count = ((Number) row[1]).intValue();
