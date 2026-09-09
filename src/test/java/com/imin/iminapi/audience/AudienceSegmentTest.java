@@ -378,10 +378,36 @@ class AudienceSegmentTest {
     // Static snapshot is frozen — dynamic re-evaluates
     // ─────────────────────────────────────────────────────────────────────────
 
+    /**
+     * audience-15: snapshot froze whatever segment it was handed, prebuilt included, with
+     * no way back — one click on Repeat pinned every future Momentum campaign to a stale id
+     * list. Prebuilts are refused; snapshotting is for the organizer's own segments.
+     */
+    @Test
+    void snapshot_refuses_a_prebuilt_segment_and_leaves_it_dynamic() {
+        segmentService.ensurePrebuiltSegments(orgA);
+        Segment repeat = findPrebuilt(orgA, "Repeat");
+
+        assertThatThrownBy(() -> segmentService.snapshot(orgA, repeat.getId(), principalA))
+                .isInstanceOfSatisfying(com.imin.iminapi.security.ApiException.class, e ->
+                        assertThat(e.status()).isEqualTo(org.springframework.http.HttpStatus.CONFLICT));
+
+        Segment reloaded = segmentRepo.findByIdAndOrgId(repeat.getId(), orgA).orElseThrow();
+        assertThat(reloaded.getKind()).isEqualTo("dynamic");
+        assertThat(reloaded.getSnapshotIds()).isNull();
+
+        // Momentum's default target keeps re-evaluating.
+        Membership m = seedMembership(orgA, "afterrefusal@s.com");
+        m.setEvents(2);
+        membershipRepo.save(m);
+        assertThat(segmentService.resolveMembers(orgA, reloaded))
+                .extracting(Membership::getMembershipId).containsExactly(m.getMembershipId());
+    }
+
     @Test
     void static_snapshot_frozen_while_dynamic_reevaluates() {
-        segmentService.ensurePrebuiltSegments(orgA);
-        Segment seg = findPrebuilt(orgA, "Repeat");
+        Segment seg = segmentService.createSegment(orgA, "My repeats", "dynamic",
+                "[{\"field\":\"events\",\"operator\":\">=\",\"value\":\"2\"}]", principalA);
 
         // No repeats yet → resolve = 0
         assertThat(segmentService.resolveMembers(orgA, seg)).isEmpty();
@@ -413,8 +439,9 @@ class AudienceSegmentTest {
 
     @Test
     void static_snapshot_after_adding_member_contains_that_member() {
-        segmentService.ensurePrebuiltSegments(orgA);
-        Segment seg = findPrebuilt(orgA, "VIP");
+        Segment seg = segmentService.createSegment(orgA, "My VIPs", "dynamic",
+                "[{\"field\":\"spend_minor\",\"operator\":\">=\",\"value\":\"20000\"},"
+                        + "{\"field\":\"events\",\"operator\":\">=\",\"value\":\"4\"}]", principalA);
 
         // Add a VIP
         Membership vip = seedMembership(orgA, "snapvip@s.com");

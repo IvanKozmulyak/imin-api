@@ -142,18 +142,34 @@ public class SegmentService {
         auditLogger.record(principal, AuditActions.SEGMENT_DELETED, "segment", segmentId, "Segment deleted");
     }
 
+    /**
+     * Freeze a segment's current members onto the row, turning it static.
+     *
+     * <p>Refused for the prebuilt seven, and the refusal is the point: snapshot is
+     * one-way — there is no un-snapshot endpoint, and deleteSegment will not remove a
+     * prebuilt row so it cannot be dropped and re-created either. One click on "Repeat"
+     * therefore used to pin every future Momentum campaign (whose default target IS that
+     * segment) to a member list frozen on the day of the click.
+     */
     @Transactional
     public Segment snapshot(UUID orgId, UUID segmentId, AuthPrincipal principal) {
         Segment s = requireSegment(orgId, segmentId);
+        if (s.isPrebuilt()) {
+            throw ApiException.invalidState(
+                    "A prebuilt segment always re-evaluates and cannot be snapshotted. "
+                            + "Create a segment with these rules and snapshot that instead.");
+        }
         List<Membership> resolved = resolveMembers(orgId, s);
         List<String> ids = resolved.stream()
                 .map(m -> m.getMembershipId().toString()).toList();
         try {
             s.setSnapshotIds(MAPPER.writeValueAsString(ids));
-            s.setKind("static");
-        } catch (Exception e) {
-            s.setSnapshotIds("[]");
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            // Serializing a List<String> cannot fail; an empty snapshot would silently
+            // empty the segment, so refuse rather than pretend.
+            throw new IllegalStateException("Could not serialize segment snapshot", e);
         }
+        s.setKind("static");
         Segment saved = segmentRepo.save(s);
         auditLogger.record(principal, AuditActions.SEGMENT_SNAPSHOT, "segment", segmentId,
                 "Snapshot taken: " + ids.size() + " members");
