@@ -57,7 +57,6 @@ replicate:
   api-token: ${REPLICATE_API_TOKEN:}
   image:
     storage-dir: ${REPLICATE_IMAGE_STORAGE_DIR:./generated-images}
-  timeout-seconds: 65
 
 # Native Ideogram V3 render API (sole renderer). QUALITY for the initial generate; TURBO for the
 # corrective remix that only fixes baked text. Exactly one style control: reference images win,
@@ -132,12 +131,6 @@ openrouter:
   # Lower temperature → stable concept JSON + coherent art direction. The provider
   # otherwise defaults near 1.0 (noisy, inconsistent prompts). Tune via env.
   temperature: ${OPENROUTER_TEMPERATURE:0.6}
-
-openai:
-  image:
-    api-key: ${OPENAI_API_KEY:}
-    base-url: ${OPENAI_BASE_URL:https://api.openai.com}
-    model: ${OPENAI_IMAGE_MODEL:gpt-image-1}
 
 recraft:
   # Per-vibe style training only (POST /styles). Ideogram V3 is the sole renderer;
