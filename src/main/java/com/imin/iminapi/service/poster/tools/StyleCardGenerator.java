@@ -110,17 +110,8 @@ public class StyleCardGenerator implements CommandLineRunner {
         this.referenceLibrary = referenceLibrary;
         this.model = model;
         this.outDir = Path.of(outDir);
-        this.restClient = RestClient.builder()
-                .baseUrl(normalizeOpenRouterV1BaseUrl(baseUrl))
-                .requestInterceptor((request, body, execution) -> {
-                    if (apiKey == null || apiKey.isBlank()) {
-                        throw new IllegalStateException(
-                                "OPENROUTER_API_KEY is not configured. Set it before running the style-card generator.");
-                    }
-                    request.getHeaders().setBearerAuth(apiKey);
-                    return execution.execute(request, body);
-                })
-                .build();
+        this.restClient = com.imin.iminapi.config.OpenRouterRestClients.v1(
+                baseUrl, apiKey, "running the style-card generator");
     }
 
     @Override
@@ -266,20 +257,6 @@ public class StyleCardGenerator implements CommandLineRunner {
             body = body.substring(0, lastFence);
         }
         return body.strip();
-    }
-
-    static String normalizeOpenRouterV1BaseUrl(String rawBaseUrl) {
-        String normalized = rawBaseUrl == null ? "" : rawBaseUrl.trim();
-        while (normalized.endsWith("/")) {
-            normalized = normalized.substring(0, normalized.length() - 1);
-        }
-        if (normalized.isBlank()) {
-            throw new IllegalStateException("openrouter.base-url is not configured");
-        }
-        if (normalized.endsWith("/v1")) {
-            return normalized;
-        }
-        return normalized + "/v1";
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

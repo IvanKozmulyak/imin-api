@@ -32,8 +32,8 @@ AiEventDescriptionService  ─►  PosterConcept { subStyleTag, 3 × PosterVaria
   │                                (one LLM call via OpenRouter / ChatClient)
   ▼
 PosterOrchestrator  ──►  3 parallel IdeogramClient.generate() calls
-  │                         (bounded by Semaphore(6) across requests,
-  │                          fixed thread pool sized per-request)
+  │                         (fixed thread pool, one thread per variant;
+  │                          poster.render.max-concurrent sizes it)
   ▼
 PosterImageStorage.download → OverlayCompositor.applyOverlays → writePng
   │   (raw PNG from Ideogram)   (zxing QR + address band only)

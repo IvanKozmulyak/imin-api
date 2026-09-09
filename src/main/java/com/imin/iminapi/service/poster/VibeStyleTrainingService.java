@@ -22,9 +22,11 @@ import java.util.Optional;
  * <p>Training loads the vibe's curated flyer bytes from {@link ReferenceImageLibrary}
  * and calls the provider's style-training endpoint (currently Recraft
  * {@code POST /styles}), then upserts the returned {@code style_id} into the
- * {@code vibe_style} table keyed by {@code (vibeId, provider)}. The orchestrator
- * reads the trained id back via {@link #resolveStyleId} at generation time,
- * falling back to {@code Vibe.styleId()} from vibes.yaml when no row exists.
+ * {@code vibe_style} table keyed by {@code (vibeId, provider)}.
+ *
+ * <p>Nothing reads the trained id back today: Ideogram V3 is the sole renderer and does not take a
+ * Recraft style id, so the read-side {@code resolveStyleId} was removed as dead code. The row is
+ * kept because the training endpoint is still on the wire.
  */
 @Service
 public class VibeStyleTrainingService {
@@ -80,19 +82,4 @@ public class VibeStyleTrainingService {
         return new TrainResult(vibeId, ImageProvider.RECRAFT, styleId, row.getTrainedAt());
     }
 
-    /**
-     * Resolve the style id for a vibe + provider: prefer the trained row in the
-     * {@code vibe_style} table, else fall back to {@code Vibe.styleId()} from
-     * vibes.yaml, else {@code null} (the client then uses its base style).
-     */
-    @Transactional(readOnly = true)
-    public String resolveStyleId(String vibeId, ImageProvider provider) {
-        if (vibeId == null) return null;
-        Optional<VibeStyle> trained = vibeStyleRepository.findByVibeIdAndProvider(vibeId, provider);
-        if (trained.isPresent() && trained.get().getStyleId() != null
-                && !trained.get().getStyleId().isBlank()) {
-            return trained.get().getStyleId();
-        }
-        return vibeLibrary.byId(vibeId).map(Vibe::styleId).orElse(null);
-    }
 }

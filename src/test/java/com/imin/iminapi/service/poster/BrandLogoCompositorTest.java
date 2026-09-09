@@ -92,6 +92,29 @@ class BrandLogoCompositorTest {
         assertThat(lum).isEqualTo(30);
     }
 
+    /**
+     * poster-11: the decoded-logo cache had no bound and no TTL. Its key is a content-addressed
+     * URL, so it gained one permanent BufferedImage (width*height*4 bytes — a 2 MB PNG decodes to
+     * well over 10 MB) for every distinct logo of every org that ever composited a poster.
+     */
+    @Test
+    void logoCache_isBounded_andDropsTheLeastRecentlyUsed() {
+        byte[] poster = solidPng(200, 250, Color.BLACK);
+        byte[] logo = solidPng(40, 40, Color.WHITE);
+        String eldest = "https://cdn/logo-0.png";
+
+        for (int i = 0; i <= BrandLogoCompositor.MAX_CACHED_LOGOS; i++) {
+            String url = "https://cdn/logo-" + i + ".png";
+            when(storage.download(url)).thenReturn(logo);
+            sut.composite(poster, url);
+        }
+
+        // One more distinct logo than the cap: the least recently used entry is gone, so the next
+        // composite of it has to download again.
+        sut.composite(poster, eldest);
+        org.mockito.Mockito.verify(storage, org.mockito.Mockito.times(2)).download(eldest);
+    }
+
     @Test
     void cache_invalidate_forces_redownload_on_next_composite() {
         byte[] poster = solidPng(800, 1000, Color.BLACK);

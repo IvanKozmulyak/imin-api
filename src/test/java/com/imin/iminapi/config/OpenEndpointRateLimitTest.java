@@ -111,6 +111,20 @@ class OpenEndpointRateLimitTest {
         verify(rateLimiter).consume("ai-content", LOCAL_IP);
     }
 
+    /**
+     * The bucket caps how OFTEN an anonymous caller can bill us; nothing capped how MUCH each of
+     * those 10 hourly calls could carry, so the prompt is bounded too and the service is never
+     * reached with an oversized one.
+     */
+    @Test
+    void aiContent_rejects_an_unbounded_prompt_before_spending_the_bucket() throws Exception {
+        mvc.perform(post("/api/v1/events/ai-content")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("prompt", "x".repeat(5000)))))
+                .andExpect(status().isBadRequest());
+        verify(eventContent, never()).generate(any());
+    }
+
     @Test
     void unsubscribe_consumes_its_bucket_on_both_verbs() throws Exception {
         mvc.perform(post("/api/v1/public/unsubscribe/not-a-real-token"));

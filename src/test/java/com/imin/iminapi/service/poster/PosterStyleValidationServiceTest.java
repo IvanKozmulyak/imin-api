@@ -91,6 +91,26 @@ class PosterStyleValidationServiceTest {
         assertThat(decision.reason()).contains("no person visible in the poster");
     }
 
+    /**
+     * poster-3: the style gate is SOFT. An unevaluable verdict (malformed LLM JSON, a 5xx, a
+     * transport error) must degrade to a non-acceptance, never escape and fail a text-accepted
+     * variant — three paid renders used to be discarded over an advisory gate blip.
+     */
+    @Test
+    void clientThrow_isNotPropagated_andBecomesANonAcceptance() {
+        PosterStyleValidationClient client = mock(PosterStyleValidationClient.class);
+        when(client.validate(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any()))
+                .thenThrow(new IllegalStateException("style validation returned no choices"));
+        PosterStyleValidationService service = new PosterStyleValidationService(client, true);
+
+        PosterStyleValidationService.ValidationDecision decision =
+                service.validateOrExplain(IMAGE, styleCard(), HeroType.PEOPLE);
+
+        assertThat(decision.accepted()).isFalse();
+        assertThat(decision.reason()).contains("could not be evaluated");
+    }
+
     @Test
     void rejectedResultWithNoSignalsStillHasReason() {
         PosterStyleValidationClient client = mock(PosterStyleValidationClient.class);
