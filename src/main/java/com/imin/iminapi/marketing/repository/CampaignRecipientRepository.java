@@ -249,6 +249,17 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
                                @Param("maxAttempts") short maxAttempts);
 
     /**
+     * How many of this membership's rows recorded a TRANSIENT bounce (mkt-edge-6). Counted
+     * across every campaign this membership has ever been on, because the question the
+     * threshold answers is "does mail to this person keep failing", not "did this campaign
+     * have a bad day". Written by {@code ResendWebhookProjector}; nothing else sets
+     * {@code error_code='soft_bounce'}.
+     */
+    @Query("select count(r) from CampaignRecipient r "
+            + "where r.membershipId = :membershipId and r.errorCode = 'soft_bounce'")
+    long countSoftBouncesByMembership(@Param("membershipId") UUID membershipId);
+
+    /**
      * DSAR (mkt-edge-4): an erased membership's rows that are still QUEUED must leave the queue,
      * not merely lose their address. {@link #redactPiiByMembershipId} nulls {@code email} on every
      * row, {@code pending} ones included, so an in-flight campaign was left holding work the
