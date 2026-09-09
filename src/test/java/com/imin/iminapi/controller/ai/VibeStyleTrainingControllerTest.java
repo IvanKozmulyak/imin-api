@@ -55,6 +55,40 @@ class VibeStyleTrainingControllerTest {
         }
     }
 
+    @Retention(RetentionPolicy.RUNTIME)
+    @WithSecurityContext(factory = MemberFactory.class)
+    public @interface WithStubMember {}
+
+    public static class MemberFactory implements WithSecurityContextFactory<WithStubMember> {
+        @Override
+        public org.springframework.security.core.context.SecurityContext createSecurityContext(WithStubMember ann) {
+            AuthPrincipal p = new AuthPrincipal(USER, ORG, com.imin.iminapi.model.UserRole.MEMBER, UUID.randomUUID());
+            var auth = new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
+                    p, null, List.of(new SimpleGrantedAuthority("ROLE_MEMBER")));
+            var ctx = org.springframework.security.core.context.SecurityContextHolder.createEmptyContext();
+            ctx.setAuthentication(auth);
+            return ctx;
+        }
+    }
+
+    /**
+     * api-11: this controller documents itself as an "Admin tool", spends live Recraft credits
+     * and upserts the platform-wide vibe_style row every org's posters resolve against — while
+     * being reachable by any authenticated organizer, because SecurityConfig gates the organizer
+     * surface on .authenticated() alone. The principal was logged and then dropped: no role, no
+     * org dimension. Same RoleGuard seniority axis api-1/api-7 put on the other privileged
+     * endpoints.
+     */
+    @Test
+    @WithStubMember
+    void trainStyle_is_forbidden_for_a_MEMBER() throws Exception {
+        mvc.perform(post("/api/v1/ai/vibes/brutalist_techno/train-style"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("FORBIDDEN"));
+
+        org.mockito.Mockito.verifyNoInteractions(trainingService);
+    }
+
     @Test
     @WithStubUser
     void trainStyle_returnsPersistedStyleId() throws Exception {
