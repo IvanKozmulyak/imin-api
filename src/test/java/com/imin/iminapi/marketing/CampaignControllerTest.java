@@ -115,6 +115,33 @@ class CampaignControllerTest {
                 .andExpect(status().isOk());
     }
 
+    /**
+     * mkt-edge-9 (P2): `page` went into PageRequest.of unclamped (only `size` was guarded),
+     * and PageRequest.of(-1, 50) throws IllegalArgumentException — for which
+     * GlobalExceptionHandler has no handler, so ?page=-1 answered 500 INTERNAL and logged an
+     * "Unhandled exception" on both the campaign list and the recipient log.
+     */
+    @Test
+    @WithStubOrganizer
+    void negativePageIsClampedNotA500() throws Exception {
+        when(service.list(any(), any(), any(), org.mockito.ArgumentMatchers.anyInt(),
+                org.mockito.ArgumentMatchers.anyInt())).thenReturn(List.of());
+        when(service.listRecipients(eq(CAMP), any(), any(), any(),
+                org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn(new com.imin.iminapi.marketing.dto.RecipientPage(
+                        List.of(), 0, 50, 0L,
+                        new com.imin.iminapi.marketing.dto.RecipientCounts(0, 0, 0, 0, 0, 0, 0, 0)));
+
+        mvc.perform(get("/api/v1/marketing/campaigns").param("page", "-1"))
+                .andExpect(status().isOk());
+        mvc.perform(get("/api/v1/marketing/campaigns/{id}/recipients", CAMP).param("page", "-3"))
+                .andExpect(status().isOk());
+
+        verify(service).list(any(), any(), any(), eq(0), org.mockito.ArgumentMatchers.anyInt());
+        verify(service).listRecipients(eq(CAMP), any(), any(), any(), eq(0),
+                org.mockito.ArgumentMatchers.anyInt());
+    }
+
     @Test
     @WithStubOrganizer
     void patch_returns_the_updated_draft() throws Exception {

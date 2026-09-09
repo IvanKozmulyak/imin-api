@@ -40,7 +40,18 @@ public class CampaignController {
             @RequestParam(required = false) String status,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "50") int size) {
-        return service.list(principal, channel, status, page, clampSize(size));
+        return service.list(principal, channel, status, clampPage(page), clampSize(size));
+    }
+
+    /**
+     * mkt-edge-9: {@code page} went into {@code PageRequest.of} unclamped — only {@code size}
+     * was guarded — and {@code PageRequest.of(-1, 50)} throws IllegalArgumentException, which
+     * GlobalExceptionHandler has no handler for. So {@code ?page=-1} answered 500 INTERNAL and
+     * logged an "Unhandled exception" on both this list and the recipient log. Clamping (rather
+     * than 400ing) keeps the wire behaviour additive, matching the precedent set for size.
+     */
+    private static int clampPage(int page) {
+        return Math.max(0, page);
     }
 
     /**
@@ -169,6 +180,6 @@ public class CampaignController {
             @RequestParam(required = false) String engagement,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "50") int size) {
-        return service.listRecipients(id, principal, status, engagement, page, clampSize(size));
+        return service.listRecipients(id, principal, status, engagement, clampPage(page), clampSize(size));
     }
 }
