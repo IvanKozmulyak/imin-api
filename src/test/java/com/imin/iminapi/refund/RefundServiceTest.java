@@ -346,6 +346,8 @@ class RefundServiceTest {
             org.mockito.Mockito.verify(refundTickets, org.mockito.Mockito.never())
                 .deleteByRefundId(any());
         }
+    }
+
     // ── stripe-15 — the fee refunds must never sum above the original fee ─────────
     @Test
     void app_fee_refunds_are_clamped_to_the_remaining_unrefunded_fee() {
