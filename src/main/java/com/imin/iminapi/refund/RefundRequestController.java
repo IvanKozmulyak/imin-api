@@ -8,7 +8,9 @@ import com.imin.iminapi.refund.dto.RefundRequestSummaryResponse;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.CurrentUser;
+import com.imin.iminapi.security.ErrorCode;
 import jakarta.validation.Valid;
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -87,7 +89,21 @@ public class RefundRequestController {
         return Arrays.stream(csv.split(","))
             .map(String::trim)
             .filter(s -> !s.isEmpty())
-            .map(s -> RefundRequestStatus.valueOf(s.toUpperCase(Locale.ROOT)))
+            .map(RefundRequestController::parseStatus)
             .toList();
+    }
+
+    /**
+     * A typo or a stale bookmark in {@code ?status=} is a client mistake. Enum.valueOf
+     * throws IllegalArgumentException, which no handler covers — it fell through to the
+     * catch-all and was answered 500 with an "Unhandled exception" ERROR log.
+     */
+    private static RefundRequestStatus parseStatus(String raw) {
+        try {
+            return RefundRequestStatus.valueOf(raw.toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
+                "Unknown status '" + raw + "'");
+        }
     }
 }

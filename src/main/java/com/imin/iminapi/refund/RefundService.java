@@ -21,8 +21,12 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -78,9 +82,20 @@ public class RefundService {
                 "Idempotency-Key header is required");
         }
 
-        // Idempotency short-circuit BEFORE order load so retries don't hit the DB twice
-        // for the order/tickets/etc. The unique (order_id, idempotency_key) index also
-        // protects against race-stacked POSTs at INSERT time.
+        // Org check FIRST, before any refund row can be returned. The replay short-circuit
+        // below hands back stripeRefundId, amounts, status and ticket ids, and the approve
+        // path's key is guessable by construction ("refund-request-" + requestId, both
+        // halves of which the buyer holds) — so answering it ahead of this check was a
+        // cross-org read of exactly the kind the 404-not-403 handling here exists to stop.
+        Order order = orders.findById(orderId).orElseThrow(() -> ApiException.notFound("Order"));
+        if (!order.getOrgId().equals(principal.orgId())) {
+            // 404, not 403 — leak-safe (don't reveal that the order exists for another org)
+            throw ApiException.notFound("Order");
+        }
+
+        // Idempotency short-circuit before the ticket work so retries don't redo it. The
+        // unique (order_id, idempotency_key) index also protects against race-stacked POSTs
+        // at INSERT time.
         Optional<Refund> existing = refunds.findByOrderIdAndIdempotencyKey(orderId, idempotencyKey);
         if (existing.isPresent()) {
             log.info("[refund] idempotent replay orderId={} key={} → returning existing {}",
@@ -93,11 +108,6 @@ public class RefundService {
                 "ticketIds must be a non-empty unique list");
         }
 
-        Order order = orders.findById(orderId).orElseThrow(() -> ApiException.notFound("Order"));
-        if (!order.getOrgId().equals(principal.orgId())) {
-            // 404, not 403 — leak-safe (don't reveal that the order exists for another org)
-            throw ApiException.notFound("Order");
-        }
         if (order.getStripePaymentIntentId() == null || order.getStripePaymentIntentId().isBlank()) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.ORDER_NOT_REFUNDABLE,
                 "Order has no Stripe payment to refund");
@@ -150,7 +160,12 @@ public class RefundService {
         try {
             List<RefundTicket> rows = new ArrayList<>(selected.size());
             for (Ticket t : selected) rows.add(new RefundTicket(r.getId(), t.getId()));
-            refundTickets.saveAll(rows);
+            // saveAllAndFlush, not saveAll: RefundTicket carries an application-assigned
+            // @IdClass id, so save() merges and only QUEUES the INSERT. Without this flush
+            // UNIQUE(refund_tickets.ticket_id) is not consulted until commit — i.e. after
+            // the Stripe call below has already moved real money — and the catch under it
+            // is unreachable. Flushing claims the tickets before we spend anything.
+            refundTickets.saveAllAndFlush(rows);
         } catch (DataIntegrityViolationException race) {
             // UNIQUE(refund_tickets.ticket_id) raced. A concurrent refund grabbed
             // a ticket between our pre-check and INSERT. Surface as ALREADY_REFUNDED.
@@ -162,16 +177,16 @@ public class RefundService {
         try {
             stripeRefund = stripeRefundService.create(
                 order.getStripePaymentIntentId(), refundAmountMinor, order.getCurrency(),
-                r.getReason(), appFeeRefundMinor, "refund_" + r.getId());
+                r.getReason(), appFeeRefundMinor,
+                stripeIdempotencyKey(orderId, idempotencyKey, ticketIds, refundAmountMinor));
         } catch (StripeException e) {
             log.warn("[refund] Stripe refund failed orderId={} refundId={} status={} code={} — {}",
                 orderId, r.getId(), e.getStatusCode(), e.getCode(), e.getMessage());
-            // Row stays at REQUESTED with no stripe_refund_id; client retries with same key
-            // → idempotency short-circuit returns the row; Stripe is re-called only because
-            // we don't yet have a stripe_refund_id... actually that's a bug: we DO want
-            // to retry the Stripe call on next attempt, but the idempotency short-circuit
-            // skips it. Acceptable for Phase A — operator can manually nudge stuck REQUESTED
-            // rows. TODO Phase B: retry on REQUESTED-status existing rows.
+            // Everything written above is rolled back with this throw (ApiException is a
+            // RuntimeException and this method is @Transactional), so the retry re-enters
+            // with an empty DB. That is survivable ONLY because the Stripe key above is
+            // derived from durable inputs rather than from the discarded row id — the retry
+            // replays the identical Stripe request and Stripe returns the original Refund.
             if ("balance_insufficient".equals(e.getCode())) {
                 // reverse_transfer=true can't pull funds back when the connected account's
                 // balance is too low (e.g. already paid out). Surface a distinct, actionable
@@ -266,15 +281,26 @@ public class RefundService {
             finalizeSucceeded(refund);
             log.info("[refund-webhook] refund {} SUCCEEDED — inventory released, email queued",
                 refund.getId());
-        } else if (newStatus == RefundStatus.FAILED) {
-            // Conditional UPDATE only flipped status; persist failure detail separately.
-            Refund reloaded = refunds.findById(refund.getId()).orElseThrow();
-            reloaded.setFailureCode(failureCode);
-            reloaded.setFailureMessage(failureMessage);
-            refunds.save(reloaded);
-            publisher.publishEvent(new RefundFailedEvent(refund.getId()));
-            log.warn("[refund-webhook] refund {} FAILED code={} message={}",
-                refund.getId(), failureCode, failureMessage);
+        } else if (newStatus == RefundStatus.FAILED || newStatus == RefundStatus.CANCELED) {
+            // No money moved, so the tickets must become refundable again. The
+            // refund_tickets rows are the claim — UNIQUE(ticket_id) means leaving them
+            // behind blocks every retry with 409 TICKET_ALREADY_REFUNDED forever, while
+            // the money side (sumActiveAmountByOrderId) already treats the refund as
+            // inactive. Same transaction as the status flip, so the two never disagree.
+            long released = refundTickets.deleteByRefundId(refund.getId());
+            if (newStatus == RefundStatus.FAILED) {
+                // Conditional UPDATE only flipped status; persist failure detail separately.
+                Refund reloaded = refunds.findById(refund.getId()).orElseThrow();
+                reloaded.setFailureCode(failureCode);
+                reloaded.setFailureMessage(failureMessage);
+                refunds.save(reloaded);
+                publisher.publishEvent(new RefundFailedEvent(refund.getId()));
+                log.warn("[refund-webhook] refund {} FAILED code={} message={} — released {} ticket claim(s)",
+                    refund.getId(), failureCode, failureMessage, released);
+            } else {
+                log.info("[refund-webhook] refund {} CANCELED — released {} ticket claim(s)",
+                    refund.getId(), released);
+            }
         }
     }
 
@@ -333,6 +359,33 @@ public class RefundService {
         if (remaining <= 0) return 0;
 
         return Math.min(proposed, remaining);
+    }
+
+    /**
+     * Stripe idempotency key for a refund attempt, derived from inputs that survive a
+     * rollback: the order, the client's Idempotency-Key, the exact ticket selection and
+     * the computed amount. Deliberately NOT the refund row id — the row is created inside
+     * the same transaction as the Stripe call, so a failed call discards it and every
+     * retry would mint a new id, a new key and therefore a SECOND real refund.
+     *
+     * <p>Same inputs ⇒ same key ⇒ Stripe replays and returns the original Refund. Different
+     * inputs (a different ticket set, or a different amount because another refund landed
+     * meanwhile) ⇒ different key, which is correct: that is genuinely a different refund,
+     * and it also keeps Stripe from rejecting a reused key carrying changed parameters.
+     */
+    static String stripeIdempotencyKey(UUID orderId, String clientKey,
+                                       List<UUID> ticketIds, long amountMinor) {
+        String material = orderId + ":" + clientKey + ":"
+            + ticketIds.stream().map(UUID::toString).sorted().collect(Collectors.joining(","))
+            + ":" + amountMinor;
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                .digest(material.getBytes(StandardCharsets.UTF_8));
+            // 7 + 64 chars, and StripeRefundService appends "_fee" — well inside Stripe's 255.
+            return "refund_" + HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 unavailable", e);
+        }
     }
 
     long computeAppFeeRefundMinor(Order order, long refundAmountMinor) {

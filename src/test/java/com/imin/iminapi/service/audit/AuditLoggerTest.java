@@ -35,7 +35,9 @@ class AuditLoggerTest {
     void setUp() {
         auditLogs = mock(AuditLogRepository.class);
         users = mock(UserRepository.class);
-        sut = new AuditLogger(auditLogs, users);
+        // A mock transaction manager runs the template's callback inline and lets the
+        // exception through, which is exactly the production contract being asserted.
+        sut = new AuditLogger(auditLogs, users, mock(org.springframework.transaction.PlatformTransactionManager.class));
         principal = new AuthPrincipal(userId, orgId, UserRole.OWNER, UUID.randomUUID());
     }
 
