@@ -189,8 +189,13 @@ public class BuyerAuthController {
             @Valid @RequestBody BuyerAuthRequests.GoogleCallback req,
             HttpServletRequest http) {
         requireGoogleEnabled();
-        var signedIn = buyerIdentityResolver.callback(
-                req.code(), req.state(), BuyerOAuthNonceCookie.read(http), userAgent(http));
+        // Two steps on purpose, exactly like the native lanes below: the state
+        // check and Google's token exchange run outside any transaction, and
+        // only the resolve that follows opens one. Folding them together pins a
+        // pooled connection across an outbound HTTP call.
+        var info = buyerIdentityResolver.exchange(
+                req.code(), req.state(), BuyerOAuthNonceCookie.read(http));
+        var signedIn = buyerIdentityResolver.resolve(info, userAgent(http));
         return ResponseEntity.ok()
                 .header(HttpHeaders.SET_COOKIE, signedIn.session().cookie().toString())
                 // Single-use by construction: the nonce goes away with the state
