@@ -45,9 +45,21 @@ public class DashboardService {
         this.auditLogs = auditLogs;
     }
 
+    /**
+     * The cache key carries the USER id as well as the org id, and that is not
+     * redundant: the payload opens with a {@link Greeting} built from the calling
+     * user's own first name — or, when that is blank, the local part of their email
+     * address (TeamService.invite creates members with an empty first name, so the
+     * fallback is the common case for invited accounts). Keyed on the org alone, the
+     * second person in an org to open the dashboard inside the 30s TTL was greeted
+     * with a colleague's name, or with a colleague's email local part. Everything
+     * else here is org-wide, so the cost is one copy of org-wide data per active
+     * team member per period pair, well inside the 10_000-entry cap in CacheConfig.
+     */
     @Transactional(readOnly = true)
     @Cacheable(value = "dashboard",
-            key = "T(java.lang.String).join('|', #p.orgId().toString(), #cyclePeriod.name(), #businessPeriod.name())")
+            key = "T(java.lang.String).join('|', #p.orgId().toString(), #p.userId().toString(), "
+                    + "#cyclePeriod.name(), #businessPeriod.name())")
     public DashboardResponse build(AuthPrincipal p, DashboardPeriod cyclePeriod, DashboardPeriod businessPeriod) {
         User u = users.findById(p.userId()).orElseThrow();
         var firstName = displayFirstName(u.getFirstName(), u.getEmail());

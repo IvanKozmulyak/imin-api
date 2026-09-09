@@ -140,4 +140,31 @@ class DashboardCacheTest {
                 .as("@CacheEvict on the tier write must actually evict the cached dashboard")
                 .isEqualTo(250);
     }
+
+    /**
+     * infra-5: TeamService.invite creates members with an empty first name, so
+     * displayFirstName falls back to the local part of the email — which made the
+     * colleague-name leak a colleague-email-address leak for exactly the accounts
+     * most likely to hit it.
+     */
+    @Test
+    void a_colleague_does_not_inherit_the_first_users_greeting() {
+        User invited = new User();
+        invited.setEmail("grace." + UUID.randomUUID().toString().substring(0, 8) + "@example.com");
+        invited.setFirstName("");
+        invited.setOrgId(org.getId());
+        invited.setRole(UserRole.MEMBER);
+        invited = users.save(invited);
+        AuthPrincipal member =
+                new AuthPrincipal(invited.getId(), org.getId(), UserRole.MEMBER, UUID.randomUUID());
+
+        DashboardResponse first = dashboard.build(ownerPrincipal, DashboardPeriod.D30, DashboardPeriod.D30);
+        assertThat(first.greeting().name()).isEqualTo("Ada");
+
+        DashboardResponse second = dashboard.build(member, DashboardPeriod.D30, DashboardPeriod.D30);
+        String expected = invited.getEmail().substring(0, invited.getEmail().indexOf('@'));
+        assertThat(second.greeting().name())
+                .as("the second user in an org must not be greeted with a colleague's name")
+                .isEqualTo(expected);
+    }
 }
