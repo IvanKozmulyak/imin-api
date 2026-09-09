@@ -25,6 +25,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.ResultActions;
@@ -39,6 +40,8 @@ import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.reset;
@@ -73,7 +76,7 @@ class BuyerAccountDeletionTest {
     @Autowired BuyerAccountEmailRepository emails;
     @Autowired BuyerSessionRepository sessions;
     @Autowired ConsumerRepository consumers;
-    @Autowired MembershipRepository memberships;
+    @MockitoSpyBean MembershipRepository memberships;
     @Autowired OrganizationRepository orgs;
     @MockitoBean EmailService email;
 
@@ -244,6 +247,44 @@ class BuyerAccountDeletionTest {
         assertThat(account.getStatus()).isEqualTo(BuyerAccount.STATUS_DELETE_PENDING);
         assertThat(account.getDeleteAt()).isNotNull();
         assertThat(sessions.findByBuyerAccountIdAndRevokedAtIsNull(accountId)).isEmpty();
+    }
+
+    /**
+     * One org's unsubscribe blowing up must not undo the deletion.
+     *
+     * <p>{@code ConsentService.unsubscribe} is {@code @Transactional} with the
+     * default propagation, so before this fix it <i>participated</i> in
+     * {@code requestDeletion}'s transaction: the throw marked that shared
+     * transaction rollback-only, the {@code catch} in the fan-out loop logged
+     * over an already-doomed transaction, and the request then died at commit
+     * with an {@code UnexpectedRollbackException}. The status flip, the
+     * {@code delete_at}, the session revocation and every <i>successful</i>
+     * unsubscribe went with it — a 500 on a request the buyer had every right
+     * to make.
+     *
+     * <p>The failure is injected inside the transactional boundary on purpose:
+     * stubbing {@code ConsentService} itself would throw before the transaction
+     * interceptor ever ran and would prove nothing.
+     */
+    @Test
+    void one_org_whose_unsubscribe_fails_does_not_undo_the_whole_deletion() throws Exception {
+        UUID consumerId = consumer(primary);
+        UUID boom = membership(org("DeleteUnsubBoom"), consumerId, "subscribed");
+        UUID survivor = membership(org("DeleteUnsubSurvivor"), consumerId, "subscribed");
+
+        // requireMembership's re-read comes up empty — the shape an organizer
+        // DSAR erase committing mid-deletion actually produces.
+        doReturn(Optional.empty()).when(memberships).findByIdAndOrgId(eq(boom), any());
+
+        requestDeletion().andExpect(status().isOk());
+
+        BuyerAccount account = accounts.findById(accountId).orElseThrow();
+        assertThat(account.getStatus()).isEqualTo(BuyerAccount.STATUS_DELETE_PENDING);
+        assertThat(account.getDeleteAt()).isNotNull();
+        assertThat(sessions.findByBuyerAccountIdAndRevokedAtIsNull(accountId)).isEmpty();
+        assertThat(membershipById(survivor).getConsentStatus())
+                .as("one org failing must not strand the rest of the objection")
+                .isEqualTo("unsubscribed");
     }
 
     // ── Cancelling ─────────────────────────────────────────────────────────
