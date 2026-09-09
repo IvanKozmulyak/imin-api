@@ -30,6 +30,16 @@ import java.util.List;
 @Service
 public class PacingEngine {
 
+    /**
+     * The smallest median pace — fraction of final sold at this horizon across the segment's
+     * comparables — that a projection is allowed to divide by. Below it the percentile is
+     * dominated by comparables that had not started selling that early, so {@code sold / pace}
+     * is noise with a decimal point: three tickets over a 0.5% median "projects" 600. A rule
+     * constant, deliberately not configurable; below the floor the honest answer is the
+     * EXPLICITLY-LABELLED Stage 0 interim, never a wider band.
+     */
+    static final double MIN_PROJECTABLE_PACE = 0.05;
+
     /** One sampled point of a segment curve: the band of "% of final sold" at {@code daysOut}. */
     public record CurvePoint(int daysOut, double medianPct, double p25Pct, double p75Pct) {}
 
@@ -126,7 +136,9 @@ public class PacingEngine {
         double medNow = interp(curve, daysOutNow, Pace.MEDIAN);
         double p25Now = interp(curve, daysOutNow, Pace.P25);
         double p75Now = interp(curve, daysOutNow, Pace.P75);
-        if (medNow <= 0 && p25Now <= 0 && p75Now <= 0) return Projection.insufficientResult();
+        // Too few comparables had sold anything by this horizon for the division below to mean
+        // anything (the median pace IS that count, expressed as a fraction): not projectable.
+        if (medNow < MIN_PROJECTABLE_PACE) return Projection.insufficientResult();
 
         // Fast pace (higher pct-of-final now) → smaller final; slow pace → larger final.
         double rawLow = p75Now > 0 ? currentSold / p75Now : currentSold;
