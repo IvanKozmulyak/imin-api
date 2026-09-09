@@ -11,7 +11,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Optional;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -73,14 +73,18 @@ public class BuyerEmailVerificationService {
     }
 
     /**
-     * Retires every outstanding code for the address and issues a fresh one.
-     * Returns the raw six digits — the only moment they exist outside the
-     * buyer's inbox; the row stores {@code HMAC-SHA256(pepper, code)}.
+     * Retires <b>this account's</b> outstanding codes for the address and issues
+     * a fresh one. Returns the raw six digits — the only moment they exist
+     * outside the buyer's inbox; the row stores {@code HMAC-SHA256(pepper, code)}.
+     *
+     * <p>Another account's live code on the same address is left alone: it was
+     * mailed to whoever asked for it, and retiring it here would let any later
+     * signup silently burn an earlier buyer's code.
      */
     @Transactional
     public String issue(UUID accountId, String emailNormalized) {
         Instant now = Instant.now();
-        codes.invalidateActiveForEmail(emailNormalized, now);
+        codes.invalidateActiveForAccount(emailNormalized, accountId, now);
 
         String code = hasher.generateCode();
         BuyerEmailVerificationCode row = new BuyerEmailVerificationCode();
@@ -93,13 +97,22 @@ public class BuyerEmailVerificationService {
     }
 
     /**
-     * Consumes the live code for an address, or throws.
+     * Consumes the code that <b>matches the submission</b>, or throws.
+     *
+     * <p>The submission is checked against every live code on the address, not
+     * against the newest one. Several accounts may hold an unverified claim on
+     * one address (§2.3 rule 1), so "the live code for this address" is not a
+     * single row — and resolving it by recency is what let a later signup answer
+     * the code an earlier buyer was still holding, then verify her address onto
+     * the later account. Matching by HMAC binds the code to the account that
+     * asked for it, which is the account the returned row names.
      *
      * <p>Every failure path records an attempt row first, including "no code
      * outstanding" and "code already burnt" — otherwise an attacker could probe
-     * for free by guessing against expired codes. The returned row carries the
-     * {@code buyer_account_id} that asked for the code, which is what tells the
-     * caller <i>whose</i> address row to mark verified.
+     * for free by guessing against expired codes. A wrong guess burns one
+     * attempt on the newest code that still has budget: the per-code counter has
+     * to cost something, and the caller cannot be told which of several codes
+     * they were guessing at without the response becoming an oracle.
      *
      * @throws ApiException 429 when the address is locked out, 400
      *                      {@code INVALID_CODE} for every other failure — one
@@ -110,30 +123,31 @@ public class BuyerEmailVerificationService {
         Instant now = Instant.now();
         requireNotLockedOut(emailNormalized, now);
 
-        Optional<BuyerEmailVerificationCode> maybe =
-                codes.findFirstByEmailNormalizedAndConsumedAtIsNullOrderByCreatedAtDesc(emailNormalized);
-        if (maybe.isEmpty()) {
+        List<BuyerEmailVerificationCode> live = codes
+                .findByEmailNormalizedAndConsumedAtIsNullAndExpiresAtAfterOrderByCreatedAtDesc(
+                        emailNormalized, now);
+
+        BuyerEmailVerificationCode matched = null;
+        BuyerEmailVerificationCode chargeable = null;
+        for (BuyerEmailVerificationCode candidate : live) {
+            if (candidate.getAttempts() >= maxAttempts()) continue;
+            if (chargeable == null) chargeable = candidate;
+            if (hasher.matches(submittedCode, candidate.getCodeHash())) {
+                matched = candidate;
+                break;
+            }
+        }
+
+        if (matched == null) {
+            if (chargeable != null) codes.incrementAttempts(chargeable.getId());
             attempts.record(emailNormalized, false);
             throw invalidCode();
         }
-        BuyerEmailVerificationCode active = maybe.get();
 
-        if (active.getAttempts() >= maxAttempts()
-                || active.getExpiresAt().isBefore(now)) {
-            attempts.record(emailNormalized, false);
-            throw invalidCode();
-        }
-
-        if (!hasher.matches(submittedCode, active.getCodeHash())) {
-            codes.incrementAttempts(active.getId());
-            attempts.record(emailNormalized, false);
-            throw invalidCode();
-        }
-
-        active.setConsumedAt(now);
-        codes.save(active);
+        matched.setConsumedAt(now);
+        codes.save(matched);
         attempts.record(emailNormalized, true);
-        return active;
+        return matched;
     }
 
     /**

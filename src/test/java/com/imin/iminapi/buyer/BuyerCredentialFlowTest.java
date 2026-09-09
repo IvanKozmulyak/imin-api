@@ -193,6 +193,63 @@ class BuyerCredentialFlowTest {
     }
 
     @Test
+    void a_later_signup_on_the_same_address_cannot_steal_the_code_the_first_buyer_received()
+            throws Exception {
+        // The mirror image of the test above, and the ordering that was never
+        // pinned: the real owner signs up FIRST and the squatter second. A code
+        // belongs to the account that asked for it, so the code the owner
+        // received must still verify the OWNER's account. Resolving "the live
+        // code for this address" by recency instead would hand her address —
+        // and every order joined to it — to whoever signed up last.
+        signup(address).andExpect(status().isNoContent());   // real owner
+        UUID owner = onlyRowFor(address).getBuyerAccountId();
+        String ownerCode = codeSentTo(address);
+        reset(email);
+
+        signup(address).andExpect(status().isNoContent());   // squatter, afterwards
+        UUID squatter = rowsFor(address).stream()
+                .map(BuyerAccountEmail::getBuyerAccountId)
+                .filter(id -> !id.equals(owner))
+                .findFirst()
+                .orElseThrow();
+
+        verifyEmail(address, ownerCode).andExpect(status().isOk());
+
+        List<BuyerAccountEmail> after = rowsFor(address);
+        assertThat(after).hasSize(1);
+        assertThat(after.get(0).getBuyerAccountId())
+                .as("the account that received the code is the one that gets verified")
+                .isEqualTo(owner);
+        assertThat(after.get(0).isVerified()).isTrue();
+        assertThat(after.get(0).isPrimary()).isTrue();
+        assertThat(sessions.findByBuyerAccountIdAndRevokedAtIsNull(squatter))
+                .as("redeeming a code must never sign anybody into the later claimant's account")
+                .isEmpty();
+        assertThat(sessions.findByBuyerAccountIdAndRevokedAtIsNull(owner)).isNotEmpty();
+    }
+
+    @Test
+    void resend_sends_nothing_while_two_accounts_hold_a_live_claim_on_one_address() throws Exception {
+        // resend-verification is unauthenticated and carries only an address, so
+        // once a second account claims it there is nothing in the request that
+        // says which claim the caller is completing. Picking one would mail the
+        // squatter's code to the owner's inbox. The neutral 204 is unchanged;
+        // the owner's own code simply keeps working.
+        signup(address).andExpect(status().isNoContent());   // real owner
+        UUID owner = onlyRowFor(address).getBuyerAccountId();
+        String ownerCode = codeSentTo(address);
+
+        signup(address).andExpect(status().isNoContent());   // squatter
+        reset(email);
+
+        resendVerification(address).andExpect(status().isNoContent());
+        verify(email, never()).send(anyString(), anyString(), anyString(), anyString());
+
+        verifyEmail(address, ownerCode).andExpect(status().isOk());
+        assertThat(onlyRowFor(address).getBuyerAccountId()).isEqualTo(owner);
+    }
+
+    @Test
     void a_wrong_code_is_a_neutral_INVALID_CODE() throws Exception {
         signup(address).andExpect(status().isNoContent());
 

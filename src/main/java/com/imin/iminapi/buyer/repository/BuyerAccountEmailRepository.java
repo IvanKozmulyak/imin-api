@@ -44,12 +44,28 @@ public interface BuyerAccountEmailRepository extends JpaRepository<BuyerAccountE
      * <p>Unverified rows are deliberately not unique (§2.3 rule 1): a global
      * UNIQUE spanning them would let an attacker squat an address they cannot
      * verify and lock its owner out forever. Several accounts may therefore hold
-     * an unverified claim on one address at once, and "newest wins" is the rule
-     * {@code resend-verification} and code issuance both use — the person who
-     * most recently asked is the person waiting on the mail.
+     * an unverified claim on one address at once.
+     *
+     * <p>"Newest wins" is used <b>only</b> by {@code login}, and only to choose
+     * which unverified account a correct password should hear
+     * {@code EMAIL_NOT_VERIFIED} from. It is not a way to pick an account for a
+     * privileged act: verification and resend resolve the account by the code
+     * that was actually issued (see
+     * {@code BuyerEmailVerificationCodeRepository}), because a stranger's later
+     * claim must never inherit an earlier buyer's mail.
      */
     Optional<BuyerAccountEmail> findFirstByEmailNormalizedAndVerifiedAtIsNullOrderByCreatedAtDesc(
             String emailNormalized);
+
+    /**
+     * Every unverified claim on an address, across all accounts.
+     *
+     * <p>Read by {@code resend-verification} to tell the unambiguous case (one
+     * claimant, resend to them) from the contested one (several claimants and
+     * nothing in an unauthenticated, address-only request that says which of
+     * them the caller is).
+     */
+    List<BuyerAccountEmail> findByEmailNormalizedAndVerifiedAtIsNull(String emailNormalized);
 
     /**
      * Verification re-claim (§2.3 rule 3): when an address is verified for one
