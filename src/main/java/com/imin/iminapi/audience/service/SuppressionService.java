@@ -77,7 +77,11 @@ public class SuppressionService {
         s.setMembershipId(membershipId);
         s.setReason(reason);
         s.setSystemOwned(false);
-        SuppressionEntry saved = suppressionRepo.save(s);
+        // saveAndFlush: the read above wins the common case, and V114's unique index is the
+        // backstop for the race it cannot close. Flushing here makes a lost race arrive as a
+        // DataIntegrityViolationException (409 DUPLICATE) instead of an opaque rollback at
+        // commit — and, either way, never as the two rows that used to 500 every later read.
+        SuppressionEntry saved = suppressionRepo.saveAndFlush(s);
 
         auditLogger.record(principal, AuditActions.SUPPRESSION_ADDED, "membership", membershipId,
                 "Marketing suppression added: reason=" + reason);
@@ -125,7 +129,8 @@ public class SuppressionService {
         s.setNormalizedEmail(normalizedEmail);
         s.setReason(reason);
         s.setSystemOwned(true);
-        return suppressionRepo.save(s);
+        // See addMarketing: flushed so the V114 unique index answers inside this method.
+        return suppressionRepo.saveAndFlush(s);
     }
 
     /**
