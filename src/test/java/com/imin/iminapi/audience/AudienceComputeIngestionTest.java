@@ -81,6 +81,11 @@ class AudienceComputeIngestionTest {
         ev.setGenre("techno");
         ev.setType("club");
         ev.setCreatedBy(owner.getId());
+        // The event is in the PAST: an unscanned ticket only becomes a no-show once the
+        // event it was bought for has ended (audience-3). An undated fixture would now
+        // (correctly) project no_show = 0 and say nothing about the no-show rule.
+        ev.setStartsAt(Instant.now().minus(30, ChronoUnit.DAYS));
+        ev.setEndsAt(Instant.now().minus(30, ChronoUnit.DAYS).plus(6, ChronoUnit.HOURS));
         ev = eventRepo.save(ev);
         eventId = ev.getId();
     }
@@ -294,6 +299,25 @@ class AudienceComputeIngestionTest {
         Membership m = membershipRepo.findByOrgIdAndConsumerId(orgId, c.getConsumerId()).orElseThrow();
         assertThat(m.getAttended()).isEqualTo(0);
         assertThat(m.getNoShow()).isEqualTo(1);
+    }
+
+    /**
+     * audience-9: the INSERT-first Consumer upsert catches DataIntegrityViolationException,
+     * but Consumer ids are assigned in memory so a plain save() issued no statement and the
+     * catch could never fire — the violation arrived at the next auto-flush, outside the
+     * try, and took the whole projection transaction with it. The flushing variant is what
+     * makes the documented guard reachable.
+     */
+    @Test
+    void a_duplicate_consumer_insert_fails_inside_the_flushing_save() {
+        orderProjector.upsertMembership(orgId, "raced@x.com", "Raced");
+
+        Consumer duplicate = new Consumer();
+        duplicate.setNormalizedEmail("raced@x.com");
+        duplicate.setDisplayName("Raced again");
+
+        assertThatThrownBy(() -> consumerRepo.saveAndFlush(duplicate))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

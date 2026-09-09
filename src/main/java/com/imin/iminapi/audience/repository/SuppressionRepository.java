@@ -23,6 +23,15 @@ public interface SuppressionRepository extends Repository<SuppressionEntry, UUID
 
     SuppressionEntry save(SuppressionEntry entry);
 
+    /**
+     * save() with the INSERT forced out to the database. The entity id is assigned in
+     * memory, so a plain save() defers the statement to the next auto-flush or to commit
+     * — and V114's unique indexes would then surface a lost read-then-insert race as an
+     * UnexpectedRollbackException from the proxy rather than the DataIntegrityViolationException
+     * GlobalExceptionHandler maps to a clean 409.
+     */
+    SuppressionEntry saveAndFlush(SuppressionEntry entry);
+
     // ---- marketing (org-scoped) ----
 
     @Query("select s from SuppressionEntry s where s.scope = 'marketing' and s.orgId = :orgId and s.membershipId = :membershipId")

@@ -213,6 +213,28 @@ class AudienceControllerWebTest {
         verify(sendGateService, never()).handoff(eq(tamperOrgId), anyList(), any());
     }
 
+    // ── POST /members/bulk-action — must not fake success ─────────────────────
+
+    /**
+     * audience-14: the endpoint accepted any body, wrote nothing and answered 200, and the
+     * dashboard turned that into "Tagged N members" / "Export queued" / "Handed off to
+     * marketing" plus a navigate — three organizer actions reporting success over a no-op.
+     */
+    @Test
+    @WithOrgA
+    void bulk_action_reports_that_it_is_not_implemented() throws Exception {
+        String body = om.writeValueAsString(Map.of(
+                "action", "tag",
+                "membershipIds", List.of(MEMBER_A.toString()),
+                "tag", "vip"));
+
+        mvc.perform(post("/api/v1/audience/members/bulk-action")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isNotImplemented())
+                .andExpect(jsonPath("$.error.code").value("INVALID_STATE"));
+    }
+
     // ── POST /handoff — happy path ────────────────────────────────────────────
 
     @Test

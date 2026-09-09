@@ -8,6 +8,7 @@ import com.imin.iminapi.repository.OrderRepository;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -32,26 +33,37 @@ public class AudienceBackfillJob {
     private final OrderRepository orderRepo;
     private final AudienceOrderProjector projector;
     private final ErasedAddressRepository erasedAddressRepo;
+    /**
+     * This bean as Spring exposes it. {@code onStartup} must call {@code run()} THROUGH the
+     * proxy: a plain in-bean call goes straight to the method body and the @SchedulerLock
+     * below never runs, so the startup pass was unlocked on every replica. Lazy, because a
+     * bean cannot inject itself eagerly.
+     */
+    private final ObjectProvider<AudienceBackfillJob> self;
 
     public AudienceBackfillJob(OrderRepository orderRepo,
                                AudienceOrderProjector projector,
-                               ErasedAddressRepository erasedAddressRepo) {
+                               ErasedAddressRepository erasedAddressRepo,
+                               ObjectProvider<AudienceBackfillJob> self) {
         this.orderRepo = orderRepo;
         this.projector = projector;
         this.erasedAddressRepo = erasedAddressRepo;
+        this.self = self;
     }
 
     /**
      * Also runs once on startup so a deploy self-heals projection gaps (e.g. orders
      * issued while an event-listener bug was live) without waiting for the nightly
      * cron. Idempotent by design; cheap at current scale.
-     * ponytail: unguarded on multi-replica (Railway runs one instance); reuse the
-     * ShedLock lock here if replicas ever appear.
+     *
+     * <p>Routed through {@link #self} so the ShedLock proxy applies — a deploy that rolls
+     * two instances, or a crash-restart during the nightly window, otherwise ran a second
+     * unlocked full backfill alongside the locked one.
      */
     @org.springframework.context.event.EventListener(org.springframework.boot.context.event.ApplicationReadyEvent.class)
     public void onStartup() {
         try {
-            run();
+            self.getObject().run();
         } catch (Exception e) {
             log.warn("AudienceBackfillJob startup run failed (nightly cron will retry): {}", e.getMessage());
         }

@@ -183,10 +183,18 @@ public class DsarService {
      * Art.17 erasure — schedules 30-day grace period.
      * Sets status='erase_pending', erase_at=now()+30d.
      * The {@link AudienceErasureJob} executes the cascade after grace period.
+     *
+     * <p>It also unsubscribes immediately, through the same path {@link #object} uses.
+     * The grace window exists so the deletion can be reversed or audited, not so the
+     * person can be mailed for another 30 days; the status filters on the listing,
+     * segment and export queries close the rest of that window.
      */
     @Transactional
     public void requestErase(UUID orgId, UUID membershipId, AuthPrincipal principal) {
         requirePrivilegedRole(principal, "erase a data subject's record");
+        require(orgId, membershipId);
+        consentService.unsubscribe(orgId, membershipId, "dsar_erase", "email",
+                ConsentOrigin.DATA_SUBJECT, principal);
         Membership m = require(orgId, membershipId);
         m.setStatus("erase_pending");
         m.setEraseAt(Instant.now().plus(30, ChronoUnit.DAYS));

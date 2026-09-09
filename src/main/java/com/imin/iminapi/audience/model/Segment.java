@@ -36,6 +36,14 @@ public class Segment {
     @Column(nullable = false)
     private boolean prebuilt = false;
 
+    /**
+     * Stable identifier of the system segment this row is (see {@code PrebuiltSegment}),
+     * or NULL for a custom segment. Resolution routes on THIS, never on {@link #name} —
+     * a custom segment called "VIP" must evaluate its own {@link #rulesJson}.
+     */
+    @Column(name = "prebuilt_key", length = 32)
+    private String prebuiltKey;
+
     /** JSON array of {field, operator, value} */
     @Column(name = "rules_json", columnDefinition = "TEXT")
     private String rulesJson;

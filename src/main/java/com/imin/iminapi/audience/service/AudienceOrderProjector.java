@@ -125,7 +125,9 @@ public class AudienceOrderProjector {
             newC.setNormalizedEmail(normalizedEmail);
             newC.setDisplayName(displayName);
             try {
-                consumer = consumerRepo.save(newC);
+                // saveAndFlush, not save: the id is assigned in memory, so a plain save()
+                // defers the INSERT past this try and the catch below could never fire.
+                consumer = consumerRepo.saveAndFlush(newC);
             } catch (DataIntegrityViolationException dup) {
                 consumer = consumerRepo.findByNormalizedEmail(normalizedEmail)
                         .orElseThrow(() -> new IllegalStateException("Consumer insert race but still not found: " + normalizedEmail));

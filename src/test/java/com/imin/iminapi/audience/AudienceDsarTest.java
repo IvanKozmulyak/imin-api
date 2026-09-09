@@ -55,6 +55,7 @@ class AudienceDsarTest {
     @Autowired DsarService dsarService;
     @Autowired ConsentService consentService;
     @Autowired SendGateService sendGateService;
+    @Autowired AudienceService audienceService;
     @Autowired DataSource dataSource;
 
     @MockitoBean AuditLogger auditLogger;
@@ -305,6 +306,70 @@ class AudienceDsarTest {
         assertThatThrownBy(() -> dsarService.requestErase(orgA, mid, principalA))
                 .isInstanceOf(ApiException.class)
                 .hasMessageContaining("not found");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // audience-4: the 30-day grace period is not 30 more days of marketing
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Test
+    void request_erase_unsubscribes_immediately() {
+        UUID mid = seedSubscribed(orgA, "erasesub@d.com", "explicit");
+        assertThat(sendGateService.evaluate(orgA, List.of(mid)).sendable()).containsExactly(mid);
+
+        dsarService.requestErase(orgA, mid, principalA);
+
+        Membership m = membershipRepo.findByIdAndOrgId(mid, orgA).orElseThrow();
+        assertThat(m.getConsentStatus()).isEqualTo("unsubscribed");
+        assertThat(m.getConsentBasis()).isNull();
+    }
+
+    /**
+     * audience-12: a mangled keyset cursor is client input. It threw
+     * IllegalArgumentException, which has no handler and fell through to the catch-all as
+     * a 500 — the dashboard could not tell a bad link from a broken server.
+     */
+    @Test
+    void a_malformed_cursor_is_a_400_not_a_500() {
+        assertThatThrownBy(() -> audienceService.listMembers(orgA, "not-a-cursor", 50, null, null))
+                .isInstanceOfSatisfying(ApiException.class, e ->
+                        assertThat(e.status()).isEqualTo(org.springframework.http.HttpStatus.BAD_REQUEST));
+    }
+
+    @Test
+    void erase_pending_member_is_not_sendable() {
+        UUID mid = seedSubscribed(orgA, "erasegate@d.com", "explicit");
+        // Status alone, with consent left intact, must already close the gate.
+        Membership m = membershipRepo.findByIdAndOrgId(mid, orgA).orElseThrow();
+        m.setStatus("erase_pending");
+        m.setEraseAt(Instant.now().plus(30, ChronoUnit.DAYS));
+        membershipRepo.save(m);
+
+        assertThat(sendGateService.evaluate(orgA, List.of(mid)).sendable()).isEmpty();
+    }
+
+    @Test
+    void erase_pending_member_is_not_listed_exported_or_segmented() {
+        UUID mid = seedSubscribed(orgA, "eraselist@d.com", "explicit");
+        Membership m = membershipRepo.findByIdAndOrgId(mid, orgA).orElseThrow();
+        m.setEvents(3);
+        m.setStatus("erase_pending");
+        m.setEraseAt(Instant.now().plus(30, ChronoUnit.DAYS));
+        membershipRepo.save(m);
+
+        assertThat(audienceService.listMembers(orgA, null, 50, null, null).items())
+                .extracting(com.imin.iminapi.audience.dto.MemberDto::membershipId)
+                .doesNotContain(mid.toString());
+        assertThat(audienceService.exportMembersCsv(orgA, null, null))
+                .extracting(com.imin.iminapi.audience.dto.MemberDto::membershipId)
+                .doesNotContain(mid.toString());
+        assertThat(membershipRepo.findRepeats(orgA)).extracting(Membership::getMembershipId)
+                .doesNotContain(mid);
+        assertThat(membershipRepo.findAllByOrgId(orgA)).extracting(Membership::getMembershipId)
+                .doesNotContain(mid);
+        assertThat(membershipRepo.findAllMembershipIdsByOrgId(orgA)).doesNotContain(mid);
+        // The operator can still open the record — DSAR itself has to keep working.
+        assertThat(audienceService.getMember(orgA, mid).membershipId()).isEqualTo(mid.toString());
     }
 
     // ─────────────────────────────────────────────────────────────────────────
