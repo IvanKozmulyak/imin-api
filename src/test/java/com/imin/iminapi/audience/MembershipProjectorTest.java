@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.Mockito.*;
 
@@ -42,6 +43,20 @@ class MembershipProjectorTest {
         ticketRepo = mock(TicketRepository.class);
         eventRepo = mock(EventRepository.class);
         projector = new MembershipProjector(orderRepo, ticketRepo, eventRepo);
+    }
+
+    /**
+     * audience-6: recompute() used to run the dashboard's whole-org group-by-email order
+     * aggregate on every projection and never read the result. It fires on every ticket
+     * issue, every redeem, every CSV import row and every backfill pair.
+     */
+    @Test
+    void recompute_does_not_run_the_whole_org_order_aggregate() {
+        stubOrder();
+
+        projector.recompute(membership(), "buyer@x.com");
+
+        verify(orderRepo, never()).orderCountsByEmailSince(any(), any());
     }
 
     /**

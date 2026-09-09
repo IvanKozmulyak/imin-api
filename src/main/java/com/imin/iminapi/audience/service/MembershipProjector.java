@@ -45,7 +45,6 @@ public class MembershipProjector {
         UUID orgId = m.getOrgId();
 
         // (S1) Derive counts from source Orders
-        List<Object[]> orderRows = orderRepo.orderCountsByEmailSince(orgId, Instant.EPOCH);
         long orderCount = 0;
         long totalSpend = 0;
         Instant lastPurchase = null;
