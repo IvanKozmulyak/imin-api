@@ -724,6 +724,16 @@ imin:
       # session.
       capacity: 10
       window-minutes: 60
+    quote:
+      # POST /api/v1/public/events/{id}/quote, keyed per client IP. Unauthenticated,
+      # three DB reads a call, and it answers with a DIFFERENT reason string for an
+      # unknown vs a disabled vs an exhausted promo code — so unmetered it is a free
+      # promo-code oracle, and organizer-chosen codes are short and guessable. Sized
+      # like `checkout`, the metered sibling that actually spends the code: generous
+      # for a real buyer re-pricing a basket and trying a code or two, tight enough
+      # that enumeration is not free.
+      capacity: 20
+      window-minutes: 5
     public-track:
       # POST /api/v1/public/events/{id}/track, keyed per client IP. Sized for a
       # real buyer's whole session across a few events rather than a single page

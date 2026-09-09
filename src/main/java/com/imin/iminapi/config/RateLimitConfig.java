@@ -113,6 +113,10 @@ public class RateLimitConfig {
     private int aiContentCapacity;
     @Value("${imin.ratelimit.ai-content.window-minutes}")
     private int aiContentWindow;
+    @Value("${imin.ratelimit.quote.capacity}")
+    private int quoteCapacity;
+    @Value("${imin.ratelimit.quote.window-minutes}")
+    private int quoteWindow;
     @Value("${imin.ratelimit.public-track.capacity}")
     private int publicTrackCapacity;
     @Value("${imin.ratelimit.public-track.window-minutes}")
@@ -266,6 +270,12 @@ public class RateLimitConfig {
         // POST /events/ai-content: unauthenticated and billed to imin per call.
         configs.put("ai-content", BucketConfiguration.builder()
                 .addLimit(Bandwidth.simple(aiContentCapacity, Duration.ofMinutes(aiContentWindow)))
+                .build());
+        // Public promo-price preview, keyed per client IP. The response distinguishes
+        // unknown / disabled / exhausted promo codes, so unmetered this is a promo-code
+        // oracle that costs an anonymous caller nothing and us three DB reads per guess.
+        configs.put("quote", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(quoteCapacity, Duration.ofMinutes(quoteWindow)))
                 .build());
         // Public funnel beacon. A full bucket drops the beacon and still answers
         // 204 — see FunnelTrackingController for why the status must not change.

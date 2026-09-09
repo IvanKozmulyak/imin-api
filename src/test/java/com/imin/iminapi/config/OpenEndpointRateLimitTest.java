@@ -7,6 +7,7 @@ import com.imin.iminapi.security.RateLimiter;
 import com.imin.iminapi.service.EventContentService;
 import com.imin.iminapi.service.auth.AuthService;
 import com.imin.iminapi.service.event.FunnelTrackingService;
+import com.imin.iminapi.service.event.QuoteService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -58,6 +59,7 @@ class OpenEndpointRateLimitTest {
     @MockitoBean BuyerCredentialService buyerCredentials;
     @MockitoBean EventContentService eventContent;
     @MockitoBean FunnelTrackingService tracking;
+    @MockitoBean QuoteService quoteService;
 
     @Test
     void verifyEmail_consumes_the_verify_email_bucket_keyed_per_address() throws Exception {
@@ -123,6 +125,32 @@ class OpenEndpointRateLimitTest {
                         .content(om.writeValueAsString(Map.of("prompt", "x".repeat(5000)))))
                 .andExpect(status().isBadRequest());
         verify(eventContent, never()).generate(any());
+    }
+
+    /**
+     * The promo-quote endpoint is unauthenticated and answers with a distinct
+     * reason string per promo-code failure mode, so an unmetered one is a free
+     * promo-code oracle (three DB reads a call). It is the only public POST the
+     * 2026-09 bucket sweep missed.
+     */
+    @Test
+    void quote_consumes_the_quote_bucket_keyed_per_ip() throws Exception {
+        mvc.perform(post("/api/v1/public/events/" + UUID.randomUUID() + "/quote")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"));
+        verify(rateLimiter).consume("quote", LOCAL_IP);
+    }
+
+    /** A full bucket must stop the promo lookup before it reaches the DB. */
+    @Test
+    void quote_over_limit_never_reaches_the_service() throws Exception {
+        doThrow(ApiException.rateLimited()).when(rateLimiter).consume("quote", LOCAL_IP);
+
+        mvc.perform(post("/api/v1/public/events/" + UUID.randomUUID() + "/quote")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isTooManyRequests());
+        verify(quoteService, never()).quote(any(), any());
     }
 
     @Test

@@ -111,7 +111,16 @@ public class PublicEventController {
     @PostMapping("/{id}/quote")
     public ResponseEntity<QuoteResponse> quote(
             @PathVariable UUID id,
-            @RequestBody(required = false) QuoteRequest body) {
+            @RequestBody(required = false) QuoteRequest body,
+            HttpServletRequest http) {
+        // Same throttle as the notify sibling above, and for a sharper reason: this
+        // endpoint answers 200 with a DIFFERENT reason per promo-code failure mode
+        // (unknown / disabled / exhausted), so unmetered it is a promo-code oracle an
+        // anonymous caller can grind for free — three DB reads a guess — before
+        // spending a found code through the metered `checkout` bucket. Keyed on
+        // getRemoteAddr(), which forward-headers-strategy=framework resolves from the
+        // proxy's own X-Forwarded-For handling — never the raw header.
+        rateLimiter.consume("quote", "ip:" + http.getRemoteAddr());
         QuoteResponse response = quoteService.quote(id, body);
         return ResponseEntity.ok(response);
     }
