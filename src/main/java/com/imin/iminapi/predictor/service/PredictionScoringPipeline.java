@@ -7,6 +7,7 @@ import com.imin.iminapi.predictor.model.CapacityBand;
 import com.imin.iminapi.predictor.model.LanguageTier;
 import com.imin.iminapi.predictor.model.PredictionSurface;
 import com.imin.iminapi.predictor.model.PredictorSegmentStatus;
+import com.imin.iminapi.predictor.model.RelaxationLevel;
 import com.imin.iminapi.predictor.repository.PredictorSegmentStatusRepository;
 import com.imin.iminapi.predictor.service.PredictionInputSnapshot.CorpusLine;
 import com.imin.iminapi.predictor.service.Stage0Scorer.Stage0Output;
@@ -194,8 +195,12 @@ public class PredictionScoringPipeline {
      */
     private PredictionResult.Comparables comparables(PredictionInputSnapshot snap) {
         CorpusLine c = snap.comparables();
-        boolean countryWide = !"NONE".equals(c.relaxation());
-        boolean seasonDropped = "DROP_SEASON".equals(c.relaxation());
+        // Parse the rung once and ask the enum: the ladder's meaning belongs in RelaxationLevel,
+        // not in string comparisons that a rename would silently break. Always written from
+        // RelaxationLevel.name(), so valueOf is total.
+        RelaxationLevel relaxation = RelaxationLevel.valueOf(c.relaxation());
+        boolean countryWide = relaxation.isCountryWide();
+        boolean seasonDropped = relaxation.isSeasonDropped();
 
         StringBuilder filters = new StringBuilder();
         appendPart(filters, snap.genreFamily());
