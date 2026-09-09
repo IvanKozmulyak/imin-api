@@ -146,7 +146,7 @@ public class BuyerProfileController {
     @DeleteMapping("/api/v1/buyer/identities/{provider}")
     public ResponseEntity<Void> unlink(@CurrentBuyer BuyerPrincipal buyer,
                                        @PathVariable String provider) {
-        service.unlinkIdentity(buyer.accountId(), provider);
+        service.unlinkIdentity(buyer.accountId(), buyer.sessionId(), provider);
         return ResponseEntity.noContent().header(HttpHeaders.CACHE_CONTROL, NO_STORE).build();
     }
 }

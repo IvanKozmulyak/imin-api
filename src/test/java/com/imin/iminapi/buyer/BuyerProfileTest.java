@@ -373,6 +373,42 @@ class BuyerProfileTest {
                 .andExpect(status().isNoContent());
     }
 
+    /**
+     * Unlinking is one of §2.2's five mandatory revocation events, and it was
+     * the only implemented one that skipped it — so "remove this sign-in
+     * method" removed the method and left every session minted through it alive
+     * for the remaining 180 days. The acting session is spared, as on the
+     * password change: a settings toggle must not sign the buyer out of the tab
+     * they used.
+     */
+    @Test
+    void unlinkingAProviderRevokesOtherSessionsButNotThisOne() throws Exception {
+        var info = new OAuthUserInfo("google", "google-sub-" + UUID.randomUUID(),
+                address(), true, "Ada", "Lovelace", "Ada Lovelace");
+        String acting = google.resolve(info, "JUnit/1.0").session().rawToken();
+
+        // A password first, or the unlink is refused as the last credential.
+        mvc.perform(post("/api/v1/buyer/me/password")
+                        .header(HttpHeaders.ORIGIN, ORIGIN)
+                        .cookie(cookie(acting))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"newPassword\":\"" + NEW_PASSWORD + "\"}"))
+                .andExpect(status().isNoContent());
+
+        // Minted AFTER the password change, so only the unlink can kill it.
+        String other = google.resolve(info, "JUnit/1.0").session().rawToken();
+
+        mvc.perform(delete("/api/v1/buyer/identities/google")
+                        .header(HttpHeaders.ORIGIN, ORIGIN)
+                        .cookie(cookie(acting)))
+                .andExpect(status().isNoContent());
+
+        mvc.perform(get("/api/v1/buyer/me").cookie(cookie(other)))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/v1/buyer/me").cookie(cookie(acting)))
+                .andExpect(status().isOk());
+    }
+
     @Test
     void identitiesListsTheProviderAndNeverTheProviderUserId() throws Exception {
         String googleCookie = googleOnlySession();
