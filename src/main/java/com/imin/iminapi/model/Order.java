@@ -53,11 +53,18 @@ public class Order {
      * writer will be added one day and will not remember.
      *
      * <p>The one gap a callback cannot cover is a bulk JPQL / native
-     * {@code UPDATE}, which bypasses callbacks entirely.
-     * {@link com.imin.iminapi.repository.OrderRepository} has no
-     * {@code @Modifying} query at all, and nothing else in the tree writes
-     * {@code orders.email}; anything that starts to must set this column in the
-     * same statement.
+     * {@code UPDATE}, which bypasses callbacks entirely. So the invariant is:
+     * <b>no bulk update writes {@code orders.email} without setting this column
+     * in the same statement</b>, and nothing outside JPA writes it either.
+     * {@code OrderEmailNormalizedInvariantTest} asserts exactly that against
+     * {@link com.imin.iminapi.repository.OrderRepository}'s source.
+     *
+     * <p>This used to be stated as "OrderRepository has no {@code @Modifying}
+     * query at all". That stopped being true at V87, which added
+     * {@code stampReminder24h} and {@code stampReminder3h} — neither touches
+     * {@code email}, so the guarantee held, but the sentence a reader would have
+     * relied on to believe it was already false. The property is what to check,
+     * not the count.
      *
      * <p>Nullable in the schema so V86 could add the column to a live table
      * without a rewrite, and because pre-V86 rows are backfilled by the
