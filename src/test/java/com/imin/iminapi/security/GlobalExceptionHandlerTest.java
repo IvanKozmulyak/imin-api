@@ -54,6 +54,12 @@ class GlobalExceptionHandlerTest {
         @PostMapping(value = "/validate", consumes = MediaType.APPLICATION_JSON_VALUE)
         String validate(@org.springframework.web.bind.annotation.RequestBody @jakarta.validation.Valid Body b) { return "ok"; }
 
+        @PostMapping("/upload")
+        String upload(@RequestPart("file") org.springframework.web.multipart.MultipartFile file) { return "ok"; }
+
+        @GetMapping("/param")
+        String param(@RequestParam String q) { return q; }
+
         record Body(@jakarta.validation.constraints.NotBlank String name) {}
     }
 
@@ -83,5 +89,49 @@ class GlobalExceptionHandlerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
                 .andExpect(jsonPath("$.error.fields.name").exists());
+    }
+
+    // ---- The four framework MVC exceptions the Throwable catch-all used to eat ----
+    //
+    // This advice is @Order(HIGHEST_PRECEDENCE) with an @ExceptionHandler(Throwable.class),
+    // so ExceptionHandlerExceptionResolver matches it before Spring's own
+    // DefaultHandlerExceptionResolver ever runs. None of the four extends
+    // ResponseStatusException, so they all landed on handleAny: 500 INTERNAL plus a
+    // spurious log.error("Unhandled exception") for what is an ordinary client mistake.
+
+    @Test
+    @WithMockUser
+    void wrong_verb_returns_405_in_the_envelope() throws Exception {
+        mvc.perform(get("/__test/validate").with(csrf()))
+                .andExpect(status().isMethodNotAllowed())
+                .andExpect(jsonPath("$.error.code").value("INVALID_REQUEST"));
+    }
+
+    @Test
+    @WithMockUser
+    void wrong_content_type_returns_415_in_the_envelope() throws Exception {
+        mvc.perform(post("/__test/validate").with(csrf())
+                        .contentType(MediaType.TEXT_PLAIN)
+                        .content("name=ada"))
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(jsonPath("$.error.code").value("INVALID_REQUEST"));
+    }
+
+    @Test
+    @WithMockUser
+    void missing_multipart_part_returns_400_naming_the_part() throws Exception {
+        mvc.perform(multipart("/__test/upload").with(csrf()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
+                .andExpect(jsonPath("$.error.fields.file").exists());
+    }
+
+    @Test
+    @WithMockUser
+    void missing_required_query_param_returns_400_naming_the_param() throws Exception {
+        mvc.perform(get("/__test/param").with(csrf()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
+                .andExpect(jsonPath("$.error.fields.q").exists());
     }
 }
