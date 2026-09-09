@@ -178,4 +178,34 @@ class EventMediaControllerTest {
         mvc.perform(delete("/api/v1/events/" + id + "/media/poster"))
                 .andExpect(status().isNoContent());
     }
+    /**
+     * api-13: spring.servlet.multipart.max-file-size is 60MB because the VIDEO kind needs it,
+     * but a POSTER is capped at 5 MB — and the cap was only consulted inside
+     * MediaUploadService.validate, i.e. AFTER {@code file.getBytes()} had already copied the
+     * whole part onto the heap. A 60 MB poster upload therefore allocated 60 MB per concurrent
+     * request to be told it was 12x over the limit. The response was always correct; what this
+     * pins is the ORDER, which is the only thing that was wrong.
+     */
+    @Test
+    void oversized_poster_is_rejected_before_the_part_is_copied_onto_the_heap() {
+        MediaUploadService svc = org.mockito.Mockito.mock(MediaUploadService.class);
+        EventMediaController controller = new EventMediaController(svc);
+        AuthPrincipal p = new AuthPrincipal(USER, ORG, UserRole.OWNER, UUID.randomUUID());
+
+        // Declares 60 MB but refuses to materialise: reaching getBytes() is the defect.
+        MockMultipartFile huge = new MockMultipartFile("file", "big.png", "image/png", new byte[0]) {
+            @Override public long getSize() { return 60L * 1024 * 1024; }
+            @Override public byte[] getBytes() {
+                throw new AssertionError("getBytes() ran before the per-kind size limit");
+            }
+        };
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                        () -> controller.upload(p, eventId, "poster", huge, null, null))
+                .isInstanceOf(com.imin.iminapi.security.ApiException.class)
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.FIELD_INVALID);
+
+        org.mockito.Mockito.verifyNoInteractions(svc);
+    }
+
 }

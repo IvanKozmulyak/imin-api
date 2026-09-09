@@ -46,6 +46,11 @@ public class EventMediaController {
                                       @RequestParam(name = "rightsAttested", required = false)
                                       Boolean rightsAttested) throws IOException {
         MediaKind k = kindOr404(kind);
+        // Before getBytes(), which copies the whole part onto the heap. The multipart ceiling is
+        // 60MB for the VIDEO kind, so without this a 5 MB-capped POSTER was materialised at up to
+        // 12x its own limit per concurrent request just to be rejected. Same limits, same error —
+        // MediaUploadService.validate still re-applies them on the loaded bytes.
+        MediaUploadService.checkSizeLimit(k, file.getSize());
         return uploadService.upload(p, eventId, k, file.getBytes(),
                 file.getContentType() == null ? "application/octet-stream" : file.getContentType(),
                 file.getOriginalFilename() == null ? "upload.bin" : file.getOriginalFilename(),

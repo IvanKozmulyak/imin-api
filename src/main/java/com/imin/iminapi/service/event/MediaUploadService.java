@@ -188,15 +188,34 @@ public class MediaUploadService {
         return e;
     }
 
-    private static void validate(MediaKind kind, byte[] bytes, String contentType) {
-        long size = bytes.length;
+    /**
+     * The per-kind size ceiling, split out so the controller can apply it to
+     * {@code MultipartFile.getSize()} BEFORE {@code getBytes()} copies the part onto the heap.
+     *
+     * <p>{@code spring.servlet.multipart.max-file-size} is 60MB because the VIDEO kind needs it,
+     * so a POSTER — capped here at 5 MB — used to be fully materialised at up to 12x its own
+     * limit, per concurrent request, only to be rejected. Same limits, consulted first;
+     * {@link #validate} still calls this so the rule has one definition and the magic-byte and
+     * dimension checks stay on the loaded bytes where they have to be.
+     */
+    public static void checkSizeLimit(MediaKind kind, long size) {
         switch (kind) {
             case POSTER, DJ_PHOTO -> {
                 if (size > 5 * MB) throw fieldErr("file", "must be ≤ 5 MB");
-                if (!IMAGE_TYPES.contains(contentType)) throw fieldErr("file", "must be JPG or PNG");
             }
             case VIDEO -> {
                 if (size > 50 * MB) throw fieldErr("file", "must be ≤ 50 MB");
+            }
+        }
+    }
+
+    private static void validate(MediaKind kind, byte[] bytes, String contentType) {
+        checkSizeLimit(kind, bytes.length);
+        switch (kind) {
+            case POSTER, DJ_PHOTO -> {
+                if (!IMAGE_TYPES.contains(contentType)) throw fieldErr("file", "must be JPG or PNG");
+            }
+            case VIDEO -> {
                 if (!VIDEO_TYPES.contains(contentType)) throw fieldErr("file", "must be MP4");
             }
         }
