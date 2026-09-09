@@ -206,6 +206,14 @@ public class OAuthAccountService {
     }
 
     private String issueSession(User user) {
+        // A removed team member never gets a new session. Removal is a soft delete
+        // (V118 users.disabled_at) because three RESTRICT FKs make the hard delete
+        // impossible for anyone who has created an event or decided a refund; the
+        // row surviving must not mean the account still works.
+        if (user.getDisabledAt() != null) {
+            throw new ApiException(HttpStatus.UNAUTHORIZED, ErrorCode.AUTH_INVALID_CREDENTIALS,
+                    "Invalid credentials");
+        }
         TokenService.IssuedToken issued = tokens.issue();
         AuthSession s = new AuthSession();
         s.setUserId(user.getId());

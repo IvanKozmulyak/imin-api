@@ -72,6 +72,15 @@ public class User {
     @Column(name = "terms_version", length = 32)
     private String termsVersion;
 
+    /**
+     * Set when the account is removed from its org (V118). Non-null means the
+     * account must not authenticate and must not appear in the team list; the
+     * row itself survives so {@code events.created_by} and
+     * {@code refunds.initiated_by_user_id} keep resolving. Null is active.
+     */
+    @Column(name = "disabled_at")
+    private Instant disabledAt;
+
     public void setEmail(String email) {
         this.email = email;
         this.emailLower = email == null ? null : email.toLowerCase();
@@ -83,5 +92,6 @@ public class User {
         createdAt = createdAt == null ? Times.nowMicros() : createdAt.truncatedTo(ChronoUnit.MICROS);
         if (lastActiveAt != null) lastActiveAt = lastActiveAt.truncatedTo(ChronoUnit.MICROS);
         if (verifiedAt != null) verifiedAt = verifiedAt.truncatedTo(ChronoUnit.MICROS);
+        if (disabledAt != null) disabledAt = disabledAt.truncatedTo(ChronoUnit.MICROS);
     }
 }

@@ -137,6 +137,11 @@ public class GateAuthService {
     @Transactional
     public void rotate(AuthPrincipal principal, UUID orgId, String newPassword) {
         requireSameOrg(principal, orgId);
+        // OWNER/ADMIN only: the same call that changes the door password also drops
+        // every live gate session, so a MEMBER could knock every scanner offline
+        // mid-event. Cross-org still answers 404 first, above.
+        com.imin.iminapi.security.RoleGuard.requireAtLeast(
+                principal, com.imin.iminapi.model.UserRole.ADMIN, "rotate the gate credential");
         GateCredential c = credentials.findByOrgId(orgId).orElseGet(GateCredential::new);
         c.setOrgId(orgId);
         c.setPasswordHash(hasher.hash(newPassword));

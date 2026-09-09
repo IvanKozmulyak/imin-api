@@ -118,6 +118,13 @@ public class BearerTokenAuthFilter extends OncePerRequestFilter {
         }
         Optional<User> user = users.findById(s.getUserId());
         if (user.isEmpty()) return false;
+        // A removed team member keeps their users row (V118 soft delete — three
+        // RESTRICT FKs make the hard delete impossible once they have created an
+        // event or decided a refund) and may still hold an un-expired token, so
+        // the row alone is no longer proof of access. Treated exactly like an
+        // unknown session: the request continues unauthenticated and
+        // SecurityConfig returns the canonical AUTH_MISSING envelope.
+        if (user.get().getDisabledAt() != null) return false;
         AuthPrincipal principal = new AuthPrincipal(
                 user.get().getId(), user.get().getOrgId(), user.get().getRole(), s.getId());
         populate(principal);

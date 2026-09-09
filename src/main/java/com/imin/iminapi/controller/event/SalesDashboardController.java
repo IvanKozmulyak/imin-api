@@ -49,6 +49,10 @@ public class SalesDashboardController {
      */
     @GetMapping(value = "/{id}/attendees/export", produces = "text/csv")
     public ResponseEntity<String> exportAttendees(@CurrentUser AuthPrincipal p, @PathVariable UUID id) {
+        // OWNER/ADMIN only. Given what the javadoc above says this endpoint hands
+        // over, "any authenticated team member" was the wrong audience for it.
+        com.imin.iminapi.security.RoleGuard.requireAtLeast(
+                p, com.imin.iminapi.model.UserRole.ADMIN, "export the attendee list");
         String csv = attendeeExport.toCsv(p, id);
         audit.record(p, AuditActions.ATTENDEES_EXPORTED, "event", id,
                 "Attendee CSV exported (" + csvRowCount(csv) + " row(s))");

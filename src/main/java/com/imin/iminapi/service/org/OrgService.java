@@ -11,6 +11,7 @@ import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.security.RoleGuard;
 import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.service.audit.AuditLogger;
 import com.imin.iminapi.settlement.SettlementRepository;
@@ -53,8 +54,14 @@ public class OrgService {
         return OrganizationDto.from(o);
     }
 
+    /**
+     * Edits the org profile. OWNER/ADMIN only: {@code contactEmail} is where org
+     * notifications land and {@code country} is the Stripe/AML jurisdiction, so
+     * this is a settings surface, not event content.
+     */
     @Transactional
     public OrganizationDto patch(AuthPrincipal p, String ifMatchHeader, OrgPatchRequest body) {
+        RoleGuard.requireAtLeast(p, UserRole.ADMIN, "edit organization settings");
         Organization o = orgs.findById(p.orgId()).orElseThrow(() -> ApiException.notFound("Organization"));
         ifMatch.requireMatch(ifMatchHeader, o.getUpdatedAt());
         if (body.name() != null) o.setName(body.name());

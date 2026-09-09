@@ -28,4 +28,29 @@ public interface UserRepository extends JpaRepository<User, UUID> {
      */
     @Query(value = "select id from users where id = :id for update", nativeQuery = true)
     Optional<UUID> lockForUpdate(@Param("id") UUID id);
+
+    /** The team list — removed accounts (V118) stay in the table but leave the org's roster. */
+    List<User> findByOrgIdAndDisabledAtIsNullOrderByCreatedAtAsc(UUID orgId);
+
+    /**
+     * Rows that would make a hard delete of this user raise a 23503.
+     *
+     * <p>Exactly the three FKs on {@code users} that carry no {@code ON DELETE}
+     * clause: {@code events.created_by} (V6:31),
+     * {@code refunds.initiated_by_user_id} (V28:33) and
+     * {@code refund_requests.decided_by_user_id} (V30:17). Everything else
+     * pointing at {@code users} cascades. Native and count-based rather than
+     * three JPQL {@code exists} calls so it stays one round trip and does not
+     * need a repository method in packages this query has no other business in.
+     */
+    @Query(value = """
+            SELECT COUNT(*) FROM (
+                SELECT 1 FROM events           WHERE created_by           = :userId
+                UNION ALL
+                SELECT 1 FROM refunds          WHERE initiated_by_user_id = :userId
+                UNION ALL
+                SELECT 1 FROM refund_requests  WHERE decided_by_user_id   = :userId
+            ) referencing
+            """, nativeQuery = true)
+    long countRetainedReferences(@Param("userId") UUID userId);
 }
