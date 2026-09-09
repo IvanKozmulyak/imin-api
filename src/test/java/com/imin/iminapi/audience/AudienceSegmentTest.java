@@ -627,6 +627,35 @@ class AudienceSegmentTest {
                 .extracting(Membership::getMembershipId).contains(anyone.getMembershipId());
     }
 
+    /** liveCount is the number the Audience tab shows; it must agree with resolution. */
+    @Test
+    void live_count_agrees_with_resolved_size_for_every_segment_kind() {
+        segmentService.ensurePrebuiltSegments(orgA);
+
+        Membership repeat = seedMembership(orgA, "lc-repeat@s.com");
+        repeat.setEvents(3);
+        repeat.setSpendMinor(30000);
+        membershipRepo.save(repeat);
+        Membership single = seedMembership(orgA, "lc-single@s.com");
+        single.setEvents(1);
+        membershipRepo.save(single);
+
+        Segment prebuiltRepeat = findPrebuilt(orgA, "Repeat");
+        Segment custom = segmentService.createSegment(orgA, "Three plus", "dynamic",
+                "[{\"field\":\"events\",\"operator\":\">=\",\"value\":\"3\"}]", principalA);
+        Segment everyone = segmentService.createSegment(orgA, "All of them", "dynamic", null, principalA);
+        segmentService.snapshot(orgA, custom.getId(), principalA);
+        Segment frozen = segmentRepo.findByIdAndOrgId(custom.getId(), orgA).orElseThrow();
+
+        for (Segment seg : List.of(prebuiltRepeat, everyone, frozen)) {
+            assertThat(segmentService.liveCount(orgA, seg))
+                    .as("liveCount for %s", seg.getName())
+                    .isEqualTo(segmentService.resolveMembers(orgA, seg).size());
+        }
+        assertThat(segmentService.liveCount(orgA, prebuiltRepeat)).isEqualTo(1);
+        assertThat(segmentService.liveCount(orgA, everyone)).isEqualTo(2);
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Ensure 7 prebuilt segments are provisioned exactly once
     // ─────────────────────────────────────────────────────────────────────────

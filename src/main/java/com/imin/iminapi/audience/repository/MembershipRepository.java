@@ -170,6 +170,47 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
     List<Membership> findByIdsAndOrgId(@Param("ids") Collection<UUID> ids,
                                         @Param("orgId") UUID orgId);
 
+    // ---- segment live counts (the Audience tab asks for a number, not a page of people) ----
+
+    @Query("select count(m) from Membership m where m.orgId = :orgId and m.status <> 'erase_pending' and m.events >= 2")
+    long countRepeats(@Param("orgId") UUID orgId);
+
+    @Query("select count(m) from Membership m where m.orgId = :orgId and m.status <> 'erase_pending' and m.spendMinor >= 20000 and m.events >= 4")
+    long countVips(@Param("orgId") UUID orgId);
+
+    @Query("select count(m) from Membership m where m.orgId = :orgId and m.status <> 'erase_pending' and m.recencyDays >= 90 and m.consentStatus = 'subscribed'")
+    long countLapsed(@Param("orgId") UUID orgId);
+
+    @Query("select count(m) from Membership m where m.orgId = :orgId and m.status <> 'erase_pending' and m.events = 1")
+    long countFirstTimers(@Param("orgId") UUID orgId);
+
+    @Query("select count(m) from Membership m where m.orgId = :orgId and m.status <> 'erase_pending' and m.nps >= 9")
+    long countPromoters(@Param("orgId") UUID orgId);
+
+    @Query("select count(m) from Membership m where m.orgId = :orgId and m.status <> 'erase_pending' and m.noShow > 0")
+    long countBoughtNoShowed(@Param("orgId") UUID orgId);
+
+    @Query("select count(m) from Membership m where m.orgId = :orgId and m.status <> 'erase_pending' and m.recencyDays <= 30 and m.events <= 1")
+    long countNewest30d(@Param("orgId") UUID orgId);
+
+    @Query("select count(m) from Membership m where m.membershipId in :ids and m.orgId = :orgId and m.status <> 'erase_pending'")
+    long countByIdsAndOrgId(@Param("ids") Collection<UUID> ids, @Param("orgId") UUID orgId);
+
+    /**
+     * Only the columns the segment rule engine reads. Custom (JSON-rule) segments have no
+     * SQL predicate to count with, so this is the cheapest honest answer: one narrow row
+     * per member instead of a fully hydrated entity graph per member per segment.
+     */
+    @Query("""
+            select new com.imin.iminapi.audience.service.SegmentRuleRow(
+                       m.events, m.spendMinor, m.recencyDays, m.noShow,
+                       m.nps, m.lifecycle, m.consentStatus, m.consentBasis)
+              from Membership m
+             where m.orgId = :orgId
+               and m.status <> 'erase_pending'
+            """)
+    List<com.imin.iminapi.audience.service.SegmentRuleRow> findRuleRowsByOrgId(@Param("orgId") UUID orgId);
+
     // ---- metrics ----
 
     @Query("select count(m) from Membership m where m.orgId = :orgId")

@@ -233,17 +233,19 @@ public class SegmentService {
         List<Map<String, String>> rules = parseRules(rulesJson);
         if (rules == null) return List.of();
         if (rules.isEmpty()) return all;
-        return all.stream().filter(m -> rulesMatch(m, rules)).collect(Collectors.toList());
+        return all.stream()
+                .filter(m -> rulesMatch(SegmentRuleRow.of(m), rules))
+                .collect(Collectors.toList());
     }
 
     /**
-     * Parsed rules: an EMPTY list for "no rules" (matches everyone, the documented meaning
+     * Parsed rules, an EMPTY list for "no rules" (matches everyone, the documented meaning
      * of a blank rules_json) and {@code null} for a rule set the engine could not read.
      *
-     * <p>Those two must not collapse into one another. An unreadable rule set used to fall
-     * back to "the entire audience" — the wrong direction by a mile for a list that feeds
-     * RecipientMaterializer. validateRulesJson guards the create path, but rows written
-     * before it, a truncated TEXT value or any future writer all land here.
+     * <p>Those last two must not collapse into one another. An unreadable rule set used to
+     * fall back to "the entire audience" — the wrong direction by a mile for a list that
+     * feeds RecipientMaterializer. validateRulesJson guards the create path, but rows
+     * written before it, a truncated TEXT value or any future writer all land here.
      */
     private List<Map<String, String>> parseRules(String rulesJson) {
         if (rulesJson == null || rulesJson.isBlank()) return List.of();
@@ -256,25 +258,25 @@ public class SegmentService {
         }
     }
 
-    private boolean rulesMatch(Membership m, List<Map<String, String>> rules) {
+    private boolean rulesMatch(SegmentRuleRow row, List<Map<String, String>> rules) {
         for (Map<String, String> rule : rules) {
             String field = rule.get("field");
             String op = rule.get("operator");
             String val = rule.get("value");
-            if (!matchRule(m, field, op, val)) return false;
+            if (!matchRule(row, field, op, val)) return false;
         }
         return true;
     }
 
-    private boolean matchRule(Membership m, String field, String op, String val) {
+    private boolean matchRule(SegmentRuleRow row, String field, String op, String val) {
         try {
             long v = Long.parseLong(val);
             long actual = switch (field) {
-                case "events"      -> m.getEvents();
-                case "spend_minor" -> m.getSpendMinor();
-                case "recency"     -> m.getRecencyDays() == null ? Long.MAX_VALUE : m.getRecencyDays();
-                case "no_show"     -> m.getNoShow();
-                case "nps"         -> m.getNps() == null ? Long.MIN_VALUE : m.getNps();
+                case "events"      -> row.events();
+                case "spend_minor" -> row.spendMinor();
+                case "recency"     -> row.recencyDays() == null ? Long.MAX_VALUE : row.recencyDays();
+                case "no_show"     -> row.noShow();
+                case "nps"         -> row.nps() == null ? Long.MIN_VALUE : row.nps();
                 default            -> 0;
             };
             return switch (op) {
@@ -288,13 +290,47 @@ public class SegmentService {
         } catch (NumberFormatException e) {
             // String comparison for non-numeric fields
             String actual = switch (field) {
-                case "lifecycle"       -> m.getLifecycle();
-                case "consent_status"  -> m.getConsentStatus();
-                case "consent_basis"   -> m.getConsentBasis();
+                case "lifecycle"       -> row.lifecycle();
+                case "consent_status"  -> row.consentStatus();
+                case "consent_basis"   -> row.consentBasis();
                 default                -> "";
             };
             return val != null && val.equals(actual);
         }
+    }
+
+    /**
+     * How many members a segment currently holds, WITHOUT materializing them.
+     *
+     * <p>{@code GET /audience/segments} asks this of every segment on every call. It used
+     * to go through resolveMembers, so each custom segment loaded the org's entire
+     * memberships table as entities — N segments, N full copies, per dashboard load.
+     * Prebuilts now count with their indexed query, static segments count their snapshot
+     * ids, and custom segments run the rule engine over a narrow projection.
+     */
+    @Transactional(readOnly = true)
+    public int liveCount(UUID orgId, Segment segment) {
+        if ("static".equals(segment.getKind()) && segment.getSnapshotIds() != null) {
+            List<UUID> ids = parseSnapshotIds(segment.getSnapshotIds());
+            return ids.isEmpty() ? 0 : (int) membershipRepo.countByIdsAndOrgId(ids, orgId);
+        }
+        PrebuiltSegment prebuilt = PrebuiltSegment.byKey(segment.getPrebuiltKey());
+        if (prebuilt != null) {
+            return (int) switch (prebuilt) {
+                case REPEAT           -> membershipRepo.countRepeats(orgId);
+                case VIP              -> membershipRepo.countVips(orgId);
+                case LAPSED           -> membershipRepo.countLapsed(orgId);
+                case FIRST_TIMERS     -> membershipRepo.countFirstTimers(orgId);
+                case PROMOTERS        -> membershipRepo.countPromoters(orgId);
+                case BOUGHT_NO_SHOWED -> membershipRepo.countBoughtNoShowed(orgId);
+                case NEWEST_30D       -> membershipRepo.countNewest30d(orgId);
+            };
+        }
+        List<SegmentRuleRow> rows = membershipRepo.findRuleRowsByOrgId(orgId);
+        List<Map<String, String>> rules = parseRules(segment.getRulesJson());
+        if (rules == null) return 0;               // unreadable rules match nobody
+        if (rules.isEmpty()) return rows.size();   // no rules means everyone
+        return (int) rows.stream().filter(r -> rulesMatch(r, rules)).count();
     }
 
     private List<UUID> parseSnapshotIds(String json) {

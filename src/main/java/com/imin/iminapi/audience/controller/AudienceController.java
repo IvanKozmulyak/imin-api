@@ -107,10 +107,8 @@ public class AudienceController {
         // (see SegmentService.ensurePrebuiltSegments).
         segmentService.ensurePrebuiltSegments(principal.orgId());
         return segmentService.listSegments(principal.orgId()).stream()
-                .map(s -> {
-                    int liveCount = segmentService.resolveMembers(principal.orgId(), s).size();
-                    return SegmentDto.from(s, liveCount);
-                }).toList();
+                .map(s -> SegmentDto.from(s, segmentService.liveCount(principal.orgId(), s)))
+                .toList();
     }
 
     @PostMapping("/segments")
@@ -135,7 +133,7 @@ public class AudienceController {
     public SegmentDto snapshot(@AuthenticationPrincipal AuthPrincipal principal,
                                 @PathVariable UUID id) {
         Segment s = segmentService.snapshot(principal.orgId(), id, principal);
-        return SegmentDto.from(s, segmentService.resolveMembers(principal.orgId(), s).size());
+        return SegmentDto.from(s, segmentService.liveCount(principal.orgId(), s));
     }
 
     /** CSV snapshot export: GET /segments/{id}/snapshot — returns the segment's resolved members as CSV. */
