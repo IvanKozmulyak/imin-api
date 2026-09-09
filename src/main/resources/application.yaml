@@ -732,6 +732,21 @@ imin:
       # exists, so it must not turn into a 429.
       capacity: 120
       window-minutes: 5
+    buyer-verify-email:
+      # POST /api/v1/buyer/auth/verify-email, keyed per client IP. The endpoint
+      # had no bucket: the DB-counted lockout in BuyerEmailVerificationService
+      # was said to be the control, but that counter was keyed on the address in
+      # the body, so it was something a stranger could spend on the owner's
+      # behalf. The counter is now keyed on (address, IP) and this bounds the
+      # caller who rotates addresses instead. Per-IP and not per-email for the
+      # same reason buyer-signup is.
+      #
+      # Roomier than the organizer `verify-email` because the key is an IP, not
+      # an address: a household or an office behind one NAT must be able to
+      # finish signing up together, while 30 in 15 minutes is nothing against a
+      # six-digit code that only allows five guesses before it is burnt.
+      capacity: 30
+      window-minutes: 15
   push:
     # Outbound push to the native fan app, via Expo's push service.
     # Dark by default: until the app ships there are no tokens to send to, and a

@@ -118,6 +118,11 @@ public class RateLimitConfig {
     @Value("${imin.ratelimit.public-track.window-minutes}")
     private int publicTrackWindow;
 
+    @Value("${imin.ratelimit.buyer-verify-email.capacity}")
+    private int buyerVerifyEmailCapacity;
+    @Value("${imin.ratelimit.buyer-verify-email.window-minutes}")
+    private int buyerVerifyEmailWindow;
+
     @Bean
     public RedisClient redisClient(@Value("${spring.data.redis.url}") String url) {
         return RedisClient.create(url);
@@ -271,6 +276,15 @@ public class RateLimitConfig {
         // 204 — see FunnelTrackingController for why the status must not change.
         configs.put("public-track", BucketConfiguration.builder()
                 .addLimit(Bandwidth.simple(publicTrackCapacity, Duration.ofMinutes(publicTrackWindow)))
+                .build());
+        // Buyer verify-email, keyed per client IP. It had no bucket at all: the
+        // DB-counted lockout was the stated control, and that counter was keyed
+        // on the address in the request body — a stranger's failures locked the
+        // owner out. The counter now keys on (address, IP); this is what bounds
+        // a caller who rotates addresses.
+        configs.put("buyer-verify-email", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(buyerVerifyEmailCapacity,
+                        Duration.ofMinutes(buyerVerifyEmailWindow)))
                 .build());
 
         return (bucketName, key) -> {

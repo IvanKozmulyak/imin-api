@@ -145,11 +145,15 @@ public class BuyerCredentialService {
      * <p>The code row carries the account that asked for it, so a code issued to
      * account A can never verify an address row on account B — which matters
      * because several accounts may hold unverified claims on one address.
+     *
+     * <p>{@code clientIp} is passed down because the failure counter is keyed on
+     * the caller as well as the address: see
+     * {@link BuyerEmailVerificationService}.
      */
     @Transactional
-    public SignedIn verifyEmail(String rawEmail, String code, String userAgent) {
+    public SignedIn verifyEmail(String rawEmail, String code, String userAgent, String clientIp) {
         String normalized = EmailNormalizer.normalize(rawEmail);
-        BuyerEmailVerificationCode consumed = verification.consume(normalized, code);
+        BuyerEmailVerificationCode consumed = verification.consume(normalized, code, clientIp);
 
         BuyerAccount account = accounts.findById(consumed.getBuyerAccountId())
                 .orElseThrow(BuyerCredentialService::invalidCode);

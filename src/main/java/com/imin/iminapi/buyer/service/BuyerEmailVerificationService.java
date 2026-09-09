@@ -30,6 +30,14 @@ import java.util.UUID;
  * issued</b>, which is the property a per-code attempt cap alone does not give
  * you: without it an attacker just asks for another code every five guesses.
  *
+ * <p>The counter is keyed on <b>the address AND the caller's IP</b> (V121), not
+ * on the address alone. Keyed on the address, the budget was the victim's:
+ * anyone could post ten wrong codes at {@code victim@x.com} and hold its owner
+ * out of verifying for the window, hourly, for free — which is the exact
+ * reasoning {@code BuyerAuthController.signup} refuses address keying for. The
+ * per-IP {@code buyer-verify-email} bucket bounds an attacker who rotates
+ * addresses; the per-code cap of five bounds guessing at any one code.
+ *
  * <h2>Two counters, on purpose</h2>
  *
  * <ul>
@@ -107,9 +115,11 @@ public class BuyerEmailVerificationService {
      * the later account. Matching by HMAC binds the code to the account that
      * asked for it, which is the account the returned row names.
      *
-     * <p>Every failure path records an attempt row first, including "no code
-     * outstanding" and "code already burnt" — otherwise an attacker could probe
-     * for free by guessing against expired codes. A wrong guess burns one
+     * <p>A failure against a live code records an attempt row, including when
+     * every live code is already burnt — otherwise an attacker could probe for
+     * free by guessing against exhausted codes. An address holding <b>no</b>
+     * live code records nothing: there was nothing to guess at, and counting it
+     * was what let a stranger lock an address out pre-emptively. A wrong guess burns one
      * attempt on the newest code that still has budget: the per-code counter has
      * to cost something, and the caller cannot be told which of several codes
      * they were guessing at without the response becoming an oracle.
@@ -119,13 +129,20 @@ public class BuyerEmailVerificationService {
      *                      indistinguishable response, on purpose.
      */
     @Transactional
-    public BuyerEmailVerificationCode consume(String emailNormalized, String submittedCode) {
+    public BuyerEmailVerificationCode consume(String emailNormalized, String submittedCode, String clientIp) {
         Instant now = Instant.now();
-        requireNotLockedOut(emailNormalized, now);
+        requireNotLockedOut(emailNormalized, clientIp, now);
 
         List<BuyerEmailVerificationCode> live = codes
                 .findByEmailNormalizedAndConsumedAtIsNullAndExpiresAtAfterOrderByCreatedAtDesc(
                         emailNormalized, now);
+
+        // Nothing outstanding is not a guess, so it does not go on the counter.
+        // Recording it let an attacker lock an address out BEFORE its owner had
+        // ever asked for a code — the one case where the lockout hurt only the
+        // person it exists to protect. A code that exists and is burnt still
+        // counts: that is somebody guessing at a real code.
+        if (live.isEmpty()) throw invalidCode();
 
         BuyerEmailVerificationCode matched = null;
         BuyerEmailVerificationCode chargeable = null;
@@ -143,13 +160,13 @@ public class BuyerEmailVerificationService {
             // the CHECK constraint being violated by a concurrent burst, and the
             // configured cap is already enforced by the loop above.
             if (chargeable != null) codes.incrementAttempts(chargeable.getId(), DB_ATTEMPT_CEILING);
-            attempts.record(emailNormalized, false);
+            attempts.record(emailNormalized, clientIp, false);
             throw invalidCode();
         }
 
         matched.setConsumedAt(now);
         codes.save(matched);
-        attempts.record(emailNormalized, true);
+        attempts.record(emailNormalized, clientIp, true);
         return matched;
     }
 
@@ -159,11 +176,13 @@ public class BuyerEmailVerificationService {
      * <p>Not a neutral {@code INVALID_CODE}: the person here has already proved
      * they are typing into the right box, and "too many attempts, try later" is
      * information they need. It leaks nothing an attacker does not already know
-     * — they made the failures.
+     * — they made the failures, from this address, which is why the count is
+     * keyed on the caller as well as on the address.
      */
-    private void requireNotLockedOut(String emailNormalized, Instant now) {
+    private void requireNotLockedOut(String emailNormalized, String clientIp, Instant now) {
         Instant since = now.minus(Duration.ofMinutes(props.getLockoutWindowMinutes()));
-        if (attempts.countFailuresSince(emailNormalized, since) >= props.getLockoutFailureThreshold()) {
+        if (attempts.countFailuresSince(emailNormalized, clientIp, since)
+                >= props.getLockoutFailureThreshold()) {
             throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, ErrorCode.RATE_LIMITED,
                     "Too many verification attempts for this address. Try again later.");
         }

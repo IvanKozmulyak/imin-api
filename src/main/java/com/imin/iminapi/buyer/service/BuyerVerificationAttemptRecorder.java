@@ -23,6 +23,15 @@ import java.time.Instant;
 @Service
 public class BuyerVerificationAttemptRecorder {
 
+    /**
+     * Stands in for a caller whose IP the container did not give us. A row is
+     * still worth writing — it just cannot be attributed — and a literal beats
+     * a NULL both because the lookup is an equality and because a nullable
+     * String parameter is the Postgres {@code lower(bytea)} trap waiting to
+     * happen.
+     */
+    static final String UNKNOWN_IP = "unknown";
+
     private final BuyerVerificationAttemptRepository attempts;
 
     public BuyerVerificationAttemptRecorder(BuyerVerificationAttemptRepository attempts) {
@@ -30,9 +39,10 @@ public class BuyerVerificationAttemptRecorder {
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void record(String emailNormalized, boolean succeeded) {
+    public void record(String emailNormalized, String clientIp, boolean succeeded) {
         BuyerVerificationAttempt row = new BuyerVerificationAttempt();
         row.setEmailNormalized(emailNormalized);
+        row.setClientIp(normalizeIp(clientIp));
         row.setSucceeded(succeeded);
         attempts.save(row);
     }
@@ -49,7 +59,12 @@ public class BuyerVerificationAttemptRecorder {
      * the count is read before any write in that request.
      */
     @Transactional(readOnly = true)
-    public long countFailuresSince(String emailNormalized, Instant since) {
-        return attempts.countByEmailNormalizedAndSucceededFalseAndAttemptedAtAfter(emailNormalized, since);
+    public long countFailuresSince(String emailNormalized, String clientIp, Instant since) {
+        return attempts.countByEmailNormalizedAndClientIpAndSucceededFalseAndAttemptedAtAfter(
+                emailNormalized, normalizeIp(clientIp), since);
+    }
+
+    static String normalizeIp(String clientIp) {
+        return clientIp == null || clientIp.isBlank() ? UNKNOWN_IP : clientIp.trim();
     }
 }

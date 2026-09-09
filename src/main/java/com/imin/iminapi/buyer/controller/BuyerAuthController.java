@@ -110,14 +110,22 @@ public class BuyerAuthController {
 
     /**
      * Redeems the six-digit code and signs the buyer in — 200 with the account
-     * plus {@code Set-Cookie}. Not rate-limited by a bucket: the DB-counted
-     * per-address lockout in {@code BuyerEmailVerificationService} is the
-     * control here, precisely because the test suite can assert on it.
+     * plus {@code Set-Cookie}.
+     *
+     * <p>Keyed per client IP, like {@code signup} and for the same reason. This
+     * shipped with no bucket at all, on the reasoning that the DB-counted
+     * lockout in {@code BuyerEmailVerificationService} was the control here —
+     * but that counter was keyed on the address in the body, so it was a way for
+     * a stranger to lock an address out rather than a way to stop them. The
+     * counter is now keyed on the address AND the caller; this bucket is what
+     * bounds a caller who rotates addresses instead.
      */
     @PostMapping("/api/v1/buyer/auth/verify-email")
     public ResponseEntity<BuyerMeResponse> verifyEmail(@Valid @RequestBody BuyerAuthRequests.VerifyEmail req,
                                                        HttpServletRequest http) {
-        var signedIn = credentials.verifyEmail(req.email(), req.code(), userAgent(http));
+        rateLimiter.consume("buyer-verify-email", "ip:" + http.getRemoteAddr());
+        var signedIn = credentials.verifyEmail(
+                req.email(), req.code(), userAgent(http), http.getRemoteAddr());
         return signedInResponse(signedIn.account(), signedIn.session(), http);
     }
 

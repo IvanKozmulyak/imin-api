@@ -238,6 +238,27 @@ class BuyerCredentialRateLimitTest {
         verify(rateLimiter, never()).consume(anyString(), eq("ip:203.0.113.9"));
     }
 
+    // ── POST /buyer/auth/verify-email ──────────────────────────────────────
+
+    /**
+     * The endpoint shipped with no bucket at all, on the reasoning that the
+     * DB-counted per-address lockout was the control. It was not: that counter
+     * is spent by whoever makes the failures, so keyed on the address alone it
+     * was a way to lock a stranger out rather than a way to stop them. The
+     * bucket is keyed per client IP for the same reason signup is.
+     */
+    @Test
+    void verifyEmailIsMeteredPerClientIp() throws Exception {
+        String to = address();
+        mvc.perform(post("/api/v1/buyer/auth/verify-email")
+                        .header(HttpHeaders.ORIGIN, ORIGIN)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"email\":\"" + to + "\",\"code\":\"000000\"}"))
+                .andExpect(status().isBadRequest());
+
+        verify(rateLimiter).consume("buyer-verify-email", "ip:" + LOCAL_IP);
+    }
+
     // ── helpers ────────────────────────────────────────────────────────────
 
     private org.springframework.test.web.servlet.ResultActions changePassword(String body) throws Exception {

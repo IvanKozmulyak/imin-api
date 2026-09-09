@@ -63,6 +63,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class BuyerCredentialFlowTest {
 
     private static final String ORIGIN = "http://localhost:3000";
+    /** Not the address MockMvc gives the owner's own calls. */
+    private static final String ATTACKER_IP = "203.0.113.9";
     private static final String PASSWORD = "correct-horse-battery";
     private static final Pattern SIX_DIGITS = Pattern.compile("\\b(\\d{6})\\b");
     private static final Pattern RESET_TOKEN = Pattern.compile("token=([A-Za-z0-9_-]+)");
@@ -297,6 +299,47 @@ class BuyerCredentialFlowTest {
                 .andExpect(status().isTooManyRequests())
                 .andExpect(jsonPath("$.error.code").value("RATE_LIMITED"));
         assertThat(onlyRowFor(address).isVerified()).isFalse();
+    }
+
+    /**
+     * The lockout must cost the person making the failures, not the person who
+     * owns the address. Keyed on the body alone, an unauthenticated stranger
+     * could burn the threshold against {@code victim@x.com} and hold the real
+     * owner out of finishing their signup for the whole window, hourly, for
+     * free — the exact reasoning {@code signup} already refuses address keying
+     * for.
+     */
+    @Test
+    void a_stranger_cannot_spend_the_owners_lockout_budget() throws Exception {
+        signup(address).andExpect(status().isNoContent());
+
+        for (int i = 0; i < 10; i++) {
+            verifyEmailFrom(address, "000000", ATTACKER_IP).andExpect(status().isBadRequest());
+        }
+
+        // The stranger did burn the code they were guessing at — five wrong
+        // guesses retire a code, by design — so the owner asks for a fresh one,
+        // which is the documented escape. The thing that must NOT have happened
+        // is the ADDRESS being locked, which is what made the fresh code useless
+        // too and left the owner nothing to do but wait out the window.
+        resendVerification(address).andExpect(status().isNoContent());
+        verifyEmail(address, codeSentTo(address)).andExpect(status().isOk());
+    }
+
+    /**
+     * Nothing to guess at is not a guess. Recording a failure for an address
+     * that holds no live code let an attacker lock one out <b>before</b> its
+     * owner ever signed up, and the 72-hour claim sweep meant they could keep
+     * doing it until the owner gave up.
+     */
+    @Test
+    void failures_against_an_address_with_no_live_code_do_not_count() throws Exception {
+        for (int i = 0; i < 10; i++) {
+            verifyEmail(address, "000000").andExpect(status().isBadRequest());
+        }
+
+        signup(address).andExpect(status().isNoContent());
+        verifyEmail(address, codeSentTo(address)).andExpect(status().isOk());
     }
 
     @Test
@@ -559,6 +602,19 @@ class BuyerCredentialFlowTest {
             throws Exception {
         return mvc.perform(post("/api/v1/buyer/auth/verify-email")
                 .header(HttpHeaders.ORIGIN, ORIGIN)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"email\":\"" + to + "\",\"code\":\"" + code + "\"}"));
+    }
+
+    /** The same call from somebody else's machine. */
+    private org.springframework.test.web.servlet.ResultActions verifyEmailFrom(String to, String code, String ip)
+            throws Exception {
+        return mvc.perform(post("/api/v1/buyer/auth/verify-email")
+                .header(HttpHeaders.ORIGIN, ORIGIN)
+                .with(request -> {
+                    request.setRemoteAddr(ip);
+                    return request;
+                })
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"email\":\"" + to + "\",\"code\":\"" + code + "\"}"));
     }

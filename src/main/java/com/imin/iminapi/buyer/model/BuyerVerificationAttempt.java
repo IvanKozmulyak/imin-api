@@ -46,6 +46,16 @@ public class BuyerVerificationAttempt {
     @Column(name = "succeeded", nullable = false)
     private boolean succeeded;
 
+    /**
+     * The caller who made this attempt (V121). Half of the lockout key: keyed
+     * on the address alone, the counter was something a stranger could spend on
+     * the owner's behalf. Never null in practice — the recorder substitutes a
+     * sentinel — because an equality lookup on a NULL parameter matches nothing
+     * and, on Postgres, does not even type-check reliably.
+     */
+    @Column(name = "client_ip", length = 45)
+    private String clientIp;
+
     @PrePersist
     void truncateTimestamps() {
         if (attemptedAt == null) attemptedAt = Times.nowMicros();
