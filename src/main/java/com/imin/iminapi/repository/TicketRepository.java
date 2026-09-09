@@ -115,8 +115,6 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
 
     List<Ticket> findByIdInAndOrderId(Collection<UUID> ids, UUID orderId);
 
-    long countByOrderIdAndStateNot(UUID orderId, String state);
-
     /** Ticket count for an event in a given state. Predictor finalize uses it for refund_count ('refunded'). */
     long countByEventIdAndState(UUID eventId, String state);
 
