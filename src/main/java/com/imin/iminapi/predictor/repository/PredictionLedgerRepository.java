@@ -46,5 +46,4 @@ public interface PredictionLedgerRepository extends JpaRepository<PredictionLedg
      */
     List<PredictionLedger> findByOutcomeJoinedAtIsNotNull();
 
-    long countByEventId(UUID eventId);
 }
