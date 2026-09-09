@@ -32,11 +32,24 @@ public final class CampaignRequests {
             @Size(max = 64, message = "must be at most 64 characters") String templateKey
     ) {}
 
-    /** PATCH /campaigns/{id} — partial; only non-null fields are applied. Draft-only. */
+    /**
+     * PATCH /campaigns/{id} — partial; an absent field is left unchanged. Draft-only.
+     *
+     * <p>{@code segmentId} and {@code eventId} are {@link PatchableUuid} rather than plain
+     * UUIDs so an explicit {@code null} can CLEAR the link (mkt-edge-8) while an absent field
+     * still means "unchanged"; a plain UUID collapses those two requests into one value. The
+     * wire shape is unchanged — see {@link PatchableUuid}.
+     */
     public record PatchCampaignRequest(
             String name,
-            UUID segmentId,
-            UUID eventId,
+            @io.swagger.v3.oas.annotations.media.Schema(
+                    implementation = UUID.class, nullable = true,
+                    description = "Segment to target. Explicit null unlinks the segment; omit to leave unchanged.")
+            PatchableUuid segmentId,
+            @io.swagger.v3.oas.annotations.media.Schema(
+                    implementation = UUID.class, nullable = true,
+                    description = "Event to link. Explicit null unlinks the event; omit to leave unchanged.")
+            PatchableUuid eventId,
             @Size(max = 200, message = "must be at most 200 characters") String subject,
             @Size(max = 200, message = "must be at most 200 characters") String preheader,
             String bodyMd,

@@ -172,8 +172,13 @@ public class CampaignService {
                     "Only draft campaigns can be edited");
         }
         if (req.name() != null) c.setName(requireName(req.name()));
-        if (req.segmentId() != null) c.setSegmentId(req.segmentId());
-        if (req.eventId() != null) c.setEventId(req.eventId());
+        // mkt-edge-8: PatchableUuid distinguishes "absent" (the component is null — leave the
+        // link alone) from "present and null" (PatchableUuid.NULL — unlink). The composer
+        // PATCHes {segmentId: null, eventId: null} when the organizer de-selects, and that
+        // used to be indistinguishable from an untouched field, so the campaign kept sending
+        // the old event's poster hero and tickets button.
+        if (req.segmentId() != null) c.setSegmentId(req.segmentId().value());
+        if (req.eventId() != null) c.setEventId(req.eventId().value());
         if (req.subject() != null) c.setSubject(req.subject());
         if (req.preheader() != null) c.setPreheader(req.preheader());
         if (req.bodyMd() != null) c.setBodyMd(req.bodyMd());

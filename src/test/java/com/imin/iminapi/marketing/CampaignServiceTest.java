@@ -5,6 +5,7 @@ import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.marketing.dto.CampaignDto;
 import com.imin.iminapi.marketing.dto.CampaignRequests.CreateCampaignRequest;
 import com.imin.iminapi.marketing.dto.CampaignRequests.PatchCampaignRequest;
+import com.imin.iminapi.marketing.dto.PatchableUuid;
 import com.imin.iminapi.marketing.dto.CampaignSummary;
 import com.imin.iminapi.marketing.dto.PreviewAudienceResponse;
 import com.imin.iminapi.marketing.service.CampaignService;
@@ -132,6 +133,42 @@ class CampaignServiceTest {
         assertThat(patched.subject()).isEqualTo("New subj");
         assertThat(patched.name()).isEqualTo("Launch");   // untouched
         assertThat(patched.bodyMd()).isEqualTo("body");    // untouched
+    }
+
+    /**
+     * mkt-edge-8 (P2): `if (req.segmentId() != null)` made an explicit JSON null
+     * indistinguishable from an absent field, so the composer's
+     * PATCH {name, segmentId: null, eventId: null} silently kept the old links and the send
+     * still rendered the de-selected event's poster hero and tickets button.
+     */
+    @Test
+    void patch_explicitNull_clearsTheLinkedSegmentAndEvent() {
+        UUID segment = UUID.randomUUID();
+        UUID event = UUID.randomUUID();
+        CampaignDto d = service.create(principal(ORG), new CreateCampaignRequest(
+                "email", "Linked", segment, event, null, null, null, null));
+        assertThat(d.segmentId()).isEqualTo(segment);
+        assertThat(d.eventId()).isEqualTo(event);
+
+        CampaignDto cleared = service.patch(principal(ORG), d.id(), new PatchCampaignRequest(
+                null, PatchableUuid.NULL, PatchableUuid.NULL, null, null, null, null));
+
+        assertThat(cleared.segmentId()).isNull();
+        assertThat(cleared.eventId()).isNull();
+    }
+
+    @Test
+    void patch_absentField_leavesTheLinkUnchanged() {
+        UUID segment = UUID.randomUUID();
+        CampaignDto d = service.create(principal(ORG), new CreateCampaignRequest(
+                "email", "Linked", segment, null, null, null, null, null));
+
+        // Only the name is supplied — the pre-existing single-field PATCH shape.
+        CampaignDto patched = service.patch(principal(ORG), d.id(),
+                new PatchCampaignRequest("Renamed", null, null, null, null, null, null));
+
+        assertThat(patched.name()).isEqualTo("Renamed");
+        assertThat(patched.segmentId()).isEqualTo(segment);
     }
 
     @Test

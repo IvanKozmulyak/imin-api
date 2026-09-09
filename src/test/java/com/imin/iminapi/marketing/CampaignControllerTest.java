@@ -125,6 +125,56 @@ class CampaignControllerTest {
                 .andExpect(status().isOk());
     }
 
+    /**
+     * mkt-edge-8 (P2): the wire half. The composer PATCHes {name, segmentId: null,
+     * eventId: null} when the organizer leaves the Audience step, and an explicit null has to
+     * reach the service as "clear it" while an absent field still reaches it as "unchanged".
+     */
+    @Test
+    @WithStubOrganizer
+    void patch_distinguishesExplicitNullFromAnAbsentField() throws Exception {
+        when(service.patch(any(), eq(CAMP), any())).thenReturn(sampleDto());
+        var captor = org.mockito.ArgumentCaptor.forClass(
+                com.imin.iminapi.marketing.dto.CampaignRequests.PatchCampaignRequest.class);
+
+        mvc.perform(patch("/api/v1/marketing/campaigns/{id}", CAMP)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Step 0\",\"segmentId\":null,\"eventId\":null}"))
+                .andExpect(status().isOk());
+        mvc.perform(patch("/api/v1/marketing/campaigns/{id}", CAMP)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Step 0\"}"))
+                .andExpect(status().isOk());
+
+        verify(service, org.mockito.Mockito.times(2)).patch(any(), eq(CAMP), captor.capture());
+        var explicitNull = captor.getAllValues().get(0);
+        var absent = captor.getAllValues().get(1);
+        org.assertj.core.api.Assertions.assertThat(explicitNull.segmentId())
+                .isEqualTo(com.imin.iminapi.marketing.dto.PatchableUuid.NULL);
+        org.assertj.core.api.Assertions.assertThat(explicitNull.eventId())
+                .isEqualTo(com.imin.iminapi.marketing.dto.PatchableUuid.NULL);
+        org.assertj.core.api.Assertions.assertThat(absent.segmentId()).isNull();
+        org.assertj.core.api.Assertions.assertThat(absent.eventId()).isNull();
+    }
+
+    @Test
+    @WithStubOrganizer
+    void patch_carriesASuppliedSegmentIdThrough() throws Exception {
+        when(service.patch(any(), eq(CAMP), any())).thenReturn(sampleDto());
+        UUID seg = UUID.randomUUID();
+        var captor = org.mockito.ArgumentCaptor.forClass(
+                com.imin.iminapi.marketing.dto.CampaignRequests.PatchCampaignRequest.class);
+
+        mvc.perform(patch("/api/v1/marketing/campaigns/{id}", CAMP)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"segmentId\":\"" + seg + "\"}"))
+                .andExpect(status().isOk());
+
+        verify(service).patch(any(), eq(CAMP), captor.capture());
+        org.assertj.core.api.Assertions.assertThat(captor.getValue().segmentId().value())
+                .isEqualTo(seg);
+    }
+
     @Test
     @WithStubOrganizer
     void duplicate_returns_201() throws Exception {
