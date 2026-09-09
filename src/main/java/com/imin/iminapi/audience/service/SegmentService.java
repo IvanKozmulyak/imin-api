@@ -68,6 +68,14 @@ public class SegmentService {
                     Map.of("name", "Segment name is required"));
         }
         validateRulesJson(rulesJson);
+        // Names are how organizers tell segments apart, and a second "VIP" beside the
+        // prebuilt one is exactly the row that used to be resolved with somebody else's
+        // rules. Resolution no longer routes on the name (see PrebuiltSegment), so this is
+        // a clarity guard rather than a correctness one — hence a clean 409 at create time
+        // instead of a destructive de-duplicating migration over segments organizers own.
+        if (segmentRepo.existsByOrgIdAndName(orgId, trimmedName)) {
+            throw ApiException.duplicate("name", "A segment named \"" + trimmedName + "\" already exists");
+        }
         Segment s = new Segment();
         s.setOrgId(orgId);
         s.setName(trimmedName);
@@ -172,20 +180,26 @@ public class SegmentService {
             List<UUID> ids = parseSnapshotIds(segment.getSnapshotIds());
             return ids.isEmpty() ? List.of() : membershipRepo.findByIdsAndOrgId(ids, orgId);
         }
-        return applyRules(orgId, segment.getName(), segment.getRulesJson());
+        return applyRules(orgId, segment);
     }
 
-    private List<Membership> applyRules(UUID orgId, String name, String rulesJson) {
-        // Route to prebuilt query methods by segment name (prebuilt segments)
-        return switch (name) {
-            case "Repeat"           -> membershipRepo.findRepeats(orgId);
-            case "VIP"              -> membershipRepo.findVips(orgId);
-            case "Lapsed"           -> membershipRepo.findLapsed(orgId);
-            case "First-timers"     -> membershipRepo.findFirstTimers(orgId);
-            case "Promoters"        -> membershipRepo.findPromoters(orgId);
-            case "Bought-no-showed" -> membershipRepo.findBoughtNoShowed(orgId);
-            case "Newest-30d"       -> membershipRepo.findNewest30d(orgId);
-            default                 -> applyJsonRules(orgId, rulesJson);
+    /**
+     * Route to the indexed prebuilt query by the segment's STABLE KEY. A segment with no
+     * key is custom and always evaluates its own rules, whatever it is named — routing on
+     * the display name meant an organizer's (or the AI namer's) "VIP" silently resolved to
+     * the prebuilt VIP query while the dashboard showed that organizer's own rules.
+     */
+    private List<Membership> applyRules(UUID orgId, Segment segment) {
+        PrebuiltSegment prebuilt = PrebuiltSegment.byKey(segment.getPrebuiltKey());
+        if (prebuilt == null) return applyJsonRules(orgId, segment.getRulesJson());
+        return switch (prebuilt) {
+            case REPEAT           -> membershipRepo.findRepeats(orgId);
+            case VIP              -> membershipRepo.findVips(orgId);
+            case LAPSED           -> membershipRepo.findLapsed(orgId);
+            case FIRST_TIMERS     -> membershipRepo.findFirstTimers(orgId);
+            case PROMOTERS        -> membershipRepo.findPromoters(orgId);
+            case BOUGHT_NO_SHOWED -> membershipRepo.findBoughtNoShowed(orgId);
+            case NEWEST_30D       -> membershipRepo.findNewest30d(orgId);
         };
     }
 
@@ -277,33 +291,27 @@ public class SegmentService {
         // Serialize concurrent first-time seeders for this org.
         orgRepo.findByIdForUpdate(orgId);
         if (segmentRepo.hasPrebuiltSegments(orgId)) return; // re-check under the lock
-        List<String[]> prebuilt = List.of(
-            new String[]{"Repeat",           "[{\"field\":\"events\",\"operator\":\">=\",\"value\":\"2\"}]"},
-            new String[]{"VIP",              "[{\"field\":\"spend_minor\",\"operator\":\">=\",\"value\":\"20000\"},{\"field\":\"events\",\"operator\":\">=\",\"value\":\"4\"}]"},
-            new String[]{"Lapsed",           "[{\"field\":\"recency\",\"operator\":\">=\",\"value\":\"90\"},{\"field\":\"consent_status\",\"operator\":\"==\",\"value\":\"subscribed\"}]"},
-            new String[]{"First-timers",     "[{\"field\":\"events\",\"operator\":\"==\",\"value\":\"1\"}]"},
-            new String[]{"Promoters",        "[{\"field\":\"nps\",\"operator\":\">=\",\"value\":\"9\"}]"},
-            new String[]{"Bought-no-showed", "[{\"field\":\"no_show\",\"operator\":\">\",\"value\":\"0\"}]"},
-            new String[]{"Newest-30d",       "[{\"field\":\"recency\",\"operator\":\"<=\",\"value\":\"30\"},{\"field\":\"events\",\"operator\":\"<=\",\"value\":\"1\"}]"}
-        );
-        for (String[] pb : prebuilt) {
+        for (PrebuiltSegment pb : PrebuiltSegment.values()) {
             Segment s = new Segment();
             s.setOrgId(orgId);
-            s.setName(pb[0]);
+            s.setName(pb.displayName());
             s.setKind("dynamic");
             s.setPrebuilt(true);
-            s.setRulesJson(pb[1]);
+            s.setPrebuiltKey(pb.key());
+            s.setRulesJson(pb.rulesJson());
             segmentRepo.save(s);
         }
     }
 
-    /** The org's prebuilt "Repeat" segment id (Momentum's v1 default target), or null if not provisioned. */
+    /**
+     * The org's prebuilt Repeat segment id (Momentum's v1 default target), or null if not
+     * provisioned. Resolved by stable key: matching on the display name would have picked
+     * up any segment an organizer happened to call "Repeat".
+     */
     @Transactional(readOnly = true)
     public UUID defaultTargetSegmentId(UUID orgId) {
-        return segmentRepo.findByOrgId(orgId).stream()
-                .filter(s -> "Repeat".equals(s.getName()))
+        return segmentRepo.findByOrgIdAndPrebuiltKey(orgId, PrebuiltSegment.REPEAT.key())
                 .map(Segment::getId)
-                .findFirst()
                 .orElse(null);
     }
 

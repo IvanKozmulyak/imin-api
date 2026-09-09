@@ -493,6 +493,79 @@ class AudienceSegmentTest {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // audience-1: prebuilt routing is by stable key, never by display name
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * A segment that merely SHARES a prebuilt's display name must evaluate its own rules.
+     * Resolution used to switch on the name, so this row resolved with the prebuilt VIP
+     * query (spend >= 20000 and events >= 4) while the dashboard showed its own rules —
+     * and RecipientMaterializer mailed the wrong list.
+     */
+    @Test
+    void segment_sharing_a_prebuilt_name_evaluates_its_own_rules() {
+        segmentService.ensurePrebuiltSegments(orgA);
+
+        Segment impostor = new Segment();
+        impostor.setOrgId(orgA);
+        impostor.setName("VIP");           // same display name, no prebuilt key
+        impostor.setKind("dynamic");
+        impostor.setRulesJson("[{\"field\":\"events\",\"operator\":\">=\",\"value\":\"1\"}]");
+        impostor = segmentRepo.save(impostor);
+
+        Membership modest = seedMembership(orgA, "modest@s.com");
+        modest.setEvents(1);
+        modest.setSpendMinor(500);
+        membershipRepo.save(modest);
+
+        assertThat(segmentService.resolveMembers(orgA, impostor))
+                .extracting(Membership::getMembershipId)
+                .containsExactly(modest.getMembershipId());
+    }
+
+    /** The prebuilt itself still uses its indexed query, resolved by key. */
+    @Test
+    void prebuilt_vip_still_routes_to_the_indexed_query() {
+        segmentService.ensurePrebuiltSegments(orgA);
+        Segment vipSegment = findPrebuilt(orgA, "VIP");
+        assertThat(vipSegment.getPrebuiltKey()).isEqualTo("VIP");
+
+        Membership modest = seedMembership(orgA, "modest2@s.com");
+        modest.setEvents(1);
+        modest.setSpendMinor(500);
+        membershipRepo.save(modest);
+
+        assertThat(segmentService.resolveMembers(orgA, vipSegment)).isEmpty();
+    }
+
+    /** Momentum's default target is the prebuilt Repeat row, found by key not by name. */
+    @Test
+    void default_target_segment_is_the_prebuilt_repeat_row() {
+        segmentService.ensurePrebuiltSegments(orgA);
+
+        Segment lookalike = new Segment();
+        lookalike.setOrgId(orgA);
+        lookalike.setName("Repeat");
+        lookalike.setKind("dynamic");
+        lookalike = segmentRepo.save(lookalike);
+
+        assertThat(segmentService.defaultTargetSegmentId(orgA))
+                .isEqualTo(findPrebuilt(orgA, "Repeat").getId())
+                .isNotEqualTo(lookalike.getId());
+    }
+
+    @Test
+    void creating_a_segment_whose_name_is_taken_is_a_409() {
+        segmentService.ensurePrebuiltSegments(orgA);
+
+        assertThatThrownBy(() -> segmentService.createSegment(orgA, " vip ", "dynamic", null, principalA))
+                .isInstanceOfSatisfying(com.imin.iminapi.security.ApiException.class, e -> {
+                    assertThat(e.status()).isEqualTo(org.springframework.http.HttpStatus.CONFLICT);
+                    assertThat(e.code()).isEqualTo(com.imin.iminapi.security.ErrorCode.DUPLICATE);
+                });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // Ensure 7 prebuilt segments are provisioned exactly once
     // ─────────────────────────────────────────────────────────────────────────
 
