@@ -11,6 +11,7 @@ import com.imin.iminapi.marketing.service.CampaignService;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.service.audit.AuditLogger;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -24,7 +25,9 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 
 @SpringBootTest
@@ -299,6 +302,50 @@ class CampaignServiceTest {
                 .isInstanceOf(ApiException.class);
         // A rejected delete leaves the campaign intact.
         assertThat(service.get(principal(ORG), d.id()).status()).isEqualTo("sent");
+    }
+
+    /**
+     * mkt-edge-2: /send was the one campaign mutation with neither a role gate nor an audit
+     * row — any MEMBER could dispatch bulk mail to the whole audience and leave no trace of
+     * who did it. Now ADMIN-or-above, 403 for a MEMBER (within-org refusal, per RoleGuard).
+     */
+    @Test
+    void send_refuses_a_member() {
+        CampaignDto d = service.create(principal(ORG),
+                new CreateCampaignRequest("email", "Blast", null, null, null, null, null, null));
+        AuthPrincipal member = new AuthPrincipal(USER, ORG, UserRole.MEMBER, UUID.randomUUID());
+
+        assertThatThrownBy(() -> service.send(d.id(), member, "idem-" + UUID.randomUUID(), null))
+                .isInstanceOf(ApiException.class)
+                .extracting(e -> ((ApiException) e).status())
+                .isEqualTo(org.springframework.http.HttpStatus.FORBIDDEN);
+
+        // Refused before the CAS — the campaign is still a draft nobody scheduled.
+        assertThat(service.get(principal(ORG), d.id()).status()).isEqualTo("draft");
+    }
+
+    @Test
+    void send_records_who_dispatched_the_campaign() {
+        CampaignDto d = service.create(principal(ORG),
+                new CreateCampaignRequest("email", "Blast", null, null, null, null, null, null));
+
+        service.send(d.id(), principal(ORG), "idem-" + UUID.randomUUID(), null);
+
+        verify(auditLogger).record(any(), eq(AuditActions.CAMPAIGN_SENT), eq("campaign"),
+                eq(d.id()), anyString());
+    }
+
+    @Test
+    void send_replay_does_not_record_a_second_dispatch() {
+        CampaignDto d = service.create(principal(ORG),
+                new CreateCampaignRequest("email", "Blast", null, null, null, null, null, null));
+        service.send(d.id(), principal(ORG), "idem-1", null);
+
+        assertThatThrownBy(() -> service.send(d.id(), principal(ORG), "idem-2", null))
+                .isInstanceOf(ApiException.class);
+
+        verify(auditLogger, org.mockito.Mockito.times(1)).record(
+                any(), eq(AuditActions.CAMPAIGN_SENT), eq("campaign"), eq(d.id()), anyString());
     }
 
     @Test

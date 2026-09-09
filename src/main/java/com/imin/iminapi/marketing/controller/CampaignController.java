@@ -97,6 +97,10 @@ public class CampaignController {
 
     public record SendRequest(java.time.Instant scheduledAt) {}
 
+    /**
+     * Draft→scheduled. <b>OWNER/ADMIN only</b> (mkt-edge-2) — a MEMBER gets
+     * {@code 403 FORBIDDEN}; a won transition writes one {@code CAMPAIGN_SENT} audit row.
+     */
     @PostMapping("/{id}/send")
     public ResponseEntity<Void> send(
             @PathVariable UUID id,
