@@ -214,6 +214,47 @@ class MomentumServiceTest {
         assertThat(suggestions.findById(s.getId()).orElseThrow().getStatus()).isEqualTo("dismissed");
     }
 
+    /**
+     * mkt-core-9(a): the draft payload is model output and V52 declares
+     * name VARCHAR(120) / subject VARCHAR(200) / preheader VARCHAR(200). The prompt only ASKS
+     * for 60/90 chars, so an over-long subject was a varchar overflow — a 500 on the
+     * organizer's Approve click. CampaignService.create already clamps the same column.
+     */
+    @Test
+    void approveClampsOverlongModelCopyToTheColumnWidths() {
+        UUID event = support.seedLiveEvent(5, 100, Instant.now(), Instant.now().plusSeconds(864000));
+        MomentumSuggestion s = seedSuggestion(support.orgIdOf(event), event);
+        s.setDraftPayload("{\"subject\":\"" + "S".repeat(400) + "\",\"preheader\":\""
+                + "P".repeat(400) + "\",\"bodyMd\":\"b\",\"segmentId\":null}");
+        suggestions.save(s);
+        AuthPrincipal principal = support.principalFor(support.orgIdOf(event));
+
+        var campaign = service.approve(principal, s.getId());
+
+        var saved = campaigns.findById(campaign.id()).orElseThrow();
+        assertThat(saved.getName().length()).isLessThanOrEqualTo(120);
+        assertThat(saved.getSubject().length()).isLessThanOrEqualTo(200);
+        assertThat(saved.getPreheader().length()).isLessThanOrEqualTo(200);
+    }
+
+    /**
+     * mkt-core-9(b): approve requires status 'suggested'; dismiss had no status guard, so an
+     * already-approved suggestion (campaign row created, campaignId set) could be flipped to
+     * 'dismissed' — orphaning the link and skewing state()'s approved30d/dismissed30d.
+     */
+    @Test
+    void dismissRefusesASuggestionThatWasAlreadyApproved() {
+        UUID event = support.seedLiveEvent(5, 100, Instant.now(), Instant.now().plusSeconds(864000));
+        MomentumSuggestion s = seedSuggestion(support.orgIdOf(event), event);
+        AuthPrincipal principal = support.principalFor(support.orgIdOf(event));
+        service.approve(principal, s.getId());
+
+        assertThatThrownBy(() -> service.dismiss(principal, s.getId()))
+                .isInstanceOf(ApiException.class);
+
+        assertThat(suggestions.findById(s.getId()).orElseThrow().getStatus()).isEqualTo("approved");
+    }
+
     @Test
     void approveFromAnotherOrgIs404() {
         UUID event = support.seedLiveEvent(5, 100, Instant.now(), Instant.now().plusSeconds(864000));
