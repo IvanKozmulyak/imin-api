@@ -54,7 +54,10 @@ public class BuyerAccountErasureJob {
         int erased = 0;
         for (BuyerAccount account : due) {
             try {
-                erasureService.erase(account.getId());
+                // eraseIfStillDue, not erase: this list was materialised before the
+                // loop began, and a buyer who pressed "Keep my account" in between
+                // must not be erased off a stale snapshot.
+                erasureService.eraseIfStillDue(account.getId());
                 erased++;
             } catch (Exception e) {
                 log.error("[buyer] erasure failed for account {}: {}", account.getId(), e.getMessage(), e);

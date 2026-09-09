@@ -4,6 +4,7 @@ import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.DsarService;
+import com.imin.iminapi.buyer.model.BuyerAccount;
 import com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository;
 import com.imin.iminapi.buyer.repository.BuyerAccountRepository;
 import com.imin.iminapi.buyer.repository.BuyerEmailVerificationCodeRepository;
@@ -22,6 +23,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -126,6 +128,44 @@ public class BuyerAccountErasureService {
                                 int consumersDeleted,
                                 int notifySubscriptions,
                                 boolean tombstoned) {}
+
+    /**
+     * The job's entry point: re-applies {@code findErasureDue}'s own predicate
+     * <b>inside this transaction</b> and erases only if it still holds.
+     *
+     * <p>{@link BuyerAccountErasureJob} materialises the whole due list before
+     * erasing any of it, so by the time an account's turn comes its row is a
+     * snapshot from potentially minutes ago — and
+     * {@code BuyerAccountDeletionService.cancel} ("Keep my account") sets
+     * {@code status = 'active'} and clears {@code delete_at} in between. Without
+     * this re-read the cascade below runs on a buyer who withdrew their request,
+     * and there is nothing to undo it: the address rows are gone and a
+     * platform-wide {@code erased_addresses} ledger entry permanently blocks
+     * {@code AudienceBackfillJob} from rebuilding them.
+     *
+     * <p>{@link #erase} stays the raw cascade so an operator (and the tests) can
+     * still run it directly; the guard belongs on the scheduled path, which is
+     * the only one that acts on a stale snapshot.
+     *
+     * @return the cascade's result, or an all-zero result when the account is no
+     *         longer due
+     */
+    @Transactional
+    public ErasureResult eraseIfStillDue(UUID accountId) {
+        BuyerAccount account = accounts.findById(accountId).orElse(null);
+        Instant now = Instant.now();
+        if (account == null
+                || !BuyerAccount.STATUS_DELETE_PENDING.equals(account.getStatus())
+                || account.getDeleteAt() == null
+                || account.getDeleteAt().isAfter(now)) {
+            log.info("[buyer] erasure skipped account={} — no longer due (status={} deleteAt={})",
+                    accountId,
+                    account == null ? "<gone>" : account.getStatus(),
+                    account == null ? null : account.getDeleteAt());
+            return new ErasureResult(accountId, 0, 0, Set.of(), 0, 0, false);
+        }
+        return erase(accountId);
+    }
 
     /**
      * Erases one account and everything the platform holds for its addresses.

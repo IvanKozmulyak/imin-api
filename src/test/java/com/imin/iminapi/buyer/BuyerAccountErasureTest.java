@@ -48,6 +48,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -55,6 +56,8 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doReturn;
 
 /**
  * The §7.2 cascade: {@code BuyerAccountErasureService}, its job, the
@@ -76,7 +79,7 @@ class BuyerAccountErasureTest {
     @Autowired BuyerAccountErasureJob erasureJob;
     @Autowired DsarService dsarService;
 
-    @Autowired BuyerAccountRepository accounts;
+    @MockitoSpyBean BuyerAccountRepository accounts;
     @Autowired BuyerAccountEmailRepository emails;
     @Autowired BuyerSessionRepository sessions;
     @Autowired BuyerIdentityRepository identities;
@@ -467,6 +470,53 @@ class BuyerAccountErasureTest {
 
         assertThat(accounts.findById(account)).isEmpty();
         assertThat(membershipExists(mid, orgA)).isFalse();
+    }
+
+    /**
+     * "Keep my account", pressed after the job took its snapshot and before this
+     * account's turn in the loop.
+     *
+     * <p>The job materialises the whole due list up front and then erases each
+     * entry in its own transaction, so the row it holds is a snapshot from
+     * potentially minutes ago. {@code cancel} sets {@code status = 'active'} and
+     * clears {@code delete_at}, and nothing downstream of the snapshot used to
+     * re-read either column — so a buyer who changed their mind inside that
+     * window was erased anyway: memberships, notify rows, saved events, prefs,
+     * push devices, identities, sessions, the address rows, the account, plus a
+     * permanent {@code erased_addresses} ledger entry that stops
+     * {@code AudienceBackfillJob} ever rebuilding them. Irreversible, and until
+     * now not even logged as anomalous.
+     */
+    @Test
+    void an_account_kept_after_the_job_snapshot_is_not_erased() {
+        UUID account = account();
+        String address = verifiedAddress(account, true);
+        UUID mid = membership(orgA, consumer(address));
+        schedule(account, -1);
+
+        List<BuyerAccount> snapshot = accounts.findErasureDue(Instant.now()).stream()
+                .filter(a -> a.getId().equals(account))
+                .toList();
+        assertThat(snapshot).hasSize(1);
+
+        // The buyer presses "Keep my account" while the job is mid-run.
+        BuyerAccount kept = accounts.findById(account).orElseThrow();
+        kept.setStatus(BuyerAccount.STATUS_ACTIVE);
+        kept.setDeleteAt(null);
+        accounts.save(kept);
+
+        doReturn(snapshot).when(accounts).findErasureDue(any());
+        erasureJob.run();
+
+        assertThat(accounts.findById(account))
+                .as("an account that is no longer delete_pending must survive the run")
+                .isPresent();
+        assertThat(emails.findEmailsByBuyerAccountId(account)).isNotEmpty();
+        assertThat(membershipExists(mid, orgA)).isTrue();
+        assertThat(jdbc.queryForObject(
+                "select count(*) from erased_addresses where email_normalized = ?", Integer.class, address))
+                .as("no ledger entry may be written for an erasure that must not happen")
+                .isZero();
     }
 
     @Test
