@@ -19,6 +19,7 @@ import com.imin.iminapi.settlement.SettlementStatus;
 import com.imin.iminapi.stripe.StripeConnectState;
 import com.imin.iminapi.stripe.StripeProperties;
 import com.stripe.StripeClient;
+import com.stripe.exception.ApiConnectionException;
 import com.stripe.exception.InvalidRequestException;
 import com.stripe.model.Balance;
 import com.stripe.model.Payout;
@@ -77,18 +78,28 @@ class PostEventPayoutServiceTest {
         final AtomicInteger payoutCount = new AtomicInteger(0);
         final AtomicReference<Long> lastPayoutAmount = new AtomicReference<>(null);
         final AtomicReference<String> lastPayoutId = new AtomicReference<>(null);
+        final AtomicReference<String> lastIdempotencyKey = new AtomicReference<>(null);
         /** When set, payouts().create throws balance_insufficient (race simulation). */
         volatile boolean failBalanceInsufficient = false;
+        /** When set, payouts().create throws a TRANSPORT error (socket/read timeout). */
+        volatile boolean failApiConnection = false;
         /** When false, accounts().retrieve reports NO external bank account. */
         volatile boolean hasBank = true;
+        /** Status the reconciliation poll (GET /v1/payouts/{id}) reports back. */
+        volatile String retrievedStatus = "paid";
+        volatile String retrievedFailureCode = null;
 
         void reset() {
             availableMinor.set(0L);
             payoutCount.set(0);
             lastPayoutAmount.set(null);
             lastPayoutId.set(null);
+            lastIdempotencyKey.set(null);
             failBalanceInsufficient = false;
+            failApiConnection = false;
             hasBank = true;
+            retrievedStatus = "paid";
+            retrievedFailureCode = null;
         }
 
         @SuppressWarnings("unchecked")
@@ -102,7 +113,29 @@ class PostEventPayoutServiceTest {
                     """.formatted(availableMinor.get());
                 return (T) ApiResource.GSON.fromJson(json, Balance.class);
             }
+            // GET /v1/payouts/{id} — the reconciliation poll. Distinguished from the
+            // create (POST /v1/payouts) by the id segment in the path.
+            if (path != null && path.startsWith("/v1/payouts/")) {
+                String json = """
+                    { "object": "payout", "id": "%s", "amount": %d, "currency": "eur",
+                      "status": "%s", "arrival_date": %d, "failure_code": %s }
+                    """.formatted(path.substring("/v1/payouts/".length()),
+                        lastPayoutAmount.get() == null ? 0L : lastPayoutAmount.get(),
+                        retrievedStatus,
+                        java.time.Instant.now().getEpochSecond(),
+                        retrievedFailureCode == null ? "null" : "\"" + retrievedFailureCode + "\"");
+                return (T) ApiResource.GSON.fromJson(json, Payout.class);
+            }
             if (path != null && path.startsWith("/v1/payouts")) {
+                if (req.getOptions() != null) {
+                    lastIdempotencyKey.set(req.getOptions().getIdempotencyKey());
+                }
+                if (failApiConnection) {
+                    // The read timed out. Stripe MAY have created the payout — we never saw
+                    // the response. ApiConnectionException extends StripeException, so the
+                    // service's single catch used to record this as FAILED.
+                    throw new ApiConnectionException("IOException during API request: read timed out");
+                }
                 if (failBalanceInsufficient) {
                     // InvalidRequestException(message, param, requestId, code, statusCode, cause)
                     // — getCode() reads the 4th arg.
@@ -227,7 +260,60 @@ class PostEventPayoutServiceTest {
         assertThat(fake.lastPayoutAmount.get())
                 .as("min(net=9000, available=4000)")
                 .isEqualTo(4_000L);
-        assertThat(payoutRuns.findByEventId(e.getId()).get(0).getAmountMinor()).isEqualTo(4_000L);
+        PayoutRun clamped = payoutRuns.findByEventId(e.getId()).get(0);
+        assertThat(clamped.getAmountMinor()).isEqualTo(4_000L);
+        assertThat(clamped.getRemainingMinor())
+                .as("the clamp left 5_000 of the organizer's net unpaid — record it so the run "
+                        + "settles PARTIAL and the event stays toppable-up")
+                .isEqualTo(5_000L);
+    }
+
+    // ── stripe-3 — a clamped payout must be topped up, never silently written off ──
+    @Test
+    void clamped_payout_settles_partial_and_the_next_sweep_pays_the_remainder() {
+        Event e = newEndedEvent(org);
+        order(e, 10_000, 1_000);            // net 9_000
+        fake.availableMinor.set(4_000L);    // balance short: only 4_000 can move today
+
+        // ── tick 1: pay what the balance allows.
+        service.payOneEvent(e.getId());
+        assertThat(fake.lastPayoutAmount.get()).isEqualTo(4_000L);
+
+        // The payout.paid webhook reconciles a clamped run to PARTIAL (asserted end-to-end in
+        // SettlementIngestWebhookTest); apply that same transition here.
+        PayoutRun first = payoutRuns.findByEventId(e.getId()).get(0);
+        assertThat(first.getRemainingMinor()).isEqualTo(5_000L);
+        first.setStatus(PayoutRunStatus.PARTIAL);
+        payoutRuns.save(first);
+
+        // ── tick 2: the balance has caught up. The event must re-candidate and receive
+        // EXACTLY the 5_000 remainder — not the full 9_000 net again, and not nothing.
+        fake.availableMinor.set(50_000L);
+        service.payOneEvent(e.getId());
+
+        assertThat(fake.payoutCount.get()).isEqualTo(2);
+        assertThat(fake.lastPayoutAmount.get())
+                .as("net 9_000 − already triggered 4_000 = 5_000 owed")
+                .isEqualTo(5_000L);
+
+        List<PayoutRun> runs = payoutRuns.findByEventId(e.getId());
+        assertThat(runs).hasSize(2);
+        PayoutRun topUp = runs.stream().filter(r -> r.getAttempt() == 2).findFirst().orElseThrow();
+        assertThat(topUp.getAmountMinor()).isEqualTo(5_000L);
+        assertThat(topUp.getRemainingMinor())
+                .as("the top-up covers the rest, so this run settles PAID")
+                .isZero();
+        assertThat(runs.stream().mapToLong(PayoutRun::getAmountMinor).sum())
+                .as("the organizer is paid their whole net across the two runs — never more")
+                .isEqualTo(9_000L);
+
+        // ── tick 3: nothing is owed any more, so no third payout is created.
+        topUp.setStatus(PayoutRunStatus.PAID);
+        payoutRuns.save(topUp);
+        service.payOneEvent(e.getId());
+        assertThat(fake.payoutCount.get())
+                .as("a fully-paid event never pays again")
+                .isEqualTo(2);
     }
 
     @Test
@@ -376,6 +462,136 @@ class PostEventPayoutServiceTest {
                 .as("retry bumps attempt → a fresh idempotency key")
                 .isEqualTo(2);
         assertThat(submitted.getIdempotencyKey()).isEqualTo("evt:" + e.getId() + ":attempt:2");
+    }
+
+    // ── stripe-2 — a TRANSPORT failure must NOT bump the attempt (double-pay) ──────
+    @Test
+    void transport_failure_parks_run_retrying_and_replays_the_same_idempotency_key() {
+        Event e = newEndedEvent(org);
+        order(e, 10_000, 1_000);            // net 9_000
+        fake.availableMinor.set(50_000L);
+        fake.failApiConnection = true;
+
+        // ── tick 1: Stripe accepted and minted po_A for 9_000, but the read timed out.
+        service.payOneEvent(e.getId());
+
+        List<PayoutRun> afterTick1 = payoutRuns.findByEventId(e.getId());
+        assertThat(afterTick1).hasSize(1);
+        PayoutRun parked = afterTick1.get(0);
+        assertThat(parked.getStatus())
+                .as("a timeout is NOT a rejection — the outcome is unknown, so the run parks RETRYING")
+                .isEqualTo(PayoutRunStatus.RETRYING);
+        assertThat(parked.getAttempt()).isEqualTo(1);
+        assertThat(parked.getIdempotencyKey()).isEqualTo("evt:" + e.getId() + ":attempt:1");
+        assertThat(parked.getAmountMinor()).isEqualTo(9_000L);
+
+        // ── tick 2: the event re-candidates. It must REPLAY key attempt:1, which Stripe
+        // answers with the original po_ — NOT mint attempt:2 and a second 9_000 payout.
+        fake.failApiConnection = false;
+        service.payOneEvent(e.getId());
+
+        assertThat(fake.payoutCount.get())
+                .as("exactly ONE payout request reached Stripe with a fresh key")
+                .isEqualTo(1);
+        assertThat(fake.lastIdempotencyKey.get())
+                .as("the replay reuses attempt:1's key so Stripe returns the ORIGINAL po_ "
+                        + "(a bumped attempt would be 18_000 out the door on 9_000 of net)")
+                .isEqualTo("evt:" + e.getId() + ":attempt:1");
+        assertThat(fake.lastPayoutAmount.get()).isEqualTo(9_000L);
+
+        List<PayoutRun> afterTick2 = payoutRuns.findByEventId(e.getId());
+        assertThat(afterTick2)
+                .as("one event, one payout unit — no attempt:2 row")
+                .hasSize(1);
+        assertThat(afterTick2.get(0).getStatus()).isEqualTo(PayoutRunStatus.SUBMITTED);
+        assertThat(afterTick2.get(0).getAttempt()).isEqualTo(1);
+    }
+
+    @Test
+    void definitive_4xx_rejection_still_bumps_the_attempt() {
+        Event e = newEndedEvent(org);
+        order(e, 6_000, 600);   // net 5_400
+        fake.availableMinor.set(50_000L);
+        fake.failBalanceInsufficient = true;
+
+        service.payOneEvent(e.getId());
+        assertThat(payoutRuns.findByEventId(e.getId()).get(0).getStatus())
+                .as("a 400 from Stripe means no po_ exists — a fresh attempt is safe")
+                .isEqualTo(PayoutRunStatus.FAILED);
+
+        fake.failBalanceInsufficient = false;
+        service.payOneEvent(e.getId());
+
+        assertThat(fake.lastIdempotencyKey.get()).isEqualTo("evt:" + e.getId() + ":attempt:2");
+    }
+
+    // ── stripe-4 — a SUBMITTED run must not freeze the org forever ─────────────────
+    @Test
+    void stale_submitted_run_is_reconciled_from_stripe_and_unblocks_the_org() {
+        Event e1 = newEndedEvent(org);
+        Event e2 = newEndedEvent(org);   // SAME org — blocked by e1's in-flight run
+        order(e1, 5_000, 500);           // net 4_500
+        order(e2, 7_000, 700);           // net 6_300
+        fake.availableMinor.set(100_000L);
+
+        service.payOneEvent(e1.getId());
+        PayoutRun submitted = payoutRuns.findByEventId(e1.getId()).get(0);
+        assertThat(submitted.getStatus()).isEqualTo(PayoutRunStatus.SUBMITTED);
+
+        // No payout.* webhook ever arrives (STRIPE_WEBHOOK_SECRET_CONNECT blank, or Stripe
+        // gave up retrying). Every event for the org is frozen behind this one row.
+        service.payOneEvent(e2.getId());
+        assertThat(payoutRuns.findByEventId(e2.getId()))
+                .as("the org-level in-flight guard blocks the sibling event")
+                .isEmpty();
+
+        // The reconciliation poll reads the payout Stripe actually holds and closes the run.
+        fake.retrievedStatus = "paid";
+        service.reconcileSubmittedRun(submitted.getId());
+
+        PayoutRun reconciled = payoutRuns.findById(submitted.getId()).orElseThrow();
+        assertThat(reconciled.getStatus()).isEqualTo(PayoutRunStatus.PAID);
+        assertThat(reconciled.getPaidAt()).isNotNull();
+
+        // …and the org is free again, so the sibling event is paid on the next tick.
+        service.payOneEvent(e2.getId());
+        assertThat(fake.lastPayoutAmount.get()).isEqualTo(6_300L);
+        assertThat(payoutRuns.findByEventId(e2.getId())).hasSize(1);
+    }
+
+    @Test
+    void reconcile_marks_a_failed_payout_failed_so_the_event_can_retry() {
+        Event e = newEndedEvent(org);
+        order(e, 5_000, 500);   // net 4_500
+        fake.availableMinor.set(100_000L);
+
+        service.payOneEvent(e.getId());
+        PayoutRun submitted = payoutRuns.findByEventId(e.getId()).get(0);
+
+        fake.retrievedStatus = "failed";
+        fake.retrievedFailureCode = "account_closed";
+        service.reconcileSubmittedRun(submitted.getId());
+
+        PayoutRun reconciled = payoutRuns.findById(submitted.getId()).orElseThrow();
+        assertThat(reconciled.getStatus()).isEqualTo(PayoutRunStatus.FAILED);
+        assertThat(reconciled.getFailureReason()).isEqualTo("account_closed");
+    }
+
+    @Test
+    void reconcile_leaves_a_still_in_transit_payout_submitted() {
+        Event e = newEndedEvent(org);
+        order(e, 5_000, 500);
+        fake.availableMinor.set(100_000L);
+
+        service.payOneEvent(e.getId());
+        PayoutRun submitted = payoutRuns.findByEventId(e.getId()).get(0);
+
+        fake.retrievedStatus = "in_transit";
+        service.reconcileSubmittedRun(submitted.getId());
+
+        assertThat(payoutRuns.findById(submitted.getId()).orElseThrow().getStatus())
+                .as("a payout genuinely still in flight stays SUBMITTED — never guess it settled")
+                .isEqualTo(PayoutRunStatus.SUBMITTED);
     }
 
     @Test

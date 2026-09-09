@@ -11,6 +11,8 @@ import com.imin.iminapi.settlement.SettlementStatus;
 import com.imin.iminapi.stripe.StripeConnectState;
 import com.imin.iminapi.stripe.StripeProperties;
 import com.stripe.StripeClient;
+import com.stripe.exception.ApiConnectionException;
+import com.stripe.exception.RateLimitException;
 import com.stripe.exception.StripeException;
 import com.stripe.model.Account;
 import com.stripe.model.Balance;
@@ -25,6 +27,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
@@ -58,8 +61,13 @@ import java.util.UUID;
  *       organizer's net.</li>
  *   <li><b>step 3 — live available balance</b> ON the connected account, matched to
  *       the event currency (Stripe reports lowercase; the event stores uppercase).</li>
- *   <li><b>step 4 — clamp</b> {@code payoutMinor = min(net, available)}; skip if
- *       {@code <= 0} (funds not yet available — rolls to the next tick).</li>
+ *   <li><b>step 4 — subtract what already moved, then clamp.</b>
+ *       {@code owed = net − already triggered (SUBMITTED/PAID/PARTIAL)};
+ *       {@code payoutMinor = min(owed, available)}; skip if {@code <= 0} (nothing left,
+ *       or funds not yet available — rolls to the next tick). What the clamp leaves
+ *       behind is recorded on the run as {@code remaining_minor}, so the settled run
+ *       reconciles to {@code PARTIAL} rather than {@code PAID} and the event stays a
+ *       candidate for a top-up instead of being silently short forever.</li>
  *   <li><b>step 5 — write the {@code payout_runs} row FIRST</b> (insert-or-find on
  *       the deterministic idempotency key) BEFORE any Stripe call. The
  *       {@code UNIQUE(idempotency_key)} is the pre-call guard that makes concurrent
@@ -68,13 +76,19 @@ import java.util.UUID;
  *       {@code run.getIdempotencyKey()} so a crash between SUBMITTED-write and
  *       Stripe-ack replays to the SAME {@code po_} (Stripe idempotency replay), then
  *       record the {@code po_} and move to {@code SUBMITTED}.</li>
- *   <li><b>step 7 — failure handling.</b> ANY {@code StripeException} from the create
- *       marks the run {@code FAILED} with the Stripe code as the reason — the create was
- *       rejected so no {@code po_} exists. {@code balance_insufficient} is FAILED too (not
- *       left PLANNED): a PLANNED row counts as in-flight for both the org-level double-pay
- *       guard and the per-event candidate query, so leaving it PLANNED would permanently
- *       freeze the org and the event; FAILED lets the event re-candidate next tick with a
- *       bumped {@code attempt} (fresh idempotency key → clean retry).</li>
+ *   <li><b>step 7 — failure handling, split by whether Stripe DEFINITIVELY refused.</b>
+ *       A 4xx rejection (the request reached Stripe and was refused, so no {@code po_}
+ *       exists) marks the run {@code FAILED} with the Stripe code as the reason.
+ *       {@code balance_insufficient} is FAILED too (not left PLANNED): a PLANNED row
+ *       counts as in-flight for both the org-level double-pay guard and the per-event
+ *       candidate query, so leaving it PLANNED would permanently freeze the org and the
+ *       event; FAILED lets the event re-candidate next tick with a bumped
+ *       {@code attempt} (fresh idempotency key → clean retry). A TRANSPORT failure
+ *       (connection/read timeout, rate limit, 5xx) is the opposite case: Stripe may
+ *       already have minted the {@code po_} and we simply never saw the response, so the
+ *       run goes {@code RETRYING} — same {@code attempt}, SAME idempotency key — and the
+ *       next tick replays that key, which Stripe answers with the ORIGINAL payout. Bumping
+ *       the attempt there would mint a second real bank payout for the same event.</li>
  * </ol>
  *
  * <p><b>Fee-retention invariant (§4.4):</b> the Payout is created ON the connected
@@ -91,6 +105,15 @@ public class PostEventPayoutService {
     /** In-flight statuses for the org-level one-payout-per-tick guard. */
     private static final List<PayoutRunStatus> IN_FLIGHT =
             List.of(PayoutRunStatus.PLANNED, PayoutRunStatus.SUBMITTED);
+
+    /**
+     * Statuses whose amount HAS been handed to Stripe for this event. Subtracted from the
+     * event's net so a top-up after a clamped payout can never re-pay what already moved.
+     * RETRYING is excluded on purpose — its outcome is unknown and it is resolved by
+     * replaying its own idempotency key, never by a fresh payout.
+     */
+    private static final List<PayoutRunStatus> ALREADY_TRIGGERED =
+            List.of(PayoutRunStatus.SUBMITTED, PayoutRunStatus.PAID, PayoutRunStatus.PARTIAL);
 
     private final StripeClient stripeClient;
     private final StripeProperties props;
@@ -209,16 +232,32 @@ public class PostEventPayoutService {
             return;
         }
 
-        // ── step 4 — clamp ──
-        long payoutMinor = Math.min(perEventNetMinor, availableMinor);
-        if (payoutMinor <= 0L) {
-            log.info("[payout] skip event {} org {} — net {} but available {} ({}); rolling to next tick",
-                    eventId, org.getId(), perEventNetMinor, availableMinor, cur);
+        // ── step 4 — subtract what already moved for this event, then clamp ──
+        // A previous tick may have paid a CLAMPED amount (available balance short of the
+        // net). That run carries remaining_minor and reconciles to PARTIAL, which keeps the
+        // event a candidate; here we pay only the outstanding difference, never the net again.
+        long alreadyTriggered = payoutRuns.sumAmountByEventAndStatusIn(eventId, ALREADY_TRIGGERED);
+        long owedMinor = Math.max(0L, perEventNetMinor - alreadyTriggered);
+        if (owedMinor <= 0L) {
+            log.info("[payout] skip event {} org {} — net {} already fully triggered ({})",
+                    eventId, org.getId(), perEventNetMinor, alreadyTriggered);
             return;
         }
+        long payoutMinor = Math.min(owedMinor, availableMinor);
+        if (payoutMinor <= 0L) {
+            log.info("[payout] skip event {} org {} — owed {} (net {} − triggered {}) but available {} ({}); "
+                            + "rolling to next tick",
+                    eventId, org.getId(), owedMinor, perEventNetMinor, alreadyTriggered, availableMinor, cur);
+            return;
+        }
+        // What the clamp leaves unpaid. Recorded on the row so the payout.paid
+        // reconciliation lands on PARTIAL (top-up-able) rather than PAID (terminal).
+        long remainingMinor = owedMinor - payoutMinor;
 
         // ── step 5 — write payout_runs row FIRST (insert-or-find on the deterministic key) ──
         // attempt 1 normally; a fresh attempt (new key) is used ONLY after a FAILED run.
+        // A RETRYING run REUSES its attempt so the key below is the one Stripe may already
+        // have seen — the insert-or-find then resolves to that row and step 6 replays it.
         int attempt = nextAttempt(eventId);
         String idem = "evt:" + eventId + ":attempt:" + attempt;
         PayoutRun run = payoutRuns.findByIdempotencyKey(idem).orElseGet(() -> {
@@ -227,6 +266,7 @@ public class PostEventPayoutService {
             r.setEventId(eventId);
             r.setStripeAccountId(acct);
             r.setAmountMinor(payoutMinor);
+            r.setRemainingMinor(remainingMinor);
             r.setCurrency(cur);
             r.setStatus(PayoutRunStatus.PLANNED);
             r.setAttempt(attempt);
@@ -239,9 +279,16 @@ public class PostEventPayoutService {
 
         // If a prior crashed run already reached SUBMITTED, the candidate/step-0 guards
         // would have excluded it — but guard defensively against re-creating a payout.
-        if (run.getStatus() == PayoutRunStatus.SUBMITTED || run.getStatus() == PayoutRunStatus.PAID) {
+        if (run.getStatus() == PayoutRunStatus.SUBMITTED
+                || run.getStatus() == PayoutRunStatus.PAID
+                || run.getStatus() == PayoutRunStatus.PARTIAL) {
             return;
         }
+
+        // Stripe rejects a replayed idempotency key whose params differ, so the amount on
+        // the wire is ALWAYS the amount recorded on the row — identical to payoutMinor for
+        // a fresh run, and the originally-submitted figure when replaying a RETRYING one.
+        long createMinor = run.getAmountMinor();
 
         // ── step 6 — create the Payout idempotently (crash-window safe) ──
         // Reusing run.getIdempotencyKey() means a re-issue after a crash between the
@@ -250,7 +297,7 @@ public class PostEventPayoutService {
         try {
             Payout po = stripeClient.payouts().create(
                     PayoutCreateParams.builder()
-                            .setAmount(payoutMinor)
+                            .setAmount(createMinor)
                             .setCurrency(cur)
                             .setDescription("imin event payout " + eventId)
                             .putMetadata("event_id", eventId.toString())
@@ -264,18 +311,43 @@ public class PostEventPayoutService {
             run.setStatus(PayoutRunStatus.SUBMITTED);
             run.setSubmittedAt(Instant.now());
             payoutRuns.save(run);
-            log.info("[payout] SUBMITTED event {} org {} acct {} amount={} {} po={}",
-                    eventId, org.getId(), acct, payoutMinor, cur, po.getId());
+            log.info("[payout] SUBMITTED event {} org {} acct {} amount={} {} po={} attempt={} remaining={}",
+                    eventId, org.getId(), acct, createMinor, cur, po.getId(), run.getAttempt(),
+                    run.getRemainingMinor());
+            if (run.getRemainingMinor() > 0L) {
+                log.warn("[payout] event {} org {} was CLAMPED to the available balance — {} {} of the "
+                                + "owed net is still outstanding and will be topped up once the balance "
+                                + "covers it (run reconciles to PARTIAL, not PAID)",
+                        eventId, org.getId(), run.getRemainingMinor(), cur);
+            }
         } catch (StripeException e) {
             // ── step 7 — failure handling ──
-            // Every create-rejection path marks the run FAILED. Stripe rejected the create,
-            // so NO po_ was minted (the request never produced a payout object) — it is safe
+            String code = e.getCode();
+
+            if (!isDefinitiveRejection(e)) {
+                // TRANSPORT failure: timeout, rate limit or 5xx. We do NOT know whether Stripe
+                // minted the payout — a read timeout on a request Stripe accepted looks exactly
+                // like one it never received. Marking this FAILED would let nextAttempt() bump
+                // to attempt 2 and mint a SECOND real bank payout for the same event on the very
+                // next tick. Instead park the run at RETRYING: the attempt and the idempotency
+                // key are untouched, so the next tick replays the SAME key and Stripe answers
+                // with the original po_ (or creates it once, if it never got the first request).
+                run.setStatus(PayoutRunStatus.RETRYING);
+                run.setFailureReason(code != null ? code : e.getMessage());
+                payoutRuns.save(run);
+                log.error("[payout] TRANSPORT failure for event {} org {} acct {} amount={} {} key={} — "
+                                + "outcome UNKNOWN, run parked RETRYING; next tick replays the SAME "
+                                + "idempotency key (never a fresh attempt)",
+                        eventId, org.getId(), acct, createMinor, cur, run.getIdempotencyKey(), e);
+                return;
+            }
+
+            // Stripe DEFINITIVELY rejected the create (4xx), so NO po_ was minted — it is safe
             // to fail and let the event re-candidate next tick with a bumped `attempt` (fresh
             // idempotency key → clean retry). balance_insufficient must NOT stay PLANNED:
             // PLANNED counts as in-flight for BOTH the org-level double-pay guard (which would
             // then freeze every sibling event for the org) and the per-event candidate query
             // (which would freeze this event), permanently. FAILED unblocks both.
-            String code = e.getCode();
             run.setStatus(PayoutRunStatus.FAILED);
             run.setFailureReason(code != null ? code : e.getMessage());
             payoutRuns.save(run);
@@ -284,19 +356,104 @@ public class PostEventPayoutService {
                         eventId, org.getId(), acct);
             } else {
                 log.error("[payout] FAILED event {} org {} acct {} amount={} {} — {}",
-                        eventId, org.getId(), acct, payoutMinor, cur, code, e);
+                        eventId, org.getId(), acct, createMinor, cur, code, e);
             }
         }
     }
 
     /**
-     * The next attempt number for an event: 1 when there are no runs, else one more
-     * than the highest attempt. Only ever called when no PLANNED/SUBMITTED/PAID run
-     * exists for the event (candidate query + step 0 guarantee that), so any existing
-     * runs are FAILED and a fresh attempt mints a fresh idempotency key.
+     * Re-read one {@code SUBMITTED} run's payout from Stripe and apply the same transition
+     * {@code SettlementIngestService.ingestPayout} would, so the trigger ledger closes even
+     * when no {@code payout.*} webhook ever arrives.
+     *
+     * <p>This is not belt-and-braces: a SUBMITTED run blocks EVERY event for its org via the
+     * org-level in-flight guard, and its only other exit is a connected-account-scoped
+     * {@code payout.paid}/{@code payout.failed} delivery — which is dark whenever the OPTIONAL
+     * {@code STRIPE_WEBHOOK_SECRET_CONNECT} is blank, and which Stripe abandons after ~3 days
+     * of retries. Without this poll one missed delivery freezes the org's payouts permanently
+     * with no signal but a 75-day retention WARN.
+     *
+     * <p>Own {@code REQUIRES_NEW} transaction so one unreadable payout can't roll back the
+     * batch. A payout Stripe still reports as pending/in_transit is LEFT SUBMITTED (it really
+     * is in flight); it is logged loudly once it is older than four reconcile windows.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void reconcileSubmittedRun(UUID runId) {
+        PayoutRun run = payoutRuns.findById(runId).orElse(null);
+        if (run == null || run.getStatus() != PayoutRunStatus.SUBMITTED) return;
+
+        String poId = run.getStripePayoutId();
+        if (poId == null || poId.isBlank()) {
+            // SUBMITTED is only ever written together with the po_ id, so this is a corrupted
+            // row rather than a real in-flight payout. Never guess — it would risk a re-pay.
+            log.error("[payout-recon] run {} (event {} org {}) is SUBMITTED with NO stripe_payout_id — "
+                            + "cannot reconcile; this row is blocking every payout for acct {}",
+                    run.getId(), run.getEventId(), run.getOrgId(), run.getStripeAccountId());
+            return;
+        }
+
+        Payout po;
+        try {
+            po = stripeClient.payouts().retrieve(poId,
+                    RequestOptions.builder().setStripeAccount(run.getStripeAccountId()).build());
+        } catch (StripeException e) {
+            log.warn("[payout-recon] could not retrieve payout {} on acct {} — {} (retrying next tick)",
+                    poId, run.getStripeAccountId(), e.getCode());
+            return;
+        }
+
+        String status = po.getStatus();
+        if ("paid".equals(status)) {
+            // Same rule as the webhook path: a clamped run settles PARTIAL, not PAID, so the
+            // event stays eligible for its top-up.
+            run.setStatus(run.getRemainingMinor() > 0L ? PayoutRunStatus.PARTIAL : PayoutRunStatus.PAID);
+            run.setPaidAt(po.getArrivalDate() == null ? Instant.now() : Instant.ofEpochSecond(po.getArrivalDate()));
+            payoutRuns.save(run);
+            log.info("[payout-recon] polled payout {} -> run {} {} (event {})",
+                    poId, run.getId(), run.getStatus(), run.getEventId());
+        } else if ("failed".equals(status) || "canceled".equals(status)) {
+            run.setStatus(PayoutRunStatus.FAILED);
+            String reason = po.getFailureCode() != null ? po.getFailureCode() : status;
+            run.setFailureReason(reason);
+            payoutRuns.save(run);
+            log.warn("[payout-recon] polled payout {} -> run {} FAILED ({}) (event {})",
+                    poId, run.getId(), reason, run.getEventId());
+        } else if (run.getSubmittedAt() != null
+                && run.getSubmittedAt().isBefore(Instant.now().minus(
+                        Duration.ofHours(4L * Math.max(1, props.getPayoutReconcileAfterHours()))))) {
+            log.error("[payout-recon] payout {} for event {} org {} has been {} since {} — every payout "
+                            + "for acct {} is blocked until it settles; check the Stripe dashboard",
+                    poId, run.getEventId(), run.getOrgId(), status, run.getSubmittedAt(),
+                    run.getStripeAccountId());
+        }
+    }
+
+    /**
+     * True only when Stripe DEFINITIVELY refused the create — the request reached Stripe,
+     * Stripe answered with a 4xx, and therefore no {@code po_} exists. Everything else
+     * (connection/read timeout, rate limit, 5xx, or any error carrying no HTTP status at
+     * all) leaves the outcome UNKNOWN and must never advance the attempt counter: the
+     * payout may already have been created.
+     */
+    private static boolean isDefinitiveRejection(StripeException e) {
+        if (e instanceof ApiConnectionException) return false;   // never reached Stripe, or no answer
+        if (e instanceof RateLimitException) return false;       // retry the same key
+        Integer status = e.getStatusCode();
+        return status != null && status >= 400 && status < 500;
+    }
+
+    /**
+     * The next attempt number for an event. A {@code RETRYING} run REUSES its attempt —
+     * that is the whole point: the replayed idempotency key is what makes Stripe return
+     * the original payout instead of minting a second one. Otherwise: 1 when there are no
+     * runs, else one more than the highest attempt. In that branch any existing runs are
+     * FAILED (the candidate query + step 0 exclude PLANNED/SUBMITTED/PAID), so a fresh
+     * attempt mints a fresh idempotency key.
      */
     private int nextAttempt(UUID eventId) {
-        return payoutRuns.maxAttemptByEventId(eventId) + 1;
+        return payoutRuns.findFirstByEventIdAndStatusOrderByAttemptDesc(eventId, PayoutRunStatus.RETRYING)
+                .map(PayoutRun::getAttempt)
+                .orElseGet(() -> payoutRuns.maxAttemptByEventId(eventId) + 1);
     }
 
     /**

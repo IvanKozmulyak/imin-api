@@ -391,7 +391,18 @@ public class StripeCheckoutService {
             // Checkout construct, and the native flow subtracts the discount from the
             // PaymentIntent amount instead. `promo_id` metadata is stamped in the shared
             // prelude, so both flows carry it.
-            couponId = createOneShotCoupon(promo, eventId, tier.getStripeProductId());
+            try {
+                couponId = createOneShotCoupon(promo, eventId, tier.getStripeProductId());
+            } catch (RuntimeException couponFailure) {
+                // createCheckout is deliberately NOT @Transactional, so nothing unwinds the
+                // inventory hold taken in the prelude above. A Stripe blip on the coupon call
+                // would otherwise strand real seats for the full checkout-session TTL (30 min)
+                // until the ReservationSweeper collects them — on a hot tier during a promo
+                // drop that reads as sold out. Mirror the session-create failure path below:
+                // release the hold, then rethrow the original error.
+                releaseQuietly(reservationId, "STRIPE_COUPON_FAILED");
+                throw couponFailure;
+            }
         }
 
         // Stripe Checkout's documented minimum lifetime is 30 minutes — anything shorter
@@ -451,12 +462,7 @@ public class StripeCheckoutService {
             // must go back to the pool. Best-effort: if release itself throws (e.g. the
             // tier was deleted in between), log it but keep the original Stripe error as
             // the user-facing cause.
-            try {
-                inventoryService.releaseReservation(reservationId, "STRIPE_CREATE_FAILED");
-            } catch (Exception releaseFailure) {
-                log.error("Failed to release reservation {} after Stripe session create failure: {}",
-                        reservationId, releaseFailure.getMessage(), releaseFailure);
-            }
+            releaseQuietly(reservationId, "STRIPE_CREATE_FAILED");
             // Best-effort: delete the one-shot coupon we minted above — it was never attached to a
             // live session, so leaving it dangles a useless object on the platform account.
             if (couponId != null) {
@@ -749,6 +755,20 @@ public class StripeCheckoutService {
         if (promo == null) return 0L;
         long discount = Math.round(subtotal * (double) promo.getDiscountPct() / 100.0);
         return Math.min(discount, subtotal);
+    }
+
+    /**
+     * Return held seats to the pool after a Stripe failure, best-effort: if the release itself
+     * throws (e.g. the tier was deleted in between) log it and let the caller rethrow the
+     * ORIGINAL Stripe error as the user-facing cause.
+     */
+    private void releaseQuietly(UUID reservationId, String reason) {
+        try {
+            inventoryService.releaseReservation(reservationId, reason);
+        } catch (Exception releaseFailure) {
+            log.error("Failed to release reservation {} after Stripe failure ({}): {}",
+                    reservationId, reason, releaseFailure.getMessage(), releaseFailure);
+        }
     }
 
     /**

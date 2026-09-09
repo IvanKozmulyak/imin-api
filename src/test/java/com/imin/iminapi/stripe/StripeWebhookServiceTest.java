@@ -68,7 +68,7 @@ class StripeWebhookServiceTest {
         // Default: issuance succeeds (first-time). Promo increment is now gated on this returning
         // true (so a duplicate delivery can't double-count); the "never increments" cases below
         // are driven by missing promo metadata, not by issuance returning false.
-        when(paidCheckoutService.issuePaidOrder(any(PaymentIntent.class))).thenReturn(true);
+        when(paidCheckoutService.issuePaidOrder(any(PaymentIntent.class), any())).thenReturn(true);
 
         recorded = new HashSet<>();
         when(dedup.tryRecord(anyString(), anyString())).thenAnswer(inv -> {
@@ -278,7 +278,7 @@ class StripeWebhookServiceTest {
                 .isInstanceOf(ApiException.class);
 
         verify(dedup, never()).tryRecord(anyString(), anyString());
-        verify(paidCheckoutService, never()).issuePaidOrder(any(PaymentIntent.class));
+        verify(paidCheckoutService, never()).issuePaidOrder(any(PaymentIntent.class), any());
     }
 
     @Test
@@ -361,7 +361,27 @@ class StripeWebhookServiceTest {
 
         svc.handleV1Endpoint(body, sign(body));
 
-        verify(paidCheckoutService).issuePaidOrder(any(PaymentIntent.class));
+        verify(paidCheckoutService).issuePaidOrder(any(PaymentIntent.class), any());
+    }
+
+    // ── stripe-9 — Stripe reads must happen BEFORE the tier row lock ──────────────
+    @Test
+    void paymentIntentSucceeded_resolvesTheBuyerFromStripeBeforeLockingTheTier() throws Exception {
+        // confirmSold runs SELECT … FOR UPDATE on the ticket tier and holds it until this
+        // transaction commits. Resolving the buyer (charges().retrieve + sessions().list, both
+        // blocking, 80s default read timeout) inside that window put every concurrent buyer of
+        // the tier behind Stripe's latency, so the resolution has to come first.
+        UUID reservationId = UUID.randomUUID();
+        UUID tierId = UUID.randomUUID();
+        String body = paymentIntentEvent("evt_pi_order_of_ops", "payment_intent.succeeded",
+                metaJson(reservationId, tierId, 1));
+
+        svc.handleV1Endpoint(body, sign(body));
+
+        var inOrder = org.mockito.Mockito.inOrder(paidCheckoutService, inventoryService);
+        inOrder.verify(paidCheckoutService).prepareIssuance(any(PaymentIntent.class));
+        inOrder.verify(inventoryService).confirmSold(reservationId);
+        inOrder.verify(paidCheckoutService).issuePaidOrder(any(PaymentIntent.class), any());
     }
 
     @Test
@@ -375,7 +395,7 @@ class StripeWebhookServiceTest {
 
         svc.handleV1Endpoint(body, sign(body));
 
-        verify(paidCheckoutService).issuePaidOrder(any(PaymentIntent.class));
+        verify(paidCheckoutService).issuePaidOrder(any(PaymentIntent.class), any());
     }
 
     @Test
@@ -387,7 +407,7 @@ class StripeWebhookServiceTest {
 
         svc.handleV1Endpoint(body, sign(body));
 
-        verify(paidCheckoutService, never()).issuePaidOrder(any(PaymentIntent.class));
+        verify(paidCheckoutService, never()).issuePaidOrder(any(PaymentIntent.class), any());
     }
 
     // ── payment_intent.payment_failed → releaseReservation ─────────────────────

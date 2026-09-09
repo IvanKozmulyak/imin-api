@@ -334,23 +334,32 @@ public class StripeConnectService {
     }
 
     /**
-     * Authoritative readiness read for the money path (checkout). Shares the {@link #shouldRefresh}
-     * freshness gate with {@link #getStatus} — force-refreshes the mirror from Stripe whenever the
-     * cached state could be wrong (any non-{@code ACTIVE} state, or an {@code ACTIVE} mirror older
-     * than the window) — so a freshly verified org isn't wrongly blocked from selling and a
-     * just-disabled org isn't wrongly allowed. The only difference from {@link #getStatus} is that
-     * this skips the org-ownership check: it's an internal call by orgId, not an organizer request.
-     * Best-effort: a Stripe outage degrades to the last-known mirror value
+     * Authoritative readiness read for the money path (checkout) — called once per checkout by
+     * {@code StripeCheckoutService.reserveAndBuildMetadata}. Force-refreshes the mirror from
+     * Stripe whenever the cached state could be wrong, so a freshly verified org isn't wrongly
+     * blocked from selling and a just-disabled org isn't wrongly allowed. It skips the
+     * org-ownership check {@link #getStatus} does: it's an internal call by orgId, not an
+     * organizer request. Best-effort: a Stripe outage degrades to the last-known mirror value
      * ({@link StripeConnectStatusMirror#syncFromStripe} swallows upstream errors), so checkout
      * never hard-fails just because Stripe is down.
+     *
+     * <p><b>Freshness is bounded, unlike {@link #getStatus}.</b> An org whose transfers
+     * capability is {@code active} but which has any {@code currently_due} entry derives as
+     * {@code RESTRICTED} while {@code readyToReceivePayments} stays true — it sells normally.
+     * With "refresh whenever not ACTIVE" that org paid a full Stripe v2 round trip plus an
+     * {@code organizations} UPDATE on EVERY checkout, holding a pooled connection for the
+     * duration with all concurrent buyers writing the same row. A short window
+     * ({@value #LIVE_NON_ACTIVE_WINDOW_SECONDS}s) keeps the gate live to the second while
+     * collapsing an on-sale's worth of duplicate syncs into one. Deliberately NOT
+     * {@code @Transactional}: the Stripe call must not be made with a transaction open, and the
+     * mirror opens its own for the write.
      */
-    @Transactional
     public StatusResult getStatusLive(UUID orgId) {
         Organization org = orgs.findById(orgId).orElseThrow(() -> ApiException.notFound("Organization"));
         if (!hasAccount(org)) {
             return notStarted();
         }
-        if (mirror != null && shouldRefresh(org)) {
+        if (mirror != null && shouldRefreshForCheckout(org)) {
             mirror.syncFromStripe(org.getStripeAccountId());
             org = orgs.findById(orgId).orElse(org);
         }
@@ -368,6 +377,25 @@ public class StripeConnectService {
         if (org.getStripeConnectState() != StripeConnectState.ACTIVE) return true;
         var updatedAt = org.getStripeConnectStatusUpdatedAt();
         return updatedAt == null || updatedAt.isBefore(Times.nowMicros().minus(Duration.ofMinutes(5)));
+    }
+
+    /** Seconds a non-ACTIVE mirror is trusted on the CHECKOUT path (see {@link #getStatusLive}). */
+    private static final int LIVE_NON_ACTIVE_WINDOW_SECONDS = 30;
+
+    /**
+     * The checkout-path variant of {@link #shouldRefresh}: same 5-minute window for ACTIVE, but a
+     * non-ACTIVE mirror is trusted for {@value #LIVE_NON_ACTIVE_WINDOW_SECONDS}s instead of being
+     * re-synced on literally every checkout. A never-synced org always refreshes. The organizer
+     * dashboard keeps the unbounded behaviour via {@link #shouldRefresh}, so a "refresh" click
+     * right after onboarding still re-checks Stripe immediately.
+     */
+    private static boolean shouldRefreshForCheckout(Organization org) {
+        var updatedAt = org.getStripeConnectStatusUpdatedAt();
+        if (updatedAt == null) return true;
+        Duration window = org.getStripeConnectState() == StripeConnectState.ACTIVE
+                ? Duration.ofMinutes(5)
+                : Duration.ofSeconds(LIVE_NON_ACTIVE_WINDOW_SECONDS);
+        return updatedAt.isBefore(Times.nowMicros().minus(window));
     }
 
     private static StatusResult notStarted() {
@@ -413,8 +441,6 @@ public class StripeConnectService {
                 && e.getMessage().contains("is currently unavailable in");
     }
 
-    /** @noinspection unused — used by tests + reflection-friendly */
-    static List<String> readyStatuses() { return List.of("active"); }
 
     // ── DTOs returned to controllers ───────────────────────────────────────
 

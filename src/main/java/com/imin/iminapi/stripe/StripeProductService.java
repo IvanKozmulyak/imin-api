@@ -11,7 +11,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import java.util.Map;
 
 /**
  * Syncs a {@link TicketTier} to a Stripe Product + Price on the *platform* account.
@@ -126,10 +125,4 @@ public class StripeProductService {
         }
     }
 
-    /** @return metadata snapshot for logging in tests / debug. */
-    Map<String, String> describe(TicketTier tier) {
-        return Map.of(
-                "productId", String.valueOf(tier.getStripeProductId()),
-                "priceId", String.valueOf(tier.getStripePriceId()));
-    }
 }

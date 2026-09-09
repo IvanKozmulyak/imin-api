@@ -78,6 +78,26 @@ public class PaidCheckoutService {
     }
 
     /**
+     * Resolve the buyer email + session id for a PI BEFORE any inventory work starts.
+     *
+     * <p>Split out of {@link #issuePaidOrder} on purpose. The webhook transaction takes a
+     * {@code SELECT … FOR UPDATE} on the ticket tier ({@code InventoryService.confirmSold}) and
+     * holds it until commit; resolving the buyer inside that window meant up to two blocking
+     * Stripe round trips (stripe-java's default read timeout is 80s) with the tier row locked
+     * and a pooled DB connection held, so every concurrent buyer of that tier queued behind
+     * Stripe's latency. The caller now resolves FIRST, then locks.
+     *
+     * @return the resolution, or {@code null} when there is nothing to resolve — a malformed PI
+     *         or an order that already exists (the idempotent short-circuit, kept cheap so a
+     *         redelivery still costs no Stripe calls).
+     */
+    public BuyerResolution prepareIssuance(PaymentIntent pi) {
+        if (pi == null || pi.getId() == null) return null;
+        if (orders.findByStripePaymentIntentId(pi.getId()).isPresent()) return null;
+        return resolveBuyerAndSession(pi);
+    }
+
+    /**
      * @return {@code true} only when THIS call created the Order (first successful issuance);
      *         {@code false} on any idempotent short-circuit (already issued, missing/invalid
      *         metadata, duplicate-key race). Callers use the boolean to gate side effects that
@@ -85,6 +105,16 @@ public class PaidCheckoutService {
      */
     @Transactional
     public boolean issuePaidOrder(PaymentIntent pi) {
+        return issuePaidOrder(pi, null);
+    }
+
+    /**
+     * As {@link #issuePaidOrder(PaymentIntent)}, but reusing a {@link BuyerResolution} the caller
+     * already obtained from {@link #prepareIssuance} outside the tier-lock window. A null
+     * {@code prepared} falls back to resolving inline, which is what the reconciler and the
+     * tests do.
+     */
+    public boolean issuePaidOrder(PaymentIntent pi, BuyerResolution prepared) {
         if (pi == null || pi.getId() == null) {
             log.warn("issuePaidOrder called with null PI — skipping");
             return false;
@@ -134,8 +164,8 @@ public class PaidCheckoutService {
         TicketTier tier = tiers.findById(tierId).orElseThrow(() ->
                 new IllegalStateException("Tier " + tierId + " for PI " + pi.getId() + " is missing"));
 
-        Resolved resolved = resolveBuyerAndSession(pi);
-        if (resolved.buyerEmail == null) {
+        BuyerResolution resolved = prepared != null ? prepared : resolveBuyerAndSession(pi);
+        if (resolved.buyerEmail() == null) {
             throw new IllegalStateException("Could not resolve buyer email for PI " + pi.getId()
                     + " — webhook will be retried by Stripe");
         }
@@ -144,14 +174,14 @@ public class PaidCheckoutService {
         order.setToken(randomToken());
         order.setEventId(event.getId());
         order.setOrgId(event.getOrgId());
-        order.setEmail(resolved.buyerEmail.trim().toLowerCase(Locale.ROOT));
+        order.setEmail(resolved.buyerEmail().trim().toLowerCase(Locale.ROOT));
         order.setTotalMinor(pi.getAmount() == null ? 0L : pi.getAmount());
         order.setCurrency(pi.getCurrency() == null
                 ? event.getCurrency()
                 : pi.getCurrency().toLowerCase(Locale.ROOT));
         order.setPaymentMethod("stripe");
         order.setStripePaymentIntentId(pi.getId());
-        order.setStripeSessionId(resolved.sessionId);
+        order.setStripeSessionId(resolved.sessionId());
         // Buyer's cookie-consent ads-consent decision (§7), stamped into the session/PI
         // metadata at checkout by StripeCheckoutService. Snapshotted onto orders.ads_consent;
         // gates the server-side Meta CAPI event (MetaCapiOutboxWriter). Absent/anything-but-
@@ -226,7 +256,7 @@ public class PaidCheckoutService {
      * charged and never receives a ticket. ({@code receipt_email} is not a way out —
      * nothing in this codebase reads it back.)
      */
-    private Resolved resolveBuyerAndSession(PaymentIntent pi) {
+    private BuyerResolution resolveBuyerAndSession(PaymentIntent pi) {
         Map<String, String> meta = pi.getMetadata() == null ? Map.of() : pi.getMetadata();
 
         // A native PI has no Checkout Session, so listing sessions for it is a
@@ -234,7 +264,7 @@ public class PaidCheckoutService {
         // StripePaymentIntentService stamps both keys via the shared prelude.
         if ("native".equals(meta.get("client"))) {
             String fromCharge = readChargeEmail(pi);
-            return new Resolved(fromCharge != null ? fromCharge : trimToNull(meta.get("buyer_email")), null);
+            return new BuyerResolution(fromCharge != null ? fromCharge : trimToNull(meta.get("buyer_email")), null);
         }
 
         String emailFromCharge = readChargeEmail(pi);
@@ -264,7 +294,7 @@ public class PaidCheckoutService {
         // Last resort for a hosted PI whose session lookup failed or came back empty.
         // Costs nothing and turns an unfulfillable order into a fulfilled one.
         if (email == null) email = trimToNull(meta.get("buyer_email"));
-        return new Resolved(email, sessionId);
+        return new BuyerResolution(email, sessionId);
     }
 
     private static String trimToNull(String s) {
@@ -287,7 +317,8 @@ public class PaidCheckoutService {
         return null;
     }
 
-    private record Resolved(String buyerEmail, String sessionId) {}
+    /** Buyer email + Checkout Session id for a PaymentIntent, resolved from Stripe. */
+    public record BuyerResolution(String buyerEmail, String sessionId) {}
 
     private static String randomToken() {
         byte[] bytes = new byte[24];

@@ -132,8 +132,10 @@ class PayoutServiceTest {
 
     @Test
     void summary_sumsByStatusAndWindow() {
-        when(settlements.sumAmountByOrgAndStatus(ORG, SettlementStatus.IN_TRANSIT)).thenReturn(5_000L);
-        when(settlements.sumAmountByOrgAndStatus(ORG, SettlementStatus.PENDING)).thenReturn(2_500L);
+        when(settlements.sumAmountByOrgAndTypeAndStatus(ORG, SettlementObjectType.PAYOUT,
+                SettlementStatus.IN_TRANSIT)).thenReturn(5_000L);
+        when(settlements.sumAmountByOrgAndTypeAndStatus(ORG, SettlementObjectType.PAYOUT,
+                SettlementStatus.PENDING)).thenReturn(2_500L);
         List<Object[]> countAndSum = java.util.Collections.singletonList(new Object[]{3L, 30_000L});
         when(settlements.countAndSumPaidByOrgAndTypeInWindow(eq(ORG), eq(SettlementObjectType.PAYOUT),
                 eq(SettlementStatus.PAID), any(Instant.class), any(Instant.class)))
@@ -151,10 +153,35 @@ class PayoutServiceTest {
         assertThat(summary.arrivesOnLabel()).isEqualTo("Jun 20");
     }
 
+    // ── stripe-5 — the pending tile is PAYOUT-scoped, not a lifetime transfer total ──
+    @Test
+    void summary_pendingIgnoresTransferRowsMirroringTheSameFunds() {
+        // Every destination-charge TRANSFER is ingested PENDING and nothing routinely moves
+        // it out, so an unscoped sum would report the org's whole lifetime transfer volume
+        // as "pending" — double-counting the euros the payout row already represents.
+        when(settlements.sumAmountByOrgAndTypeAndStatus(ORG, SettlementObjectType.PAYOUT,
+                SettlementStatus.IN_TRANSIT)).thenReturn(0L);
+        when(settlements.sumAmountByOrgAndTypeAndStatus(ORG, SettlementObjectType.PAYOUT,
+                SettlementStatus.PENDING)).thenReturn(2_500L);
+        when(settlements.sumAmountByOrgAndTypeAndStatus(ORG, SettlementObjectType.TRANSFER,
+                SettlementStatus.PENDING)).thenReturn(999_999L);
+        when(settlements.countAndSumPaidByOrgAndTypeInWindow(eq(ORG), eq(SettlementObjectType.PAYOUT),
+                eq(SettlementStatus.PAID), any(Instant.class), any(Instant.class)))
+                .thenReturn(java.util.Collections.singletonList(new Object[]{0L, 0L}));
+        when(settlements.findByOrgIdAndStatusOrderByCreatedAtDesc(ORG, SettlementStatus.IN_TRANSIT))
+                .thenReturn(List.of());
+
+        assertThat(sut.summary(ORG).pending())
+                .as("only the PAYOUT rows count — the 999_999 of pending transfers is the same money")
+                .isEqualTo(2_500L);
+    }
+
     @Test
     void summary_emptyTable_yieldsZerosAndNullOptionals() {
-        when(settlements.sumAmountByOrgAndStatus(ORG, SettlementStatus.IN_TRANSIT)).thenReturn(0L);
-        when(settlements.sumAmountByOrgAndStatus(ORG, SettlementStatus.PENDING)).thenReturn(0L);
+        when(settlements.sumAmountByOrgAndTypeAndStatus(ORG, SettlementObjectType.PAYOUT,
+                SettlementStatus.IN_TRANSIT)).thenReturn(0L);
+        when(settlements.sumAmountByOrgAndTypeAndStatus(ORG, SettlementObjectType.PAYOUT,
+                SettlementStatus.PENDING)).thenReturn(0L);
         List<Object[]> zeroWindow = java.util.Collections.singletonList(new Object[]{0L, 0L});
         when(settlements.countAndSumPaidByOrgAndTypeInWindow(eq(ORG), eq(SettlementObjectType.PAYOUT),
                 eq(SettlementStatus.PAID), any(Instant.class), any(Instant.class)))

@@ -39,6 +39,11 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *   <li>{@code payout-buffer-days} — STRIPE_PAYOUT_BUFFER_DAYS. Days after
  *       {@code event.endsAt} before the post-event payout job fires. Default 3
  *       (covers most EU card availability lag).</li>
+ *   <li>{@code payout-reconcile-after-hours} — STRIPE_PAYOUT_RECONCILE_AFTER_HOURS.
+ *       Age at which a {@code SUBMITTED} payout run is re-read from Stripe instead of
+ *       waiting for a {@code payout.*} webhook that may never come (the Connect signing
+ *       secret is optional, and Stripe gives up retrying after ~3 days). Default 6h —
+ *       i.e. any run left over from a previous daily tick.</li>
  *   <li>{@code payout-zone} — STRIPE_PAYOUT_ZONE. Timezone for resolving the
  *       payout buffer deadline (the business deadline, not the event's local
  *       zone). Default {@code Europe/Amsterdam}.</li>
@@ -60,6 +65,7 @@ public class StripeProperties {
     // ----- Track B manual payouts (Phase 1/2). DEFAULT FALSE => inert on deploy. -----
     private boolean payoutScheduleManual = false;
     private int payoutBufferDays = 3;
+    private int payoutReconcileAfterHours = 6;
     private String payoutZone = "Europe/Amsterdam";
 
     public String getSecretKey() { return secretKey; }
@@ -108,6 +114,11 @@ public class StripeProperties {
 
     public int getPayoutBufferDays() { return payoutBufferDays; }
     public void setPayoutBufferDays(int payoutBufferDays) { this.payoutBufferDays = payoutBufferDays; }
+
+    public int getPayoutReconcileAfterHours() { return payoutReconcileAfterHours; }
+    public void setPayoutReconcileAfterHours(int payoutReconcileAfterHours) {
+        this.payoutReconcileAfterHours = payoutReconcileAfterHours;
+    }
 
     public String getPayoutZone() { return payoutZone; }
     public void setPayoutZone(String payoutZone) { this.payoutZone = payoutZone; }

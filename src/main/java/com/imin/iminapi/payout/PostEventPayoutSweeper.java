@@ -11,6 +11,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.Instant;
@@ -46,15 +47,18 @@ public class PostEventPayoutSweeper {
 
     private final StripeProperties props;
     private final EventRepository events;
+    private final PayoutRunRepository payoutRuns;
     private final PostEventPayoutService payoutService;
     private final Clock clock;
 
     public PostEventPayoutSweeper(StripeProperties props,
                                   EventRepository events,
+                                  PayoutRunRepository payoutRuns,
                                   PostEventPayoutService payoutService,
                                   Clock clock) {
         this.props = props;
         this.events = events;
+        this.payoutRuns = payoutRuns;
         this.payoutService = payoutService;
         this.clock = clock;
     }
@@ -63,6 +67,14 @@ public class PostEventPayoutSweeper {
     @SchedulerLock(name = "PostEventPayoutSweeper.sweep", lockAtLeastFor = "PT1M", lockAtMostFor = "PT30M")
     public void sweep() {
         if (!props.isPayoutScheduleManual()) return;   // master kill-switch — inert when off
+
+        // ── step A — reconcile stale SUBMITTED runs BEFORE looking for candidates ──
+        // A SUBMITTED run blocks every event for its org (the org-level in-flight guard) and
+        // its only other exit is a connected-account payout.* webhook, which is dark whenever
+        // the OPTIONAL STRIPE_WEBHOOK_SECRET_CONNECT is blank and which Stripe stops retrying
+        // after ~3 days. Polling Stripe for the po_ we stored closes the loop, and doing it
+        // first means an org unblocked here can still be paid in the same tick.
+        reconcileStaleSubmitted();
 
         // Resolve the buffer deadline in the configured payout zone (the business
         // deadline, not the event's local zone): an event qualifies when
@@ -91,5 +103,28 @@ public class PostEventPayoutSweeper {
             }
         }
         log.info("[payout-sweep] tick done processed={} errored={}", paid, failed);
+    }
+
+    /**
+     * Re-read every {@code SUBMITTED} payout run older than the reconcile window from Stripe
+     * and apply the {@code paid}/{@code failed} transition the webhook would have. Each run
+     * reconciles in its own {@code REQUIRES_NEW} transaction through the service proxy, so
+     * one unreadable payout can't abort the sweep.
+     */
+    private void reconcileStaleSubmitted() {
+        Instant staleBefore = Instant.now(clock).minus(
+                Duration.ofHours(Math.max(1, props.getPayoutReconcileAfterHours())));
+        List<PayoutRun> stale = payoutRuns.findByStatusAndSubmittedAtBefore(
+                PayoutRunStatus.SUBMITTED, staleBefore);
+        if (stale.isEmpty()) return;
+
+        log.info("[payout-sweep] reconciling {} SUBMITTED run(s) submitted before {}", stale.size(), staleBefore);
+        for (PayoutRun r : stale) {
+            try {
+                payoutService.reconcileSubmittedRun(r.getId());
+            } catch (Exception ex) {
+                log.error("[payout-sweep] reconcile failed for run {} — {}", r.getId(), ex.getMessage(), ex);
+            }
+        }
     }
 }

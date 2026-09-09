@@ -142,7 +142,7 @@ class PaymentIntentIdempotencyTest {
         verify(paymentIntents, times(1)).create(any(PaymentIntentCreateParams.class));
         verify(checkoutService, times(1)).reserveAndBuildMetadata(
                 any(), any(), any(), anyInt(), any(), anyBoolean(), anyBoolean(),
-                any(), any(), anyBoolean());
+                any(), any(), anyBoolean(), any());
         // Nothing was released: the first hold is the one the buyer still has.
         verify(inventory, never()).releaseReservation(any(), any());
     }
@@ -244,6 +244,22 @@ class PaymentIntentIdempotencyTest {
                 .hasMessageContaining("already in progress");
     }
 
+    // ── stripe-13 — the key lookup is unscoped, so the replay must be checked ─────
+    @Test
+    void aKeyHeldByADifferentTiersReservationIsRefusedNotReplayed() throws Exception {
+        // The lookup is on the raw header value alone, on an UNAUTHENTICATED endpoint, so the
+        // server cannot assume every client picks a good key. Replaying here would hand back a
+        // client secret and an amount belonging to somebody else's purchase.
+        create("key-abc");
+        claimed.get("key-abc").setTierId(UUID.randomUUID());   // a reservation for another tier
+
+        assertThatThrownBy(() -> create("key-abc"))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("already in progress");
+
+        verify(paymentIntents, times(1)).create(any(PaymentIntentCreateParams.class));
+    }
+
     /**
      * Truncating to the column width would silently collapse two distinct keys
      * that share a prefix into one purchase — the exact failure this feature
@@ -292,7 +308,7 @@ class PaymentIntentIdempotencyTest {
 
         when(checkoutService.reserveAndBuildMetadata(
                 any(), any(), any(), anyInt(), any(), anyBoolean(), anyBoolean(),
-                any(), any(), anyBoolean()))
+                any(), any(), anyBoolean(), any()))
                 .thenReturn(new StripeCheckoutService.PaidPrelude(
                         null, null, org, null, reservationId, java.time.Instant.now(),
                         subtotal, 0L, subtotal, fee, "eur", metadata));
