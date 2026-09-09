@@ -14,9 +14,12 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
 import javax.imageio.ImageIO;
+import javax.imageio.ImageReader;
+import javax.imageio.stream.ImageInputStream;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.util.Iterator;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
@@ -35,6 +38,14 @@ public class OrgMediaService {
     private static final Logger log = LoggerFactory.getLogger(OrgMediaService.class);
     private static final long MAX_BYTES = 2L * 1024 * 1024;
     private static final int MIN_SHORT_SIDE = 128;
+    /**
+     * 4096 x 4096. The byte cap alone does not bound the decoded raster: PNG deflate on flat
+     * imagery reaches ratios in the thousands, so a well-formed 2 MB upload can declare tens of
+     * thousands of pixels per side, and {@code ImageIO.read} allocates the whole destination
+     * from the header before it looks at a single pixel — gigabytes on the request thread, an
+     * OutOfMemoryError that takes the JVM with it rather than a 400 for the uploader.
+     */
+    private static final long MAX_PIXELS = 16_777_216L;
     private static final double MIN_ASPECT = 0.25; // 1:4
     private static final double MAX_ASPECT = 4.0;  // 4:1
 
@@ -108,21 +119,38 @@ public class OrgMediaService {
         if (!"image/png".equals(contentType)) throw fieldErr("PNG only for poster logos (SVG support later)");
         if (bytes.length < 8 || !isPngMagic(bytes)) throw fieldErr("content does not match declared type");
 
+        // Dimensions come from the IHDR, BEFORE any decode — see MAX_PIXELS. Every size rule
+        // is applied to the declared width/height, so an oversized image is refused without
+        // ever allocating a raster for it; the decode below only proves the pixel data is
+        // readable, on an image already known to be small.
         BufferedImage img;
-        try {
-            img = ImageIO.read(new ByteArrayInputStream(bytes));
+        try (ImageInputStream iis = ImageIO.createImageInputStream(new ByteArrayInputStream(bytes))) {
+            if (iis == null) throw fieldErr("could not decode PNG");
+            Iterator<ImageReader> readers = ImageIO.getImageReaders(iis);
+            if (!readers.hasNext()) throw fieldErr("could not decode PNG");
+            ImageReader reader = readers.next();
+            try {
+                reader.setInput(iis, true, true);
+                int w = reader.getWidth(0);
+                int h = reader.getHeight(0);
+                if ((long) w * (long) h > MAX_PIXELS) {
+                    throw fieldErr("must be at most 4096x4096 px");
+                }
+                if (Math.min(w, h) < MIN_SHORT_SIDE) {
+                    throw fieldErr("must be at least 128px on the short side");
+                }
+                double aspect = (double) w / (double) h;
+                if (aspect < MIN_ASPECT || aspect > MAX_ASPECT) {
+                    throw fieldErr("aspect ratio must be between 1:4 and 4:1");
+                }
+                img = reader.read(0);
+            } finally {
+                reader.dispose();
+            }
         } catch (IOException e) {
             throw fieldErr("could not decode PNG");
         }
         if (img == null) throw fieldErr("could not decode PNG");
-
-        int w = img.getWidth();
-        int h = img.getHeight();
-        if (Math.min(w, h) < MIN_SHORT_SIDE) throw fieldErr("must be at least 128px on the short side");
-        double aspect = (double) w / (double) h;
-        if (aspect < MIN_ASPECT || aspect > MAX_ASPECT) {
-            throw fieldErr("aspect ratio must be between 1:4 and 4:1");
-        }
     }
 
     private static boolean isPngMagic(byte[] b) {
