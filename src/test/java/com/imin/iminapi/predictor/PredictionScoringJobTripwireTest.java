@@ -52,7 +52,7 @@ class PredictionScoringJobTripwireTest {
         outcomes = mock(EventOutcomeRepository.class);
         segments = mock(PredictorSegmentStatusRepository.class);
         sut = new PredictionScoringJob(ledger, outcomes, mock(PredictionLedgerService.class), segments, clock);
-        when(ledger.findByOutcomeJoinedAtIsNullOrderByCreatedAtAscIdAsc(any())).thenReturn(List.of());
+        when(ledger.findJoinable(any())).thenReturn(List.of());
         when(outcomes.findById(any())).thenAnswer(inv -> Optional.ofNullable(outcomeByEvent.get(inv.getArgument(0))));
         when(segments.findById(any())).thenReturn(Optional.empty());
     }
@@ -98,6 +98,22 @@ class PredictionScoringJobTripwireTest {
         assertThat(s.getDowngradedAt()).isEqualTo(now);
         assertThat(s.getReason()).contains("Brier").contains("base-rate");
         assertThat(s.getScoredCount()).isEqualTo(20);
+    }
+
+    @Test
+    void scoredCountCountsMeasuredRendersNotEveryJoinedRow() {
+        // 20 renders carrying a Brier component, plus 10 joined rows that measured nothing (a
+        // re-forecast row parses into a PredictionResult with no sell-out band and no attendance
+        // range, so both metrics come back null). "Scored: 30" would tell a founder the mean rests
+        // on 30 measurements when only 20 exist.
+        List<PredictionLedger> rows = new ArrayList<>();
+        for (int i = 0; i < 20; i++) rows.add(scoredRow(new BigDecimal("0.010000"), null, false));
+        for (int i = 0; i < 10; i++) rows.add(scoredRow(null, null, false));
+        when(ledger.findByOutcomeJoinedAtIsNotNull()).thenReturn(rows);
+
+        sut.run();
+
+        assertThat(savedSegment().getScoredCount()).isEqualTo(20);
     }
 
     @Test

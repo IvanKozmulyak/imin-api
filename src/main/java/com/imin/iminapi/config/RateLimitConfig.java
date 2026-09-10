@@ -297,6 +297,7 @@ public class RateLimitConfig {
         // reason buyer-native-signin shares one.
         configs.put("oauth-callback", BucketConfiguration.builder()
                 .addLimit(Bandwidth.simple(oauthCallbackCapacity, Duration.ofMinutes(oauthCallbackWindow)))
+                .build());
         // Buyer verify-email, keyed per client IP. It had no bucket at all: the
         // DB-counted lockout was the stated control, and that counter was keyed
         // on the address in the request body — a stranger's failures locked the

@@ -94,24 +94,37 @@ public class WeatherService {
         return w;
     }
 
+    /**
+     * City → coordinates, cached forever (a city does not move). The lookup happens OUTSIDE the
+     * map: ConcurrentHashMap runs a computeIfAbsent mapping function while holding the bin lock,
+     * so doing the HTTP round trip in there blocks every other thread hashing into that bin for
+     * the length of a network call — on the synchronous POST /reforecast path. A duplicate
+     * concurrent lookup for a cold key is much cheaper than that (and the same pattern
+     * {@link #cachedForecast} already uses).
+     */
     private double[] geocode(String city, String country) {
         String key = city.toLowerCase() + "|" + (country == null ? "" : country.toLowerCase());
-        return coordsCache.computeIfAbsent(key, k -> {
-            try {
-                String url = "https://geocoding-api.open-meteo.com/v1/search?count=1&language=en&format=json&name="
-                        + URLEncoder.encode(city, StandardCharsets.UTF_8)
-                        + (country == null || country.isBlank() ? "" : "&country=" + URLEncoder.encode(country, StandardCharsets.UTF_8));
-                JsonNode results = getJson(url).path("results");
-                if (!results.isArray() || results.isEmpty()) return Optional.empty();
+        Optional<double[]> cached = coordsCache.get(key);
+        if (cached != null) return cached.orElse(null);
+        Optional<double[]> looked;
+        try {
+            String url = "https://geocoding-api.open-meteo.com/v1/search?count=1&language=en&format=json&name="
+                    + URLEncoder.encode(city, StandardCharsets.UTF_8)
+                    + (country == null || country.isBlank() ? "" : "&country=" + URLEncoder.encode(country, StandardCharsets.UTF_8));
+            JsonNode results = getJson(url).path("results");
+            if (!results.isArray() || results.isEmpty()) {
+                looked = Optional.empty();
+            } else {
                 JsonNode first = results.get(0);
-                return Optional.of(new double[]{first.path("latitude").asDouble(), first.path("longitude").asDouble()});
-            } catch (Exception e) {
-                log.debug("[weather] geocode failed for {}: {}", city, e.getMessage());
-                return Optional.empty();
+                looked = Optional.of(new double[]{first.path("latitude").asDouble(), first.path("longitude").asDouble()});
             }
-        }).orElse(null);
+        } catch (Exception e) {
+            log.debug("[weather] geocode failed for {}: {}", city, e.getMessage());
+            looked = Optional.empty();
+        }
+        Optional<double[]> won = coordsCache.putIfAbsent(key, looked);
+        return (won != null ? won : looked).orElse(null);
     }
-
     private JsonNode getJson(String url) throws Exception {
         HttpRequest req = HttpRequest.newBuilder(URI.create(url))
                 .timeout(Duration.ofSeconds(3)).GET().build();

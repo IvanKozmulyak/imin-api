@@ -271,6 +271,25 @@ class EventOutcomeServiceTest {
         assertThat(fin.getSoldTotal()).isEqualTo(7);
         assertThat(fin.getAttendance()).isEqualTo(7);           // tickets-sold fallback
         assertThat(fin.getAttendanceSource()).isEqualTo(AttendanceSource.SALES);
+        // No beacon row exists for this event at all: that is an ABSENCE of funnel data, not a
+        // measurement of zero page views. The corpus must not learn a number nobody observed.
+        assertThat(fin.getFunnelViews()).isNull();
+        assertThat(fin.getFunnelCheckoutStarts()).isNull();
+    }
+
+    @Test
+    void finalize_leavesRefundRateNull_whenNothingWasIssued() {
+        Event e = liveEvent();
+        tier(e.getId(), "GA", 2000, 50, 0);
+        service.freezeOnPublish(e);
+
+        EventOutcome o = outcomes.findById(e.getId()).orElseThrow();
+        service.finalize(o, e, Instant.now());
+
+        EventOutcome fin = outcomes.findById(e.getId()).orElseThrow();
+        assertThat(fin.getSoldTotal()).isZero();
+        assertThat(fin.getRefundCount()).isZero();
+        assertThat(fin.getRefundRate()).isNull();   // 0 of 0 issued is undefined, not a 0.0000 rate
     }
 
     @Test
