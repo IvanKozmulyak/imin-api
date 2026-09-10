@@ -1,6 +1,7 @@
 package com.imin.iminapi.dto.event;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import jakarta.validation.constraints.Size;
 
 import java.time.Instant;
 import java.util.List;
@@ -9,10 +10,19 @@ import java.util.UUID;
 /**
  * Partial update body. All fields nullable; null = leave unchanged.
  * Server permits incomplete drafts and only validates on publish.
+ *
+ * <p>{@code genre} is bounded at 64 characters to match {@code event_outcomes.genre_family}
+ * (predictor-edge-5): the predictor's publish-freeze snapshots the genre into that VARCHAR(64)
+ * inside {@code EventService.publish}'s transaction, so a longer value used to fail the INSERT
+ * and roll the whole publish back with nothing naming the field. The freeze also clamps
+ * defensively — this rule is what names the field instead of truncating silently. The endpoints
+ * carry {@code @Valid} so it is not inert.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record EventPatchRequest(
-        String name, String slug, String visibility, String genre, String type,
+        String name, String slug, String visibility,
+        @Size(max = 64, message = "must be at most 64 characters") String genre,
+        String type,
         Instant startsAt, Instant endsAt, String timezone, VenueDto venue,
         String description, String posterUrl, String videoUrl,
         String currency,

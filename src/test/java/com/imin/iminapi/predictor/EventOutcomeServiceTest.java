@@ -10,6 +10,7 @@ import com.imin.iminapi.predictor.model.EventOutcome;
 import com.imin.iminapi.predictor.model.Season;
 import com.imin.iminapi.predictor.repository.EventOutcomeRepository;
 import com.imin.iminapi.predictor.service.EventOutcomeService;
+import com.imin.iminapi.predictor.service.PredictorSegmentKeys;
 import com.imin.iminapi.repository.*;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -349,6 +350,30 @@ class EventOutcomeServiceTest {
                 CapacityBand.B101_300, Season.WINTER))
                 .extracting(EventOutcome::getEventId)
                 .containsExactlyInAnyOrder(lower.getId(), upper.getId());
+    }
+
+    /**
+     * predictor-edge-5: the freeze runs inside {@code EventService.publish}'s transaction, so a
+     * genre too long for {@code event_outcomes.genre_family} (VARCHAR(64)) would fail that INSERT
+     * and roll the WHOLE publish back. Correction to the finding's premise: the source column is
+     * {@code events.genre} VARCHAR(64) (V6 — the VARCHAR(255) genre is on {@code generated_event},
+     * a different table), so the events row cannot hold a longer value today and the freeze
+     * cannot be handed one; the clamp is belt and braces for the day that column is widened, and
+     * it keeps two distinct long values in two distinct segments. The reachable half of this
+     * finding is bounding the genre AT THE EDGE — see
+     * {@code EventControllerTest.patch_rejects_a_genre_longer_than_the_outcome_column}, which
+     * without the rule answered an unnamed "Request violates a data constraint" from the events
+     * UPDATE instead of naming the field.
+     */
+    @Test
+    void segmentGenreKeyIsClampedToTheOutcomeColumnWidth() {
+        String one = "z".repeat(80) + "-one";
+        String two = "z".repeat(80) + "-two";
+
+        assertThat(PredictorSegmentKeys.genreKey(one)).hasSize(64);
+        assertThat(PredictorSegmentKeys.genreKey(two)).hasSize(64);
+        assertThat(PredictorSegmentKeys.genreKey(one)).isNotEqualTo(PredictorSegmentKeys.genreKey(two));
+        assertThat(PredictorSegmentKeys.genreKey("House & Techno")).isEqualTo("house & techno");
     }
 
     /**

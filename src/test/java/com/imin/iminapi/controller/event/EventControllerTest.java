@@ -134,6 +134,40 @@ class EventControllerTest {
                 .andExpect(status().isOk());
     }
 
+    /**
+     * predictor-edge-5: the predictor's publish-freeze snapshots events.genre into
+     * event_outcomes.genre_family (VARCHAR(64)) inside EventService.publish's transaction, so an
+     * over-long genre used to fail that INSERT and roll the WHOLE publish back with only a
+     * generic "Request violates a data constraint". The bound has to be enforced here, at the
+     * edge, and the endpoint needs @Valid or the @Size is inert.
+     */
+    @Test
+    @WithStubUser
+    void patch_rejects_a_genre_longer_than_the_outcome_column() throws Exception {
+        UUID id = UUID.randomUUID();
+        String tooLong = "x".repeat(65);
+
+        mvc.perform(patch("/api/v1/events/" + id)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("genre", tooLong))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
+                .andExpect(jsonPath("$.error.fields.genre").exists());
+        verify(eventService, org.mockito.Mockito.never()).patch(any(), any(), any(), any());
+    }
+
+    @Test
+    @WithStubUser
+    void patch_accepts_a_genre_at_the_limit() throws Exception {
+        UUID id = UUID.randomUUID();
+        when(eventService.patch(any(), eq(id), any(), any())).thenReturn(sample());
+
+        mvc.perform(patch("/api/v1/events/" + id)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("genre", "x".repeat(64)))))
+                .andExpect(status().isOk());
+    }
+
     @Test
     @WithStubUser
     void patch_deserializes_embedded_tiers_into_request() throws Exception {
