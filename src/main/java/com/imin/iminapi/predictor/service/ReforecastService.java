@@ -190,8 +190,8 @@ public class ReforecastService {
         }
 
         ReforecastResult.Alert alert = alertFor(prior, newBand);
-        return new ReforecastResult("ready", 1, newBand.wire(), range, revenue, velocity, eta, pacing,
-                narration, alert, null, clock.instant());
+        return new ReforecastResult("ready", 1, newBand.wire(), newBand.phrase(), range, revenue,
+                velocity, eta, pacing, narration, alert, null, clock.instant());
     }
 
     // ---- stage 0 interim / insufficient ----------------------------------------
@@ -205,8 +205,8 @@ public class ReforecastService {
         Instant at = clock.instant();
         if (pre == null || pre.attendanceRange() == null) {
             // Nothing forward-looking to lean on — say so rather than widen silently (§5).
-            return new ReforecastResult("insufficient_data", 0, null, null, null, velocity, null, null,
-                    null, prior == null ? null : prior.alert(), null, at);
+            return new ReforecastResult("insufficient_data", 0, null, null, null, null, velocity, null,
+                    null, null, prior == null ? null : prior.alert(), null, at);
         }
         int rawLow = pre.attendanceRange().low();
         int rawHigh = pre.attendanceRange().high();
@@ -217,8 +217,8 @@ public class ReforecastService {
         ReforecastResult.Range range = new ReforecastResult.Range(low, high);
         ReforecastResult.RevenueRange revenue = revenueRange(eventId, currentSold, range);
         ReforecastResult.Alert alert = alertFor(prior, band);
-        return new ReforecastResult("ready", 0, band.wire(), range, revenue, velocity, null, null,
-                null, alert, null, at);
+        return new ReforecastResult("ready", 0, band.wire(), band.phrase(), range, revenue, velocity,
+                null, null, null, alert, null, at);
     }
 
     // ---- derived arithmetic fields ---------------------------------------------
@@ -367,9 +367,25 @@ public class ReforecastService {
 
     private static ReforecastResult parseReforecast(String json) {
         try {
-            return PredictorJson.MAPPER.readValue(json, ReforecastResult.class);
+            return backfillBandLabel(PredictorJson.MAPPER.readValue(json, ReforecastResult.class));
         } catch (Exception ex) {
             return null;
+        }
+    }
+
+    /**
+     * Ledger rows written before {@code bandLabel} existed carry only the machine code
+     * (predictor-edge-8), and {@link #latestServable} re-serves those rows verbatim — the chip
+     * would have nothing to render until the next recompute. The phrase is a pure function of
+     * the code, so filling it in here is formatting, never a new claim: an unparseable code is
+     * left alone rather than guessed.
+     */
+    private static ReforecastResult backfillBandLabel(ReforecastResult r) {
+        if (r == null || r.band() == null || r.bandLabel() != null) return r;
+        try {
+            return r.withBandLabel(ProjectionBand.valueOf(r.band()).phrase());
+        } catch (IllegalArgumentException ex) {
+            return r;
         }
     }
 

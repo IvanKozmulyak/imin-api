@@ -168,6 +168,51 @@ class ReforecastServiceTest {
         assertThat(rows).allMatch(row -> row.getSurface() == PredictionSurface.REFORECAST);
     }
 
+    /**
+     * predictor-edge-8: {@code band} must stay the MACHINE code — {@code ReforecastService}
+     * parses it back with {@code ProjectionBand.valueOf} on every recompute and folds it into
+     * the ledger input hash — so the honest phrase ships beside it as {@code bandLabel}. The
+     * organizer's chip rendered the raw constant ("TRACKING_60_85") in all four locales until
+     * this existed.
+     */
+    @Test
+    void servesTheBandCodeAndItsDisplayPhraseSideBySide() {
+        stubBands(ProjectionBand.TRACKING_60_85);
+        ReforecastResult r = sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
+
+        assertThat(r.band()).isEqualTo("TRACKING_60_85");                          // machine code
+        assertThat(r.bandLabel()).isEqualTo("tracking 60–85% of capacity");        // display phrase
+        assertThat(r.bandLabel()).isEqualTo(ProjectionBand.TRACKING_60_85.phrase());
+    }
+
+    /** A ledger row written before bandLabel existed still serves a renderable label. */
+    @Test
+    void servableLedgerRowWithoutBandLabelGetsThePhraseFilledIn() {
+        stubBands(ProjectionBand.TRACKING_60_85);
+        sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
+        // Strip the field from the persisted row, exactly as a pre-upgrade row looks.
+        PredictionLedger row = rows.get(0);
+        row.setOutputJson(row.getOutputJson().replace("\"bandLabel\":\"tracking 60–85% of capacity\",", ""));
+        assertThat(row.getOutputJson()).doesNotContain("bandLabel");
+
+        ReforecastResult served = sut.latestServable(eventId);
+
+        assertThat(served.band()).isEqualTo("TRACKING_60_85");
+        assertThat(served.bandLabel()).isEqualTo("tracking 60–85% of capacity");
+    }
+
+    @Test
+    void stage0InterimCarriesTheBandLabelToo() {
+        when(pacingCurves.lookup(any(), any(), any(), any(), any())).thenReturn(Optional.empty());
+        seedPrePublish(120, 170);
+
+        ReforecastResult r = sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
+
+        assertThat(r.stage()).isEqualTo(0);
+        assertThat(r.band()).isNotNull();
+        assertThat(r.bandLabel()).isEqualTo(ProjectionBand.valueOf(r.band()).phrase());
+    }
+
     @Test
     void projectedFinalRangeYieldsRevenueAndVelocityArithmetic() {
         stubBands(ProjectionBand.TRACKING_60_85);
@@ -234,6 +279,7 @@ class ReforecastServiceTest {
         ReforecastResult r = sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
         assertThat(r.status()).isEqualTo("insufficient_data");
         assertThat(r.band()).isNull();
+        assertThat(r.bandLabel()).isNull();                       // no band ⇒ no label to render
         assertThat(r.generatedAt()).isEqualTo(now);               // timestamp still present
     }
 
