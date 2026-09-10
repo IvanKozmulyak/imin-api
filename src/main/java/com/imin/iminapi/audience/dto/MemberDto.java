@@ -94,11 +94,6 @@ public record MemberDto(
         );
     }
 
-    /** Same member, with the DSAR consent trail attached. */
-    public MemberDto withConsentHistory(List<ConsentHistoryEntry> history) {
-        return withDsar(history, dsarRecords);
-    }
-
     /** Same member, as the Art.15 export sees it: consent trail plus the records. */
     public MemberDto withDsar(List<ConsentHistoryEntry> history, DsarRecords records) {
         return new MemberDto(membershipId, name, email, city, genres, events, attended, noShow,
