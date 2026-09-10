@@ -161,6 +161,26 @@ class PacingCurveServiceTest {
         assertThat(m.get().relaxation()).isEqualTo(RelaxationLevel.CITY_TO_COUNTRY);
     }
 
+    @Test
+    void anOverlongCityDoesNotStopEveryOtherSegmentsCurve() {
+        // events.venue_city is VARCHAR(255) and nothing clamps it upstream, but segment_key is the
+        // VARCHAR(200) primary key of pacing_curves. One such city used to fail the insert and roll
+        // back the whole @Transactional delete-all + reinsert: platform-wide curves stop updating.
+        String longCity = "Ci" + "t".repeat(216) + "y"; // 219 chars
+        completedEventInCity("techno", "Amsterdam");
+        completedEventInCity("techno", "Amsterdam");
+        completedEventInCity("techno", "Amsterdam");
+        completedEventInCity("techno", longCity);
+        completedEventInCity("techno", longCity);
+        completedEventInCity("techno", longCity);
+
+        service.rebuildAll();
+
+        assertThat(service.lookup("Amsterdam", "NL", "techno", CapacityBand.B101_300, Season.SPRING)).isPresent();
+        // and the long-city segment still resolves — writer and reader clamp the key identically.
+        assertThat(service.lookup(longCity, "NL", "techno", CapacityBand.B101_300, Season.SPRING)).isPresent();
+    }
+
     private void completedEventInCity(String genre, String city) {
         Event e = new Event();
         e.setOrgId(orgId);

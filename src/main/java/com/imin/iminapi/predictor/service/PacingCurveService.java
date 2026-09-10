@@ -102,6 +102,13 @@ public class PacingCurveService {
         List<PacingCurve> rows = new ArrayList<>();
         for (Map.Entry<String, List<NormalizedCurve>> g : groups.entrySet()) {
             if (g.getValue().size() < minEvents) continue;
+            // Belt and braces on top of the clamp: a key that cannot be stored is dropped with a
+            // loud log, never handed to the insert — one segment must not roll back every other.
+            if (g.getKey().length() > MAX_SEGMENT_KEY_CHARS) {
+                log.error("PacingCurveService: skipping segment key of {} chars (> {}): {}...",
+                        g.getKey().length(), MAX_SEGMENT_KEY_CHARS, g.getKey().substring(0, 60));
+                continue;
+            }
             Curve curve = engine.buildCurve(g.getValue(), maxDaysOut);
             if (curve.eventsCount() < minEvents) continue; // undated shapes dropped it below the floor
             PacingCurve row = new PacingCurve();
@@ -150,16 +157,51 @@ public class PacingCurveService {
 
     // ---- segment keys ----------------------------------------------------------
 
+    /** Free-text budget per key component. City + genre must fit inside the 200-char key. */
+    private static final int MAX_CITY_CHARS = 100;
+    private static final int MAX_GENRE_CHARS = 64;
+
+    /** pacing_curves.segment_key is VARCHAR(200) — see {@link #clamp}. */
+    static final int MAX_SEGMENT_KEY_CHARS = 200;
+
+    /**
+     * Bound a free-text key component. City and genre are organizer-authored and have no length
+     * clamp upstream (events.venue_city is VARCHAR(255), its DTO carries no @Size), while
+     * segment_key is the VARCHAR(200) primary key of pacing_curves — so one long city used to
+     * fail the insert, roll back the whole {@code @Transactional} delete-all + reinsert, and stop
+     * pacing curves updating for EVERY segment. Over-long values keep a readable prefix plus a
+     * digest of the full value, so two different long cities still get different keys. Writer and
+     * reader go through these same helpers, so a clamped key still resolves on lookup.
+     */
+    private static String clamp(String value, int max) {
+        if (value == null || value.length() <= max) return value;
+        return value.substring(0, max - 9) + "~" + digestPrefix(value);
+    }
+
+    private static String digestPrefix(String value) {
+        try {
+            byte[] d = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(8);
+            for (int i = 0; i < 4; i++) sb.append(String.format("%02x", d[i]));
+            return sb.toString();
+        } catch (java.security.NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 unavailable", ex); // every JVM ships it
+        }
+    }
+
     static String keyNone(String city, String genre, CapacityBand band, Season season) {
-        return "NONE|" + city + "|" + genre + "|" + band.name() + "|" + season.name();
+        return "NONE|" + clamp(city, MAX_CITY_CHARS) + "|" + clamp(genre, MAX_GENRE_CHARS)
+                + "|" + band.name() + "|" + season.name();
     }
 
     static String keyCountry(String country, String genre, CapacityBand band, Season season) {
-        return "CITY_TO_COUNTRY|" + country + "|" + genre + "|" + band.name() + "|" + season.name();
+        return "CITY_TO_COUNTRY|" + country + "|" + clamp(genre, MAX_GENRE_CHARS)
+                + "|" + band.name() + "|" + season.name();
     }
 
     static String keyDropSeason(String country, String genre, CapacityBand band) {
-        return "DROP_SEASON|" + country + "|" + genre + "|" + band.name();
+        return "DROP_SEASON|" + country + "|" + clamp(genre, MAX_GENRE_CHARS) + "|" + band.name();
     }
 
     private static RelaxationLevel relaxationOf(String key) {
