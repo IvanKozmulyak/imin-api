@@ -88,9 +88,41 @@ class ResendWebhookControllerTest {
                 .contentType("application/json").content(body))
            .andExpect(status().isOk());
 
-        // signature: project(campaignId, recipientId, membershipId, email, type, occurredAt)
+        // signature: project(campaignId, recipientId, membershipId, email, type, bounceType, occurredAt)
         Mockito.verify(projector).project(any(), eq(r.getId()), any(),
-            eq("x@example.com"), eq("email.delivered"), any());
+            eq("x@example.com"), eq("email.delivered"), eq(null), any());
+    }
+
+    /**
+     * mkt-edge-6 (P2): the handler parsed type/email_id/to/created_at and dropped
+     * {@code data.bounce.type}, so the projector could not tell a permanent bounce from a
+     * full mailbox and suppressed the address platform-wide either way. The classification
+     * has to reach the projector to exist at all.
+     */
+    @Test
+    void bounceTypeReachesTheProjector() throws Exception {
+        CampaignRecipient r = new CampaignRecipient();
+        r.setId(UUID.randomUUID());
+        r.setCampaignId(seedCampaign());
+        r.setEmail("b@example.com");
+        r.setStatus("sent");
+        r.setProviderMessageId("msg_bounce_1");
+        recipientRepo.save(r);
+
+        String body = "{\"type\":\"email.bounced\",\"data\":{\"email_id\":\"msg_bounce_1\","
+                + "\"to\":[\"b@example.com\"],"
+                + "\"bounce\":{\"type\":\"Transient\",\"subType\":\"MailboxFull\",\"message\":\"full\"}}}";
+        String id = "svix_" + UUID.randomUUID();
+        String ts = String.valueOf(System.currentTimeMillis() / 1000L);
+
+        mvc.perform(post("/api/v1/public/webhooks/resend")
+                .header("svix-id", id).header("svix-timestamp", ts)
+                .header("svix-signature", sign(id, ts, body))
+                .contentType("application/json").content(body))
+           .andExpect(status().isOk());
+
+        Mockito.verify(projector).project(any(), eq(r.getId()), any(),
+            eq("b@example.com"), eq("email.bounced"), eq("Transient"), any());
     }
 
     @Test
@@ -125,6 +157,7 @@ class ResendWebhookControllerTest {
 
         mvc.perform(req).andExpect(status().isOk());
         mvc.perform(req).andExpect(status().isOk()); // replay
-        Mockito.verify(projector, Mockito.times(1)).project(any(), any(), any(), any(), any(), any());
+        Mockito.verify(projector, Mockito.times(1)).project(
+                any(), any(), any(), any(), any(), any(), any());
     }
 }

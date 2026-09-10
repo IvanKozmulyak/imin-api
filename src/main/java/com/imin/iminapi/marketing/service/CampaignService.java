@@ -172,8 +172,13 @@ public class CampaignService {
                     "Only draft campaigns can be edited");
         }
         if (req.name() != null) c.setName(requireName(req.name()));
-        if (req.segmentId() != null) c.setSegmentId(req.segmentId());
-        if (req.eventId() != null) c.setEventId(req.eventId());
+        // mkt-edge-8: PatchableUuid distinguishes "absent" (the component is null — leave the
+        // link alone) from "present and null" (PatchableUuid.NULL — unlink). The composer
+        // PATCHes {segmentId: null, eventId: null} when the organizer de-selects, and that
+        // used to be indistinguishable from an untouched field, so the campaign kept sending
+        // the old event's poster hero and tickets button.
+        if (req.segmentId() != null) c.setSegmentId(req.segmentId().value());
+        if (req.eventId() != null) c.setEventId(req.eventId().value());
         if (req.subject() != null) c.setSubject(req.subject());
         if (req.preheader() != null) c.setPreheader(req.preheader());
         if (req.bodyMd() != null) c.setBodyMd(req.bodyMd());
@@ -332,6 +337,12 @@ public class CampaignService {
         // Org-scope + existence check (404 leak-safe if not this org's campaign).
         Campaign c = campaigns.findByIdAndOrgId(campaignId, principal.orgId())
                 .orElseThrow(() -> ApiException.notFound("Campaign"));
+        // mkt-edge-2: dispatching bulk mail to the whole audience is the most consequential
+        // and least reversible thing this controller does; it was the only campaign mutation
+        // with neither a role gate nor an audit row. After the 404 so a foreign campaign
+        // stays a 404, before the CAS so a refusal never moves the state machine.
+        com.imin.iminapi.security.RoleGuard.requireAtLeast(
+                principal, com.imin.iminapi.model.UserRole.ADMIN, "send a campaign");
         // Fail fast on a channel nothing drains (mkt-core-7). CampaignRepository.claimDue
         // filters WHERE channel='email', so a scheduled SMS campaign was never claimed,
         // never failed and never timed out — it sat 'scheduled' for ever with no signal.
@@ -347,6 +358,10 @@ public class CampaignService {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
                     "Campaign is not in draft");
         }
+        // Recorded AFTER the guarded transition won, so a 409 replay does not read as a
+        // second dispatch — the trail carries exactly one row per campaign that actually left.
+        audit.record(principal, AuditActions.CAMPAIGN_SENT, "campaign", campaignId,
+                "Campaign scheduled to send at " + when);
         // Predictor trigger (task §4): a campaign scheduled for an event → re-forecast.
         // AFTER_COMMIT + debounced in ReforecastTriggerService.
         if (eventPublisher != null && c.getEventId() != null) {
@@ -385,6 +400,12 @@ public class CampaignService {
             String status, String engagement, int page, int size) {
         campaigns.findByIdAndOrgId(campaignId, principal.orgId())
                 .orElseThrow(() -> ApiException.notFound("Campaign"));
+        // mkt-edge-1: this hands back every targeted contact's raw address, 200 rows a page over
+        // unlimited pages — the same class of disclosure SalesDashboardController.exportAttendees
+        // gates on ADMIN. The org-scope 404 above runs FIRST so a foreign campaign stays a 404
+        // (no existence leak) rather than becoming a role-shaped 403.
+        com.imin.iminapi.security.RoleGuard.requireAtLeast(
+                principal, com.imin.iminapi.model.UserRole.ADMIN, "read the campaign recipient log");
 
         List<String> statuses = parseStatuses(status);
         Engagement eng = parseEngagement(engagement);
@@ -422,6 +443,14 @@ public class CampaignService {
         List<com.imin.iminapi.marketing.dto.RecipientDto> items = rows.stream()
                 .map(r -> com.imin.iminapi.marketing.dto.RecipientDto.from(r, displayName(names, r)))
                 .toList();
+
+        // One row per opening of the log, not per page: the dashboard pages and polls this
+        // endpoint, so auditing every call would drown the trail it exists to leave. Written
+        // after the rows are loaded, so a 403/404 never reads as a disclosure that happened.
+        if (page == 0) {
+            audit.record(principal, AuditActions.CAMPAIGN_RECIPIENTS_VIEWED, "campaign", campaignId,
+                    "Campaign recipient log opened (" + total + " row(s) under the active filter)");
+        }
 
         return new com.imin.iminapi.marketing.dto.RecipientPage(items, page, size, total,
                 campaignRecipientRepository.chipCounts(campaignId));

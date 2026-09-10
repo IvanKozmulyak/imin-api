@@ -124,6 +124,10 @@ public class EmailChannelSender {
         // complained or was deliverability-suppressed in the meantime is diverted rather than
         // emailed — SendGateService is "THE ONLY path that yields sendable recipients".
         divertNoLongerSendable(c, batch);
+        // A row with no address can never be sent, and resend-java does not refuse it: a null
+        // `to` is wrapped into a one-null list and fails on the wire, taking the whole batch
+        // (and, via the dispatcher, the campaign) with it. Divert before assembling the batch.
+        divertMissingAddress(c, batch);
         if (batch.isEmpty()) {
             return recipients.countByCampaignIdAndStatus(c.getId(), "pending") > 0;
         }
@@ -182,6 +186,23 @@ public class EmailChannelSender {
                 r.setLastEventAt(Instant.now());
                 recipients.save(r);
             }
+        } catch (com.imin.iminapi.marketing.email.CampaignEmailProvider.TerminalBatchFailure ex) {
+            // A 4xx will be rejected identically on every retry, so backing off three times
+            // only delays the truth and holds the campaign in 'sending'. Fail the rows with
+            // the reason on them; POST /campaigns/{id}/retry requeues 'failed' rows once the
+            // cause (key, sender identity, payload) is fixed.
+            log.error("[email-sender] campaign {}: provider rejected the batch with HTTP {} — "
+                    + "failing {} rows: {}", c.getId(), ex.upstreamStatus(), batch.size(), ex.getMessage());
+            Instant now = Instant.now();
+            for (CampaignRecipient r : batch) {
+                r.setStatus("failed");
+                r.setErrorCode("provider_rejected");
+                r.setAttemptCount((short) (r.getAttemptCount() + 1));
+                r.setLastEventAt(now);
+                recipients.save(r);
+            }
+            campaigns.touch(c.getId(), now);
+            return false;
         } catch (ApiException ex) {
             log.warn("[email-sender] batch failed for campaign {} — leaving {} rows pending: {}",
                     c.getId(), batch.size(), ex.getMessage());
@@ -255,6 +276,30 @@ public class EmailChannelSender {
             recipients.save(r);
             log.info("[email-sender] campaign {} recipient {} no longer sendable ({}) — skipping",
                     c.getId(), r.getId(), reason);
+            return true;
+        });
+    }
+
+    /**
+     * Diverts every claimed row with no address to {@code skipped}/{@code no_email}, removing it
+     * from the batch. A row loses its address exactly once: DSAR erasure nulls
+     * {@code campaign_recipients.email} for an erased membership
+     * ({@code CampaignRecipientRepository.redactPiiByMembershipId}), which can catch a row that
+     * is still queued. The Send Gate cannot cover this — its {@code no_email} clause reads the
+     * consumer's address, and the erased membership it would need is already gone — so the check
+     * belongs here, on the row that is about to be sent. Same reason value the gate uses, so the
+     * recipient log's skip chips stay one vocabulary.
+     */
+    private void divertMissingAddress(Campaign c, List<CampaignRecipient> batch) {
+        Instant now = Instant.now();
+        batch.removeIf(r -> {
+            if (r.getEmail() != null && !r.getEmail().isBlank()) return false;
+            r.setStatus("skipped");
+            r.setSkipReason("no_email");
+            r.setLastEventAt(now);
+            recipients.save(r);
+            log.info("[email-sender] campaign {} recipient {} has no address — skipping",
+                    c.getId(), r.getId());
             return true;
         });
     }

@@ -81,4 +81,51 @@ class DsarCampaignRecipientRedactionTest {
         assertThat(after.getEmail()).isNull();                  // PII redacted
         assertThat(after.getMembershipId()).isNull();           // FK ON DELETE SET NULL
     }
+
+    /**
+     * mkt-edge-4 (P1): the redaction nulls the address on EVERY row of the erased membership,
+     * 'pending' ones included — leaving an in-flight campaign holding queued work that can
+     * never be sent. A queued row must be diverted to skipped/'dsar_erased' instead, so the
+     * anonymous aggregate says what happened rather than sitting in the send queue for ever.
+     */
+    @Test
+    void erase_divertsAStillQueuedRow_insteadOfLeavingItUnsendable() {
+        UUID orgId = UUID.randomUUID();
+        Consumer c = new Consumer();
+        c.setNormalizedEmail("erase-pending-" + UUID.randomUUID() + "@example.com");
+        c = consumers.save(c);
+        Membership m = new Membership();
+        m.setOrgId(orgId);
+        m.setConsumerId(c.getConsumerId());
+        m.setStatus("erase_pending");
+        m = memberships.save(m);
+
+        Campaign camp = new Campaign();
+        camp.setId(UUID.randomUUID());
+        camp.setOrgId(orgId);
+        camp.setChannel("email");
+        camp.setName("in flight");
+        camp.setStatus("sending");
+        camp.setCreatedAt(Instant.now());
+        camp.setUpdatedAt(Instant.now());
+        campaigns.save(camp);
+
+        CampaignRecipient r = new CampaignRecipient();
+        UUID recipientId = UUID.randomUUID();
+        r.setId(recipientId);
+        r.setCampaignId(camp.getId());
+        r.setMembershipId(m.getMembershipId());
+        r.setEmail(c.getNormalizedEmail());
+        r.setStatus("pending");
+        recipients.save(r);
+
+        dsarService.executeErase(orgId, m.getMembershipId(),
+                new AuthPrincipal(null, orgId, UserRole.MEMBER, null));
+
+        CampaignRecipient after = recipients.findById(recipientId).orElseThrow();
+        assertThat(after.getStatus()).isEqualTo("skipped");
+        assertThat(after.getSkipReason()).isEqualTo("dsar_erased");
+        assertThat(after.getEmail()).isNull();
+        assertThat(after.getMembershipId()).isNull();
+    }
 }
