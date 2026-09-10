@@ -66,6 +66,10 @@ class BuyerProfileTest {
     @Autowired com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository emailRows;
     @MockitoBean EmailService email;
 
+    /** Buyer account mail is sent AFTER_COMMIT on this pool — see {@link BuyerMailSync}. */
+    @Autowired @org.springframework.beans.factory.annotation.Qualifier("ticketEmailExecutor")
+    java.util.concurrent.Executor mailExecutor;
+
     private String address;
     private String cookie;
     /** This test's own account. The suite shares one H2 instance, so every
@@ -74,10 +78,12 @@ class BuyerProfileTest {
 
     @BeforeEach
     void signedInBuyer() throws Exception {
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
         address = address();
         cookie = signUpAndSignIn(address);
         accountId = accountIdOf(address);
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
     }
 
@@ -303,6 +309,36 @@ class BuyerProfileTest {
                 .andExpect(status().isUnauthorized());
     }
 
+    /**
+     * The finish-registration screen starts every field empty and sends the
+     * ones the buyer left alone as explicit nulls (imin-public
+     * {@code CompleteClient.tsx}). Onboarding only ever SETS: an absent name is
+     * "leave it alone", not "clear it", so the display name a provider supplied
+     * — the only one a Google buyer has — survives ticking just the terms box.
+     */
+    @Test
+    void onboardingWithNoNameKeepsTheDisplayNameGoogleSupplied() throws Exception {
+        var info = new OAuthUserInfo("google", "google-sub-" + UUID.randomUUID(),
+                address(), true, "Ada", "Lovelace", "Ada Lovelace");
+        var signedIn = google.resolve(info, "JUnit/1.0");
+        UUID id = signedIn.account().getId();
+        assertThat(signedIn.account().getDisplayName()).isEqualTo("Ada Lovelace");
+
+        mvc.perform(post("/api/v1/buyer/me/onboarding")
+                        .header(HttpHeaders.ORIGIN, ORIGIN)
+                        .cookie(cookie(signedIn.session().rawToken()))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        // Byte for byte what the buyer site posts when only the box is ticked.
+                        .content("{\"firstName\":null,\"lastName\":null,\"city\":null,"
+                                + "\"dateOfBirth\":null,\"acceptedTerms\":true,"
+                                + "\"termsVersion\":\"2026-08-14\",\"productNews\":false}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.displayName").value("Ada Lovelace"));
+
+        assertThat(accounts.findById(id).orElseThrow().getDisplayName())
+                .isEqualTo("Ada Lovelace");
+    }
+
     // ── POST /buyer/me/password ────────────────────────────────────────────
 
     @Test
@@ -506,6 +542,7 @@ class BuyerProfileTest {
     }
 
     private String codeSentTo(String to) {
+        BuyerMailSync.drain(mailExecutor);
         ArgumentCaptor<String> recipient = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);

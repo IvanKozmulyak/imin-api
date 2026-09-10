@@ -2,7 +2,7 @@ package com.imin.iminapi.buyer.service;
 
 import com.imin.iminapi.audience.service.EmailNormalizer;
 import com.imin.iminapi.buyer.BuyerProperties;
-import com.imin.iminapi.buyer.email.BuyerAccountEmailer;
+import com.imin.iminapi.buyer.email.BuyerMailEvents;
 import com.imin.iminapi.buyer.model.BuyerAccount;
 import com.imin.iminapi.buyer.model.BuyerAccountEmail;
 import com.imin.iminapi.buyer.model.BuyerEmailVerificationCode;
@@ -15,8 +15,7 @@ import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.security.PasswordHasher;
 import com.imin.iminapi.security.TokenService;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -65,15 +64,13 @@ import java.util.Optional;
 @Service
 public class BuyerCredentialService {
 
-    private static final Logger log = LoggerFactory.getLogger(BuyerCredentialService.class);
-
     private final BuyerAccountRepository accounts;
     private final BuyerAccountEmailRepository emails;
     private final BuyerPasswordResetTokenRepository resetTokens;
     private final BuyerEmailVerificationService verification;
     private final BuyerAddressClaims claims;
     private final BuyerSessionService sessions;
-    private final BuyerAccountEmailer emailer;
+    private final ApplicationEventPublisher events;
     private final BuyerTimingEqualizer timing;
     private final PasswordHasher hasher;
     private final TokenService tokens;
@@ -85,7 +82,7 @@ public class BuyerCredentialService {
                                   BuyerEmailVerificationService verification,
                                   BuyerAddressClaims claims,
                                   BuyerSessionService sessions,
-                                  BuyerAccountEmailer emailer,
+                                  ApplicationEventPublisher events,
                                   BuyerTimingEqualizer timing,
                                   PasswordHasher hasher,
                                   TokenService tokens,
@@ -96,7 +93,7 @@ public class BuyerCredentialService {
         this.verification = verification;
         this.claims = claims;
         this.sessions = sessions;
-        this.emailer = emailer;
+        this.events = events;
         this.timing = timing;
         this.hasher = hasher;
         this.tokens = tokens;
@@ -124,7 +121,7 @@ public class BuyerCredentialService {
             BuyerAccountEmail owner = verifiedElsewhere.get();
             String ownerLocale = accounts.findById(owner.getBuyerAccountId())
                     .map(BuyerAccount::getLocale).orElse(null);
-            swallow("account-exists notice", () -> emailer.sendAccountExistsNotice(owner.getEmail(), ownerLocale));
+            events.publishEvent(new BuyerMailEvents.AccountExistsNotice(owner.getEmail(), ownerLocale));
             return;
         }
 
@@ -136,7 +133,7 @@ public class BuyerCredentialService {
         emails.save(BuyerAccountEmail.of(saved.getId(), rawEmail, BuyerAccountEmail.ADDED_VIA_SIGNUP));
 
         String code = verification.issue(saved.getId(), normalized);
-        swallow("verification code", () -> emailer.sendVerificationCode(
+        events.publishEvent(new BuyerMailEvents.VerificationCode(
                 rawEmail.trim(), saved.getLocale(), code, verification.codeTtlMinutes()));
     }
 
@@ -148,11 +145,15 @@ public class BuyerCredentialService {
      * <p>The code row carries the account that asked for it, so a code issued to
      * account A can never verify an address row on account B — which matters
      * because several accounts may hold unverified claims on one address.
+     *
+     * <p>{@code clientIp} is passed down because the failure counter is keyed on
+     * the caller as well as the address: see
+     * {@link BuyerEmailVerificationService}.
      */
     @Transactional
-    public SignedIn verifyEmail(String rawEmail, String code, String userAgent) {
+    public SignedIn verifyEmail(String rawEmail, String code, String userAgent, String clientIp) {
         String normalized = EmailNormalizer.normalize(rawEmail);
-        BuyerEmailVerificationCode consumed = verification.consume(normalized, code);
+        BuyerEmailVerificationCode consumed = verification.consume(normalized, code, clientIp);
 
         BuyerAccount account = accounts.findById(consumed.getBuyerAccountId())
                 .orElseThrow(BuyerCredentialService::invalidCode);
@@ -202,7 +203,7 @@ public class BuyerCredentialService {
         if (account.isEmpty()) return;
 
         String code = verification.issue(account.get().getId(), normalized);
-        swallow("verification code (resend)", () -> emailer.sendVerificationCode(
+        events.publishEvent(new BuyerMailEvents.VerificationCode(
                 claim.getEmail(), account.get().getLocale(), code, verification.codeTtlMinutes()));
     }
 
@@ -293,9 +294,9 @@ public class BuyerCredentialService {
         token.setExpiresAt(now.plus(Duration.ofMinutes(props.getPasswordResetTtlMinutes())));
         resetTokens.save(token);
 
-        swallow("password reset", () -> emailer.sendPasswordReset(
+        events.publishEvent(new BuyerMailEvents.PasswordReset(
                 verified.get().getEmail(), account.getLocale(),
-                emailer.resetUrl(issued.token()), props.getPasswordResetTtlMinutes()));
+                issued.token(), props.getPasswordResetTtlMinutes()));
     }
 
     /**
@@ -329,24 +330,11 @@ public class BuyerCredentialService {
         sessions.revokeAll(account.getId());
 
         emails.findByPrimaryMarker(account.getId()).ifPresent(primary ->
-                swallow("password-changed notice",
-                        () -> emailer.sendPasswordChanged(primary.getEmail(), account.getLocale())));
+                events.publishEvent(new BuyerMailEvents.PasswordChanged(
+                        primary.getEmail(), account.getLocale())));
     }
 
     // ── helpers ────────────────────────────────────────────────────────────
-
-    /**
-     * Sends and swallows. A Resend outage must not change the status code, the
-     * body, or (materially) the timing of a flow whose whole contract is that
-     * every branch looks the same.
-     */
-    private void swallow(String what, Runnable send) {
-        try {
-            send.run();
-        } catch (RuntimeException e) {
-            log.error("[buyer] {} email send failed: {}", what, e.getMessage(), e);
-        }
-    }
 
     private static ApiException invalidCode() {
         return new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_CODE,

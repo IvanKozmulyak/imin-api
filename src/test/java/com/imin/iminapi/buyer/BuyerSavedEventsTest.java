@@ -69,16 +69,22 @@ class BuyerSavedEventsTest {
     @Autowired UserRepository users;
     @MockitoBean EmailService email;
 
+    /** Buyer account mail is sent AFTER_COMMIT on this pool — see {@link BuyerMailSync}. */
+    @Autowired @org.springframework.beans.factory.annotation.Qualifier("ticketEmailExecutor")
+    java.util.concurrent.Executor mailExecutor;
+
     private String cookie;
     private UUID eventId;
     private UUID otherEventId;
 
     @BeforeEach
     void signedInBuyer() throws Exception {
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
         cookie = signUpAndSignIn(address());
         eventId = event("Vechirka").getId();
         otherEventId = event("Second Night").getId();
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
     }
 
@@ -129,6 +135,21 @@ class BuyerSavedEventsTest {
         save(eventId).andExpect(status().isNoContent());
 
         merge(List.of()).andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].eventId").value(eventId.toString()));
+    }
+
+    /** Null and empty mean the same thing here — the merge only ever adds. */
+    @Test
+    void mergeTreatsAnExplicitlyNullListAsEmpty() throws Exception {
+        save(eventId).andExpect(status().isNoContent());
+
+        mvc.perform(post("/api/v1/buyer/saved/merge")
+                        .header(HttpHeaders.ORIGIN, ORIGIN)
+                        .cookie(cookie(cookie))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"eventIds\":null}"))
+                .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(1))
                 .andExpect(jsonPath("$[0].eventId").value(eventId.toString()));
     }
@@ -216,6 +237,7 @@ class BuyerSavedEventsTest {
     }
 
     private String codeSentTo(String to) {
+        BuyerMailSync.drain(mailExecutor);
         ArgumentCaptor<String> recipient = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
