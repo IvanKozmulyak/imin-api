@@ -117,7 +117,9 @@ class PredictionLedgerServiceTest {
         UUID fbId = service.recordFeedback(ledgerId, eventId, "rec-tier-price-1", FeedbackType.DISMISSED);
 
         assertThat(fbId).isNotNull();
-        List<PredictionFeedback> byLedger = feedback.findByLedgerId(ledgerId);
+        List<PredictionFeedback> byLedger = feedback.findByEventId(eventId).stream()
+                .filter(f -> ledgerId.equals(f.getLedgerId()))
+                .toList();
         assertThat(byLedger).hasSize(1);
         PredictionFeedback fb = byLedger.get(0);
         assertThat(fb.getEventId()).isEqualTo(eventId);
@@ -127,6 +129,8 @@ class PredictionLedgerServiceTest {
         // executions are logged too, independently, on the same render
         service.recordFeedback(ledgerId, eventId, "rec-add-tier-2", FeedbackType.EXECUTED);
         assertThat(feedback.findByEventId(eventId)).hasSize(2);
-        assertThat(feedback.findByEventIdAndRecommendationId(eventId, "rec-add-tier-2")).hasSize(1);
+        assertThat(feedback.findByEventId(eventId).stream()
+                .filter(f -> "rec-add-tier-2".equals(f.getRecommendationId()))
+                .toList()).hasSize(1);
     }
 }
