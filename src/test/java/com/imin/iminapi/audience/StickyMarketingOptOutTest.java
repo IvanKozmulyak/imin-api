@@ -169,7 +169,9 @@ class StickyMarketingOptOutTest {
                 .containsExactlyInAnyOrder(
                         org.assertj.core.groups.Tuple.tuple(orgA, "email"),
                         org.assertj.core.groups.Tuple.tuple(orgA, "sms"));
-        assertThat(optOuts.findByEmailNormalizedAndOrgId(email, orgB)).isEmpty();
+        assertThat(optOuts.findByEmailNormalized(email))
+                .as("nothing sticks for the other organizer")
+                .noneMatch(o -> orgB.equals(o.getOrgId()));
         assertThat(inB).isNotNull(); // membership in org B exists and is untouched
         assertThat(consentStatus(orgB, inB)).isEqualTo("subscribed");
     }

@@ -45,13 +45,6 @@ public interface PayoutRunRepository extends JpaRepository<PayoutRun, UUID> {
      */
     boolean existsByStripeAccountIdAndStatusIn(String stripeAccountId, Collection<PayoutRunStatus> statuses);
 
-    /**
-     * Per-event existence guard for the candidate query: skip an event that already
-     * has a {@code PLANNED}/{@code SUBMITTED}/{@code PAID} run. Bind
-     * {@code [PLANNED, SUBMITTED, PAID]}.
-     */
-    boolean existsByEventIdAndStatusIn(UUID eventId, Collection<PayoutRunStatus> statuses);
-
     /** Runs for an event, e.g. to compute the next {@code attempt} after a FAILED run. */
     List<PayoutRun> findByEventId(UUID eventId);
 

@@ -438,10 +438,11 @@ class PostEventPayoutServiceTest {
         // The event is now re-candidate-able: neither the per-event existence guard
         // (PLANNED/SUBMITTED/PAID) nor the org-level in-flight guard (PLANNED/SUBMITTED)
         // sees a FAILED run, so the next tick is free to retry.
-        assertThat(payoutRuns.existsByEventIdAndStatusIn(e.getId(),
-                List.of(PayoutRunStatus.PLANNED, PayoutRunStatus.SUBMITTED, PayoutRunStatus.PAID)))
+        assertThat(afterTick1)
                 .as("FAILED run does not block the per-event candidate query")
-                .isFalse();
+                .noneMatch(r -> r.getStatus() == PayoutRunStatus.PLANNED
+                        || r.getStatus() == PayoutRunStatus.SUBMITTED
+                        || r.getStatus() == PayoutRunStatus.PAID);
         assertThat(payoutRuns.existsByStripeAccountIdAndStatusIn(org.getStripeAccountId(),
                 List.of(PayoutRunStatus.PLANNED, PayoutRunStatus.SUBMITTED)))
                 .as("FAILED run does not block the org-level double-pay guard")
