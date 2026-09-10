@@ -341,6 +341,32 @@ class EventOutcomeServiceTest {
         assertThat(page).extracting(EventOutcome::getEventId).containsExactly(due.getId());
     }
 
+    /**
+     * predictor-edge-4: an event with no ticket tiers publishes (EventValidator requires none),
+     * and the tier-sum query COALESCEs to 0 — which used to freeze capacity = 0 / band = LE100
+     * and finalize sell_out = false. Zero capacity is UNKNOWN capacity: the row must not join
+     * the ≤100 segment of every other organizer's corpus, and "did not sell out" is not a fact
+     * anyone stated.
+     */
+    @Test
+    void freeze_leavesCapacityAndBandNull_whenTheEventHasNoTiers() {
+        Event e = liveEvent();   // no tier() calls
+
+        service.freezeOnPublish(e);
+
+        EventOutcome o = outcomes.findById(e.getId()).orElseThrow();
+        assertThat(o.getCapacity()).isNull();
+        assertThat(o.getCapacityBand()).isNull();
+        assertThat(CapacityBand.of(0)).isNull();
+
+        service.finalize(o, e, Instant.now());
+
+        EventOutcome fin = outcomes.findById(e.getId()).orElseThrow();
+        assertThat(fin.getSoldTotal()).isZero();          // measured: no tickets exist
+        assertThat(fin.getSellOut()).isNull();            // undefined, not "did not sell out"
+        assertThat(fin.getTimeToSellOutHours()).isNull();
+    }
+
     @Test
     void reconstruct_flagsSnapshotAndSkipsExistingRows() {
         Event e = liveEvent();
