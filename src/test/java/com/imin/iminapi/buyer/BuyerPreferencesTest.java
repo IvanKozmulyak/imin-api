@@ -242,6 +242,38 @@ class BuyerPreferencesTest {
     }
 
     /**
+     * One row per organizer, not one per membership.
+     *
+     * <p>A legacy account can hold several verified addresses, and every one of
+     * them resolves to its own {@code Consumer} — so an account whose two
+     * addresses both bought from the same organizer produced that organizer
+     * twice, with whatever {@code subscribed} value each membership happened to
+     * carry. The endpoint is documented as a read-only disclosure of who holds
+     * what; a duplicated, self-contradicting row misstates it.
+     */
+    @Test
+    void organizersCollapsesTwoAddressesIntoOneRowPerOrganizer() throws Exception {
+        String second = address();
+        var row = com.imin.iminapi.buyer.model.BuyerAccountEmail.of(
+                accountId(), second, com.imin.iminapi.buyer.model.BuyerAccountEmail.ADDED_VIA_MANUAL);
+        row.markVerified(java.time.Instant.now());
+        accountEmails.save(row);
+        // The second address bought from orgA too, and unsubscribed there.
+        membership(orgA, consumer(second), "unsubscribed");
+
+        String body = mvc.perform(get("/api/v1/buyer/organizers").cookie(cookie(cookie)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(2))
+                .andReturn().getResponse().getContentAsString();
+
+        // Two memberships, one answer: the buyer still holds a live
+        // subscription with orgA through the other address.
+        List<Boolean> subscribedToA = com.jayway.jsonpath.JsonPath.read(
+                body, "$.items[?(@.orgId=='" + orgA + "')].subscribed");
+        assertThat(subscribedToA).containsExactly(true);
+    }
+
+    /**
      * The fan-out is bounded. Each membership costs roughly three statements
      * inside one transaction, so an account with an unbounded number of them
      * would hold locks on {@code memberships} and {@code consent_records} for

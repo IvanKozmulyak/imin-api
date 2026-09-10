@@ -24,6 +24,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -152,15 +153,25 @@ public class BuyerPreferencesService {
                 .stream()
                 .collect(Collectors.toMap(o -> o.getId(), o -> o.getName(), (a, b) -> a));
 
-        List<BuyerPreferencesResponse.Organizer> out = new ArrayList<>();
+        // One row per ORGANIZER, not per membership. Every verified address on
+        // the account resolves to its own Consumer, so a legacy account whose
+        // two addresses both bought from one organizer produced that organizer
+        // twice — with whatever consent_status each membership happened to
+        // carry, i.e. two contradictory answers to a question that has one.
+        // Subscribed if ANY membership is: the buyer does still hold a live
+        // subscription there. optedOut is already org-keyed.
+        Map<UUID, BuyerPreferencesResponse.Organizer> byOrg = new LinkedHashMap<>();
         for (Membership m : reach.memberships()) {
-            out.add(new BuyerPreferencesResponse.Organizer(
-                    m.getOrgId(),
-                    names.getOrDefault(m.getOrgId(), null),
-                    "subscribed".equals(m.getConsentStatus()),
-                    reach.stickyOrgIds().contains(m.getOrgId())));
+            UUID orgId = m.getOrgId();
+            boolean subscribed = "subscribed".equals(m.getConsentStatus());
+            BuyerPreferencesResponse.Organizer seen = byOrg.get(orgId);
+            byOrg.put(orgId, new BuyerPreferencesResponse.Organizer(
+                    orgId,
+                    names.getOrDefault(orgId, null),
+                    subscribed || (seen != null && seen.subscribed()),
+                    reach.stickyOrgIds().contains(orgId)));
         }
-        return out;
+        return new ArrayList<>(byOrg.values());
     }
 
     // ── writes ─────────────────────────────────────────────────────────────
