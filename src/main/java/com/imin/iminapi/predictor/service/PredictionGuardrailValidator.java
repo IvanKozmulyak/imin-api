@@ -69,6 +69,15 @@ public class PredictionGuardrailValidator {
     static final double PRICE_MIN_FACTOR = 0.5;
     static final double PRICE_MAX_FACTOR = 2.0;
 
+    /**
+     * Recommendation ids are persisted verbatim into {@code prediction_feedback.recommendation_id}
+     * (VARCHAR(128)) when the organizer dismisses one, so an id the model wrote as a sentence
+     * would serve a recommendation whose Dismiss button can only 400 (predictor-edge-12). The
+     * prompt asks for a "short stable slug"; this is the rule that makes it a rule, fed back to
+     * the model on the single retry.
+     */
+    static final int REC_ID_MAX_CHARS = 128;
+
     static final int FACTORS_MIN = 3;
     static final int FACTORS_MAX = 5;
     static final int RECOMMENDATIONS_MAX = 3;
@@ -207,7 +216,10 @@ public class PredictionGuardrailValidator {
             Stage0Scorer.RecCandidate r = recs.get(i);
             if (r == null) { errors.add("recommendations[" + i + "] is null"); continue; }
             if (isBlank(r.id())) errors.add("recommendations[" + i + "].id is empty");
-            else if (!seenIds.add(r.id())) errors.add("recommendations[" + i + "].id duplicates another recommendation");
+            else if (r.id().length() > REC_ID_MAX_CHARS) {
+                errors.add("recommendations[" + i + "].id is " + r.id().length() + " characters - it must be a "
+                        + "short stable slug of at most " + REC_ID_MAX_CHARS);
+            } else if (!seenIds.add(r.id())) errors.add("recommendations[" + i + "].id duplicates another recommendation");
             if (isBlank(r.claim())) errors.add("recommendations[" + i + "].claim is empty");
             if (isBlank(r.evidence())) errors.add("recommendations[" + i + "].evidence is empty - no evidence, no recommendation");
             String impact = r.impact() == null ? null : r.impact().toUpperCase(Locale.ROOT);

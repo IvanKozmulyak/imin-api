@@ -47,6 +47,22 @@ class PredictionGuardrailValidatorTest {
                 List.of());
     }
 
+    /**
+     * predictor-edge-12: the id is persisted verbatim into prediction_feedback (VARCHAR(128)) on
+     * a dismissal, so a sentence-length id served a recommendation whose Dismiss button could
+     * only 400. The prompt asks for a short slug; this is the rule that enforces it and feeds it
+     * back to the model on the retry.
+     */
+    @Test
+    void overLongRecommendationIdRejected() {
+        Stage0Output out = new Stage0Output(new PredictionResult.Band(35, 60),
+                new PredictionResult.Range(120, 210), null, goodFactors(),
+                List.of(new RecCandidate("z".repeat(129), "Lower Early Bird",
+                        "priced above the comparable band", "HIGH", "tier_edit", null, null, null)));
+
+        assertThat(sut.validate(out, ctx())).anyMatch(e -> e.contains("short stable slug"));
+    }
+
     @Test
     void coherentOutputPasses() {
         assertThat(sut.validate(valid(), ctx())).isEmpty();

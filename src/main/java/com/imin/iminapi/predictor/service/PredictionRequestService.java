@@ -203,9 +203,16 @@ public class PredictionRequestService {
         // Dismissal memory (task 86cav47a5): stamp the fingerprint of the targeted recommendation
         // on dismissed/restored rows (compute-on-write) so serve-time filtering is a pure compare.
         // Executed rows carry no fingerprint (an execution never suppresses).
-        String fingerprint = (type == FeedbackType.EXECUTED)
-                ? null
-                : fingerprintOf(latest, req.recommendationId());
+        String fingerprint = null;
+        if (type != FeedbackType.EXECUTED) {
+            fingerprint = fingerprintOf(latest, req.recommendationId());
+            // No fingerprint means the id is not in the render this feedback targets — a fresh
+            // score replaced it, or the id was never served. Writing the row anyway and
+            // answering 204 claimed a suppression that could not happen: a fingerprint-less row
+            // suppresses nothing at serve time, so the recommendation silently came back on the
+            // next load (predictor-edge-12). Answer the not-found the resource deserves.
+            if (fingerprint == null) throw ApiException.notFound("Recommendation");
+        }
         ledgerService.recordFeedback(latest.getId(), eventId, req.recommendationId(), type, fingerprint);
 
         // Loop closes (spec §4.3, task 86cav479w): executing a recommendation triggers a

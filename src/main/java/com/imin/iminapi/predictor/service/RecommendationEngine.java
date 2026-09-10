@@ -58,6 +58,9 @@ public class RecommendationEngine {
 
     static final int MAX_ACTIVE = 3;
 
+    /** {@code prediction_feedback.recommendation_id} is VARCHAR(128) — see {@link #clampId}. */
+    static final int MAX_REC_ID_CHARS = 128;
+
     private final TicketTierRepository tiers;
     private final MomentumSuggestionRepository momentum;
     private final PredictionFeedbackRepository feedback;
@@ -90,13 +93,24 @@ public class RecommendationEngine {
             UUID tierId = resolveTierId(c.tierRef(), eventTiers);
             UUID momentumId = "campaign".equals(actionType) ? liveMomentumId : null;
             ActionTarget target = buildTarget(tierId, c.priceMinor(), c.dateIso(), momentumId);
-            out.add(new Recommendation(c.id(), c.claim(), c.evidence(), impact, actionType, target));
+            out.add(new Recommendation(clampId(c.id()), c.claim(), c.evidence(), impact, actionType, target));
         }
 
         out.sort(Comparator
                 .comparingInt((Recommendation r) -> impactRank(r.impact()))
                 .thenComparing(r -> r.id() == null ? "" : r.id()));
         return out.size() > MAX_ACTIVE ? new ArrayList<>(out.subList(0, MAX_ACTIVE)) : out;
+    }
+
+    /**
+     * Bound the model's id to the width of {@code prediction_feedback.recommendation_id}
+     * (VARCHAR(128)) — belt and braces behind {@code PredictionGuardrailValidator}'s length rule
+     * (predictor-edge-12), because this id is what a later Dismiss INSERTs verbatim. Truncation
+     * alone could merge two long ids, so the tail is a digest of the full value.
+     */
+    private static String clampId(String id) {
+        if (id == null || id.length() <= MAX_REC_ID_CHARS) return id;
+        return id.substring(0, MAX_REC_ID_CHARS - 9) + "~" + sha256(id).substring(0, 8);
     }
 
     /** null when every structured field is absent — the FE then falls back to the surface generally. */

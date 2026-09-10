@@ -299,6 +299,43 @@ class PredictionControllerTest {
                 .andExpect(jsonPath("$.dismissedCount").value(0));
     }
 
+    /**
+     * predictor-edge-12: an id absent from the render this feedback targets cannot yield a
+     * fingerprint, so the row that used to be written suppressed nothing and the 204 claimed a
+     * suppression that never happened — the recommendation came back on the next load with no
+     * error shown. It is a 404 now, and nothing is persisted.
+     */
+    @Test
+    void dismissingAnIdThatIsNotInTheRenderIsNotFound() throws Exception {
+        Authentication a = auth(owner, org);
+        mvc.perform(post("/api/v1/events/" + event.getId() + "/prediction").with(authentication(a)))
+                .andExpect(status().isAccepted());
+        pollUntilNotPending(a, event.getId());
+
+        mvc.perform(post("/api/v1/events/" + event.getId() + "/prediction/feedback")
+                        .with(authentication(a))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"recommendationId\":\"stale-from-an-older-render\",\"type\":\"dismissed\"}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
+
+        assertThat(feedback.count()).isZero();
+    }
+
+    /** predictor-edge-12: over-long ids are a field-named 400, not a DB-constraint 400. */
+    @Test
+    void feedbackRejectsAnOverLongRecommendationId() throws Exception {
+        String tooLong = "z".repeat(129);
+        mvc.perform(post("/api/v1/events/" + event.getId() + "/prediction/feedback")
+                        .with(authentication(auth(owner, org)))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"recommendationId\":\"" + tooLong + "\",\"type\":\"dismissed\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
+                .andExpect(jsonPath("$.error.fields.recommendationId").exists());
+        assertThat(feedback.count()).isZero();
+    }
+
     @Test
     void feedbackWithoutAnyPredictionIsConflict() throws Exception {
         mvc.perform(post("/api/v1/events/" + event.getId() + "/prediction/feedback")
