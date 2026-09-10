@@ -303,6 +303,28 @@ class ReforecastServiceTest {
         assertThat(r.generatedAt()).isEqualTo(now);               // timestamp still present
     }
 
+    /**
+     * predictor-edge-14: {@code classify(mid, 0)} answered UNDER_60, so an event whose tiers were
+     * removed or zeroed after it was scored was served a "ready" chip reading "tracking below 60%
+     * of capacity" — and a crossing into it fired a dashboard notification — about an event with
+     * no capacity at all. Unknown capacity is not a tiny capacity.
+     */
+    @Test
+    void capacityZeroServesNoBandAndNoAlert() {
+        when(tiers.sumQuantityByEventId(eventId)).thenReturn(0);
+        when(pacingCurves.lookup(any(), any(), any(), any(), any())).thenReturn(Optional.empty());
+        seedPrePublish(120, 170);   // a real pre-publish range still exists in the ledger
+
+        ReforecastResult r = sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
+
+        assertThat(ProjectionBand.classify(150, 0)).isNull();
+        assertThat(r.status()).isEqualTo("insufficient_data");
+        assertThat(r.band()).isNull();
+        assertThat(r.bandLabel()).isNull();
+        assertThat(r.projectedFinalRange()).isNull();
+        verify(alertNotifier, never()).notifyBandChange(any(), any(), any(), any());
+    }
+
     // ---- trajectory alert: exactly once per crossing ---------------------------
 
     @Test

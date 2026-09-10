@@ -57,7 +57,7 @@ public class PacingEngine {
     public record Projection(boolean insufficient, int finalLow, int finalHigh, ProjectionBand band,
                              Integer sellOutEarliestDaysOut, Integer sellOutLatestDaysOut) {
         static Projection insufficientResult() {
-            return new Projection(true, 0, 0, ProjectionBand.UNDER_60, null, null);
+            return new Projection(true, 0, 0, null, null, null); // no projection ⇒ no band to claim
         }
     }
 
@@ -154,6 +154,10 @@ public class PacingEngine {
         int finalHigh = clamp((int) Math.round(rawHigh), currentSold, Math.max(currentSold, capacity));
 
         ProjectionBand band = ProjectionBand.classify((rawLow + rawHigh) / 2.0, capacity);
+        // Unknown capacity has no band (predictor-edge-14). Today the caller already guards
+        // capacity > 0 before projecting, so this is belt and braces — but a null band would
+        // reach buildStage1, which dereferences it.
+        if (band == null) return Projection.insufficientResult();
 
         // Sell-out ETA: per pace curve that actually reaches capacity, the largest day-out where
         // the event's projected cumulative first hits capacity. Range = [earliest date, latest date]

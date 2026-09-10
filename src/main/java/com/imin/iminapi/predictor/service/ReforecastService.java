@@ -200,21 +200,26 @@ public class ReforecastService {
 
     /**
      * Below the curve threshold: lean on the latest pre-publish Stage 0 estimate as the interim,
-     * EXPLICITLY labelled {@code stage:0} (no blending). No prior score → {@code insufficient_data}.
+     * EXPLICITLY labelled {@code stage:0} (no blending). No prior score, or no capacity to band
+     * against → {@code insufficient_data}.
      */
     private ReforecastResult buildInterim(UUID eventId, int currentSold, int capacity, Double velocity, Prior prior) {
         PredictionResult pre = latestPrePublish(eventId);
         Instant at = clock.instant();
-        if (pre == null || pre.attendanceRange() == null) {
+        // Unknown capacity (no tiers, or every tier removed/zeroed since the score) has no band
+        // and therefore no projection frame at all (predictor-edge-14): every band is a fraction
+        // OF capacity, so answering one would be inventing the denominator. Say insufficient
+        // rather than serve a "ready" chip — and fire no alert — for an event with no capacity.
+        if (capacity <= 0 || pre == null || pre.attendanceRange() == null) {
             // Nothing forward-looking to lean on — say so rather than widen silently (§5).
             return new ReforecastResult("insufficient_data", 0, null, null, null, null, velocity, null,
                     null, null, prior == null ? null : prior.alert(), null, at);
         }
         int rawLow = pre.attendanceRange().low();
         int rawHigh = pre.attendanceRange().high();
-        int cap = capacity > 0 ? capacity : rawHigh;
-        int low = clamp(rawLow, 0, cap);
-        int high = clamp(rawHigh, low, cap);
+        int low = clamp(rawLow, 0, capacity);
+        int high = clamp(rawHigh, low, capacity);
+        // Non-null: capacity > 0 is guaranteed by the guard above.
         ProjectionBand band = ProjectionBand.classify((rawLow + rawHigh) / 2.0, capacity);
         ReforecastResult.Range range = new ReforecastResult.Range(low, high);
         ReforecastResult.RevenueRange revenue = revenueRange(eventId, currentSold, range);
