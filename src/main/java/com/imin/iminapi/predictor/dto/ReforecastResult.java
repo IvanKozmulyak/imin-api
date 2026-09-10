@@ -79,7 +79,13 @@ public record ReforecastResult(
      * The pacing overlay (spec §4.2): the comparable band curve, the event's own curve, the
      * count of comparable completed events the band was built from, and the relaxation applied
      * to find them. The percentages are privacy-safe aggregates — see {@code PacingCurveService}.
+     *
+     * <p>{@code relaxation} is a DISPLAY PHRASE and is ABSENT when the net was not widened
+     * (predictor-edge-9) — {@code RelaxationLevel.phrase()}, null at {@code NONE}. NON_NULL is
+     * declared here as well as on the enclosing record because the outer annotation does not
+     * reach a nested record's own properties.
      */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
     public record Pacing(List<CurvePoint> curve, List<EventPoint> eventCurve,
                          int comparableEventsCount, String relaxation) {}
 

@@ -164,9 +164,11 @@ public class ReforecastService {
         ReforecastResult.Range range = new ReforecastResult.Range(p.finalLow(), p.finalHigh());
         ReforecastResult.RevenueRange revenue = revenueRange(e.getId(), currentSold, range);
         ReforecastResult.SellOutEta eta = sellOutEta(p, startsAt);
+        // relaxation ships as a display phrase, null at NONE (predictor-edge-9); the enum name
+        // stays in the narrator context and the ledger's internal comparables JSON.
         ReforecastResult.Pacing pacing = new ReforecastResult.Pacing(
                 curvePoints(match), eventCurvePoints(e.getId()), match.curve().eventsCount(),
-                match.relaxation().name());
+                match.relaxation().phrase());
 
         // Narration regenerates ONLY on a band change; otherwise reuse the prior verbatim. The kill
         // switch suppresses narration entirely — the numbers above are arithmetic and survive it.

@@ -219,8 +219,10 @@ public class PredictionScoringPipeline {
             aggregates.put("sellOutRate", Math.round(fa.sellOutRate() * 100) + "%");
         }
 
+        // relaxation ships as a display phrase, null at NONE (predictor-edge-9) — the enum name
+        // stays on the snapshot's CorpusLine and in the ledger JSON below.
         return new PredictionResult.Comparables(
-                c.densityTotal(), c.ownCount(), c.relaxation(), filters.toString(), aggregates);
+                c.densityTotal(), c.ownCount(), relaxation.phrase(), filters.toString(), aggregates);
     }
 
     private static void appendPart(StringBuilder sb, String part) {

@@ -213,6 +213,26 @@ class ReforecastServiceTest {
         assertThat(r.bandLabel()).isEqualTo(ProjectionBand.valueOf(r.band()).phrase());
     }
 
+    /**
+     * predictor-edge-9: the pacing block's relaxation is a display phrase and is absent at the
+     * un-relaxed rung; the ledger's internal comparables JSON keeps the enum name.
+     */
+    @Test
+    void pacingRelaxationIsAPhraseAndAbsentWhenTheNetWasNotWidened() {
+        stubBands(ProjectionBand.TRACKING_60_85);
+        ReforecastResult r = sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
+
+        assertThat(r.pacing().relaxation()).isNull();                       // NONE ⇒ nothing to say
+        assertThat(rows.get(0).getComparablesJson()).contains("\"relaxation\":\"NONE\"");
+
+        when(pacingCurves.lookup(any(), any(), any(), any(), any()))
+                .thenReturn(Optional.of(new CurveMatch(RelaxationLevel.CITY_TO_COUNTRY, curve())));
+        stubBands(ProjectionBand.TRACKING_60_85);
+        ReforecastResult widened = sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
+
+        assertThat(widened.pacing().relaxation()).isEqualTo("across the country");
+    }
+
     @Test
     void projectedFinalRangeYieldsRevenueAndVelocityArithmetic() {
         stubBands(ProjectionBand.TRACKING_60_85);
