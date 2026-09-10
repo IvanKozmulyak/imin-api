@@ -258,6 +258,37 @@ class PublicEventServiceTest {
     }
 
     // -----------------------------------------------------------------------
+    // 9b. Detail tiers carry the all-in price
+    //
+    // priceMinor alone is not a lawful first display price (Code conso. L112-1,
+    // CRD Art.6(1)(e)) and it made the same event read cheaper on its own page
+    // than on the listing card, whose priceFromMinor has always been all-in.
+    // -----------------------------------------------------------------------
+    @Test
+    void detailTiers_carryTheAllInPrice() {
+        Event e = eventRepository.save(publishedLiveEvent());
+        tier(e.getId(), "GA", 2500, 100, 0, true, 10, null);
+
+        PublicEventResponse r = publicEventService.get(e.getId());
+
+        // 5% of 2500 = 125, plus the 99 flat per-ticket fee.
+        assertThat(r.tiers()).hasSize(1);
+        assertThat(r.tiers().get(0).priceMinor()).isEqualTo(2500);
+        assertThat(r.tiers().get(0).priceAllInMinor()).isEqualTo(2724L);
+    }
+
+    /** A free tier is free: no fee on a €0 net total, matching QuoteService. */
+    @Test
+    void detailTiers_freeTierIsAllInZero() {
+        Event e = eventRepository.save(publishedLiveEvent());
+        tier(e.getId(), "Free", 0, 100, 0, true, 10, null);
+
+        PublicEventResponse r = publicEventService.get(e.getId());
+
+        assertThat(r.tiers().get(0).priceAllInMinor()).isZero();
+    }
+
+    // -----------------------------------------------------------------------
     // 10. Sold-out tier — hidden from public listing
     // -----------------------------------------------------------------------
     @Test

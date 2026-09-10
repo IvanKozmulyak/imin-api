@@ -1,5 +1,6 @@
 package com.imin.iminapi.refund.email;
 
+import com.imin.iminapi.util.LogSafe;
 import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.email.EmailService;
@@ -18,8 +19,10 @@ import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.context.event.EventListener;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.event.TransactionPhase;
+import org.springframework.transaction.event.TransactionalEventListener;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -74,7 +77,12 @@ public class RefundRequestEmailer {
         this.users = users;
     }
 
-    @EventListener
+    // AFTER_COMMIT + @Async, matching the sibling RefundConfirmationEmailer: a plain
+    // @EventListener ran these Resend round-trips synchronously inside the submit/reject
+    // database transaction, holding it open for the network call and mailing the buyer
+    // about a request that a later rollback would have erased.
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    @Async("ticketEmailExecutor")
     public void onSubmitted(RefundRequestSubmittedEvent ev) {
         RefundRequest rr = requests.findById(ev.requestId()).orElse(null);
         if (rr == null) {
@@ -129,12 +137,16 @@ public class RefundRequestEmailer {
             "Новий запит на повернення коштів · imin");
         safeSend(organizerEmail, organizerSubject, org);
 
-        // 3. Imin inbox.
+        // 3. Imin inbox. Deliberately English-only: the recipient is one internal ops
+        // address, not a user, and rendering an operational alert in whichever language
+        // the buyer happened to check out in would make the queue harder to work, not
+        // easier. There is no locale to read for it either — it belongs to imin.
         EmailTemplateRenderer.Rendered imin = renderer.render("refund-request-notify-imin", base);
         safeSend(props.resolveRefundRequestInbox(), "[imin] new refund request", imin);
     }
 
-    @EventListener
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+    @Async("ticketEmailExecutor")
     public void onRejected(RefundRequestRejectedEvent ev) {
         RefundRequest rr = requests.findById(ev.requestId()).orElse(null);
         if (rr == null) {
@@ -145,8 +157,19 @@ public class RefundRequestEmailer {
         Map<String, String> values = new LinkedHashMap<>();
         values.put("decisionNote", rr.getDecisionNote() == null ? "" : rr.getDecisionNote());
 
-        EmailTemplateRenderer.Rendered r = renderer.render("refund-request-rejected", values);
-        safeSend(rr.getBuyerEmail(), "Your refund request · imin", r);
+        // Buyer-facing, so the buyer's checkout language (V78) — the same source the
+        // acknowledgement above already used. A rejection is the message they are most
+        // likely to need to read carefully.
+        String buyerLocale = orders.findById(rr.getOrderId())
+            .map(Order::getBuyerLocale)
+            .orElse(null);
+        EmailTemplateRenderer.Rendered r = renderer.render("refund-request-rejected", buyerLocale, values);
+        String subject = EmailLocale.choose(buyerLocale,
+            "Your refund request · imin",
+            "Tu solicitud de reembolso · imin",
+            "Votre demande de remboursement · imin",
+            "Ваш запит на повернення коштів · imin");
+        safeSend(rr.getBuyerEmail(), subject, r);
     }
 
     private void safeSend(String to, String subject, EmailTemplateRenderer.Rendered r) {
@@ -154,7 +177,7 @@ public class RefundRequestEmailer {
         try {
             email.send(to, subject, r.html(), r.text());
         } catch (Exception e) {
-            log.warn("[refund-request-email] send failed to={}: {}", to, e.getMessage());
+            log.warn("[refund-request-email] send failed to={}: {}", LogSafe.email(to), LogSafe.redact(e.getMessage()));
         }
     }
 }

@@ -10,6 +10,7 @@ import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.repository.SuppressionRepository;
 import com.imin.iminapi.audience.service.AudienceImportService;
+import com.imin.iminapi.audience.service.ImportAttestation;
 import com.imin.iminapi.audience.service.ConsentOrigin;
 import com.imin.iminapi.audience.service.ConsentService;
 import com.imin.iminapi.audience.service.CsvContactParser;
@@ -111,6 +112,40 @@ class AudienceImportServiceTest {
         assertThat(records.get(0).getStatus()).isEqualTo("subscribed");
         // proof records who + when
         assertThat(records.get(0).getProofText()).contains(principal.userId().toString());
+    }
+
+    /**
+     * The proof recorded who and when but not <b>what they attested to</b>. imin
+     * emails people on an organizer's word, so the record has to name the
+     * statement they made and the version of it they were shown — otherwise a
+     * later change to the dialog copy silently rewrites what every past importer
+     * is on file as having asserted.
+     *
+     * <p>{@code consent_basis} stays {@code explicit} and the send gate is
+     * untouched: that is a product decision this card explicitly does not make.
+     */
+    @Test
+    void the_proof_names_the_attestation_statement_and_the_version_shown() {
+        importService.importContacts(rows("Alice@Example.com"), false, principal, "2026-09-08");
+
+        Membership m = membershipFor("alice@example.com");
+        String proof = consentRepo.findByMembershipId(m.getMembershipId()).get(0).getProofText();
+
+        assertThat(proof).contains(ImportAttestation.STATEMENT);
+        assertThat(proof).contains("2026-09-08");
+        assertThat(proof).contains(principal.userId().toString());
+        // Unchanged, deliberately.
+        assertThat(m.getConsentBasis()).isEqualTo("explicit");
+    }
+
+    /** An older dashboard sends no version; the record says so rather than guessing. */
+    @Test
+    void an_unversioned_attestation_is_recorded_as_unversioned() {
+        importService.importContacts(rows("Alice@Example.com"), false, principal);
+
+        Membership m = membershipFor("alice@example.com");
+        assertThat(consentRepo.findByMembershipId(m.getMembershipId()).get(0).getProofText())
+                .contains(ImportAttestation.UNVERSIONED);
     }
 
     // ── CRITICAL: suppressed email stays unsubscribed / never ──────────────────

@@ -109,7 +109,9 @@ public class SmsConsentService {
             newC.setNormalizedEmail(normalizedEmail);
             newC.setDisplayName(rawEmail);
             try {
-                consumer = consumers.save(newC);
+                // saveAndFlush, not save: the id is assigned in memory, so a plain save()
+                // defers the INSERT past this try and the catch below could never fire.
+                consumer = consumers.saveAndFlush(newC);
             } catch (DataIntegrityViolationException dup) {
                 consumer = consumers.findByNormalizedEmail(normalizedEmail)
                         .orElseThrow(() -> new IllegalStateException(

@@ -32,6 +32,9 @@ public interface SettlementRepository extends JpaRepository<Settlement, UUID> {
     Optional<Settlement> findByStripeObjectId(String stripeObjectId);
 
     /** Org-scoped payout history, newest first, paginated. */
+    /** Any settlement row at all — the money-has-moved gate on org deletion. */
+    boolean existsByOrgId(UUID orgId);
+
     Page<Settlement> findByOrgIdOrderByCreatedAtDesc(UUID orgId, Pageable pageable);
 
     /** Org-scoped payout history, newest first (unpaged convenience). */
@@ -50,17 +53,23 @@ public interface SettlementRepository extends JpaRepository<Settlement, UUID> {
     List<Settlement> findByOrgIdAndStatusOrderByCreatedAtDesc(UUID orgId, SettlementStatus status);
 
     /**
-     * Sum of settlement amounts (minor units) for an org in a single status.
-     * Drives summary tiles like inTransit / pending. Bind {@code status} as a
-     * parameter so the converter maps it to the lowercase column value.
+     * Sum of settlement amounts (minor units) for an org in a single status, scoped to
+     * one object type. Drives the inTransit / pending summary tiles, which bind
+     * {@code PAYOUT} for the same reason {@link #countAndSumPaidByOrgAndTypeInWindow}
+     * does: a destination charge writes BOTH a transfer row and, later, a payout row
+     * mirroring the same euros, so an unscoped sum double-counts them. Bind
+     * {@code status}/{@code objectType} as parameters so the converters map them to the
+     * lowercase column values.
      */
     @Query("""
             select coalesce(sum(s.amountMinor), 0) from Settlement s
              where s.orgId = :orgId
+               and s.objectType = :objectType
                and s.status = :status
             """)
-    long sumAmountByOrgAndStatus(@Param("orgId") UUID orgId,
-                                 @Param("status") SettlementStatus status);
+    long sumAmountByOrgAndTypeAndStatus(@Param("orgId") UUID orgId,
+                                        @Param("objectType") SettlementObjectType objectType,
+                                        @Param("status") SettlementStatus status);
 
     /**
      * (count, summed amount minor) of an org's PAID payouts whose {@code paidAt}

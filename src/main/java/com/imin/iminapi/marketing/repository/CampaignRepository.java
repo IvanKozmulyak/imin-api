@@ -82,16 +82,6 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
                              @Param("status") String status,
                              Pageable pageable);
 
-    @Query("""
-            select count(c) from Campaign c
-             where c.orgId = :orgId
-               and (:channel is null or c.channel = :channel)
-               and (:status  is null or c.status  = :status)
-            """)
-    long countByOrg(@Param("orgId") UUID orgId,
-                    @Param("channel") String channel,
-                    @Param("status") String status);
-
     /**
      * Org's campaigns created since a cutoff — feeds the marketing hub 30-day
      * attributed-purchases roll-up (summed per-campaign via CampaignAttributionService).

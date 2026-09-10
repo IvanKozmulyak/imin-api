@@ -1,7 +1,9 @@
 package com.imin.iminapi.service.ticket;
 
 import com.imin.iminapi.model.Order;
+import com.imin.iminapi.model.ReservationStatus;
 import com.imin.iminapi.repository.OrderRepository;
+import com.imin.iminapi.repository.TicketReservationRepository;
 import org.springframework.stereotype.Service;
 
 import java.util.Optional;
@@ -25,9 +27,11 @@ public class CheckoutStatusService {
     public record Result(Status status, String orderToken) {}
 
     private final OrderRepository orders;
+    private final TicketReservationRepository reservations;
 
-    public CheckoutStatusService(OrderRepository orders) {
+    public CheckoutStatusService(OrderRepository orders, TicketReservationRepository reservations) {
         this.orders = orders;
+        this.reservations = reservations;
     }
 
     /**
@@ -50,7 +54,35 @@ public class CheckoutStatusService {
         Optional<Order> o = id.startsWith("pi_")
                 ? orders.findByStripePaymentIntentId(id)
                 : orders.findByStripeSessionId(id);
-        return o.map(order -> new Result(Status.READY, order.getToken()))
-                .orElse(new Result(Status.PENDING, null));
+        if (o.isPresent()) {
+            return new Result(Status.READY, o.get().getToken());
+        }
+        return terminalFailure(id) ? new Result(Status.FAILED, null)
+                                    : new Result(Status.PENDING, null);
+    }
+
+    /**
+     * {@code FAILED} exists so the poll can stop. A declined card or an abandoned
+     * session produces no Order, ever, and the success page meta-refreshes until it
+     * sees something other than {@code PENDING} — so without this the buyer sat on a
+     * spinner forever. (The constant was declared and serialised as
+     * {@code status: "failed"} but produced by nothing, which is how that went
+     * unnoticed.)
+     *
+     * <p>A RELEASED hold is the signal: the {@code payment_intent.payment_failed} /
+     * {@code checkout.session.expired} webhooks and the {@code ReservationSweeper}
+     * all land there, and none of them run while a payment can still succeed. HELD
+     * (the normal webhook race) and CONFIRMED (money moved, issuance not landed yet
+     * — the case the fulfilment reconciler covers) both stay PENDING; calling either
+     * failed would be a lie to someone who has paid.
+     *
+     * <p>One lookup covers both id shapes: the web flow attaches the Checkout Session
+     * id to the reservation, and {@code StripePaymentIntentService} attaches the
+     * PaymentIntent id to the same column for native purchases.
+     */
+    private boolean terminalFailure(String id) {
+        return reservations.findByStripeSessionId(id)
+                .map(r -> r.getStatus() == ReservationStatus.RELEASED)
+                .orElse(false);
     }
 }

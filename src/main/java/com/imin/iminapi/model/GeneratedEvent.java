@@ -72,6 +72,42 @@ public class GeneratedEvent {
     @Column(name = "confidence_pct")
     private Integer confidencePct;
 
+    // ── ConceptRequest snapshot (V108) ────────────────────────────────────────
+    // The create request, kept so a regenerate reproduces the same event text and the same pinned
+    // vibe instead of passing nulls. All nullable: NULL means "not recorded", never "empty".
+
+    @Column(name = "request_title", columnDefinition = "TEXT")
+    private String requestTitle;
+
+    @Column(name = "request_venue", columnDefinition = "TEXT")
+    private String requestVenue;
+
+    /** Comma-joined, like {@link #platforms} — the lineup collapses to a comma-joined string anyway. */
+    @Column(name = "request_lineup", columnDefinition = "TEXT")
+    private String requestLineup;
+
+    @Column(name = "request_address", columnDefinition = "TEXT")
+    private String requestAddress;
+
+    @Column(name = "request_rsvp_url", columnDefinition = "TEXT")
+    private String requestRsvpUrl;
+
+    @Column(name = "request_vibe_id", length = 64)
+    private String requestVibeId;
+
+    @Column(name = "request_event_id")
+    private UUID requestEventId;
+
+    /** The real event date the organizer asked for, as opposed to {@link #eventDate}'s pricing horizon. */
+    @Column(name = "request_event_date")
+    private LocalDate requestEventDate;
+
+    @Column(name = "request_capacity")
+    private Integer requestCapacity;
+
+    @Column(name = "request_logo_on_posters")
+    private Boolean requestLogoOnPosters;
+
     @PrePersist
     void prePersist() {
         if (createdAt == null) {

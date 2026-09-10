@@ -70,6 +70,9 @@ public class PayoutController {
     public PayoutConnectResponse connect(
             @CurrentUser AuthPrincipal p,
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey) {
+        // OWNER/ADMIN only — this is the money rail, not a read.
+        com.imin.iminapi.security.RoleGuard.requireAtLeast(
+                p, com.imin.iminapi.model.UserRole.ADMIN, "connect a payout account");
         return service.connect(p, p.orgId(), idempotencyKey);
     }
 }

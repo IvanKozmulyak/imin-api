@@ -72,6 +72,7 @@ public class ResendWebhookController {
         String type;
         String messageId;
         String email;
+        String bounceType;
         Instant occurredAt;
         try {
             JsonNode root = MAPPER.readTree(body);
@@ -81,6 +82,11 @@ public class ResendWebhookController {
             email = data.path("to").isArray() && data.path("to").size() > 0
                     ? data.path("to").get(0).asText(null)
                     : text(data, "to");
+            // mkt-edge-6: Resend classifies every bounce as Permanent | Transient |
+            // Undetermined in data.bounce.type. Dropping it here was what made the projector
+            // treat a full mailbox exactly like a dead address and suppress it for every org
+            // on the platform, for ever.
+            bounceType = text(data.path("bounce"), "type");
             occurredAt = parseInstant(text(root, "created_at"));
         } catch (Exception e) {
             log.warn("[resend-webhook] unparseable body — acking to stop retries: {}", e.getMessage());
@@ -95,7 +101,7 @@ public class ResendWebhookController {
 
         // Idempotent claim keyed on the svix message id (the provider_event_id).
         boolean fresh = dedup.tryClaim(ProviderEvent.PROVIDER_RESEND, svixId, messageId,
-                campaignId, recipientId, type, body);
+                campaignId, recipientId, type);
         if (!fresh) {
             log.info("[resend-webhook] duplicate svixId={} — acked", svixId);
             return ResponseEntity.ok().build();
@@ -104,7 +110,7 @@ public class ResendWebhookController {
         if (r != null) {
             // org id is derived inside the projector from the campaign (recipient
             // rows carry no org_id — spec §2.2 V53).
-            projector.project(campaignId, recipientId, membershipId, email, type, occurredAt);
+            projector.project(campaignId, recipientId, membershipId, email, type, bounceType, occurredAt);
         } else {
             log.info("[resend-webhook] no recipient for messageId={} type={} — logged only", messageId, type);
         }

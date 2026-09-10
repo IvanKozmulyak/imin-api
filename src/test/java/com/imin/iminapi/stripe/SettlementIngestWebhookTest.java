@@ -13,7 +13,11 @@ import com.imin.iminapi.settlement.SettlementObjectType;
 import com.imin.iminapi.settlement.SettlementRepository;
 import com.imin.iminapi.settlement.SettlementStatus;
 import com.stripe.StripeClient;
+import com.stripe.net.ApiRequest;
+import com.stripe.net.ApiResource;
+import com.stripe.net.StripeResponseGetter;
 import com.stripe.net.Webhook;
+import com.stripe.service.ChargeService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -23,11 +27,15 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
+import java.lang.reflect.Type;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * Integration test for Track A settlements ingestion through the V1 webhook path. Unlike the
@@ -133,11 +141,14 @@ class SettlementIngestWebhookTest {
     }
 
     /**
-     * A real {@code charge.refunded} V1 envelope for a DESTINATION charge: the connected account
-     * lives on {@code transfer_data.destination}, and the backing transfer on {@code source_transfer}.
-     * {@code refunded} toggles full vs partial.
+     * A real {@code charge.refunded} V1 envelope as the "Your account" (PLATFORM) endpoint
+     * delivers it for a destination charge: the connected account is on
+     * {@code transfer_data.destination} and the backing transfer is on {@code transfer}.
+     * {@code source_transfer} is absent — it exists only on the connected account's copy of
+     * the charge, and a payload carrying BOTH (which the old fixture hand-wrote) is a shape
+     * no real webhook has. {@code refunded} toggles full vs partial.
      */
-    private String chargeRefundedEvent(String eventId, String chargeId, String sourceTransfer,
+    private String chargeRefundedEvent(String eventId, String chargeId, String backingTransfer,
                                        String destination, long amount, boolean fullyRefunded) {
         return """
             {
@@ -154,22 +165,54 @@ class SettlementIngestWebhookTest {
                   "amount": %d,
                   "currency": "eur",
                   "refunded": %b,
-                  "source_transfer": "%s",
+                  "transfer": "%s",
                   "transfer_data": { "destination": "%s" },
                   "metadata": {}
                 }
               }
             }
             """.formatted(eventId, Instant.now().getEpochSecond(), destination,
-                chargeId, amount, fullyRefunded, sourceTransfer, destination);
+                chargeId, amount, fullyRefunded, backingTransfer, destination);
     }
 
     /**
-     * A real {@code charge.dispute.created} V1 envelope. The dispute carries an EXPANDED
-     * {@code charge} object so the ingest can reach {@code charge.source_transfer}.
+     * The CONNECTED-account copy of the same charge: {@code source_transfer} only, no
+     * {@code transfer} and no {@code transfer_data}. Proves the fallback still works if the
+     * event is ever re-scoped to the "Connected accounts" endpoint.
      */
-    private String disputeEvent(String eventId, String disputeId, String chargeId,
-                                String sourceTransfer, long amount) {
+    private String connectedChargeRefundedEvent(String eventId, String chargeId, String sourceTransfer,
+                                                long amount) {
+        return """
+            {
+              "id": "%s",
+              "object": "event",
+              "type": "charge.refunded",
+              "api_version": "2026-04-22.dahlia",
+              "created": %d,
+              "account": "%s",
+              "data": {
+                "object": {
+                  "id": "%s",
+                  "object": "charge",
+                  "amount": %d,
+                  "currency": "eur",
+                  "refunded": true,
+                  "source_transfer": "%s",
+                  "metadata": {}
+                }
+              }
+            }
+            """.formatted(eventId, Instant.now().getEpochSecond(), acctId,
+                chargeId, amount, sourceTransfer);
+    }
+
+    /**
+     * A real {@code charge.dispute.created} V1 envelope. Webhook bodies are NEVER expanded, so
+     * {@code charge} is a plain {@code "ch_..."} STRING — the previous fixture hand-wrote an
+     * expanded charge object, which is why the handler's expanded-only read looked correct.
+     * The ingest has to retrieve the charge by id, which {@link #stubChargeRetrieve} answers.
+     */
+    private String disputeEvent(String eventId, String disputeId, String chargeId, long amount) {
         return """
             {
               "id": "%s",
@@ -186,16 +229,31 @@ class SettlementIngestWebhookTest {
                   "currency": "eur",
                   "reason": "fraudulent",
                   "status": "needs_response",
-                  "charge": {
-                    "id": "%s",
-                    "object": "charge",
-                    "source_transfer": "%s"
-                  }
+                  "charge": "%s"
                 }
               }
             }
             """.formatted(eventId, Instant.now().getEpochSecond(), acctId,
-                disputeId, amount, chargeId, sourceTransfer);
+                disputeId, amount, chargeId);
+    }
+
+    /**
+     * Make {@code stripeClient.charges().retrieve(id)} answer with a PLATFORM destination
+     * charge carrying {@code transfer} (no {@code source_transfer} — that field only exists on
+     * the connected account's copy). {@code ChargeService} is final, so the seam is a real
+     * service over a mocked {@link StripeResponseGetter}, as elsewhere in the suite.
+     */
+    private void stubChargeRetrieve(String chargeId, String backingTransfer) throws Exception {
+        StripeResponseGetter rg = mock(StripeResponseGetter.class);
+        when(rg.request(any(ApiRequest.class), any(Type.class)))
+                .thenAnswer(inv -> {
+                    String json = """
+                        { "id": "%s", "object": "charge", "amount": 4200, "currency": "eur",
+                          "transfer": "%s", "transfer_data": { "destination": "%s" } }
+                        """.formatted(chargeId, backingTransfer, acctId);
+                    return ApiResource.GSON.fromJson(json, com.stripe.model.Charge.class);
+                });
+        when(stripeClient.charges()).thenReturn(new ChargeService(rg));
     }
 
     /**
@@ -205,6 +263,14 @@ class SettlementIngestWebhookTest {
      */
     private String payoutEvent(String eventId, String payoutId, String type,
                                long amount, String status, long arrivalDate, String failureMessage) {
+        return payoutEvent(eventId, payoutId, type, amount, status, arrivalDate, failureMessage,
+                Instant.now().getEpochSecond());
+    }
+
+    /** As above with an explicit Stripe {@code event.created}, to drive out-of-order delivery. */
+    private String payoutEvent(String eventId, String payoutId, String type,
+                               long amount, String status, long arrivalDate, String failureMessage,
+                               long createdAt) {
         return """
             {
               "id": "%s",
@@ -225,7 +291,7 @@ class SettlementIngestWebhookTest {
                 }
               }
             }
-            """.formatted(eventId, type, Instant.now().getEpochSecond(), acctId,
+            """.formatted(eventId, type, createdAt, acctId,
                 payoutId, amount, status, arrivalDate,
                 failureMessage == null ? "null" : "\"" + failureMessage + "\"");
     }
@@ -260,7 +326,13 @@ class SettlementIngestWebhookTest {
 
     /** Seed a SUBMITTED payout_runs row (as the post-event job would leave it) for a po_ id. */
     private PayoutRun seedSubmittedRun(UUID eventId, String payoutId, long amount) {
+        return seedSubmittedRun(eventId, payoutId, amount, 0L);
+    }
+
+    /** As above, with the V110 clamp remainder the post-event job records on a short balance. */
+    private PayoutRun seedSubmittedRun(UUID eventId, String payoutId, long amount, long remaining) {
         PayoutRun r = new PayoutRun();
+        r.setRemainingMinor(remaining);
         r.setOrgId(org.getId());
         r.setEventId(eventId);
         r.setStripeAccountId(acctId);
@@ -274,6 +346,28 @@ class SettlementIngestWebhookTest {
     }
 
     // ── tests ────────────────────────────────────────────────────────────────
+
+    @Test
+    void payoutPaid_onAClampedRun_settlesPartialSoTheRemainderCanBeToppedUp() throws Exception {
+        UUID eventId = insertEvent();
+        String payoutId = "po_" + UUID.randomUUID().toString().substring(0, 12);
+        // Net was 9_000 but only 4_000 was available at payout time.
+        seedSubmittedRun(eventId, payoutId, 4_000, 5_000);
+
+        long arrival = Instant.now().getEpochSecond();
+        String body = payoutEvent("evt_payout_paid_partial", payoutId, "payout.paid", 4_000, "paid", arrival, null);
+        webhook.handleV1Endpoint(body, sign(body));
+
+        PayoutRun run = payoutRuns.findByStripePayoutId(payoutId).orElseThrow();
+        assertThat(run.getStatus())
+                .as("PAID is excluded by the per-event candidate guard — a clamped run marked PAID "
+                        + "would leave the organizer 5_000 short forever")
+                .isEqualTo(PayoutRunStatus.PARTIAL);
+        assertThat(run.getPaidAt()).isNotNull();
+        // The settlement read-model still mirrors Stripe's own status verbatim.
+        assertThat(settlements.findByStripeObjectId(payoutId).orElseThrow().getStatus())
+                .isEqualTo(SettlementStatus.PAID);
+    }
 
     @Test
     void payoutPaid_reconcilesRunToPaid_andCopiesEventIdOntoSettlement() throws Exception {
@@ -459,6 +553,72 @@ class SettlementIngestWebhookTest {
         assertThat(settlements.findByOrgIdOrderByCreatedAtDesc(org.getId())).hasSize(1);
     }
 
+    @Test
+    void fullRefund_onTheConnectedAccountCopy_stillResolvesViaSourceTransfer() throws Exception {
+        String transferId = "tr_" + UUID.randomUUID().toString().substring(0, 12);
+        String created = transferCreatedEvent("evt_cfr_seed", transferId, acctId, 4200, "eur");
+        webhook.handleV1Endpoint(created, sign(created));
+
+        String chargeId = "ch_" + UUID.randomUUID().toString().substring(0, 12);
+        String refund = connectedChargeRefundedEvent("evt_cfr_refund", chargeId, transferId, 4200);
+        webhook.handleV1Endpoint(refund, sign(refund));
+
+        assertThat(settlements.findByStripeObjectId(transferId).orElseThrow().getStatus())
+                .isEqualTo(SettlementStatus.REVERSED);
+    }
+
+    // ── stripe-8 — out-of-order deliveries must not rewrite settled state ────────
+
+    @Test
+    void lateTransferCreated_doesNotDragARefundedRowBackToPending() throws Exception {
+        // transfer.created 500s on first delivery. Its dedup marker is written in the SAME
+        // transaction as the handler, so the rollback removes it and Stripe re-delivers later.
+        String transferId = "tr_" + UUID.randomUUID().toString().substring(0, 12);
+        String created = transferCreatedEvent("evt_ooo_seed", transferId, acctId, 4200, "eur");
+        webhook.handleV1Endpoint(created, sign(created));
+
+        // Meanwhile the refund lands and reverses the row.
+        String chargeId = "ch_" + UUID.randomUUID().toString().substring(0, 12);
+        String refund = chargeRefundedEvent("evt_ooo_refund", chargeId, transferId, acctId, 4200, true);
+        webhook.handleV1Endpoint(refund, sign(refund));
+        assertThat(settlements.findByStripeObjectId(transferId).orElseThrow().getStatus())
+                .isEqualTo(SettlementStatus.REVERSED);
+
+        // Now the retried transfer.created arrives under a DIFFERENT event id, so the
+        // processed_webhook_events dedup does not stop it.
+        String retry = transferCreatedEvent("evt_ooo_retry", transferId, acctId, 4200, "eur");
+        webhook.handleV1Endpoint(retry, sign(retry));
+
+        assertThat(settlements.findByStripeObjectId(transferId).orElseThrow().getStatus())
+                .as("PENDING is only ever an initial state — a late transfer.created must never "
+                        + "un-reverse a refunded row (it is the bucket the pending tile sums)")
+                .isEqualTo(SettlementStatus.REVERSED);
+    }
+
+    @Test
+    void olderPayoutEvent_deliveredLast_doesNotOverwriteTheNewerStatus() throws Exception {
+        String payoutId = "po_" + UUID.randomUUID().toString().substring(0, 12);
+        long arrival = Instant.now().getEpochSecond();
+        long tPaid = Instant.now().getEpochSecond();
+        long tFailed = tPaid - 600;   // the FAILED event was created 10 minutes EARLIER
+
+        String paid = payoutEvent("evt_ooo_paid", payoutId, "payout.paid", 7_200, "paid",
+                arrival, null, tPaid);
+        webhook.handleV1Endpoint(paid, sign(paid));
+        assertThat(settlements.findByStripeObjectId(payoutId).orElseThrow().getStatus())
+                .isEqualTo(SettlementStatus.PAID);
+
+        // Stripe re-delivers the OLDER payout.failed afterwards. Neither status is PENDING, so
+        // only the event-created ordering stamp can tell which one is authoritative.
+        String failed = payoutEvent("evt_ooo_failed", payoutId, "payout.failed", 7_200, "failed",
+                arrival, "account_closed", tFailed);
+        webhook.handleV1Endpoint(failed, sign(failed));
+
+        assertThat(settlements.findByStripeObjectId(payoutId).orElseThrow().getStatus())
+                .as("the row keeps the state written by the NEWER event")
+                .isEqualTo(SettlementStatus.PAID);
+    }
+
     // ── charge.dispute.* ────────────────────────────────────────────────────────
 
     @Test
@@ -468,7 +628,8 @@ class SettlementIngestWebhookTest {
         String disputeId = "du_" + UUID.randomUUID().toString().substring(0, 12);
         String chargeId = "ch_" + UUID.randomUUID().toString().substring(0, 12);
         String transferId = "tr_" + UUID.randomUUID().toString().substring(0, 12);
-        String body = disputeEvent("evt_dispute_orphan", disputeId, chargeId, transferId, 4200);
+        String body = disputeEvent("evt_dispute_orphan", disputeId, chargeId, 4200);
+        stubChargeRetrieve(chargeId, transferId);
 
         webhook.handleV1Endpoint(body, sign(body));
 
@@ -488,7 +649,8 @@ class SettlementIngestWebhookTest {
 
         String disputeId = "du_" + UUID.randomUUID().toString().substring(0, 12);
         String chargeId = "ch_" + UUID.randomUUID().toString().substring(0, 12);
-        String body = disputeEvent("evt_disp_annot", disputeId, chargeId, transferId, 4200);
+        String body = disputeEvent("evt_disp_annot", disputeId, chargeId, 4200);
+        stubChargeRetrieve(chargeId, transferId);
         webhook.handleV1Endpoint(body, sign(body));
 
         Settlement s = settlements.findByStripeObjectId(transferId).orElseThrow();

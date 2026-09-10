@@ -60,6 +60,27 @@ public class User {
     @Column(name = "verified_at")
     private Instant verifiedAt;
 
+    /**
+     * When this organizer accepted the terms of use, and which version (V98).
+     * Null on every account created before the dashboard sent the field — and
+     * that absence means "not recorded", not "declined". Nothing enforces it
+     * yet; see {@code OrganizerTerms}.
+     */
+    @Column(name = "terms_accepted_at")
+    private Instant termsAcceptedAt;
+
+    @Column(name = "terms_version", length = 32)
+    private String termsVersion;
+
+    /**
+     * Set when the account is removed from its org (V118). Non-null means the
+     * account must not authenticate and must not appear in the team list; the
+     * row itself survives so {@code events.created_by} and
+     * {@code refunds.initiated_by_user_id} keep resolving. Null is active.
+     */
+    @Column(name = "disabled_at")
+    private Instant disabledAt;
+
     public void setEmail(String email) {
         this.email = email;
         this.emailLower = email == null ? null : email.toLowerCase();
@@ -71,5 +92,6 @@ public class User {
         createdAt = createdAt == null ? Times.nowMicros() : createdAt.truncatedTo(ChronoUnit.MICROS);
         if (lastActiveAt != null) lastActiveAt = lastActiveAt.truncatedTo(ChronoUnit.MICROS);
         if (verifiedAt != null) verifiedAt = verifiedAt.truncatedTo(ChronoUnit.MICROS);
+        if (disabledAt != null) disabledAt = disabledAt.truncatedTo(ChronoUnit.MICROS);
     }
 }

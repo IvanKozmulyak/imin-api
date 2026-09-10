@@ -46,6 +46,7 @@ class AudienceComputeIngestionTest {
 
     // ── Services under test
     @Autowired AudienceOrderProjector orderProjector;
+    @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
     @Autowired MembershipProjector membershipProjector;
     @Autowired AudienceBackfillJob backfillJob;
 
@@ -81,6 +82,11 @@ class AudienceComputeIngestionTest {
         ev.setGenre("techno");
         ev.setType("club");
         ev.setCreatedBy(owner.getId());
+        // The event is in the PAST: an unscanned ticket only becomes a no-show once the
+        // event it was bought for has ended (audience-3). An undated fixture would now
+        // (correctly) project no_show = 0 and say nothing about the no-show rule.
+        ev.setStartsAt(Instant.now().minus(30, ChronoUnit.DAYS));
+        ev.setEndsAt(Instant.now().minus(30, ChronoUnit.DAYS).plus(6, ChronoUnit.HOURS));
         ev = eventRepo.save(ev);
         eventId = ev.getId();
     }
@@ -296,6 +302,25 @@ class AudienceComputeIngestionTest {
         assertThat(m.getNoShow()).isEqualTo(1);
     }
 
+    /**
+     * audience-9: the INSERT-first Consumer upsert catches DataIntegrityViolationException,
+     * but Consumer ids are assigned in memory so a plain save() issued no statement and the
+     * catch could never fire — the violation arrived at the next auto-flush, outside the
+     * try, and took the whole projection transaction with it. The flushing variant is what
+     * makes the documented guard reachable.
+     */
+    @Test
+    void a_duplicate_consumer_insert_fails_inside_the_flushing_save() {
+        orderProjector.upsertMembership(orgId, "raced@x.com", "Raced");
+
+        Consumer duplicate = new Consumer();
+        duplicate.setNormalizedEmail("raced@x.com");
+        duplicate.setDisplayName("Raced again");
+
+        assertThatThrownBy(() -> consumerRepo.saveAndFlush(duplicate))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // REPLAY == BACKFILL: identical membership rows
     // ─────────────────────────────────────────────────────────────────────────
@@ -328,7 +353,11 @@ class AudienceComputeIngestionTest {
         // Now wipe ONLY the audience projection (leave source data intact)
         wipeMemberships();
 
-        // Backfill path: runs through the same upsertMembership
+        // Backfill path: runs through the same upsertMembership.
+        // onStartup already ran the job THROUGH the ShedLock proxy (lockAtLeastFor=PT1M),
+        // so a direct run() here would be a silent no-op while that lock is held. Hand the
+        // lock back (expire, never delete: a deleted row makes every later acquire fail).
+        jdbc.update("update shedlock set lock_until = locked_at where name = 'audience_backfill'");
         backfillJob.run();
 
         Consumer c2 = consumerRepo.findByNormalizedEmail("replay@x.com").orElseThrow();

@@ -15,8 +15,18 @@ import java.util.UUID;
 @RepositoryRestResource(exported = false)
 public interface BuyerVerificationAttemptRepository extends JpaRepository<BuyerVerificationAttempt, UUID> {
 
-    /** Failed-attempt count for one address inside a window — the §2.2 lockout input (R1.2). */
-    long countByEmailNormalizedAndSucceededFalseAndAttemptedAtAfter(String emailNormalized, Instant since);
+    /**
+     * Failed-attempt count for one address <b>from one caller</b> inside a
+     * window — the §2.2 lockout input (R1.2).
+     *
+     * <p>The IP is half the key on purpose (V121). Counting by address alone
+     * made the lockout an attack: an unauthenticated stranger could burn the
+     * owner's budget with wrong codes and hold them out of verifying. Both
+     * parameters are always non-null — the recorder substitutes a sentinel for
+     * a missing IP — so this stays plain equality.
+     */
+    long countByEmailNormalizedAndClientIpAndSucceededFalseAndAttemptedAtAfter(
+            String emailNormalized, String clientIp, Instant since);
 
     @Transactional
     @Modifying

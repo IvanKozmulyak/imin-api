@@ -79,31 +79,129 @@ class ResendWebhookProjectorTest {
         return new Fixture(orgId, c.getId(), m.getMembershipId(), r.getId(), email);
     }
 
+    /**
+     * mkt-core-14 (P3): provider_events.type is nullable, so a signed Resend body with no
+     * "type" field reached {@code switch (type)} — a String switch on null throws NPE. The
+     * controller's @Transactional rolled the dedup claim back with it, so every Resend retry
+     * of that event repeated the 500 instead of being deduped away. An unknown shape is
+     * ignored, not fatal.
+     */
+    @Test
+    void nullEventTypeIsIgnoredInsteadOfThrowing() {
+        Fixture f = seed("null-type@example.com");
+        org.assertj.core.api.Assertions.assertThatCode(() ->
+                projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
+                        f.email(), null, null, Instant.now()))
+                .doesNotThrowAnyException();
+        assertThat(recipientRepo.findById(f.recipientId()).orElseThrow().getStatus())
+                .isEqualTo("sent");   // untouched
+    }
+
     @Test
     void deliveredMarksRecipientDelivered() {
         Fixture f = seed("a@example.com");
         projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
-            "a@example.com", "email.delivered", Instant.now());
+            "a@example.com", "email.delivered", null, Instant.now());
         assertThat(recipientRepo.findById(f.recipientId()).orElseThrow().getStatus())
             .isEqualTo("delivered");
     }
 
     @Test
-    void bouncedSuppressesDeliverabilityByNormalizedEmail() {
+    void aPermanentBounceSuppressesDeliverabilityByNormalizedEmail() {
         Fixture f = seed("Bounce@Example.com");
         projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
-            "Bounce@Example.com", "email.bounced", Instant.now());
+            "Bounce@Example.com", "email.bounced", "Permanent", Instant.now());
         assertThat(recipientRepo.findById(f.recipientId()).orElseThrow().getStatus())
             .isEqualTo("bounced");
         // normalized lower+trim per EmailNormalizer
         assertThat(suppressionRepo.findDeliverabilityByEmail("bounce@example.com")).isPresent();
     }
 
+    /**
+     * mkt-edge-6 (P2): every email.bounced wrote the shared, system-owned,
+     * never-removable deliverability row — so one org's full mailbox, greylisting or
+     * temporary DNS failure blinded EVERY organizer on the platform for that address,
+     * permanently, with no un-suppress path anywhere in the tree. Only a Permanent bounce
+     * may reach the shared list.
+     */
+    @Test
+    void aTransientBounceDoesNotTouchTheSharedList() {
+        Fixture f = seed("soft@example.com");
+        projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
+            "soft@example.com", "email.bounced", "Transient", Instant.now());
+
+        CampaignRecipient after = recipientRepo.findById(f.recipientId()).orElseThrow();
+        assertThat(after.getStatus()).isEqualTo("bounced");
+        assertThat(after.getErrorCode()).isEqualTo("soft_bounce");
+        assertThat(suppressionRepo.findDeliverabilityByEmail("soft@example.com")).isEmpty();
+        assertThat(suppressionRepo.findMarketingByOrgAndMembership(f.orgId(), f.membershipId()))
+            .isEmpty();
+    }
+
+    /** An absent bounce.type is treated as transient — the shared list is never written on a guess. */
+    @Test
+    void anUntypedBounceIsTreatedAsTransient() {
+        Fixture f = seed("untyped@example.com");
+        projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
+            "untyped@example.com", "email.bounced", null, Instant.now());
+        assertThat(suppressionRepo.findDeliverabilityByEmail("untyped@example.com")).isEmpty();
+    }
+
+    /**
+     * Repeated transient bounces do mean something — but the escalation is org-scoped
+     * (marketing suppression for that membership), never the cross-org deliverability list.
+     */
+    @Test
+    void repeatedTransientBouncesSuppressTheMembershipForItsOwnOrgOnly() {
+        Fixture f = seed("repeat-soft@example.com");
+        projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
+            f.email(), "email.bounced", "Transient", Instant.now());
+        assertThat(suppressionRepo.findMarketingByOrgAndMembership(f.orgId(), f.membershipId()))
+            .isEmpty();
+
+        for (int i = 0; i < 2; i++) {
+            Fixture later = laterCampaignFor(f);
+            projector.project(later.campaignId(), later.recipientId(), later.membershipId(),
+                later.email(), "email.bounced", "Transient", Instant.now());
+        }
+
+        assertThat(suppressionRepo.findMarketingByOrgAndMembership(f.orgId(), f.membershipId()))
+            .isPresent();
+        // ...and the platform-wide list is still untouched.
+        assertThat(suppressionRepo.findDeliverabilityByEmail("repeat-soft@example.com")).isEmpty();
+    }
+
+    /**
+     * The same membership on a LATER campaign — the only way it can bounce twice, since
+     * uq_campaign_recipient (campaign_id, membership_id) allows one row per campaign.
+     */
+    private Fixture laterCampaignFor(Fixture f) {
+        com.imin.iminapi.marketing.model.Campaign c = new com.imin.iminapi.marketing.model.Campaign();
+        c.setId(UUID.randomUUID());
+        c.setOrgId(f.orgId());
+        c.setChannel("email");
+        c.setName("proj-test-later");
+        c.setStatus("sending");
+        c.setCreatedAt(Instant.now());
+        c.setUpdatedAt(Instant.now());
+        campaignRepo.save(c);
+
+        CampaignRecipient r = new CampaignRecipient();
+        r.setId(UUID.randomUUID());
+        r.setCampaignId(c.getId());
+        r.setMembershipId(f.membershipId());
+        r.setEmail(f.email());
+        r.setStatus("sent");
+        r.setProviderMessageId("msg_" + UUID.randomUUID());
+        recipientRepo.save(r);
+        return new Fixture(f.orgId(), c.getId(), f.membershipId(), r.getId(), f.email());
+    }
+
     @Test
     void complainedSuppressesMarketingAndMarksComplained() {
         Fixture f = seed("spam@example.com");
         projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
-            "spam@example.com", "email.complained", Instant.now());
+            "spam@example.com", "email.complained", null, Instant.now());
         assertThat(recipientRepo.findById(f.recipientId()).orElseThrow().getStatus())
             .isEqualTo("complained");
         assertThat(suppressionRepo.findMarketingByOrgAndMembership(f.orgId(), f.membershipId()))
@@ -115,7 +213,7 @@ class ResendWebhookProjectorTest {
         Fixture f = seed("open@example.com");
         Instant when = Instant.now();
         projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
-            "open@example.com", "email.opened", when);
+            "open@example.com", "email.opened", null, when);
         assertThat(recipientRepo.findById(f.recipientId()).orElseThrow().getOpenedAt()).isNotNull();
         assertThat(membershipRepo.findByIdAndOrgId(f.membershipId(), f.orgId())
             .orElseThrow().getLastEmailOpen()).isNotNull();
@@ -125,7 +223,7 @@ class ResendWebhookProjectorTest {
     void clickedStampsRecipientAndMembership() {
         Fixture f = seed("click@example.com");
         projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
-            "click@example.com", "email.clicked", Instant.now());
+            "click@example.com", "email.clicked", null, Instant.now());
         assertThat(recipientRepo.findById(f.recipientId()).orElseThrow().getClickedAt()).isNotNull();
         assertThat(membershipRepo.findByIdAndOrgId(f.membershipId(), f.orgId())
             .orElseThrow().getLastEmailClick()).isNotNull();

@@ -66,6 +66,10 @@ class BuyerProfileTest {
     @Autowired com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository emailRows;
     @MockitoBean EmailService email;
 
+    /** Buyer account mail is sent AFTER_COMMIT on this pool — see {@link BuyerMailSync}. */
+    @Autowired @org.springframework.beans.factory.annotation.Qualifier("ticketEmailExecutor")
+    java.util.concurrent.Executor mailExecutor;
+
     private String address;
     private String cookie;
     /** This test's own account. The suite shares one H2 instance, so every
@@ -74,10 +78,12 @@ class BuyerProfileTest {
 
     @BeforeEach
     void signedInBuyer() throws Exception {
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
         address = address();
         cookie = signUpAndSignIn(address);
         accountId = accountIdOf(address);
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
     }
 
@@ -219,7 +225,13 @@ class BuyerProfileTest {
 
         var account = accounts.findById(accountId).orElseThrow();
         assertThat(account.getTermsAcceptedAt()).isNotNull();
-        assertThat(account.getTermsVersion()).isEqualTo("2026-08-14");
+        // The CLIENT sent "2026-08-14" and it is deliberately not believed: whatever
+        // the browser said used to become the audit fact, which is the one property
+        // a consent record must not have. The field is still accepted on the wire.
+        assertThat(account.getTermsVersion())
+                .isEqualTo(com.imin.iminapi.buyer.BuyerTerms.CURRENT_VERSION);
+        // A version is only evidence if the text it names can be produced later.
+        assertThat(account.getTermsProof()).isNotBlank();
     }
 
     /** Not a toggle the client may send false for — the screen cannot continue without it. */
@@ -283,7 +295,9 @@ class BuyerProfileTest {
 
         var again = accounts.findById(accountId).orElseThrow();
         assertThat(again.getTermsAcceptedAt()).isEqualTo(stampedAt);
-        assertThat(again.getTermsVersion()).isEqualTo("v1");
+        // Neither "v1" nor "v2" — the version has never come from the client.
+        assertThat(again.getTermsVersion())
+                .isEqualTo(com.imin.iminapi.buyer.BuyerTerms.CURRENT_VERSION);
     }
 
     @Test
@@ -293,6 +307,36 @@ class BuyerProfileTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"acceptedTerms\":true}"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    /**
+     * The finish-registration screen starts every field empty and sends the
+     * ones the buyer left alone as explicit nulls (imin-public
+     * {@code CompleteClient.tsx}). Onboarding only ever SETS: an absent name is
+     * "leave it alone", not "clear it", so the display name a provider supplied
+     * — the only one a Google buyer has — survives ticking just the terms box.
+     */
+    @Test
+    void onboardingWithNoNameKeepsTheDisplayNameGoogleSupplied() throws Exception {
+        var info = new OAuthUserInfo("google", "google-sub-" + UUID.randomUUID(),
+                address(), true, "Ada", "Lovelace", "Ada Lovelace");
+        var signedIn = google.resolve(info, "JUnit/1.0");
+        UUID id = signedIn.account().getId();
+        assertThat(signedIn.account().getDisplayName()).isEqualTo("Ada Lovelace");
+
+        mvc.perform(post("/api/v1/buyer/me/onboarding")
+                        .header(HttpHeaders.ORIGIN, ORIGIN)
+                        .cookie(cookie(signedIn.session().rawToken()))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        // Byte for byte what the buyer site posts when only the box is ticked.
+                        .content("{\"firstName\":null,\"lastName\":null,\"city\":null,"
+                                + "\"dateOfBirth\":null,\"acceptedTerms\":true,"
+                                + "\"termsVersion\":\"2026-08-14\",\"productNews\":false}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.displayName").value("Ada Lovelace"));
+
+        assertThat(accounts.findById(id).orElseThrow().getDisplayName())
+                .isEqualTo("Ada Lovelace");
     }
 
     // ── POST /buyer/me/password ────────────────────────────────────────────
@@ -363,6 +407,42 @@ class BuyerProfileTest {
                         .header(HttpHeaders.ORIGIN, ORIGIN)
                         .cookie(cookie(googleCookie)))
                 .andExpect(status().isNoContent());
+    }
+
+    /**
+     * Unlinking is one of §2.2's five mandatory revocation events, and it was
+     * the only implemented one that skipped it — so "remove this sign-in
+     * method" removed the method and left every session minted through it alive
+     * for the remaining 180 days. The acting session is spared, as on the
+     * password change: a settings toggle must not sign the buyer out of the tab
+     * they used.
+     */
+    @Test
+    void unlinkingAProviderRevokesOtherSessionsButNotThisOne() throws Exception {
+        var info = new OAuthUserInfo("google", "google-sub-" + UUID.randomUUID(),
+                address(), true, "Ada", "Lovelace", "Ada Lovelace");
+        String acting = google.resolve(info, "JUnit/1.0").session().rawToken();
+
+        // A password first, or the unlink is refused as the last credential.
+        mvc.perform(post("/api/v1/buyer/me/password")
+                        .header(HttpHeaders.ORIGIN, ORIGIN)
+                        .cookie(cookie(acting))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"newPassword\":\"" + NEW_PASSWORD + "\"}"))
+                .andExpect(status().isNoContent());
+
+        // Minted AFTER the password change, so only the unlink can kill it.
+        String other = google.resolve(info, "JUnit/1.0").session().rawToken();
+
+        mvc.perform(delete("/api/v1/buyer/identities/google")
+                        .header(HttpHeaders.ORIGIN, ORIGIN)
+                        .cookie(cookie(acting)))
+                .andExpect(status().isNoContent());
+
+        mvc.perform(get("/api/v1/buyer/me").cookie(cookie(other)))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/v1/buyer/me").cookie(cookie(acting)))
+                .andExpect(status().isOk());
     }
 
     @Test
@@ -462,6 +542,7 @@ class BuyerProfileTest {
     }
 
     private String codeSentTo(String to) {
+        BuyerMailSync.drain(mailExecutor);
         ArgumentCaptor<String> recipient = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);

@@ -39,6 +39,23 @@ public enum RelaxationLevel {
         };
     }
 
+    /**
+     * How far the net was cast, worded for a surface — {@code null} at {@link #NONE}
+     * (predictor-edge-9). Both surfaces truthiness-guard the field and prefix it with "Net
+     * widened", so the enum constant used to render as "Net widened. NONE" for the common,
+     * UN-relaxed case: an absence dressed up as a widening. Null is the honest answer there;
+     * the enum name stays in the snapshot's CorpusLine and in the ledger's internal
+     * comparables JSON, which are machine-read.
+     */
+    public String phrase() {
+        return switch (this) {
+            case NONE -> null;
+            case CITY_TO_COUNTRY -> "across the country";
+            case GENRE_TO_FAMILY -> "in this genre across the country";
+            case DROP_SEASON -> "across the country, season dropped";
+        };
+    }
+
     /** True once geography has been widened from the requesting city to its country. */
     public boolean isCountryWide() { return this != NONE; }
 

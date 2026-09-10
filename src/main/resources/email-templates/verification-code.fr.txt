@@ -3,7 +3,7 @@ imin.wtf · code de vérification
 Vérifiez votre adresse e-mail
 ─────────────────
 
-Saisissez ce code à 4 chiffres pour finaliser la création de votre compte imin :
+Saisissez ce code à 6 chiffres pour finaliser la création de votre compte imin :
 
     {{code}}
 

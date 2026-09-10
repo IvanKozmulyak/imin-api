@@ -2,8 +2,8 @@ package com.imin.iminapi.service.event;
 
 import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.email.EmailProperties;
-import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.model.CheckoutAttribution;
+import com.imin.iminapi.model.CheckoutConsent;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.PromoCode;
@@ -12,6 +12,9 @@ import com.imin.iminapi.model.TicketTier;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.PromoCodeRepository;
 import com.imin.iminapi.repository.TicketRepository;
+import com.imin.iminapi.security.ApiException;
+import com.imin.iminapi.security.ErrorCode;
+import org.springframework.http.HttpStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -47,7 +50,6 @@ public class FreeCheckoutService {
     private final TicketRepository tickets;
     private final PromoCodeRepository promos;
     private final InventoryService inventory;
-    private final EmailService email;
     private final EmailProperties emailProps;
     private final Clock clock;
     private final org.springframework.context.ApplicationEventPublisher publisher;
@@ -56,7 +58,6 @@ public class FreeCheckoutService {
                                 TicketRepository tickets,
                                 PromoCodeRepository promos,
                                 InventoryService inventory,
-                                EmailService email,
                                 EmailProperties emailProps,
                                 Clock clock,
                                 org.springframework.context.ApplicationEventPublisher publisher) {
@@ -64,7 +65,6 @@ public class FreeCheckoutService {
         this.tickets = tickets;
         this.promos = promos;
         this.inventory = inventory;
-        this.email = email;
         this.emailProps = emailProps;
         this.clock = clock;
         this.publisher = publisher;
@@ -72,9 +72,10 @@ public class FreeCheckoutService {
 
     /**
      * Atomically reserves + confirms inventory, creates one Order and N Tickets,
-     * and returns the public order URL the buyer should be redirected to. Email
-     * delivery is fired AFTER this method returns (caller-side); see
-     * {@link #sendConfirmation(Order, Event, List)}.
+     * and returns the public order URL the buyer should be redirected to. The ticket
+     * email is not sent here and not sent by the caller either: this method publishes
+     * {@code TicketsIssuedEvent}, whose AFTER_COMMIT listener ({@code TicketIssuanceEmailer})
+     * renders the same branded, localized template the paid path uses.
      *
      * @param appliedPromo the promo whose discount zeroed the total. Pass {@code null}
      *                     when the tier itself was already free. When non-null, the
@@ -133,6 +134,16 @@ public class FreeCheckoutService {
                                  String buyerEmail, PromoCode appliedPromo, boolean adsConsent,
                                  boolean marketingOptIn, CheckoutAttribution attribution,
                                  String buyerLocale, String idempotencyKey) {
+        return issueFreeOrder(event, tier, quantity, buyerEmail, appliedPromo, adsConsent,
+                marketingOptIn, attribution, buyerLocale, idempotencyKey, CheckoutConsent.NONE);
+    }
+
+    /** As above, plus the V97 consent evidence captured on the buy page. */
+    @Transactional
+    public Order issueFreeOrder(Event event, TicketTier tier, int quantity,
+                                 String buyerEmail, PromoCode appliedPromo, boolean adsConsent,
+                                 boolean marketingOptIn, CheckoutAttribution attribution,
+                                 String buyerLocale, String idempotencyKey, CheckoutConsent consent) {
         // Reserve + confirm atomically in the same transaction. expires_at is a
         // short fallback that the sweeper would only see if the surrounding
         // transaction crashed between reserve() and confirmSold() — both calls
@@ -159,6 +170,7 @@ public class FreeCheckoutService {
         order.setMarketingOptIn(marketingOptIn);
         order.setBuyerLocale(EmailLocale.normalizeOrNull(buyerLocale));
         (attribution == null ? CheckoutAttribution.NONE : attribution).applyTo(order);
+        (consent == null ? CheckoutConsent.NONE : consent).applyTo(order);
         if (appliedPromo != null) {
             order.setPromoCodeId(appliedPromo.getId());
         }
@@ -166,10 +178,16 @@ public class FreeCheckoutService {
         orders.save(order);
 
         // Increment promo usage inline. The paid path does this on the
-        // checkout.session.completed webhook; here we have to fold it into the
-        // same transaction so a free-checkout race can't over-redeem.
-        if (appliedPromo != null) {
-            promos.incrementUsedCount(appliedPromo.getId());
+        // payment_intent.succeeded webhook; here it is folded into this transaction.
+        // What makes the race safe is the conditional UPDATE (used_count < max_uses),
+        // not the shared transaction — nothing locks the promo row. Losing that UPDATE
+        // means another redeemer took the last use between our check and this write, so
+        // we refuse with the same 400 the pre-check raises and let the rollback return
+        // the order, the tickets and the seats.
+        if (appliedPromo != null && promos.incrementUsedCount(appliedPromo.getId()) == 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_REQUEST,
+                    "Promo code has reached its usage limit",
+                    java.util.Map.of("promoCode", "exhausted"));
         }
 
         for (int i = 0; i < quantity; i++) {
@@ -199,40 +217,6 @@ public class FreeCheckoutService {
         String base = emailProps.getBuyerSiteBaseUrl();
         if (base.endsWith("/")) base = base.substring(0, base.length() - 1);
         return base + "/order/" + order.getToken();
-    }
-
-    /**
-     * Fire-and-log confirmation email. Any failure is logged but not propagated —
-     * the buyer already has the redirect URL in hand.
-     */
-    public void sendConfirmation(Order order, Event event, List<Ticket> issued) {
-        try {
-            String url = orderUrl(order);
-            String ticketCount = issued.size() + (issued.size() == 1 ? " ticket" : " tickets");
-            String subject = "Your " + event.getName() + " " + ticketCount;
-            StringBuilder text = new StringBuilder();
-            text.append("Hi,\n\n");
-            text.append("You're in for ").append(event.getName()).append(".\n\n");
-            text.append("Open your order: ").append(url).append("\n\n");
-            text.append("Each ticket can also be viewed directly:\n");
-            String base = emailProps.getBuyerSiteBaseUrl();
-            if (base.endsWith("/")) base = base.substring(0, base.length() - 1);
-            for (Ticket t : issued) {
-                text.append("- ").append(base).append("/tickets/").append(t.getToken()).append("\n");
-            }
-            text.append("\nSee you there,\nimin\n");
-            String html = "<p>You're in for <strong>" + escape(event.getName()) + "</strong>.</p>"
-                    + "<p><a href=\"" + url + "\">Open your order</a></p>";
-            email.send(order.getEmail(), subject, html, text.toString());
-        } catch (Exception e) {
-            log.warn("Free-ticket confirmation email failed for order {}: {}",
-                    order.getId(), e.getMessage());
-        }
-    }
-
-    /** Convenience used by callers + the controller path. */
-    public List<Ticket> findOrderTickets(UUID orderId) {
-        return tickets.findByOrderIdOrderByCreatedAtAsc(orderId);
     }
 
     /**
@@ -272,9 +256,5 @@ public class FreeCheckoutService {
         byte[] bytes = new byte[24];
         RNG.nextBytes(bytes);
         return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
-    }
-
-    private static String escape(String s) {
-        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 }

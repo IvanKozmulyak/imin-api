@@ -13,12 +13,15 @@ import org.junit.jupiter.api.Test;
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
+import java.nio.ByteBuffer;
 import java.util.Optional;
+import java.util.zip.CRC32;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.*;
 
 class OrgMediaServiceTest {
@@ -63,7 +66,7 @@ class OrgMediaServiceTest {
                 .startsWith("https://media.test/orgs/" + id + "/brand/logo-")
                 .endsWith(".png")
                 .matches("https://media\\.test/orgs/" + id + "/brand/logo-[0-9a-f]{16}\\.png");
-        verify(brandService).setLogoUrl(any(AuthPrincipal.class), eq(r.logoUrl()));
+        verify(brandService).setLogoUrl(any(AuthPrincipal.class), eq(r.logoUrl()), isNull());
         assertThat(storage.blobs()).hasSize(1);
     }
 
@@ -171,6 +174,73 @@ class OrgMediaServiceTest {
 
         verify(brandService).clearLogoUrl(any(AuthPrincipal.class));
         assertThat(storage.blobs()).isEmpty();
+    }
+
+    /**
+     * A well-formed PNG whose IHDR declares {@code w x h} and which carries no image data at
+     * all. Decoding it is what the service must NOT do: {@code ImageIO.read} allocates the
+     * full destination raster from the header before it ever looks for pixels, so a 2 MB
+     * upload declaring 40000x40000 asks for 6.4 GB on the request thread — an
+     * OutOfMemoryError that takes the JVM down rather than a 400.
+     */
+    private static byte[] pngHeaderOnly(int w, int h) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.writeBytes(new byte[] {(byte) 0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'});
+        byte[] ihdr = ByteBuffer.allocate(17)
+                .put("IHDR".getBytes(java.nio.charset.StandardCharsets.US_ASCII))
+                .putInt(w).putInt(h)
+                .put((byte) 8)   // bit depth
+                .put((byte) 6)   // colour type: RGBA
+                .put((byte) 0).put((byte) 0).put((byte) 0)
+                .array();
+        CRC32 crc = new CRC32();
+        crc.update(ihdr);
+        out.writeBytes(ByteBuffer.allocate(4).putInt(ihdr.length - 4).array());
+        out.writeBytes(ihdr);
+        out.writeBytes(ByteBuffer.allocate(4).putInt((int) crc.getValue()).array());
+        return out.toByteArray();
+    }
+
+    /** Grayscale so the test can hold a >16-megapixel image without a 4-byte-per-pixel raster. */
+    private static byte[] grayPng(int w, int h) {
+        try {
+            BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_BYTE_GRAY);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            ImageIO.write(img, "PNG", out);
+            return out.toByteArray();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /**
+     * infra-14: the size rules were read off the DECODED raster, so the only thing standing
+     * between a 2 MB upload and a multi-gigabyte allocation was PNG's compression ratio —
+     * which reaches 1000:1 on flat imagery. There was no maximum at all.
+     */
+    @Test
+    void a_png_over_the_pixel_cap_is_rejected() {
+        UUID id = UUID.randomUUID();
+        when(orgs.findById(id)).thenReturn(Optional.of(org(id)));
+
+        // 4200x4200 = 17.6 megapixels, just over the 4096x4096 cap, and otherwise valid:
+        // square, far above the 128px short side.
+        assertThatThrownBy(() -> sut.uploadLogo(owner(id), grayPng(4200, 4200), "image/png", "big.png"))
+                .isInstanceOf(ApiException.class)
+                .hasFieldOrPropertyWithValue("code", ErrorCode.FIELD_INVALID);
+        assertThat(storage.blobs()).isEmpty();
+    }
+
+    /** The decompression bomb itself: rejected from the header, never handed to a decoder. */
+    @Test
+    void a_png_declaring_huge_dimensions_is_rejected_without_decoding_it() {
+        UUID id = UUID.randomUUID();
+        when(orgs.findById(id)).thenReturn(Optional.of(org(id)));
+
+        assertThatThrownBy(() ->
+                sut.uploadLogo(owner(id), pngHeaderOnly(40_000, 40_000), "image/png", "bomb.png"))
+                .isInstanceOf(ApiException.class)
+                .hasFieldOrPropertyWithValue("code", ErrorCode.FIELD_INVALID);
     }
 
     @Test

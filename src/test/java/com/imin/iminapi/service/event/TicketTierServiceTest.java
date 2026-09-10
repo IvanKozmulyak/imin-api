@@ -305,6 +305,28 @@ class TicketTierServiceTest {
         verify(tiers, never()).delete(any(TicketTier.class));
     }
 
+    /**
+     * events-14: ticket_reservations.tier_id is ON DELETE CASCADE, so deleting a tier with
+     * outstanding HELD holds takes the reservation rows with it. The buyer already redirected
+     * to Stripe then pays: confirmSold logs "unknown reservation id" and no-ops, but issuance
+     * continues, leaving a charged buyer holding a ticket for a tier that no longer exists.
+     */
+    @Test
+    void delete_returns_409_INVALID_STATE_when_a_checkout_is_in_flight() {
+        UUID tierId = UUID.randomUUID();
+        TicketTier tier = existingTier(tierId, 0, 0);
+        tier.setReserved(2);
+        when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(tier));
+
+        assertThatThrownBy(() -> sut.delete(principal, eventId, tierId))
+                .isInstanceOfSatisfying(ApiException.class, ex -> {
+                    assertThat(ex.code()).isEqualTo(ErrorCode.INVALID_STATE);
+                    assertThat(ex.status().value()).isEqualTo(409);
+                    assertThat(ex.getMessage()).contains("enabled=false");
+                });
+        verify(tiers, never()).delete(any(TicketTier.class));
+    }
+
     // ── reconcileEmbedded ──────────────────────────────────────────────────────
 
     @Test

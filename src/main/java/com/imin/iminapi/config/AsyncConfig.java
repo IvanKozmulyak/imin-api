@@ -3,10 +3,12 @@ package com.imin.iminapi.config;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import java.util.concurrent.Executor;
+import java.util.concurrent.ThreadPoolExecutor;
 
 /**
  * Dedicated executor for post-issuance async work so a burst of Stripe
@@ -17,6 +19,26 @@ import java.util.concurrent.Executor;
 @EnableAsync
 public class AsyncConfig {
 
+    /**
+     * Overflow runs on the CALLER, deliberately.
+     *
+     * <p>{@code TicketIssuanceEmailer.onTicketsIssued} is
+     * {@code @TransactionalEventListener(AFTER_COMMIT)} + {@code @Async} on this pool,
+     * so the submit happens inside the afterCommit synchronization — on the Stripe
+     * webhook's thread, after the Order and the {@code processed_webhook_events} dedup
+     * row have already committed. Under the default {@code AbortPolicy} a full queue
+     * threw {@code TaskRejectedException} out of {@code commit()} into the webhook
+     * response, and Stripe's retry then short-circuited at the dedup marker: the
+     * buyer's ticket email was lost, permanently. The pool is shared with
+     * {@code SalesMilestoneNotifier} and {@code RefundConfirmationEmailer}, so a
+     * refund or milestone burst is enough to fill it.
+     *
+     * <p>Note the asymmetry with {@code venueGeocodingExecutor} below, which discards:
+     * a dropped map pin leaves a NULL every consumer handles, a dropped ticket email
+     * leaves a paying buyer with nothing. Back-pressuring the commit thread is the
+     * cheaper failure. (The durable fix is an outbox row written inside the issuance
+     * transaction and drained by a job; this closes the loss until then.)
+     */
     @Bean(name = "ticketEmailExecutor")
     public Executor ticketEmailExecutor() {
         ThreadPoolTaskExecutor exec = new ThreadPoolTaskExecutor();
@@ -24,23 +46,7 @@ public class AsyncConfig {
         exec.setMaxPoolSize(4);
         exec.setQueueCapacity(64);
         exec.setThreadNamePrefix("ticket-email-");
-        exec.initialize();
-        return exec;
-    }
-
-    /**
-     * Dedicated pool for marketing campaign batch sends (spec §2.5). Kept SEPARATE
-     * from ticketEmailExecutor — that pool is corePool 2 / maxPool 4, purpose-built
-     * for transactional ticket bursts; sharing it would starve ticket delivery and
-     * risk deadlock under campaign batches.
-     */
-    @Bean(name = "campaignSendExecutor")
-    public Executor campaignSendExecutor() {
-        ThreadPoolTaskExecutor exec = new ThreadPoolTaskExecutor();
-        exec.setCorePoolSize(2);
-        exec.setMaxPoolSize(4);
-        exec.setQueueCapacity(32);
-        exec.setThreadNamePrefix("campaign-send-");
+        exec.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
         exec.initialize();
         return exec;
     }
@@ -54,12 +60,12 @@ public class AsyncConfig {
      * per-replica rate ceiling exactly {@code 1 / minIntervalMillis} by construction, with the
      * client-side throttle as the second line of defence.
      *
-     * <p><b>This is also what stops the unbounded-thread failure mode.</b> An unqualified
-     * {@code @Async} resolves to {@code SimpleAsyncTaskExecutor} — a brand-new platform thread
-     * per task, no pool, no cap — because the three {@code Executor} beans above make Boot's
-     * {@code TaskExecutorConfigurations} back off from auto-configuring one. A bulk venue edit
-     * would then spawn a thread per event, each holding a ~9.4s HTTP call. The geocoding
-     * listener names THIS executor for that reason; do not drop the qualifier.
+     * <p><b>Keep the qualifier on the listener.</b> Unqualified {@code @Async} used to resolve
+     * to {@code SimpleAsyncTaskExecutor} — a brand-new platform thread per task, no pool, no cap
+     * — and a bulk venue edit would then spawn a thread per event, each holding a ~9.4s HTTP
+     * call. {@link #taskExecutor()} closed that fallback, but the default pool is 8 threads
+     * wide: dropping the qualifier here would still put up to eight concurrent callers on
+     * Nominatim, which is the one thing this bean exists to prevent.
      *
      * <p>Overflow DISCARDS with a log line rather than throwing: the caller is an
      * {@code AFTER_COMMIT} transaction listener, and a {@code TaskRejectedException} there
@@ -94,6 +100,51 @@ public class AsyncConfig {
         exec.setMaxPoolSize(2);
         exec.setQueueCapacity(16);
         exec.setThreadNamePrefix("predictor-score-");
+        // Keeps the default AbortPolicy, unlike ticketEmailExecutor above, and that is
+        // deliberate: both submitters (PredictionRequestService.trigger, which answers 202,
+        // and the EXECUTED-feedback path, which answers 204) hand work to this pool FROM AN
+        // HTTP REQUEST THREAD and do not wait on it. CallerRunsPolicy would run a full LLM
+        // scoring run inline on that request thread exactly when the queue is saturated,
+        // converting a documented non-blocking endpoint into a blocking one and pinning
+        // Tomcat threads under load. A rejection here is not lost work either: trigger()
+        // catches it, clears the pending marker and lets the 500 reach the organizer, who
+        // can retry. Nothing money-bearing runs on this pool.
+        exec.initialize();
+        return exec;
+    }
+
+    /**
+     * The default {@code @Async} executor. Bounded, on purpose.
+     *
+     * <p>Eight {@code @Async} methods carry no qualifier — AudienceOrderProjector,
+     * AudienceRedeemProjector, the four ReforecastTriggerService entry points and the two
+     * PredictorReactivityService listeners — and all of them are
+     * {@code @TransactionalEventListener(AFTER_COMMIT)} paths; the audience projector fires
+     * on every paid order. With named {@code Executor} beans and no default, Spring's
+     * {@code AsyncExecutionAspectSupport.getDefaultExecutor} hits
+     * {@code NoUniqueBeanDefinitionException} on {@code TaskExecutor.class}, then
+     * {@code NoSuchBeanDefinition} on {@code "taskExecutor"}, and
+     * {@code AsyncExecutionInterceptor} falls back to {@code SimpleAsyncTaskExecutor}: one new
+     * platform thread per task, no pool, no cap, each task opening its own JDBC connection
+     * against a Hikari pool of 20. An order burst was a thread burst.
+     *
+     * <p>The bean name is load-bearing — {@code "taskExecutor"} is the name that lookup
+     * asks for — and {@code @Primary} makes the by-type half of it unambiguous too. Overflow
+     * runs on the caller: these submits happen inside afterCommit synchronizations, so
+     * rejecting would throw out of {@code commit()} into a response for work that already
+     * succeeded, and the projections are the audience registry, not a best-effort map pin.
+     *
+     * <p>Qualified {@code @Async} sites are unaffected; this pool is only the fallback.
+     */
+    @Bean(name = "taskExecutor")
+    @Primary
+    public Executor taskExecutor() {
+        ThreadPoolTaskExecutor exec = new ThreadPoolTaskExecutor();
+        exec.setCorePoolSize(2);
+        exec.setMaxPoolSize(8);
+        exec.setQueueCapacity(256);
+        exec.setThreadNamePrefix("async-default-");
+        exec.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
         exec.initialize();
         return exec;
     }

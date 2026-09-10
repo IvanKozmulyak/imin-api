@@ -127,7 +127,7 @@ class EventVelocityServiceTest {
     void cross_org_returns_404_leak_safe() {
         AuthPrincipal other = new AuthPrincipal(UUID.randomUUID(), UUID.randomUUID(),
                 UserRole.OWNER, UUID.randomUUID());
-        assertThatThrownBy(() -> service.last7Days(other, event.getId()))
+        assertThatThrownBy(() -> service.windowEndingToday(other, event.getId(), EventVelocityService.DEFAULT_WINDOW_DAYS))
                 .isInstanceOf(ApiException.class)
                 .extracting(e -> ((ApiException) e).code())
                 .isEqualTo(ErrorCode.NOT_FOUND);
@@ -135,7 +135,7 @@ class EventVelocityServiceTest {
 
     @Test
     void returns_seven_buckets_today_last_with_iso_date_labels() {
-        EventVelocityService.VelocityResponse r = service.last7Days(principal, event.getId());
+        EventVelocityService.VelocityResponse r = service.windowEndingToday(principal, event.getId(), EventVelocityService.DEFAULT_WINDOW_DAYS);
 
         assertThat(r.points()).hasSize(7);
         assertThat(r.points()).allMatch(v -> v == 0L);
@@ -155,7 +155,7 @@ class EventVelocityServiceTest {
         Order o = newOrder(1000, todayNoon);
         newSucceededRefund(o, 300, todayNoon);
 
-        List<Long> points = service.last7Days(principal, event.getId()).points();
+        List<Long> points = service.windowEndingToday(principal, event.getId(), EventVelocityService.DEFAULT_WINDOW_DAYS).points();
         assertThat(points.get(6)).isEqualTo(700L);
     }
 
@@ -191,7 +191,7 @@ class EventVelocityServiceTest {
         Order o = newOrder(500, todayNoon);
         newSucceededRefund(o, 2000, todayNoon);
 
-        List<Long> points = service.last7Days(principal, event.getId()).points();
+        List<Long> points = service.windowEndingToday(principal, event.getId(), EventVelocityService.DEFAULT_WINDOW_DAYS).points();
         assertThat(points.get(6)).isEqualTo(0L);
     }
 
@@ -203,7 +203,7 @@ class EventVelocityServiceTest {
         newOrder(2500, todayNoon);
         newOrder(1500, todayNoon);
 
-        List<Long> points = service.last7Days(principal, event.getId()).points();
+        List<Long> points = service.windowEndingToday(principal, event.getId(), EventVelocityService.DEFAULT_WINDOW_DAYS).points();
         assertThat(points).hasSize(7);
         assertThat(points.get(6)).isEqualTo(4000L);   // index 6 = today
         for (int i = 0; i < 6; i++) {
@@ -217,7 +217,7 @@ class EventVelocityServiceTest {
         Instant threeDaysAgoNoon = threeDaysAgo.atTime(12, 0).atZone(ZoneId.of("UTC")).toInstant();
         newOrder(7000, threeDaysAgoNoon);
 
-        List<Long> points = service.last7Days(principal, event.getId()).points();
+        List<Long> points = service.windowEndingToday(principal, event.getId(), EventVelocityService.DEFAULT_WINDOW_DAYS).points();
         // start = today - 6 days. So three-days-ago index = 6 - 3 = 3.
         assertThat(points.get(3)).isEqualTo(7000L);
     }
@@ -228,7 +228,7 @@ class EventVelocityServiceTest {
         Instant outside = eightDaysAgo.atTime(12, 0).atZone(ZoneId.of("UTC")).toInstant();
         newOrder(99_000, outside);
 
-        List<Long> points = service.last7Days(principal, event.getId()).points();
+        List<Long> points = service.windowEndingToday(principal, event.getId(), EventVelocityService.DEFAULT_WINDOW_DAYS).points();
         assertThat(points).allMatch(v -> v == 0L);
     }
 
@@ -246,7 +246,7 @@ class EventVelocityServiceTest {
         Instant todayNoonAuckland = today.atTime(12, 0).atZone(ZoneId.of("Pacific/Auckland")).toInstant();
         newOrder(1234, todayNoonAuckland);
 
-        List<Long> points = service.last7Days(principal, event.getId()).points();
+        List<Long> points = service.windowEndingToday(principal, event.getId(), EventVelocityService.DEFAULT_WINDOW_DAYS).points();
         long sum = points.stream().mapToLong(Long::longValue).sum();
         assertThat(sum).isEqualTo(1234L);
     }

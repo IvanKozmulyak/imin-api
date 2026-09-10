@@ -130,17 +130,22 @@ public class InventoryService {
             return;
         }
 
+        // Lock ticket_tiers BEFORE touching ticket_reservations. reserve() and
+        // confirmSold() both take the locks in that order; doing the reverse here made
+        // the sweeper (holds reservation, wants tier) and the payment_intent.succeeded
+        // webhook (holds tier, wants reservation) a real PostgreSQL deadlock pair.
+        TicketTier tier = tiers.findByIdForUpdate(r.getTierId())
+                .orElseThrow(() -> ApiException.notFound("TicketTier"));
+
         int won = reservations.markReleased(reservationId, clock.instant(), reason);
         if (won == 0) {
             // Lost the race to a concurrent releaser. Whoever won did the counter
-            // decrement; we just return.
+            // decrement; we just return (releasing the tier lock at commit).
             log.info("releaseReservation: {} concurrently transitioned — no-op (reason={})",
                     reservationId, reason);
             return;
         }
 
-        TicketTier tier = tiers.findByIdForUpdate(r.getTierId())
-                .orElseThrow(() -> ApiException.notFound("TicketTier"));
         int current = tier.getReserved();
         int decrement = Math.min(current, r.getQty());
         if (r.getQty() > current) {
@@ -341,17 +346,4 @@ public class InventoryService {
         reservations.saveAndFlush(r);
     }
 
-    /** Same shape as {@link #releaseReservationBySessionId} but for the success path. */
-    @Transactional
-    public boolean confirmSoldBySessionId(String stripeSessionId) {
-        if (stripeSessionId == null || stripeSessionId.isBlank()) return false;
-        Optional<TicketReservation> r = reservations.findByStripeSessionId(stripeSessionId);
-        if (r.isEmpty()) {
-            log.info("confirmSoldBySessionId: no reservation for session {} — pre-V27 event, skipping",
-                    stripeSessionId);
-            return false;
-        }
-        confirmSold(r.get().getId());
-        return true;
-    }
 }

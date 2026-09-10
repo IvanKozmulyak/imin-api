@@ -81,8 +81,8 @@ public class PublicEventController {
         // public checkout limiter. Without it a loop can fill notify_subscriptions with fake
         // addresses, and every one of those rows later earns a real send from
         // NotifyReleaseSender — a free spam relay pointed at our sending domain.
-        // Keyed on getRemoteAddr() (proxy-resolved via forward-headers-strategy), NOT the
-        // client-controllable X-Forwarded-For that clientIp() reads for the evidence trail.
+        // Keyed on getRemoteAddr(), which forward-headers-strategy=framework resolves
+        // from the proxy's own X-Forwarded-For handling — never the raw header.
         rateLimiter.consume("notify-subscribe", "ip:" + http.getRemoteAddr());
         // Consent provenance (V77): who asked, from where, with which client. Captured
         // here because the service has no HTTP context — same split as PublicRecoveryController.
@@ -92,24 +92,35 @@ public class PublicEventController {
     }
 
     /**
-     * Client IP for the proxied deployment (Railway/Vercel edge in front of us):
-     * {@code getRemoteAddr()} is the proxy, so the first hop of {@code X-Forwarded-For}
-     * is the buyer. The header is client-controllable, which is fine here — this is an
-     * evidence trail, not an authorization input.
+     * Client IP for the consent-provenance record.
+     *
+     * <p>This used to read the first hop of the raw {@code X-Forwarded-For}
+     * header, on the reasoning that an evidence trail is not an authorization
+     * input so a spoofable value is harmless. It is not harmless: the value is
+     * <b>consent evidence</b>, and evidence the subject of the record can dictate
+     * is worth nothing — anyone could have written any address into the trail,
+     * including someone else's. {@code getRemoteAddr()} is the resolved address
+     * ({@code server.forward-headers-strategy: framework} makes Spring apply the
+     * proxy's forwarded headers itself, so this is the real client behind
+     * Railway), and it is the same value the rate limiter above trusts.
      */
     private static String clientIp(HttpServletRequest http) {
-        String forwarded = http.getHeader("X-Forwarded-For");
-        if (forwarded != null && !forwarded.isBlank()) {
-            String first = forwarded.split(",")[0].trim();
-            if (!first.isEmpty()) return first;
-        }
         return http.getRemoteAddr();
     }
 
     @PostMapping("/{id}/quote")
     public ResponseEntity<QuoteResponse> quote(
             @PathVariable UUID id,
-            @RequestBody(required = false) QuoteRequest body) {
+            @RequestBody(required = false) QuoteRequest body,
+            HttpServletRequest http) {
+        // Same throttle as the notify sibling above, and for a sharper reason: this
+        // endpoint answers 200 with a DIFFERENT reason per promo-code failure mode
+        // (unknown / disabled / exhausted), so unmetered it is a promo-code oracle an
+        // anonymous caller can grind for free — three DB reads a guess — before
+        // spending a found code through the metered `checkout` bucket. Keyed on
+        // getRemoteAddr(), which forward-headers-strategy=framework resolves from the
+        // proxy's own X-Forwarded-For handling — never the raw header.
+        rateLimiter.consume("quote", "ip:" + http.getRemoteAddr());
         QuoteResponse response = quoteService.quote(id, body);
         return ResponseEntity.ok(response);
     }

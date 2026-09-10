@@ -28,6 +28,8 @@ import java.util.stream.Collectors;
 @Service
 public class SegmentService {
 
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(SegmentService.class);
+
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final TypeReference<List<Map<String, String>>> RULES_TYPE = new TypeReference<>() {};
 
@@ -68,6 +70,14 @@ public class SegmentService {
                     Map.of("name", "Segment name is required"));
         }
         validateRulesJson(rulesJson);
+        // Names are how organizers tell segments apart, and a second "VIP" beside the
+        // prebuilt one is exactly the row that used to be resolved with somebody else's
+        // rules. Resolution no longer routes on the name (see PrebuiltSegment), so this is
+        // a clarity guard rather than a correctness one — hence a clean 409 at create time
+        // instead of a destructive de-duplicating migration over segments organizers own.
+        if (segmentRepo.existsByOrgIdAndName(orgId, trimmedName)) {
+            throw ApiException.duplicate("name", "A segment named \"" + trimmedName + "\" already exists");
+        }
         Segment s = new Segment();
         s.setOrgId(orgId);
         s.setName(trimmedName);
@@ -134,18 +144,34 @@ public class SegmentService {
         auditLogger.record(principal, AuditActions.SEGMENT_DELETED, "segment", segmentId, "Segment deleted");
     }
 
+    /**
+     * Freeze a segment's current members onto the row, turning it static.
+     *
+     * <p>Refused for the prebuilt seven, and the refusal is the point: snapshot is
+     * one-way — there is no un-snapshot endpoint, and deleteSegment will not remove a
+     * prebuilt row so it cannot be dropped and re-created either. One click on "Repeat"
+     * therefore used to pin every future Momentum campaign (whose default target IS that
+     * segment) to a member list frozen on the day of the click.
+     */
     @Transactional
     public Segment snapshot(UUID orgId, UUID segmentId, AuthPrincipal principal) {
         Segment s = requireSegment(orgId, segmentId);
+        if (s.isPrebuilt()) {
+            throw ApiException.invalidState(
+                    "A prebuilt segment always re-evaluates and cannot be snapshotted. "
+                            + "Create a segment with these rules and snapshot that instead.");
+        }
         List<Membership> resolved = resolveMembers(orgId, s);
         List<String> ids = resolved.stream()
                 .map(m -> m.getMembershipId().toString()).toList();
         try {
             s.setSnapshotIds(MAPPER.writeValueAsString(ids));
-            s.setKind("static");
-        } catch (Exception e) {
-            s.setSnapshotIds("[]");
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            // Serializing a List<String> cannot fail; an empty snapshot would silently
+            // empty the segment, so refuse rather than pretend.
+            throw new IllegalStateException("Could not serialize segment snapshot", e);
         }
+        s.setKind("static");
         Segment saved = segmentRepo.save(s);
         auditLogger.record(principal, AuditActions.SEGMENT_SNAPSHOT, "segment", segmentId,
                 "Snapshot taken: " + ids.size() + " members");
@@ -170,22 +196,33 @@ public class SegmentService {
     public List<Membership> resolveMembers(UUID orgId, Segment segment) {
         if ("static".equals(segment.getKind()) && segment.getSnapshotIds() != null) {
             List<UUID> ids = parseSnapshotIds(segment.getSnapshotIds());
-            return ids.isEmpty() ? List.of() : membershipRepo.findByIdsAndOrgId(ids, orgId);
+            if (ids.isEmpty()) return List.of();
+            // A snapshot taken before an Art.17 request must not carry that member forward:
+            // findByIdsAndOrgId is id-keyed and status-blind, unlike the dynamic queries.
+            return membershipRepo.findByIdsAndOrgId(ids, orgId).stream()
+                    .filter(m -> !"erase_pending".equals(m.getStatus()))
+                    .collect(Collectors.toList());
         }
-        return applyRules(orgId, segment.getName(), segment.getRulesJson());
+        return applyRules(orgId, segment);
     }
 
-    private List<Membership> applyRules(UUID orgId, String name, String rulesJson) {
-        // Route to prebuilt query methods by segment name (prebuilt segments)
-        return switch (name) {
-            case "Repeat"           -> membershipRepo.findRepeats(orgId);
-            case "VIP"              -> membershipRepo.findVips(orgId);
-            case "Lapsed"           -> membershipRepo.findLapsed(orgId);
-            case "First-timers"     -> membershipRepo.findFirstTimers(orgId);
-            case "Promoters"        -> membershipRepo.findPromoters(orgId);
-            case "Bought-no-showed" -> membershipRepo.findBoughtNoShowed(orgId);
-            case "Newest-30d"       -> membershipRepo.findNewest30d(orgId);
-            default                 -> applyJsonRules(orgId, rulesJson);
+    /**
+     * Route to the indexed prebuilt query by the segment's STABLE KEY. A segment with no
+     * key is custom and always evaluates its own rules, whatever it is named — routing on
+     * the display name meant an organizer's (or the AI namer's) "VIP" silently resolved to
+     * the prebuilt VIP query while the dashboard showed that organizer's own rules.
+     */
+    private List<Membership> applyRules(UUID orgId, Segment segment) {
+        PrebuiltSegment prebuilt = PrebuiltSegment.byKey(segment.getPrebuiltKey());
+        if (prebuilt == null) return applyJsonRules(orgId, segment.getRulesJson());
+        return switch (prebuilt) {
+            case REPEAT           -> membershipRepo.findRepeats(orgId);
+            case VIP              -> membershipRepo.findVips(orgId);
+            case LAPSED           -> membershipRepo.findLapsed(orgId);
+            case FIRST_TIMERS     -> membershipRepo.findFirstTimers(orgId);
+            case PROMOTERS        -> membershipRepo.findPromoters(orgId);
+            case BOUGHT_NO_SHOWED -> membershipRepo.findBoughtNoShowed(orgId);
+            case NEWEST_30D       -> membershipRepo.findNewest30d(orgId);
         };
     }
 
@@ -193,54 +230,121 @@ public class SegmentService {
         // Generic rule evaluation — load all memberships and filter in Java
         // For Tier C with reasonable org sizes this is acceptable
         List<Membership> all = membershipRepo.findAllByOrgId(orgId);
-        if (rulesJson == null || rulesJson.isBlank()) return all;
+        List<Map<String, String>> rules = parseRules(rulesJson);
+        if (rules == null) return List.of();
+        if (rules.isEmpty()) return all;
+        return all.stream()
+                .filter(m -> rulesMatch(SegmentRuleRow.of(m), rules))
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Parsed rules, an EMPTY list for "no rules" (matches everyone, the documented meaning
+     * of a blank rules_json) and {@code null} for a rule set the engine could not read.
+     *
+     * <p>Those last two must not collapse into one another. An unreadable rule set used to
+     * fall back to "the entire audience" — the wrong direction by a mile for a list that
+     * feeds RecipientMaterializer. validateRulesJson guards the create path, but rows
+     * written before it, a truncated TEXT value or any future writer all land here.
+     */
+    private List<Map<String, String>> parseRules(String rulesJson) {
+        if (rulesJson == null || rulesJson.isBlank()) return List.of();
         try {
-            List<Map<String, String>> rules = MAPPER.readValue(rulesJson, RULES_TYPE);
-            return all.stream().filter(m -> rulesMatch(m, rules)).collect(Collectors.toList());
+            return MAPPER.readValue(rulesJson, RULES_TYPE);
         } catch (Exception e) {
-            return all;
+            log.warn("Segment rules_json could not be parsed; the segment matches nobody: {}",
+                    e.getMessage());
+            return null;
         }
     }
 
-    private boolean rulesMatch(Membership m, List<Map<String, String>> rules) {
+    private boolean rulesMatch(SegmentRuleRow row, List<Map<String, String>> rules) {
         for (Map<String, String> rule : rules) {
             String field = rule.get("field");
             String op = rule.get("operator");
             String val = rule.get("value");
-            if (!matchRule(m, field, op, val)) return false;
+            if (!matchRule(row, field, op, val)) return false;
         }
         return true;
     }
 
-    private boolean matchRule(Membership m, String field, String op, String val) {
-        try {
-            long v = Long.parseLong(val);
-            long actual = switch (field) {
-                case "events"      -> m.getEvents();
-                case "spend_minor" -> m.getSpendMinor();
-                case "recency"     -> m.getRecencyDays() == null ? Long.MAX_VALUE : m.getRecencyDays();
-                case "no_show"     -> m.getNoShow();
-                case "nps"         -> m.getNps() == null ? Long.MIN_VALUE : m.getNps();
-                default            -> 0;
-            };
-            return switch (op) {
-                case ">="  -> actual >= v;
-                case "<="  -> actual <= v;
-                case ">"   -> actual > v;
-                case "<"   -> actual < v;
-                case "=="  -> actual == v;
-                default    -> false;
-            };
-        } catch (NumberFormatException e) {
-            // String comparison for non-numeric fields
+    /**
+     * Numeric or string comparison is decided by the FIELD, not by whether the value
+     * happens to parse as a long. It used to be the latter: a rule on an enum field with a
+     * numeric-looking value took the numeric branch, where an unknown field fell through to
+     * {@code default -> 0}, so {@code consent_status == 0} matched every member in the org.
+     * An unknown field or a non-numeric value on a numeric field now matches nobody.
+     */
+    private boolean matchRule(SegmentRuleRow row, String field, String op, String val) {
+        if (field == null || op == null || val == null) return false;
+        if (STRING_FIELDS.contains(field)) {
             String actual = switch (field) {
-                case "lifecycle"       -> m.getLifecycle();
-                case "consent_status"  -> m.getConsentStatus();
-                case "consent_basis"   -> m.getConsentBasis();
-                default                -> "";
+                case "lifecycle"      -> row.lifecycle();
+                case "consent_status" -> row.consentStatus();
+                case "consent_basis"  -> row.consentBasis();
+                default               -> null;
             };
-            return val != null && val.equals(actual);
+            // Only equality is meaningful on these; ordering operators are accepted at
+            // create time but have never meant anything here.
+            return val.equals(actual);
         }
+        if (!NUMERIC_FIELDS.contains(field)) return false;
+        long v;
+        try {
+            v = Long.parseLong(val.trim());
+        } catch (NumberFormatException e) {
+            return false;
+        }
+        long actual = switch (field) {
+            case "events"      -> row.events();
+            case "spend_minor" -> row.spendMinor();
+            case "recency"     -> row.recencyDays() == null ? Long.MAX_VALUE : row.recencyDays();
+            case "no_show"     -> row.noShow();
+            case "nps"         -> row.nps() == null ? Long.MIN_VALUE : row.nps();
+            default            -> 0;
+        };
+        return switch (op) {
+            case ">="  -> actual >= v;
+            case "<="  -> actual <= v;
+            case ">"   -> actual > v;
+            case "<"   -> actual < v;
+            case "=="  -> actual == v;
+            default    -> false;
+        };
+    }
+
+    /**
+     * How many members a segment currently holds, WITHOUT materializing them.
+     *
+     * <p>{@code GET /audience/segments} asks this of every segment on every call. It used
+     * to go through resolveMembers, so each custom segment loaded the org's entire
+     * memberships table as entities — N segments, N full copies, per dashboard load.
+     * Prebuilts now count with their indexed query, static segments count their snapshot
+     * ids, and custom segments run the rule engine over a narrow projection.
+     */
+    @Transactional(readOnly = true)
+    public int liveCount(UUID orgId, Segment segment) {
+        if ("static".equals(segment.getKind()) && segment.getSnapshotIds() != null) {
+            List<UUID> ids = parseSnapshotIds(segment.getSnapshotIds());
+            return ids.isEmpty() ? 0 : (int) membershipRepo.countByIdsAndOrgId(ids, orgId);
+        }
+        PrebuiltSegment prebuilt = PrebuiltSegment.byKey(segment.getPrebuiltKey());
+        if (prebuilt != null) {
+            return (int) switch (prebuilt) {
+                case REPEAT           -> membershipRepo.countRepeats(orgId);
+                case VIP              -> membershipRepo.countVips(orgId);
+                case LAPSED           -> membershipRepo.countLapsed(orgId);
+                case FIRST_TIMERS     -> membershipRepo.countFirstTimers(orgId);
+                case PROMOTERS        -> membershipRepo.countPromoters(orgId);
+                case BOUGHT_NO_SHOWED -> membershipRepo.countBoughtNoShowed(orgId);
+                case NEWEST_30D       -> membershipRepo.countNewest30d(orgId);
+            };
+        }
+        List<SegmentRuleRow> rows = membershipRepo.findRuleRowsByOrgId(orgId);
+        List<Map<String, String>> rules = parseRules(segment.getRulesJson());
+        if (rules == null) return 0;               // unreadable rules match nobody
+        if (rules.isEmpty()) return rows.size();   // no rules means everyone
+        return (int) rows.stream().filter(r -> rulesMatch(r, rules)).count();
     }
 
     private List<UUID> parseSnapshotIds(String json) {
@@ -277,33 +381,27 @@ public class SegmentService {
         // Serialize concurrent first-time seeders for this org.
         orgRepo.findByIdForUpdate(orgId);
         if (segmentRepo.hasPrebuiltSegments(orgId)) return; // re-check under the lock
-        List<String[]> prebuilt = List.of(
-            new String[]{"Repeat",           "[{\"field\":\"events\",\"operator\":\">=\",\"value\":\"2\"}]"},
-            new String[]{"VIP",              "[{\"field\":\"spend_minor\",\"operator\":\">=\",\"value\":\"20000\"},{\"field\":\"events\",\"operator\":\">=\",\"value\":\"4\"}]"},
-            new String[]{"Lapsed",           "[{\"field\":\"recency\",\"operator\":\">=\",\"value\":\"90\"},{\"field\":\"consent_status\",\"operator\":\"==\",\"value\":\"subscribed\"}]"},
-            new String[]{"First-timers",     "[{\"field\":\"events\",\"operator\":\"==\",\"value\":\"1\"}]"},
-            new String[]{"Promoters",        "[{\"field\":\"nps\",\"operator\":\">=\",\"value\":\"9\"}]"},
-            new String[]{"Bought-no-showed", "[{\"field\":\"no_show\",\"operator\":\">\",\"value\":\"0\"}]"},
-            new String[]{"Newest-30d",       "[{\"field\":\"recency\",\"operator\":\"<=\",\"value\":\"30\"},{\"field\":\"events\",\"operator\":\"<=\",\"value\":\"1\"}]"}
-        );
-        for (String[] pb : prebuilt) {
+        for (PrebuiltSegment pb : PrebuiltSegment.values()) {
             Segment s = new Segment();
             s.setOrgId(orgId);
-            s.setName(pb[0]);
+            s.setName(pb.displayName());
             s.setKind("dynamic");
             s.setPrebuilt(true);
-            s.setRulesJson(pb[1]);
+            s.setPrebuiltKey(pb.key());
+            s.setRulesJson(pb.rulesJson());
             segmentRepo.save(s);
         }
     }
 
-    /** The org's prebuilt "Repeat" segment id (Momentum's v1 default target), or null if not provisioned. */
+    /**
+     * The org's prebuilt Repeat segment id (Momentum's v1 default target), or null if not
+     * provisioned. Resolved by stable key: matching on the display name would have picked
+     * up any segment an organizer happened to call "Repeat".
+     */
     @Transactional(readOnly = true)
     public UUID defaultTargetSegmentId(UUID orgId) {
-        return segmentRepo.findByOrgId(orgId).stream()
-                .filter(s -> "Repeat".equals(s.getName()))
+        return segmentRepo.findByOrgIdAndPrebuiltKey(orgId, PrebuiltSegment.REPEAT.key())
                 .map(Segment::getId)
-                .findFirst()
                 .orElse(null);
     }
 

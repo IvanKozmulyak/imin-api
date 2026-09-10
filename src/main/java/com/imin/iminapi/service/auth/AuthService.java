@@ -1,5 +1,6 @@
 package com.imin.iminapi.service.auth;
 
+import com.imin.iminapi.util.LogSafe;
 import com.imin.iminapi.dto.OrganizationDto;
 import com.imin.iminapi.dto.UserDto;
 import com.imin.iminapi.dto.auth.AuthResponse;
@@ -131,6 +132,14 @@ public class AuthService {
         user.setPasswordHash(hasher.hash(req.password()));
         user.setRole(UserRole.OWNER);
         user.setAvatarInitials(deriveInitials(firstName, lastName));
+        // Terms acceptance evidence (V98). Optional and unenforced — the dashboard
+        // has no legal pages to link yet — and the version is server-canonical, not
+        // the string the client sent. Absent ⇒ both columns stay null, which reads
+        // as "not recorded" and must never be read as "declined".
+        if (Boolean.TRUE.equals(req.acceptedTerms())) {
+            user.setTermsAcceptedAt(Instant.now());
+            user.setTermsVersion(OrganizerTerms.CURRENT_VERSION);
+        }
         // verifiedAt left null until /verify-email succeeds
         User savedUser = users.save(user);
 
@@ -192,7 +201,7 @@ public class AuthService {
         try {
             accountEmail.sendWelcome(user);
         } catch (RuntimeException e) {
-            log.warn("Welcome email send failed for {}: {}", user.getEmail(), e.getMessage());
+            log.warn("Welcome email send failed for {}: {}", LogSafe.email(user.getEmail()), LogSafe.redact(e.getMessage()));
         }
         return new AuthResponse(token, UserDto.from(user), OrganizationDto.from(org));
     }
@@ -219,7 +228,7 @@ public class AuthService {
         try {
             accountEmail.sendPasswordReset(user, resetUrl, PasswordResetService.EXPIRES_IN_MINUTES);
         } catch (RuntimeException e) {
-            log.error("Password-reset email send failed for {}: {}", user.getEmail(), e.getMessage(), e);
+            log.error("Password-reset email send failed for {}: {}", LogSafe.email(user.getEmail()), LogSafe.redact(e.getMessage()), e);
         }
     }
 
@@ -230,7 +239,7 @@ public class AuthService {
         try {
             accountEmail.sendPasswordChangedNotification(user);
         } catch (RuntimeException e) {
-            log.warn("Password-changed notification failed for {}: {}", user.getEmail(), e.getMessage());
+            log.warn("Password-changed notification failed for {}: {}", LogSafe.email(user.getEmail()), LogSafe.redact(e.getMessage()));
         }
     }
 
@@ -255,7 +264,7 @@ public class AuthService {
         try {
             accountEmail.sendPasswordChangedNotification(user);
         } catch (RuntimeException e) {
-            log.warn("Password-changed notification failed for {}: {}", user.getEmail(), e.getMessage());
+            log.warn("Password-changed notification failed for {}: {}", LogSafe.email(user.getEmail()), LogSafe.redact(e.getMessage()));
         }
         Organization org = orgs.findById(user.getOrgId())
                 .orElseThrow(() -> new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, ErrorCode.INTERNAL, "Org missing"));
@@ -263,6 +272,14 @@ public class AuthService {
     }
 
     private String issueSession(User user) {
+        // A removed team member never gets a new session. Removal is a soft delete
+        // (V118 users.disabled_at) because three RESTRICT FKs make the hard delete
+        // impossible for anyone who has created an event or decided a refund; the
+        // row surviving must not mean the account still works.
+        if (user.getDisabledAt() != null) {
+            throw new ApiException(HttpStatus.UNAUTHORIZED, ErrorCode.AUTH_INVALID_CREDENTIALS,
+                    "Invalid credentials");
+        }
         TokenService.IssuedToken issued = tokens.issue();
         AuthSession s = new AuthSession();
         s.setUserId(user.getId());

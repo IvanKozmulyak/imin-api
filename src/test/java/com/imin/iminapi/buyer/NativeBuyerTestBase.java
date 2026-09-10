@@ -48,6 +48,10 @@ abstract class NativeBuyerTestBase {
     /** The mocked mailer the six-digit verification code is read back out of. */
     @MockitoBean protected EmailService email;
 
+    /** Buyer account mail is sent AFTER_COMMIT on this pool — see {@link BuyerMailSync}. */
+    @Autowired @org.springframework.beans.factory.annotation.Qualifier("ticketEmailExecutor")
+    protected java.util.concurrent.Executor mailExecutor;
+
     /** A brand-new address, so tests never collide on the account uniqueness rule. */
     protected static String newAddress() {
         return "native-" + UUID.randomUUID() + "@example.test";
@@ -111,6 +115,7 @@ abstract class NativeBuyerTestBase {
      * previous one's.
      */
     protected void register(String to) throws Exception {
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
         mvc.perform(post("/api/v1/buyer/auth/signup")
                         .header("Origin", ORIGIN)
@@ -118,6 +123,7 @@ abstract class NativeBuyerTestBase {
                         .content("{\"email\":\"" + to + "\",\"password\":\"" + PASSWORD + "\"}"))
                 .andExpect(status().isNoContent());
 
+        BuyerMailSync.drain(mailExecutor);
         ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
         verify(email, atLeast(1)).send(org.mockito.ArgumentMatchers.eq(to),
                 org.mockito.ArgumentMatchers.anyString(), html.capture(),
@@ -130,6 +136,7 @@ abstract class NativeBuyerTestBase {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"email\":\"" + to + "\",\"code\":\"" + m.group(1) + "\"}"))
                 .andExpect(status().isOk());
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
     }
 }

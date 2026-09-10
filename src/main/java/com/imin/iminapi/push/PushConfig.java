@@ -38,11 +38,13 @@ public class PushConfig {
      * Connect and read timeouts, from {@code imin.push.timeout-seconds}.
      *
      * <p><b>Not decorative.</b> The Expo POST runs inline on
-     * {@code NotifyReleaseSender.sweep()}, a {@code @Scheduled} method on
-     * Spring's default scheduler — which is <b>pool size 1</b>, because
-     * {@code spring.task.scheduling.pool.size} is set nowhere in this repo. A
-     * hung connection to {@code exp.host} would stall every other
-     * {@code @Scheduled} job in the application, including
+     * {@code NotifyReleaseSender.sweep()}, a {@code @Scheduled} method on the
+     * shared scheduler — <b>4 threads</b> since
+     * {@code spring.task.scheduling.pool.size} was set in {@code application.yaml}
+     * (it was previously unset, i.e. Spring's single-threaded default). Four is
+     * still a small, shared pool: a hung connection to {@code exp.host} takes one
+     * of them for the whole timeout, and enough of those stall other
+     * {@code @Scheduled} jobs in the application, including
      * {@code ReservationSweeper} (the thing that releases stale inventory
      * holds), and would outlive the ShedLock {@code lockAtMostFor}, letting a
      * second replica re-enter the sweep. There is no global HTTP timeout default

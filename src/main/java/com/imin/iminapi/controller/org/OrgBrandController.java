@@ -36,11 +36,19 @@ public class OrgBrandController {
     }
 
     @PostMapping(path = "/logo", consumes = "multipart/form-data")
+    /**
+     * @param rightsAttested optional (V101). Recorded when the dashboard sends it;
+     *        a logo is normally the organizer's own mark, so unlike the DJ photo
+     *        this is not a gate.
+     */
     public LogoUploadResponse uploadLogo(@CurrentUser AuthPrincipal p,
-                                         @RequestPart("file") MultipartFile file) throws IOException {
+                                         @RequestPart("file") MultipartFile file,
+                                         @RequestParam(name = "rightsAttested", required = false)
+                                         Boolean rightsAttested) throws IOException {
         return mediaService.uploadLogo(p, file.getBytes(),
                 file.getContentType() == null ? "application/octet-stream" : file.getContentType(),
-                file.getOriginalFilename() == null ? "logo.png" : file.getOriginalFilename());
+                file.getOriginalFilename() == null ? "logo.png" : file.getOriginalFilename(),
+                rightsAttested);
     }
 
     @DeleteMapping("/logo")

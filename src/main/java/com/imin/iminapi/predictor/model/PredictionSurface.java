@@ -7,11 +7,10 @@ package com.imin.iminapi.predictor.model;
 public enum PredictionSurface {
     PRE_PUBLISH,   // §4.1 pre-publish draft score
     REFORECAST,    // §4.2 live re-forecast
-    ACTIONS;       // §4.3 prescriptive actions
+    // §4.3 prescriptive actions. NOTHING WRITES THIS ROW TODAY: prescriptive actions ship inside
+    // the PRE_PUBLISH result's `recommendations` list, so filtering the ledger's surface column
+    // for ACTIONS returns an empty set — the constant is a reserved name, not a promise.
+    ACTIONS;
 
     public String wire() { return name().toLowerCase(); }
-
-    public static PredictionSurface fromWire(String s) {
-        return valueOf(s.toUpperCase());
-    }
 }

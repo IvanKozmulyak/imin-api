@@ -38,7 +38,10 @@ class BuyerEmailLocaleVariantsTest {
                 "eventWhere", "Sala Apolo, Barcelona",
                 "ticketBlocks", "__TICKETS_BLOCK_PLACEHOLDER__",
                 "orderUrl", "https://app.imin.wtf/order/abc",
-                "recoverUrl", "https://app.imin.wtf/recover"));
+                "recoverUrl", "https://app.imin.wtf/recover",
+                "priceTicketsMinor", "49.99 EUR",
+                "priceBookingFeeMinor", "1.99 EUR",
+                "priceTotalMinor", "51.98 EUR"));
 
         TEMPLATES.put("order-recovery", Map.of(
                 "links", "__LINKS_PLACEHOLDER__"));
@@ -53,11 +56,22 @@ class BuyerEmailLocaleVariantsTest {
         TEMPLATES.put("refund-request-received-buyer", Map.of(
                 "requestId", "6f1c2f18-9a0e-4c1e-8f2a-1d3b5c7e9a11"));
 
+        TEMPLATES.put("refund-request-link", Map.of(
+                "link", "https://app.imin.wtf/refund/abc123",
+                "ttlMinutes", "30"));
+
+        TEMPLATES.put("refund-request-rejected", Map.of(
+                "decisionNote", "The event went ahead as scheduled."));
+
         TEMPLATES.put("notify-release", Map.of(
                 "eventName", "Warehouse 7",
                 "eventWhen", "Friday, 5 Jun 2026 · 23:00",
                 "eventWhere", "Sala Apolo, Barcelona",
-                "eventUrl", "https://app.imin.wtf/e/abc"));
+                "eventUrl", "https://app.imin.wtf/e/abc",
+                // The guest opt-out (CPCE L34-5): a subscriber with no account has no
+                // other way out, so a locale that dropped this placeholder would ship
+                // a drop alert nobody can stop.
+                "unsubscribeUrl", "https://app.imin.wtf/notify/unsubscribe/tok"));
 
         // ---- Buyer accounts ----
         // R1.2's three templates were localized but never registered here, so a

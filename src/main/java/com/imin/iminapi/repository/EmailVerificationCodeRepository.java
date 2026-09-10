@@ -33,4 +33,25 @@ public interface EmailVerificationCodeRepository extends JpaRepository<EmailVeri
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     @Query("UPDATE EmailVerificationCode c SET c.attempts = c.attempts + 1 WHERE c.id = :id")
     int incrementAttempts(@Param("id") UUID id);
+
+    /**
+     * Wrong guesses made against <b>every</b> code this user has been issued
+     * inside a window — the input to the per-address lockout.
+     *
+     * <p>The per-code {@code attempts} cap alone is not a brute-force control:
+     * {@code /auth/resend-verification} mints a fresh row, so five guesses per
+     * code times three resends per fifteen minutes is roughly 1,440 guesses a
+     * day against a code space, with a live session as the prize. Summing across
+     * codes is what makes the budget survive a resend.
+     *
+     * <p>Counted from the existing {@code attempts} column rather than a new
+     * attempts table (the shape the buyer side uses) because the counter already
+     * exists here, is already written outside the caller's transaction by
+     * {@link #incrementAttempts}, and is therefore already test-visible — which
+     * is the property {@code RateLimitConfig} being {@code @Profile("!test")}
+     * denies a bucket.
+     */
+    @Query("SELECT COALESCE(SUM(c.attempts), 0) FROM EmailVerificationCode c "
+           + "WHERE c.userId = :userId AND c.createdAt >= :since")
+    long sumAttemptsSince(@Param("userId") UUID userId, @Param("since") Instant since);
 }

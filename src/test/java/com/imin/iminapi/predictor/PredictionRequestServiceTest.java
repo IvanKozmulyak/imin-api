@@ -29,6 +29,8 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -38,6 +40,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -95,6 +98,28 @@ class PredictionRequestServiceTest {
     private PredictionResult benchmark() {
         return new PredictionResult("pre_publish", 0, "C", null, null, null,
                 List.of(), List.of(), null, true, "m", "1.0.0", Instant.now());
+    }
+
+    @Test
+    void aSecondTriggerDuringTheFirstSetupDoesNotStartASecondRun() {
+        // The interleave the in-memory registry has to survive: a second POST for the same event
+        // arrives while the first is still building its snapshot and probing the cache. Without a
+        // claim taken up front, both see nothing in flight, both burn a daily score from the org's
+        // allowance, and both dispatch the same LLM run.
+        AtomicReference<PredictionRequestService.Trigger> second = new AtomicReference<>();
+        AtomicBoolean interleaved = new AtomicBoolean(false);
+        when(pipeline.snapshot(event)).thenAnswer(inv -> {
+            if (interleaved.compareAndSet(false, true)) second.set(sut.trigger(principal, eventId));
+            return snap;
+        });
+
+        PredictionRequestService.Trigger first = sut.trigger(principal, eventId);
+
+        assertThat(first.httpStatus()).isEqualTo(202);
+        assertThat(second.get().httpStatus()).isEqualTo(202);
+        assertThat(second.get().body().predictionId()).isEqualTo(first.body().predictionId());
+        verify(quota, times(1)).checkAndRecordScore(any());
+        verify(pipeline, times(1)).score(any(), any(), any());
     }
 
     @Test
@@ -171,6 +196,32 @@ class PredictionRequestServiceTest {
         verify(ledgerService).recordFeedback(any(), eq(eventId), eq("rec1"), eq(FeedbackType.DISMISSED),
                 org.mockito.ArgumentMatchers.argThat(fp -> fp != null && fp.length() == 64));
         verify(reforecastTrigger, never()).requestRecompute(any(), any());
+    }
+
+    /**
+     * predictor-edge-12: a dismissal for an id that is not in the targeted render cannot derive
+     * a fingerprint, so the row suppressed nothing and the 204 was a lie. 404, and no write.
+     */
+    @Test
+    void dismissalForAnIdNotInTheRenderIsNotFoundAndWritesNothing() throws Exception {
+        stubLatestRenderWithRecommendation("rec1");
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                        sut.feedback(principal, eventId, new PredictionFeedbackRequest("rec-gone", "dismissed")))
+                .isInstanceOf(com.imin.iminapi.security.ApiException.class)
+                .hasMessageContaining("Recommendation not found");
+
+        verify(ledgerService, never()).recordFeedback(any(), any(), any(), any(), any());
+    }
+
+    /** EXECUTED never suppresses, so it carries no fingerprint and is not id-checked. */
+    @Test
+    void executedFeedbackForAnIdNotInTheRenderStillRecords() throws Exception {
+        stubLatestRenderWithRecommendation("rec1");
+
+        sut.feedback(principal, eventId, new PredictionFeedbackRequest("rec-gone", "executed"));
+
+        verify(ledgerService).recordFeedback(any(), eq(eventId), eq("rec-gone"), eq(FeedbackType.EXECUTED), eq(null));
     }
 
     /** A latest PRE_PUBLISH ledger row whose render carries one recommendation with the given id. */

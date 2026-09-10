@@ -6,7 +6,6 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 
 import java.util.List;
-import java.util.UUID;
 
 /**
  * Sticky marketing opt-outs, keyed by address rather than by org — like
@@ -22,6 +21,4 @@ public interface MarketingOptOutRepository extends JpaRepository<MarketingOptOut
 
     /** Every organizer this address has explicitly opted out of, across all orgs. */
     List<MarketingOptOut> findByEmailNormalized(String emailNormalized);
-
-    List<MarketingOptOut> findByEmailNormalizedAndOrgId(String emailNormalized, UUID orgId);
 }

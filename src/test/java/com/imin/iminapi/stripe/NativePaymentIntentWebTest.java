@@ -12,6 +12,7 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -47,7 +48,7 @@ class NativePaymentIntentWebTest {
     @Test
     void returnsTheClientSecretShapeAndNeverCachesIt() throws Exception {
         when(intents.create(any(), any(), anyInt(), any(), any(), any(),
-                anyBoolean(), anyBoolean(), any(), any(), any()))
+                anyBoolean(), anyBoolean(), any(), any(), any(), any()))
                 .thenReturn(new StripePaymentIntentService.NativeIntent(
                         "pi_x_secret_y", "pi_x", 5448L, 448L, "eur"));
 
@@ -96,10 +97,34 @@ class NativePaymentIntentWebTest {
      * while every native retry took a second 30-minute hold on real inventory,
      * and nothing on the wire would say so.
      */
+    // ── stripe-16 — the native path must carry the V97 consent evidence ───────────
+    @Test
+    void consentEvidenceOnTheRequestReachesTheService() throws Exception {
+        when(intents.create(any(), any(), anyInt(), any(), any(), any(),
+                anyBoolean(), anyBoolean(), any(), any(), any(), any()))
+                .thenReturn(new StripePaymentIntentService.NativeIntent(
+                        "pi_x_secret_y", "pi_x", 5448L, 448L, "eur"));
+
+        mvc.perform(post("/api/v1/public/events/" + EVENT + "/payment-intent")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tierId\":\"" + TIER + "\",\"quantity\":2,"
+                                + "\"marketingOptIn\":true,\"acceptedTerms\":true,"
+                                + "\"marketingOptInProofText\":\"Email me about future events\"}"))
+                .andExpect(status().isOk());
+
+        org.mockito.ArgumentCaptor<com.imin.iminapi.model.CheckoutConsent> consent =
+                org.mockito.ArgumentCaptor.forClass(com.imin.iminapi.model.CheckoutConsent.class);
+        verify(intents).create(any(), any(), anyInt(), any(), any(), any(),
+                anyBoolean(), anyBoolean(), any(), any(), any(), consent.capture());
+        assertThat(consent.getValue().acceptedTerms()).isTrue();
+        assertThat(consent.getValue().marketingOptInProofText())
+                .isEqualTo("Email me about future events");
+    }
+
     @Test
     void theIdempotencyKeyHeaderIsForwarded() throws Exception {
         when(intents.create(any(), any(), anyInt(), any(), any(), any(),
-                anyBoolean(), anyBoolean(), any(), any(), any()))
+                anyBoolean(), anyBoolean(), any(), any(), any(), any()))
                 .thenReturn(new StripePaymentIntentService.NativeIntent(
                         "pi_x_secret_y", "pi_x", 5448L, 448L, "eur"));
 
@@ -111,14 +136,14 @@ class NativePaymentIntentWebTest {
 
         verify(intents).create(any(), any(), anyInt(), any(), any(), any(),
                 anyBoolean(), anyBoolean(), any(), any(),
-                org.mockito.ArgumentMatchers.eq("retry-me-once"));
+                org.mockito.ArgumentMatchers.eq("retry-me-once"), any());
     }
 
     /** The web sends no header at all and must keep working unchanged. */
     @Test
     void noIdempotencyKeyIsStillAValidRequest() throws Exception {
         when(intents.create(any(), any(), anyInt(), any(), any(), any(),
-                anyBoolean(), anyBoolean(), any(), any(), any()))
+                anyBoolean(), anyBoolean(), any(), any(), any(), any()))
                 .thenReturn(new StripePaymentIntentService.NativeIntent(
                         "pi_x_secret_y", "pi_x", 5448L, 448L, "eur"));
 
@@ -129,6 +154,6 @@ class NativePaymentIntentWebTest {
 
         verify(intents).create(any(), any(), anyInt(), any(), any(), any(),
                 anyBoolean(), anyBoolean(), any(), any(),
-                org.mockito.ArgumentMatchers.isNull());
+                org.mockito.ArgumentMatchers.isNull(), any());
     }
 }

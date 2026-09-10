@@ -60,12 +60,6 @@ public class EventVelocityService {
         this.clock = clock;
     }
 
-    /** Back-compat shim for callers that want the original 7-day window. */
-    @Transactional(readOnly = true)
-    public VelocityResponse last7Days(AuthPrincipal p, UUID eventId) {
-        return windowEndingToday(p, eventId, DEFAULT_WINDOW_DAYS);
-    }
-
     /**
      * Compute the velocity histogram for the {@code days}-day window ending today
      * in the event's timezone. {@code days} is clamped to [1, MAX_WINDOW_DAYS].

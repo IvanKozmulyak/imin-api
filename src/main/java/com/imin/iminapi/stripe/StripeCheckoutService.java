@@ -2,6 +2,7 @@ package com.imin.iminapi.stripe;
 
 import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.model.CheckoutAttribution;
+import com.imin.iminapi.model.CheckoutConsent;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.PromoCode;
@@ -243,6 +244,23 @@ public class StripeCheckoutService {
                                          boolean adsConsent, boolean marketingOptIn,
                                          CheckoutAttribution attribution, String rawLocale,
                                          String rawIdempotencyKey) {
+        return createCheckout(eventId, tierId, quantity, promoCode, expectedPriceMinor, buyerEmail,
+                adsConsent, marketingOptIn, attribution, rawLocale, rawIdempotencyKey,
+                CheckoutConsent.NONE);
+    }
+
+    /**
+     * @param consent the terms acceptance and the verbatim marketing-checkbox
+     *                sentence the buyer read (V97). {@link CheckoutConsent#NONE}
+     *                for internal callers and for anything that predates it —
+     *                which is byte-identical to the previous behaviour.
+     */
+    public CheckoutResult createCheckout(UUID eventId, UUID tierId, int quantity,
+                                         String promoCode, Integer expectedPriceMinor, String buyerEmail,
+                                         boolean adsConsent, boolean marketingOptIn,
+                                         CheckoutAttribution attribution, String rawLocale,
+                                         String rawIdempotencyKey, CheckoutConsent consent) {
+        if (consent == null) consent = CheckoutConsent.NONE;
         // Normalize first, so a malformed header is a 400 before anything is priced,
         // reserved or charged — and so both public checkout endpoints reject the same
         // header the same way.
@@ -287,7 +305,7 @@ public class StripeCheckoutService {
             Order order;
             try {
                 order = freeCheckoutService.issueFreeOrder(event, tier, quantity, email, promo, adsConsent,
-                        marketingOptIn, attribution, buyerLocale, idempotencyKey);
+                        marketingOptIn, attribution, buyerLocale, idempotencyKey, consent);
             } catch (ApiException e) {
                 // Inventory shortage → collapse to leak-safe 404 like the paid path.
                 if (e.status() == HttpStatus.CONFLICT) {
@@ -332,7 +350,7 @@ public class StripeCheckoutService {
         // shared with the native PaymentIntent flow so the readiness gate, the inventory
         // hold, the platform fee and the metadata the webhook reads cannot drift apart.
         PaidPrelude prelude = reserveAndBuildMetadata(priced, eventId, tierId, quantity, buyerEmail,
-                adsConsent, marketingOptIn, attribution, rawLocale, false);
+                adsConsent, marketingOptIn, attribution, rawLocale, false, consent);
         Organization org = prelude.org();
         UUID reservationId = prelude.reservationId();
         Instant expiresAt = prelude.expiresAt();
@@ -373,7 +391,18 @@ public class StripeCheckoutService {
             // Checkout construct, and the native flow subtracts the discount from the
             // PaymentIntent amount instead. `promo_id` metadata is stamped in the shared
             // prelude, so both flows carry it.
-            couponId = createOneShotCoupon(promo, eventId, tier.getStripeProductId());
+            try {
+                couponId = createOneShotCoupon(promo, eventId, tier.getStripeProductId());
+            } catch (RuntimeException couponFailure) {
+                // createCheckout is deliberately NOT @Transactional, so nothing unwinds the
+                // inventory hold taken in the prelude above. A Stripe blip on the coupon call
+                // would otherwise strand real seats for the full checkout-session TTL (30 min)
+                // until the ReservationSweeper collects them — on a hot tier during a promo
+                // drop that reads as sold out. Mirror the session-create failure path below:
+                // release the hold, then rethrow the original error.
+                releaseQuietly(reservationId, "STRIPE_COUPON_FAILED");
+                throw couponFailure;
+            }
         }
 
         // Stripe Checkout's documented minimum lifetime is 30 minutes — anything shorter
@@ -433,12 +462,7 @@ public class StripeCheckoutService {
             // must go back to the pool. Best-effort: if release itself throws (e.g. the
             // tier was deleted in between), log it but keep the original Stripe error as
             // the user-facing cause.
-            try {
-                inventoryService.releaseReservation(reservationId, "STRIPE_CREATE_FAILED");
-            } catch (Exception releaseFailure) {
-                log.error("Failed to release reservation {} after Stripe session create failure: {}",
-                        reservationId, releaseFailure.getMessage(), releaseFailure);
-            }
+            releaseQuietly(reservationId, "STRIPE_CREATE_FAILED");
             // Best-effort: delete the one-shot coupon we minted above — it was never attached to a
             // live session, so leaving it dangles a useless object on the platform account.
             if (couponId != null) {
@@ -504,10 +528,11 @@ public class StripeCheckoutService {
         // 1. Load + validate event (must be publicly visible).
         Event event = events.findPublic(eventId).orElseThrow(() -> ApiException.notFound("Event"));
 
-        // 2. Load + validate tier (belongs to event, enabled, in sale window, has price+quantity).
+        // 2. Load + validate the event window (status, on-sale/close) and the tier
+        //    (belongs to event, enabled, in sale window, has price+quantity).
         // Shared eligibility predicate so quote and checkout never disagree on buyability — see PublicTierEligibility.
         Instant now = clock.instant();
-        TicketTier tier = PublicTierEligibility.loadBuyableTier(tiers, eventId, tierId, now);
+        TicketTier tier = PublicTierEligibility.loadBuyableTier(tiers, event, tierId, now);
 
         // 2a. Price-drift guard. No-op when the client didn't send `expectedPriceMinor`.
         // When supplied and mismatched → 409 PRICE_CHANGED with `currentPriceMinor` in fields.
@@ -558,6 +583,15 @@ public class StripeCheckoutService {
                                                String buyerEmail, boolean adsConsent, boolean marketingOptIn,
                                                CheckoutAttribution attribution, String rawLocale,
                                                boolean nativeClient) {
+        return reserveAndBuildMetadata(priced, eventId, tierId, quantity, buyerEmail, adsConsent,
+                marketingOptIn, attribution, rawLocale, nativeClient, CheckoutConsent.NONE);
+    }
+
+    /** As above, plus the V97 consent evidence to ride the metadata to fulfilment. */
+    public PaidPrelude reserveAndBuildMetadata(Priced priced, UUID eventId, UUID tierId, int quantity,
+                                               String buyerEmail, boolean adsConsent, boolean marketingOptIn,
+                                               CheckoutAttribution attribution, String rawLocale,
+                                               boolean nativeClient, CheckoutConsent consent) {
         if (attribution == null) attribution = CheckoutAttribution.NONE;
         String buyerLocale = EmailLocale.normalizeOrNull(rawLocale);
         Event event = priced.event();
@@ -634,6 +668,10 @@ public class StripeCheckoutService {
         // turns per-campaign revenue from a visit-share estimate into a true per-order sum.
         // Absent fields are omitted rather than written as "null".
         attribution.putInto(metadata);
+        // Same round trip for the V97 consent evidence: the Order only exists at
+        // webhook fulfilment, so a fact captured on the buy page has no other way
+        // to reach it. Absent fields are omitted, never written as "false"/"null".
+        (consent == null ? CheckoutConsent.NONE : consent).putInto(metadata);
         // Buyer's UI language (V78). The Order is only created at webhook fulfilment, so
         // the locale has to survive the Stripe round-trip like every other checkout-time
         // fact; PaidCheckoutService reads it back onto orders.buyer_locale. Omitted when
@@ -717,6 +755,20 @@ public class StripeCheckoutService {
         if (promo == null) return 0L;
         long discount = Math.round(subtotal * (double) promo.getDiscountPct() / 100.0);
         return Math.min(discount, subtotal);
+    }
+
+    /**
+     * Return held seats to the pool after a Stripe failure, best-effort: if the release itself
+     * throws (e.g. the tier was deleted in between) log it and let the caller rethrow the
+     * ORIGINAL Stripe error as the user-facing cause.
+     */
+    private void releaseQuietly(UUID reservationId, String reason) {
+        try {
+            inventoryService.releaseReservation(reservationId, reason);
+        } catch (Exception releaseFailure) {
+            log.error("Failed to release reservation {} after Stripe failure ({}): {}",
+                    reservationId, reason, releaseFailure.getMessage(), releaseFailure);
+        }
     }
 
     /**

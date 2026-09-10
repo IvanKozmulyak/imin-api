@@ -47,6 +47,14 @@ public enum ErrorCode {
     REFUND_APPROVAL_NOT_CONFIRMED,
     META_UPSTREAM_ERROR,
 
+    /**
+     * A DJ-photo upload arrived without {@code rightsAttested=true}. A third
+     * party's face is about to enter an AI pipeline (Ideogram character
+     * reference, OpenRouter vision gate) and nobody has claimed the right to
+     * put it there — droit à l'image (C. civ. 9), CPI L122-4.
+     */
+    RIGHTS_ATTESTATION_REQUIRED,
+
     // ---- Audience CSV import ----
     IMPORT_ATTESTATION_REQUIRED,
     IMPORT_FILE_REQUIRED,
@@ -54,6 +62,13 @@ public enum ErrorCode {
     IMPORT_TOO_MANY_ROWS,
     IMPORT_EMAIL_COLUMN_MISSING,
     IMPORT_INVALID_CSV,
+
+    /**
+     * DELETE /api/v1/orgs refused: the organization holds records imin cannot
+     * legally destroy on request — orders, tickets, settlements or payouts.
+     * 409, and terminal from the API's side: there is no force flag.
+     */
+    ORG_HAS_RECORDS,
 
     // ---- Buyer accounts ----
     /**

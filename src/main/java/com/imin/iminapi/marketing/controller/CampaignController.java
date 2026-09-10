@@ -30,6 +30,9 @@ public class CampaignController {
         this.service = service;
     }
 
+    /** Upper bound on any page this controller serves. */
+    static final int MAX_PAGE_SIZE = 200;
+
     @GetMapping
     public List<CampaignSummary> list(
             @AuthenticationPrincipal AuthPrincipal principal,
@@ -37,13 +40,34 @@ public class CampaignController {
             @RequestParam(required = false) String status,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "50") int size) {
-        return service.list(principal, channel, status, page, size);
+        return service.list(principal, channel, status, clampPage(page), clampSize(size));
+    }
+
+    /**
+     * mkt-edge-9: {@code page} went into {@code PageRequest.of} unclamped — only {@code size}
+     * was guarded — and {@code PageRequest.of(-1, 50)} throws IllegalArgumentException, which
+     * GlobalExceptionHandler has no handler for. So {@code ?page=-1} answered 500 INTERNAL and
+     * logged an "Unhandled exception" on both this list and the recipient log. Clamping (rather
+     * than 400ing) keeps the wire behaviour additive, matching the precedent set for size.
+     */
+    private static int clampPage(int page) {
+        return Math.max(0, page);
+    }
+
+    /**
+     * mkt-core-21: {@code size} went straight into PageRequest.of, so an authenticated
+     * organizer could ask for {@code ?size=1000000} and materialise the whole campaign list
+     * or recipient log — every row hydrated as an entity plus a batched name lookup — in one
+     * request. Clamped to a page a client can actually render.
+     */
+    private static int clampSize(int size) {
+        return Math.min(Math.max(size, 1), MAX_PAGE_SIZE);
     }
 
     @PostMapping
     public ResponseEntity<CampaignDto> create(
             @AuthenticationPrincipal AuthPrincipal principal,
-            @RequestBody CreateCampaignRequest req) {
+            @jakarta.validation.Valid @RequestBody CreateCampaignRequest req) {
         return ResponseEntity.status(HttpStatus.CREATED).body(service.create(principal, req));
     }
 
@@ -57,7 +81,7 @@ public class CampaignController {
     public CampaignDto patch(
             @AuthenticationPrincipal AuthPrincipal principal,
             @PathVariable UUID id,
-            @RequestBody PatchCampaignRequest req) {
+            @jakarta.validation.Valid @RequestBody PatchCampaignRequest req) {
         return service.patch(principal, id, req);
     }
 
@@ -84,6 +108,10 @@ public class CampaignController {
 
     public record SendRequest(java.time.Instant scheduledAt) {}
 
+    /**
+     * Draft→scheduled. <b>OWNER/ADMIN only</b> (mkt-edge-2) — a MEMBER gets
+     * {@code 403 FORBIDDEN}; a won transition writes one {@code CAMPAIGN_SENT} audit row.
+     */
     @PostMapping("/{id}/send")
     public ResponseEntity<Void> send(
             @PathVariable UUID id,
@@ -128,7 +156,11 @@ public class CampaignController {
 
     /**
      * Recipient log for one campaign — org-scoped via the auth principal (404 no-leak for
-     * another org's campaign), unchanged from before.
+     * another org's campaign).
+     *
+     * <p><b>OWNER/ADMIN only</b> (mkt-edge-1): the rows carry every targeted contact's raw
+     * address, so a MEMBER now gets {@code 403 FORBIDDEN}. Opening page 0 writes one
+     * {@code CAMPAIGN_RECIPIENTS_VIEWED} audit row.
      *
      * <p>Response is {@code items}/{@code page}/{@code size} (original shape) plus additive
      * {@code total} (real aggregate over the active filter) and {@code counts} (real aggregates
@@ -148,6 +180,6 @@ public class CampaignController {
             @RequestParam(required = false) String engagement,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "50") int size) {
-        return service.listRecipients(id, principal, status, engagement, page, size);
+        return service.listRecipients(id, principal, status, engagement, clampPage(page), clampSize(size));
     }
 }

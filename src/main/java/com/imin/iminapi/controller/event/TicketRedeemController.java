@@ -4,8 +4,11 @@ import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.CurrentUser;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.service.audit.AuditActions;
+import com.imin.iminapi.service.audit.AuditLogger;
 import com.imin.iminapi.service.ticket.TicketRedeemService;
-import jakarta.validation.constraints.NotBlank;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -27,12 +30,25 @@ import java.util.UUID;
 @RestController
 public class TicketRedeemController {
 
-    public record Req(@NotBlank String qrPayload) {}
+    /**
+     * No {@code @NotBlank} here on purpose. It used to carry one, but the parameter is bound
+     * without {@code @Valid} (see redeem below), so the constraint never ran — the endpoint read
+     * as validated-by-annotation while the hand-rolled check twenty lines down was what actually
+     * enforced it. The two do not agree on the wire: bean validation answers FIELD_INVALID, the
+     * explicit check answers INVALID_REQUEST, and INVALID_REQUEST is what the gate PWA has
+     * always been given. Dropping the dead annotation, rather than adding {@code @Valid},
+     * is what keeps that contract; TicketRedeemGateAuthTest pins the code.
+     */
+    public record Req(String qrPayload) {}
+
+    private static final Logger log = LoggerFactory.getLogger(TicketRedeemController.class);
 
     private final TicketRedeemService service;
+    private final AuditLogger audit;
 
-    public TicketRedeemController(TicketRedeemService service) {
+    public TicketRedeemController(TicketRedeemService service, AuditLogger audit) {
         this.service = service;
+        this.audit = audit;
     }
 
     @PostMapping("/api/v1/orgs/{orgId}/events/{eventId}/tickets/redeem")
@@ -49,11 +65,20 @@ public class TicketRedeemController {
                     "qrPayload is required");
         }
 
-        // `userId` is null for gate-token requests — TicketRedeemService persists
-        // the redeemed-by column as the user UUID (nullable), and the
-        // audit/log trail uses me.actorLabel() ("gate:<orgId>" for gates) to
-        // keep the actor identifiable without crashing on null.
-        TicketRedeemService.Result r = service.redeem(eventId, req.qrPayload(), me.userId());
+        // `userId` is null for gate-token requests, and tickets.redeemed_by_user_id
+        // is therefore written null for every scan a door phone makes — which is
+        // most of them. That column alone can identify nobody.
+        //
+        // This comment used to claim an audit/log trail keyed on me.actorLabel()
+        // existed. It did not: there was no audit write anywhere on this path and
+        // TicketRedeemService had no log statement at all, so which door admitted
+        // whom was unreconstructable — a GDPR accountability gap, an
+        // internal-fraud blind spot, and worse for having been documented as a
+        // control that was there. The trail is written below, for real.
+        TicketRedeemService.Result r = service.redeem(me.orgId(), eventId, req.qrPayload(), me.userId());
+        if (r.outcome() == TicketRedeemService.Outcome.REDEEMED && r.ticket() != null) {
+            recordAdmission(me, eventId, r);
+        }
 
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("result", switch (r.outcome()) {
@@ -76,5 +101,35 @@ public class TicketRedeemController {
             body.put("ticket", tk);
         }
         return ResponseEntity.ok(body);
+    }
+
+    /**
+     * One audit row and one structured line per ticket actually admitted.
+     *
+     * <p>Written here rather than inside the service because the actor is an HTTP
+     * concern: the service is handed a nullable user id and has no way to tell a
+     * door phone from a human, which is exactly how the gap arose.
+     *
+     * <p>{@code audit_logs} rather than new {@code tickets} columns: it is already
+     * org-scoped, already readable through {@code GET /orgs/{id}/audit}, and one
+     * row per scan preserves a repeat attempt that a single "redeemed by" column
+     * would overwrite. {@code AuditLogger} writes in its own transaction and
+     * swallows failures, so a full disk cannot turn a valid ticket away at the
+     * door.
+     *
+     * <p><b>No buyer identity in either.</b> The question this answers is which
+     * door admitted a ticket, not who was holding it; putting the address here
+     * would put attendee lists into the log pipeline (and into Sentry) on every
+     * scan of the night.
+     */
+    private void recordAdmission(AuthPrincipal me, UUID eventId, TicketRedeemService.Result r) {
+        String actor = me.actorLabel();
+        String summary = "Ticket redeemed at the gate — event " + eventId
+                + ", ticket " + r.ticket().getId()
+                + ", session " + me.sessionId()
+                + ", actor " + actor;
+        log.info("[gate-redeem] event={} ticket={} session={} actor={}",
+                eventId, r.ticket().getId(), me.sessionId(), actor);
+        audit.record(me, AuditActions.TICKET_REDEEMED, "ticket", r.ticket().getId(), summary);
     }
 }

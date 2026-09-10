@@ -79,11 +79,6 @@ public final class BuiltinTemplates {
         return List.copyOf(BY_KEY.values());
     }
 
-    /** True when {@code key} names a builtin (not a UUID org-template id). */
-    public static boolean isBuiltinKey(String key) {
-        return key != null && BY_KEY.containsKey(key);
-    }
-
     /** The builtin for {@code key}, or null when it is not a builtin key. */
     public static ResolvedTemplate byKey(String key) {
         return key == null ? null : BY_KEY.get(key);

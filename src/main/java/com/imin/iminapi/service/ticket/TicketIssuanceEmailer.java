@@ -1,5 +1,6 @@
 package com.imin.iminapi.service.ticket;
 
+import com.imin.iminapi.util.LogSafe;
 import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.email.EmailService;
@@ -7,6 +8,7 @@ import com.imin.iminapi.email.EmailTemplateRenderer;
 import com.imin.iminapi.dto.publicapi.TicketWallets;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
+import com.imin.iminapi.util.MoneyFormat;
 import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
@@ -126,6 +128,17 @@ public class TicketIssuanceEmailer {
         values.put("ticketBlocks", "__TICKETS_BLOCK_PLACEHOLDER__");
         values.put("orderUrl", orderUrl);
         values.put("recoverUrl", recoverUrl);
+        // Price breakdown. The buyer pays ticket price + booking fee, and until now
+        // the only itemisation they ever saw was a "Service fee" line on the Stripe
+        // page they had already left. Code conso. L112-1 / CRD Art.6(1)(e) want the
+        // total broken out, and the receipt is where a buyer looks for it afterwards.
+        // Derived, not re-computed: applicationFeeMinor is what was actually charged.
+        long feeMinor = Math.max(0L, order.getApplicationFeeMinor());
+        long ticketsMinor = Math.max(0L, order.getTotalMinor() - feeMinor);
+        String currency = order.getCurrency();
+        values.put("priceTicketsMinor", MoneyFormat.format(ticketsMinor, currency));
+        values.put("priceBookingFeeMinor", MoneyFormat.format(feeMinor, currency));
+        values.put("priceTotalMinor", MoneyFormat.format(order.getTotalMinor(), currency));
 
         // The buyer's language, snapshotted at checkout (V78). Null ⇒ English, which is
         // exactly what the renderer does with a null locale.
@@ -149,7 +162,7 @@ public class TicketIssuanceEmailer {
 
         email.send(order.getEmail(), subject, html, text);
         log.info("Sent issuance email for order {} ({} ticket(s)) to {}",
-                order.getId(), issued.size(), order.getEmail());
+                order.getId(), issued.size(), LogSafe.email(order.getEmail()));
     }
 
     private String renderHtmlBlocks(List<Ticket> issued, String siteBase, String apiBase) {

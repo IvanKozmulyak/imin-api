@@ -52,7 +52,7 @@ class PredictionScoringJobTripwireTest {
         outcomes = mock(EventOutcomeRepository.class);
         segments = mock(PredictorSegmentStatusRepository.class);
         sut = new PredictionScoringJob(ledger, outcomes, mock(PredictionLedgerService.class), segments, clock);
-        when(ledger.findByOutcomeJoinedAtIsNull(any())).thenReturn(List.of());
+        when(ledger.findJoinable(any())).thenReturn(List.of());
         when(outcomes.findById(any())).thenAnswer(inv -> Optional.ofNullable(outcomeByEvent.get(inv.getArgument(0))));
         when(segments.findById(any())).thenReturn(Optional.empty());
     }
@@ -98,6 +98,22 @@ class PredictionScoringJobTripwireTest {
         assertThat(s.getDowngradedAt()).isEqualTo(now);
         assertThat(s.getReason()).contains("Brier").contains("base-rate");
         assertThat(s.getScoredCount()).isEqualTo(20);
+    }
+
+    @Test
+    void scoredCountCountsMeasuredRendersNotEveryJoinedRow() {
+        // 20 renders carrying a Brier component, plus 10 joined rows that measured nothing (a
+        // re-forecast row parses into a PredictionResult with no sell-out band and no attendance
+        // range, so both metrics come back null). "Scored: 30" would tell a founder the mean rests
+        // on 30 measurements when only 20 exist.
+        List<PredictionLedger> rows = new ArrayList<>();
+        for (int i = 0; i < 20; i++) rows.add(scoredRow(new BigDecimal("0.010000"), null, false));
+        for (int i = 0; i < 10; i++) rows.add(scoredRow(null, null, false));
+        when(ledger.findByOutcomeJoinedAtIsNotNull()).thenReturn(rows);
+
+        sut.run();
+
+        assertThat(savedSegment().getScoredCount()).isEqualTo(20);
     }
 
     @Test
@@ -192,6 +208,26 @@ class PredictionScoringJobTripwireTest {
         EventOutcome o = new EventOutcome();
         o.setAttendance(100);
         assertThat(PredictionScoringJob.ape(r, o)).isEqualByComparingTo(new BigDecimal("0.500000"));
+    }
+
+    /**
+     * predictor-edge-17: ape is a ratio with no upper bound, but the column is NUMERIC(10,6).
+     * A large-capacity event with an attendance of 1 overflowed the UPDATE, so the render kept
+     * outcome_joined_at = null forever, was retried every monthly pass, and never entered the
+     * evaluation set.
+     */
+    @Test
+    void apeIsClampedToTheColumnCeilingInsteadOfOverflowing() {
+        PredictionResult r = resultWithBand(-1, -1, new PredictionResult.Range(10_000, 10_000));
+        EventOutcome o = new EventOutcome();
+        o.setAttendance(1);   // ratio ~ 9999 - fits; one more order of magnitude does not
+
+        assertThat(PredictionScoringJob.ape(r, o)).isEqualByComparingTo(new BigDecimal("9999.000000"));
+
+        PredictionResult huge = resultWithBand(-1, -1, new PredictionResult.Range(500_000, 500_000));
+        assertThat(PredictionScoringJob.ape(huge, o))
+                .isEqualByComparingTo(PredictionScoringJob.MAX_RATIO)
+                .matches(v -> v.precision() - v.scale() <= 4, "fits NUMERIC(10,6)");
     }
 
     private static PredictionResult resultWithBand(int low, int high, PredictionResult.Range att) {

@@ -80,7 +80,7 @@ public class PromoCodeService {
     }
 
     @Transactional
-    @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
+    @CacheEvict(value = "dashboard", allEntries = true)
     public PromoCodeDto create(AuthPrincipal p, UUID eventId, PromoCodeCreateRequest req) {
         Event event = loadOwnedEvent(p, eventId);
         Map<String, String> errors = new LinkedHashMap<>();
@@ -105,7 +105,7 @@ public class PromoCodeService {
     }
 
     @Transactional
-    @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
+    @CacheEvict(value = "dashboard", allEntries = true)
     public PromoCodeDto patch(AuthPrincipal p, UUID eventId, UUID promoId, PromoCodePatchRequest req) {
         Event event = loadOwnedEvent(p, eventId);
         PromoCode pc = loadOwnedPromo(eventId, promoId);
@@ -137,7 +137,7 @@ public class PromoCodeService {
     }
 
     @Transactional
-    @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
+    @CacheEvict(value = "dashboard", allEntries = true)
     public void delete(AuthPrincipal p, UUID eventId, UUID promoId) {
         Event event = loadOwnedEvent(p, eventId);
         PromoCode pc = loadOwnedPromo(eventId, promoId);

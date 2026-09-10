@@ -15,6 +15,7 @@ import com.imin.iminapi.marketing.service.CampaignVolumeGuard;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
@@ -54,7 +55,12 @@ public class RecipientMaterializer {
         this.volumeGuard = volumeGuard;
     }
 
-    @Transactional
+    /**
+     * REQUIRES_NEW: the snapshot must be durable before the first batch leaves. Committing
+     * it with the whole drive meant a mid-send crash deleted every row, so the automatic
+     * re-claim re-materialised the FULL audience and re-emailed everyone already contacted.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void materialize(Campaign c) {
         if (recipients.countByCampaignId(c.getId()) > 0) {
             log.info("[materialize] campaign {} already has recipients — skipping", c.getId());

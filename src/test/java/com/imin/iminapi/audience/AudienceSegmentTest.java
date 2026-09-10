@@ -378,10 +378,36 @@ class AudienceSegmentTest {
     // Static snapshot is frozen — dynamic re-evaluates
     // ─────────────────────────────────────────────────────────────────────────
 
+    /**
+     * audience-15: snapshot froze whatever segment it was handed, prebuilt included, with
+     * no way back — one click on Repeat pinned every future Momentum campaign to a stale id
+     * list. Prebuilts are refused; snapshotting is for the organizer's own segments.
+     */
+    @Test
+    void snapshot_refuses_a_prebuilt_segment_and_leaves_it_dynamic() {
+        segmentService.ensurePrebuiltSegments(orgA);
+        Segment repeat = findPrebuilt(orgA, "Repeat");
+
+        assertThatThrownBy(() -> segmentService.snapshot(orgA, repeat.getId(), principalA))
+                .isInstanceOfSatisfying(com.imin.iminapi.security.ApiException.class, e ->
+                        assertThat(e.status()).isEqualTo(org.springframework.http.HttpStatus.CONFLICT));
+
+        Segment reloaded = segmentRepo.findByIdAndOrgId(repeat.getId(), orgA).orElseThrow();
+        assertThat(reloaded.getKind()).isEqualTo("dynamic");
+        assertThat(reloaded.getSnapshotIds()).isNull();
+
+        // Momentum's default target keeps re-evaluating.
+        Membership m = seedMembership(orgA, "afterrefusal@s.com");
+        m.setEvents(2);
+        membershipRepo.save(m);
+        assertThat(segmentService.resolveMembers(orgA, reloaded))
+                .extracting(Membership::getMembershipId).containsExactly(m.getMembershipId());
+    }
+
     @Test
     void static_snapshot_frozen_while_dynamic_reevaluates() {
-        segmentService.ensurePrebuiltSegments(orgA);
-        Segment seg = findPrebuilt(orgA, "Repeat");
+        Segment seg = segmentService.createSegment(orgA, "My repeats", "dynamic",
+                "[{\"field\":\"events\",\"operator\":\">=\",\"value\":\"2\"}]", principalA);
 
         // No repeats yet → resolve = 0
         assertThat(segmentService.resolveMembers(orgA, seg)).isEmpty();
@@ -413,8 +439,9 @@ class AudienceSegmentTest {
 
     @Test
     void static_snapshot_after_adding_member_contains_that_member() {
-        segmentService.ensurePrebuiltSegments(orgA);
-        Segment seg = findPrebuilt(orgA, "VIP");
+        Segment seg = segmentService.createSegment(orgA, "My VIPs", "dynamic",
+                "[{\"field\":\"spend_minor\",\"operator\":\">=\",\"value\":\"20000\"},"
+                        + "{\"field\":\"events\",\"operator\":\">=\",\"value\":\"4\"}]", principalA);
 
         // Add a VIP
         Membership vip = seedMembership(orgA, "snapvip@s.com");
@@ -490,6 +517,143 @@ class AudienceSegmentTest {
         List<Membership> list = segmentService.resolveMembers(orgA, seg);
         assertThat(dto.matched()).isEqualTo(list.size());
         assertThat(dto.matched()).isEqualTo(2);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // audience-1: prebuilt routing is by stable key, never by display name
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * A segment that merely SHARES a prebuilt's display name must evaluate its own rules.
+     * Resolution used to switch on the name, so this row resolved with the prebuilt VIP
+     * query (spend >= 20000 and events >= 4) while the dashboard showed its own rules —
+     * and RecipientMaterializer mailed the wrong list.
+     */
+    @Test
+    void segment_sharing_a_prebuilt_name_evaluates_its_own_rules() {
+        segmentService.ensurePrebuiltSegments(orgA);
+
+        Segment impostor = new Segment();
+        impostor.setOrgId(orgA);
+        impostor.setName("VIP");           // same display name, no prebuilt key
+        impostor.setKind("dynamic");
+        impostor.setRulesJson("[{\"field\":\"events\",\"operator\":\">=\",\"value\":\"1\"}]");
+        impostor = segmentRepo.save(impostor);
+
+        Membership modest = seedMembership(orgA, "modest@s.com");
+        modest.setEvents(1);
+        modest.setSpendMinor(500);
+        membershipRepo.save(modest);
+
+        assertThat(segmentService.resolveMembers(orgA, impostor))
+                .extracting(Membership::getMembershipId)
+                .containsExactly(modest.getMembershipId());
+    }
+
+    /** The prebuilt itself still uses its indexed query, resolved by key. */
+    @Test
+    void prebuilt_vip_still_routes_to_the_indexed_query() {
+        segmentService.ensurePrebuiltSegments(orgA);
+        Segment vipSegment = findPrebuilt(orgA, "VIP");
+        assertThat(vipSegment.getPrebuiltKey()).isEqualTo("VIP");
+
+        Membership modest = seedMembership(orgA, "modest2@s.com");
+        modest.setEvents(1);
+        modest.setSpendMinor(500);
+        membershipRepo.save(modest);
+
+        assertThat(segmentService.resolveMembers(orgA, vipSegment)).isEmpty();
+    }
+
+    /** Momentum's default target is the prebuilt Repeat row, found by key not by name. */
+    @Test
+    void default_target_segment_is_the_prebuilt_repeat_row() {
+        segmentService.ensurePrebuiltSegments(orgA);
+
+        Segment lookalike = new Segment();
+        lookalike.setOrgId(orgA);
+        lookalike.setName("Repeat");
+        lookalike.setKind("dynamic");
+        lookalike = segmentRepo.save(lookalike);
+
+        assertThat(segmentService.defaultTargetSegmentId(orgA))
+                .isEqualTo(findPrebuilt(orgA, "Repeat").getId())
+                .isNotEqualTo(lookalike.getId());
+    }
+
+    @Test
+    void creating_a_segment_whose_name_is_taken_is_a_409() {
+        segmentService.ensurePrebuiltSegments(orgA);
+
+        assertThatThrownBy(() -> segmentService.createSegment(orgA, " vip ", "dynamic", null, principalA))
+                .isInstanceOfSatisfying(com.imin.iminapi.security.ApiException.class, e -> {
+                    assertThat(e.status()).isEqualTo(org.springframework.http.HttpStatus.CONFLICT);
+                    assertThat(e.code()).isEqualTo(com.imin.iminapi.security.ErrorCode.DUPLICATE);
+                });
+    }
+
+    /**
+     * audience-5: an unreadable rules_json used to resolve to the ENTIRE org audience.
+     * The failure mode of a rule the engine cannot read must be "nobody", not "everybody"
+     * — this list feeds RecipientMaterializer.
+     */
+    @Test
+    void a_segment_whose_rules_cannot_be_parsed_matches_nobody() {
+        Membership anyone = seedMembership(orgA, "unparseable@s.com");
+        anyone.setEvents(4);
+        membershipRepo.save(anyone);
+
+        // The shape a truncated TEXT value has; createSegment would reject it today.
+        Segment broken = new Segment();
+        broken.setOrgId(orgA);
+        broken.setName("Truncated rules");
+        broken.setKind("dynamic");
+        broken.setRulesJson("[{\"field\":\"events\",\"operator\":\">=\",\"val");
+        broken = segmentRepo.save(broken);
+
+        assertThat(segmentService.resolveMembers(orgA, broken)).isEmpty();
+        assertThat(segmentService.resolve(orgA, broken.getId()).matched()).isZero();
+    }
+
+    /** A blank rules_json still means "everyone" — that is documented, not a parse failure. */
+    @Test
+    void a_segment_with_no_rules_still_matches_everyone() {
+        Membership anyone = seedMembership(orgA, "norules@s.com");
+        membershipRepo.save(anyone);
+
+        Segment all = segmentService.createSegment(orgA, "Everyone", "dynamic", null, principalA);
+
+        assertThat(segmentService.resolveMembers(orgA, all))
+                .extracting(Membership::getMembershipId).contains(anyone.getMembershipId());
+    }
+
+    /** liveCount is the number the Audience tab shows; it must agree with resolution. */
+    @Test
+    void live_count_agrees_with_resolved_size_for_every_segment_kind() {
+        segmentService.ensurePrebuiltSegments(orgA);
+
+        Membership repeat = seedMembership(orgA, "lc-repeat@s.com");
+        repeat.setEvents(3);
+        repeat.setSpendMinor(30000);
+        membershipRepo.save(repeat);
+        Membership single = seedMembership(orgA, "lc-single@s.com");
+        single.setEvents(1);
+        membershipRepo.save(single);
+
+        Segment prebuiltRepeat = findPrebuilt(orgA, "Repeat");
+        Segment custom = segmentService.createSegment(orgA, "Three plus", "dynamic",
+                "[{\"field\":\"events\",\"operator\":\">=\",\"value\":\"3\"}]", principalA);
+        Segment everyone = segmentService.createSegment(orgA, "All of them", "dynamic", null, principalA);
+        segmentService.snapshot(orgA, custom.getId(), principalA);
+        Segment frozen = segmentRepo.findByIdAndOrgId(custom.getId(), orgA).orElseThrow();
+
+        for (Segment seg : List.of(prebuiltRepeat, everyone, frozen)) {
+            assertThat(segmentService.liveCount(orgA, seg))
+                    .as("liveCount for %s", seg.getName())
+                    .isEqualTo(segmentService.resolveMembers(orgA, seg).size());
+        }
+        assertThat(segmentService.liveCount(orgA, prebuiltRepeat)).isEqualTo(1);
+        assertThat(segmentService.liveCount(orgA, everyone)).isEqualTo(2);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

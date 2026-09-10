@@ -128,7 +128,7 @@ class AuthControllerTest {
 
         mvc.perform(post("/api/v1/auth/verify-email")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(om.writeValueAsString(Map.of("email", "ada@example.com", "code", "1234"))))
+                        .content(om.writeValueAsString(Map.of("email", "ada@example.com", "code", "123456"))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.token").value("tok-xyz"));
     }
@@ -137,7 +137,7 @@ class AuthControllerTest {
     void verify_email_with_bad_code_format_returns_FIELD_INVALID() throws Exception {
         mvc.perform(post("/api/v1/auth/verify-email")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(om.writeValueAsString(Map.of("email", "ada@example.com", "code", "abcd"))))
+                        .content(om.writeValueAsString(Map.of("email", "ada@example.com", "code", "abcdef"))))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"));
     }
@@ -149,7 +149,7 @@ class AuthControllerTest {
                         ErrorCode.INVALID_CODE, "Invalid or expired verification code"));
         mvc.perform(post("/api/v1/auth/verify-email")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(om.writeValueAsString(Map.of("email", "ada@example.com", "code", "0000"))))
+                        .content(om.writeValueAsString(Map.of("email", "ada@example.com", "code", "000000"))))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("INVALID_CODE"));
     }

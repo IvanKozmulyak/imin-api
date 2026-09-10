@@ -21,9 +21,14 @@ public final class AuditActions {
     public static final String MEMBER_INVITED = "MEMBER_INVITED";
     public static final String MEMBER_REMOVED = "MEMBER_REMOVED";
     public static final String STRIPE_ONBOARDED = "STRIPE_ONBOARDED";
+    /** Irreversible and cascading — the one action whose trail has to outlive its subject. */
+    public static final String ORG_DELETED = "ORG_DELETED";
+    /** One row per ticket actually admitted, naming the door that admitted it. */
+    public static final String TICKET_REDEEMED = "TICKET_REDEEMED";
+    /** A copy of an event's attendee list — names, addresses — left the platform. */
+    public static final String ATTENDEES_EXPORTED = "ATTENDEES_EXPORTED";
 
     // ---- Audience / Consent / DSAR (Tier C) ----
-    public static final String AUDIENCE_TAG_ADDED       = "AUDIENCE_TAG_ADDED";
     public static final String SEGMENT_CREATED          = "SEGMENT_CREATED";
     public static final String SEGMENT_DELETED          = "SEGMENT_DELETED";
     public static final String SEGMENT_SNAPSHOT         = "SEGMENT_SNAPSHOT";
@@ -54,4 +59,16 @@ public final class AuditActions {
     public static final String CAMPAIGN_DUPLICATED = "CAMPAIGN_DUPLICATED";
     public static final String CAMPAIGN_TEST_SENT = "CAMPAIGN_TEST_SENT";
     public static final String CAMPAIGN_DELETED = "CAMPAIGN_DELETED";
+    /**
+     * Bulk mail was dispatched to this org's audience — the marketing analogue of
+     * {@link #ATTENDEES_EXPORTED}: irreversible, visible to third parties, and previously
+     * the only campaign mutation that left no record of who did it.
+     */
+    public static final String CAMPAIGN_SENT = "CAMPAIGN_SENT";
+    /**
+     * The recipient log — every targeted contact's raw address — was opened. Written once per
+     * read of the FIRST page only: the log is paged and polled, so a row per page would bury
+     * the trail rather than be one.
+     */
+    public static final String CAMPAIGN_RECIPIENTS_VIEWED = "CAMPAIGN_RECIPIENTS_VIEWED";
 }

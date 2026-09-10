@@ -96,6 +96,14 @@ public class BuyerAccount {
     @Column(name = "terms_version", length = 32)
     private String termsVersion;
 
+    /**
+     * The sentence this buyer actually read next to the mandatory checkbox (V97).
+     * A version string is only evidence if the text it names can be produced
+     * later; storing the text removes the dependency on a lookup nobody kept.
+     */
+    @Column(name = "terms_proof", columnDefinition = "TEXT")
+    private String termsProof;
+
     @Column(name = "city", length = 128)
     private String city;
 

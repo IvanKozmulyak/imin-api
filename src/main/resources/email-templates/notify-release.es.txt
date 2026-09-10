@@ -12,4 +12,6 @@ Consigue tus entradas: {{eventUrl}}
 
 Las entradas se venden por orden de compra — este correo no te reserva ninguna. No recibirás otro correo sobre este evento a menos que vuelvas a apuntarte.
 
+Cancelar estos avisos: {{unsubscribeUrl}}
+
 imin.wtf · entradas a la venta para {{eventName}}

@@ -30,6 +30,16 @@ import java.util.List;
 @Service
 public class PacingEngine {
 
+    /**
+     * The smallest median pace — fraction of final sold at this horizon across the segment's
+     * comparables — that a projection is allowed to divide by. Below it the percentile is
+     * dominated by comparables that had not started selling that early, so {@code sold / pace}
+     * is noise with a decimal point: three tickets over a 0.5% median "projects" 600. A rule
+     * constant, deliberately not configurable; below the floor the honest answer is the
+     * EXPLICITLY-LABELLED Stage 0 interim, never a wider band.
+     */
+    static final double MIN_PROJECTABLE_PACE = 0.05;
+
     /** One sampled point of a segment curve: the band of "% of final sold" at {@code daysOut}. */
     public record CurvePoint(int daysOut, double medianPct, double p25Pct, double p75Pct) {}
 
@@ -47,7 +57,7 @@ public class PacingEngine {
     public record Projection(boolean insufficient, int finalLow, int finalHigh, ProjectionBand band,
                              Integer sellOutEarliestDaysOut, Integer sellOutLatestDaysOut) {
         static Projection insufficientResult() {
-            return new Projection(true, 0, 0, ProjectionBand.UNDER_60, null, null);
+            return new Projection(true, 0, 0, null, null, null); // no projection ⇒ no band to claim
         }
     }
 
@@ -126,17 +136,28 @@ public class PacingEngine {
         double medNow = interp(curve, daysOutNow, Pace.MEDIAN);
         double p25Now = interp(curve, daysOutNow, Pace.P25);
         double p75Now = interp(curve, daysOutNow, Pace.P75);
-        if (medNow <= 0 && p25Now <= 0 && p75Now <= 0) return Projection.insufficientResult();
+        // Too few comparables had sold anything by this horizon for the division below to mean
+        // anything (the median pace IS that count, expressed as a fraction): not projectable.
+        if (medNow < MIN_PROJECTABLE_PACE) return Projection.insufficientResult();
+        // The slow-pace end (P25) is what sets the TOP of the range. When a quarter or more of the
+        // comparables had no sale at this horizon it is 0, i.e. the upper bound is unobserved —
+        // and capacity is a tier sum, not a pace, so it must never stand in for it (§5 "computed,
+        // not generated"). An unknown upper bound makes the whole projection unprojectable.
+        if (p25Now <= 0) return Projection.insufficientResult();
 
         // Fast pace (higher pct-of-final now) → smaller final; slow pace → larger final.
         double rawLow = p75Now > 0 ? currentSold / p75Now : currentSold;
-        double rawHigh = p25Now > 0 ? currentSold / p25Now : capacity; // p25==0 → unbounded, cap at capacity
+        double rawHigh = currentSold / p25Now; // p25 > 0 guaranteed by the guard above
         if (rawHigh < rawLow) rawHigh = rawLow;
 
         int finalLow = clamp((int) Math.round(rawLow), currentSold, Math.max(currentSold, capacity));
         int finalHigh = clamp((int) Math.round(rawHigh), currentSold, Math.max(currentSold, capacity));
 
         ProjectionBand band = ProjectionBand.classify((rawLow + rawHigh) / 2.0, capacity);
+        // Unknown capacity has no band (predictor-edge-14). Today the caller already guards
+        // capacity > 0 before projecting, so this is belt and braces — but a null band would
+        // reach buildStage1, which dereferences it.
+        if (band == null) return Projection.insufficientResult();
 
         // Sell-out ETA: per pace curve that actually reaches capacity, the largest day-out where
         // the event's projected cumulative first hits capacity. Range = [earliest date, latest date]

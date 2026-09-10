@@ -109,6 +109,31 @@ class CampaignAttributionServiceTest {
         assertThat(attributed).isEqualTo(2); // anonA + anonB
     }
 
+    /**
+     * mkt-core-12: the Marketing hub summed attributedPurchaseCount once PER CAMPAIGN created
+     * in the last 30 days — N funnel queries per page view, while the revenue tile right below
+     * it already used the batched form. One query for the whole id list, same numbers.
+     */
+    @Test
+    void batchedPurchaseCountsMatchThePerCampaignCounts() {
+        UUID eventId = newEvent();
+        UUID a = UUID.randomUUID();
+        UUID b = UUID.randomUUID();
+        UUID silent = UUID.randomUUID();
+        beacon(eventId, FunnelEvent.STAGE_CHECKOUT_START, "anonA", a.toString());
+        beacon(eventId, FunnelEvent.STAGE_CHECKOUT_START, "anonA", a.toString()); // dedup
+        beacon(eventId, FunnelEvent.STAGE_CHECKOUT_START, "anonB", a.toString());
+        beacon(eventId, FunnelEvent.STAGE_CHECKOUT_START, "anonC", b.toString());
+        beacon(eventId, FunnelEvent.STAGE_PAGE_VIEW, "anonD", b.toString());      // not a conversion
+
+        var counts = attribution.attributedPurchaseCountByCampaign(List.of(a, b, silent));
+
+        assertThat(counts).containsEntry(a, 2L).containsEntry(b, 1L);
+        // A campaign nobody clicked reads back as a real 0, not a missing key.
+        assertThat(counts).containsEntry(silent, 0L);
+        assertThat(counts.get(a)).isEqualTo(attribution.attributedPurchaseCount(a));
+    }
+
     @Test
     void zeroWhenNoBeaconsCarryTheCampaign() {
         assertThat(attribution.attributedPurchaseCount(UUID.randomUUID())).isEqualTo(0);

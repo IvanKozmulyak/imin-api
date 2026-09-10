@@ -1,0 +1,17 @@
+-- V104__orders_stripe_session_id_index.sql
+-- Index the column the buyer's success page polls on.
+--
+-- CheckoutStatusService.statusFor runs OrderRepository.findByStripeSessionId on
+-- every poll of /e/{eventId}/success — the page meta-refreshes until the
+-- issuance webhook has landed, so this is a loop, per buyer, at the moment they
+-- have just paid. V24 declared orders.stripe_session_id with only
+-- idx_orders_event_id and idx_orders_org_id created beside it, and no later
+-- migration added one: the cs_ branch sequential-scanned the table. (The pi_
+-- branch of the same method has always been covered by
+-- orders_stripe_payment_intent_id_unique, added in V26.)
+--
+-- Plain, not partial, even though the column is NULL for every native order:
+-- the whole test suite boots H2 in PG-compat mode, which has no WHERE-clause
+-- indexes. V86:55 chose the same way for the same reason. Production `orders`
+-- is small enough (67 rows as of V86's header) that the build is milliseconds.
+CREATE INDEX ix_orders_stripe_session_id ON orders (stripe_session_id);

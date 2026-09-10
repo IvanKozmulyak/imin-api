@@ -107,7 +107,8 @@ class AudienceControllerWebTest {
                 "explicit", "subscribed", null,
                 null, null, null, null, null,
                 List.of("vip"), "", "repeat",
-                new MemberDto.RfmInfo(4, 3, 5)
+                new MemberDto.RfmInfo(4, 3, 5),
+                null, null
         );
     }
 
@@ -210,6 +211,28 @@ class AudienceControllerWebTest {
         // Verify service was called with ORG_A (from principal), never ORG_B
         verify(sendGateService).handoff(eq(ORG_A), anyList(), any());
         verify(sendGateService, never()).handoff(eq(tamperOrgId), anyList(), any());
+    }
+
+    // ── POST /members/bulk-action — must not fake success ─────────────────────
+
+    /**
+     * audience-14: the endpoint accepted any body, wrote nothing and answered 200, and the
+     * dashboard turned that into "Tagged N members" / "Export queued" / "Handed off to
+     * marketing" plus a navigate — three organizer actions reporting success over a no-op.
+     */
+    @Test
+    @WithOrgA
+    void bulk_action_reports_that_it_is_not_implemented() throws Exception {
+        String body = om.writeValueAsString(Map.of(
+                "action", "tag",
+                "membershipIds", List.of(MEMBER_A.toString()),
+                "tag", "vip"));
+
+        mvc.perform(post("/api/v1/audience/members/bulk-action")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isNotImplemented())
+                .andExpect(jsonPath("$.error.code").value("INVALID_STATE"));
     }
 
     // ── POST /handoff — happy path ────────────────────────────────────────────
@@ -342,6 +365,66 @@ class AudienceControllerWebTest {
         mvc.perform(post("/api/v1/audience/members/" + MEMBER_A + "/access"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.membershipId").value(MEMBER_A.toString()));
+    }
+
+    @Test
+    @WithOrgA
+    void post_dsar_export_carries_the_consent_trail() throws Exception {
+        when(dsarService.export(eq(ORG_A), eq(MEMBER_A), any())).thenReturn(null);
+        when(audienceService.getMember(eq(ORG_A), eq(MEMBER_A))).thenReturn(stubMember(MEMBER_A));
+        when(dsarService.consentHistory(eq(ORG_A), eq(MEMBER_A))).thenReturn(List.of(
+                new ConsentHistoryEntry(Instant.parse("2025-02-01T10:00:00Z"), "email", true,
+                        "soft_opt_in", "checkout", "Left the pre-ticked box ticked at checkout")));
+
+        mvc.perform(post("/api/v1/audience/members/" + MEMBER_A + "/export"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.membershipId").value(MEMBER_A.toString()))
+                .andExpect(jsonPath("$.consentHistory[0].granted").value(true))
+                .andExpect(jsonPath("$.consentHistory[0].lawfulBasis").value("soft_opt_in"))
+                .andExpect(jsonPath("$.consentHistory[0].source").value("checkout"))
+                .andExpect(jsonPath("$.consentHistory[0].channel").value("email"))
+                .andExpect(jsonPath("$.consentHistory[0].proofText")
+                        .value("Left the pre-ticked box ticked at checkout"))
+                .andExpect(jsonPath("$.consentHistory[0].at").exists());
+    }
+
+    /** The list payload must not grow a consent table per member. */
+    @Test
+    @WithOrgA
+    void get_members_omits_consent_history() throws Exception {
+        when(audienceService.listMembers(eq(ORG_A), isNull(), eq(50), isNull(), isNull()))
+                .thenReturn(new MemberPage(List.of(stubMember(MEMBER_A)), null));
+
+        mvc.perform(get("/api/v1/audience/members"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items[0].consentHistory").doesNotExist());
+    }
+
+    @Test
+    @WithOrgA
+    void get_consent_history_returns_the_trail() throws Exception {
+        when(dsarService.consentHistory(eq(ORG_A), eq(MEMBER_A))).thenReturn(List.of(
+                new ConsentHistoryEntry(Instant.parse("2025-02-01T10:00:00Z"), "email", true,
+                        "explicit", "signup_form", "Ticked the box on the signup form"),
+                new ConsentHistoryEntry(Instant.parse("2025-03-01T10:00:00Z"), "email", false,
+                        null, "one_click", null)));
+
+        mvc.perform(get("/api/v1/audience/members/" + MEMBER_A + "/consent-history"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(2))
+                .andExpect(jsonPath("$[0].granted").value(true))
+                .andExpect(jsonPath("$[1].granted").value(false))
+                .andExpect(jsonPath("$[1].source").value("one_click"));
+    }
+
+    @Test
+    @WithOrgA
+    void get_consent_history_cross_org_returns_404() throws Exception {
+        when(dsarService.consentHistory(eq(ORG_A), eq(MEMBER_B)))
+                .thenThrow(ApiException.notFound("Membership"));
+
+        mvc.perform(get("/api/v1/audience/members/" + MEMBER_B + "/consent-history"))
+                .andExpect(status().isNotFound());
     }
 
     @Test
@@ -604,7 +687,7 @@ class AudienceControllerWebTest {
             }
 
             if (!hasOrgIdParam) {
-                // findSendCandidates and findCreatedSince and findByIdsAndOrgId take orgId
+                // findCreatedSince and findByIdsAndOrgId take orgId
                 // findByOrgIdAndConsumerId takes orgId
                 // If there's no orgId param, this is an unscoped method - FAIL
                 // But we need to allow "save" (already skipped) and Pageable variants
@@ -859,7 +942,8 @@ class AudienceControllerWebTest {
                 7, "organic", "explicit", "subscribed", null,
                 null, null, null, null, null,
                 List.of("tag1"), "", "repeat",
-                new MemberDto.RfmInfo(3, 2, 4)
+                new MemberDto.RfmInfo(3, 2, 4),
+                null, null
         );
         when(audienceService.exportMembersCsv(eq(ORG_A), isNull(), isNull()))
                 .thenReturn(List.of(tricky));

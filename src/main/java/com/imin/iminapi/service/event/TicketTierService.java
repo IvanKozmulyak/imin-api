@@ -129,7 +129,7 @@ public class TicketTierService {
     }
 
     @Transactional
-    @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
+    @CacheEvict(value = "dashboard", allEntries = true)
     public TicketTierDto create(AuthPrincipal p, UUID eventId, TicketTierCreateRequest req) {
         Event event = loadOwnedEvent(p, eventId);
         Map<String, String> errors = validator.validateCreate(req, event);
@@ -159,7 +159,7 @@ public class TicketTierService {
     }
 
     @Transactional
-    @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
+    @CacheEvict(value = "dashboard", allEntries = true)
     public TicketTierDto patch(AuthPrincipal p, UUID eventId, UUID tierId, TicketTierPatchRequest req) {
         Event event = loadOwnedEvent(p, eventId);
         TicketTier tier = loadOwnedTier(eventId, tierId);
@@ -179,13 +179,25 @@ public class TicketTierService {
     }
 
     @Transactional
-    @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
+    @CacheEvict(value = "dashboard", allEntries = true)
     public void delete(AuthPrincipal p, UUID eventId, UUID tierId) {
         Event event = loadOwnedEvent(p, eventId);
         TicketTier tier = loadOwnedTier(eventId, tierId);
         if (tier.getSold() > 0) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
                     "Cannot delete a tier with sold tickets — disable it instead (set enabled=false)",
+                    Map.of());
+        }
+        // ticket_reservations.tier_id is ON DELETE CASCADE, so deleting a tier with live holds
+        // silently drops them: the buyer already redirected to Stripe pays, confirmSold no-ops
+        // on the vanished reservation, and issuance still runs — a charged buyer holding a
+        // ticket for a tier that no longer exists, whose capacity was never credited back
+        // (events-14). `reserved` is the counter InventoryService maintains under the tier
+        // row lock, so it is the authoritative live-hold signal.
+        if (tier.getReserved() > 0) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                    "Cannot delete a tier with checkouts in progress — disable it instead "
+                            + "(set enabled=false)",
                     Map.of());
         }
         // Capture name BEFORE delete — accessing tier.getName() after delete()/flush is risky.

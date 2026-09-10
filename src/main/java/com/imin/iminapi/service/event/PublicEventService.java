@@ -89,7 +89,9 @@ public class PublicEventService {
         var stream = tierRepository
                 .findByEventIdAndEnabledTrueOrderBySortOrderAsc(id)
                 .stream()
-                .map(t -> PublicTierDto.from(t, event, now));
+                .map(t -> PublicTierDto.from(t, event, now,
+                        stripeProperties.getApplicationFeeBps(),
+                        stripeProperties.getApplicationFeeFixedMinor()));
         if (!includeUnavailable) {
             stream = stream.filter(PublicTierDto::onSale);
         }
@@ -362,7 +364,8 @@ public class PublicEventService {
                 e.getId(), e.getSlug(), e.getName(), e.getStatus().wireValue(), e.getPublishedAt(),
                 e.getGenre(), e.getType(),
                 e.getStartsAt(), e.getEndsAt(), e.getTimezone(),
-                e.getVenueName(), e.getVenueCity(), e.getVenueCountry(), e.getPosterUrl(), e.getCurrency(),
+                e.getVenueName(), e.getVenueCity(), e.getVenueCountry(), e.getPosterUrl(),
+                Boolean.TRUE.equals(e.getPosterAiGenerated()), e.getCurrency(),
                 priceFromMinor, soldOut, lowStock,
                 new PublicOrganizationDto(org.getName(), org.getSlug()));
     }

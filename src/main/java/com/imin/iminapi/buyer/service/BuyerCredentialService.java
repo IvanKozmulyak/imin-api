@@ -2,7 +2,7 @@ package com.imin.iminapi.buyer.service;
 
 import com.imin.iminapi.audience.service.EmailNormalizer;
 import com.imin.iminapi.buyer.BuyerProperties;
-import com.imin.iminapi.buyer.email.BuyerAccountEmailer;
+import com.imin.iminapi.buyer.email.BuyerMailEvents;
 import com.imin.iminapi.buyer.model.BuyerAccount;
 import com.imin.iminapi.buyer.model.BuyerAccountEmail;
 import com.imin.iminapi.buyer.model.BuyerEmailVerificationCode;
@@ -15,14 +15,14 @@ import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.security.PasswordHasher;
 import com.imin.iminapi.security.TokenService;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -64,15 +64,13 @@ import java.util.Optional;
 @Service
 public class BuyerCredentialService {
 
-    private static final Logger log = LoggerFactory.getLogger(BuyerCredentialService.class);
-
     private final BuyerAccountRepository accounts;
     private final BuyerAccountEmailRepository emails;
     private final BuyerPasswordResetTokenRepository resetTokens;
     private final BuyerEmailVerificationService verification;
     private final BuyerAddressClaims claims;
     private final BuyerSessionService sessions;
-    private final BuyerAccountEmailer emailer;
+    private final ApplicationEventPublisher events;
     private final BuyerTimingEqualizer timing;
     private final PasswordHasher hasher;
     private final TokenService tokens;
@@ -84,7 +82,7 @@ public class BuyerCredentialService {
                                   BuyerEmailVerificationService verification,
                                   BuyerAddressClaims claims,
                                   BuyerSessionService sessions,
-                                  BuyerAccountEmailer emailer,
+                                  ApplicationEventPublisher events,
                                   BuyerTimingEqualizer timing,
                                   PasswordHasher hasher,
                                   TokenService tokens,
@@ -95,7 +93,7 @@ public class BuyerCredentialService {
         this.verification = verification;
         this.claims = claims;
         this.sessions = sessions;
-        this.emailer = emailer;
+        this.events = events;
         this.timing = timing;
         this.hasher = hasher;
         this.tokens = tokens;
@@ -123,7 +121,7 @@ public class BuyerCredentialService {
             BuyerAccountEmail owner = verifiedElsewhere.get();
             String ownerLocale = accounts.findById(owner.getBuyerAccountId())
                     .map(BuyerAccount::getLocale).orElse(null);
-            swallow("account-exists notice", () -> emailer.sendAccountExistsNotice(owner.getEmail(), ownerLocale));
+            events.publishEvent(new BuyerMailEvents.AccountExistsNotice(owner.getEmail(), ownerLocale));
             return;
         }
 
@@ -135,7 +133,7 @@ public class BuyerCredentialService {
         emails.save(BuyerAccountEmail.of(saved.getId(), rawEmail, BuyerAccountEmail.ADDED_VIA_SIGNUP));
 
         String code = verification.issue(saved.getId(), normalized);
-        swallow("verification code", () -> emailer.sendVerificationCode(
+        events.publishEvent(new BuyerMailEvents.VerificationCode(
                 rawEmail.trim(), saved.getLocale(), code, verification.codeTtlMinutes()));
     }
 
@@ -147,11 +145,15 @@ public class BuyerCredentialService {
      * <p>The code row carries the account that asked for it, so a code issued to
      * account A can never verify an address row on account B — which matters
      * because several accounts may hold unverified claims on one address.
+     *
+     * <p>{@code clientIp} is passed down because the failure counter is keyed on
+     * the caller as well as the address: see
+     * {@link BuyerEmailVerificationService}.
      */
     @Transactional
-    public SignedIn verifyEmail(String rawEmail, String code, String userAgent) {
+    public SignedIn verifyEmail(String rawEmail, String code, String userAgent, String clientIp) {
         String normalized = EmailNormalizer.normalize(rawEmail);
-        BuyerEmailVerificationCode consumed = verification.consume(normalized, code);
+        BuyerEmailVerificationCode consumed = verification.consume(normalized, code, clientIp);
 
         BuyerAccount account = accounts.findById(consumed.getBuyerAccountId())
                 .orElseThrow(BuyerCredentialService::invalidCode);
@@ -172,29 +174,37 @@ public class BuyerCredentialService {
     /**
      * Always returns normally — 204 on every branch.
      *
-     * <p>When several accounts hold unverified claims on one address the
-     * <b>newest claim wins</b>. That is the deterministic reading of an
-     * ambiguous request (§15 D-10): the person who most recently asked is the
-     * person waiting on the mail, and {@code invalidateActiveForEmail} means
-     * only one code is ever live for an address anyway. An address that is
-     * already verified gets nothing — there is nothing to resend, and mailing
-     * its owner on a stranger's request would be a nuisance amplifier.
+     * <p>This request is unauthenticated and carries nothing but an address, so
+     * it can only be honoured when the address has exactly <b>one</b> claimant.
+     * Several accounts may hold unverified claims on one address (§2.3 rule 1),
+     * and there is then no fact in the request that says which of them the
+     * caller is completing. "Newest wins" looked like the deterministic reading
+     * of an ambiguous request and was in fact an account-takeover primitive: a
+     * stranger signing up after the real owner became the newest claim, and the
+     * owner's next resend mailed <i>his</i> code to <i>her</i> inbox — which,
+     * redeemed, verified her address onto his account. Contested addresses
+     * therefore get the same silent 204, and the owner's existing code, which is
+     * still bound to her own account, keeps working.
+     *
+     * <p>An address that is already verified gets nothing either — there is
+     * nothing to resend, and mailing its owner on a stranger's request would be
+     * a nuisance amplifier.
      */
     @Transactional
     public void resendVerification(String rawEmail) {
         String normalized = EmailNormalizer.normalize(rawEmail);
         if (emails.findByVerifiedKey(normalized).isPresent()) return;
 
-        Optional<BuyerAccountEmail> claim =
-                emails.findFirstByEmailNormalizedAndVerifiedAtIsNullOrderByCreatedAtDesc(normalized);
-        if (claim.isEmpty()) return;
+        List<BuyerAccountEmail> pending = emails.findByEmailNormalizedAndVerifiedAtIsNull(normalized);
+        if (pending.stream().map(BuyerAccountEmail::getBuyerAccountId).distinct().count() != 1) return;
 
-        Optional<BuyerAccount> account = accounts.findById(claim.get().getBuyerAccountId());
+        BuyerAccountEmail claim = pending.get(0);
+        Optional<BuyerAccount> account = accounts.findById(claim.getBuyerAccountId());
         if (account.isEmpty()) return;
 
         String code = verification.issue(account.get().getId(), normalized);
-        swallow("verification code (resend)", () -> emailer.sendVerificationCode(
-                claim.get().getEmail(), account.get().getLocale(), code, verification.codeTtlMinutes()));
+        events.publishEvent(new BuyerMailEvents.VerificationCode(
+                claim.getEmail(), account.get().getLocale(), code, verification.codeTtlMinutes()));
     }
 
     // ── Login ──────────────────────────────────────────────────────────────
@@ -252,6 +262,10 @@ public class BuyerCredentialService {
      * <p>A reset link is sent only to a <b>verified</b> address, so it can never
      * hand control of an account to someone who merely typed its address.
      *
+     * <p>Issuing retires the account's outstanding links first: only the newest
+     * one may work, exactly as {@code BuyerEmailVerificationService.issue}
+     * retires outstanding codes.
+     *
      * <p>A Google-only account (NULL {@code password_hash}) can acquire a
      * password this way. That is correct and standard — the link goes to an
      * address the buyer has proved they control — and it is the escape hatch for
@@ -268,16 +282,21 @@ public class BuyerCredentialService {
         if (maybe.isEmpty()) return;
         BuyerAccount account = maybe.get();
 
+        // Only the newest link may work. Anything still outstanding is retired
+        // before the new one is minted — see consumeAllForAccount.
+        Instant now = Instant.now();
+        resetTokens.consumeAllForAccount(account.getId(), now);
+
         TokenService.IssuedToken issued = tokens.issue();
         BuyerPasswordResetToken token = new BuyerPasswordResetToken();
         token.setBuyerAccountId(account.getId());
         token.setTokenHash(issued.tokenHash());
-        token.setExpiresAt(Instant.now().plus(Duration.ofMinutes(props.getPasswordResetTtlMinutes())));
+        token.setExpiresAt(now.plus(Duration.ofMinutes(props.getPasswordResetTtlMinutes())));
         resetTokens.save(token);
 
-        swallow("password reset", () -> emailer.sendPasswordReset(
+        events.publishEvent(new BuyerMailEvents.PasswordReset(
                 verified.get().getEmail(), account.getLocale(),
-                emailer.resetUrl(issued.token()), props.getPasswordResetTtlMinutes()));
+                issued.token(), props.getPasswordResetTtlMinutes()));
     }
 
     /**
@@ -305,28 +324,17 @@ public class BuyerCredentialService {
         accounts.save(account);
         token.setConsumedAt(now);
         resetTokens.save(token);
+        // And any link minted in parallel with the one just used dies with it.
+        resetTokens.consumeAllForAccount(account.getId(), now);
 
         sessions.revokeAll(account.getId());
 
         emails.findByPrimaryMarker(account.getId()).ifPresent(primary ->
-                swallow("password-changed notice",
-                        () -> emailer.sendPasswordChanged(primary.getEmail(), account.getLocale())));
+                events.publishEvent(new BuyerMailEvents.PasswordChanged(
+                        primary.getEmail(), account.getLocale())));
     }
 
     // ── helpers ────────────────────────────────────────────────────────────
-
-    /**
-     * Sends and swallows. A Resend outage must not change the status code, the
-     * body, or (materially) the timing of a flow whose whole contract is that
-     * every branch looks the same.
-     */
-    private void swallow(String what, Runnable send) {
-        try {
-            send.run();
-        } catch (RuntimeException e) {
-            log.error("[buyer] {} email send failed: {}", what, e.getMessage(), e);
-        }
-    }
 
     private static ApiException invalidCode() {
         return new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_CODE,

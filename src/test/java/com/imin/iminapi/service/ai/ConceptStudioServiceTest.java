@@ -12,7 +12,6 @@ import com.imin.iminapi.dto.ai.ConceptResponse;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.GeneratedEvent;
 import com.imin.iminapi.model.GeneratedEventStatus;
-import com.imin.iminapi.model.ImageProvider;
 import com.imin.iminapi.model.PosterGeneration;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.EventRepository;
@@ -31,7 +30,6 @@ import org.mockito.ArgumentCaptor;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -85,10 +83,10 @@ class ConceptStudioServiceTest {
         OrchestrationResult result = new OrchestrationResult(
                 UUID.randomUUID(), "neon_underground",
                 List.of(
-                        new GeneratedPoster(UUID.randomUUID(), "people", "https://cdn/raw1.png", "https://cdn/p1.png", 1L, "prompt", List.of(), Map.of(), "COMPLETE", null),
-                        new GeneratedPoster(UUID.randomUUID(), "object",     "https://cdn/raw2.png", "https://cdn/p2.png", 2L, "prompt", List.of(), Map.of(), "COMPLETE", null),
-                        new GeneratedPoster(UUID.randomUUID(), "typographic",     "https://cdn/raw3.png", "https://cdn/p3.png", 3L, "prompt", List.of(), Map.of(), "COMPLETE", null)));
-        when(orchestrator.run(any(), any(), any(), anyLong(), any(), any(), any())).thenReturn(result);
+                        new GeneratedPoster(UUID.randomUUID(), "people", "https://cdn/raw1.png", "https://cdn/p1.png", 1L, List.of(), "COMPLETE", null),
+                        new GeneratedPoster(UUID.randomUUID(), "object",     "https://cdn/raw2.png", "https://cdn/p2.png", 2L, List.of(), "COMPLETE", null),
+                        new GeneratedPoster(UUID.randomUUID(), "typographic",     "https://cdn/raw3.png", "https://cdn/p3.png", 3L, List.of(), "COMPLETE", null)));
+        when(orchestrator.run(any(), any(), any(), anyLong(), any(), any(), any(), any())).thenReturn(result);
 
         when(pricing.recommend(any(), any(), any())).thenReturn(
                 new PricingRecommendation(new BigDecimal("12.00"), new BigDecimal("24.00"), "ok"));
@@ -138,11 +136,11 @@ class ConceptStudioServiceTest {
                         new PosterVariant("minimal", "Large event prompt text here one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four twenty-five twenty-six twenty-seven twenty-eight twenty-nine thirty more words here", "4:5", "Design")));
         when(descService.generateConcept(any(), anyLong(), anyBoolean()))
                 .thenReturn(new AiEventDescriptionService.GeneratedConcept(concept, List.of()));
-        when(orchestrator.run(any(), any(), any(), anyLong(), any(), any(), any())).thenReturn(new OrchestrationResult(
+        when(orchestrator.run(any(), any(), any(), anyLong(), any(), any(), any(), any())).thenReturn(new OrchestrationResult(
                 UUID.randomUUID(), "flat_graphic",
-                List.of(new GeneratedPoster(UUID.randomUUID(), "people", "raw", "url1", 1L, "p", List.of(), Map.of(), "COMPLETE", null),
-                        new GeneratedPoster(UUID.randomUUID(), "object",     "raw", "url2", 2L, "p", List.of(), Map.of(), "COMPLETE", null),
-                        new GeneratedPoster(UUID.randomUUID(), "typographic",     "raw", "url3", 3L, "p", List.of(), Map.of(), "COMPLETE", null))));
+                List.of(new GeneratedPoster(UUID.randomUUID(), "people", "raw", "url1", 1L, List.of(), "COMPLETE", null),
+                        new GeneratedPoster(UUID.randomUUID(), "object",     "raw", "url2", 2L, List.of(), "COMPLETE", null),
+                        new GeneratedPoster(UUID.randomUUID(), "typographic",     "raw", "url3", 3L, List.of(), "COMPLETE", null))));
         when(pricing.recommend(any(), any(), any())).thenReturn(
                 new PricingRecommendation(new BigDecimal("10.00"), new BigDecimal("20.00"), "ok"));
         when(overviewLlm.generate(any(), any())).thenReturn(new ConceptOverview(
@@ -175,9 +173,9 @@ class ConceptStudioServiceTest {
                                 new PosterVariant("object", body, "1:1", "Design"),
                                 new PosterVariant("typographic", body, "9:16", "Design"))),
                 List.of()));
-        when(orchestrator.run(any(), any(), any(), anyLong(), any(), any(), any())).thenReturn(new OrchestrationResult(
+        when(orchestrator.run(any(), any(), any(), anyLong(), any(), any(), any(), any())).thenReturn(new OrchestrationResult(
                 UUID.randomUUID(), "brutalist_techno",
-                List.of(new GeneratedPoster(UUID.randomUUID(), "people", "raw", "u1", 1L, "p", List.of(), Map.of(), "COMPLETE", null))));
+                List.of(new GeneratedPoster(UUID.randomUUID(), "people", "raw", "u1", 1L, List.of(), "COMPLETE", null))));
         when(pricing.recommend(any(), any(), any())).thenReturn(
                 new PricingRecommendation(new BigDecimal("12.00"), new BigDecimal("24.00"), "ok"));
         when(overviewLlm.generate(any(), any())).thenReturn(
@@ -190,43 +188,8 @@ class ConceptStudioServiceTest {
 
         // The concept handed to the orchestrator carries the pinned vibe id, not the LLM's echo.
         ArgumentCaptor<PosterConcept> cap = ArgumentCaptor.forClass(PosterConcept.class);
-        verify(orchestrator).run(any(), any(), cap.capture(), anyLong(), any(), any(), any());
+        verify(orchestrator).run(any(), any(), cap.capture(), anyLong(), any(), any(), any(), any());
         assertThat(cap.getValue().subStyleTag()).isEqualTo("brutalist_techno");
-    }
-
-    @Test
-    void providerFor_defaultsToRecraftForReferenceFirstGeneration() {
-        Vibe recraftVibe = vibe("recraft");
-        assertThat(sut.providerFor(recraftVibe)).isEqualTo(ImageProvider.RECRAFT);
-        assertThat(sut.providerFor(vibe("sdxl"))).isEqualTo(ImageProvider.RECRAFT);
-        assertThat(sut.providerFor(null)).isEqualTo(ImageProvider.RECRAFT);
-    }
-
-    @Test
-    void providerFor_mapsModelRoute_whenRoutingEnabled() {
-        org.springframework.test.util.ReflectionTestUtils.setField(sut, "providerRoutingEnabled", true);
-        assertThat(sut.providerFor(vibe("recraft"))).isEqualTo(ImageProvider.RECRAFT);
-        assertThat(sut.providerFor(vibe("gpt-image"))).isEqualTo(ImageProvider.OPENAI);
-        assertThat(sut.providerFor(vibe("replicate"))).isEqualTo(ImageProvider.REPLICATE);
-        assertThat(sut.providerFor(vibe("sdxl"))).isEqualTo(ImageProvider.RECRAFT);
-        assertThat(sut.providerFor(null)).isEqualTo(ImageProvider.RECRAFT);
-    }
-
-    @Test
-    void eventCreatorRequest_defaultProviderIsRecraft() {
-        EventCreatorRequest request = new EventCreatorRequest(
-                "vibe", "tone", "techno", "Berlin",
-                LocalDate.of(2026, 6, 14), List.of("INSTAGRAM"),
-                null, null, "Void", null, null, null,
-                "brutalist_techno", null);
-
-        assertThat(request.effectiveImageProvider()).isEqualTo(ImageProvider.RECRAFT);
-    }
-
-    private static Vibe vibe(String modelRoute) {
-        return new Vibe("v", "V", List.of("g"), "vs", List.of("#000"), "typ", "comp",
-                List.of(), List.of(), modelRoute, List.of(), null, "tpl", false,
-                "subject", com.imin.iminapi.dto.StyleMode.TRAINED_STYLE_ID, null);
     }
 
     @Test
@@ -283,9 +246,9 @@ class ConceptStudioServiceTest {
                                         new PosterVariant("object", body, "1:1", "Design"),
                                         new PosterVariant("typographic", body, "9:16", "Design"))),
                         List.of()));
-        when(orchestrator.run(any(), any(), any(), anyLong(), any(), any(), any())).thenReturn(new OrchestrationResult(
+        when(orchestrator.run(any(), any(), any(), anyLong(), any(), any(), any(), any())).thenReturn(new OrchestrationResult(
                 UUID.randomUUID(), "neon_underground",
-                List.of(new GeneratedPoster(UUID.randomUUID(), "people", "raw", "u1", 1L, "p", List.of(), Map.of(), "COMPLETE", null))));
+                List.of(new GeneratedPoster(UUID.randomUUID(), "people", "raw", "u1", 1L, List.of(), "COMPLETE", null))));
         when(pricing.recommend(any(), any(), any())).thenReturn(
                 new PricingRecommendation(new BigDecimal("12.00"), new BigDecimal("24.00"), "ok"));
         when(overviewLlm.generate(any(), any())).thenReturn(
@@ -342,7 +305,7 @@ class ConceptStudioServiceTest {
 
         ArgumentCaptor<com.imin.iminapi.service.poster.BrandSnapshot> cap =
                 ArgumentCaptor.forClass(com.imin.iminapi.service.poster.BrandSnapshot.class);
-        verify(orchestrator).run(any(), any(), any(), anyLong(), any(), cap.capture(), any());
+        verify(orchestrator).run(any(), any(), any(), anyLong(), any(), cap.capture(), any(), any());
         assertThat(cap.getValue().logoOn()).isFalse();
     }
 
@@ -362,8 +325,165 @@ class ConceptStudioServiceTest {
         assertThat(cap.getValue().accentColor()).isNull();
         ArgumentCaptor<com.imin.iminapi.service.poster.BrandSnapshot> bcap =
                 ArgumentCaptor.forClass(com.imin.iminapi.service.poster.BrandSnapshot.class);
-        verify(orchestrator).run(any(), any(), any(), anyLong(), any(), bcap.capture(), any());
+        verify(orchestrator).run(any(), any(), any(), anyLong(), any(), bcap.capture(), any(), any());
         assertThat(bcap.getValue()).isNull();
+    }
+
+    @Test
+    void create_attributesTheRenderToTheCallingOrganizer() {
+        AuthPrincipal p = owner();
+        stubPipeline();
+
+        sut.create(p, new ConceptRequest(
+                "Moody warehouse techno brief here", "Techno", "Berlin", null, null,
+                null, null, null, null, null, null, null, null));
+
+        verify(orchestrator).run(any(), any(), any(), anyLong(), any(), any(), any(), eq(p.userId()));
+    }
+
+    // ---- create-request snapshot carried into regenerate (poster-5) ------------------------------
+
+    @Test
+    void create_snapshotsTheRequestOntoTheStagingRow() {
+        AuthPrincipal p = owner();
+        stubPipeline();
+        when(vibeLibrary.hasVibe("brutalist_techno")).thenReturn(true);
+
+        sut.create(p, new ConceptRequest(
+                "Moody warehouse techno brief here", "Techno", "Berlin", 400, "brutalist_techno",
+                "ANTRUM VII", LocalDate.of(2026, 11, 14), "Void Club",
+                List.of("Nina Kraviz", "Rrose"), "12 Rue Test", "https://rsvp.example",
+                Boolean.TRUE, null));
+
+        ArgumentCaptor<GeneratedEvent> cap = ArgumentCaptor.forClass(GeneratedEvent.class);
+        verify(repo, atLeastOnce()).save(cap.capture());
+        GeneratedEvent row = cap.getValue();
+        assertThat(row.getRequestTitle()).isEqualTo("ANTRUM VII");
+        assertThat(row.getRequestVenue()).isEqualTo("Void Club");
+        assertThat(row.getRequestLineup()).isEqualTo("Nina Kraviz,Rrose");
+        assertThat(row.getRequestAddress()).isEqualTo("12 Rue Test");
+        assertThat(row.getRequestRsvpUrl()).isEqualTo("https://rsvp.example");
+        assertThat(row.getRequestVibeId()).isEqualTo("brutalist_techno");
+        assertThat(row.getRequestEventDate()).isEqualTo(LocalDate.of(2026, 11, 14));
+        assertThat(row.getRequestCapacity()).isEqualTo(400);
+        assertThat(row.getRequestLogoOnPosters()).isTrue();
+    }
+
+    @Test
+    void regenerate_rebuildsTheRequestFromTheStoredSnapshot() {
+        AuthPrincipal p = owner();
+        UUID conceptId = UUID.randomUUID();
+        GeneratedEvent prior = priorConcept(p, conceptId);
+        prior.setRequestTitle("ANTRUM VII");
+        prior.setRequestVenue("Void Club");
+        prior.setRequestLineup("Nina Kraviz,Rrose");
+        prior.setRequestAddress("12 Rue Test");
+        prior.setRequestRsvpUrl("https://rsvp.example");
+        prior.setRequestVibeId("brutalist_techno");
+        prior.setRequestEventDate(LocalDate.of(2026, 11, 14));
+        prior.setRequestCapacity(400);
+        prior.setRequestLogoOnPosters(Boolean.FALSE);
+        stubPipeline();
+        when(vibeLibrary.hasVibe("brutalist_techno")).thenReturn(true);
+        when(vibeLibrary.byId("brutalist_techno")).thenReturn(java.util.Optional.of(vibeNamed("brutalist_techno")));
+
+        sut.regenerate(p, conceptId, List.of());
+
+        ArgumentCaptor<EventCreatorRequest> cap = ArgumentCaptor.forClass(EventCreatorRequest.class);
+        verify(descService).generateConcept(cap.capture(), anyLong(), anyBoolean());
+        EventCreatorRequest legacy = cap.getValue();
+        assertThat(legacy.title()).isEqualTo("ANTRUM VII");
+        assertThat(legacy.location()).isEqualTo("Void Club");
+        assertThat(legacy.djName()).isEqualTo("Nina Kraviz, Rrose");
+        assertThat(legacy.address()).isEqualTo("12 Rue Test");
+        assertThat(legacy.rsvpUrl()).isEqualTo("https://rsvp.example");
+        assertThat(legacy.date()).isEqualTo(LocalDate.of(2026, 11, 14));
+        // The vibe the organizer pinned at create time drives the render again, not the genre default.
+        assertThat(legacy.subStyleTag()).isEqualTo("brutalist_techno");
+        verify(vibeLibrary, never()).suggestForGenre(any());
+    }
+
+    private static Vibe vibeNamed(String id) {
+        return new Vibe(id, id, List.of("techno"), "vs", List.of("#000"), "typ", "comp",
+                List.of(), List.of(), "recraft", List.of(), null, "tpl", false,
+                "subject", com.imin.iminapi.dto.StyleMode.CURATED_SUBSTYLE, "urban_drama");
+    }
+
+    // ---- lock list on regenerate (poster-4) ------------------------------------------------------
+
+    /** A prior generation whose three variants carry the posters an organizer may lock. */
+    private PosterGeneration priorGenerationWithVariants() {
+        PosterGeneration gen = new PosterGeneration();
+        gen.setSubStyleTag("flat_graphic");
+        for (String[] v : new String[][]{
+                {"people", "https://cdn/prior-1.png"},
+                {"object", "https://cdn/prior-2.png"},
+                {"typographic", "https://cdn/prior-3.png"}}) {
+            com.imin.iminapi.model.PosterVariantEntity e = new com.imin.iminapi.model.PosterVariantEntity();
+            e.setVariantStyle(v[0]);
+            e.setFinalUrl(v[1]);
+            e.setRawUrl(v[1].replace("prior", "raw"));
+            gen.getVariants().add(e);
+        }
+        return gen;
+    }
+
+    private GeneratedEvent priorConcept(AuthPrincipal p, UUID conceptId) {
+        GeneratedEvent existing = new GeneratedEvent();
+        existing.setId(conceptId);
+        existing.setOrgId(p.orgId());
+        existing.setVibe("Old vibe text");
+        existing.setGenre("House");
+        existing.setCity("Paris");
+        existing.setName("KEPT NAME");
+        existing.setDescription("kept description");
+        existing.setStatus(GeneratedEventStatus.COMPLETE);
+        when(repo.findByIdAndOrgId(conceptId, p.orgId())).thenReturn(java.util.Optional.of(existing));
+        return existing;
+    }
+
+    @Test
+    void regenerate_withPosterLocked_skipsRenderAndReusesPriorPosters() {
+        AuthPrincipal p = owner();
+        UUID conceptId = UUID.randomUUID();
+        priorConcept(p, conceptId);
+        when(generationRepo.findWithVariantsByGeneratedEventId(conceptId))
+                .thenReturn(List.of(priorGenerationWithVariants()));
+        stubPipeline();
+
+        ConceptResponse r = sut.regenerate(p, conceptId, List.of("poster"));
+
+        // No Ideogram spend at all, and the prior posters come back unchanged.
+        verify(orchestrator, never()).run(any(), any(), any(), anyLong(), any(), any(), any(), any());
+        assertThat(r.posters()).extracting("url")
+                .containsExactly("https://cdn/prior-1.png", "https://cdn/prior-2.png", "https://cdn/prior-3.png");
+    }
+
+    @Test
+    void regenerate_withNameAndDescriptionLocked_carriesThePriorValues() {
+        AuthPrincipal p = owner();
+        UUID conceptId = UUID.randomUUID();
+        priorConcept(p, conceptId);
+        stubPipeline(); // overview LLM returns name "N", description "d"
+
+        ConceptResponse r = sut.regenerate(p, conceptId, List.of("name", "description"));
+
+        assertThat(r.name()).isEqualTo("KEPT NAME");
+        assertThat(r.description()).isEqualTo("kept description");
+    }
+
+    @Test
+    void regenerate_withEmptyLock_stillRendersAndTakesTheFreshOverview() {
+        AuthPrincipal p = owner();
+        UUID conceptId = UUID.randomUUID();
+        priorConcept(p, conceptId);
+        stubPipeline();
+
+        ConceptResponse r = sut.regenerate(p, conceptId, List.of());
+
+        verify(orchestrator).run(any(), any(), any(), anyLong(), any(), any(), any(), any());
+        assertThat(r.name()).isEqualTo("N");
+        assertThat(r.description()).isEqualTo("d");
     }
 
     // ---- DJ photo read-back on regenerate -------------------------------------------------------
@@ -392,7 +512,7 @@ class ConceptStudioServiceTest {
 
         // snapshot forwarded to orchestrator with the correct URL
         verify(orchestrator).run(any(), any(), any(), anyLong(), any(), any(),
-                argThat(snap -> snap != null && djUrl.equals(snap.url())));
+                argThat(snap -> snap != null && djUrl.equals(snap.url())), any());
         // descService called with djMode=true
         verify(descService).generateConcept(any(), anyLong(), eq(true));
         // response reflects DJ photo was used

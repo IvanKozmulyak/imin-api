@@ -66,7 +66,13 @@ class BuyerPreferencesTest {
     @Autowired MarketingOptOutRepository optOuts;
     @Autowired OrganizationRepository organizations;
     @Autowired ConsentService consentService;
+    @Autowired com.imin.iminapi.buyer.repository.BuyerNotificationPreferenceRepository preferences;
+    @Autowired com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository accountEmails;
     @MockitoBean EmailService email;
+
+    /** Buyer account mail is sent AFTER_COMMIT on this pool — see {@link BuyerMailSync}. */
+    @Autowired @org.springframework.beans.factory.annotation.Qualifier("ticketEmailExecutor")
+    java.util.concurrent.Executor mailExecutor;
 
     private String address;
     private String cookie;
@@ -77,6 +83,7 @@ class BuyerPreferencesTest {
 
     @BeforeEach
     void signedInBuyerWithTwoOrganizers() throws Exception {
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
         address = address();
         cookie = signUpAndSignIn(address);
@@ -86,6 +93,7 @@ class BuyerPreferencesTest {
         orgB = org("Beta");
         membershipA = membership(orgA, consumerId, "subscribed");
         membershipB = membership(orgB, consumerId, "subscribed");
+        BuyerMailSync.drain(mailExecutor);
         reset(email);
     }
 
@@ -174,6 +182,42 @@ class BuyerPreferencesTest {
                 .andExpect(jsonPath("$.productNews").value(false));
     }
 
+    /**
+     * V91 gave the product-news flag a timestamp and a proof column, and only
+     * the onboarding step ever wrote them — so a later toggle moved the flag and
+     * left the evidence behind. An account could read {@code productNews=false}
+     * with a {@code product_news_at} and a proof sentence still beside it,
+     * asserting a consent that had been withdrawn.
+     */
+    @Test
+    void togglingProductNewsWritesTheProofAndClearsItOnOff() throws Exception {
+        patchPrefs("{\"productNews\":true}").andExpect(status().isOk())
+                .andExpect(jsonPath("$.productNews").value(true));
+
+        var on = preferences.findById(accountId()).orElseThrow();
+        assertThat(on.isProductNews()).isTrue();
+        assertThat(on.getProductNewsAt()).isNotNull();
+        assertThat(on.getProductNewsProof()).isNotBlank();
+
+        patchPrefs("{\"productNews\":false}").andExpect(status().isOk())
+                .andExpect(jsonPath("$.productNews").value(false));
+
+        var off = preferences.findById(accountId()).orElseThrow();
+        assertThat(off.isProductNews()).isFalse();
+        assertThat(off.getProductNewsAt()).isNull();
+        assertThat(off.getProductNewsProof()).isNull();
+    }
+
+    /** The buyer site owns the copy, so a supplied sentence is stored verbatim. */
+    @Test
+    void aClientSuppliedProofSentenceIsStoredVerbatim() throws Exception {
+        patchPrefs("{\"productNews\":true,\"productNewsProof\":\"Envíame novedades de imin\"}")
+                .andExpect(status().isOk());
+
+        assertThat(preferences.findById(accountId()).orElseThrow().getProductNewsProof())
+                .isEqualTo("Envíame novedades de imin");
+    }
+
     @Test
     void patchingOneSwitchLeavesTheOtherAlone() throws Exception {
         patchPrefs("{\"eventReminders\":false}").andExpect(status().isOk());
@@ -195,6 +239,38 @@ class BuyerPreferencesTest {
                 // for the wrong reason; assert inside items.
                 .andExpect(jsonPath("$.items.length()").value(2))
                 .andExpect(jsonPath("$.nextCursor").doesNotExist());
+    }
+
+    /**
+     * One row per organizer, not one per membership.
+     *
+     * <p>A legacy account can hold several verified addresses, and every one of
+     * them resolves to its own {@code Consumer} — so an account whose two
+     * addresses both bought from the same organizer produced that organizer
+     * twice, with whatever {@code subscribed} value each membership happened to
+     * carry. The endpoint is documented as a read-only disclosure of who holds
+     * what; a duplicated, self-contradicting row misstates it.
+     */
+    @Test
+    void organizersCollapsesTwoAddressesIntoOneRowPerOrganizer() throws Exception {
+        String second = address();
+        var row = com.imin.iminapi.buyer.model.BuyerAccountEmail.of(
+                accountId(), second, com.imin.iminapi.buyer.model.BuyerAccountEmail.ADDED_VIA_MANUAL);
+        row.markVerified(java.time.Instant.now());
+        accountEmails.save(row);
+        // The second address bought from orgA too, and unsubscribed there.
+        membership(orgA, consumer(second), "unsubscribed");
+
+        String body = mvc.perform(get("/api/v1/buyer/organizers").cookie(cookie(cookie)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items.length()").value(2))
+                .andReturn().getResponse().getContentAsString();
+
+        // Two memberships, one answer: the buyer still holds a live
+        // subscription with orgA through the other address.
+        List<Boolean> subscribedToA = com.jayway.jsonpath.JsonPath.read(
+                body, "$.items[?(@.orgId=='" + orgA + "')].subscribed");
+        assertThat(subscribedToA).containsExactly(true);
     }
 
     /**
@@ -228,6 +304,11 @@ class BuyerPreferencesTest {
     }
 
     // ── plumbing ───────────────────────────────────────────────────────────
+
+    private UUID accountId() {
+        return accountEmails.findByVerifiedKey(address.toLowerCase())
+                .orElseThrow().getBuyerAccountId();
+    }
 
     private ResultActions readPrefs() throws Exception {
         return mvc.perform(get("/api/v1/buyer/preferences").cookie(cookie(cookie)));
@@ -298,6 +379,7 @@ class BuyerPreferencesTest {
     }
 
     private String codeSentTo(String to) {
+        BuyerMailSync.drain(mailExecutor);
         ArgumentCaptor<String> recipient = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);

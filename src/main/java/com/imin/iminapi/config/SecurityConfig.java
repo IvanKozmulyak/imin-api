@@ -37,6 +37,14 @@ public class SecurityConfig {
     @Value("${imin.cors.allowed-origin-patterns:}")
     private String[] allowedOriginPatterns;
 
+    /**
+     * Preview-deployment origins, empty by default. Kept as a separate property
+     * so the standing allow-list stays readable as "the production origins" and
+     * a temporary grant is visibly temporary.
+     */
+    @Value("${imin.cors.preview-origin-patterns:}")
+    private String[] previewOriginPatterns;
+
     @Bean
     public BCryptPasswordEncoder bCryptPasswordEncoder() {
         return new BCryptPasswordEncoder(12);
@@ -45,8 +53,11 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource(BuyerProperties buyerProps) {
         CorsConfiguration config = new CorsConfiguration();
-        List<String> patterns = Arrays.stream(allowedOriginPatterns)
+        List<String> patterns = java.util.stream.Stream
+                .concat(Arrays.stream(allowedOriginPatterns), Arrays.stream(previewOriginPatterns))
                 .filter(p -> p != null && !p.isBlank())
+                .map(String::trim)
+                .distinct()
                 .toList();
         config.setAllowedOriginPatterns(patterns);
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
@@ -90,7 +101,18 @@ public class SecurityConfig {
                 .csrf(csrf -> csrf.disable())
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/images/**").permitAll()
-                        .requestMatchers("/swagger-ui/**", "/v3/api-docs/**").permitAll()
+                        // Liveness only. management.endpoints.web.exposure.include
+                        // narrows what Boot registers; this denies the rest even if
+                        // that widens, because the chain ends in permitAll() and an
+                        // exposed endpoint would otherwise be exposed to everyone.
+                        .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
+                        .requestMatchers("/actuator/**").denyAll()
+                        // /v3/api-docs.yaml is named explicitly: a trailing /** matches zero
+                        // segments, so "/v3/api-docs/**" covers /v3/api-docs — but not the
+                        // .yaml sibling, which is the URL imin-webapp's api:sync pulls and
+                        // which application-prod.yaml keeps springdoc serving in production.
+                        // It was public only via the chain's closing .anyRequest().permitAll().
+                        .requestMatchers("/swagger-ui/**", "/v3/api-docs/**", "/v3/api-docs.yaml").permitAll()
                         // Public AI content (event copy) generation + style-reference images.
                         .requestMatchers(HttpMethod.POST, "/api/v1/events/ai-content").permitAll()
                         .requestMatchers("/api/v1/posters/**").permitAll()
@@ -155,6 +177,10 @@ public class SecurityConfig {
                         // signed-token-verified inside the handler.
                         .requestMatchers(HttpMethod.GET, "/api/v1/public/unsubscribe/**").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/public/unsubscribe/**").permitAll()
+                        // Notify-me opt-out — unauthenticated, signed-token-verified in the
+                        // handler. POST only: a guest subscriber has no account, so this link
+                        // in the email is their only way out (CPCE L34-5).
+                        .requestMatchers(HttpMethod.POST, "/api/v1/public/notify/unsubscribe/**").permitAll()
                         // ── Buyer accounts (imin-public / app.imin.wtf) ──────────────
                         // A separate namespace from /api/v1/public/**, which is blanket
                         // permitAll on GET (:102 above): keeping the two disjoint makes

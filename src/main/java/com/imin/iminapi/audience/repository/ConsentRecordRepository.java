@@ -22,10 +22,6 @@ public interface ConsentRecordRepository extends Repository<ConsentRecord, UUID>
     @Query("select c from ConsentRecord c where c.membershipId = :membershipId order by c.occurredAt asc")
     List<ConsentRecord> findByMembershipId(@Param("membershipId") UUID membershipId);
 
-    /** Count of unsubscribe records for a membership — used for complaint rate metric. */
-    @Query("select count(c) from ConsentRecord c where c.membershipId = :membershipId and c.status = 'unsubscribed'")
-    long countUnsubsByMembershipId(@Param("membershipId") UUID membershipId);
-
     /**
      * Count unsubscribes across org (for unsubscribe rate metric).
      * Joins through membership.

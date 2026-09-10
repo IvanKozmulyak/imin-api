@@ -107,10 +107,8 @@ public class AudienceController {
         // (see SegmentService.ensurePrebuiltSegments).
         segmentService.ensurePrebuiltSegments(principal.orgId());
         return segmentService.listSegments(principal.orgId()).stream()
-                .map(s -> {
-                    int liveCount = segmentService.resolveMembers(principal.orgId(), s).size();
-                    return SegmentDto.from(s, liveCount);
-                }).toList();
+                .map(s -> SegmentDto.from(s, segmentService.liveCount(principal.orgId(), s)))
+                .toList();
     }
 
     @PostMapping("/segments")
@@ -135,7 +133,7 @@ public class AudienceController {
     public SegmentDto snapshot(@AuthenticationPrincipal AuthPrincipal principal,
                                 @PathVariable UUID id) {
         Segment s = segmentService.snapshot(principal.orgId(), id, principal);
-        return SegmentDto.from(s, segmentService.resolveMembers(principal.orgId(), s).size());
+        return SegmentDto.from(s, segmentService.liveCount(principal.orgId(), s));
     }
 
     /** CSV snapshot export: GET /segments/{id}/snapshot — returns the segment's resolved members as CSV. */
@@ -181,11 +179,20 @@ public class AudienceController {
 
     // ── Bulk action ────────────────────────────────────────────────────────
 
+    /**
+     * Not built yet — and it says so. This was a stub that accepted any body, wrote
+     * nothing and answered 200, which the dashboard rendered as "Tagged N members" /
+     * "Export queued" / "Handed off to marketing" and a navigate away: three organizer
+     * actions reporting success over a no-op, with no way to find out. Answering
+     * 501 is the smaller honest change than deleting a route the FE already calls —
+     * the toast cannot fire on a non-2xx, and the route stays available for Tier D.
+     */
     @PostMapping("/members/bulk-action")
     public ResponseEntity<Void> bulkAction(@AuthenticationPrincipal AuthPrincipal principal,
                                             @RequestBody Map<String, Object> body) {
-        // Tier C stub — tag/export/hand-to-marketing wired in Tier D
-        return ResponseEntity.ok().build();
+        throw new ApiException(HttpStatus.NOT_IMPLEMENTED, ErrorCode.INVALID_STATE,
+                "Bulk actions are not available yet. Use the segment CSV export or the "
+                        + "handoff to marketing instead.");
     }
 
     // ── Suppression ────────────────────────────────────────────────────────
@@ -227,11 +234,36 @@ public class AudienceController {
         return audienceService.getMember(principal.orgId(), id);
     }
 
+    /**
+     * Art.15 export. Carries {@code consentHistory} — the proof rows the export
+     * has to contain to be worth anything: a DSAR answer that says
+     * "subscribed, basis soft_opt_in" without the record of when, through what,
+     * and on what proof is not an answer — and {@code dsarRecords}, the orders,
+     * tickets, /track beacons, Meta CAPI sends and notify-me rows the audience
+     * projection never mentioned.
+     *
+     * <p>OWNER/ADMIN only; a MEMBER gets 403 (enforced in {@code DsarService}).
+     */
     @PostMapping("/members/{id}/export")
     public MemberDto dsarExport(@AuthenticationPrincipal AuthPrincipal principal,
                                  @PathVariable UUID id) {
         Membership m = dsarService.export(principal.orgId(), id, principal);
-        return audienceService.getMember(principal.orgId(), id);
+        return audienceService.getMember(principal.orgId(), id)
+                .withDsar(dsarService.consentHistory(principal.orgId(), id),
+                        dsarService.exportRecords(principal.orgId(), id, principal));
+    }
+
+    /**
+     * The same trail on its own, for the member drawer.
+     *
+     * <p>Org comes from the auth context, never the path (SPINE INVARIANT 1) —
+     * which is why this sits under {@code /api/v1/audience/members/...} beside
+     * its siblings rather than under an {@code /orgs/{orgId}/...} prefix.
+     */
+    @GetMapping("/members/{id}/consent-history")
+    public List<ConsentHistoryEntry> consentHistory(@AuthenticationPrincipal AuthPrincipal principal,
+                                                    @PathVariable UUID id) {
+        return dsarService.consentHistory(principal.orgId(), id);
     }
 
     @PostMapping("/members/{id}/rectify")

@@ -115,6 +115,33 @@ class CampaignControllerTest {
                 .andExpect(status().isOk());
     }
 
+    /**
+     * mkt-edge-9 (P2): `page` went into PageRequest.of unclamped (only `size` was guarded),
+     * and PageRequest.of(-1, 50) throws IllegalArgumentException — for which
+     * GlobalExceptionHandler has no handler, so ?page=-1 answered 500 INTERNAL and logged an
+     * "Unhandled exception" on both the campaign list and the recipient log.
+     */
+    @Test
+    @WithStubOrganizer
+    void negativePageIsClampedNotA500() throws Exception {
+        when(service.list(any(), any(), any(), org.mockito.ArgumentMatchers.anyInt(),
+                org.mockito.ArgumentMatchers.anyInt())).thenReturn(List.of());
+        when(service.listRecipients(eq(CAMP), any(), any(), any(),
+                org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn(new com.imin.iminapi.marketing.dto.RecipientPage(
+                        List.of(), 0, 50, 0L,
+                        new com.imin.iminapi.marketing.dto.RecipientCounts(0, 0, 0, 0, 0, 0, 0, 0)));
+
+        mvc.perform(get("/api/v1/marketing/campaigns").param("page", "-1"))
+                .andExpect(status().isOk());
+        mvc.perform(get("/api/v1/marketing/campaigns/{id}/recipients", CAMP).param("page", "-3"))
+                .andExpect(status().isOk());
+
+        verify(service).list(any(), any(), any(), eq(0), org.mockito.ArgumentMatchers.anyInt());
+        verify(service).listRecipients(eq(CAMP), any(), any(), any(), eq(0),
+                org.mockito.ArgumentMatchers.anyInt());
+    }
+
     @Test
     @WithStubOrganizer
     void patch_returns_the_updated_draft() throws Exception {
@@ -123,6 +150,56 @@ class CampaignControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(om.writeValueAsString(Map.of("subject", "New"))))
                 .andExpect(status().isOk());
+    }
+
+    /**
+     * mkt-edge-8 (P2): the wire half. The composer PATCHes {name, segmentId: null,
+     * eventId: null} when the organizer leaves the Audience step, and an explicit null has to
+     * reach the service as "clear it" while an absent field still reaches it as "unchanged".
+     */
+    @Test
+    @WithStubOrganizer
+    void patch_distinguishesExplicitNullFromAnAbsentField() throws Exception {
+        when(service.patch(any(), eq(CAMP), any())).thenReturn(sampleDto());
+        var captor = org.mockito.ArgumentCaptor.forClass(
+                com.imin.iminapi.marketing.dto.CampaignRequests.PatchCampaignRequest.class);
+
+        mvc.perform(patch("/api/v1/marketing/campaigns/{id}", CAMP)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Step 0\",\"segmentId\":null,\"eventId\":null}"))
+                .andExpect(status().isOk());
+        mvc.perform(patch("/api/v1/marketing/campaigns/{id}", CAMP)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Step 0\"}"))
+                .andExpect(status().isOk());
+
+        verify(service, org.mockito.Mockito.times(2)).patch(any(), eq(CAMP), captor.capture());
+        var explicitNull = captor.getAllValues().get(0);
+        var absent = captor.getAllValues().get(1);
+        org.assertj.core.api.Assertions.assertThat(explicitNull.segmentId())
+                .isEqualTo(com.imin.iminapi.marketing.dto.PatchableUuid.NULL);
+        org.assertj.core.api.Assertions.assertThat(explicitNull.eventId())
+                .isEqualTo(com.imin.iminapi.marketing.dto.PatchableUuid.NULL);
+        org.assertj.core.api.Assertions.assertThat(absent.segmentId()).isNull();
+        org.assertj.core.api.Assertions.assertThat(absent.eventId()).isNull();
+    }
+
+    @Test
+    @WithStubOrganizer
+    void patch_carriesASuppliedSegmentIdThrough() throws Exception {
+        when(service.patch(any(), eq(CAMP), any())).thenReturn(sampleDto());
+        UUID seg = UUID.randomUUID();
+        var captor = org.mockito.ArgumentCaptor.forClass(
+                com.imin.iminapi.marketing.dto.CampaignRequests.PatchCampaignRequest.class);
+
+        mvc.perform(patch("/api/v1/marketing/campaigns/{id}", CAMP)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"segmentId\":\"" + seg + "\"}"))
+                .andExpect(status().isOk());
+
+        verify(service).patch(any(), eq(CAMP), captor.capture());
+        org.assertj.core.api.Assertions.assertThat(captor.getValue().segmentId().value())
+                .isEqualTo(seg);
     }
 
     @Test
@@ -174,6 +251,62 @@ class CampaignControllerTest {
         mvc.perform(delete("/api/v1/marketing/campaigns/{id}", CAMP))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
+    }
+
+    /**
+     * mkt-edge-7 (P2): neither request record carried a constraint and neither @RequestBody
+     * was @Valid, so a 201-character subject reached Postgres as a VARCHAR(200) overflow —
+     * SQLSTATE 22001 — which GlobalExceptionHandler renders as a FIELDLESS
+     * "Request violates a data constraint". The composer could not say which field was wrong.
+     */
+    @Test
+    @WithStubOrganizer
+    void create_overlong_subject_is_a_fielded_400() throws Exception {
+        String body = om.writeValueAsString(Map.of(
+                "channel", "email", "name", "Launch", "subject", "x".repeat(201)));
+        mvc.perform(post("/api/v1/marketing/campaigns")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
+                .andExpect(jsonPath("$.error.fields.subject").exists());
+        org.mockito.Mockito.verifyNoInteractions(service);
+    }
+
+    @Test
+    @WithStubOrganizer
+    void patch_overlong_preheader_is_a_fielded_400() throws Exception {
+        String body = om.writeValueAsString(Map.of("preheader", "y".repeat(201)));
+        mvc.perform(patch("/api/v1/marketing/campaigns/{id}", CAMP)
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.fields.preheader").exists());
+        org.mockito.Mockito.verifyNoInteractions(service);
+    }
+
+    @Test
+    @WithStubOrganizer
+    void create_overlong_templateKey_is_a_fielded_400() throws Exception {
+        String body = om.writeValueAsString(Map.of(
+                "channel", "email", "name", "Launch", "templateKey", "t".repeat(65)));
+        mvc.perform(post("/api/v1/marketing/campaigns")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.fields.templateKey").exists());
+    }
+
+    /**
+     * name is deliberately NOT constrained: CampaignService.truncateName silently clips it
+     * today, so a @Size there would turn a currently-succeeding request into a 400.
+     */
+    @Test
+    @WithStubOrganizer
+    void create_overlong_name_still_succeeds() throws Exception {
+        when(service.create(any(), any())).thenReturn(sampleDto());
+        String body = om.writeValueAsString(Map.of(
+                "channel", "email", "name", "n".repeat(300)));
+        mvc.perform(post("/api/v1/marketing/campaigns")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isCreated());
     }
 
     @Test

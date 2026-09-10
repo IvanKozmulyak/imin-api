@@ -106,6 +106,21 @@ class EventControllerTest {
                 .andExpect(status().isOk());
     }
 
+    /**
+     * api-6: {@code EventStatus.fromWire} is a bare {@code valueOf}, so a stale bookmark or a
+     * typo'd deep link threw IllegalArgumentException, which nothing handled — a 500 INTERNAL
+     * plus a log.error for what is a client typo. The FE expects the FIELD_INVALID envelope.
+     */
+    @Test
+    @WithStubUser
+    void get_events_with_unknown_status_is_a_400_not_a_500() throws Exception {
+        mvc.perform(get("/api/v1/events?status=archived"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
+                .andExpect(jsonPath("$.error.fields.status").exists());
+        verify(eventService, org.mockito.Mockito.never()).list(any(), any(), org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt());
+    }
+
     @Test
     @WithStubUser
     void patch_event_passes_ifMatch() throws Exception {
@@ -116,6 +131,40 @@ class EventControllerTest {
                         .header("If-Match", "\"2026-04-23T10:00:00Z\"")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(om.writeValueAsString(Map.of("name", "Renamed"))))
+                .andExpect(status().isOk());
+    }
+
+    /**
+     * predictor-edge-5: the predictor's publish-freeze snapshots events.genre into
+     * event_outcomes.genre_family (VARCHAR(64)) inside EventService.publish's transaction, so an
+     * over-long genre used to fail that INSERT and roll the WHOLE publish back with only a
+     * generic "Request violates a data constraint". The bound has to be enforced here, at the
+     * edge, and the endpoint needs @Valid or the @Size is inert.
+     */
+    @Test
+    @WithStubUser
+    void patch_rejects_a_genre_longer_than_the_outcome_column() throws Exception {
+        UUID id = UUID.randomUUID();
+        String tooLong = "x".repeat(65);
+
+        mvc.perform(patch("/api/v1/events/" + id)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("genre", tooLong))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
+                .andExpect(jsonPath("$.error.fields.genre").exists());
+        verify(eventService, org.mockito.Mockito.never()).patch(any(), any(), any(), any());
+    }
+
+    @Test
+    @WithStubUser
+    void patch_accepts_a_genre_at_the_limit() throws Exception {
+        UUID id = UUID.randomUUID();
+        when(eventService.patch(any(), eq(id), any(), any())).thenReturn(sample());
+
+        mvc.perform(patch("/api/v1/events/" + id)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("genre", "x".repeat(64)))))
                 .andExpect(status().isOk());
     }
 

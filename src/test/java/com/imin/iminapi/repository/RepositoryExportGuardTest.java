@@ -18,14 +18,20 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code @RepositoryRestResource(exported = false)}.
  *
  * <p>Why this is a test and not a convention: Spring Data REST is on the
- * classpath, {@code spring.data.rest.base-path} is {@code /api/v1}, and no
- * detection strategy is configured — so the default strategy auto-publishes
- * every public repository interface as a REST resource. Those generated
- * endpoints land inside {@code /api/v1/**}, which {@code SecurityConfig} only
- * requires {@code .authenticated()} on: no tenant check, no buyer check, no
- * org filter. Any authenticated organizer could read another org's rows —
- * refund magic-link tokens included — and nothing in review reliably catches a
- * missing annotation on a new file.
+ * classpath, so the default detection strategy auto-publishes every public
+ * repository interface as a REST resource, and nothing in review reliably
+ * catches a missing annotation on a new file. Any authenticated organizer
+ * could then read another org's rows — refund magic-link tokens included —
+ * with no tenant check, no buyer check and no org filter.
+ *
+ * <p>Config is the second line of defence, not the first. Until 2026-09
+ * {@code spring.data.rest.base-path} was unset (the key in application.yaml,
+ * {@code imin.api.base-path}, bound to nothing), so those generated endpoints
+ * would have landed on the servlet ROOT — outside {@code /api/v1/**} and under
+ * the chain's closing {@code .anyRequest().permitAll()}, i.e. unauthenticated
+ * public CRUD rather than authenticated cross-tenant read. It is now
+ * {@code /api/v1} with {@code detection-strategy: annotated}. This test remains
+ * the control that actually holds.
  *
  * <p>A failure here is not a style nit. Add the annotation.
  */

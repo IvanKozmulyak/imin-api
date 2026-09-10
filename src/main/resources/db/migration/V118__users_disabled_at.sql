@@ -1,0 +1,27 @@
+-- V118__users_disabled_at.sql
+-- Soft-delete for organizer accounts, so removing a team member stops 400ing.
+--
+-- WHY THIS EXISTS. TeamService.remove hard-deleted the users row. Three FKs
+-- point at it with no ON DELETE clause — events.created_by (V6:31),
+-- refunds.initiated_by_user_id (V28:33) and refund_requests.decided_by_user_id
+-- (V30:17) — so Postgres raises 23503 at commit and GlobalExceptionHandler
+-- turns that into an unexplained 400 FIELD_INVALID ("Request violates a data
+-- constraint"). The member an organizer most wants to remove is precisely the
+-- one who has created an event or decided a refund, so removal was permanently
+-- impossible for exactly that person, and deletion was the ONLY revocation
+-- lever there was: BearerTokenAuthFilter authorises off the users row, and the
+-- row carried no disabled/status column at all. A departed admin kept working
+-- dashboard access.
+--
+-- WHAT A NON-NULL VALUE MEANS. "This account has been removed from its org.
+-- It must not authenticate, must not appear in the team list, and its historic
+-- provenance (who created this event, who approved that refund) stays intact."
+-- The alternative — making created_by nullable with ON DELETE SET NULL — would
+-- have bought a hard delete at the price of losing that provenance on rows imin
+-- has to retain, which is the wrong trade on an audit surface.
+--
+-- Nullable, no backfill: every existing account is active, and NULL is the
+-- active state. The hard delete is kept for the case it is safe in (no
+-- referencing rows), so an invite that is removed before it is ever accepted
+-- still leaves no trace.
+ALTER TABLE users ADD COLUMN disabled_at TIMESTAMP WITH TIME ZONE NULL;

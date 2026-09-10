@@ -15,14 +15,37 @@ logging:
     root: WARN
     com.imin.iminapi: INFO
 
+# CLAUDE.md has said "Swagger UI: dev only; disabled in prod" since it was
+# written. It was not: both flags were `true` here, so /swagger-ui.html and
+# /v3/api-docs served the complete shape of every organizer and buyer endpoint
+# to anyone, and SecurityConfig permits both paths. A machine-readable map of
+# the attack surface is not a secret worth keeping on its own, but publishing it
+# is a free gift and the doc claimed otherwise — a control that people believed
+# existed. Swagger UI is off in prod. /v3/api-docs stays ON on purpose:
+# imin-webapp's `api:sync` pulls the OpenAPI contract from the production URL
+# (docs/API_SYNC.md) and every endpoint it describes is already reachable, so
+# the spec adds no attack surface that the running API does not expose itself.
 springdoc:
   api-docs:
     enabled: true
   swagger-ui:
-    enabled: true
+    enabled: false
 
 server:
   forward-headers-strategy: framework
+
+# Only health over HTTP, stated explicitly rather than relied on as a Boot
+# default: the default has changed before, and the security chain ends in
+# .anyRequest().permitAll(), so anything this exposes is exposed to everyone.
+# SecurityConfig denies /actuator/** apart from health as the second lock.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
 
 sentry:
   enabled: true

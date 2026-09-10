@@ -210,6 +210,28 @@ class EventReminderSenderTest {
         verify(email, times(1)).send(eq(address), any(), any(), any());
     }
 
+    /**
+     * The count in the mail has to be the count at the door. {@code hasLiveTicket}
+     * deliberately lets an order through on one live ticket among refunded ones
+     * (the test above), but {@code ticketCount} was {@code orderTickets.size()} —
+     * the unfiltered list — so that buyer was told "Your 3 ticket(s) are ready"
+     * while holding one.
+     */
+    @Test
+    void theReminderCountsOnlyTheTicketsThatStillWork() {
+        String address = "counted+" + UUID.randomUUID() + "@example.com";
+        Order order = OrderFixtures.order(orders, tomorrow, address, Instant.now());
+        OrderFixtures.ticket(tickets, order, "issued");
+        OrderFixtures.ticket(tickets, order, "refunded");
+        OrderFixtures.ticket(tickets, order, "revoked");
+
+        sender.sweepWindow(EventReminderSender.Window.T24H);
+
+        assertThat(textSentTo(address))
+                .as("two of the three tickets are dead — the door will honour one")
+                .contains("Your 1 ticket(s) are ready");
+    }
+
     @Test
     void aCancelledEventNeverNudgesAnyone() {
         Event cancelled = OrderFixtures.event(orgs, users, events, "Called Off",
@@ -329,6 +351,10 @@ class EventReminderSenderTest {
         return account.getId();
     }
 
+    private String textSentTo(String address) {
+        return capturedSentTo(address, 3);
+    }
+
     private String subjectSentTo(String address) {
         ArgumentCaptor<String> to = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
@@ -340,6 +366,27 @@ class EventReminderSenderTest {
         for (int i = to.getAllValues().size() - 1; i >= 0; i--) {
             if (address.equalsIgnoreCase(to.getAllValues().get(i))) {
                 return subject.getAllValues().get(i);
+            }
+        }
+        throw new AssertionError("nothing sent to " + address);
+    }
+
+    /** {@code arg}: 1 subject, 2 html, 3 text — the last send to {@code address}. */
+    private String capturedSentTo(String address, int arg) {
+        ArgumentCaptor<String> to = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<String> text = ArgumentCaptor.forClass(String.class);
+        verify(email, org.mockito.Mockito.atLeast(1))
+                .send(to.capture(), subject.capture(), html.capture(), text.capture());
+
+        for (int i = to.getAllValues().size() - 1; i >= 0; i--) {
+            if (address.equalsIgnoreCase(to.getAllValues().get(i))) {
+                return switch (arg) {
+                    case 1 -> subject.getAllValues().get(i);
+                    case 2 -> html.getAllValues().get(i);
+                    default -> text.getAllValues().get(i);
+                };
             }
         }
         throw new AssertionError("nothing sent to " + address);

@@ -41,9 +41,11 @@ public class AudienceMetricsService {
         List<Membership> recent = membershipRepo.findCreatedSince(orgId, since);
         List<Integer> growth = computeWeeklyGrowth(recent, 8);
 
-        // Repeat-attendee pct: buyers who attended > 1 event / total buyers
-        long repeatAttendees = buyers == 0 ? 0 :
-                recent.stream().filter(m -> m.getAttended() > 1).count();
+        // Repeat-attendee pct: buyers who attended > 1 event / total buyers.
+        // Both halves are org-wide counts. `recent` above is the 8-week list-growth
+        // window and must never be the numerator here — it made loyalty invisible for
+        // every org whose members signed up more than 56 days ago.
+        long repeatAttendees = buyers == 0 ? 0 : membershipRepo.countRepeatAttendeesByOrgId(orgId);
         double repeatPct = buyers == 0 ? 0.0 : (repeatAttendees * 100.0 / buyers);
 
         // Unsub rate: unsub records / total subscribers

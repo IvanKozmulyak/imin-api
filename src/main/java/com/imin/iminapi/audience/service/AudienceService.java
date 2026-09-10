@@ -175,7 +175,11 @@ public class AudienceService {
                 return new CursorValue(Instant.ofEpochMilli(Long.parseLong(parts[0])),
                         UUID.fromString(parts[1]));
             } catch (Exception e) {
-                throw new IllegalArgumentException("Invalid cursor");
+                // The cursor is client input; a mangled one is a bad request, not a server
+                // fault. IllegalArgumentException has no handler and fell through to the
+                // catch-all as a 500.
+                throw new ApiException(org.springframework.http.HttpStatus.BAD_REQUEST,
+                        com.imin.iminapi.security.ErrorCode.INVALID_REQUEST, "Invalid cursor");
             }
         }
     }

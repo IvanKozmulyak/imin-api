@@ -9,6 +9,7 @@ import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.predictor.service.EventOutcomeService;
 import com.imin.iminapi.service.audit.AuditActions;
+import com.imin.iminapi.service.poster.PosterImageStorage;
 import com.imin.iminapi.service.audit.AuditLogger;
 import com.imin.iminapi.stripe.StripeConnectService;
 import com.imin.iminapi.util.CountryTimeZones;
@@ -144,7 +145,7 @@ public class EventService {
     }
 
     @Transactional
-    @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
+    @CacheEvict(value = "dashboard", allEntries = true)
     public EventDto createDraft(AuthPrincipal p, EventPatchRequest body) {
         Event e = new Event();
         e.setOrgId(p.orgId());
@@ -154,6 +155,12 @@ public class EventService {
         stampConceptProvenance(p, e, body);
         try {
             Event saved = events.save(e);
+            // Flush inside the try. Event ids come from an in-VM generator
+            // (GenerationType.UUID), so save() emits no SQL and Hibernate defers the INSERT
+            // to commit — i.e. outside this catch, where the uq_events_org_slug violation
+            // reached GlobalExceptionHandler as a generic DUPLICATE with no `fields` map and
+            // the wizard could not attach the error to the slug input (events-9).
+            events.flush();
             audit(p, AuditActions.EVENT_CREATED, "event", saved.getId(),
                     "Created event \"" + eventLabel(saved) + "\"");
             // A draft created WITH an address geocodes straight away (V80). Empty
@@ -184,15 +191,23 @@ public class EventService {
     }
 
     @Transactional
-    @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
+    @CacheEvict(value = "dashboard", allEntries = true)
     public EventDto patch(AuthPrincipal p, UUID id, String ifMatchHeader, EventPatchRequest body) {
         Event e = loadOwned(p, id);
+        // Optimistic concurrency, same contract as OrgService.patch: a null/blank header is
+        // the FE opting out, a stale one is 409 STALE_WRITE. Without this the ETag half of
+        // the protocol was maintained (see the setUpdatedAt below) while the check half was
+        // absent, so two organizer tabs silently clobbered each other.
+        ifMatch.requireMatch(ifMatchHeader, e.getUpdatedAt());
         String addressBefore = venueAddressKey(e);
         boolean changed = applyPatch(e, body);
         String addressAfter = venueAddressKey(e);
         e.setUpdatedAt(Instant.now()); // ensure ETag changes even when @PreUpdate doesn't fire
         try {
             events.save(e);
+            // Same reason as createDraft: save() on an already-managed entity emits no SQL,
+            // so without this flush the slug violation escapes the catch (events-17).
+            events.flush();
         } catch (DataIntegrityViolationException ex) {
             throw ApiException.duplicate("slug", "Event slug already taken in this organization");
         }
@@ -250,7 +265,7 @@ public class EventService {
     }
 
     @Transactional
-    @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
+    @CacheEvict(value = "dashboard", allEntries = true)
     public EventDto publish(AuthPrincipal p, UUID id) {
         Event e = loadOwned(p, id);
         if (e.getStatus() == EventStatus.LIVE) {
@@ -285,17 +300,25 @@ public class EventService {
      * the money and disappear the event page.
      */
     @Transactional
-    @CacheEvict(value = "dashboard", key = "#p.orgId().toString()")
+    @CacheEvict(value = "dashboard", allEntries = true)
     public EventDto unpublish(AuthPrincipal p, UUID id) {
         Event e = loadOwned(p, id);
         if (e.getStatus() != EventStatus.LIVE) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE, "Event is not published");
         }
-        boolean anySold = tiers.findByEventIdOrderBySortOrderAsc(e.getId()).stream()
-                .anyMatch(t -> t.getSold() > 0);
-        if (anySold) {
+        List<TicketTier> eventTiers = tiers.findByEventIdOrderBySortOrderAsc(e.getId());
+        if (eventTiers.stream().anyMatch(t -> t.getSold() > 0)) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
                     "Cannot unpublish: tickets have been sold. Cancel the event and refund buyers first.");
+        }
+        // A buyer on a hosted Stripe Checkout page holds reserved > 0 with sold still 0, and
+        // nothing in the webhook path re-checks status — so within the session TTL they would
+        // pay and get tickets for an event the organizer believes had no sales (events-19).
+        // Distinct message: a hold just needs them to retry once it expires.
+        if (eventTiers.stream().anyMatch(t -> t.getReserved() > 0)) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                    "Cannot unpublish: a checkout is in progress. Try again once the "
+                            + "checkout session expires.");
         }
         e.setStatus(EventStatus.DRAFT);
         e.setUpdatedAt(Instant.now());
@@ -333,6 +356,24 @@ public class EventService {
     }
 
     /**
+     * {@code EventVisibility.fromWire} is a bare {@code valueOf}, so {"visibility":"unlisted"}
+     * threw IllegalArgumentException out of applyPatch and landed on the global Throwable
+     * handler as a 500 INTERNAL. There is no upstream guard to lean on: EventPatchRequest
+     * declares {@code String visibility} with no constraint and the controller binds the body
+     * without {@code @Valid} (deliberately — drafts are allowed to be incomplete and are only
+     * validated on publish), so the enum boundary is where this has to be caught.
+     */
+    private static EventVisibility visibilityOr400(String visibility) {
+        try {
+            return EventVisibility.fromWire(visibility);
+        } catch (IllegalArgumentException e) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID,
+                    "Unknown event visibility",
+                    Map.of("visibility", "must be one of: public, private"));
+        }
+    }
+
+    /**
      * Applies the patch and returns {@code true} when at least one direct
      * event field was provided (so an "Updated event" audit row makes sense).
      * The tier and promo-code reconcile paths are intentionally excluded —
@@ -343,7 +384,7 @@ public class EventService {
         boolean changed = false;
         if (b.name() != null) { e.setName(b.name()); changed = true; }
         if (b.slug() != null) { e.setSlug(b.slug().toLowerCase(Locale.ROOT)); changed = true; }
-        if (b.visibility() != null) { e.setVisibility(EventVisibility.fromWire(b.visibility())); changed = true; }
+        if (b.visibility() != null) { e.setVisibility(visibilityOr400(b.visibility())); changed = true; }
         // Genre keeps its typed case (V82) — only whitespace is cleaned, exactly like the city
         // below. The case-insensitive merge that makes "Techno" and "techno" one facet chip and
         // one ?genre= query happens on the derived genre_key, never on the display string: both
@@ -356,27 +397,54 @@ public class EventService {
         // Venue is applied BEFORE the timezone so a same-request country can seed the derived zone.
         if (b.venue() != null) {
             VenueDto v = b.venue();
-            e.setVenueName(v.name());
+            // Every venue field is null-guarded: VenueDto has no required fields and the
+            // request contract is "null = leave unchanged", so a partial venue patch used to
+            // erase the name and the country outright (events-11). Losing the country also
+            // moved venueAddressKey, which fires a spurious re-geocode and disables the
+            // CountryTimeZones derivation applyTimezone depends on.
+            if (v.name() != null) e.setVenueName(v.name());
             if (v.street() != null) e.setVenueStreet(v.street());
             // City keeps its typed case (see EventNormalization) — only whitespace is cleaned.
             // The case-insensitive merge happens on the derived venue_city_key.
             if (v.city() != null) e.setVenueCity(EventNormalization.city(v.city()));
             if (v.postalCode() != null) e.setVenuePostalCode(v.postalCode());
-            e.setVenueCountry(normalizedCountry(v.country()));
+            if (v.country() != null) e.setVenueCountry(normalizedCountry(v.country()));
             changed = true;
         }
         changed |= applyTimezone(e, b);
         if (b.description() != null) { e.setDescription(b.description()); changed = true; }
         if (b.posterUrl() != null) {
-            // Provenance (V71): a PATCH that CHANGES the poster URL has unknown origin (could be
-            // an AI-studio poster or a pasted link) — reset the stamp to NULL rather than let a
-            // stale true/false claim ride along. The manual-upload path re-stamps false itself.
-            if (!b.posterUrl().equals(e.getPosterUrl())) e.setPosterAiGenerated(null);
+            // Provenance (V71 + AI Act Art.50). A PATCH that CHANGES the poster URL either
+            // points at something this API rendered — an ai-posters/ object key or the local
+            // /images/ fallback, which nothing but PosterImageStorage ever writes — or at a
+            // URL of unknown origin. The first case is the writer poster_ai_generated never
+            // had, and it is decided from the URL rather than from a client-supplied flag.
+            // The second stays NULL: "we do not know" is a different claim from "a human made
+            // this", and only the multipart upload path can honestly assert the latter.
+            if (!b.posterUrl().equals(e.getPosterUrl())) {
+                e.setPosterAiGenerated(
+                        PosterImageStorage.isAiGeneratedPosterUrl(b.posterUrl()) ? Boolean.TRUE : null);
+            }
             e.setPosterUrl(b.posterUrl());
             changed = true;
         }
         if (b.videoUrl() != null) { e.setVideoUrl(b.videoUrl()); changed = true; }
-        if (b.currency() != null) { e.setCurrency(b.currency()); changed = true; }
+        if (b.currency() != null) {
+            // events-4: a Stripe Price is minted in the currency the event had at sync time,
+            // and the checkout Session mixes that stored Price with an inline service-fee line
+            // item built from event.currency — Stripe requires one currency per Session, so a
+            // change after any tier is synced breaks checkout outright. Refuse instead.
+            // (A new draft has no id and therefore no tiers; re-sending the same value —
+            // in any casing, as autosave does — is a no-op, not a conflict.)
+            if (e.getId() != null && !b.currency().equalsIgnoreCase(e.getCurrency())
+                    && tiers.existsSyncedStripePrice(e.getId())) {
+                throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                        "Currency cannot be changed once tickets are synced to Stripe",
+                        Map.of("currency", "already synced to Stripe as " + e.getCurrency()));
+            }
+            e.setCurrency(b.currency());
+            changed = true;
+        }
         if (b.onSaleAt() != null) { e.setOnSaleAt(b.onSaleAt()); changed = true; }
         if (b.saleClosesAt() != null) { e.setSaleClosesAt(b.saleClosesAt()); changed = true; }
         return changed;
@@ -465,6 +533,15 @@ public class EventService {
      * reconcile (and the surrounding @Transactional rolls back the event update too).
      */
     private void reconcilePromoCodes(UUID eventId, List<PromoCodeEmbeddedPatch> patches) {
+        // Loaded up front so validation can compare against what has already been redeemed:
+        // patch() has no status check, so this whole-list replace is reachable on a LIVE
+        // event despite the draft-only precondition the callers document (events-10/18).
+        List<PromoCode> existing = promos.findByEventId(eventId);
+        Map<String, PromoCode> existingByCode = new LinkedHashMap<>();
+        for (PromoCode pc : existing) {
+            existingByCode.put(pc.getCode().toUpperCase(Locale.ROOT), pc);
+        }
+
         Map<String, String> fieldErrors = new LinkedHashMap<>();
         Set<String> seenCodes = new HashSet<>();
         for (int i = 0; i < patches.size(); i++) {
@@ -487,6 +564,15 @@ public class EventService {
                 fieldErrors.put(prefix + "maxUses", "required");
             } else if (p.maxUses() < 1) {
                 fieldErrors.put(prefix + "maxUses", "must be ≥ 1");
+            } else if (code != null && !code.isEmpty()) {
+                // Same rule the per-id path enforces (PromoCodeService.validateMaxUses):
+                // dropping the cap under what has been redeemed makes the code read as
+                // exhausted at quote and checkout for everyone.
+                PromoCode current = existingByCode.get(code.toUpperCase(Locale.ROOT));
+                if (current != null && p.maxUses() < current.getUsedCount()) {
+                    fieldErrors.put(prefix + "maxUses",
+                            "must be ≥ " + current.getUsedCount() + " (already used)");
+                }
             }
         }
         if (!fieldErrors.isEmpty()) {
@@ -495,11 +581,6 @@ public class EventService {
         }
 
         // Upsert by uppercase code. Existing rows keep their id and usedCount.
-        List<PromoCode> existing = promos.findByEventId(eventId);
-        Map<String, PromoCode> existingByCode = new LinkedHashMap<>();
-        for (PromoCode pc : existing) {
-            existingByCode.put(pc.getCode().toUpperCase(Locale.ROOT), pc);
-        }
         Set<String> patchedCodes = new HashSet<>();
         for (PromoCodeEmbeddedPatch p : patches) {
             String upper = p.code().trim().toUpperCase(Locale.ROOT);
@@ -516,7 +597,15 @@ public class EventService {
             promos.save(pc);
         }
         for (PromoCode pc : existing) {
-            if (!patchedCodes.contains(pc.getCode().toUpperCase(Locale.ROOT))) {
+            if (patchedCodes.contains(pc.getCode().toUpperCase(Locale.ROOT))) continue;
+            if (pc.getUsedCount() > 0) {
+                // orders.promo_code_id is a bare UUID column with no REFERENCES clause, so
+                // deleting a redeemed code leaves every order that used it pointing at a row
+                // that no longer exists. Retire it instead — it stops being offerable, and the
+                // redemption history survives.
+                pc.setEnabled(false);
+                promos.save(pc);
+            } else {
                 promos.delete(pc);
             }
         }

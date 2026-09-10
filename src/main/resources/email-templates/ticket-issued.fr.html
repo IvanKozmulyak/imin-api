@@ -74,6 +74,28 @@
             </td>
           </tr>
 
+
+          <!-- price breakdown (Code conso. L112-1 / CRD Art.6(1)(e): the total, itemised) -->
+          <tr>
+            <td style="padding:24px 32px 0;">
+              <div style="font-family:'Space Mono', ui-monospace, Menlo, Consolas, monospace; font-size:11px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:#7a738f;">CE QUE VOUS AVEZ PAYÉ</div>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:10px; border:1px solid #d4cee6; border-radius:8px;">
+                <tr>
+                  <td style="padding:12px 16px 4px; font-size:13px; color:#7a738f;">Billets</td>
+                  <td style="padding:12px 16px 4px; font-size:13px; color:#11091f; text-align:right;">{{priceTicketsMinor}}</td>
+                </tr>
+                <tr>
+                  <td style="padding:4px 16px; font-size:13px; color:#7a738f;">Frais de réservation</td>
+                  <td style="padding:4px 16px; font-size:13px; color:#11091f; text-align:right;">{{priceBookingFeeMinor}}</td>
+                </tr>
+                <tr>
+                  <td style="padding:4px 16px 12px; font-size:13px; font-weight:700; color:#11091f;">Total</td>
+                  <td style="padding:4px 16px 12px; font-size:13px; font-weight:700; color:#11091f; text-align:right;">{{priceTotalMinor}}</td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
           <!-- view-order CTA -->
           <tr>
             <td style="padding:24px 32px 0;">

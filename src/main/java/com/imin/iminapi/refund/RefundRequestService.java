@@ -1,5 +1,7 @@
 package com.imin.iminapi.refund;
 
+import com.imin.iminapi.security.IpHasher;
+import com.imin.iminapi.util.LogSafe;
 import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.email.EmailTemplateRenderer;
@@ -81,7 +83,9 @@ public class RefundRequestService {
     private final RefundTicketRepository refundTickets;
     private final TicketTierRepository tiers;
     private final RefundService refundService;
+    private final RefundRepository refunds;
     private final RefundReferenceGenerator references;
+    private final IpHasher ipHasher;
 
     public RefundRequestService(OrderRepository orders,
                                 EventRepository events,
@@ -97,7 +101,9 @@ public class RefundRequestService {
                                 RefundTicketRepository refundTickets,
                                 TicketTierRepository tiers,
                                 RefundService refundService,
-                                RefundReferenceGenerator references) {
+                                RefundRepository refunds,
+                                RefundReferenceGenerator references,
+                                IpHasher ipHasher) {
         this.orders = orders;
         this.events = events;
         this.attempts = attempts;
@@ -112,7 +118,9 @@ public class RefundRequestService {
         this.refundTickets = refundTickets;
         this.tiers = tiers;
         this.refundService = refundService;
+        this.refunds = refunds;
         this.references = references;
+        this.ipHasher = ipHasher;
     }
 
     @Transactional
@@ -133,8 +141,12 @@ public class RefundRequestService {
         long byIp = attempts.countByIpHashAndAttemptedAtAfter(hashIp(clientIp), cutoff);
         int cap = ticketProps.getRecoveryMaxPerHour();
         if (byEmail > cap || byIp > cap) {
+            // Masked, like the "no refundable order" branch below and the identical line in
+            // OrderRecoveryService. This branch is the one an anonymous caller can drive at
+            // will (just exceed recoveryMaxPerHour), so a raw address here is a buyer address
+            // written into the log pipeline on demand.
             log.info("[refund-request] rate-limited email={} byEmail={} byIp={}",
-                normalized, byEmail, byIp);
+                LogSafe.email(normalized), byEmail, byIp);
             return;
         }
 
@@ -147,7 +159,7 @@ public class RefundRequestService {
             .findFirst()
             .orElse(null);
         if (chosen == null) {
-            log.info("[refund-request] no refundable order for {}", normalized);
+            log.info("[refund-request] no refundable order for {}", LogSafe.email(normalized));
             return;
         }
 
@@ -166,14 +178,22 @@ public class RefundRequestService {
         Map<String, String> values = new LinkedHashMap<>();
         values.put("link", url);
         values.put("ttlMinutes", String.valueOf(emailProps.getRefundRequestTokenTtlMinutes()));
-        EmailTemplateRenderer.Rendered r = renderer.render("refund-request-link", values);
+        // The buyer's language, snapshotted on the order at checkout (V78) — the same
+        // source the ticket and refund-ack emails use. Null ⇒ English.
+        String locale = chosen.getBuyerLocale();
+        EmailTemplateRenderer.Rendered r = renderer.render("refund-request-link", locale, values);
+        String subject = com.imin.iminapi.email.EmailLocale.choose(locale,
+            "Request a refund · imin",
+            "Solicita tu reembolso · imin",
+            "Demandez votre remboursement · imin",
+            "Запит на повернення коштів · imin");
 
         try {
-            email.send(normalized, "Request a refund · imin", r.html(), r.text());
+            email.send(normalized, subject, r.html(), r.text());
             log.info("[refund-request] token-issued orderId={} emailHash={}",
                 chosen.getId(), sha256Hex(normalized));
         } catch (Exception e) {
-            log.warn("[refund-request] link email failed for {}: {}", normalized, e.getMessage());
+            log.warn("[refund-request] link email failed for {}: {}", LogSafe.email(normalized), LogSafe.redact(e.getMessage()));
         }
     }
 
@@ -247,7 +267,8 @@ public class RefundRequestService {
      * list it describes the moment either copy is edited; a subtraction cannot. Whatever
      * {@link #eligibilityFor} excludes and for whatever reason, the count is exactly that.
      */
-    private record RefundEligibility(List<Ticket> refundable, int nonRefundableCount) {}
+    private record RefundEligibility(List<Ticket> all, List<Ticket> refundable,
+                                     int nonRefundableCount) {}
 
     /**
      * Splits an order's tickets into refundable and not.
@@ -256,8 +277,10 @@ public class RefundRequestService {
      * when it has been redeemed at the door. Note what is NOT excluded: a {@code revoked}
      * ticket, and a ticket for an event that has already ended, both stay refundable —
      * see the class notes on this in the branch that introduced the count. This method is
-     * the single definition of that rule for the buyer-facing form; changing it changes
-     * what is refundable, which is out of scope for a reporting field.
+     * the single definition of that rule — for the buyer-facing form and for every
+     * organizer surface below; changing it changes what is refundable, which is out of
+     * scope for a reporting field. {@code all} rides along because the organizer views
+     * also render the non-refundable lines.
      */
     private RefundEligibility eligibilityFor(Order order) {
         List<Ticket> all = tickets.findByOrderId(order.getId());
@@ -268,7 +291,7 @@ public class RefundRequestService {
             .filter(t -> !alreadyRefunded.contains(t.getId()))
             .filter(t -> !Ticket.STATE_REDEEMED.equals(t.getState()))
             .toList();
-        return new RefundEligibility(refundable, all.size() - refundable.size());
+        return new RefundEligibility(all, refundable, all.size() - refundable.size());
     }
 
     private List<Ticket> refundableTicketsFor(Order order) {
@@ -412,14 +435,9 @@ public class RefundRequestService {
         Order order = orders.findById(rr.getOrderId())
             .orElseThrow(() -> ApiException.notFound("Order"));
 
-        List<Ticket> all = tickets.findByOrderId(order.getId());
-        Set<UUID> alreadyRefunded = all.isEmpty()
-            ? Set.of()
-            : refundTickets.findRefundedTicketIds(all.stream().map(Ticket::getId).toList());
-        List<Ticket> refundable = all.stream()
-            .filter(t -> !alreadyRefunded.contains(t.getId()))
-            .filter(t -> !Ticket.STATE_REDEEMED.equals(t.getState()))
-            .toList();
+        RefundEligibility eligibility = eligibilityFor(order);
+        List<Ticket> all = eligibility.all();
+        List<Ticket> refundable = eligibility.refundable();
 
         Map<UUID, String> tierNames = new HashMap<>();
         for (Ticket t : all) {
@@ -436,15 +454,18 @@ public class RefundRequestService {
                 refundable.stream().map(Ticket::getId).toList());
         }
 
-        // refundStatus left null; the controller layer may enrich if needed.
-        String refundStatus = null;
+        // Both fields are on the wire and rendered by the dashboard — the refund chip and
+        // the failed-refund retry CTA read refundStatus — so they are filled from the rows
+        // they name rather than sent as a permanent null.
+        String refundStatus = refundStatusOf(rr.getRefundId());
+        String eventName = events.findById(order.getEventId()).map(Event::getName).orElse(null);
 
         return new RefundRequestDetailResponse(
             rr.getId(),
             rr.getReference(),
             order.getId(),
             order.getEventId(),
-            null, // eventName left null for MVP
+            eventName,
             rr.getBuyerEmail(),
             rr.getBuyerPhone(),
             rr.getStatus().name().toLowerCase(Locale.ROOT),
@@ -511,27 +532,26 @@ public class RefundRequestService {
                 normalizedRef != null ? normalizedRef : term, term, pageReq);
         }
 
+        // One lookup for the whole page, not one per row: the mapper below already costs
+        // several queries per row (see the note there).
+        Map<UUID, String> refundStatuses = refundStatusesFor(rows);
+        Map<UUID, String> eventNames = eventNamesFor(rows);
+
         return rows.stream().map(rr -> {
             // ticketCount and estimatedRefundMinor are best-effort live
             // computations. We accept the per-row cost for now and add caching
             // if it bites.
-            List<Ticket> all = tickets.findByOrderId(rr.getOrderId());
-            Set<UUID> alreadyRefunded = all.isEmpty()
-                ? Set.of()
-                : refundTickets.findRefundedTicketIds(all.stream().map(Ticket::getId).toList());
-            List<Ticket> refundable = all.stream()
-                .filter(t -> !alreadyRefunded.contains(t.getId()))
-                .filter(t -> !Ticket.STATE_REDEEMED.equals(t.getState()))
-                .toList();
+            Order order = orders.findById(rr.getOrderId()).orElse(null);
+            List<Ticket> refundable = order == null ? List.of() : eligibilityFor(order).refundable();
             long estimated = 0;
             String currency = null;
-            Order order = orders.findById(rr.getOrderId()).orElse(null);
             if (order != null && !refundable.isEmpty()) {
                 estimated = refundService.computeRefundAmountMinor(order, refundable);
                 currency = order.getCurrency();
             }
             return new RefundRequestSummaryResponse(
-                rr.getId(), rr.getReference(), rr.getOrderId(), rr.getEventId(), null,
+                rr.getId(), rr.getReference(), rr.getOrderId(), rr.getEventId(),
+                eventNames.get(rr.getEventId()),
                 rr.getBuyerEmail(),
                 rr.getStatus().name().toLowerCase(Locale.ROOT),
                 rr.getReason().toWire(),
@@ -541,8 +561,36 @@ public class RefundRequestService {
                 estimated,
                 currency,
                 rr.getRefundId(),
-                null);
+                rr.getRefundId() == null ? null : refundStatuses.get(rr.getRefundId()));
         }).toList();
+    }
+
+    /** Wire form of a linked refund's status ({@code "failed"}, {@code "succeeded"}, …). */
+    private String refundStatusOf(UUID refundId) {
+        if (refundId == null) return null;
+        return refunds.findById(refundId)
+            .map(r -> r.getStatus().name().toLowerCase(Locale.ROOT))
+            .orElse(null);
+    }
+
+    private Map<UUID, String> refundStatusesFor(List<RefundRequest> rows) {
+        List<UUID> ids = rows.stream()
+            .map(RefundRequest::getRefundId).filter(java.util.Objects::nonNull).distinct().toList();
+        if (ids.isEmpty()) return Map.of();
+        Map<UUID, String> byId = new HashMap<>();
+        for (Refund r : refunds.findAllById(ids)) {
+            byId.put(r.getId(), r.getStatus().name().toLowerCase(Locale.ROOT));
+        }
+        return byId;
+    }
+
+    private Map<UUID, String> eventNamesFor(List<RefundRequest> rows) {
+        List<UUID> ids = rows.stream()
+            .map(RefundRequest::getEventId).filter(java.util.Objects::nonNull).distinct().toList();
+        if (ids.isEmpty()) return Map.of();
+        Map<UUID, String> byId = new HashMap<>();
+        for (Event e : events.findAllById(ids)) byId.put(e.getId(), e.getName());
+        return byId;
     }
 
     @Transactional
@@ -562,14 +610,7 @@ public class RefundRequestService {
         Order order = orders.findById(rr.getOrderId())
             .orElseThrow(() -> ApiException.notFound("Order"));
 
-        List<Ticket> all = tickets.findByOrderId(order.getId());
-        Set<UUID> alreadyRefunded = all.isEmpty()
-            ? Set.of()
-            : refundTickets.findRefundedTicketIds(all.stream().map(Ticket::getId).toList());
-        List<Ticket> refundable = all.stream()
-            .filter(t -> !alreadyRefunded.contains(t.getId()))
-            .filter(t -> !Ticket.STATE_REDEEMED.equals(t.getState()))
-            .toList();
+        List<Ticket> refundable = eligibilityFor(order).refundable();
         if (refundable.isEmpty()) {
             throw new ApiException(
                 HttpStatus.CONFLICT,
@@ -672,7 +713,13 @@ public class RefundRequestService {
         }
     }
 
-    private static String hashIp(String ip) {
-        return sha256Hex(ip);
+    /**
+     * Keyed, not a bare digest: IPv4 is 2³² values, so an unsalted SHA-256 is a
+     * reversible record of who asked for a refund link. See {@link IpHasher}.
+     * The token hashes above stay unkeyed — those are 24 bytes of entropy, where
+     * a rainbow table is not a threat.
+     */
+    private String hashIp(String ip) {
+        return ipHasher.hash(ip);
     }
 }

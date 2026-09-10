@@ -1,6 +1,7 @@
 package com.imin.iminapi.stripe;
 
 import com.imin.iminapi.model.CheckoutAttribution;
+import com.imin.iminapi.model.CheckoutConsent;
 import com.imin.iminapi.model.ReservationStatus;
 import com.imin.iminapi.model.TicketReservation;
 import com.imin.iminapi.security.ApiException;
@@ -108,6 +109,37 @@ public class StripePaymentIntentService {
                                boolean adsConsent, boolean marketingOptIn,
                                CheckoutAttribution attribution, String rawLocale,
                                String idempotencyKey) {
+        return create(eventId, tierId, quantity, promoCode, expectedPriceMinor, buyerEmail,
+                adsConsent, marketingOptIn, attribution, rawLocale, idempotencyKey,
+                CheckoutConsent.NONE);
+    }
+
+    /**
+     * As above, plus the V97 consent evidence the native client captured. The hosted sibling
+     * has threaded this end-to-end since V97; the native path hard-coded
+     * {@link CheckoutConsent#NONE}, so a native order landed with
+     * {@code orders.marketing_opt_in = true} and a {@code basis='soft_opt_in'} consent row
+     * minted from the server's own fallback sentence, with {@code terms_accepted_at} and
+     * {@code marketing_opt_in_proof} both NULL — precisely the Art. 7(1) evidence V97 exists
+     * to capture.
+     *
+     * <p><b>An opt-in with no proof text is not recorded as an opt-in.</b> Consent we cannot
+     * evidence is worth less than no consent, so the flag is downgraded to false (and logged)
+     * rather than written on the strength of a boolean a client asserted.
+     */
+    public NativeIntent create(UUID eventId, UUID tierId, int quantity, String promoCode,
+                               Integer expectedPriceMinor, String buyerEmail,
+                               boolean adsConsent, boolean marketingOptIn,
+                               CheckoutAttribution attribution, String rawLocale,
+                               String idempotencyKey, CheckoutConsent consent) {
+
+        if (consent == null) consent = CheckoutConsent.NONE;
+        if (marketingOptIn && consent.marketingOptInProofText() == null) {
+            log.warn("[native-intent] event {} tier {} sent marketingOptIn=true with no "
+                    + "marketingOptInProofText — recording NO opt-in (Art. 7(1) needs the verbatim "
+                    + "sentence the buyer read, not a bare boolean)", eventId, tierId);
+            marketingOptIn = false;
+        }
 
         String key = normalizeKey(idempotencyKey);
 
@@ -116,7 +148,7 @@ public class StripePaymentIntentService {
         // a different total than the one the buyer already confirmed on the
         // payment sheet. Not calling priceIt at all is what guarantees it.
         if (key != null) {
-            NativeIntent replayed = replay(key);
+            NativeIntent replayed = replay(key, tierId);
             if (replayed != null) return replayed;
         }
 
@@ -137,7 +169,7 @@ public class StripePaymentIntentService {
 
         StripeCheckoutService.PaidPrelude p = checkoutService.reserveAndBuildMetadata(
                 priced, eventId, tierId, quantity, buyerEmail,
-                adsConsent, marketingOptIn, attribution, rawLocale, true);
+                adsConsent, marketingOptIn, attribution, rawLocale, true, consent);
 
         // Claim the key on the hold we just took, before Stripe is asked for
         // anything. The unique index — not the lookup above — is what settles a
@@ -149,7 +181,7 @@ public class StripePaymentIntentService {
                 inventoryService.claimIdempotencyKey(p.reservationId(), key);
             } catch (DataIntegrityViolationException duplicate) {
                 releaseQuietly(p.reservationId(), "IDEMPOTENT_REPLAY");
-                NativeIntent replayed = replay(key);
+                NativeIntent replayed = replay(key, tierId);
                 if (replayed != null) return replayed;
                 throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
                         "A checkout with this Idempotency-Key is already in progress");
@@ -221,10 +253,26 @@ public class StripePaymentIntentService {
      * <p>The client secret cannot be stored — it is a credential, and it is not
      * derivable from the id — so the intent is re-read from Stripe. That is one
      * idempotent GET; no second intent is created and no second hold is taken.
+     *
+     * <p>The lookup is on the raw key alone, which is not scoped to anything — and this is an
+     * UNAUTHENTICATED endpoint, so the server must not depend on every client picking good
+     * keys. {@code requestedTierId} is therefore checked against the reservation the key
+     * claimed: a tier belongs to exactly one event, so a match proves the replay is for the
+     * same purchase, and a mismatch means the key is already in use for a different one. The
+     * free path scopes its equivalent lookup by (eventId, buyerEmail, key) for the same reason.
      */
-    private NativeIntent replay(String key) {
+    private NativeIntent replay(String key, UUID requestedTierId) {
         TicketReservation existing = inventoryService.findByIdempotencyKey(key).orElse(null);
         if (existing == null) return null;
+
+        if (!requestedTierId.equals(existing.getTierId())) {
+            // Someone else's key, or the same client reusing one across selections. Never hand
+            // back a client secret (or an amount) belonging to a different purchase.
+            log.warn("Idempotency-Key replay refused: the key is held by a reservation for tier {}, "
+                    + "not the requested tier {}", existing.getTierId(), requestedTierId);
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                    "A checkout with this Idempotency-Key is already in progress");
+        }
 
         if (existing.getStatus() != ReservationStatus.HELD) {
             // Confirmed (already paid) or released (expired, or the sweeper got

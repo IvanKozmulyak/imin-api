@@ -45,6 +45,9 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
     /** Number of orders (= completed payments) for an event. Drives the funnel's PAYMENTS_COMPLETED stage. */
     long countByEventId(UUID eventId);
 
+    /** Has this org ever taken an order? Gate on org deletion — see {@code OrgService.delete}. */
+    boolean existsByOrgId(UUID orgId);
+
     /**
      * Org-wide order count (= completed payments) since a cutoff. Drives the
      * PAYMENTS_COMPLETED stage of the org-wide Meta signal-health funnel (spec §8).
@@ -82,9 +85,22 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
     List<Object[]> findCreatedAtAndTotalSince(@Param("eventId") UUID eventId,
                                               @Param("since") Instant since);
 
+    /**
+     * Behind the unauthenticated {@code POST /api/v1/public/orders/recover}.
+     *
+     * <p>Matches {@code email_normalized}, NOT {@code lower(o.email)}: this is the
+     * query V86 was written for — its header names it and says the expression
+     * predicate "sequential-scans the table on every call" — and only the plain
+     * column can use {@code ix_orders_email_normalized}. Do not wrap it in
+     * {@code lower()}; {@code OrderRecoveryService} already passes
+     * {@code trim().toLowerCase(Locale.ROOT)}, which is what
+     * {@code EmailNormalizer} (and so the column) applies. The old predicate also
+     * never trimmed, so an address stored with surrounding whitespace was
+     * unrecoverable.
+     */
     @Query("""
             select o from Order o
-             where lower(o.email) = lower(:email)
+             where o.emailNormalized = :email
                and (:eventId is null or o.eventId = :eventId)
                and o.createdAt > :cutoff
              order by o.createdAt desc

@@ -80,37 +80,4 @@ class VibeStyleTrainingServiceTest {
         verify(recraftClient, org.mockito.Mockito.never()).createStyle(any());
     }
 
-    @Test
-    void resolveStyleId_prefersTrainedRowOverYaml() {
-        VibeStyle row = new VibeStyle();
-        row.setVibeId("brutalist_techno");
-        row.setProvider(ImageProvider.RECRAFT);
-        row.setStyleId("trained-id");
-        row.setTrainedAt(LocalDateTime.now());
-        when(vibeStyleRepository.findByVibeIdAndProvider("brutalist_techno", ImageProvider.RECRAFT))
-                .thenReturn(Optional.of(row));
-
-        assertThat(service().resolveStyleId("brutalist_techno", ImageProvider.RECRAFT))
-                .isEqualTo("trained-id");
-    }
-
-    @Test
-    void resolveStyleId_fallsBackToYamlStyleId() {
-        when(vibeStyleRepository.findByVibeIdAndProvider("brutalist_techno", ImageProvider.RECRAFT))
-                .thenReturn(Optional.empty());
-        when(vibeLibrary.byId("brutalist_techno"))
-                .thenReturn(Optional.of(vibe("brutalist_techno", "yaml-style-id")));
-
-        assertThat(service().resolveStyleId("brutalist_techno", ImageProvider.RECRAFT))
-                .isEqualTo("yaml-style-id");
-    }
-
-    @Test
-    void resolveStyleId_noTrainedRowNoYaml_returnsNull() {
-        when(vibeStyleRepository.findByVibeIdAndProvider(eq("x"), any()))
-                .thenReturn(Optional.empty());
-        when(vibeLibrary.byId("x")).thenReturn(Optional.empty());
-
-        assertThat(service().resolveStyleId("x", ImageProvider.RECRAFT)).isNull();
-    }
 }

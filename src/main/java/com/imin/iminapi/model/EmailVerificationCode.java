@@ -21,8 +21,17 @@ public class EmailVerificationCode {
     @Column(name = "user_id", nullable = false)
     private UUID userId;
 
-    @Column(nullable = false, length = 4)
+    /**
+     * Legacy plaintext column. Nullable since V96 and never written any more —
+     * kept only so codes issued by the previous deploy stay verifiable for the
+     * ten minutes they live. Read {@link #codeHash} instead.
+     */
+    @Column(length = 4)
     private String code;
+
+    /** {@code HMAC-SHA256(pepper, code)} as 64 lowercase hex chars — see {@code BuyerCodeHasher}. */
+    @Column(name = "code_hash", length = 64)
+    private String codeHash;
 
     @Column(name = "expires_at", nullable = false)
     private Instant expiresAt;

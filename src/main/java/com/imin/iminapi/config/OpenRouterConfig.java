@@ -35,9 +35,15 @@ public class OpenRouterConfig {
         log.info("Configuring OpenRouter ChatClient with baseUrl={}, model={}, temperature={}",
                 normalizedBaseUrl, model, temperature);
 
+        // Every OpenRouter request carries the provider data-collection opt-out.
+        // It is a body field with no header equivalent, and OpenAiChatOptions models
+        // the OpenAI schema with no room for a vendor extension — so it goes in
+        // through the transport. See OpenRouterPrivacy.
         OpenAiApi openAiApi = OpenAiApi.builder()
                 .baseUrl(normalizedBaseUrl)
                 .apiKey(apiKey)
+                .restClientBuilder(org.springframework.web.client.RestClient.builder()
+                        .requestInterceptor(OpenRouterPrivacy.bodyInjectingInterceptor()))
                 .build();
         OpenAiChatModel chatModel = OpenAiChatModel.builder()
                 .openAiApi(openAiApi)

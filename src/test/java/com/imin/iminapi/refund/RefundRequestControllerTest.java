@@ -86,6 +86,21 @@ class RefundRequestControllerTest {
             .listRequests(eq(orgId), any(), any(), eq("REQ-8K2M-26"), anyInt());
     }
 
+    /** refund-5: a bad ?status= is a client mistake, not a server fault. */
+    @Test
+    void list_rejects_an_unknown_status_with_400() throws Exception {
+        UUID orgId = UUID.randomUUID();
+        AuthPrincipal me = principalFor(orgId);
+
+        mvc.perform(get("/api/v1/orgs/{orgId}/refund-requests", orgId)
+                .param("status", "open")
+                .with(authentication(auth(me))))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.error.code").value("INVALID_REQUEST"));
+
+        org.mockito.Mockito.verifyNoInteractions(service);
+    }
+
     @Test
     void approve_passes_body_through() throws Exception {
         UUID orgId = UUID.randomUUID();

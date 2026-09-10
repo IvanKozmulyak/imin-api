@@ -9,6 +9,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -30,14 +31,54 @@ import java.util.UUID;
 @RepositoryRestResource(exported = false)
 public interface EventOutcomeRepository extends JpaRepository<EventOutcome, UUID> {
 
-    /** Outcomes still awaiting the post-event finalize pass. Drives the finalize job. */
-    List<EventOutcome> findByFinalizedAtIsNull(Pageable pageable);
+    /**
+     * Outcomes still awaiting the post-event finalize pass, oldest freeze first. Drives the
+     * finalize job.
+     *
+     * <p>The ORDER BY is not cosmetic. This is a capped scan whose caller does NOT finalize
+     * everything it fetches — {@code EventOutcomeFinalizeJob} skips every outcome whose event has
+     * not yet ended past the grace window. A frozen row is written at publish and stays
+     * unfinalized until well after the event, so the unfinalized set is dominated by future
+     * events and grows with the published-event count; once it exceeds the page size, an
+     * unordered page can be filled entirely with not-yet-due rows while a genuinely due one is
+     * never selected, every tick. Oldest-first is the order that drains, and the eventId (the
+     * @Id) is the deterministic tiebreaker that keeps the page stable when frozenAt ties.
+     * {@code EventRepository.findPayoutCandidates} and {@code OrderRepository.findDue24hReminder}
+     * carry an explicit ORDER BY for exactly this reason.
+     */
+    List<EventOutcome> findByFinalizedAtIsNullOrderByFrozenAtAscEventIdAsc(Pageable pageable);
 
     /**
-     * Number of an org's events already snapshotted at publish. Used at freeze time to
-     * compute {@code prior_event_count} for the NEXT freeze (excludes the row being written).
+     * Outcomes that are actually DUE for the post-event finalize pass: not yet finalized AND
+     * belonging to an event that ended before {@code cutoff}. The due predicate lives in the
+     * query rather than in a Java skip after the page is read, because every published event
+     * gets a {@code finalizedAt = null} row at publish: live events, future events and events
+     * with no end time can never satisfy it, and would otherwise occupy the single page forever
+     * and starve the rows that can. Ordered (event date, then id) so paging is total and
+     * repeatable rather than a heap-order slice.
+     *
+     * <p><b>Soft-deleted and CANCELLED events are excluded</b> (predictor-edge-10), matching
+     * {@code EventRepository.findActive}/{@code findAllPublished} — every other Event query
+     * carries the soft-delete filter. A cancelled event's tickets are refunded, so finalizing it
+     * would stamp {@code sold_total ≈ 0}, {@code sell_out = false} and {@code attendance ≈ 0};
+     * because {@code finalizedAt is not null} is the ONLY membership test the three corpus
+     * segment queries below apply, that row would then become a cross-org comparable for every
+     * other organizer in its city × genre × band × season and drag the aggregates — and
+     * {@code PacingCurveService}'s median/P25/P75 shapes — toward a result that never happened.
+     * It would also write fresh derived data for an event the org asked to have deleted.
      */
-    long countByOrgId(UUID orgId);
+    @Query("""
+            select o from EventOutcome o
+             where o.finalizedAt is null
+               and exists (select 1 from Event e
+                            where e.id = o.eventId
+                              and e.deletedAt is null
+                              and e.status <> com.imin.iminapi.model.EventStatus.CANCELLED
+                              and e.endsAt is not null
+                              and e.endsAt < :cutoff)
+             order by o.eventDate asc, o.eventId asc
+            """)
+    List<EventOutcome> findDueForFinalize(@Param("cutoff") Instant cutoff, Pageable pageable);
 
     // ---------------------------------------------------------------------------
     // Comparable corpus segment queries — FINALIZED outcomes only (a comparable is

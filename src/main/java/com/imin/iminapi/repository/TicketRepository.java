@@ -17,6 +17,20 @@ import java.util.UUID;
 @RepositoryRestResource(exported = false)
 public interface TicketRepository extends JpaRepository<Ticket, UUID> {
     Optional<Ticket> findByToken(String token);
+
+    /**
+     * Does this org hold any issued ticket? Gate on org deletion.
+     *
+     * <p>A subquery rather than a join because {@code Ticket} carries no
+     * association to {@code Order} — only an {@code orderId} column — and no
+     * {@code orgId} of its own. Strictly this is implied by
+     * {@code OrderRepository.existsByOrgId} (a ticket cannot outlive its order's
+     * FK), but the thing being protected is the buyer's ticket, so it is checked
+     * for itself rather than inferred.
+     */
+    @Query("select count(t) > 0 from Ticket t "
+           + "where t.orderId in (select o.id from Order o where o.orgId = :orgId)")
+    boolean existsByOrgId(@Param("orgId") UUID orgId);
     List<Ticket> findByOrderIdOrderByCreatedAtAsc(UUID orderId);
 
     List<Ticket> findByOrderId(java.util.UUID orderId);
@@ -100,8 +114,6 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
                                           @Param("since") Instant since);
 
     List<Ticket> findByIdInAndOrderId(Collection<UUID> ids, UUID orderId);
-
-    long countByOrderIdAndStateNot(UUID orderId, String state);
 
     /** Ticket count for an event in a given state. Predictor finalize uses it for refund_count ('refunded'). */
     long countByEventIdAndState(UUID eventId, String state);

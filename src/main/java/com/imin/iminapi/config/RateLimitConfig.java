@@ -89,6 +89,47 @@ public class RateLimitConfig {
     private int buyerNativeSignInCapacity;
     @Value("${imin.ratelimit.buyer-native-signin.window-minutes}")
     private int buyerNativeSignInWindow;
+    @Value("${imin.ratelimit.verify-email.capacity}")
+    private int verifyEmailCapacity;
+    @Value("${imin.ratelimit.verify-email.window-minutes}")
+    private int verifyEmailWindow;
+    @Value("${imin.ratelimit.signup.capacity}")
+    private int signupCapacity;
+    @Value("${imin.ratelimit.signup.window-minutes}")
+    private int signupWindow;
+    @Value("${imin.ratelimit.reset-password-token.capacity}")
+    private int resetPasswordTokenCapacity;
+    @Value("${imin.ratelimit.reset-password-token.window-minutes}")
+    private int resetPasswordTokenWindow;
+    @Value("${imin.ratelimit.buyer-reset-password-token.capacity}")
+    private int buyerResetPasswordTokenCapacity;
+    @Value("${imin.ratelimit.buyer-reset-password-token.window-minutes}")
+    private int buyerResetPasswordTokenWindow;
+    @Value("${imin.ratelimit.unsubscribe.capacity}")
+    private int unsubscribeCapacity;
+    @Value("${imin.ratelimit.unsubscribe.window-minutes}")
+    private int unsubscribeWindow;
+    @Value("${imin.ratelimit.ai-content.capacity}")
+    private int aiContentCapacity;
+    @Value("${imin.ratelimit.ai-content.window-minutes}")
+    private int aiContentWindow;
+    @Value("${imin.ratelimit.quote.capacity}")
+    private int quoteCapacity;
+    @Value("${imin.ratelimit.quote.window-minutes}")
+    private int quoteWindow;
+    @Value("${imin.ratelimit.public-track.capacity}")
+    private int publicTrackCapacity;
+    @Value("${imin.ratelimit.public-track.window-minutes}")
+    private int publicTrackWindow;
+
+    @Value("${imin.ratelimit.oauth-callback.capacity}")
+    private int oauthCallbackCapacity;
+    @Value("${imin.ratelimit.oauth-callback.window-minutes}")
+    private int oauthCallbackWindow;
+    @Value("${imin.ratelimit.buyer-verify-email.capacity}")
+    private int buyerVerifyEmailCapacity;
+    @Value("${imin.ratelimit.buyer-verify-email.window-minutes}")
+    private int buyerVerifyEmailWindow;
 
     @Bean
     public RedisClient redisClient(@Value("${spring.data.redis.url}") String url) {
@@ -205,6 +246,66 @@ public class RateLimitConfig {
         configs.put("buyer-native-signin", BucketConfiguration.builder()
                 .addLimit(Bandwidth.simple(buyerNativeSignInCapacity,
                         Duration.ofMinutes(buyerNativeSignInWindow)))
+                .build());
+
+
+        // ---- Previously unmetered open endpoints (legal/security audit) -----
+        // Verify-email, keyed per address: a correct guess returns a live
+        // organizer session, and resend-verification mints fresh codes, so the
+        // per-code attempt cap alone bounded nothing.
+        configs.put("verify-email", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(verifyEmailCapacity, Duration.ofMinutes(verifyEmailWindow)))
+                .build());
+        // Organizer account creation, keyed per client IP — per-email would let an
+        // attacker burn a stranger's bucket. Mirrors buyer-signup.
+        configs.put("signup", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(signupCapacity, Duration.ofMinutes(signupWindow)))
+                .build());
+        // The consume half of password reset, both surfaces. forgot-password was
+        // metered per address from the start; these two were not metered at all.
+        configs.put("reset-password-token", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(resetPasswordTokenCapacity,
+                        Duration.ofMinutes(resetPasswordTokenWindow)))
+                .build());
+        configs.put("buyer-reset-password-token", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(buyerResetPasswordTokenCapacity,
+                        Duration.ofMinutes(buyerResetPasswordTokenWindow)))
+                .build());
+        // Owned opt-out, keyed per client IP. Deliberately loose — an opt-out is
+        // the one request that must never be hard to complete.
+        configs.put("unsubscribe", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(unsubscribeCapacity, Duration.ofMinutes(unsubscribeWindow)))
+                .build());
+        // POST /events/ai-content: unauthenticated and billed to imin per call.
+        configs.put("ai-content", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(aiContentCapacity, Duration.ofMinutes(aiContentWindow)))
+                .build());
+        // Public promo-price preview, keyed per client IP. The response distinguishes
+        // unknown / disabled / exhausted promo codes, so unmetered this is a promo-code
+        // oracle that costs an anonymous caller nothing and us three DB reads per guess.
+        configs.put("quote", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(quoteCapacity, Duration.ofMinutes(quoteWindow)))
+                .build());
+        // Public funnel beacon. A full bucket drops the beacon and still answers
+        // 204 — see FunnelTrackingController for why the status must not change.
+        configs.put("public-track", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(publicTrackCapacity, Duration.ofMinutes(publicTrackWindow)))
+                .build());
+        // Organizer OAuth callbacks (Google callback + Apple return), keyed per
+        // client IP. Both are permitAll and each drives an outbound POST to the
+        // provider's token endpoint; one bucket for both providers, for the same
+        // reason buyer-native-signin shares one.
+        configs.put("oauth-callback", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(oauthCallbackCapacity, Duration.ofMinutes(oauthCallbackWindow)))
+                .build());
+        // Buyer verify-email, keyed per client IP. It had no bucket at all: the
+        // DB-counted lockout was the stated control, and that counter was keyed
+        // on the address in the request body — a stranger's failures locked the
+        // owner out. The counter now keys on (address, IP); this is what bounds
+        // a caller who rotates addresses.
+        configs.put("buyer-verify-email", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(buyerVerifyEmailCapacity,
+                        Duration.ofMinutes(buyerVerifyEmailWindow)))
                 .build());
 
         return (bucketName, key) -> {

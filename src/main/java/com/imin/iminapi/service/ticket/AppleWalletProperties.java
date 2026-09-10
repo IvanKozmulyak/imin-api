@@ -42,7 +42,6 @@ public class AppleWalletProperties {
     public void setTeamId(String v) { this.teamId = v; }
     public String getCertP12Base64() { return certP12Base64; }
     public void setCertP12Base64(String v) { this.certP12Base64 = v; }
-    public String getCertPassword() { return certPassword; }
     public void setCertPassword(String v) { this.certPassword = v; }
     public String getWwdrPemBase64() { return wwdrPemBase64; }
     public void setWwdrPemBase64(String v) { this.wwdrPemBase64 = v; }

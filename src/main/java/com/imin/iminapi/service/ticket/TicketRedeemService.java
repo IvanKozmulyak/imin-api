@@ -1,7 +1,10 @@
 package com.imin.iminapi.service.ticket;
 
+import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Ticket;
+import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.TicketRepository;
+import com.imin.iminapi.security.ApiException;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -15,8 +18,13 @@ import java.util.UUID;
  * UPDATE with a {@code state in ('issued', 'pre')} predicate so two scanners
  * racing on the same QR can never both succeed.
  *
- * <p>Authorization (organizer is in the right org, event is theirs) is
- * enforced one level up in the controller.
+ * <p>Authorization is enforced HERE, not in the controller. The controller can
+ * only check that the caller belongs to the org named in the path; it cannot
+ * check that the event named in the path belongs to that org, and a gate
+ * credential is org-scoped ({@code AuthPrincipal.forGate}) — it carries no
+ * event scope at all. Without the ownership load below, org A's own token on
+ * org A's path with org B's event id reached the atomic UPDATE and redeemed a
+ * foreign ticket. Keeping the check in the service covers every future caller.
  *
  * <p>M1: publishes {@link TicketRedeemedEvent}(orderId, eventId) on successful
  * redemption. The audience projector listens AFTER_COMMIT + @Async. The
@@ -30,18 +38,33 @@ public class TicketRedeemService {
     public record Result(Outcome outcome, Ticket ticket) {}
 
     private final TicketRepository tickets;
+    private final EventRepository events;
     private final QrPayloadSigner signer;
     private final ApplicationEventPublisher publisher;
 
-    public TicketRedeemService(TicketRepository tickets, QrPayloadSigner signer,
+    public TicketRedeemService(TicketRepository tickets, EventRepository events,
+                               QrPayloadSigner signer,
                                ApplicationEventPublisher publisher) {
         this.tickets = tickets;
+        this.events = events;
         this.signer = signer;
         this.publisher = publisher;
     }
 
+    /**
+     * @param callerOrgId the org the credential is scoped to. The event must belong
+     *                    to it; a foreign or unknown event id answers
+     *                    {@code 404 NOT_FOUND}, the same shape every other
+     *                    org-scoped service uses for cross-org access, so the
+     *                    response never confirms that the event exists.
+     */
     @Transactional
-    public Result redeem(UUID expectedEventId, String qrPayload, UUID userId) {
+    public Result redeem(UUID callerOrgId, UUID expectedEventId, String qrPayload, UUID userId) {
+        Event event = events.findById(expectedEventId).orElseThrow(() -> ApiException.notFound("Event"));
+        if (callerOrgId == null || !callerOrgId.equals(event.getOrgId())) {
+            throw ApiException.notFound("Event");
+        }
+
         Optional<String> token = signer.verify(qrPayload);
         if (token.isEmpty()) return new Result(Outcome.INVALID, null);
 

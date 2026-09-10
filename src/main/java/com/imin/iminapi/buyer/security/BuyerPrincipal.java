@@ -20,9 +20,4 @@ public record BuyerPrincipal(UUID accountId, UUID sessionId) {
 
     public static final String ROLE = "BUYER";
     public static final String AUTHORITY = "ROLE_" + ROLE;
-
-    /** Stable, non-null identifier for audit-log / log-line use. */
-    public String actorLabel() {
-        return "buyer:" + accountId;
-    }
 }

@@ -139,6 +139,53 @@ class V86OrdersEmailNormalizedTest {
         assertThat(reloaded.getEmailNormalized()).isEqualTo("reload@example.com");
     }
 
+    // ── The query has to actually use the column ───────────────────────────
+
+    /**
+     * The third mechanism, and the one that was missing: V86's own header says the
+     * column exists to fix {@code OrderRepository.findRecentForRecovery}, "which
+     * matches {@code lower(o.email)} with no orgId predicate and therefore
+     * sequential-scans the table on every call" — behind the <b>unauthenticated</b>
+     * /recover endpoint. The column and {@code ix_orders_email_normalized} shipped;
+     * the query was never switched over, so the index has been dead weight and the
+     * scan is still there. A {@code lower()} wrapper round the column would defeat
+     * it again, hence the second assertion.
+     *
+     * <p>Read from the source: the predicate is a string inside an annotation, so
+     * there is nothing at runtime to interrogate.
+     */
+    @Test
+    void the_recovery_lookup_targets_the_indexed_column() throws java.io.IOException {
+        String source = java.nio.file.Files.readString(java.nio.file.Path.of(
+                "src/main/java/com/imin/iminapi/repository/OrderRepository.java"),
+                java.nio.charset.StandardCharsets.UTF_8);
+        int at = source.indexOf("findRecentForRecovery");
+        assertThat(at).as("findRecentForRecovery has been renamed — retarget this test").isPositive();
+        String query = source.substring(Math.max(0, at - 600), at);
+
+        assertThat(query)
+                .as("the recovery lookup must match on the indexed email_normalized column")
+                .contains("o.emailNormalized = :email");
+        assertThat(query)
+                .as("a lower() wrapper round the column makes the index unusable again; "
+                        + "OrderRecoveryService already normalises the parameter")
+                .doesNotContain("lower(o.email");
+    }
+
+    /**
+     * And the equivalence that makes the switch safe: an address stored in mixed
+     * case is still found by the normalised parameter the service passes in.
+     */
+    @Test
+    void recovery_finds_an_order_whose_stored_address_is_mixed_case() {
+        Order order = persistOrder("  Mixed.Case@Example.COM ");
+
+        assertThat(orders.findRecentForRecovery("mixed.case@example.com", null,
+                Instant.parse("2026-01-01T00:00:00Z")))
+                .extracting(Order::getId)
+                .contains(order.getId());
+    }
+
     // ── helpers ────────────────────────────────────────────────────────────
 
     private Order persistOrder(String email) {

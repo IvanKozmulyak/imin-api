@@ -57,9 +57,7 @@ import java.time.Instant;
  *       zone; this field reports what is stored, not the fallback.</li>
  *   <li>{@code enforced} — {@code true}. {@code CampaignDispatcher} calls
  *       {@code QuietHours.isEmailQuiet} unconditionally on every claim pass; there is no
- *       override and no feature flag on that path. (A separate, unwired {@code QuietHoursPolicy}
- *       seam with a default-off flag exists in the tree but is referenced only by its own test —
- *       it gates nothing, so it is deliberately NOT what this field reports.)</li>
+ *       override and no feature flag on that path.</li>
  *   <li>{@code quietNow} — live evaluation of {@code QuietHours.isEmailQuiet(orgTz, now)}.</li>
  * </ul>
  *

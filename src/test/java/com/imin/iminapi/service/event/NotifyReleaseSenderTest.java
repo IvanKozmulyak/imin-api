@@ -1,5 +1,6 @@
 package com.imin.iminapi.service.event;
 
+import org.mockito.ArgumentCaptor;
 import com.imin.iminapi.audience.model.SuppressionEntry;
 import com.imin.iminapi.audience.repository.SuppressionRepository;
 import com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository;
@@ -89,6 +90,9 @@ class NotifyReleaseSenderTest {
     Organization org;
     User owner;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    com.imin.iminapi.marketing.unsubscribe.UnsubscribeTokenService unsubscribeTokens;
+
     @BeforeEach
     void setUp() {
         emailService = mock(EmailService.class);
@@ -99,7 +103,7 @@ class NotifyReleaseSenderTest {
         pushProps = new PushProperties(); // enabled defaults to false
         sender = new NotifyReleaseSender(subscriptions, events, tiers, suppressions,
                 emailService, renderer, emailProps, CLOCK,
-                pushProps, push, pushDevices, buyerEmails, pushPrefs);
+                pushProps, push, pushDevices, buyerEmails, pushPrefs, unsubscribeTokens);
 
         org = new Organization();
         org.setName("Release Org");
@@ -113,6 +117,36 @@ class NotifyReleaseSenderTest {
         owner.setOrgId(org.getId());
         owner.setRole(UserRole.OWNER);
         owner = users.save(owner);
+    }
+
+    /**
+     * A guest subscriber has no account, so the link in this email is their only
+     * way to stop the mail (CPCE L34-5). It points at the buyer site, carries a
+     * signed token scoped to THIS subscription, and differs per recipient even
+     * though the body is rendered once per locale.
+     */
+    @Test
+    void the_release_email_carries_a_per_subscriber_optout_link() {
+        Event e = liveEvent();
+        tier(e.getId(), 100, 0);
+        NotifySubscription a = subscribe(e.getId(), "ada@example.com");
+        NotifySubscription b = subscribe(e.getId(), "grace@example.com");
+
+        sender.sweep();
+
+        ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<String> text = ArgumentCaptor.forClass(String.class);
+        verify(emailService, times(2))
+                .send(anyString(), anyString(), html.capture(), text.capture());
+
+        String expectedA = "/notify/unsubscribe/" + unsubscribeTokens.signNotify(a.getId());
+        String expectedB = "/notify/unsubscribe/" + unsubscribeTokens.signNotify(b.getId());
+        assertThat(html.getAllValues()).anyMatch(h -> h.contains(expectedA));
+        assertThat(html.getAllValues()).anyMatch(h -> h.contains(expectedB));
+        assertThat(text.getAllValues()).allMatch(t -> t.contains("/notify/unsubscribe/"));
+        // The sentinel is an implementation detail and must never reach an inbox.
+        assertThat(html.getAllValues()).noneMatch(h -> h.contains("PLACEHOLDER"));
+        assertThat(text.getAllValues()).noneMatch(t -> t.contains("PLACEHOLDER"));
     }
 
     // -----------------------------------------------------------------------

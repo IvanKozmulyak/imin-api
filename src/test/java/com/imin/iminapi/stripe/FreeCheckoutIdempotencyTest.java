@@ -125,7 +125,8 @@ class FreeCheckoutIdempotencyTest {
 
         // A distinct order per issuance, so a second issuance is impossible to miss.
         when(freeCheckout.issueFreeOrder(any(), any(), anyInt(), anyString(), nullable(com.imin.iminapi.model.PromoCode.class),
-                anyBoolean(), anyBoolean(), any(), nullable(String.class), nullable(String.class)))
+                anyBoolean(), anyBoolean(), any(), nullable(String.class), nullable(String.class),
+                any(com.imin.iminapi.model.CheckoutConsent.class)))
                 .thenAnswer(inv -> {
                     String email = normalize(inv.getArgument(3));
                     String key = inv.getArgument(9);
@@ -182,7 +183,8 @@ class FreeCheckoutIdempotencyTest {
 
         verify(freeCheckout, times(1)).issueFreeOrder(any(), any(), anyInt(), anyString(),
                 nullable(com.imin.iminapi.model.PromoCode.class), anyBoolean(), anyBoolean(),
-                any(), nullable(String.class), nullable(String.class));
+                any(), nullable(String.class), nullable(String.class),
+                any(com.imin.iminapi.model.CheckoutConsent.class));
     }
 
     /**
@@ -230,7 +232,8 @@ class FreeCheckoutIdempotencyTest {
         assertThat(second.orderToken()).isNotEqualTo(first.orderToken());
         verify(freeCheckout, times(2)).issueFreeOrder(any(), any(), anyInt(), anyString(),
                 nullable(com.imin.iminapi.model.PromoCode.class), anyBoolean(), anyBoolean(),
-                any(), nullable(String.class), nullable(String.class));
+                any(), nullable(String.class), nullable(String.class),
+                any(com.imin.iminapi.model.CheckoutConsent.class));
         verify(freeCheckout, never()).findByIdempotencyKey(any(), anyString(), anyString());
     }
 
@@ -249,7 +252,8 @@ class FreeCheckoutIdempotencyTest {
 
         verify(freeCheckout, never()).issueFreeOrder(any(), any(), anyInt(), anyString(),
                 nullable(com.imin.iminapi.model.PromoCode.class), anyBoolean(), anyBoolean(),
-                any(), nullable(String.class), nullable(String.class));
+                any(), nullable(String.class), nullable(String.class),
+                any(com.imin.iminapi.model.CheckoutConsent.class));
     }
 
     /** Exactly at the column width is a legitimate key, not an off-by-one rejection. */
@@ -311,7 +315,8 @@ class FreeCheckoutIdempotencyTest {
 
         when(freeCheckout.issueFreeOrder(any(), any(), anyInt(), anyString(),
                 nullable(com.imin.iminapi.model.PromoCode.class), anyBoolean(), anyBoolean(),
-                any(), nullable(String.class), nullable(String.class)))
+                any(), nullable(String.class), nullable(String.class),
+                any(com.imin.iminapi.model.CheckoutConsent.class)))
                 .thenThrow(new ConcurrencyFailureException("concurrent update on uq_orders_idem"));
         blindTriple = triple(eventId, normalize(BUYER), "key-race");
 
@@ -328,7 +333,8 @@ class FreeCheckoutIdempotencyTest {
     void aDuplicateWithNoReadableWinnerIs409NotAFabricatedOrder() {
         when(freeCheckout.issueFreeOrder(any(), any(), anyInt(), anyString(),
                 nullable(com.imin.iminapi.model.PromoCode.class), anyBoolean(), anyBoolean(),
-                any(), nullable(String.class), nullable(String.class)))
+                any(), nullable(String.class), nullable(String.class),
+                any(com.imin.iminapi.model.CheckoutConsent.class)))
                 .thenThrow(new DataIntegrityViolationException("uq_orders_idem"));
 
         assertThatThrownBy(() -> checkoutWith("key-ghost"))
@@ -346,7 +352,8 @@ class FreeCheckoutIdempotencyTest {
     void anUnkeyedConstraintViolationIsNotSwallowed() {
         when(freeCheckout.issueFreeOrder(any(), any(), anyInt(), anyString(),
                 nullable(com.imin.iminapi.model.PromoCode.class), anyBoolean(), anyBoolean(),
-                any(), nullable(String.class), nullable(String.class)))
+                any(), nullable(String.class), nullable(String.class),
+                any(com.imin.iminapi.model.CheckoutConsent.class)))
                 .thenThrow(new DataIntegrityViolationException("uq_orders_token"));
 
         assertThatThrownBy(() -> checkoutWith(null))

@@ -127,6 +127,20 @@ class PredictionInputSnapshotServiceTest {
     }
 
     @Test
+    void leadTimeIsCountedInTheEventsOwnCalendarNotUtc() {
+        stub(1500);
+        Event e = draft();
+        e.setTimezone("Pacific/Auckland");
+        e.setStartsAt(Instant.parse("2026-07-18T08:00:00Z")); // 2026-07-18 20:00 NZST
+
+        // The clock reads 2026-06-01T12:00Z, which is already 2026-06-02 in Auckland. The event
+        // day is taken in the event's zone, so "today" must be too — otherwise the two sides of
+        // the subtraction are different calendars and the lead time is off by one for part of
+        // every UTC day, flipping the snapshot hash for a reason unrelated to the event.
+        assertThat(sut.build(e).leadTimeDays()).isEqualTo(46);
+    }
+
+    @Test
     void holidayNearEventIsCaptured() {
         stub(1500);
         Event e = draft();

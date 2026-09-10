@@ -62,9 +62,22 @@ public class AttendeeExportService {
         return currency + " " + String.format(Locale.ROOT, "%.2f", minor / 100.0);
     }
 
-    /** RFC-4180 escaping: wrap in quotes and double any embedded quote when needed. */
+    /**
+     * RFC-4180 escaping (wrap in quotes and double any embedded quote when needed), plus a
+     * CSV-injection guard.
+     *
+     * <p>The guard is the same one {@code AudienceController.csvField} applies: a value whose
+     * first character is one of {@code = + - @}, tab or CR is prefixed with a single quote so
+     * Excel and Sheets treat it as text. {@code buyer_email} is buyer-controlled — checkout
+     * validates only that the address contains an "@" — and
+     * {@code =cmd|'/C calc'!A0@example.com} satisfies that while being valid RFC-5322 atext
+     * (events-20).
+     */
     private static String csv(String v) {
         if (v == null) return "";
+        if (!v.isEmpty() && "=+-@\t\r".indexOf(v.charAt(0)) >= 0) {
+            v = "'" + v;
+        }
         if (v.contains(",") || v.contains("\"") || v.contains("\n") || v.contains("\r")) {
             return "\"" + v.replace("\"", "\"\"") + "\"";
         }

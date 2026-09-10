@@ -13,6 +13,7 @@ import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.CurrentUser;
 import com.imin.iminapi.security.RateLimiter;
 import com.imin.iminapi.service.auth.AuthService;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
@@ -29,13 +30,28 @@ public class AuthController {
         this.rateLimiter = rateLimiter;
     }
 
+    /**
+     * Keyed per client IP, not per email: an email key would let an attacker burn
+     * a stranger's bucket and stop them registering at all. Same reasoning, and
+     * the same numbers, as {@code buyer-signup}.
+     */
     @PostMapping("/signup")
-    public VerificationPendingResponse signup(@Valid @RequestBody SignupRequest req) {
+    public VerificationPendingResponse signup(@Valid @RequestBody SignupRequest req,
+                                              HttpServletRequest http) {
+        rateLimiter.consume("signup", "ip:" + http.getRemoteAddr());
         return authService.signup(req);
     }
 
+    /**
+     * Keyed per address, because the address is what is under attack: a correct
+     * guess here returns a live session for that organization. This bucket is the
+     * fast lane only — the control that has to hold is the DB-counted lockout in
+     * {@code EmailVerificationService}, since {@code RateLimitConfig} is
+     * {@code @Profile("!test")} and a limit the suite cannot assert on regresses.
+     */
     @PostMapping("/verify-email")
     public AuthResponse verifyEmail(@Valid @RequestBody VerifyEmailRequest req) {
+        rateLimiter.consume("verify-email", req.email().toLowerCase());
         return authService.verifyEmail(req);
     }
 
@@ -53,9 +69,16 @@ public class AuthController {
         authService.forgotPassword(req);
     }
 
+    /**
+     * Keyed per client IP — the only key that exists before the token is
+     * resolved. The token itself is long and opaque, so this is a floor under
+     * the cost of hammering the endpoint rather than a guessing control.
+     */
     @PostMapping("/reset-password")
     @ResponseStatus(HttpStatus.OK)
-    public void resetPassword(@Valid @RequestBody ResetPasswordRequest req) {
+    public void resetPassword(@Valid @RequestBody ResetPasswordRequest req,
+                              HttpServletRequest http) {
+        rateLimiter.consume("reset-password-token", "ip:" + http.getRemoteAddr());
         authService.resetPassword(req);
     }
 

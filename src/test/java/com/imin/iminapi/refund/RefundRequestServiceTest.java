@@ -10,6 +10,8 @@ import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.service.ticket.TicketProperties;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.ApplicationEventPublisher;
@@ -47,6 +49,7 @@ class RefundRequestServiceTest {
     RefundTicketRepository refundTickets = mock(RefundTicketRepository.class);
     TicketTierRepository tiers = mock(TicketTierRepository.class);
     RefundService refundService = mock(RefundService.class);
+    RefundRepository refunds = mock(RefundRepository.class);
     RefundReferenceGenerator references = new RefundReferenceGenerator(
         java.time.Clock.fixed(java.time.Instant.parse("2026-08-11T00:00:00Z"), java.time.ZoneOffset.UTC));
 
@@ -57,11 +60,12 @@ class RefundRequestServiceTest {
         emailProps.setBuyerSiteBaseUrl("https://app.test");
         emailProps.setFromAddress("noreply@test");
         ticketProps.setRecoveryMaxPerHour(5);
-        when(renderer.render(anyString(), any()))
+        when(renderer.render(anyString(), any(), any()))
             .thenReturn(new EmailTemplateRenderer.Rendered("<html/>", "txt"));
         service = new RefundRequestService(orders, events, attempts, tokens, requests,
             email, renderer, emailProps, ticketProps, publisher,
-            tickets, refundTickets, tiers, refundService, references);
+            tickets, refundTickets, tiers, refundService, refunds, references,
+            new com.imin.iminapi.security.IpHasher("test-ip-hash-secret"));
     }
 
     @Test
@@ -118,6 +122,44 @@ class RefundRequestServiceTest {
         verify(attempts).save(any(OrderRecoveryAttempt.class));
         verify(tokens, never()).save(any());
         verify(email, never()).send(anyString(), anyString(), anyString(), anyString());
+    }
+
+    /**
+     * api-12: this branch logged the buyer's address verbatim while the branch fourteen lines
+     * below it (and the structurally identical OrderRecoveryService line) went through
+     * LogSafe.email. The endpoint that reaches it is unauthenticated, and this is precisely the
+     * branch an attacker drives at will by exceeding recoveryMaxPerHour — so raw addresses
+     * landed in the Railway log pipeline on demand.
+     */
+    @Test
+    void requestLink_rate_limited_does_not_log_the_raw_address() {
+        when(attempts.countByEmailAndAttemptedAtAfter(eq("buyer@example.com"), any()))
+            .thenReturn(100L);
+
+        List<ILoggingEvent> logged = captureWhile(
+            () -> service.requestLink("buyer@example.com", "1.2.3.4"));
+
+        assertThat(logged).isNotEmpty();
+        assertThat(logged).extracting(ILoggingEvent::getFormattedMessage)
+            .allSatisfy(m -> assertThat(m).doesNotContain("buyer@example.com"));
+        assertThat(logged).extracting(ILoggingEvent::getFormattedMessage)
+            .anySatisfy(m -> assertThat(m).contains(com.imin.iminapi.util.LogSafe.email("buyer@example.com")));
+    }
+
+    /** Runs {@code work} with a listening appender attached to the service's logger. */
+    private static List<ILoggingEvent> captureWhile(Runnable work) {
+        ch.qos.logback.classic.Logger logger =
+            (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(RefundRequestService.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            work.run();
+            return List.copyOf(appender.list);
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
     }
 
     @org.junit.jupiter.api.Nested
@@ -572,6 +614,56 @@ class RefundRequestServiceTest {
             assertThat(resp.status()).isEqualTo("rejected");
             assertThat(resp.proposedRefund()).isNull();
         }
+
+        /**
+         * refund-11: refundStatus is a live contract field the dashboard renders (and gates
+         * its "retry this refund" CTA on === 'failed'), so it has to come from the linked
+         * refund row rather than a hard-coded null.
+         */
+        @Test
+        void populates_refund_status_and_event_name_from_the_linked_rows() {
+            java.util.UUID rid = java.util.UUID.randomUUID();
+            java.util.UUID orgId = java.util.UUID.randomUUID();
+            Order order = new Order();
+            order.setId(java.util.UUID.randomUUID());
+            order.setOrgId(orgId);
+            order.setEventId(java.util.UUID.randomUUID());
+            order.setTotalMinor(9000);
+            order.setCurrency("eur");
+
+            Refund refund = new Refund();
+            refund.setId(java.util.UUID.randomUUID());
+            refund.setOrderId(order.getId());
+            refund.setAmountMinor(3000);
+            refund.setStatus(RefundStatus.FAILED);
+
+            RefundRequest rr = new RefundRequest();
+            rr.setId(rid);
+            rr.setOrgId(orgId);
+            rr.setOrderId(order.getId());
+            rr.setEventId(order.getEventId());
+            rr.setBuyerEmail("buyer@example.com");
+            rr.setReason(RefundRequestReason.OTHER);
+            rr.setStatus(RefundRequestStatus.APPROVED);
+            rr.setRefundId(refund.getId());
+
+            com.imin.iminapi.model.Event event = new com.imin.iminapi.model.Event();
+            event.setId(order.getEventId());
+            event.setName("Warehouse Night");
+
+            when(requests.findByIdAndOrgId(rid, orgId)).thenReturn(Optional.of(rr));
+            when(orders.findById(order.getId())).thenReturn(Optional.of(order));
+            when(tickets.findByOrderId(order.getId())).thenReturn(List.of());
+            when(refundTickets.findRefundedTicketIds(any())).thenReturn(Set.of());
+            when(refunds.findById(refund.getId())).thenReturn(Optional.of(refund));
+            when(events.findById(order.getEventId())).thenReturn(Optional.of(event));
+
+            var resp = service.getRequest(rid, orgId);
+
+            assertThat(resp.refundId()).isEqualTo(refund.getId());
+            assertThat(resp.refundStatus()).isEqualTo("failed");
+            assertThat(resp.eventName()).isEqualTo("Warehouse Night");
+        }
     }
 
     @org.junit.jupiter.api.Nested
@@ -761,6 +853,50 @@ class RefundRequestServiceTest {
             assertThat(page.get(0).ticketCount()).isEqualTo(1);
             assertThat(page.get(0).estimatedRefundMinor()).isEqualTo(2500L);
             assertThat(page.get(0).currency()).isEqualTo("eur");
+        }
+
+        @Test
+        void summary_rows_carry_refund_status_and_event_name() {
+            java.util.UUID orgId = java.util.UUID.randomUUID();
+            Order order = new Order();
+            order.setId(java.util.UUID.randomUUID());
+            order.setOrgId(orgId);
+            order.setEventId(java.util.UUID.randomUUID());
+            order.setTotalMinor(9000);
+            order.setCurrency("eur");
+
+            Refund refund = new Refund();
+            refund.setId(java.util.UUID.randomUUID());
+            refund.setOrderId(order.getId());
+            refund.setAmountMinor(3000);
+            refund.setStatus(RefundStatus.FAILED);
+
+            RefundRequest rr = new RefundRequest();
+            rr.setId(java.util.UUID.randomUUID());
+            rr.setOrgId(orgId);
+            rr.setOrderId(order.getId());
+            rr.setEventId(order.getEventId());
+            rr.setBuyerEmail("buyer@example.com");
+            rr.setReason(RefundRequestReason.OTHER);
+            rr.setStatus(RefundRequestStatus.APPROVED);
+            rr.setRefundId(refund.getId());
+
+            com.imin.iminapi.model.Event event = new com.imin.iminapi.model.Event();
+            event.setId(order.getEventId());
+            event.setName("Warehouse Night");
+
+            when(requests.page(eq(orgId), any(), any(), any())).thenReturn(List.of(rr));
+            when(tickets.findByOrderId(order.getId())).thenReturn(List.of());
+            when(refundTickets.findRefundedTicketIds(any())).thenReturn(Set.of());
+            when(orders.findById(order.getId())).thenReturn(Optional.of(order));
+            when(refunds.findAllById(List.of(refund.getId()))).thenReturn(List.of(refund));
+            when(events.findAllById(List.of(order.getEventId()))).thenReturn(List.of(event));
+
+            var page = service.listRequests(orgId, null, null, 25);
+
+            assertThat(page).hasSize(1);
+            assertThat(page.get(0).refundStatus()).isEqualTo("failed");
+            assertThat(page.get(0).eventName()).isEqualTo("Warehouse Night");
         }
     }
 

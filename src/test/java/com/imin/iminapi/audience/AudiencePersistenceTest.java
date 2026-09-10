@@ -399,9 +399,9 @@ class AudiencePersistenceTest {
 
     @Test
     void segment_static_snapshot_frozen_while_dynamic_reevaluates() {
-        segmentService.ensurePrebuiltSegments(orgA);
-        Segment repeatSeg = segmentRepo.findByOrgId(orgA).stream()
-                .filter(s -> "Repeat".equals(s.getName())).findFirst().orElseThrow();
+        // A segment the organizer owns: snapshot refuses prebuilt rows (audience-15).
+        Segment repeatSeg = segmentService.createSegment(orgA, "My repeats", "dynamic",
+                "[{\"field\":\"events\",\"operator\":\">=\",\"value\":\"2\"}]", principalA);
 
         // No repeats yet → resolve = 0
         assertThat(segmentService.resolveMembers(orgA, repeatSeg)).isEmpty();

@@ -13,9 +13,11 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -57,20 +59,43 @@ class PublicUnsubscribeControllerTest {
     }
 
     /**
-     * Both public handlers are the buyer acting on their own behalf (§16), so both
-     * carry DATA_SUBJECT and both write the sticky opt-out. The GET one matters as
-     * much as the POST: it is what a footer link resolves to.
+     * The GET used to write the opt-out, so a link prefetcher, a mail-client
+     * image proxy or a corporate URL scanner unsubscribed people who never
+     * clicked. It now renders a confirm page and touches nothing; the POST that
+     * page submits is what mutates.
      */
     @Test
-    void confirmationPageGet_validToken_unsubscribesAsDataSubject() throws Exception {
+    void confirmationPageGet_doesNotMutate_and_offers_a_post_form_to_the_same_url() throws Exception {
         UUID org = UUID.randomUUID();
         UUID member = UUID.randomUUID();
         String token = tokenService.sign(org, member, UUID.randomUUID(), "email");
 
-        mvc.perform(get("/api/v1/public/unsubscribe/{token}", token))
+        String html = mvc.perform(get("/api/v1/public/unsubscribe/{token}", token))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        verifyNoInteractions(consentService);
+        assertThat(html).contains("method=\"post\"");
+        assertThat(html).contains("/api/v1/public/unsubscribe/" + token);
+    }
+
+    /** The confirm page's own submit still writes the sticky opt-out. */
+    @Test
+    void the_post_the_confirm_page_submits_unsubscribes_as_data_subject() throws Exception {
+        UUID org = UUID.randomUUID();
+        UUID member = UUID.randomUUID();
+        String token = tokenService.sign(org, member, UUID.randomUUID(), "email");
+
+        mvc.perform(post("/api/v1/public/unsubscribe/{token}", token))
                 .andExpect(status().isOk());
 
-        verify(consentService).unsubscribe(eq(org), eq(member), eq("footer_link"), eq("email"),
+        verify(consentService).unsubscribe(eq(org), eq(member), eq("one_click"), eq("email"),
                 eq(ConsentOrigin.DATA_SUBJECT), any());
+    }
+
+    @Test
+    void confirmationPage_badToken_returns404() throws Exception {
+        mvc.perform(get("/api/v1/public/unsubscribe/{token}", "garbage.token"))
+                .andExpect(status().isNotFound());
     }
 }

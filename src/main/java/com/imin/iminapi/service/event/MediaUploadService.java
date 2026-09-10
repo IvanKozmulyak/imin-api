@@ -18,6 +18,7 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
 import java.util.HexFormat;
 import java.util.Map;
 import java.util.Set;
@@ -40,10 +41,44 @@ public class MediaUploadService {
         this.videoMetadata = videoMetadata;
     }
 
+    /** Back-compat overload: an upload that makes no AI-provenance claim. */
     @Transactional
     public MediaUploadResponse upload(AuthPrincipal p, UUID eventId, MediaKind kind,
                                       byte[] bytes, String contentType, String originalFilename) {
+        return upload(p, eventId, kind, bytes, contentType, originalFilename, null);
+    }
+
+    /** Back-compat overload: no rights attestation supplied. */
+    @Transactional
+    public MediaUploadResponse upload(AuthPrincipal p, UUID eventId, MediaKind kind,
+                                      byte[] bytes, String contentType, String originalFilename,
+                                      Boolean aiGenerated) {
+        return upload(p, eventId, kind, bytes, contentType, originalFilename, aiGenerated, null);
+    }
+
+    /**
+     * @param aiGenerated POSTER only. {@code TRUE} when the caller (the Poster
+     *        Studio) is uploading an image it generated; anything else means the
+     *        organizer's own file. Ignored for other media kinds — there is no
+     *        column to put it in, and inventing one from a query parameter would
+     *        be worse than dropping it.
+     */
+    @Transactional
+    public MediaUploadResponse upload(AuthPrincipal p, UUID eventId, MediaKind kind,
+                                      byte[] bytes, String contentType, String originalFilename,
+                                      Boolean aiGenerated, Boolean rightsAttested) {
         Event e = loadOwned(p, eventId);
+        // Rights gate BEFORE validation or any write: a DJ photo is a third
+        // party's face on its way into an AI pipeline (Ideogram character
+        // reference, OpenRouter vision gate). Droit à l'image (C. civ. 9) and
+        // CPI L122-4 make that the uploader's claim to make, and refusing the
+        // upload is the only point at which it can still be captured. Same shape
+        // as the audience CSV import's consent attestation.
+        if (kind == MediaKind.DJ_PHOTO && !Boolean.TRUE.equals(rightsAttested)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.RIGHTS_ATTESTATION_REQUIRED,
+                    "You must confirm you hold the rights to this image and the consent of "
+                            + "anyone depicted (rightsAttested=true)");
+        }
         validate(kind, bytes, contentType);
         Integer durationSec = null;
         if (kind == MediaKind.VIDEO) {
@@ -70,12 +105,20 @@ public class MediaUploadService {
         switch (kind) {
             case POSTER -> {
                 e.setPosterUrl(url);
-                // Provenance (V71): a multipart file upload is the organizer's own asset —
-                // the one poster path whose manual origin is verifiable server-side.
-                e.setPosterAiGenerated(false);
+                // Provenance (V71 / AI Act Art.50). A multipart upload is the organizer's
+                // own asset unless the uploader says otherwise: the Poster Studio pushes
+                // AI output through this same endpoint, and the bytes alone cannot tell
+                // the two apart. Absent or false keeps the original meaning.
+                e.setPosterAiGenerated(Boolean.TRUE.equals(aiGenerated));
             }
             case VIDEO -> e.setVideoUrl(url);
-            case DJ_PHOTO -> e.setDjPhotoUrl(url);
+            case DJ_PHOTO -> {
+                e.setDjPhotoUrl(url);
+                // Stamped with the wording version, not just the time: a timestamp
+                // without the text that was agreed to proves nothing later.
+                e.setDjPhotoRightsAttestedAt(Instant.now());
+                e.setDjPhotoRightsAttestationVersion(RightsAttestation.CURRENT_VERSION);
+            }
         }
         events.save(e);
         // Upload to remote storage — if this throws, the DB row already has the correct URL
@@ -86,7 +129,7 @@ public class MediaUploadService {
         // succeeded — never delete the old object before the new one is durable.
         if (oldUrl != null && !oldUrl.equals(url)) {
             String oldKey = storage.keyFor(oldUrl);
-            if (oldKey != null && !oldKey.equals(key)) {
+            if (oldKey != null && !oldKey.equals(key) && isOwnUploadKey(e.getId(), oldKey)) {
                 try { storage.delete(oldKey); } catch (Exception ignored) {}
             }
         }
@@ -103,7 +146,7 @@ public class MediaUploadService {
         };
         if (url == null) return;
         String key = storage.keyFor(url);
-        if (key != null) {
+        if (key != null && isOwnUploadKey(e.getId(), key)) {
             try { storage.delete(key); } catch (Exception ignored) {}
         }
         switch (kind) {
@@ -112,9 +155,31 @@ public class MediaUploadService {
                 e.setPosterAiGenerated(null); // no poster → no provenance claim (V71)
             }
             case VIDEO -> e.setVideoUrl(null);
-            case DJ_PHOTO -> e.setDjPhotoUrl(null);
+            case DJ_PHOTO -> {
+                e.setDjPhotoUrl(null);
+                // No photo, no attestation: the record described an image that is gone.
+                e.setDjPhotoRightsAttestedAt(null);
+                e.setDjPhotoRightsAttestationVersion(null);
+            }
         }
         events.save(e);
+    }
+
+    /**
+     * True only for objects this event's own multipart uploads wrote, i.e. keys under
+     * {@code events/{eventId}/}.
+     *
+     * <p>{@code MediaStorage.keyFor} resolves a key for ANY URL under the bucket's public
+     * prefix, and the destructive delete used to fire on whatever it returned. AI posters
+     * are written through the same bucket under the shared {@code ai-posters/} prefix
+     * ({@code PosterImageStorage.AI_POSTER_KEY_PREFIX}) and are referenced by the concept
+     * gallery, by every event promoted from that concept, and by already-sent emails and
+     * social posts — and a URL can equally belong to another event. Deleting either is
+     * unrecoverable; leaving an object behind costs bounded storage. So anything outside
+     * this event's own namespace is left alone.
+     */
+    private static boolean isOwnUploadKey(UUID eventId, String key) {
+        return key.startsWith("events/" + eventId + "/");
     }
 
     private Event loadOwned(AuthPrincipal p, UUID eventId) {
@@ -123,15 +188,34 @@ public class MediaUploadService {
         return e;
     }
 
-    private static void validate(MediaKind kind, byte[] bytes, String contentType) {
-        long size = bytes.length;
+    /**
+     * The per-kind size ceiling, split out so the controller can apply it to
+     * {@code MultipartFile.getSize()} BEFORE {@code getBytes()} copies the part onto the heap.
+     *
+     * <p>{@code spring.servlet.multipart.max-file-size} is 60MB because the VIDEO kind needs it,
+     * so a POSTER — capped here at 5 MB — used to be fully materialised at up to 12x its own
+     * limit, per concurrent request, only to be rejected. Same limits, consulted first;
+     * {@link #validate} still calls this so the rule has one definition and the magic-byte and
+     * dimension checks stay on the loaded bytes where they have to be.
+     */
+    public static void checkSizeLimit(MediaKind kind, long size) {
         switch (kind) {
             case POSTER, DJ_PHOTO -> {
                 if (size > 5 * MB) throw fieldErr("file", "must be ≤ 5 MB");
-                if (!IMAGE_TYPES.contains(contentType)) throw fieldErr("file", "must be JPG or PNG");
             }
             case VIDEO -> {
                 if (size > 50 * MB) throw fieldErr("file", "must be ≤ 50 MB");
+            }
+        }
+    }
+
+    private static void validate(MediaKind kind, byte[] bytes, String contentType) {
+        checkSizeLimit(kind, bytes.length);
+        switch (kind) {
+            case POSTER, DJ_PHOTO -> {
+                if (!IMAGE_TYPES.contains(contentType)) throw fieldErr("file", "must be JPG or PNG");
+            }
+            case VIDEO -> {
                 if (!VIDEO_TYPES.contains(contentType)) throw fieldErr("file", "must be MP4");
             }
         }

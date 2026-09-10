@@ -1,5 +1,6 @@
 package com.imin.iminapi.buyer.service;
 
+import com.imin.iminapi.buyer.BuyerTerms;
 import com.imin.iminapi.buyer.model.BuyerAccount;
 import com.imin.iminapi.buyer.model.BuyerIdentity;
 import com.imin.iminapi.buyer.model.BuyerNotificationPreference;
@@ -129,6 +130,9 @@ public class BuyerProfileService {
     public BuyerAccount completeOnboarding(UUID accountId,
                                            Map<String, Object> patch,
                                            boolean acceptedTerms,
+                                           // Accepted so the buyer site keeps compiling
+                                           // against the same shape; deliberately unused —
+                                           // see BuyerTerms.
                                            String termsVersion,
                                            boolean productNews,
                                            String productNewsProof) {
@@ -142,7 +146,14 @@ public class BuyerProfileService {
         // a reason to rewrite when the original one happened.
         if (account.getTermsAcceptedAt() == null) {
             account.setTermsAcceptedAt(Times.nowMicros());
-            account.setTermsVersion(termsVersion);
+            // Server-canonical, NOT the client's string. Whatever the browser sent
+            // used to become the audit fact, which is the one property a consent
+            // record must not have — a client can be old, wrong or hostile. The
+            // field is still accepted on the wire so the buyer site keeps working;
+            // it is simply not believed. The wording is stored alongside because a
+            // version is only evidence if the text it names can be produced later.
+            account.setTermsVersion(BuyerTerms.CURRENT_VERSION);
+            account.setTermsProof(BuyerTerms.acceptanceText(account.getLocale()));
             accounts.save(account);
         }
 
@@ -200,9 +211,15 @@ public class BuyerProfileService {
      * would leave the account with no way back in — no password hash and no
      * other identity. Locking someone out of their own tickets is not a valid
      * outcome of a settings toggle.
+     *
+     * <p>Revokes every OTHER session on success — unlinking Google is one of
+     * §2.2's five mandatory revocation events, and it is the whole point of the
+     * control: "remove this sign-in method" that leaves the sessions it minted
+     * alive for the remaining 180 days does not remove access. The acting
+     * session is spared for the same reason {@link #changePassword} spares it.
      */
     @Transactional
-    public void unlinkIdentity(UUID accountId, String provider) {
+    public void unlinkIdentity(UUID accountId, UUID actingSessionId, String provider) {
         BuyerAccount account = accounts.findById(accountId)
                 .orElseThrow(() -> ApiException.notFound("Account"));
 
@@ -220,6 +237,8 @@ public class BuyerProfileService {
         }
 
         identities.delete(target);
+
+        sessions.revokeAllExcept(accountId, actingSessionId);
     }
 
     /** "First Last", or whichever half exists, or null when neither does. */

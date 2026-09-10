@@ -168,6 +168,89 @@ class ReforecastServiceTest {
         assertThat(rows).allMatch(row -> row.getSurface() == PredictionSurface.REFORECAST);
     }
 
+    /**
+     * predictor-edge-8: {@code band} must stay the MACHINE code — {@code ReforecastService}
+     * parses it back with {@code ProjectionBand.valueOf} on every recompute and folds it into
+     * the ledger input hash — so the honest phrase ships beside it as {@code bandLabel}. The
+     * organizer's chip rendered the raw constant ("TRACKING_60_85") in all four locales until
+     * this existed.
+     */
+    @Test
+    void servesTheBandCodeAndItsDisplayPhraseSideBySide() {
+        stubBands(ProjectionBand.TRACKING_60_85);
+        ReforecastResult r = sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
+
+        assertThat(r.band()).isEqualTo("TRACKING_60_85");                          // machine code
+        assertThat(r.bandLabel()).isEqualTo("tracking 60–85% of capacity");        // display phrase
+        assertThat(r.bandLabel()).isEqualTo(ProjectionBand.TRACKING_60_85.phrase());
+    }
+
+    /** A ledger row written before bandLabel existed still serves a renderable label. */
+    @Test
+    void servableLedgerRowWithoutBandLabelGetsThePhraseFilledIn() {
+        stubBands(ProjectionBand.TRACKING_60_85);
+        sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
+        // Strip the field from the persisted row, exactly as a pre-upgrade row looks.
+        PredictionLedger row = rows.get(0);
+        row.setOutputJson(row.getOutputJson().replace("\"bandLabel\":\"tracking 60–85% of capacity\",", ""));
+        assertThat(row.getOutputJson()).doesNotContain("bandLabel");
+
+        ReforecastResult served = sut.latestServable(eventId);
+
+        assertThat(served.band()).isEqualTo("TRACKING_60_85");
+        assertThat(served.bandLabel()).isEqualTo("tracking 60–85% of capacity");
+    }
+
+    @Test
+    void stage0InterimCarriesTheBandLabelToo() {
+        when(pacingCurves.lookup(any(), any(), any(), any(), any())).thenReturn(Optional.empty());
+        seedPrePublish(120, 170);
+
+        ReforecastResult r = sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
+
+        assertThat(r.stage()).isEqualTo(0);
+        assertThat(r.band()).isNotNull();
+        assertThat(r.bandLabel()).isEqualTo(ProjectionBand.valueOf(r.band()).phrase());
+    }
+
+    /**
+     * predictor-edge-3: the curves are keyed off event_outcomes.city / genre_family, which store
+     * MERGE keys — looking up with a display spelling would miss the event's own segment.
+     */
+    @Test
+    void pacingCurveIsLookedUpByTheMergeKeysNotTheDisplaySpellings() {
+        Event e = events.findActive(eventId).orElseThrow();
+        e.setVenueCity("Den Haag");
+        e.setGenre(" House & Techno ");
+        stubBands(ProjectionBand.TRACKING_60_85);
+
+        sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
+
+        verify(pacingCurves).lookup(org.mockito.ArgumentMatchers.eq("den haag"),
+                org.mockito.ArgumentMatchers.eq("NL"),
+                org.mockito.ArgumentMatchers.eq("house & techno"), any(), any());
+    }
+
+    /**
+     * predictor-edge-9: the pacing block's relaxation is a display phrase and is absent at the
+     * un-relaxed rung; the ledger's internal comparables JSON keeps the enum name.
+     */
+    @Test
+    void pacingRelaxationIsAPhraseAndAbsentWhenTheNetWasNotWidened() {
+        stubBands(ProjectionBand.TRACKING_60_85);
+        ReforecastResult r = sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
+
+        assertThat(r.pacing().relaxation()).isNull();                       // NONE ⇒ nothing to say
+        assertThat(rows.get(0).getComparablesJson()).contains("\"relaxation\":\"NONE\"");
+
+        when(pacingCurves.lookup(any(), any(), any(), any(), any()))
+                .thenReturn(Optional.of(new CurveMatch(RelaxationLevel.CITY_TO_COUNTRY, curve())));
+        stubBands(ProjectionBand.TRACKING_60_85);
+        ReforecastResult widened = sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
+
+        assertThat(widened.pacing().relaxation()).isEqualTo("across the country");
+    }
+
     @Test
     void projectedFinalRangeYieldsRevenueAndVelocityArithmetic() {
         stubBands(ProjectionBand.TRACKING_60_85);
@@ -234,7 +317,30 @@ class ReforecastServiceTest {
         ReforecastResult r = sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
         assertThat(r.status()).isEqualTo("insufficient_data");
         assertThat(r.band()).isNull();
+        assertThat(r.bandLabel()).isNull();                       // no band ⇒ no label to render
         assertThat(r.generatedAt()).isEqualTo(now);               // timestamp still present
+    }
+
+    /**
+     * predictor-edge-14: {@code classify(mid, 0)} answered UNDER_60, so an event whose tiers were
+     * removed or zeroed after it was scored was served a "ready" chip reading "tracking below 60%
+     * of capacity" — and a crossing into it fired a dashboard notification — about an event with
+     * no capacity at all. Unknown capacity is not a tiny capacity.
+     */
+    @Test
+    void capacityZeroServesNoBandAndNoAlert() {
+        when(tiers.sumQuantityByEventId(eventId)).thenReturn(0);
+        when(pacingCurves.lookup(any(), any(), any(), any(), any())).thenReturn(Optional.empty());
+        seedPrePublish(120, 170);   // a real pre-publish range still exists in the ledger
+
+        ReforecastResult r = sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
+
+        assertThat(ProjectionBand.classify(150, 0)).isNull();
+        assertThat(r.status()).isEqualTo("insufficient_data");
+        assertThat(r.band()).isNull();
+        assertThat(r.bandLabel()).isNull();
+        assertThat(r.projectedFinalRange()).isNull();
+        verify(alertNotifier, never()).notifyBandChange(any(), any(), any(), any());
     }
 
     // ---- trajectory alert: exactly once per crossing ---------------------------
@@ -251,6 +357,30 @@ class ReforecastServiceTest {
         for (int i = 0; i < 5; i++) sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
 
         verify(alertNotifier, times(2)).notifyBandChange(any(), any(), any(), any());
+    }
+
+    /**
+     * predictor-edge-1: the alert's tone is the platform's tone vocabulary (green/amber). It
+     * shipped "up"/"down", which that vocabulary has no member for — so an up-crossing (the good
+     * news the alert exists to deliver) and a down-crossing rendered as the identical neutral
+     * chip and the direction signal was lost.
+     */
+    @Test
+    void bandCrossingToneIsGreenUpAndAmberDown() {
+        stubBands(
+                ProjectionBand.TRACKING_85_100, // establish
+                ProjectionBand.TRACKING_60_85,  // weakened → amber
+                ProjectionBand.TRACKING_85_100  // recovered → green
+        );
+        sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
+
+        ReforecastResult weakened = sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
+        assertThat(weakened.alert().tone()).isEqualTo("amber");
+        assertThat(weakened.alert().was()).isEqualTo(ProjectionBand.TRACKING_85_100.phrase());
+        assertThat(weakened.alert().now()).isEqualTo(ProjectionBand.TRACKING_60_85.phrase());
+
+        ReforecastResult recovered = sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
+        assertThat(recovered.alert().tone()).isEqualTo("green");
     }
 
     // ---- helpers ---------------------------------------------------------------

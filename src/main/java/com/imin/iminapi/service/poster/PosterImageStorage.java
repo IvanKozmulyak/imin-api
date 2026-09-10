@@ -30,6 +30,31 @@ public class PosterImageStorage {
 
     private static final Logger log = LoggerFactory.getLogger(PosterImageStorage.class);
 
+    /** Object-storage key prefix every AI-rendered poster is written under. */
+    public static final String AI_POSTER_KEY_PREFIX = "ai-posters/";
+
+    /** Local-disk fallback path segment for the same images. */
+    public static final String AI_POSTER_LOCAL_PATH = "/images/";
+
+    /**
+     * Whether a poster URL was produced by the AI pipeline.
+     *
+     * <p>AI Act Art.50 provenance has to be decidable from something the server
+     * knows, not from a flag the client sends. Every AI render leaves through
+     * {@link #writePng}, which writes either an {@code ai-posters/} object-storage
+     * key or a local {@code /images/} file, and nothing else in the application
+     * writes to either location — so the URL itself is the evidence.
+     *
+     * <p>A {@code false} here means "not one of ours", i.e. provenance unknown,
+     * not "definitely human-made". Callers stamp {@code null} rather than
+     * {@code false} on that branch.
+     */
+    public static boolean isAiGeneratedPosterUrl(String url) {
+        if (url == null || url.isBlank()) return false;
+        return url.contains("/" + AI_POSTER_KEY_PREFIX) || url.startsWith(AI_POSTER_KEY_PREFIX)
+                || url.contains(AI_POSTER_LOCAL_PATH);
+    }
+
     private final Path storageDir;
     private final ObjectProvider<MediaStorage> mediaStorageProvider;
     private final String apiPublicBaseUrl;
@@ -77,7 +102,7 @@ public class PosterImageStorage {
         MediaStorage media = mediaStorageProvider.getIfAvailable();
         if (media != null) {
             try {
-                String url = media.put("ai-posters/" + id + ".png", bytes, "image/png").url();
+                String url = media.put(AI_POSTER_KEY_PREFIX + id + ".png", bytes, "image/png").url();
                 log.debug("Stored poster to object storage: {} ({} bytes)", url, bytes.length);
                 return url;
             } catch (RuntimeException e) {
@@ -95,6 +120,6 @@ public class PosterImageStorage {
             throw new UncheckedIOException("Failed to write image to disk: " + path, e);
         }
         log.debug("Wrote {} ({} bytes)", path, bytes.length);
-        return apiPublicBaseUrl + "/images/" + filename;
+        return apiPublicBaseUrl + AI_POSTER_LOCAL_PATH + filename;
     }
 }

@@ -4,8 +4,7 @@ import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.ConsentOrigin;
-import com.imin.iminapi.audience.service.ConsentService;
-import com.imin.iminapi.buyer.email.BuyerAccountEmailer;
+import com.imin.iminapi.buyer.email.BuyerMailEvents;
 import com.imin.iminapi.buyer.model.BuyerAccount;
 import com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository;
 import com.imin.iminapi.buyer.repository.BuyerAccountRepository;
@@ -17,6 +16,7 @@ import com.imin.iminapi.service.audit.AuditLogger;
 import com.imin.iminapi.util.Times;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -75,27 +75,27 @@ public class BuyerAccountDeletionService {
     private final BuyerAccountEmailRepository emails;
     private final ConsumerRepository consumers;
     private final MembershipRepository memberships;
-    private final ConsentService consentService;
+    private final BuyerUnsubscribeRunner unsubscribeRunner;
     private final BuyerSessionService sessions;
     private final AuditLogger auditLogger;
-    private final BuyerAccountEmailer emailer;
+    private final ApplicationEventPublisher events;
 
     public BuyerAccountDeletionService(BuyerAccountRepository accounts,
                                        BuyerAccountEmailRepository emails,
                                        ConsumerRepository consumers,
                                        MembershipRepository memberships,
-                                       ConsentService consentService,
+                                       BuyerUnsubscribeRunner unsubscribeRunner,
                                        BuyerSessionService sessions,
                                        AuditLogger auditLogger,
-                                       BuyerAccountEmailer emailer) {
+                                       ApplicationEventPublisher events) {
         this.accounts = accounts;
         this.emails = emails;
         this.consumers = consumers;
         this.memberships = memberships;
-        this.consentService = consentService;
+        this.unsubscribeRunner = unsubscribeRunner;
         this.sessions = sessions;
         this.auditLogger = auditLogger;
-        this.emailer = emailer;
+        this.events = events;
     }
 
     /**
@@ -128,7 +128,7 @@ public class BuyerAccountDeletionService {
         int revoked = sessions.revokeAll(accountId);
         int notified = notifyDeletionScheduled(accountId, account.getLocale(), deleteAt);
 
-        log.info("[buyer] deletion scheduled account={} deleteAt={} unsubscribed={} sessionsRevoked={} notified={}",
+        log.info("[buyer] deletion scheduled account={} deleteAt={} unsubscribed={} sessionsRevoked={} notifying={}",
                 accountId, deleteAt, unsubscribed, revoked, notified);
 
         return deleteAt;
@@ -149,21 +149,21 @@ public class BuyerAccountDeletionService {
      * <p>A send failure can never fail the deletion. The buyer asked for it, the
      * status flip and the session revocation have already happened, and refusing
      * the request because Resend was down would be the wrong trade. Each address
-     * is attempted independently so one bad address cannot silence the rest.
+     * is a separate event so one bad address cannot silence the rest.
      *
-     * @return how many addresses were mailed
+     * <p>The sends themselves happen AFTER_COMMIT, off this thread
+     * ({@code BuyerMailListener}). This is the loop the whole rule is about: it
+     * made one blocking Resend round trip per verified address while the
+     * deletion transaction — and its pooled connection — stayed open.
+     *
+     * @return how many addresses will be mailed
      */
     private int notifyDeletionScheduled(UUID accountId, String locale, Instant deleteAt) {
-        int sent = 0;
-        for (String address : emails.findVerifiedEmailsByBuyerAccountId(accountId)) {
-            try {
-                emailer.sendDeletionScheduled(address, locale, deleteAt);
-                sent++;
-            } catch (RuntimeException e) {
-                log.error("[buyer] deletion notice failed account={} : {}", accountId, e.getMessage());
-            }
+        List<String> addresses = emails.findVerifiedEmailsByBuyerAccountId(accountId);
+        for (String address : addresses) {
+            events.publishEvent(new BuyerMailEvents.DeletionScheduled(address, locale, deleteAt));
         }
-        return sent;
+        return addresses.size();
     }
 
     /**
@@ -222,7 +222,14 @@ public class BuyerAccountDeletionService {
                     try {
                         // The buyer asked for deletion themselves, so this is an Art. 21
                         // objection by the data subject and writes a sticky opt-out row.
-                        consentService.unsubscribe(m.getOrgId(), m.getMembershipId(),
+                        //
+                        // Through the REQUIRES_NEW runner, never straight at
+                        // ConsentService: unsubscribe is @Transactional(REQUIRED), so a
+                        // direct call would participate in THIS transaction and its throw
+                        // would mark the whole deletion rollback-only before the catch
+                        // below ever ran. The catch stays outside that boundary so it
+                        // also covers whatever the proxy raises at the inner commit.
+                        unsubscribeRunner.unsubscribeOne(m.getOrgId(), m.getMembershipId(),
                                 CONSENT_SOURCE, channel, ConsentOrigin.DATA_SUBJECT, principal);
                         count++;
                     } catch (RuntimeException e) {

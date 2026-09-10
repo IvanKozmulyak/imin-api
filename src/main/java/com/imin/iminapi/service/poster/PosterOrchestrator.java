@@ -25,7 +25,6 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -34,7 +33,6 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -74,7 +72,6 @@ public class PosterOrchestrator {
     private final boolean paletteRegradeEnabled;
     private final int paletteRegradeWeight;
     private final int maxReferences;
-    private final Semaphore renderCap;
     private final ExecutorService variantPool;
 
     public PosterOrchestrator(
@@ -93,7 +90,7 @@ public class PosterOrchestrator {
             @Value("${poster.palette-regrade.enabled:true}") boolean paletteRegradeEnabled,
             @Value("${poster.palette-regrade.image-weight:85}") int paletteRegradeWeight,
             @Value("${ideogram.max-references:3}") int maxReferences,
-            @Value("${poster.render.max-concurrent:${replicate.max-concurrent:6}}") int maxConcurrent) {
+            @Value("${poster.render.max-concurrent:6}") int maxConcurrent) {
         this.ideogramClient = ideogramClient;
         this.vibeLibrary = vibeLibrary;
         this.styleCardLibrary = styleCardLibrary;
@@ -109,7 +106,9 @@ public class PosterOrchestrator {
         this.paletteRegradeEnabled = paletteRegradeEnabled;
         this.paletteRegradeWeight = paletteRegradeWeight;
         this.maxReferences = Math.max(0, maxReferences);
-        this.renderCap = new Semaphore(maxConcurrent, true);
+        // maxConcurrent sizes the variant pool and nothing else: the pool is capped at 3 (one thread
+        // per concept variant) and never exceeds maxConcurrent, so a second per-render permit could
+        // not block for ANY value and only pretended to cap in-flight renders.
         this.variantPool = Executors.newFixedThreadPool(
                 Math.min(VARIANT_POOL_SIZE, Math.max(1, maxConcurrent)),
                 r -> {
@@ -129,25 +128,18 @@ public class PosterOrchestrator {
 
     private record RenderContext(Vibe vibe, StyleCard card, StyleControl style) {}
 
-    public OrchestrationResult run(UUID generatedEventId, EventCreatorRequest request, PosterConcept concept) {
-        return run(generatedEventId, request, concept, deriveSeed(generatedEventId), List.of(), null);
-    }
-
-    public OrchestrationResult run(UUID generatedEventId, EventCreatorRequest request, PosterConcept concept,
-                                   long creativeSeed, List<CreativeDirection> directions) {
-        return run(generatedEventId, request, concept, creativeSeed, directions, null);
-    }
-
-    public OrchestrationResult run(UUID generatedEventId, EventCreatorRequest request, PosterConcept concept,
-                                   long creativeSeed, List<CreativeDirection> directions, BrandSnapshot brand) {
-        return run(generatedEventId, request, concept, creativeSeed, directions, brand, null);
-    }
-
+    /**
+     * @param organizerId the user this paid render is attributed to (may be null in tests). Stamped
+     *                    on the generation row: {@code poster_generations.organizer_id} has existed
+     *                    since V3 with no writer, so every row carried no actor at all, while the
+     *                    AI-Act provenance work already stamps model_id per variant.
+     */
     public OrchestrationResult run(UUID generatedEventId, EventCreatorRequest request, PosterConcept concept,
                                    long creativeSeed, List<CreativeDirection> directions, BrandSnapshot brand,
-                                   DjPhotoSnapshot djPhoto) {
+                                   DjPhotoSnapshot djPhoto, UUID organizerId) {
         PosterGeneration generation = new PosterGeneration();
         generation.setGeneratedEventId(generatedEventId);
+        generation.setOrganizerId(organizerId);
         generation.setStatus(PosterGenerationStatus.PENDING);
         generation.setSubStyleTag(concept.subStyleTag());
         generation.setCreativeSeed(creativeSeed);
@@ -222,19 +214,14 @@ public class PosterOrchestrator {
         entity.setReferenceImagesUsed(String.join(",", ctx.style().ids()));
         entity.setSeed(seed);
         entity.setCreativeDirectionJson(serialize(direction));
+        // AI Act Art.50 provenance (V100): stamped at creation, alongside the
+        // prompt and seed, so it is recorded even for a variant that then fails.
+        entity.setModelId(IdeogramV3Client.MODEL_ID);
         entity.setStatus(PosterVariantStatus.PENDING);
         synchronized (generation) {
             generation.getVariants().add(entity);
         }
 
-        try {
-            renderCap.acquire();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            entity.setStatus(PosterVariantStatus.FAILED);
-            entity.setFailureReason("interrupted while waiting for render slot");
-            return toDto(entity);
-        }
         try {
             return renderWithValidation(entity, variant, seed, request, ctx, brand, characterRef);
         } catch (RuntimeException e) {
@@ -242,8 +229,6 @@ public class PosterOrchestrator {
             entity.setStatus(PosterVariantStatus.FAILED);
             entity.setFailureReason(e.getMessage());
             return toDto(entity);
-        } finally {
-            renderCap.release();
         }
     }
 
@@ -260,7 +245,6 @@ public class PosterOrchestrator {
 
         long seed = baseSeed;
         byte[] image = null;
-        String url = null;
         String correction = null;
 
         for (int attempt = 0; attempt <= maxRegenerations; attempt++) {
@@ -275,8 +259,9 @@ public class PosterOrchestrator {
                     : ideogramClient.remix(image, correction, remixImageWeight, seed, style.parts(), style.preset(),
                             brandPalette, characterRef);
             image = render.imageBytes();
-            url = storage.writePng(image);
-            entity.setRawUrl(url);
+            // Deliberately NOT stored yet: every superseded retry render used to leave an
+            // unreferenced, immutable R2 object that nothing ever reclaimed. accept() performs the
+            // single raw write, for the one render that actually ships.
             entity.setStatus(PosterVariantStatus.RAW_READY);
 
             PosterTextValidationService.ValidationDecision text = textValidation.validateOrExplain(image, spec);
@@ -285,7 +270,7 @@ public class PosterOrchestrator {
                 if (last) {
                     log.warn("Text gate still failing after {} regenerations; accepting best-effort: {}",
                             maxRegenerations, text.reason());
-                    return accept(entity, url, VERDICT_BEST_EFFORT, attempts, brand);
+                    return accept(entity, image, VERDICT_BEST_EFFORT, attempts, brand);
                 }
                 correction = buildCorrectionPrompt(variant.ideogramPrompt(), text);
                 seed = nextSeed(seed);
@@ -296,23 +281,18 @@ public class PosterOrchestrator {
             // combination), so apply the brand palette in a separate regrade pass BEFORE the
             // style gate, so the gate judges the colours that actually ship.
             if (characterRef != null && paletteRegradeEnabled && !brandPalette.isEmpty()) {
-                byte[] regraded = paletteRegrade(image, seed, brandPalette, spec, attempts);
-                if (regraded != image) {
-                    image = regraded;
-                    url = storage.writePng(image);
-                    entity.setRawUrl(url);
-                }
+                image = paletteRegrade(image, seed, brandPalette, spec, attempts);
             }
 
             PosterStyleValidationService.ValidationDecision styleDecision =
                     styleValidation.validateOrExplain(image, ctx.card(), heroType);
             attempts.add(attemptJson(attempt, seed, attempt == 0 ? "generate" : "remix", text, styleDecision));
             if (styleDecision.accepted()) {
-                return accept(entity, url, VERDICT_ACCEPTED, attempts, brand);
+                return accept(entity, image, VERDICT_ACCEPTED, attempts, brand);
             }
             // Text is correct; style is soft — accept best-effort without spending more renders.
             log.warn("Style gate soft-failed (text OK); accepting best-effort: {}", styleDecision.reason());
-            return accept(entity, url, VERDICT_BEST_EFFORT, attempts, brand);
+            return accept(entity, image, VERDICT_BEST_EFFORT, attempts, brand);
         }
         throw new IllegalStateException("render-with-validation loop exhausted");
     }
@@ -358,13 +338,18 @@ public class PosterOrchestrator {
     }
 
     /**
-     * The single funnel that sets final_url for every acceptance path. Composites the brand logo
-     * when the snapshot says to, as a SECOND storage write (final_url = composited URL; raw_url keeps
-     * the un-composited render). Failure isolation is absolute: any composite error → final_url =
+     * The single funnel that stores the accepted render and sets raw_url/final_url for every
+     * acceptance path. This is the ONLY raw write: retry and regrade renders that were superseded
+     * are never stored, so no unreferenced objects accumulate. Composites the brand logo when the
+     * snapshot says to, as a SECOND storage write (final_url = composited URL; raw_url keeps the
+     * un-composited render). Failure isolation is absolute: any composite error → final_url =
      * raw_url + Sentry warning + status FAILED. Generation never fails over the logo.
      */
-    private GeneratedPoster accept(PosterVariantEntity entity, String rawUrl, String verdict,
-                                   List<Map<String, Object>> attempts, BrandSnapshot brand) {
+    private GeneratedPoster accept(PosterVariantEntity entity, byte[] rawBytes,
+                                   String verdict, List<Map<String, Object>> attempts,
+                                   BrandSnapshot brand) {
+        String rawUrl = storage.writePng(rawBytes);
+        entity.setRawUrl(rawUrl);
         entity.setValidationVerdict(verdict);
         entity.setValidationAttemptsJson(serialize(attempts));
         entity.setStatus(PosterVariantStatus.COMPLETE);
@@ -375,7 +360,9 @@ public class PosterOrchestrator {
             compositeStatus = "SKIPPED";
         } else {
             try {
-                byte[] rawBytes = storage.download(rawUrl);
+                // The render bytes are still in hand — re-fetching the object we just wrote adds an
+                // R2 round trip per branded variant and a failure mode (a transient read error ships
+                // the poster un-composited) that holding the bytes cannot have.
                 byte[] composited = logoCompositor.composite(rawBytes, brand.logoUrl());
                 finalUrl = storage.writePng(composited); // SECOND write → distinct object/URL
                 compositeStatus = "APPLIED";
@@ -452,28 +439,21 @@ public class PosterOrchestrator {
         return Math.floorMod(s, 1_000_000_000L) + 1L;
     }
 
-    private static long deriveSeed(UUID id) {
-        return id == null ? 1L : Math.abs(id.getMostSignificantBits() ^ id.getLeastSignificantBits());
-    }
-
     private static long nextSeed(long seed) {
         long s = seed * 6364136223846793005L + 1442695040888963407L;
         return Math.floorMod(s, 1_000_000_000L) + 1L;
     }
 
     private GeneratedPoster toDto(PosterVariantEntity e) {
-        Map<String, Object> overlays = new HashMap<>();
-        overlays.put("qr_code", false);
-        overlays.put("address", false);
         List<String> refs = e.getReferenceImagesUsed() == null || e.getReferenceImagesUsed().isBlank()
                 ? List.of() : List.of(e.getReferenceImagesUsed().split(","));
         return new GeneratedPoster(
                 e.getId(), e.getVariantStyle(), e.getRawUrl(), e.getFinalUrl(),
-                e.getSeed() != null ? e.getSeed() : 0L, e.getIdeogramPrompt(), refs, overlays,
+                e.getSeed() != null ? e.getSeed() : 0L, refs,
                 e.getStatus().name(), e.getFailureReason());
     }
 
     private GeneratedPoster failedPoster(UUID id, String style, String reason) {
-        return new GeneratedPoster(id, style, null, null, 0L, "", List.of(), Map.of(), "FAILED", reason);
+        return new GeneratedPoster(id, style, null, null, 0L, List.of(), "FAILED", reason);
     }
 }

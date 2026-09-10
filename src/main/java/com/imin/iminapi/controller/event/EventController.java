@@ -3,8 +3,10 @@ package com.imin.iminapi.controller.event;
 import com.imin.iminapi.dto.PageResponse;
 import com.imin.iminapi.dto.event.*;
 import com.imin.iminapi.model.EventStatus;
+import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.CurrentUser;
+import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.service.event.EventOverviewService;
 import com.imin.iminapi.service.event.EventService;
 import com.imin.iminapi.service.event.EventVelocityService;
@@ -34,13 +36,31 @@ public class EventController {
                                        @RequestParam(required = false) String status,
                                        @RequestParam(defaultValue = "1") int page,
                                        @RequestParam(defaultValue = "20") int pageSize) {
-        EventStatus s = (status == null || status.isBlank()) ? null : EventStatus.fromWire(status);
+        EventStatus s = (status == null || status.isBlank()) ? null : statusOr400(status);
         return eventService.list(p, s, page, pageSize);
+    }
+
+    /**
+     * {@code EventStatus.fromWire} is a bare {@code valueOf}, so an unknown value threw
+     * IllegalArgumentException — which no handler catches, making a stale bookmark or a typo'd
+     * deep link a 500 INTERNAL plus a spurious log.error. Same translation the sibling
+     * {@code EventMediaController.kindOr404} already does for MediaKind, and it names the
+     * offending field so the FE can point at the filter.
+     */
+    private static EventStatus statusOr400(String status) {
+        try {
+            return EventStatus.fromWire(status);
+        } catch (IllegalArgumentException e) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID,
+                    "Unknown event status",
+                    java.util.Map.of("status", "must be one of: draft, live, past, cancelled"));
+        }
     }
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public EventDto create(@CurrentUser AuthPrincipal p, @RequestBody(required = false) EventPatchRequest body) {
+    public EventDto create(@CurrentUser AuthPrincipal p,
+                           @RequestBody(required = false) @jakarta.validation.Valid EventPatchRequest body) {
         return eventService.createDraft(p, body);
     }
 
@@ -53,7 +73,7 @@ public class EventController {
     public EventDto patch(@CurrentUser AuthPrincipal p,
                           @PathVariable UUID id,
                           @RequestHeader(value = "If-Match", required = false) String ifMatch,
-                          @RequestBody EventPatchRequest body) {
+                          @RequestBody @jakarta.validation.Valid EventPatchRequest body) {
         return eventService.patch(p, id, ifMatch, body);
     }
 

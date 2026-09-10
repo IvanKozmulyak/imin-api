@@ -28,7 +28,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 // so the two buyer filters are instantiated here even though this controller has
 // nothing to do with them — same reason the organizer session repositories below
 // are mocked for BearerTokenAuthFilter.
-@Import({SecurityConfig.class, com.imin.iminapi.buyer.BuyerConfig.class})
+@Import({SecurityConfig.class, com.imin.iminapi.buyer.BuyerConfig.class,
+        com.imin.iminapi.security.GlobalExceptionHandler.class})
 class StyleReferenceControllerTest {
 
     @Autowired private MockMvc mockMvc;
@@ -84,5 +85,28 @@ class StyleReferenceControllerTest {
 
         mockMvc.perform(get("/api/v1/posters/style-references/neon_underground/99"))
                 .andExpect(status().isNotFound());
+    }
+
+    /**
+     * api-15: the 404 reason was {@code e.getMessage()} straight off the library's
+     * IllegalArgumentException, and GlobalExceptionHandler copies a ResponseStatusException's
+     * reason into the body. The whole /api/v1/posters/** tree is permitAll, so an anonymous
+     * caller was reading whatever the library chose to say about the classpath — including the
+     * per-tag reference count ("size=K"). It is the one place in the codebase that reflected an
+     * internal message rather than substituting a fixed string.
+     */
+    @Test
+    void image_404_does_not_echo_the_internal_message() throws Exception {
+        when(library.loadBytes("neon_underground", 99))
+                .thenThrow(new IllegalArgumentException(
+                        "Index 99 out of range for tag neon_underground (size=4)"));
+
+        mockMvc.perform(get("/api/v1/posters/style-references/neon_underground/99"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("NOT_FOUND"))
+                .andExpect(content().string(org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.containsString("size=4"))))
+                .andExpect(content().string(org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.containsString("out of range"))));
     }
 }

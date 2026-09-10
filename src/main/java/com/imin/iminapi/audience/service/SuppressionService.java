@@ -77,7 +77,11 @@ public class SuppressionService {
         s.setMembershipId(membershipId);
         s.setReason(reason);
         s.setSystemOwned(false);
-        SuppressionEntry saved = suppressionRepo.save(s);
+        // saveAndFlush: the read above wins the common case, and V114's unique index is the
+        // backstop for the race it cannot close. Flushing here makes a lost race arrive as a
+        // DataIntegrityViolationException (409 DUPLICATE) instead of an opaque rollback at
+        // commit — and, either way, never as the two rows that used to 500 every later read.
+        SuppressionEntry saved = suppressionRepo.saveAndFlush(s);
 
         auditLogger.record(principal, AuditActions.SUPPRESSION_ADDED, "membership", membershipId,
                 "Marketing suppression added: reason=" + reason);
@@ -87,6 +91,15 @@ public class SuppressionService {
     /**
      * Remove a marketing suppression for a membership in this org.
      * No-op if it does not exist.
+     *
+     * <p>// ponytail: NO HTTP PATH REACHES THIS TODAY. Kept deliberately, not by
+     * oversight: it is the only code in the tree that can un-suppress a member, so
+     * deleting it would remove the capability, which is a product decision rather
+     * than a dead-code sweep. AudienceController exposes add-suppression but no
+     * remove, so an organizer who suppresses a member cannot undo it through the
+     * API. Either wire a DELETE onto this method or decide, explicitly, that
+     * suppression is permanent — and then delete it along with
+     * {@code SuppressionRepository.deleteMarketing}, whose only caller this is.
      */
     @Transactional
     public void removeMarketing(UUID orgId, UUID membershipId, AuthPrincipal principal) {
@@ -96,6 +109,11 @@ public class SuppressionService {
 
     /**
      * List all marketing suppression entries for an org.
+     *
+     * <p>// ponytail: no caller — AudienceController and AudienceService both read
+     * {@code suppressionRepo.findMarketingByOrg} directly and bypass this wrapper.
+     * Held with {@link #removeMarketing} rather than deleted separately, so the
+     * suppression read/remove pair stays one decision.
      */
     @Transactional(readOnly = true)
     public List<SuppressionEntry> listMarketing(UUID orgId) {
@@ -125,7 +143,8 @@ public class SuppressionService {
         s.setNormalizedEmail(normalizedEmail);
         s.setReason(reason);
         s.setSystemOwned(true);
-        return suppressionRepo.save(s);
+        // See addMarketing: flushed so the V114 unique index answers inside this method.
+        return suppressionRepo.saveAndFlush(s);
     }
 
     /**

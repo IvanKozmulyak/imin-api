@@ -1,5 +1,7 @@
 package com.imin.iminapi.service.ticket;
 
+import com.imin.iminapi.security.IpHasher;
+import com.imin.iminapi.util.LogSafe;
 import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.email.EmailService;
@@ -11,7 +13,6 @@ import com.imin.iminapi.repository.OrderRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -41,22 +42,35 @@ public class OrderRecoveryService {
     private final EmailProperties emailProps;
     private final TicketProperties ticketProps;
     private final OrderRecoveryAttemptRepository attempts;
+    private final IpHasher ipHasher;
 
     public OrderRecoveryService(OrderRepository orders,
                                  EmailService email,
                                  EmailTemplateRenderer renderer,
                                  EmailProperties emailProps,
                                  TicketProperties ticketProps,
-                                 OrderRecoveryAttemptRepository attempts) {
+                                 OrderRecoveryAttemptRepository attempts,
+                                 IpHasher ipHasher) {
         this.orders = orders;
         this.email = email;
         this.renderer = renderer;
         this.emailProps = emailProps;
         this.ticketProps = ticketProps;
         this.attempts = attempts;
+        this.ipHasher = ipHasher;
     }
 
-    @Transactional
+    /**
+     * <b>Deliberately NOT {@code @Transactional}.</b> The Resend send at the end is a
+     * synchronous outbound HTTP call, and this endpoint is unauthenticated with no
+     * rate-limit bucket — its only cap is the in-DB counter below. Wrapping the method
+     * pinned a pooled JDBC connection (prod max 20) for the duration of a third party's
+     * round trip, on a path an attacker picks the rate of. Nothing here needs a shared
+     * atomic unit: the only write is the attempt row, which {@code attempts.save()}
+     * commits in its own repository transaction, and it must survive on its own anyway
+     * so a failed lookup still counts against the limit. Same reasoning, same emailer,
+     * as {@code BuyerOrderActionsController}'s deliberately-outside-the-transaction send.
+     */
     public void requestRecovery(String rawEmail, UUID eventIdOrNull, String clientIp) {
         if (rawEmail == null) return;
         String normalized = rawEmail.trim().toLowerCase(Locale.ROOT);
@@ -75,7 +89,7 @@ public class OrderRecoveryService {
         int cap = ticketProps.getRecoveryMaxPerHour();
         if (byEmail > cap || byIp > cap) {
             log.info("Recovery rate-limited (email={} byEmail={} byIp={})",
-                    normalized, byEmail, byIp);
+                    LogSafe.email(normalized), byEmail, byIp);
             return;
         }
 
@@ -83,7 +97,7 @@ public class OrderRecoveryService {
                 .minus(Duration.ofDays(ticketProps.getRecoveryWindowDays()));
         List<Order> found = orders.findRecentForRecovery(normalized, eventIdOrNull, recoveryCutoff);
         if (found.isEmpty()) {
-            log.info("Recovery: no orders found for {}", normalized);
+            log.info("Recovery: no orders found for {}", LogSafe.email(normalized));
             return;
         }
 
@@ -117,9 +131,9 @@ public class OrderRecoveryService {
 
         try {
             email.send(normalized, subject, html, text);
-            log.info("Recovery: sent {} order link(s) to {}", found.size(), normalized);
+            log.info("Recovery: sent {} order link(s) to {}", found.size(), LogSafe.email(normalized));
         } catch (Exception e) {
-            log.warn("Recovery email failed for {}: {}", normalized, e.getMessage());
+            log.warn("Recovery email failed for {}: {}", LogSafe.email(normalized), LogSafe.redact(e.getMessage()));
         }
     }
 
@@ -130,14 +144,12 @@ public class OrderRecoveryService {
         attempts.save(a);
     }
 
-    private static String hashIp(String ip) {
-        try {
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
-            byte[] bytes = md.digest((ip == null ? "" : ip).getBytes(StandardCharsets.UTF_8));
-            return HexFormat.of().formatHex(bytes);
-        } catch (Exception e) {
-            return "";
-        }
+    /**
+     * Keyed, not a bare digest: IPv4 is 2³² values, so an unsalted SHA-256 is a
+     * reversible record of who asked about which order. See {@link IpHasher}.
+     */
+    private String hashIp(String ip) {
+        return ipHasher.hash(ip);
     }
 
     private String baseUrl() {

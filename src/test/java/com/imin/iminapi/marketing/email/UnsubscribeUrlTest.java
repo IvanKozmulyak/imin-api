@@ -63,9 +63,11 @@ class UnsubscribeUrlTest {
         // RFC 8058 one-click POSTs to the List-Unsubscribe-Post URL, and a human
         // clicking the footer GETs the same one. If either mapping disappears,
         // half the recipients lose their opt-out silently.
-        assertThat(PublicUnsubscribeController.class.getMethod("oneClick", String.class)
+        assertThat(PublicUnsubscribeController.class
+                .getMethod("oneClick", String.class, jakarta.servlet.http.HttpServletRequest.class)
                 .getAnnotation(PostMapping.class)).isNotNull();
-        assertThat(PublicUnsubscribeController.class.getMethod("confirmPage", String.class)
+        assertThat(PublicUnsubscribeController.class
+                .getMethod("confirmPage", String.class, jakarta.servlet.http.HttpServletRequest.class)
                 .getAnnotation(GetMapping.class)).isNotNull();
     }
 

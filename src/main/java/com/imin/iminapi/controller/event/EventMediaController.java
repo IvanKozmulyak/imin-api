@@ -23,15 +23,38 @@ public class EventMediaController {
         this.uploadService = uploadService;
     }
 
+    /**
+     * @param aiGenerated optional, POSTER only (AI Act Art.50). The Poster Studio
+     *        uploads an image it generated through this same endpoint, and a file
+     *        upload is otherwise indistinguishable from an organizer's own artwork
+     *        — so the studio says so. Absent or false keeps the historic meaning
+     *        of a multipart upload: the organizer's own asset.
+     * @param rightsAttested <b>required for DJ_PHOTO</b> — that photo becomes an
+     *        Ideogram character reference and is uploaded to the OpenRouter vision
+     *        gate inside the finished poster, so somebody has to have claimed the
+     *        right to put a third party's face there. Missing or false ⇒ 400
+     *        {@code RIGHTS_ATTESTATION_REQUIRED}. Optional and recorded for other
+     *        kinds.
+     */
     @PostMapping(path = "/{kind}", consumes = "multipart/form-data")
     public MediaUploadResponse upload(@CurrentUser AuthPrincipal p,
                                       @PathVariable UUID eventId,
                                       @PathVariable String kind,
-                                      @RequestPart("file") MultipartFile file) throws IOException {
+                                      @RequestPart("file") MultipartFile file,
+                                      @RequestParam(name = "aiGenerated", required = false)
+                                      Boolean aiGenerated,
+                                      @RequestParam(name = "rightsAttested", required = false)
+                                      Boolean rightsAttested) throws IOException {
         MediaKind k = kindOr404(kind);
+        // Before getBytes(), which copies the whole part onto the heap. The multipart ceiling is
+        // 60MB for the VIDEO kind, so without this a 5 MB-capped POSTER was materialised at up to
+        // 12x its own limit per concurrent request just to be rejected. Same limits, same error —
+        // MediaUploadService.validate still re-applies them on the loaded bytes.
+        MediaUploadService.checkSizeLimit(k, file.getSize());
         return uploadService.upload(p, eventId, k, file.getBytes(),
                 file.getContentType() == null ? "application/octet-stream" : file.getContentType(),
-                file.getOriginalFilename() == null ? "upload.bin" : file.getOriginalFilename());
+                file.getOriginalFilename() == null ? "upload.bin" : file.getOriginalFilename(),
+                aiGenerated, rightsAttested);
     }
 
     @DeleteMapping("/{kind}")

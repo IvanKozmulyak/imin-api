@@ -81,6 +81,15 @@ class PosterOrchestratorTest {
                 /*maxReferences*/ 3, /*maxConcurrent*/ 6);
     }
 
+    /** Same wiring as {@link #orchestrator()} but with a caller-supplied style gate. */
+    private PosterOrchestrator orchestratorWithStyleGate(PosterStyleValidationService gate) {
+        return new PosterOrchestrator(ideogram, vibeLibrary, styleCardLibrary, referenceLibrary,
+                textSpecFactory, textValidation, gate, storage, logoCompositor, repo,
+                /*maxRegenerations*/ 2, /*remixImageWeight*/ 70,
+                /*paletteRegradeEnabled*/ true, /*paletteRegradeWeight*/ 85,
+                /*maxReferences*/ 3, /*maxConcurrent*/ 6);
+    }
+
     private static Vibe brutalist() {
         return new Vibe("brutalist_techno", "Brutalist Techno", List.of("techno"), "vs",
                 List.of("#000"), "typo", "comp", List.of(), List.of(), null, List.of(), null,
@@ -89,7 +98,7 @@ class PosterOrchestratorTest {
 
     private static EventCreatorRequest req() {
         return new EventCreatorRequest("v", "energetic", "techno", "Berlin", LocalDate.now(),
-                List.of("instagram"), null, null, "Big Night", null, null, null, "brutalist_techno", null);
+                List.of("instagram"), null, null, "Big Night", null, null, null, "brutalist_techno");
     }
 
     private static PosterConcept concept() {
@@ -124,7 +133,7 @@ class PosterOrchestratorTest {
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
 
         PosterOrchestrator.OrchestrationResult r =
-                orchestrator().run(UUID.randomUUID(), req(), concept());
+                orchestrator().run(UUID.randomUUID(), req(), concept(), 1L, List.of(), null, null, null);
 
         assertThat(r.posters()).hasSize(3);
         assertThat(r.posters()).allSatisfy(p -> assertThat(p.status()).isEqualTo("COMPLETE"));
@@ -146,7 +155,7 @@ class PosterOrchestratorTest {
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
 
         PosterOrchestrator.OrchestrationResult r =
-                orchestrator().run(UUID.randomUUID(), req(), concept());
+                orchestrator().run(UUID.randomUUID(), req(), concept(), 1L, List.of(), null, null, null);
 
         assertThat(r.posters()).allSatisfy(p -> assertThat(p.status()).isEqualTo("COMPLETE"));
         verify(ideogram, times(3)).remix(any(), any(), eq(70), anyLong(), any(), any(), any(), any());
@@ -164,7 +173,7 @@ class PosterOrchestratorTest {
         when(textValidation.validateOrExplain(any(), any())).thenReturn(textFail());
 
         PosterOrchestrator.OrchestrationResult r =
-                orchestrator().run(UUID.randomUUID(), req(), concept());
+                orchestrator().run(UUID.randomUUID(), req(), concept(), 1L, List.of(), null, null, null);
 
         // 2 remixes (maxRegenerations=2) per variant, then best-effort COMPLETE
         verify(ideogram, times(6)).remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any());
@@ -176,6 +185,28 @@ class PosterOrchestratorTest {
         assertThat(v.getValidationAttemptsJson()).contains("remix");
     }
 
+    /**
+     * poster-18: every text-gate retry used to write a fresh immutable R2 object that nothing ever
+     * referenced or reclaimed — up to 3 orphans per variant at maxRegenerations=2. Only the render
+     * that actually ships gets written.
+     */
+    @Test
+    void supersededRetryRenders_areNeverWritten_onlyTheAcceptedOne() {
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{1}, 1L));
+        when(ideogram.remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{1}, 2L));
+        when(textValidation.validateOrExplain(any(), any())).thenReturn(textFail());
+
+        PosterOrchestrator.OrchestrationResult r =
+                orchestrator().run(UUID.randomUUID(), req(), concept(), 1L, List.of(), null, null, null);
+
+        // 3 attempts x 3 variants rendered, but exactly one stored object per variant.
+        verify(ideogram, times(6)).remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any());
+        verify(storage, times(3)).writePng(any());
+        assertThat(r.posters()).allSatisfy(p -> assertThat(p.rawUrl()).isNotNull());
+    }
+
     @Test
     void textPasses_styleSoftFails_acceptsBestEffort_noRemix() {
         when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
@@ -184,8 +215,31 @@ class PosterOrchestratorTest {
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleFail());
 
         PosterOrchestrator.OrchestrationResult r =
-                orchestrator().run(UUID.randomUUID(), req(), concept());
+                orchestrator().run(UUID.randomUUID(), req(), concept(), 1L, List.of(), null, null, null);
 
+        assertThat(r.posters()).allSatisfy(p -> assertThat(p.status()).isEqualTo("COMPLETE"));
+        verify(ideogram, never()).remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any());
+    }
+
+    /**
+     * poster-3: the SOFT style gate throwing must not fail a text-accepted variant. With the real
+     * service wrapping a throwing client, all three renders still ship (best-effort).
+     */
+    @Test
+    void styleGateThrows_textAcceptedVariantsStillShip() {
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 1L));
+        when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
+
+        PosterStyleValidationClient throwingClient = mock(PosterStyleValidationClient.class);
+        when(throwingClient.validate(any(), any(), any()))
+                .thenThrow(new IllegalStateException("style validation returned malformed JSON"));
+
+        PosterOrchestrator.OrchestrationResult r = orchestratorWithStyleGate(
+                new PosterStyleValidationService(throwingClient, true))
+                .run(UUID.randomUUID(), req(), concept(), 1L, List.of(), null, null, null);
+
+        assertThat(r.posters()).hasSize(3);
         assertThat(r.posters()).allSatisfy(p -> assertThat(p.status()).isEqualTo("COMPLETE"));
         verify(ideogram, never()).remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any());
     }
@@ -204,7 +258,7 @@ class PosterOrchestratorTest {
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
 
         BrandSnapshot brand = new BrandSnapshot(List.of("#ec4899", "#f6c04a"), null, false);
-        orchestrator().run(UUID.randomUUID(), req(), concept(), 123L, List.of(), brand);
+        orchestrator().run(UUID.randomUUID(), req(), concept(), 123L, List.of(), brand, null, null);
 
         verify(ideogram, times(3)).generate(any(), anyLong(), any(), any(),
                 eq(List.of("#ec4899", "#f6c04a")), any());
@@ -219,7 +273,7 @@ class PosterOrchestratorTest {
         when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
 
-        orchestrator().run(UUID.randomUUID(), req(), concept());
+        orchestrator().run(UUID.randomUUID(), req(), concept(), 1L, List.of(), null, null, null);
 
         verify(ideogram, times(3)).generate(any(), anyLong(), any(), any(), eq(List.of()), any());
     }
@@ -232,7 +286,7 @@ class PosterOrchestratorTest {
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
 
         PosterOrchestrator.OrchestrationResult r =
-                orchestrator().run(UUID.randomUUID(), req(), concept());
+                orchestrator().run(UUID.randomUUID(), req(), concept(), 1L, List.of(), null, null, null);
 
         // No second writePng beyond the one raw write per variant; compositor never called.
         verify(logoCompositor, never()).composite(any(), any());
@@ -254,13 +308,12 @@ class PosterOrchestratorTest {
             byte[] b = inv.getArgument(0);
             return (b.length > 0 && b[0] == 7) ? "https://img/composited.png" : "https://img/raw.png";
         });
-        when(storage.download("https://img/raw.png")).thenReturn(new byte[]{9});
         when(logoCompositor.composite(any(), eq("https://cdn/logo.png")))
                 .thenReturn(new byte[]{7});
 
         BrandSnapshot brand = new BrandSnapshot(java.util.List.of("#ec4899"), "https://cdn/logo.png", true);
         PosterOrchestrator.OrchestrationResult r = orchestrator().run(
-                UUID.randomUUID(), req(), concept(), 123L, java.util.List.of(), brand);
+                UUID.randomUUID(), req(), concept(), 123L, java.util.List.of(), brand, null, null);
 
         // Assert across ALL variants (not .get(0)) — placement among the 3 parallel results is not ordered.
         assertThat(r.posters()).allSatisfy(p -> {
@@ -275,6 +328,34 @@ class PosterOrchestratorTest {
                 .allSatisfy(v -> assertThat(v.getLogoCompositeStatus()).isEqualTo("APPLIED"));
     }
 
+    /**
+     * poster-9: the logo composite must use the render bytes the process is still holding, not a
+     * fresh HTTP GET of the object it just wrote. A transient R2 read error is a failure mode
+     * holding the bytes cannot have — here download() always throws and the composite still lands.
+     */
+    @Test
+    void logoComposite_usesTheRenderBytesInMemory_notAReDownload() {
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 1L));
+        when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
+        when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
+        when(storage.writePng(any())).thenAnswer(inv -> {
+            byte[] b = inv.getArgument(0);
+            return (b.length > 0 && b[0] == 7) ? "https://img/composited.png" : "https://img/raw.png";
+        });
+        when(storage.download(anyString())).thenThrow(new RuntimeException("R2 read failed"));
+        when(logoCompositor.composite(argThat(b -> b != null && b.length == 1 && b[0] == 2),
+                eq("https://cdn/logo.png"))).thenReturn(new byte[]{7});
+
+        BrandSnapshot brand = new BrandSnapshot(List.of("#ec4899"), "https://cdn/logo.png", true);
+        PosterOrchestrator.OrchestrationResult r = orchestrator().run(
+                UUID.randomUUID(), req(), concept(), 123L, List.of(), brand, null, null);
+
+        assertThat(r.posters()).allSatisfy(p ->
+                assertThat(p.finalUrl()).isEqualTo("https://img/composited.png"));
+        verify(storage, never()).download(anyString());
+    }
+
     @Test
     void compositeThrows_isIsolated_finalFallsBackToRaw_statusFailed() {
         when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
@@ -282,13 +363,12 @@ class PosterOrchestratorTest {
         when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
         when(storage.writePng(any())).thenReturn("https://img/raw.png");
-        when(storage.download("https://img/raw.png")).thenReturn(new byte[]{9});
         when(logoCompositor.composite(any(), any()))
                 .thenThrow(new RuntimeException("decode boom"));
 
         BrandSnapshot brand = new BrandSnapshot(java.util.List.of("#ec4899"), "https://cdn/logo.png", true);
         PosterOrchestrator.OrchestrationResult r = orchestrator().run(
-                UUID.randomUUID(), req(), concept(), 123L, java.util.List.of(), brand);
+                UUID.randomUUID(), req(), concept(), 123L, java.util.List.of(), brand, null, null);
 
         // Generation still succeeds; final_url falls back to raw_url; status FAILED for every variant.
         assertThat(r.posters()).allSatisfy(p -> {
@@ -314,7 +394,7 @@ class PosterOrchestratorTest {
         when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
 
-        orchestrator().run(UUID.randomUUID(), req(), concept(), 7L, List.of(), null, DJ);
+        orchestrator().run(UUID.randomUUID(), req(), concept(), 7L, List.of(), null, DJ, null);
 
         ArgumentCaptor<StyleReferencePart> ref = ArgumentCaptor.forClass(StyleReferencePart.class);
         verify(ideogram, atLeastOnce()).generate(anyString(), anyLong(), anyList(), any(), anyList(), ref.capture());
@@ -335,10 +415,29 @@ class PosterOrchestratorTest {
         });
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
 
-        orchestrator().run(UUID.randomUUID(), req(), concept(), 7L, List.of(), null, DJ);
+        orchestrator().run(UUID.randomUUID(), req(), concept(), 7L, List.of(), null, DJ, null);
 
         verify(ideogram, atLeastOnce()).remix(any(), anyString(), anyInt(), anyLong(), anyList(), any(), anyList(),
                 argThat(r -> r != null && "dj-photo.jpg".equals(r.filename())));
+    }
+
+    /**
+     * poster-16: poster_generations.organizer_id has existed since V3 with no writer, so every row
+     * carried no actor for a paid AI render.
+     */
+    @Test
+    void organizerIdIsStampedOnTheGeneration() {
+        when(ideogram.generate(any(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 1L));
+        when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
+        when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
+        UUID organizer = UUID.randomUUID();
+
+        orchestrator().run(UUID.randomUUID(), req(), concept(), 7L, List.of(), null, null, organizer);
+
+        ArgumentCaptor<PosterGeneration> saved = ArgumentCaptor.forClass(PosterGeneration.class);
+        verify(repo, atLeastOnce()).save(saved.capture());
+        assertThat(saved.getAllValues().get(0).getOrganizerId()).isEqualTo(organizer);
     }
 
     @Test
@@ -348,7 +447,7 @@ class PosterOrchestratorTest {
         when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
 
-        orchestrator().run(UUID.randomUUID(), req(), concept(), 7L, List.of(), null, DJ);
+        orchestrator().run(UUID.randomUUID(), req(), concept(), 7L, List.of(), null, DJ, null);
 
         ArgumentCaptor<PosterGeneration> saved = ArgumentCaptor.forClass(PosterGeneration.class);
         verify(repo, atLeastOnce()).save(saved.capture());
@@ -362,7 +461,7 @@ class PosterOrchestratorTest {
         when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
 
-        orchestrator().run(UUID.randomUUID(), req(), concept(), 7L, List.of(), null, null);
+        orchestrator().run(UUID.randomUUID(), req(), concept(), 7L, List.of(), null, null, null);
 
         verify(ideogram, atLeastOnce()).generate(anyString(), anyLong(), anyList(), any(), anyList(), isNull());
     }
@@ -385,7 +484,7 @@ class PosterOrchestratorTest {
 
         BrandSnapshot brand = new BrandSnapshot(List.of("#ec4899", "#f6c04a"), null, false);
         PosterOrchestrator.OrchestrationResult r =
-                orchestrator().run(UUID.randomUUID(), req(), concept(), 7L, List.of(), brand, DJ);
+                orchestrator().run(UUID.randomUUID(), req(), concept(), 7L, List.of(), brand, DJ, null);
 
         // One regrade per variant: no char ref, palette attached, NO style refs/preset, weight 85.
         verify(ideogram, times(3)).remix(any(), contains("Re-grade"), eq(85), anyLong(),
@@ -412,7 +511,7 @@ class PosterOrchestratorTest {
 
         BrandSnapshot brand = new BrandSnapshot(List.of("#ec4899"), null, false);
         PosterOrchestrator.OrchestrationResult r =
-                orchestrator().run(UUID.randomUUID(), req(), concept(), 7L, List.of(), brand, DJ);
+                orchestrator().run(UUID.randomUUID(), req(), concept(), 7L, List.of(), brand, DJ, null);
 
         assertThat(r.posters()).allSatisfy(p -> {
             assertThat(p.status()).isEqualTo("COMPLETE");
@@ -428,10 +527,10 @@ class PosterOrchestratorTest {
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
 
         // DJ mode without brand colours → nothing to regrade with.
-        orchestrator().run(UUID.randomUUID(), req(), concept(), 7L, List.of(), null, DJ);
+        orchestrator().run(UUID.randomUUID(), req(), concept(), 7L, List.of(), null, DJ, null);
         // Non-DJ mode with brand colours → palette already rode the generate call structurally.
         BrandSnapshot brand = new BrandSnapshot(List.of("#ec4899"), null, false);
-        orchestrator().run(UUID.randomUUID(), req(), concept(), 8L, List.of(), brand, null);
+        orchestrator().run(UUID.randomUUID(), req(), concept(), 8L, List.of(), brand, null, null);
 
         verify(ideogram, never()).remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any());
     }
@@ -447,7 +546,7 @@ class PosterOrchestratorTest {
 
         BrandSnapshot brand = new BrandSnapshot(List.of("#ec4899"), null, false);
         PosterOrchestrator.OrchestrationResult r =
-                orchestrator().run(UUID.randomUUID(), req(), concept(), 7L, List.of(), brand, DJ);
+                orchestrator().run(UUID.randomUUID(), req(), concept(), 7L, List.of(), brand, DJ, null);
 
         assertThat(r.posters()).allSatisfy(p -> assertThat(p.status()).isEqualTo("COMPLETE"));
     }

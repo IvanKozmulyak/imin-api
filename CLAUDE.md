@@ -183,7 +183,7 @@ The backend contract the Expo fan app is built against shipped ahead of the app 
 
 - `IMIN_PUSH_ENABLED` — default **`false`**, and unset in production, so the sender returns before any HTTP work is prepared. Dark until the app has real tokens; a sender firing at an empty registry is worse than none.
 - `EXPO_ACCESS_TOKEN` — optional; required only when the Expo project has "enhanced security" on.
-- `EXPO_PUSH_BASE_URL` (default `https://exp.host/--/api/v2/push/send`), `IMIN_PUSH_TIMEOUT_SECONDS` (default `10`) — the POST runs inline on a `@Scheduled` sweep sharing a pool of **one** with every other job, so the timeout is load-bearing.
+- `EXPO_PUSH_BASE_URL` (default `https://exp.host/--/api/v2/push/send`), `IMIN_PUSH_TIMEOUT_SECONDS` (default `10`) — the POST runs inline on a `@Scheduled` sweep sharing a pool of **four** with every other job (`spring.task.scheduling.pool.size`, set in `application.yaml`; it was unset — i.e. Spring's single-threaded default — until 2026-09-09), so the timeout is still load-bearing.
 
 **Force-upgrade gate**, served by `GET /api/v1/public/app-config` (unauthenticated, `s-maxage=60`). It exists before the app does because a shipped binary cannot be force-updated retroactively, and an OTA JS update cannot fix a native module.
 

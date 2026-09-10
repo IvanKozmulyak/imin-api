@@ -35,9 +35,6 @@ public class SmsProperties {
     /** HMAC secret for the inbound STOP / delivery-receipt webhook. Blank ⇒ every webhook 401s (fail closed). */
     private String webhookSecret = "";
 
-    /** Clock-skew tolerance (seconds) on the webhook timestamp header, if present. */
-    private long webhookToleranceSeconds = 300;
-
     /** True only when a non-blank api key is configured. When false, {@link SmsSender} is in dry-run. */
     public boolean isEnabled() {
         return apiKey != null && !apiKey.isBlank();
@@ -54,9 +51,4 @@ public class SmsProperties {
 
     public String getWebhookSecret() { return webhookSecret; }
     public void setWebhookSecret(String webhookSecret) { this.webhookSecret = webhookSecret; }
-
-    public long getWebhookToleranceSeconds() { return webhookToleranceSeconds; }
-    public void setWebhookToleranceSeconds(long webhookToleranceSeconds) {
-        this.webhookToleranceSeconds = webhookToleranceSeconds;
-    }
 }

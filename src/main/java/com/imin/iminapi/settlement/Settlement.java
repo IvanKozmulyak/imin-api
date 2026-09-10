@@ -71,6 +71,16 @@ public class Settlement {
     @Column(name = "paid_at")
     private Instant paidAt;
 
+    /**
+     * Stripe {@code event.created} of the delivery that last wrote this row (V111). Stripe
+     * does not guarantee delivery order, and a failed handler rolls its dedup marker back so
+     * the retry re-processes from scratch — so a late {@code transfer.created} could otherwise
+     * drag a {@code REVERSED} row back to {@code PENDING}. An incoming event older than this
+     * stamp is ignored. NULL = written before the column existed (no ordering information).
+     */
+    @Column(name = "last_event_at")
+    private Instant lastEventAt;
+
     @Column(name = "failure_reason", columnDefinition = "text")
     private String failureReason;
 

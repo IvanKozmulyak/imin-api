@@ -26,4 +26,14 @@ public interface RefundTicketRepository extends JpaRepository<RefundTicket, Refu
      */
     @Query("select rt.refundId, rt.ticketId from RefundTicket rt where rt.refundId in :refundIds")
     List<Object[]> findRefundIdTicketIdPairs(@Param("refundIds") Collection<UUID> refundIds);
+
+    /**
+     * Releases a refund's ticket claims. Called when a refund reaches FAILED or CANCELED:
+     * no money moved, so UNIQUE(ticket_id) must stop blocking a retry on those tickets.
+     * Without this the tickets stay {@code issued} but are permanently unrefundable
+     * in-product — every retry 409s on the pre-check and the unique index alike.
+     *
+     * @return number of join rows removed
+     */
+    long deleteByRefundId(UUID refundId);
 }

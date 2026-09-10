@@ -221,8 +221,13 @@ class NotifySubscriptionControllerTest {
                 .andExpect(status().isOk());
 
         NotifySubscription row = subscriptionRepository.findAll().get(0);
-        // First XFF hop is the buyer; the rest are proxies.
-        assertThat(row.getSourceIp()).isEqualTo("203.0.113.7");
+        // NOT the raw X-Forwarded-For hop the request supplied. This value is
+        // consent evidence, and evidence the subject of the record can dictate is
+        // worth nothing — anyone could write any address, including someone
+        // else's, into the trail. It is the resolved remote address, which behind
+        // Railway is the real client (server.forward-headers-strategy: framework)
+        // and here is MockMvc's own.
+        assertThat(row.getSourceIp()).isEqualTo("127.0.0.1");
         assertThat(row.getUserAgent()).isEqualTo("Mozilla/5.0 (iPhone)");
         // Proof-of-consent is the exact wording the form shows.
         assertThat(row.getConsentText()).isEqualTo(NotifySubscriptionService.CONSENT_TEXT);
@@ -307,7 +312,7 @@ class NotifySubscriptionControllerTest {
         assertThat(rows).hasSize(1);
         NotifySubscription reArmed = rows.get(0);
         assertThat(reArmed.getNotifiedAt()).isNull();
-        assertThat(reArmed.getSourceIp()).isEqualTo("198.51.100.22");
+        assertThat(reArmed.getSourceIp()).isEqualTo("127.0.0.1");
         assertThat(reArmed.getUserAgent()).isEqualTo("NewBrowser/9.0");
         assertThat(reArmed.getLocale()).isEqualTo("uk");
         assertThat(reArmed.getConsentText()).isEqualTo(NotifySubscriptionService.CONSENT_TEXT);

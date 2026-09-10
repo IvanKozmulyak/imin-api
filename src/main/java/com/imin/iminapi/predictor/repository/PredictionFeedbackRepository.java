@@ -15,9 +15,5 @@ import java.util.UUID;
 @RepositoryRestResource(exported = false)
 public interface PredictionFeedbackRepository extends JpaRepository<PredictionFeedback, UUID> {
 
-    List<PredictionFeedback> findByLedgerId(UUID ledgerId);
-
-    List<PredictionFeedback> findByEventIdAndRecommendationId(UUID eventId, String recommendationId);
-
     List<PredictionFeedback> findByEventId(UUID eventId);
 }

@@ -65,10 +65,74 @@ public class CampaignEmailProvider {
                 ids.add(be.getId());
             }
             return ids;
-        } catch (ResendException ex) {
-            log.error("Resend batch send failed ({} emails): {}", emails.size(), ex.getMessage(), ex);
-            throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, ErrorCode.UPSTREAM_UNAVAILABLE,
-                    "Email service unavailable", ex);
+        } catch (Exception ex) {
+            throw classify(ex, emails.size());
         }
     }
+
+    /**
+     * A provider failure this batch must NOT retry: the request will be rejected identically
+     * every time (a 4xx — bad key, malformed address, rejected payload). Distinct from the
+     * plain {@link ApiException} every other failure raises, which the sender backs off and
+     * re-claims. Carries the upstream status purely so the log and the row say why.
+     */
+    public static class TerminalBatchFailure extends ApiException {
+        private final int upstreamStatus;
+
+        public TerminalBatchFailure(String message, int upstreamStatus, Throwable cause) {
+            super(HttpStatus.SERVICE_UNAVAILABLE, ErrorCode.UPSTREAM_UNAVAILABLE, message, cause);
+            this.upstreamStatus = upstreamStatus;
+        }
+
+        public int upstreamStatus() { return upstreamStatus; }
+    }
+
+    /**
+     * mkt-edge-4: resend-java 4.1.0 never throws {@link ResendException} from
+     * {@code Batch.send} — a non-2xx is a PLAIN {@code RuntimeException} whose message is
+     * {@code "Failed to send batch emails: <code> <body>"} (Batch.java:38-40), and any
+     * {@code IOException} is wrapped in a bare {@code RuntimeException}
+     * (HttpClient.perform:63-65). Catching only ResendException therefore caught nothing real:
+     * every 429/5xx/timeout escaped as an unchecked exception, rolled back the REQUIRES_NEW
+     * batch transaction (losing the attempt increment AND the next_attempt_at backoff) and
+     * reached CampaignDispatcher, which failed the whole campaign.
+     *
+     * <p>Classification: an I/O failure anywhere in the cause chain, a 429 and any 5xx are
+     * retryable; any other 4xx is terminal for this batch. An unrecognised failure is
+     * retryable — the per-row attempt budget bounds it, whereas failing a campaign on a shape
+     * we have not seen before is unrecoverable.
+     */
+    private static ApiException classify(Exception ex, int size) {
+        if (hasIoCause(ex)) {
+            log.error("Resend batch send failed on transport ({} emails): {}", size, ex.getMessage(), ex);
+            return new ApiException(HttpStatus.SERVICE_UNAVAILABLE, ErrorCode.UPSTREAM_UNAVAILABLE,
+                    "Email service unavailable", ex);
+        }
+        int status = upstreamStatus(ex.getMessage());
+        if (status >= 400 && status < 500 && status != 429) {
+            log.error("Resend rejected the batch with {} ({} emails): {}", status, size, ex.getMessage(), ex);
+            return new TerminalBatchFailure("Email service rejected the batch", status, ex);
+        }
+        log.error("Resend batch send failed ({} emails): {}", size, ex.getMessage(), ex);
+        return new ApiException(HttpStatus.SERVICE_UNAVAILABLE, ErrorCode.UPSTREAM_UNAVAILABLE,
+                "Email service unavailable", ex);
+    }
+
+    private static boolean hasIoCause(Throwable t) {
+        for (Throwable c = t; c != null; c = c.getCause()) {
+            if (c instanceof java.io.IOException) return true;
+            if (c.getCause() == c) break;
+        }
+        return false;
+    }
+
+    /** The HTTP status out of Batch.send's message, or 0 when it carries none. */
+    private static int upstreamStatus(String message) {
+        if (message == null) return 0;
+        java.util.regex.Matcher m = STATUS_IN_MESSAGE.matcher(message);
+        return m.find() ? Integer.parseInt(m.group(1)) : 0;
+    }
+
+    private static final java.util.regex.Pattern STATUS_IN_MESSAGE =
+            java.util.regex.Pattern.compile("Failed to send batch emails:\\s*(\\d{3})\\b");
 }

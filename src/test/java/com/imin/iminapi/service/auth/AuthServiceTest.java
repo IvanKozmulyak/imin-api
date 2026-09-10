@@ -57,7 +57,7 @@ class AuthServiceTest {
         when(verificationSvc.issueCode(any(User.class))).thenReturn("1234");
 
         com.imin.iminapi.dto.auth.VerificationPendingResponse r =
-                sut.signup(new SignupRequest("ada@example.com", "lovelace12", "Ada", "Lovelace", "Ada Co", "GB"));
+                sut.signup(new SignupRequest("ada@example.com", "lovelace12", "Ada", "Lovelace", "Ada Co", "GB", null, null));
 
         assertThat(r.message()).isEqualTo("Verification email sent");
         assertThat(r.email()).isEqualTo("ada@example.com");
@@ -82,15 +82,87 @@ class AuthServiceTest {
                 com.imin.iminapi.security.ErrorCode.UPSTREAM_UNAVAILABLE, "down"))
             .when(accountEmail).sendVerificationCode(any(User.class), any(), anyInt());
 
-        assertThatThrownBy(() -> sut.signup(new SignupRequest("ada@example.com", "lovelace12", "Ada", "Lovelace", "Ada Co", "GB")))
+        assertThatThrownBy(() -> sut.signup(new SignupRequest("ada@example.com", "lovelace12", "Ada", "Lovelace", "Ada Co", "GB", null, null)))
                 .isInstanceOf(ApiException.class)
                 .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.UPSTREAM_UNAVAILABLE);
+    }
+
+    /**
+     * The organizer is the party that signs the contract imin relies on, and the
+     * controller for every attendee they collect — and nothing recorded that they
+     * had accepted anything. The buyer side has had this since V91.
+     */
+    @Test
+    void signup_records_the_terms_acceptance_when_the_dashboard_sends_it() {
+        when(users.existsByEmailLower("ada@example.com")).thenReturn(false);
+        when(orgs.existsBySlug(any())).thenReturn(false);
+        when(orgs.saveAndFlush(any(Organization.class))).thenAnswer(inv -> {
+            Organization o = inv.getArgument(0); o.setId(java.util.UUID.randomUUID()); return o;
+        });
+        when(users.save(any(User.class))).thenAnswer(inv -> {
+            User u = inv.getArgument(0); u.setId(java.util.UUID.randomUUID()); return u;
+        });
+        when(verificationSvc.issueCode(any(User.class))).thenReturn("123456");
+        sut.signup(new SignupRequest("ada@example.com", "lovelace12", "Ada", "Lovelace",
+                "Ada Co", "GB", true, "whatever-the-client-says"));
+
+        org.mockito.ArgumentCaptor<User> saved = org.mockito.ArgumentCaptor.forClass(User.class);
+        verify(users).save(saved.capture());
+        assertThat(saved.getValue().getTermsAcceptedAt()).isNotNull();
+        // NOT the client's string: a client-supplied value that becomes an audit
+        // fact is a record that says whatever the client says.
+        assertThat(saved.getValue().getTermsVersion())
+                .isEqualTo(OrganizerTerms.CURRENT_VERSION);
+    }
+
+    /**
+     * Deliberately not enforced: the dashboard has no legal pages to link to yet,
+     * so a required checkbox would gate signup on a link that 404s. Absence must
+     * read as "not recorded", never as "declined".
+     */
+    @Test
+    void signup_without_the_terms_field_still_succeeds_and_records_nothing() {
+        when(users.existsByEmailLower("ada@example.com")).thenReturn(false);
+        when(orgs.existsBySlug(any())).thenReturn(false);
+        when(orgs.saveAndFlush(any(Organization.class))).thenAnswer(inv -> {
+            Organization o = inv.getArgument(0); o.setId(java.util.UUID.randomUUID()); return o;
+        });
+        when(users.save(any(User.class))).thenAnswer(inv -> {
+            User u = inv.getArgument(0); u.setId(java.util.UUID.randomUUID()); return u;
+        });
+        when(verificationSvc.issueCode(any(User.class))).thenReturn("123456");
+        sut.signup(new SignupRequest("ada@example.com", "lovelace12", "Ada", "Lovelace",
+                "Ada Co", "GB", null, null));
+
+        org.mockito.ArgumentCaptor<User> saved = org.mockito.ArgumentCaptor.forClass(User.class);
+        verify(users).save(saved.capture());
+        assertThat(saved.getValue().getTermsAcceptedAt()).isNull();
+        assertThat(saved.getValue().getTermsVersion()).isNull();
+    }
+
+    @Test
+    void signup_with_an_explicit_false_records_nothing() {
+        when(users.existsByEmailLower("ada@example.com")).thenReturn(false);
+        when(orgs.existsBySlug(any())).thenReturn(false);
+        when(orgs.saveAndFlush(any(Organization.class))).thenAnswer(inv -> {
+            Organization o = inv.getArgument(0); o.setId(java.util.UUID.randomUUID()); return o;
+        });
+        when(users.save(any(User.class))).thenAnswer(inv -> {
+            User u = inv.getArgument(0); u.setId(java.util.UUID.randomUUID()); return u;
+        });
+        when(verificationSvc.issueCode(any(User.class))).thenReturn("123456");
+        sut.signup(new SignupRequest("ada@example.com", "lovelace12", "Ada", "Lovelace",
+                "Ada Co", "GB", false, null));
+
+        org.mockito.ArgumentCaptor<User> saved = org.mockito.ArgumentCaptor.forClass(User.class);
+        verify(users).save(saved.capture());
+        assertThat(saved.getValue().getTermsAcceptedAt()).isNull();
     }
 
     @Test
     void signup_blocked_for_sanctioned_country() {
         assertThatThrownBy(() -> sut.signup(new SignupRequest("ada@example.com", "lovelace12",
-                "Ada", "Lovelace", "X", "IR")))
+                "Ada", "Lovelace", "X", "IR", null, null)))
                 .isInstanceOf(ApiException.class)
                 .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.COUNTRY_NOT_ALLOWED);
         verifyNoInteractions(orgs);
@@ -100,7 +172,7 @@ class AuthServiceTest {
     @Test
     void signup_blocked_for_unsupported_country() {
         assertThatThrownBy(() -> sut.signup(new SignupRequest("ada@example.com", "lovelace12",
-                "Ada", "Lovelace", "X", "UA")))
+                "Ada", "Lovelace", "X", "UA", null, null)))
                 .isInstanceOf(ApiException.class)
                 .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.COUNTRY_NOT_SUPPORTED);
         verifyNoInteractions(orgs);
@@ -110,7 +182,7 @@ class AuthServiceTest {
     @Test
     void signup_with_existing_email_throws_DUPLICATE() {
         when(users.existsByEmailLower("dupe@example.com")).thenReturn(true);
-        assertThatThrownBy(() -> sut.signup(new SignupRequest("dupe@example.com", "valid12345", "Dupe", "User", "X", "FR")))
+        assertThatThrownBy(() -> sut.signup(new SignupRequest("dupe@example.com", "valid12345", "Dupe", "User", "X", "FR", null, null)))
                 .isInstanceOf(ApiException.class)
                 .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.DUPLICATE);
     }
@@ -128,7 +200,7 @@ class AuthServiceTest {
         });
         when(verificationSvc.issueCode(any(User.class))).thenReturn("0001");
 
-        sut.signup(new SignupRequest("ada@example.com", "lovelace12", "Ada", "Lovelace", "X", "GB"));
+        sut.signup(new SignupRequest("ada@example.com", "lovelace12", "Ada", "Lovelace", "X", "GB", null, null));
 
         assertThat(savedUser.get().getAvatarInitials()).isEqualTo("AL");
         assertThat(savedUser.get().getFirstName()).isEqualTo("Ada");

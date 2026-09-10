@@ -46,6 +46,10 @@ public class MomentumService {
 
     private static final Duration ACTED_WINDOW = Duration.ofDays(30);
     private static final int LOG_LIMIT = 10;
+    // V52 column widths the approved draft lands in — model copy is clamped to them.
+    private static final int MAX_NAME = 120;
+    private static final int MAX_SUBJECT = 200;
+    private static final int MAX_PREHEADER = 200;
 
     private final MomentumSuggestionRepository suggestions;
     private final CampaignRepository campaigns;
@@ -290,14 +294,14 @@ public class MomentumService {
         c.setId(UUID.randomUUID());
         c.setOrgId(principal.orgId());
         c.setChannel("email");
-        c.setName(text(draft, "subject", "Momentum campaign"));
+        c.setName(clamp(text(draft, "subject", "Momentum campaign"), MAX_NAME));
         c.setStatus("draft");
         c.setEventId(s.getEventId());
         c.setSegmentId(uuidOrNull(text(draft, "segmentId", null)));
         c.setOrigin("momentum");
         c.setMomentumSuggestionId(s.getId());
-        c.setSubject(text(draft, "subject", null));
-        c.setPreheader(text(draft, "preheader", null));
+        c.setSubject(clamp(text(draft, "subject", null), MAX_SUBJECT));
+        c.setPreheader(clamp(text(draft, "preheader", null), MAX_PREHEADER));
         c.setBodyMd(text(draft, "bodyMd", null));
         c.setCreatedBy(principal.userId());
         c.setCreatedAt(now);
@@ -315,6 +319,13 @@ public class MomentumService {
     @Transactional
     public void dismiss(AuthPrincipal principal, UUID suggestionId) {
         MomentumSuggestion s = loadOwned(principal, suggestionId);
+        // Same guard approve uses (mkt-core-9). Without it an already-approved suggestion —
+        // campaign row created, campaignId set — could be flipped to 'dismissed', orphaning
+        // the link and double-counting it in state()'s approved30d/dismissed30d.
+        if (!"suggested".equals(s.getStatus())) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                    "Suggestion is not live");
+        }
         s.setStatus("dismissed");
         s.setActedAt(Instant.now());
         suggestions.save(s);
@@ -340,4 +351,16 @@ public class MomentumService {
         return v == null || v.isNull() ? dflt : v.asText();
     }
     private UUID uuidOrNull(String s) { return s == null ? null : UUID.fromString(s); }
+
+    /**
+     * Clamp model copy to the column it lands in (V52: name VARCHAR(120), subject and
+     * preheader VARCHAR(200)). MomentumCopyGenerator only ASKS the model for 60/90 chars, so
+     * an over-long subject was a varchar overflow -> DataIntegrityViolationException -> a 500
+     * on the organizer's Approve click. CampaignService.create does NOT clamp subject or
+     * preheader — it only truncates `name` — so this clamp is the only guard on the momentum
+     * path; the manual path is bounded by @Size on CampaignRequests instead (mkt-edge-7).
+     */
+    private static String clamp(String s, int max) {
+        return s == null || s.length() <= max ? s : s.substring(0, max);
+    }
 }

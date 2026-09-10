@@ -1,5 +1,6 @@
 package com.imin.iminapi.audience.service;
 
+import com.imin.iminapi.util.LogSafe;
 import com.imin.iminapi.audience.dto.ImportResultResponse;
 import com.imin.iminapi.audience.dto.ImportResultResponse.ImportError;
 import com.imin.iminapi.audience.model.Consumer;
@@ -86,6 +87,20 @@ public class AudienceImportService {
     public ImportResultResponse importContacts(List<CsvContactParser.RawContact> rawRows,
                                                boolean dryRun,
                                                AuthPrincipal principal) {
+        return importContacts(rawRows, dryRun, principal, null);
+    }
+
+    /**
+     * @param attestationVersion the revision of the attestation statement the
+     *        dashboard displayed, or null from a client that does not send one —
+     *        recorded as {@link ImportAttestation#UNVERSIONED} rather than
+     *        guessed at.
+     */
+    public ImportResultResponse importContacts(List<CsvContactParser.RawContact> rawRows,
+                                               boolean dryRun,
+                                               AuthPrincipal principal,
+                                               String attestationVersion) {
+        String version = ImportAttestation.version(attestationVersion);
         int total = rawRows.size();
         int invalidEmails = 0;
         List<ImportError> errors = new java.util.ArrayList<>();
@@ -110,7 +125,7 @@ public class AudienceImportService {
             String email = e.getKey();
             CsvContactParser.RawContact row = e.getValue();
             try {
-                Classification c = process(principal.orgId(), email, row, dryRun, principal);
+                Classification c = process(principal.orgId(), email, row, dryRun, principal, version);
                 switch (c) {
                     case IMPORTED -> imported++;
                     case UPDATED -> updated++;
@@ -118,7 +133,8 @@ public class AudienceImportService {
                     case SKIPPED_UNSUBSCRIBED -> skippedUnsubscribed++;
                 }
             } catch (RuntimeException ex) {
-                log.error("Import row {} ({}) failed: {}", row.rowNumber(), email, ex.getMessage(), ex);
+                log.error("Import row {} ({}) failed: {}", row.rowNumber(), LogSafe.email(email),
+                        LogSafe.redact(ex.getMessage()), ex);
                 addError(errors, row.rowNumber(), email, "processing error");
             }
         }
@@ -127,7 +143,8 @@ public class AudienceImportService {
             auditLogger.record(principal, AuditActions.AUDIENCE_IMPORTED, "audience", null,
                     "CSV import: total=" + total + " imported=" + imported + " updated=" + updated
                             + " suppressed=" + suppressed + " skippedUnsubscribed=" + skippedUnsubscribed
-                            + " invalidEmails=" + invalidEmails);
+                            + " invalidEmails=" + invalidEmails
+                            + " attestationVersion=" + version);
         }
 
         return new ImportResultResponse(total, imported, updated, suppressed,
@@ -139,7 +156,7 @@ public class AudienceImportService {
      */
     private Classification process(java.util.UUID orgId, String email,
                                    CsvContactParser.RawContact row, boolean dryRun,
-                                   AuthPrincipal principal) {
+                                   AuthPrincipal principal, String attestationVersion) {
         // ---- read current state (before any write) ----
         Consumer consumer = consumerRepo.findByNormalizedEmail(email).orElse(null);
         Membership existing = (consumer == null) ? null
@@ -179,18 +196,28 @@ public class AudienceImportService {
 
         if (c == Classification.IMPORTED || c == Classification.UPDATED) {
             Membership m = requireMembership(orgId, email);
+            // basis stays "explicit" and the send gate is untouched — whether an
+            // organizer import should carry a distinct basis and require
+            // re-permission before the first send is a product decision, and the
+            // open half of this card.
             consentService.capture(orgId, m.getMembershipId(), "explicit", SOURCE,
-                    proofText(principal), "email", principal);
+                    proofText(principal, attestationVersion), "email", principal);
         }
         // SUPPRESSED / SKIPPED_UNSUBSCRIBED: member row exists (or was just created for a new
         // suppressed contact) but consent_status is left untouched — the guardrail.
         return c;
     }
 
-    /** Proof text records WHO asserted the consent and WHEN, alongside source=organizer_import. */
-    private static String proofText(AuthPrincipal principal) {
-        return "Organizer-asserted consent via CSV import (attestation=true), imported by user "
-                + principal.userId() + " at " + Instant.now();
+    /**
+     * Proof text records WHO asserted the consent, WHEN, and — since the 2026-09
+     * legal audit — <b>WHAT they asserted</b> and which revision of it they were
+     * shown. Without the last two, an edit to the dashboard's dialog copy
+     * silently rewrites what every past importer is on file as having claimed.
+     */
+    private static String proofText(AuthPrincipal principal, String attestationVersion) {
+        return "Organizer-asserted consent via CSV import (attestation=true, version="
+                + attestationVersion + "). " + ImportAttestation.STATEMENT
+                + " Imported by user " + principal.userId() + " at " + Instant.now();
     }
 
     private Membership requireMembership(java.util.UUID orgId, String email) {

@@ -68,4 +68,12 @@ public class PosterVariantEntity {
     /** Logo composite outcome, beside validation_verdict: NULL | 'APPLIED' | 'SKIPPED' | 'FAILED'. */
     @Column(name = "logo_composite_status", length = 16)
     private String logoCompositeStatus;
+
+    /**
+     * The renderer that produced this image, e.g. {@code "ideogram-v3"} (V100).
+     * NULL on rows written before the column existed — that is "not recorded",
+     * not "rendered by today's model".
+     */
+    @Column(name = "model_id", length = 128)
+    private String modelId;
 }

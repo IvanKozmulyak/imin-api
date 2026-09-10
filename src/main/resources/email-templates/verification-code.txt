@@ -3,7 +3,7 @@ imin.wtf · verification code
 Verify your email
 ─────────────────
 
-Enter this 4-digit code to finish creating your imin account:
+Enter this 6-digit code to finish creating your imin account:
 
     {{code}}
 

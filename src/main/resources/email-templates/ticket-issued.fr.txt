@@ -6,6 +6,13 @@ C'est confirmé pour {{eventName}}.
 VOS BILLETS
 
 {{ticketBlocks}}
+
+CE QUE VOUS AVEZ PAYÉ
+
+Billets : {{priceTicketsMinor}}
+Frais de réservation : {{priceBookingFeeMinor}}
+Total : {{priceTotalMinor}}
+
 Voir votre commande en ligne : {{orderUrl}}
 
 Vous avez perdu cet e-mail ? Récupérez vos billets : {{recoverUrl}}

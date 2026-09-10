@@ -106,6 +106,12 @@ class QuoteServiceTest {
         return eventRepository.save(e);
     }
 
+    private Event cancelledEvent() {
+        Event e = publishedLiveEvent();
+        e.setStatus(EventStatus.CANCELLED);
+        return eventRepository.save(e);
+    }
+
     private TicketTier tier(UUID eventId, int priceMinor) {
         TicketTier t = new TicketTier();
         t.setEventId(eventId);
@@ -243,6 +249,55 @@ class QuoteServiceTest {
                     assertThat(api.status()).isEqualTo(HttpStatus.NOT_FOUND);
                     assertThat(api.code()).isEqualTo(ErrorCode.NOT_FOUND);
                 });
+    }
+
+    // ---- event-level gate: status + event sale window (events-1) -----------
+
+    // A CANCELLED event stays reachable by share-link (EventRepository.findPublic is
+    // deliberately CANCELLED-tolerant so the detail page can render the banner), but a
+    // buyer holding a tierId must not be able to price or buy a ticket for it.
+    @Test
+    void quote_returns404_onCancelledEvent() {
+        Event e = cancelledEvent();
+        TicketTier t = tier(e.getId(), 2500);
+
+        assertThatThrownBy(() ->
+                quoteService.quote(e.getId(), new QuoteRequest(t.getId(), 1, null, null)))
+                .isInstanceOf(ApiException.class)
+                .satisfies(ex -> {
+                    ApiException api = (ApiException) ex;
+                    assertThat(api.status()).isEqualTo(HttpStatus.NOT_FOUND);
+                    assertThat(api.code()).isEqualTo(ErrorCode.NOT_FOUND);
+                });
+    }
+
+    // The event-level sale window is enforced even when the tier itself has none.
+    @Test
+    void quote_returns404_whenEventSaleHasNotOpenedYet() {
+        Event e = publishedLiveEvent();
+        e.setOnSaleAt(NOW.plusSeconds(3600));
+        eventRepository.save(e);
+        TicketTier t = tier(e.getId(), 2500);
+
+        assertThatThrownBy(() ->
+                quoteService.quote(e.getId(), new QuoteRequest(t.getId(), 1, null, null)))
+                .isInstanceOf(ApiException.class)
+                .satisfies(ex -> assertThat(((ApiException) ex).status())
+                        .isEqualTo(HttpStatus.NOT_FOUND));
+    }
+
+    @Test
+    void quote_returns404_whenEventSaleHasClosed() {
+        Event e = publishedLiveEvent();
+        e.setSaleClosesAt(NOW.minusSeconds(60));
+        eventRepository.save(e);
+        TicketTier t = tier(e.getId(), 2500);
+
+        assertThatThrownBy(() ->
+                quoteService.quote(e.getId(), new QuoteRequest(t.getId(), 1, null, null)))
+                .isInstanceOf(ApiException.class)
+                .satisfies(ex -> assertThat(((ApiException) ex).status())
+                        .isEqualTo(HttpStatus.NOT_FOUND));
     }
 
     // ---- (f) 404 on tier from different event ------------------------------

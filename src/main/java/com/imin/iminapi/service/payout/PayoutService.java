@@ -120,14 +120,23 @@ public class PayoutService {
     /**
      * Summary tiles. inTransit / pending are status sums across all time;
      * thisMonth (+ count) is the sum/count of PAID payouts in the current
-     * calendar month (UTC). We sum the {@code PAYOUT} object type for the
-     * windowed metric so transfer + payout rows mirroring the same funds aren't
-     * double-counted (money-in-the-bank = the payout).
+     * calendar month (UTC). ALL THREE sum the {@code PAYOUT} object type so
+     * transfer + payout rows mirroring the same funds aren't double-counted
+     * (money-in-the-bank = the payout).
+     *
+     * <p>The type filter is load-bearing on {@code pending}, not just tidiness: every
+     * destination-charge transfer is ingested as {@code PENDING} and nothing routinely
+     * moves a transfer row out of that status, so an unscoped sum was the org's running
+     * LIFETIME transfer total plus any in-flight payout — a number that only ever grew
+     * and counted the same euros twice. {@code pending} means "an imin-visible payout
+     * Stripe has accepted but not yet put in transit".
      */
     @Transactional(readOnly = true)
     public PayoutsSummaryResponse summary(UUID orgId) {
-        long inTransit = settlements.sumAmountByOrgAndStatus(orgId, SettlementStatus.IN_TRANSIT);
-        long pending = settlements.sumAmountByOrgAndStatus(orgId, SettlementStatus.PENDING);
+        long inTransit = settlements.sumAmountByOrgAndTypeAndStatus(
+                orgId, SettlementObjectType.PAYOUT, SettlementStatus.IN_TRANSIT);
+        long pending = settlements.sumAmountByOrgAndTypeAndStatus(
+                orgId, SettlementObjectType.PAYOUT, SettlementStatus.PENDING);
 
         Instant monthStart = startOfCurrentMonthUtc();
         Instant nextMonthStart = startOfNextMonthUtc();

@@ -130,13 +130,22 @@ public class EventOutcomeService {
 
     private void applyFrozenFields(EventOutcome o, Event e, boolean reconstructed) {
         o.setOrgId(e.getOrgId());
-        o.setCity(blankToNull(e.getVenueCity()));
-        o.setCountry(blankToNull(e.getVenueCountry()));
-        o.setGenreFamily(blankToNull(e.getGenre()));
+        // The MERGE keys, not the display spellings (predictor-edge-3): these two columns are
+        // matched by equality in the three comparable-corpus segment queries and are the
+        // components of PacingCurveService's segment keys, so "Techno"/"techno" must not be two
+        // segments. Nothing renders event_outcomes; the display spelling stays on the event row.
+        o.setCity(PredictorSegmentKeys.cityKey(e.getVenueCity()));
+        o.setCountry(blankToNull(e.getVenueCountry()));   // already upper-cased on write (V82)
+        o.setGenreFamily(PredictorSegmentKeys.genreKey(e.getGenre()));
         // venueType / indoorOpenAir stay NULL — no source in the data model.
 
+        // A tier-less event (free/RSVP-style — EventValidator.validateForPublish requires no
+        // tier) sums to 0, and the query COALESCEs to 0, so the caller can never pass null.
+        // Store NULL for a non-positive sum (predictor-edge-4): 0 would claim an event with a
+        // capacity of zero, join the ≤100 segment of every other org's corpus, and let finalize
+        // record a definitive "did not sell out" for a capacity nobody stated.
         int capacity = tiers.sumQuantityByEventId(e.getId());
-        o.setCapacity(capacity);
+        o.setCapacity(capacity > 0 ? capacity : null);
         o.setCapacityBand(CapacityBand.of(capacity));
 
         ZoneId zone = resolveZone(e.getTimezone());
@@ -222,10 +231,13 @@ public class EventOutcomeService {
         o.setSoldPerTierJson(writeJson(perTier, "[]"));
         o.setGrossRevenueMinor(grossRevenue);
 
+        // Unknown capacity → the sell-out FACT is undefined. NULL says that; false would be a
+        // definitive "did not sell out" for an event whose capacity was never stated
+        // (predictor-edge-4) — the same honesty rule as refundRate below.
         Integer capacity = o.getCapacity();
-        boolean sellOut = capacity != null && capacity > 0 && soldTotal >= capacity;
+        Boolean sellOut = (capacity == null || capacity <= 0) ? null : soldTotal >= capacity;
         o.setSellOut(sellOut);
-        if (sellOut) {
+        if (Boolean.TRUE.equals(sellOut)) {
             Instant lastSold = tickets.findLastSoldCreatedAt(e.getId());
             o.setTimeToSellOutHours(wholeHoursBetween(e.getPublishedAt(), lastSold));
         } else {
@@ -235,7 +247,9 @@ public class EventOutcomeService {
         long refundCount = tickets.countByEventIdAndState(e.getId(), "refunded");
         o.setRefundCount((int) refundCount);
         long issued = soldTotal + refundCount;
-        o.setRefundRate(issued == 0 ? BigDecimal.ZERO
+        // Nothing issued → the refund RATE is undefined. NULL says that; 0.0000 would claim the
+        // event issued tickets and none came back (§6.1 honesty columns).
+        o.setRefundRate(issued == 0 ? null
                 : BigDecimal.valueOf(refundCount).divide(BigDecimal.valueOf(issued), 4, RoundingMode.HALF_UP));
 
         // Attendance: door-scan truth when ANY scan exists; else the sales fallback (recorded, not hidden).
@@ -247,7 +261,10 @@ public class EventOutcomeService {
             o.setAttendanceSource(AttendanceSource.SALES);
         }
 
-        int views = 0, checkoutStarts = 0;
+        // Null until a beacon row for that stage says otherwise: an event with no funnel data at
+        // all recorded NOTHING, which is not the same claim as "this event got zero page views".
+        // A real stage row carrying 0 still records 0 — presence is tracked, not just the value.
+        Integer views = null, checkoutStarts = null;
         for (Object[] row : funnel.countDistinctAnonByStage(e.getId())) {
             String stage = (String) row[0];
             int count = ((Number) row[1]).intValue();

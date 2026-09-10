@@ -87,11 +87,22 @@ class EmailTemplateRendererTest {
 
     @Test
     void missing_locale_variant_falls_back_to_english_without_throwing() {
-        // refund-request-rejected is a buyer email with no localized variants — a
-        // supported locale must fall back to the base EN file, never throw.
-        Map<String, String> vars = Map.of("decisionNote", "Past the 48-hour window.");
-        EmailTemplateRenderer.Rendered fr = renderer.render("refund-request-rejected", "fr", vars);
-        EmailTemplateRenderer.Rendered en = renderer.render("refund-request-rejected", null, vars);
+        // refund-request-notify-imin has no localized variants and deliberately never
+        // will: its recipient is one internal ops inbox. A supported locale must fall
+        // back to the base EN file, never throw.
+        // (This used to point at refund-request-rejected, which was translated in the
+        // same change that moved this assertion — a template that gains variants stops
+        // testing the fallback.)
+        Map<String, String> vars = Map.of(
+                "eventName", "Warehouse 7",
+                "buyerEmail", "buyer@example.com",
+                "phoneLine", "",
+                "reason", "event_cancelled",
+                "explanation", "The event was called off.",
+                "orgId", "6f1c2f18-9a0e-4c1e-8f2a-1d3b5c7e9a11",
+                "dashboardUrl", "https://dashboard.imin.wtf/refunds");
+        EmailTemplateRenderer.Rendered fr = renderer.render("refund-request-notify-imin", "fr", vars);
+        EmailTemplateRenderer.Rendered en = renderer.render("refund-request-notify-imin", null, vars);
         assertThat(fr.html()).isEqualTo(en.html());
         assertThat(fr.text()).isEqualTo(en.text());
         assertThat(fr.html()).doesNotContain("{{");

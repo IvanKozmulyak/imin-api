@@ -149,28 +149,30 @@ class OAuthAccountServiceTest {
         verify(sessions, never()).save(any(AuthSession.class));
     }
 
+    /**
+     * infra-11: provisioning ran with no {@code email_verified} check at all —
+     * {@code emailVerified} was consulted only on the existing-email branch — so an
+     * unverified address became a fresh Organization with an OWNER user whose
+     * {@code verifiedAt} we stamped ourselves. The buyer twin refuses exactly this
+     * input before both of its branches (BuyerOAuthService: 409
+     * OAUTH_EMAIL_UNVERIFIED); this closes the asymmetry.
+     *
+     * <p>It binds Google only in practice: GoogleOAuthService reads the real
+     * {@code email_verified} claim, while AppleOAuthService hardcodes {@code true}.
+     */
     @Test
-    void unverified_email_no_user_still_provisions_a_separate_account() {
-        AtomicReference<User> savedUser = new AtomicReference<>();
+    void unverified_email_with_no_user_is_refused_instead_of_provisioning() {
         when(identities.findByProviderAndProviderUserId("google", "sub-5")).thenReturn(Optional.empty());
         when(users.findByEmailLower("solo@example.com")).thenReturn(Optional.empty());
-        when(orgs.existsBySlug(any())).thenReturn(false);
-        AtomicReference<Organization> savedOrg = new AtomicReference<>();
-        when(orgs.saveAndFlush(any(Organization.class))).thenAnswer(inv -> {
-            Organization o = inv.getArgument(0); o.setId(UUID.randomUUID()); savedOrg.set(o); return o;
-        });
-        when(users.save(any(User.class))).thenAnswer(inv -> {
-            User u = inv.getArgument(0); if (u.getId() == null) u.setId(UUID.randomUUID()); savedUser.set(u); return u;
-        });
-        when(orgs.findById(any())).thenAnswer(inv -> Optional.of(savedOrg.get()));
-        when(identities.save(any(UserIdentity.class))).thenAnswer(inv -> inv.getArgument(0));
-        stubSessionSave();
 
-        AuthResponse r = sut.resolve(google("sub-5", "solo@example.com", false));
+        assertThatThrownBy(() -> sut.resolve(google("sub-5", "solo@example.com", false)))
+                .isInstanceOf(ApiException.class)
+                .hasFieldOrPropertyWithValue("code", ErrorCode.OAUTH_EMAIL_UNVERIFIED);
 
-        assertThat(r.token()).isNotBlank();
-        assertThat(savedUser.get().getEmail()).isEqualTo("solo@example.com");
-        verify(identities).save(any(UserIdentity.class));
+        verify(orgs, never()).saveAndFlush(any(Organization.class));
+        verify(users, never()).save(any(User.class));
+        verify(identities, never()).save(any(UserIdentity.class));
+        verify(sessions, never()).save(any(AuthSession.class));
     }
 
     @Test

@@ -48,6 +48,10 @@ public class AudienceImportController {
             @AuthenticationPrincipal AuthPrincipal principal,
             @RequestParam("file") MultipartFile file,
             @RequestParam(value = "attestation", required = false) String attestation,
+            // Which revision of the attestation statement the dashboard displayed.
+            // Optional so an older dashboard keeps working; absent is recorded as
+            // "unversioned" rather than guessed at.
+            @RequestParam(value = "attestationVersion", required = false) String attestationVersion,
             @RequestParam(value = "dryRun", defaultValue = "false") boolean dryRun) {
 
         // Attestation is the load-bearing consent gate — reject before any parsing or writes.
@@ -77,6 +81,6 @@ public class AudienceImportController {
         }
 
         List<CsvContactParser.RawContact> rows = CsvContactParser.parse(bytes, MAX_ROWS);
-        return importService.importContacts(rows, dryRun, principal);
+        return importService.importContacts(rows, dryRun, principal, attestationVersion);
     }
 }

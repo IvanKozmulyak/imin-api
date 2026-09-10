@@ -8,8 +8,9 @@ import com.imin.iminapi.security.AuthPrincipal;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Propagation;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.Optional;
 import java.util.UUID;
@@ -19,9 +20,9 @@ import java.util.UUID;
  *
  * <p>Write semantics:
  * <ul>
- *   <li>Each {@link #record} call runs in its own transaction
- *       ({@link Propagation#REQUIRES_NEW}) so an audit-write failure can never
- *       roll back the surrounding business transaction.</li>
+ *   <li>Each database touch runs in its own transaction, opened by a
+ *       {@code REQUIRES_NEW} {@link TransactionTemplate} <em>inside</em> the try, so an
+ *       audit-write failure can never roll back the surrounding business transaction.</li>
  *   <li>Any exception thrown by the repository (or anything else) is caught,
  *       logged at ERROR level, and swallowed. Audit writes are best-effort —
  *       losing an audit row is strictly better than failing the user's action.</li>
@@ -36,10 +37,14 @@ public class AuditLogger {
 
     private final AuditLogRepository auditLogs;
     private final UserRepository users;
+    private final TransactionTemplate ownTransaction;
 
-    public AuditLogger(AuditLogRepository auditLogs, UserRepository users) {
+    public AuditLogger(AuditLogRepository auditLogs, UserRepository users,
+                       PlatformTransactionManager transactionManager) {
         this.auditLogs = auditLogs;
         this.users = users;
+        this.ownTransaction = new TransactionTemplate(transactionManager);
+        this.ownTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
     /**
@@ -51,22 +56,23 @@ public class AuditLogger {
      * @param targetId optional id of the affected resource
      * @param summary human-readable, one-line description (≤ 512 chars; truncated if longer)
      */
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void record(AuthPrincipal principal, String action, String targetType,
                        UUID targetId, String summary) {
-        // ── Validate BEFORE writing, because a failed write here is not
-        // recoverable by the catch below. ────────────────────────────────────
+        // ── Why the write below goes through `ownTransaction` and not a
+        // @Transactional(REQUIRES_NEW) on this method. ───────────────────────
         //
-        // The try/catch cannot save us from a constraint violation. This method
-        // runs in its own REQUIRES_NEW transaction; a failing INSERT marks that
-        // transaction rollback-only, and the commit — performed by the
-        // transaction interceptor AFTER this method has returned — then throws
-        // UnexpectedRollbackException straight into the caller's frame, rolling
-        // back its business transaction. The class contract below says audit
-        // writes are best-effort and swallowed; the only way to actually honour
-        // that is to never emit a statement that cannot succeed.
+        // With the annotation, the transaction is committed by the interceptor
+        // AFTER this method returns — outside the try. A failing INSERT marks
+        // that transaction rollback-only, the catch swallows the exception, and
+        // the interceptor's commit then throws UnexpectedRollbackException
+        // straight into the caller's frame, rolling back a business change that
+        // had already succeeded. Opening and completing the transaction inside
+        // the try instead means the failure escapes the template (which rolls
+        // back its own transaction) into a catch that genuinely swallows it.
         //
-        // This is not hypothetical. audit_logs.org_id is NOT NULL (V21:3) and
+        // The guard below still stands on its own: an org-less row cannot be
+        // written at all, and losing it silently would hide a real bug.
+        // audit_logs.org_id is NOT NULL (V21:3) and
         // AudienceErasureJob passed a SYSTEM principal with a null org, so
         // DsarService.executeErase aborted on every run: no tombstone was
         // written AND no membership was ever erased. Every test that covered
@@ -82,20 +88,19 @@ public class AuditLogger {
             return;
         }
 
+        String actorEmail = lookupEmail(principal.userId());
         try {
             AuditLog row = new AuditLog();
             row.setOrgId(principal.orgId());
             row.setActorId(principal.userId());
-            row.setActorEmail(lookupEmail(principal.userId()));
+            row.setActorEmail(actorEmail);
             row.setAction(action);
             row.setTargetType(targetType);
             row.setTargetId(targetId);
             row.setSummary(truncate(summary));
             // saveAndFlush, not save: with a plain save() the INSERT is only
-            // queued and runs at commit — outside this try, where the catch can
-            // no longer see it. Flushing here at least brings the remaining
-            // failure modes back inside the block that logs them.
-            auditLogs.saveAndFlush(row);
+            // queued and runs at commit, where this catch can no longer see it.
+            ownTransaction.executeWithoutResult(status -> auditLogs.saveAndFlush(row));
         } catch (RuntimeException e) {
             // Never rethrow — audit failures must not break the surrounding business txn.
             log.error("Audit write failed action={} target={} org={} actor={}: {}",
@@ -112,7 +117,10 @@ public class AuditLogger {
     private String lookupEmail(UUID userId) {
         if (userId == null) return null;
         try {
-            Optional<User> u = users.findById(userId);
+            // Own transaction for the same reason as the INSERT above: a repository
+            // call that participates in the caller's transaction poisons it on failure.
+            Optional<User> u = ownTransaction.execute(status -> users.findById(userId));
+            if (u == null) return null;
             if (u.isEmpty()) {
                 log.warn("Audit actor user not found: id={}", userId);
                 return null;

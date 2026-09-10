@@ -91,12 +91,13 @@ public class MarketingHubService {
         // The two come from different sources on purpose (sessions vs money that moved), so
         // they can legitimately disagree — see CampaignAttributionService.
         List<Campaign> recent = campaigns.findByOrgCreatedSince(orgId, now.minus(ATTRIBUTION_WINDOW));
-        int attributedPurchases = 0;
-        for (Campaign c : recent) {
-            attributedPurchases += (int) attribution.attributedPurchaseCount(c.getId());
-        }
+        List<UUID> recentIds = recent.stream().map(Campaign::getId).toList();
+        // Both tiles are ONE batched query over the whole id list. The purchases tile used to
+        // run a funnel query per campaign on every hub page view (mkt-core-12).
+        int attributedPurchases = (int) attribution.attributedPurchaseCountByCampaign(recentIds)
+                .values().stream().mapToLong(Long::longValue).sum();
         long attributedRevMinor = attribution
-                .attributedRevenueMinorByCampaign(orgId, recent.stream().map(Campaign::getId).toList())
+                .attributedRevenueMinorByCampaign(orgId, recentIds)
                 .values().stream().mapToLong(Long::longValue).sum();
 
         // Marketing sender identity + whether it is configured enough to send.

@@ -93,11 +93,15 @@ class AttendeeExportServiceTest {
     }
 
     private Order order() {
+        return order("buyer@example.com");
+    }
+
+    private Order order(String email) {
         Order o = new Order();
         o.setToken(UUID.randomUUID().toString().replace("-", ""));
         o.setEventId(event.getId());
         o.setOrgId(org.getId());
-        o.setEmail("buyer@example.com");
+        o.setEmail(email);
         o.setTotalMinor(1500);
         o.setCurrency("eur");
         o.setPaymentMethod("stripe");
@@ -125,6 +129,23 @@ class AttendeeExportServiceTest {
                 .isInstanceOf(ApiException.class)
                 .extracting(e -> ((ApiException) e).code())
                 .isEqualTo(ErrorCode.NOT_FOUND);
+    }
+
+    /**
+     * events-20: buyer_email is buyer-controlled — checkout validates only that it contains
+     * an "@" — and a leading = + - @ makes Excel/Sheets evaluate the cell (DDE / HYPERLINK
+     * exfiltration). AudienceController already implements exactly this guard for the same
+     * class of data; the attendee export was the surface that was missed.
+     */
+    @Test
+    void csv_neutralizes_a_formula_in_a_buyer_supplied_email() {
+        Order o = order("=cmd|'/C calc'!A0@example.com");
+        ticket(o, Ticket.STATE_ISSUED, null);
+
+        String csv = service.toCsv(principal, event.getId());
+
+        assertThat(csv).doesNotContain(",=cmd");
+        assertThat(csv).contains("'=cmd|'/C calc'!A0@example.com");
     }
 
     @Test

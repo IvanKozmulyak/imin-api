@@ -6,13 +6,16 @@ import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.render.CampaignEmailRenderer;
 import com.imin.iminapi.marketing.render.MergeTags;
+import com.imin.iminapi.audience.dto.ExclusionReason;
 import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
+import com.imin.iminapi.audience.service.SendGateService;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.marketing.service.CampaignTemplateService;
+import com.imin.iminapi.marketing.service.MarketingGuardProperties;
 import com.imin.iminapi.marketing.template.ResolvedTemplate;
 import com.imin.iminapi.marketing.unsubscribe.UnsubscribeTokenService;
 import com.imin.iminapi.model.Event;
@@ -23,14 +26,17 @@ import com.imin.iminapi.security.ApiException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.UUID;
 import java.util.Map;
 import java.util.HashMap;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Spec §2.5 step 3: per-row email worker over campaign_recipients. Claims a batch of
@@ -43,6 +49,8 @@ public class EmailChannelSender {
 
     private static final Logger log = LoggerFactory.getLogger(EmailChannelSender.class);
     static final int BATCH_SIZE = 100;
+    /** Rolling window the per-org daily cap is measured over — matches CampaignDispatcher. */
+    private static final long DAILY_CAP_WINDOW_HOURS = 24;
 
     private final CampaignRecipientRepository recipients;
     private final CampaignRepository campaigns;
@@ -55,13 +63,16 @@ public class EmailChannelSender {
     private final EventRepository events;
     private final MembershipRepository memberships;
     private final ConsumerRepository consumers;
+    private final SendGateService sendGate;
+    private final MarketingGuardProperties guardProps;
 
     public EmailChannelSender(CampaignRecipientRepository recipients, CampaignRepository campaigns,
                               CampaignEmailRenderer renderer, CampaignEmailProvider provider,
                               UnsubscribeTokenService tokens, MarketingEmailProperties props,
                               CampaignTemplateService templateService,
                               OrganizationRepository organizations, EventRepository events,
-                              MembershipRepository memberships, ConsumerRepository consumers) {
+                              MembershipRepository memberships, ConsumerRepository consumers,
+                              SendGateService sendGate, MarketingGuardProperties guardProps) {
         this.recipients = recipients;
         this.campaigns = campaigns;
         this.renderer = renderer;
@@ -73,13 +84,53 @@ public class EmailChannelSender {
         this.events = events;
         this.memberships = memberships;
         this.consumers = consumers;
+        this.sendGate = sendGate;
+        this.guardProps = guardProps;
     }
 
-    /** Sends one batch. Returns true if there are (likely) more pending rows to process. */
-    @Transactional
+    /**
+     * Sends one batch. Returns true if there are (likely) more claimable rows to process.
+     *
+     * <p>REQUIRES_NEW is load-bearing: the provider send is irreversible, so this batch's
+     * 'sent' flips and provider_message_ids must be durable BEFORE the next batch is
+     * claimed. Sharing one transaction with the whole drive (the previous shape) meant a
+     * later crash rolled the record of already-delivered mail back and the dispatcher
+     * re-sent it.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public boolean sendNextBatch(Campaign c) {
-        List<CampaignRecipient> batch = recipients.claimPendingBatch(c.getId(), BATCH_SIZE);
+        // Per-org daily cap (spec §7), re-checked PER BATCH. Checking it only at claim time
+        // capped which campaigns start, not how much they send: a single 200k campaign
+        // admitted under a 10,000/day cap then drained all 200k. Stopping here leaves the
+        // campaign 'sending' with rows queued, so it resumes when the window rolls forward.
+        if (recipients.countRecentSendsForOrg(c.getOrgId(),
+                Instant.now().minus(DAILY_CAP_WINDOW_HOURS, ChronoUnit.HOURS))
+                >= guardProps.getDailyCap()) {
+            log.info("[email-sender] org {} at daily cap — pausing campaign {}",
+                    c.getOrgId(), c.getId());
+            return false;
+        }
+        List<CampaignRecipient> batch = new ArrayList<>(recipients.claimPendingBatch(c.getId(), BATCH_SIZE, Instant.now()));
         if (batch.isEmpty()) return false;
+        // Idempotence belt-and-braces: only rows still 'pending' may be sent. The claim
+        // already filters on it, but a row that changed underneath us must never be
+        // re-emailed just because it was in the claimed page.
+        batch.removeIf(r -> !"pending".equals(r.getStatus()));
+        // Unreachable while the claim filters on status; stop the drive rather than spin
+        // if it ever is reached — the dispatcher re-claims the campaign either way.
+        if (batch.isEmpty()) return false;
+        // The gate snapshot was taken at materialisation, and a large campaign drains for
+        // minutes-to-hours after that. Re-run it over THIS batch so someone who unsubscribed,
+        // complained or was deliverability-suppressed in the meantime is diverted rather than
+        // emailed — SendGateService is "THE ONLY path that yields sendable recipients".
+        divertNoLongerSendable(c, batch);
+        // A row with no address can never be sent, and resend-java does not refuse it: a null
+        // `to` is wrapped into a one-null list and fails on the wire, taking the whole batch
+        // (and, via the dispatcher, the campaign) with it. Divert before assembling the batch.
+        divertMissingAddress(c, batch);
+        if (batch.isEmpty()) {
+            return recipients.countByCampaignIdAndStatus(c.getId(), "pending") > 0;
+        }
 
         // Template, org brand name, and event poster are constant for the whole campaign —
         // resolve them ONCE per batch, not per recipient. Only the unsubscribe URL varies.
@@ -116,22 +167,59 @@ public class EmailChannelSender {
 
         try {
             List<String> ids = provider.sendBatch(outgoing);
+            if (ids.size() < batch.size()) {
+                // Ids are matched to recipients by POSITION and the provider gives no guarantee
+                // the list is the same length. The mail left, so these rows stay 'sent' — but
+                // without a provider_message_id no delivery/bounce/complaint event can ever be
+                // resolved back to them, so say so on the row instead of leaving them silently
+                // invisible to the stats and to the complaint breaker (mkt-core-16).
+                log.warn("[email-sender] campaign {}: provider returned {} ids for {} emails — "
+                        + "{} recipients will be untrackable", c.getId(), ids.size(), batch.size(),
+                        batch.size() - ids.size());
+            }
             for (int i = 0; i < batch.size(); i++) {
                 CampaignRecipient r = batch.get(i);
                 r.setStatus("sent");
                 r.setProviderMessageId(i < ids.size() ? ids.get(i) : null);
+                if (i >= ids.size()) r.setErrorCode("no_provider_id");
                 r.setAttemptCount((short) (r.getAttemptCount() + 1));
                 r.setLastEventAt(Instant.now());
                 recipients.save(r);
             }
+        } catch (com.imin.iminapi.marketing.email.CampaignEmailProvider.TerminalBatchFailure ex) {
+            // A 4xx will be rejected identically on every retry, so backing off three times
+            // only delays the truth and holds the campaign in 'sending'. Fail the rows with
+            // the reason on them; POST /campaigns/{id}/retry requeues 'failed' rows once the
+            // cause (key, sender identity, payload) is fixed.
+            log.error("[email-sender] campaign {}: provider rejected the batch with HTTP {} — "
+                    + "failing {} rows: {}", c.getId(), ex.upstreamStatus(), batch.size(), ex.getMessage());
+            Instant now = Instant.now();
+            for (CampaignRecipient r : batch) {
+                r.setStatus("failed");
+                r.setErrorCode("provider_rejected");
+                r.setAttemptCount((short) (r.getAttemptCount() + 1));
+                r.setLastEventAt(now);
+                recipients.save(r);
+            }
+            campaigns.touch(c.getId(), now);
+            return false;
         } catch (ApiException ex) {
             log.warn("[email-sender] batch failed for campaign {} — leaving {} rows pending: {}",
                     c.getId(), batch.size(), ex.getMessage());
+            Instant now = Instant.now();
             for (CampaignRecipient r : batch) {
-                r.setAttemptCount((short) (r.getAttemptCount() + 1));
-                r.setLastEventAt(Instant.now());
+                short attempt = (short) (r.getAttemptCount() + 1);
+                r.setAttemptCount(attempt);
+                r.setLastEventAt(now);
+                r.setNextAttemptAt(now.plusSeconds(backoffSeconds(attempt)));
                 recipients.save(r);
             }
+            campaigns.touch(c.getId(), now);
+            // Bail out of the drive instead of looping straight back into a provider that just
+            // refused us: claimPendingBatch would re-claim these exact rows (ORDER BY id) and
+            // re-POST the identical batch within milliseconds. The dispatcher's stale-`sending`
+            // reclaim resumes the campaign once the backoff has elapsed.
+            return false;
         }
 
         // Heartbeat: bump campaigns.updated_at so the dispatcher's stale-`sending` reclaim
@@ -141,6 +229,79 @@ public class EmailChannelSender {
         campaigns.touch(c.getId(), Instant.now());
 
         return recipients.countByCampaignIdAndStatus(c.getId(), "pending") > 0;
+    }
+
+    /**
+     * Attempt-based delay before a failed row may be claimed again. Deliberately coarser than
+     * the dispatcher's 30s tick and no shorter than its 5-minute stale-`sending` reclaim from
+     * attempt 2 on, so a sustained outage backs off instead of hammering.
+     */
+    private static long backoffSeconds(short attempt) {
+        return switch (attempt) {
+            case 0, 1 -> 60L;
+            case 2 -> 300L;
+            default -> 900L;
+        };
+    }
+
+    /**
+     * Re-runs the Send Gate for a claimed batch and diverts every row that no longer passes
+     * to {@code skipped} with the gate's own exclusion reason, removing it from the batch.
+     * Read-only and tenant-scoped (SendGateService.evaluate), four batched queries per call.
+     *
+     * <p>Rows with a null membership_id (DSAR-erased) cannot be gated and are left alone —
+     * they carry no consent state to re-check.
+     */
+    private void divertNoLongerSendable(Campaign c, List<CampaignRecipient> batch) {
+        List<UUID> membershipIds = batch.stream()
+                .map(CampaignRecipient::getMembershipId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (membershipIds.isEmpty()) return;
+        SendGateService.GateResult gate = sendGate.evaluate(c.getOrgId(), membershipIds);
+        if (gate.excluded().isEmpty()) return;
+        Map<UUID, String> reasonByMembership = new HashMap<>();
+        for (ExclusionReason ex : gate.excluded()) {
+            reasonByMembership.put(ex.membershipId(), ex.reason());
+        }
+        Instant now = Instant.now();
+        batch.removeIf(r -> {
+            String reason = r.getMembershipId() == null
+                    ? null : reasonByMembership.get(r.getMembershipId());
+            if (reason == null) return false;
+            r.setStatus("skipped");
+            r.setSkipReason(reason);
+            r.setLastEventAt(now);
+            recipients.save(r);
+            log.info("[email-sender] campaign {} recipient {} no longer sendable ({}) — skipping",
+                    c.getId(), r.getId(), reason);
+            return true;
+        });
+    }
+
+    /**
+     * Diverts every claimed row with no address to {@code skipped}/{@code no_email}, removing it
+     * from the batch. A row loses its address exactly once: DSAR erasure nulls
+     * {@code campaign_recipients.email} for an erased membership
+     * ({@code CampaignRecipientRepository.redactPiiByMembershipId}), which can catch a row that
+     * is still queued. The Send Gate cannot cover this — its {@code no_email} clause reads the
+     * consumer's address, and the erased membership it would need is already gone — so the check
+     * belongs here, on the row that is about to be sent. Same reason value the gate uses, so the
+     * recipient log's skip chips stay one vocabulary.
+     */
+    private void divertMissingAddress(Campaign c, List<CampaignRecipient> batch) {
+        Instant now = Instant.now();
+        batch.removeIf(r -> {
+            if (r.getEmail() != null && !r.getEmail().isBlank()) return false;
+            r.setStatus("skipped");
+            r.setSkipReason("no_email");
+            r.setLastEventAt(now);
+            recipients.save(r);
+            log.info("[email-sender] campaign {} recipient {} has no address — skipping",
+                    c.getId(), r.getId());
+            return true;
+        });
     }
 
     /**

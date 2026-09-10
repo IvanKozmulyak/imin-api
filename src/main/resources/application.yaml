@@ -14,10 +14,34 @@ spring:
         jdbc:
           time_zone: UTC
 
+  # @Scheduled pool. Spring's default is ONE thread for every scheduled job in the
+  # app, and this key was previously unset — PushConfig documents the consequence:
+  # a single slow job stalls every other one, including the ReservationSweeper that
+  # CLAUDE.md calls the source of truth for inventory holds. PaidFulfilmentReconciler
+  # pages up to 1000 PaymentIntents through the Stripe SDK every 15 min and
+  # EventReminderSender does ~80s of synchronous sends per tick, so that is not
+  # hypothetical. Four threads let those run without blocking the 60-second sweeps;
+  # ShedLock remains the cross-replica guard, this is only the in-JVM one.
+  task:
+    scheduling:
+      pool:
+        size: 4
+
   ai:
     openai:
       api-key: ${OPENAI_API_KEY}
   data:
+    # Spring Data REST is on the classpath (spring-boot-starter-data-rest). With no
+    # base-path it mounts its RepositoryController/ProfileController at the servlet
+    # ROOT — outside the `/api/v1/**` .authenticated() rule in SecurityConfig and so
+    # under the chain's closing .anyRequest().permitAll(). `imin.api.base-path` used
+    # to sit here in spirit but bound to nothing. These two keys are the second line
+    # of defence behind RepositoryExportGuardTest: `annotated` means a repository is
+    # exported only if it explicitly asks to be (none do), and the base path puts
+    # anything that ever is behind authentication instead of on the public root.
+    rest:
+      base-path: /api/v1
+      detection-strategy: annotated
     redis:
       url: ${REDIS_URL:redis://localhost:6380}
       repositories:
@@ -28,14 +52,10 @@ spring:
       max-request-size: 60MB
 
 replicate:
-  # Retained only for the local-disk image-storage fallback (PosterImageStorage + WebConfig) and the
-  # render concurrency cap. The Replicate image-prediction path was removed with the native Ideogram V3
-  # migration.
-  api-token: ${REPLICATE_API_TOKEN:}
+  # Retained only for the local-disk image-storage fallback (PosterImageStorage + WebConfig).
+  # The Replicate image-prediction path was removed with the native Ideogram V3 migration.
   image:
     storage-dir: ${REPLICATE_IMAGE_STORAGE_DIR:./generated-images}
-  timeout-seconds: 65
-  max-concurrent: 6
 
 # Native Ideogram V3 render API (sole renderer). QUALITY for the initial generate; TURBO for the
 # corrective remix that only fixes baked text. Exactly one style control: reference images win,
@@ -97,13 +117,9 @@ poster:
     # control, keep <= 2). POSTER_TEXT_VALIDATION_MAX_REGENERATIONS is kept as a deprecated alias.
     max-regenerations: ${POSTER_VALIDATION_MAX_REGENERATIONS:${POSTER_TEXT_VALIDATION_MAX_REGENERATIONS:2}}
   render:
-    # Concurrency cap across in-flight Ideogram renders. Alias keeps the old REPLICATE_MAX_CONCURRENT working.
+    # Size of the per-concept variant thread pool (itself capped at 3, one thread per variant).
+    # Alias keeps the old REPLICATE_MAX_CONCURRENT working.
     max-concurrent: ${POSTER_RENDER_MAX_CONCURRENT:${REPLICATE_MAX_CONCURRENT:6}}
-  provider-routing:
-    # When true, each vibe's model_route selects the image provider.
-    # Default false keeps all concept/poster generation on RECRAFT, which is the
-    # reference-first path. Use explicit routing only for provider experiments/fallbacks.
-    enabled: ${POSTER_PROVIDER_ROUTING_ENABLED:false}
 
 openrouter:
   api-key: ${OPENROUTER_API_KEY}
@@ -115,24 +131,23 @@ openrouter:
   # otherwise defaults near 1.0 (noisy, inconsistent prompts). Tune via env.
   temperature: ${OPENROUTER_TEMPERATURE:0.6}
 
-openai:
-  image:
-    api-key: ${OPENAI_API_KEY:}
-    base-url: ${OPENAI_BASE_URL:https://api.openai.com}
-    model: ${OPENAI_IMAGE_MODEL:gpt-image-1}
-
 recraft:
-  # Recraft image-gen + per-vibe style training. Required for the default
-  # reference-first poster path and for training a vibe style.
+  # Per-vibe style training only (POST /styles). Ideogram V3 is the sole renderer;
+  # the Recraft image-generation path was removed with that migration.
   api-key: ${RECRAFT_API_KEY:}
   base-url: ${RECRAFT_BASE_URL:https://external.api.recraft.ai/v1}
-  model: ${RECRAFT_MODEL:recraftv3}
-  # Base style used for untrained vibes (style_id absent) and as the training
-  # base for POST /styles. One of: realistic_image | digital_illustration |
-  # vector_illustration | icon.
+  # Base style sent as the training base for POST /styles. One of: realistic_image |
+  # digital_illustration | vector_illustration | icon.
   base-style: ${RECRAFT_BASE_STYLE:realistic_image}
 
 imin:
+  analytics:
+    # Days of /track funnel-beacon history kept in event_funnel_events. The rows
+    # carry anon_id, which V62 also stamps on the order, so they are joinable to a
+    # named purchaser and are not anonymous audience measurement. 0 disables the
+    # purge. Every funnel/attribution reader defaults an absent stage to zero, so
+    # purged history reads as 0 rather than failing.
+    funnel-retention-days: ${IMIN_ANALYTICS_FUNNEL_RETENTION_DAYS:90}
   stripe:
     # STRIPE_SECRET_KEY (sk_test_... locally, sk_live_... in prod). Required — see README.
     secret-key: ${STRIPE_SECRET_KEY:}
@@ -168,6 +183,12 @@ imin:
     # Days after event.endsAt before the post-event payout job fires (EU card
     # availability lag). Default 3.
     payout-buffer-days: ${STRIPE_PAYOUT_BUFFER_DAYS:3}
+    # Age at which a SUBMITTED payout run is re-read from Stripe rather than waiting
+    # for a payout.* webhook. The connect-scoped signing secret is OPTIONAL (blank =>
+    # payout.* reconciliation is dark) and Stripe stops retrying a delivery after ~3
+    # days, so without this poll one undelivered event freezes every payout for the
+    # org forever. Default 6h = "left over from a previous daily tick".
+    payout-reconcile-after-hours: ${STRIPE_PAYOUT_RECONCILE_AFTER_HOURS:6}
     # Timezone for resolving the payout buffer deadline (the business deadline,
     # not the event's local zone). Default Europe/Amsterdam.
     payout-zone: ${STRIPE_PAYOUT_ZONE:Europe/Amsterdam}
@@ -208,6 +229,19 @@ imin:
     # Defaults to prod, never localhost: an unset env var here would put a
     # dead link in a real inbox, which is the defect this replaced.
     api-public-base-url: ${IMIN_API_PUBLIC_BASE_URL:https://api.imin.wtf}
+    # HMAC key for the opt-out tokens — the marketing unsubscribe link AND the
+    # notify-me one. Its own key: it used to fall back to imin.ticket.signing-secret,
+    # the key that tamper-proofs ticket QR payloads, so rotating that key to deal
+    # with a ticket problem would have silently killed every unsubscribe link
+    # already in an inbox, and a compromise of either was a compromise of both.
+    #
+    # BLANK IS SAFE and is the default: an unset variable falls back to exactly the
+    # previous behaviour, so deploying this changes nothing until it is set. Once
+    # set, new links are signed with it and old ones still verify against the
+    # legacy key — verification tries both, for ever. There is deliberately no
+    # expiry anywhere in this path: an unsubscribe link that has expired fails at
+    # the moment someone finally uses it.
+    unsubscribe-secret: ${IMIN_MARKETING_UNSUBSCRIBE_SECRET:}
     resend-webhook:
       # Svix signing secret from the Resend dashboard ("whsec_..."). Verifies the
       # inbound POST /api/v1/public/webhooks/resend delivery events. Blank => every
@@ -253,7 +287,16 @@ imin:
     # HMAC secret for POST /api/v1/public/webhooks/sms (inbound STOP + delivery receipts).
     # Blank => every inbound webhook fails signature verification (fail closed).
     webhook-secret: ${IMIN_SMS_WEBHOOK_SECRET:}
-    webhook-tolerance-seconds: 300
+  security:
+    # Key for IpHasher's HMAC over the IP addresses stored beside rate-limit
+    # counters. IpHasher's javadoc documents the knob as IMIN_IP_HASH_SECRET, but
+    # Boot only ever resolves imin.security.ip-hash-secret from
+    # IMIN_SECURITY_IP_HASH_SECRET — IMIN_IP_HASH_SECRET binds to
+    # imin.ip-hash-secret, which nothing reads. Without this line the documented
+    # rotation is silently inert: no error, and the old key stays in use. The
+    # default preserves today's behaviour (the ticket signing secret, already set
+    # in production), so setting IMIN_IP_HASH_SECRET is a clean rotation.
+    ip-hash-secret: ${IMIN_IP_HASH_SECRET:${IMIN_TICKET_SIGNING_SECRET:}}
   ticket:
     # HMAC-SHA256 secret used to tamper-evidence QR payloads. 32+ bytes of entropy.
     # Required at boot — QrPayloadSigner throws if blank.
@@ -348,9 +391,20 @@ imin:
     # see GoogleWalletProperties#origins.
     origins: ${GOOGLE_WALLET_ORIGINS:}
   cors:
-    allowed-origin-patterns: ${CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:3000,http://localhost:5173,https://imin-webapp.vercel.app,https://imin-webapp-*.vercel.app,https://dashboard.imin.wtf,https://imin.wtf,https://www.imin.wtf,https://imin-public.vercel.app,https://imin-public-*.vercel.app,https://t.imin.wtf}
-  api:
-    base-path: /api/v1
+    # EXACT origins. The two `https://imin-webapp-*.vercel.app` /
+    # `https://imin-public-*.vercel.app` wildcards used to sit here next to
+    # setAllowCredentials(true): Vercel project names are first-come, so anyone
+    # who registered `imin-webapp-anything` owned a credentialed origin against
+    # this API. The buyer namespace was carved out for exactly that reason
+    # (imin.buyer.allowed-origins, §2.6); this closes it for the rest.
+    #
+    # dashboard.imin.wtf is the organizer app, app.imin.wtf the buyer site — the
+    # two are routinely confused, and both belong here.
+    allowed-origin-patterns: ${CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:3000,http://localhost:5173,https://imin-webapp.vercel.app,https://dashboard.imin.wtf,https://app.imin.wtf,https://imin.wtf,https://www.imin.wtf,https://imin-public.vercel.app,https://t.imin.wtf}
+    # Preview deployments, when someone needs them. Empty by default and merged
+    # with the list above, so a preview origin is a deliberate, temporary,
+    # named act rather than a standing wildcard nobody remembers granting.
+    preview-origin-patterns: ${CORS_PREVIEW_ORIGIN_PATTERNS:}
   # Mobile force-upgrade gate, served by GET /api/v1/public/app-config.
   # Bound to env so gating a shipped binary off is a Railway env edit, not a
   # deploy. DEFAULT 0.0.0 = gate OFF: no build in the field is below it, so an
@@ -505,6 +559,30 @@ imin:
     tier-b-min-density: ${PREDICTOR_TIER_B_MIN_DENSITY:8}
     tier-a-min-density: ${PREDICTOR_TIER_A_MIN_DENSITY:25}
     tier-a-own-min: ${PREDICTOR_TIER_A_OWN_MIN:3}
+    # ---- FORECAST phase (Stage 1 pacing / live re-forecast) ----
+    # Every key below is enumerated here on purpose: a @ConfigurationProperties field this file
+    # does not list binds ONLY under its relaxed name (IMIN_PREDICTOR_…), so the PREDICTOR_… name
+    # the javadoc documents would be silently inert — the GOOGLE_OAUTH_NATIVE_AUDIENCE trap.
+    # PredictorPropertiesBindingTest fails if a property or a documented variable is missing.
+    # Completed comparable events a segment needs before its pacing curve is trusted for a live
+    # projection; below it the re-forecast serves the labelled Stage 0 interim instead.
+    min-curve-events: ${PREDICTOR_MIN_CURVE_EVENTS:12}
+    # Upper bound (days-to-event) for the pacing-curve sample grid.
+    pacing-max-days-out: ${PREDICTOR_PACING_MAX_DAYS_OUT:90}
+    # Leading-edge debounce coalescing milestone/tier/campaign re-forecast triggers.
+    reforecast-debounce-seconds: ${PREDICTOR_REFORECAST_DEBOUNCE_SECONDS:60}
+    # +/- window (days) around the event date for the "competing nights on imin" signal.
+    competing-nights-window-days: ${PREDICTOR_COMPETING_NIGHTS_WINDOW_DAYS:1}
+    # Weather signal kill switch. false stops every outbound Open-Meteo call, checked per
+    # request, so it can be flipped without a deploy (WeatherService).
+    weather-enabled: ${PREDICTOR_WEATHER_ENABLED:true}
+    # Horizon cap (days-to-event) past which weather is reported null, never fabricated.
+    weather-max-horizon-days: ${PREDICTOR_WEATHER_MAX_HORIZON_DAYS:14}
+    # ---- Organizer-action reactivity (system-initiated recomputes) ----
+    # +/- debounce coalescing autosave bursts of organizer edits into one recompute.
+    action-debounce-seconds: ${PREDICTOR_ACTION_DEBOUNCE_SECONDS:120}
+    # Daily cap on SYSTEM-initiated re-scores/re-forecasts per event (a WARN logs at the cap).
+    system-rescores-per-event-per-day: ${PREDICTOR_SYSTEM_RESCORES_PER_EVENT_PER_DAY:10}
   ratelimit:
     login:
       capacity: 5
@@ -632,6 +710,104 @@ imin:
       # not an account.
       capacity: 20
       window-minutes: 5
+    # ---- Open endpoints that shipped with no bucket at all ---------------
+    # Found by the 2026-09 legal/security audit. Every one of these is
+    # reachable without a credential.
+    verify-email:
+      # POST /api/v1/auth/verify-email, keyed per lowercase address. A correct
+      # guess returns a live organizer session, so this is a credential
+      # endpoint, and it had no limit while resend-verification kept minting
+      # fresh codes. The control that has to hold is the DB-counted lockout in
+      # EmailVerificationService — this file does not apply under the test
+      # profile — but the bucket is what stops the volume in production.
+      capacity: 10
+      window-minutes: 15
+    signup:
+      # POST /api/v1/auth/signup, keyed per client IP. Mirrors buyer-signup:
+      # per-IP and not per-email, or an attacker could burn a stranger's bucket
+      # and stop them registering. Each accepted call also sends a real email
+      # from our sending domain, so the cap protects the domain reputation too.
+      capacity: 10
+      window-minutes: 60
+    reset-password-token:
+      # POST /api/v1/auth/reset-password, keyed per client IP — the only key
+      # available before the opaque token is resolved. The sibling
+      # forgot-password endpoint has been metered per address since it shipped;
+      # the consume half had nothing.
+      capacity: 10
+      window-minutes: 15
+    buyer-reset-password-token:
+      # POST /api/v1/buyer/auth/reset-password. Separate from the organizer
+      # bucket for the same reason every other buyer bucket is: two surfaces,
+      # two abuse profiles, and buyer traffic must not throttle organizers.
+      capacity: 10
+      window-minutes: 15
+    unsubscribe:
+      # GET and POST /api/v1/public/unsubscribe/**, keyed per client IP.
+      # Deliberately loose. An opt-out is the one request that must never be
+      # hard to complete, and a mail client may fire RFC 8058 one-click for
+      # several messages at once; what this bounds is somebody probing the HMAC
+      # by grinding tokens, which is cheap for us to serve and useless to them.
+      capacity: 60
+      window-minutes: 5
+    ai-content:
+      # POST /api/v1/events/ai-content, keyed per client IP. Unauthenticated
+      # (SecurityConfig permits it explicitly) and every call spends an LLM
+      # budget imin pays for — the only endpoint on this API where an anonymous
+      # caller can bill us. Tighter than ai-concept, which at least requires a
+      # session.
+      capacity: 10
+      window-minutes: 60
+    quote:
+      # POST /api/v1/public/events/{id}/quote, keyed per client IP. Unauthenticated,
+      # three DB reads a call, and it answers with a DIFFERENT reason string for an
+      # unknown vs a disabled vs an exhausted promo code — so unmetered it is a free
+      # promo-code oracle, and organizer-chosen codes are short and guessable. Sized
+      # like `checkout`, the metered sibling that actually spends the code: generous
+      # for a real buyer re-pricing a basket and trying a code or two, tight enough
+      # that enumeration is not free.
+      capacity: 20
+      window-minutes: 5
+    public-track:
+      # POST /api/v1/public/events/{id}/track, keyed per client IP. Sized for a
+      # real buyer's whole session across a few events rather than a single page
+      # view. A full bucket DROPS the beacon and still answers 204 — the
+      # always-204 contract is what stops this endpoint leaking whether an event
+      # exists, so it must not turn into a 429.
+      capacity: 120
+      window-minutes: 5
+    oauth-callback:
+      # POST /api/v1/auth/google/callback and POST /api/v1/auth/apple/return,
+      # keyed per client IP. Both are permitAll and each one drives an outbound
+      # POST to the provider's token endpoint, so unmetered they are a free
+      # amplifier aimed at Google and Apple, bounded only by oauthRestClient's
+      # 10s read timeout.
+      #
+      # ONE bucket for both providers, like buyer-native-signin: same act, same
+      # cost, and splitting would hand an attacker twice the budget for
+      # alternating between them. Per IP because nothing else exists before the
+      # code is exchanged.
+      #
+      # 20 per 5 minutes is sized for an office or a venue behind one NAT —
+      # organizer sign-in is rare, so this is roughly an order of magnitude of
+      # headroom for real use while capping a script at 240/hour.
+      capacity: 20
+      window-minutes: 5
+    buyer-verify-email:
+      # POST /api/v1/buyer/auth/verify-email, keyed per client IP. The endpoint
+      # had no bucket: the DB-counted lockout in BuyerEmailVerificationService
+      # was said to be the control, but that counter was keyed on the address in
+      # the body, so it was something a stranger could spend on the owner's
+      # behalf. The counter is now keyed on (address, IP) and this bounds the
+      # caller who rotates addresses instead. Per-IP and not per-email for the
+      # same reason buyer-signup is.
+      #
+      # Roomier than the organizer `verify-email` because the key is an IP, not
+      # an address: a household or an office behind one NAT must be able to
+      # finish signing up together, while 30 in 15 minutes is nothing against a
+      # six-digit code that only allows five guesses before it is burnt.
+      capacity: 30
+      window-minutes: 15
   push:
     # Outbound push to the native fan app, via Expo's push service.
     # Dark by default: until the app ships there are no tokens to send to, and a

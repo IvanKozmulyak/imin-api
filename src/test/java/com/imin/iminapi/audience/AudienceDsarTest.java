@@ -55,6 +55,7 @@ class AudienceDsarTest {
     @Autowired DsarService dsarService;
     @Autowired ConsentService consentService;
     @Autowired SendGateService sendGateService;
+    @Autowired AudienceService audienceService;
     @Autowired DataSource dataSource;
 
     @MockitoBean AuditLogger auditLogger;
@@ -118,6 +119,52 @@ class AudienceDsarTest {
     void export_cross_org_returns_404() {
         UUID mid = seedMembership(orgB, "exportb@d.com");
         assertThatThrownBy(() -> dsarService.export(orgA, mid, principalA))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("not found");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Art.15: consent trail
+    //
+    // consent_records has been written faithfully since Tier C and read by
+    // nothing but a COUNT(*) metrics tile. A proof nobody can produce is not a
+    // proof, so these assert the trail comes back with the fields that make it
+    // one — when, on what basis, through which source, with what proof text.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Test
+    void consent_history_returns_the_proof_rows_in_order() {
+        UUID mid = seedMembership(orgA, "trail@d.com");
+        consentService.capture(orgA, mid, "soft_opt_in", "checkout",
+                "Left the pre-ticked box ticked at checkout", principalA);
+        consentService.unsubscribe(orgA, mid, "one_click", "email",
+                ConsentOrigin.DATA_SUBJECT, principalA);
+
+        List<com.imin.iminapi.audience.dto.ConsentHistoryEntry> history =
+                dsarService.consentHistory(orgA, mid);
+
+        assertThat(history).hasSize(2);
+        assertThat(history.get(0).granted()).isTrue();
+        assertThat(history.get(0).lawfulBasis()).isEqualTo("soft_opt_in");
+        assertThat(history.get(0).source()).isEqualTo("checkout");
+        assertThat(history.get(0).channel()).isEqualTo("email");
+        assertThat(history.get(0).proofText())
+                .isEqualTo("Left the pre-ticked box ticked at checkout");
+        assertThat(history.get(0).at()).isNotNull();
+        assertThat(history.get(1).granted()).isFalse();
+        assertThat(history.get(1).source()).isEqualTo("one_click");
+    }
+
+    @Test
+    void consent_history_is_empty_for_a_member_who_never_consented() {
+        UUID mid = seedMembership(orgA, "notrail@d.com");
+        assertThat(dsarService.consentHistory(orgA, mid)).isEmpty();
+    }
+
+    @Test
+    void consent_history_cross_org_returns_404() {
+        UUID mid = seedSubscribed(orgB, "trailb@d.com", "explicit");
+        assertThatThrownBy(() -> dsarService.consentHistory(orgA, mid))
                 .isInstanceOf(ApiException.class)
                 .hasMessageContaining("not found");
     }
@@ -259,6 +306,70 @@ class AudienceDsarTest {
         assertThatThrownBy(() -> dsarService.requestErase(orgA, mid, principalA))
                 .isInstanceOf(ApiException.class)
                 .hasMessageContaining("not found");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // audience-4: the 30-day grace period is not 30 more days of marketing
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Test
+    void request_erase_unsubscribes_immediately() {
+        UUID mid = seedSubscribed(orgA, "erasesub@d.com", "explicit");
+        assertThat(sendGateService.evaluate(orgA, List.of(mid)).sendable()).containsExactly(mid);
+
+        dsarService.requestErase(orgA, mid, principalA);
+
+        Membership m = membershipRepo.findByIdAndOrgId(mid, orgA).orElseThrow();
+        assertThat(m.getConsentStatus()).isEqualTo("unsubscribed");
+        assertThat(m.getConsentBasis()).isNull();
+    }
+
+    /**
+     * audience-12: a mangled keyset cursor is client input. It threw
+     * IllegalArgumentException, which has no handler and fell through to the catch-all as
+     * a 500 — the dashboard could not tell a bad link from a broken server.
+     */
+    @Test
+    void a_malformed_cursor_is_a_400_not_a_500() {
+        assertThatThrownBy(() -> audienceService.listMembers(orgA, "not-a-cursor", 50, null, null))
+                .isInstanceOfSatisfying(ApiException.class, e ->
+                        assertThat(e.status()).isEqualTo(org.springframework.http.HttpStatus.BAD_REQUEST));
+    }
+
+    @Test
+    void erase_pending_member_is_not_sendable() {
+        UUID mid = seedSubscribed(orgA, "erasegate@d.com", "explicit");
+        // Status alone, with consent left intact, must already close the gate.
+        Membership m = membershipRepo.findByIdAndOrgId(mid, orgA).orElseThrow();
+        m.setStatus("erase_pending");
+        m.setEraseAt(Instant.now().plus(30, ChronoUnit.DAYS));
+        membershipRepo.save(m);
+
+        assertThat(sendGateService.evaluate(orgA, List.of(mid)).sendable()).isEmpty();
+    }
+
+    @Test
+    void erase_pending_member_is_not_listed_exported_or_segmented() {
+        UUID mid = seedSubscribed(orgA, "eraselist@d.com", "explicit");
+        Membership m = membershipRepo.findByIdAndOrgId(mid, orgA).orElseThrow();
+        m.setEvents(3);
+        m.setStatus("erase_pending");
+        m.setEraseAt(Instant.now().plus(30, ChronoUnit.DAYS));
+        membershipRepo.save(m);
+
+        assertThat(audienceService.listMembers(orgA, null, 50, null, null).items())
+                .extracting(com.imin.iminapi.audience.dto.MemberDto::membershipId)
+                .doesNotContain(mid.toString());
+        assertThat(audienceService.exportMembersCsv(orgA, null, null))
+                .extracting(com.imin.iminapi.audience.dto.MemberDto::membershipId)
+                .doesNotContain(mid.toString());
+        assertThat(membershipRepo.findRepeats(orgA)).extracting(Membership::getMembershipId)
+                .doesNotContain(mid);
+        assertThat(membershipRepo.findAllByOrgId(orgA)).extracting(Membership::getMembershipId)
+                .doesNotContain(mid);
+        assertThat(membershipRepo.findAllMembershipIdsByOrgId(orgA)).doesNotContain(mid);
+        // The operator can still open the record — DSAR itself has to keep working.
+        assertThat(audienceService.getMember(orgA, mid).membershipId()).isEqualTo(mid.toString());
     }
 
     // ─────────────────────────────────────────────────────────────────────────

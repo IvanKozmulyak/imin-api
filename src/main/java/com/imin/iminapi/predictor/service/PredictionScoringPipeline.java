@@ -7,6 +7,7 @@ import com.imin.iminapi.predictor.model.CapacityBand;
 import com.imin.iminapi.predictor.model.LanguageTier;
 import com.imin.iminapi.predictor.model.PredictionSurface;
 import com.imin.iminapi.predictor.model.PredictorSegmentStatus;
+import com.imin.iminapi.predictor.model.RelaxationLevel;
 import com.imin.iminapi.predictor.repository.PredictorSegmentStatusRepository;
 import com.imin.iminapi.predictor.service.PredictionInputSnapshot.CorpusLine;
 import com.imin.iminapi.predictor.service.Stage0Scorer.Stage0Output;
@@ -94,8 +95,11 @@ public class PredictionScoringPipeline {
      */
     public Scored score(Event e, PredictionInputSnapshot snap, String trigger) {
         String hash = snap.sha256();
-        PredictorSegmentStatus seg = segmentStatus
-                .findById(PredictorSegmentStatus.key(snap.genreFamily(), bandOf(snap))).orElse(null);
+        // PredictionScoringJob writes these keys from event_outcomes.genre_family, which stores
+        // the MERGE key (predictor-edge-3) — reading with the display spelling would silently
+        // never match, and the §5 tripwire override would stop applying.
+        PredictorSegmentStatus seg = segmentStatus.findById(PredictorSegmentStatus.key(
+                PredictorSegmentKeys.genreKey(snap.genreFamily()), bandOf(snap))).orElse(null);
         LanguageTier tier = earnedTier(snap.comparables());
         if (seg != null && seg.dropsOneTier()) {
             tier = tier.dropOne(); // §5 automatic downgrade (tripwire), applied at render time
@@ -154,9 +158,9 @@ public class PredictionScoringPipeline {
                 PredictionSurface.PRE_PUBLISH.wire(),
                 0,
                 tier.wire(),
-                out.selloutBand(),
-                qualitativeOverride ? null : out.attendanceRange(),   // MAPE tripwire: numeric → qualitative
-                qualitativeOverride ? null : out.revenueRangeMinor(),
+                band(out.selloutBand()),
+                qualitativeOverride ? null : range(out.attendanceRange()),  // MAPE tripwire: numeric → qualitative
+                qualitativeOverride ? null : longRange(out.revenueRangeMinor()),
                 out.factors(),
                 // Normalize raw candidates → impact-ranked, tier-resolved, momentum-linked, ≤3.
                 recommendations.finalizeForRender(e.getId(), out.recommendations()),
@@ -165,6 +169,26 @@ public class PredictionScoringPipeline {
                 scorer.modelId(),
                 Stage0Scorer.PROMPT_VERSION,
                 clock.instant());
+    }
+
+    // ---- raw (boxed) → served (primitive) carriers -------------------------------
+    // Only reached once the validator has passed the output, which is where every component's
+    // presence is enforced (predictor-edge-13). The null checks below are structural, not a
+    // fallback: a missing number can never become a served 0.
+
+    private static PredictionResult.Band band(Stage0Scorer.RawBand b) {
+        if (b == null || b.lowPct() == null || b.highPct() == null) return null;
+        return new PredictionResult.Band(b.lowPct(), b.highPct());
+    }
+
+    private static PredictionResult.Range range(Stage0Scorer.RawRange r) {
+        if (r == null || r.low() == null || r.high() == null) return null;
+        return new PredictionResult.Range(r.low(), r.high());
+    }
+
+    private static PredictionResult.LongRange longRange(Stage0Scorer.RawLongRange r) {
+        if (r == null || r.low() == null || r.high() == null) return null;
+        return new PredictionResult.LongRange(r.low(), r.high());
     }
 
     /**
@@ -194,8 +218,12 @@ public class PredictionScoringPipeline {
      */
     private PredictionResult.Comparables comparables(PredictionInputSnapshot snap) {
         CorpusLine c = snap.comparables();
-        boolean countryWide = !"NONE".equals(c.relaxation());
-        boolean seasonDropped = "DROP_SEASON".equals(c.relaxation());
+        // Parse the rung once and ask the enum: the ladder's meaning belongs in RelaxationLevel,
+        // not in string comparisons that a rename would silently break. Always written from
+        // RelaxationLevel.name(), so valueOf is total.
+        RelaxationLevel relaxation = RelaxationLevel.valueOf(c.relaxation());
+        boolean countryWide = relaxation.isCountryWide();
+        boolean seasonDropped = relaxation.isSeasonDropped();
 
         StringBuilder filters = new StringBuilder();
         appendPart(filters, snap.genreFamily());
@@ -214,8 +242,10 @@ public class PredictionScoringPipeline {
             aggregates.put("sellOutRate", Math.round(fa.sellOutRate() * 100) + "%");
         }
 
+        // relaxation ships as a display phrase, null at NONE (predictor-edge-9) — the enum name
+        // stays on the snapshot's CorpusLine and in the ledger JSON below.
         return new PredictionResult.Comparables(
-                c.densityTotal(), c.ownCount(), c.relaxation(), filters.toString(), aggregates);
+                c.densityTotal(), c.ownCount(), relaxation.phrase(), filters.toString(), aggregates);
     }
 
     private static void appendPart(StringBuilder sb, String part) {

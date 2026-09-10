@@ -114,8 +114,56 @@ class PacingEngineTest {
     }
 
     @Test
+    void projectIsInsufficientWhenMostComparablesHadNoSalesAtThisHorizon() {
+        // 12 comparables at day-out 40: 8 had not sold a thing that early, 4 had sold {0.5, 1, 2, 5}%
+        // of their final. Percentiles: median 0, p25 0, p75 0.00625. Dividing 3 sold tickets by
+        // 0.00625 "projects" 480 against a capacity of 300 — a sell-out call off three tickets.
+        List<NormalizedCurve> comparables = new java.util.ArrayList<>();
+        for (int i = 0; i < 8; i++) comparables.add(noSalesBy40());
+        for (double pct : new double[]{0.005, 0.01, 0.02, 0.05}) comparables.add(tinyPctBy40(pct));
+        Curve c = engine.buildCurve(comparables, 90);
+        assertThat(c.eventsCount()).isEqualTo(12);
+        assertThat(pointAt(c, 40).medianPct()).isEqualTo(0.0);
+        assertThat(pointAt(c, 40).p75Pct()).isCloseTo(0.00625, within(1e-9));
+
+        Projection p = engine.project(c, 3, 40, 300);
+        assertThat(p.insufficient()).isTrue();          // no range, no band, no ETA
+        assertThat(p.sellOutEarliestDaysOut()).isNull();
+        assertThat(p.sellOutLatestDaysOut()).isNull();
+    }
+
+    @Test
+    void projectIsInsufficientWhenTheSlowPaceEndIsUnknown() {
+        // Healthy median (0.4) and fast end (p75 0.5), but a quarter of the comparables had no sale
+        // at this horizon so p25 is 0 — the SLOW-pace end, i.e. the top of the range, is unknown.
+        // Capacity is not an observation, so it must not stand in for it: no range at all.
+        Curve c = new Curve(12, List.of(
+                new PacingEngine.CurvePoint(10, 0.4, 0.0, 0.5),
+                new PacingEngine.CurvePoint(0, 1.0, 1.0, 1.0)));
+
+        Projection p = engine.project(c, 100, 10, 300);
+        assertThat(p.insufficient()).isTrue();
+        assertThat(p.finalHigh()).isNotEqualTo(300);   // the capacity ceiling was never a projection
+        assertThat(p.sellOutEarliestDaysOut()).isNull();
+    }
+
+    @Test
     void projectIsDeterministic() {
         assertThat(engine.project(curve(), 30, 5, 40)).isEqualTo(engine.project(curve(), 30, 5, 40));
+    }
+
+    /** A comparable whose first tracked sale is 20 days out — nothing at all at day-out 40. */
+    private NormalizedCurve noSalesBy40() {
+        return new NormalizedCurve(UUID.randomUUID(), 100, List.of(
+                new NormalizedPoint(LocalDate.parse("2026-03-01"), 20, 50, 0.5),
+                new NormalizedPoint(LocalDate.parse("2026-03-21"), 0, 100, 1.0)));
+    }
+
+    /** A comparable that had sold {@code pct} of its final 40 days out, the rest later. */
+    private NormalizedCurve tinyPctBy40(double pct) {
+        return new NormalizedCurve(UUID.randomUUID(), 100, List.of(
+                new NormalizedPoint(LocalDate.parse("2026-02-09"), 40, (int) Math.round(pct * 100), pct),
+                new NormalizedPoint(LocalDate.parse("2026-03-21"), 0, 100, 1.0)));
     }
 
     private static PacingEngine.CurvePoint pointAt(Curve c, int daysOut) {

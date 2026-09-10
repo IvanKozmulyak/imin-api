@@ -382,6 +382,15 @@ public class StripeWebhookService {
         UUID reservationId = parseReservationId(meta);
         log.info("[stripe-webhook] payment_intent.succeeded paymentIntentId={} reservationId={} amount={} currency={}",
                 pi.getId(), reservationId, pi.getAmount(), pi.getCurrency());
+
+        // Resolve the buyer from Stripe BEFORE taking the tier lock. confirmSold below runs a
+        // SELECT … FOR UPDATE on the ticket tier inside this transaction and holds it to commit,
+        // and issuance needs up to two blocking Stripe round trips to find the buyer address.
+        // Doing them under the lock queued every concurrent buyer of that tier behind Stripe's
+        // latency (80s default read timeout) and could exhaust the pool during an on-sale. These
+        // reads are pure lookups with no DB dependency, so hoisting them changes no ordering.
+        PaidCheckoutService.BuyerResolution buyer = paidCheckoutService.prepareIssuance(pi);
+
         if (reservationId != null) {
             inventoryService.confirmSold(reservationId);
         } else {
@@ -392,7 +401,7 @@ public class StripeWebhookService {
         // Persist Order + N Ticket rows for the buyer. Idempotent on PI id, so a Stripe retry is a
         // noop. Publishes TicketsIssuedEvent on success; the @Async listener emails the buyer with
         // the tickets and QR. Returns true ONLY on the first successful issuance for this PI.
-        boolean issued = paidCheckoutService.issuePaidOrder(pi);
+        boolean issued = paidCheckoutService.issuePaidOrder(pi, buyer);
 
         // Increment promo usage ONLY on first issuance, tying it to the same idempotency boundary
         // as Order creation — so a second, distinct-event-id delivery for the same PI that slips
@@ -404,7 +413,12 @@ public class StripeWebhookService {
                     UUID promoId = UUID.fromString(promoIdRaw);
                     int rows = promos.incrementUsedCount(promoId);
                     if (rows == 0) {
-                        log.warn("Promo code {} not found when handling payment_intent {} — skipped",
+                        // Either the code is gone or it is already at its cap — the capped
+                        // UPDATE (events-8) refuses both. The ticket is issued regardless:
+                        // money moved, and a redemption we cannot record is not the buyer's
+                        // problem.
+                        log.warn("Promo code {} not incremented for payment_intent {} — not found "
+                                        + "or already at its usage cap; skipped",
                                 promoId, pi.getId());
                     } else {
                         log.info("Incremented usedCount on promo {} after payment_intent {}",
@@ -523,7 +537,7 @@ public class StripeWebhookService {
         com.stripe.model.Transfer transfer = extractTransfer(event,
                 reversed ? "transfer.reversed" : "transfer.created");
         if (transfer == null) return;
-        settlementIngest.ingestTransfer(transfer, event.getAccount(), reversed);
+        settlementIngest.ingestTransfer(transfer, event.getAccount(), reversed, createdAt(event));
     }
 
     /**
@@ -535,7 +549,7 @@ public class StripeWebhookService {
     private void onPayout(com.stripe.model.Event event) {
         com.stripe.model.Payout payout = extractPayout(event, "payout.*");
         if (payout == null) return;
-        settlementIngest.ingestPayout(payout, event.getAccount());
+        settlementIngest.ingestPayout(payout, event.getAccount(), createdAt(event));
     }
 
     /**
@@ -546,7 +560,7 @@ public class StripeWebhookService {
     private void onChargeRefunded(com.stripe.model.Event event) {
         com.stripe.model.Charge charge = extractCharge(event, "charge.refunded");
         if (charge == null) return;
-        settlementIngest.ingestChargeRefunded(charge, event.getAccount());
+        settlementIngest.ingestChargeRefunded(charge, event.getAccount(), createdAt(event));
     }
 
     /**
@@ -558,7 +572,16 @@ public class StripeWebhookService {
     private void onDispute(com.stripe.model.Event event, String eventType) {
         com.stripe.model.Dispute dispute = extractDispute(event, eventType);
         if (dispute == null) return;
-        settlementIngest.ingestDispute(dispute, event.getAccount(), eventType);
+        settlementIngest.ingestDispute(dispute, event.getAccount(), eventType, createdAt(event));
+    }
+
+    /**
+     * The Stripe {@code event.created} timestamp, used by the settlements read-model to drop an
+     * out-of-order delivery instead of letting it rewrite settled state. Null when Stripe
+     * omitted it (no ordering information — the ingest then falls back to its terminal guards).
+     */
+    private static java.time.Instant createdAt(com.stripe.model.Event event) {
+        return event.getCreated() == null ? null : java.time.Instant.ofEpochSecond(event.getCreated());
     }
 
     private com.stripe.model.Transfer extractTransfer(com.stripe.model.Event event, String label) {

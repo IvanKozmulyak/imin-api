@@ -67,6 +67,7 @@ class TicketRedeemGateAuthTest {
     @Autowired OrderRepository orders;
     @Autowired TicketRepository tickets;
     @Autowired QrPayloadSigner signer;
+    @Autowired com.imin.iminapi.repository.AuditLogRepository auditLogs;
 
     final ObjectMapper om = new ObjectMapper();
 
@@ -79,6 +80,7 @@ class TicketRedeemGateAuthTest {
     void seed() {
         gateSessions.deleteAll();
         gateCredentials.deleteAll();
+        auditLogs.deleteAll();
         tickets.deleteAll();
         orders.deleteAll();
         events.deleteAll();
@@ -165,6 +167,79 @@ class TicketRedeemGateAuthTest {
         assertThat(after.getRedeemedByUserId()).isNull();
     }
 
+    /**
+     * {@code TicketRedeemController} carried a comment claiming the audit/log
+     * trail used {@code me.actorLabel()}. There was no audit write and
+     * {@code TicketRedeemService} had no log statement at all, so nobody could
+     * reconstruct which door admitted whom — a GDPR accountability gap and an
+     * internal-fraud blind spot, made worse by being a control that documentation
+     * said existed.
+     *
+     * <p>The row lands in {@code audit_logs} rather than on new {@code tickets}
+     * columns: it is the redemption log row the card offers as the alternative, it
+     * is already org-scoped and already readable through {@code GET /orgs/{id}/audit},
+     * and one row per scan records the repeat attempts that a single "redeemed by"
+     * column would overwrite.
+     */
+    @Test
+    void a_gate_redemption_is_recorded_against_the_gate_session_that_did_it() throws Exception {
+        long before = auditLogs.count();
+        UUID sessionId = gateSessions.findAll().get(0).getId();
+        String qr = signer.sign(ticket.getToken());
+
+        mvc.perform(post("/api/v1/orgs/" + org.getId() + "/events/" + event.getId() + "/tickets/redeem")
+                        .header("Authorization", "Bearer " + gateToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("qrPayload", qr))))
+                .andExpect(status().isOk());
+
+        assertThat(auditLogs.count()).isEqualTo(before + 1);
+        var row = auditLogs.findAll().stream()
+                .filter(a -> "TICKET_REDEEMED".equals(a.getAction()))
+                .findFirst().orElseThrow();
+        assertThat(row.getOrgId()).isEqualTo(org.getId());
+        assertThat(row.getTargetType()).isEqualTo("ticket");
+        assertThat(row.getTargetId()).isEqualTo(ticket.getId());
+        // Which door: the gate session id and the actor label, both reconstructable.
+        assertThat(row.getSummary()).contains(sessionId.toString());
+        assertThat(row.getSummary()).contains("gate:" + org.getId());
+        assertThat(row.getSummary()).contains(event.getId().toString());
+        // Never the buyer's address — the row says which door, not who walked through it.
+        assertThat(row.getSummary()).doesNotContain("buyer@example.test");
+    }
+
+    /**
+     * api-17: {@code Req} carries {@code @NotBlank} but the parameter is bound without
+     * {@code @Valid}, so the constraint never ran — the behaviour was correct only because the
+     * handler repeats the check by hand. The two disagree on the wire: bean validation answers
+     * FIELD_INVALID, the hand-rolled check answers INVALID_REQUEST. This pins which one the gate
+     * PWA actually sees, so the annotation cannot be "cleaned up" into a silent contract change.
+     */
+    @Test
+    void a_blank_qrPayload_is_INVALID_REQUEST() throws Exception {
+        mvc.perform(post("/api/v1/orgs/" + org.getId() + "/events/" + event.getId() + "/tickets/redeem")
+                        .header("Authorization", "Bearer " + gateToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("qrPayload", "  "))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_REQUEST"));
+    }
+
+    /** A scan that admitted nobody is not an admission and must not read like one. */
+    @Test
+    void a_failed_scan_writes_no_redemption_row() throws Exception {
+        long before = auditLogs.count();
+
+        mvc.perform(post("/api/v1/orgs/" + org.getId() + "/events/" + event.getId() + "/tickets/redeem")
+                        .header("Authorization", "Bearer " + gateToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("qrPayload", "not-a-signed-payload"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.result").value("invalid"));
+
+        assertThat(auditLogs.count()).isEqualTo(before);
+    }
+
     @Test
     void gate_token_for_wrong_org_returns_403() throws Exception {
         // Build a SECOND org + event, then try to redeem org B's ticket using org A's gate token.
@@ -200,6 +275,78 @@ class TicketRedeemGateAuthTest {
                         .content(om.writeValueAsString(Map.of("qrPayload", qr))))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.error.code").value("FORBIDDEN"));
+    }
+
+    /**
+     * A gate token is ORG-scoped, never event-scoped: {@code AuthPrincipal.forGate}
+     * carries an org id and nothing else. The controller only compared the path
+     * {@code orgId} to the principal's, and the service only compared the ticket's
+     * event id to the path's — so org A's own token, on org A's path, with org B's
+     * event id and a copy of org B's QR string, reached the atomic UPDATE and flipped
+     * a foreign ticket to {@code redeemed}. The event has to be loaded and owned.
+     *
+     * <p>Cross-org answers with the same {@code 404 NOT_FOUND} every other org-scoped
+     * service gives (see {@code TicketTierService.loadOwnedEvent}) — it must not
+     * confirm that the event exists.
+     */
+    @Test
+    void gate_token_cannot_redeem_a_ticket_from_another_orgs_event() throws Exception {
+        Organization otherOrg = new Organization();
+        otherOrg.setName("Victim Org");
+        otherOrg.setSlug("victim-" + UUID.randomUUID().toString().substring(0, 8));
+        otherOrg.setContactEmail("victim@example.test");
+        otherOrg.setCountry("DE");
+        otherOrg = orgs.save(otherOrg);
+
+        User otherOwner = new User();
+        otherOwner.setOrgId(otherOrg.getId());
+        otherOwner.setEmail("victim-owner-" + UUID.randomUUID() + "@example.test");
+        otherOwner.setRole(UserRole.OWNER);
+        otherOwner = users.save(otherOwner);
+
+        Event otherEvent = new Event();
+        otherEvent.setOrgId(otherOrg.getId());
+        otherEvent.setName("Victim Event");
+        otherEvent.setSlug("victim-event-" + UUID.randomUUID().toString().substring(0, 8));
+        otherEvent.setVisibility(EventVisibility.PUBLIC);
+        otherEvent.setStatus(EventStatus.LIVE);
+        otherEvent.setCurrency("EUR");
+        otherEvent.setCreatedBy(otherOwner.getId());
+        otherEvent = events.save(otherEvent);
+
+        Order otherOrder = new Order();
+        otherOrder.setToken("ORD_" + UUID.randomUUID());
+        otherOrder.setEventId(otherEvent.getId());
+        otherOrder.setOrgId(otherOrg.getId());
+        otherOrder.setEmail("victim-buyer@example.test");
+        otherOrder.setTotalMinor(2500L);
+        otherOrder.setCurrency("EUR");
+        otherOrder.setPaymentMethod("stripe");
+        otherOrder = orders.save(otherOrder);
+
+        Ticket otherTicket = new Ticket();
+        otherTicket.setToken("TKT_" + UUID.randomUUID());
+        otherTicket.setOrderId(otherOrder.getId());
+        otherTicket.setEventId(otherEvent.getId());
+        otherTicket.setTierId(UUID.randomUUID());
+        otherTicket.setTierName("GA");
+        otherTicket.setState("issued");
+        otherTicket = tickets.save(otherTicket);
+
+        long auditsBefore = auditLogs.count();
+        // Path orgId is OUR org (so the controller's membership check passes);
+        // the event id and the QR both belong to the other org.
+        mvc.perform(post("/api/v1/orgs/" + org.getId() + "/events/" + otherEvent.getId() + "/tickets/redeem")
+                        .header("Authorization", "Bearer " + gateToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("qrPayload", signer.sign(otherTicket.getToken())))))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
+
+        assertThat(tickets.findByToken(otherTicket.getToken()).orElseThrow().getState())
+                .as("a foreign ticket must not be redeemable with our gate token")
+                .isEqualTo("issued");
+        assertThat(auditLogs.count()).isEqualTo(auditsBefore);
     }
 
     @Test

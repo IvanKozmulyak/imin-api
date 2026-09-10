@@ -4,6 +4,7 @@ import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 import com.imin.iminapi.marketing.model.MetaCapiEvent;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -52,4 +53,30 @@ public interface MetaCapiEventRepository extends JpaRepository<MetaCapiEvent, UU
             ORDER BY e.createdAt DESC
             """)
     List<String> recentErrors(@Param("orgId") UUID orgId, Pageable pageable);
+
+    // ── DSAR (Art.15 / Art.17) ───────────────────────────────────────────────
+
+    /** This org's CAPI outbox rows for a set of the data subject's orders. */
+    @Query("select e from MetaCapiEvent e where e.orgId = :orgId and e.orderId in :orderIds "
+            + "order by e.createdAt asc")
+    List<MetaCapiEvent> findByOrgAndOrderIds(@Param("orgId") UUID orgId,
+                                             @Param("orderIds") java.util.Collection<UUID> orderIds);
+
+    /**
+     * Art.17: strip the identifiers, keep the send record.
+     *
+     * <p>Redacted rather than deleted. The row is the evidence that a hashed
+     * address was transmitted to Meta for a retained order, which is the fact a
+     * regulator or the data subject would ask about; deleting it would destroy
+     * the proof of the disclosure while the disclosure itself has already
+     * happened. What is removed is everything that identifies the person:
+     * {@code email_sha256} (a hashed address is still personal data — it is a
+     * pseudonym, and Meta can re-identify it), plus the {@code fbp}/{@code fbc}
+     * browser cookies.
+     */
+    @Modifying
+    @Query("update MetaCapiEvent e set e.emailSha256 = null, e.fbp = null, e.fbc = null "
+            + "where e.orgId = :orgId and e.orderId in :orderIds")
+    int redactIdentifiersByOrgAndOrderIds(@Param("orgId") UUID orgId,
+                                          @Param("orderIds") java.util.Collection<UUID> orderIds);
 }

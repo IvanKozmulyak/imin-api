@@ -39,6 +39,17 @@ public interface TicketTierRepository extends JpaRepository<TicketTier, UUID> {
     List<TicketTier> findByEventIdInAndEnabledTrue(Collection<UUID> eventIds);
 
     /**
+     * True when at least one tier of the event already carries a synced Stripe Price.
+     *
+     * <p>Backs the event-level currency guard (events-4): once a Price exists it was minted
+     * in the event's currency and the checkout Session mixes it with an inline-built service
+     * fee line item, which Stripe rejects unless every line item shares one currency.
+     */
+    @Query("SELECT COUNT(t) > 0 FROM TicketTier t WHERE t.eventId = :eventId "
+            + "AND t.stripePriceId IS NOT NULL AND t.stripePriceId <> ''")
+    boolean existsSyncedStripePrice(@Param("eventId") UUID eventId);
+
+    /**
      * Pessimistic row lock for inventory updates. Used by {@code InventoryService} to
      * serialize concurrent reserve / release / confirm flows so two buyers can't both
      * see the same {@code available} count and both succeed past the capacity check.
