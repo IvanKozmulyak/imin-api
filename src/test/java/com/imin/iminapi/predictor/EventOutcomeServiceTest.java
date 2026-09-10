@@ -167,9 +167,11 @@ class EventOutcomeServiceTest {
 
         EventOutcome o = outcomes.findById(e.getId()).orElseThrow();
         assertThat(o.getOrgId()).isEqualTo(org.getId());
-        assertThat(o.getCity()).isEqualTo("Amsterdam");
+        // MERGE keys, not display spellings (predictor-edge-3) — these two columns are matched
+        // by equality in the corpus segment queries.
+        assertThat(o.getCity()).isEqualTo("amsterdam");
         assertThat(o.getCountry()).isEqualTo("NL");
-        assertThat(o.getGenreFamily()).isEqualTo("House & Techno");
+        assertThat(o.getGenreFamily()).isEqualTo("house & techno");
         assertThat(o.getCapacity()).isEqualTo(100);
         assertThat(o.getCapacityBand()).isEqualTo(CapacityBand.LE100);
         assertThat(o.getSeason()).isEqualTo(Season.WINTER);
@@ -310,6 +312,43 @@ class EventOutcomeServiceTest {
         assertThat(fin.getSellOut()).isTrue();                  // sold 2 >= capacity 2
         assertThat(fin.getTimeToSellOutHours()).isNotNull();
         assertThat(fin.getTimeToSellOutHours()).isGreaterThanOrEqualTo(0);
+    }
+
+    /**
+     * predictor-edge-3: the segment columns are matched by equality, so freezing the DISPLAY
+     * spelling split one cluster across "Techno"/"techno" and "Amsterdam"/"AMSTERDAM" — which
+     * shrinks clusterSize, and clusterSize is what picks the §5 language tier and what the ≥5
+     * privacy floor tests. Case variants must land in ONE segment.
+     */
+    @Test
+    void freeze_mergesCaseVariantsIntoOneSegment() {
+        Event lower = liveEvent();
+        lower.setGenre("techno");
+        lower.setVenueCity("Amsterdam");
+        events.save(lower);
+        tier(lower.getId(), "GA", 2000, 120, 0);
+
+        Event upper = liveEvent();
+        upper.setGenre(" TECHNO ");
+        upper.setVenueCity("AMSTERDAM");
+        events.save(upper);
+        tier(upper.getId(), "GA", 2000, 120, 0);
+
+        service.freezeOnPublish(lower);
+        service.freezeOnPublish(upper);
+
+        EventOutcome a = outcomes.findById(lower.getId()).orElseThrow();
+        EventOutcome b = outcomes.findById(upper.getId()).orElseThrow();
+        assertThat(a.getGenreFamily()).isEqualTo("techno").isEqualTo(b.getGenreFamily());
+        assertThat(a.getCity()).isEqualTo("amsterdam").isEqualTo(b.getCity());
+
+        // …and one segment query returns both once they are finalized.
+        service.finalize(a, lower, Instant.now());
+        service.finalize(b, upper, Instant.now());
+        assertThat(outcomes.findFinalizedByCitySegment("amsterdam", "techno",
+                CapacityBand.B101_300, Season.WINTER))
+                .extracting(EventOutcome::getEventId)
+                .containsExactlyInAnyOrder(lower.getId(), upper.getId());
     }
 
     /**

@@ -95,8 +95,11 @@ public class PredictionScoringPipeline {
      */
     public Scored score(Event e, PredictionInputSnapshot snap, String trigger) {
         String hash = snap.sha256();
-        PredictorSegmentStatus seg = segmentStatus
-                .findById(PredictorSegmentStatus.key(snap.genreFamily(), bandOf(snap))).orElse(null);
+        // PredictionScoringJob writes these keys from event_outcomes.genre_family, which stores
+        // the MERGE key (predictor-edge-3) — reading with the display spelling would silently
+        // never match, and the §5 tripwire override would stop applying.
+        PredictorSegmentStatus seg = segmentStatus.findById(PredictorSegmentStatus.key(
+                PredictorSegmentKeys.genreKey(snap.genreFamily()), bandOf(snap))).orElse(null);
         LanguageTier tier = earnedTier(snap.comparables());
         if (seg != null && seg.dropsOneTier()) {
             tier = tier.dropOne(); // §5 automatic downgrade (tripwire), applied at render time

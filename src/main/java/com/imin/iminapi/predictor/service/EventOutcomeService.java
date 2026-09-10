@@ -130,9 +130,13 @@ public class EventOutcomeService {
 
     private void applyFrozenFields(EventOutcome o, Event e, boolean reconstructed) {
         o.setOrgId(e.getOrgId());
-        o.setCity(blankToNull(e.getVenueCity()));
-        o.setCountry(blankToNull(e.getVenueCountry()));
-        o.setGenreFamily(blankToNull(e.getGenre()));
+        // The MERGE keys, not the display spellings (predictor-edge-3): these two columns are
+        // matched by equality in the three comparable-corpus segment queries and are the
+        // components of PacingCurveService's segment keys, so "Techno"/"techno" must not be two
+        // segments. Nothing renders event_outcomes; the display spelling stays on the event row.
+        o.setCity(PredictorSegmentKeys.cityKey(e.getVenueCity()));
+        o.setCountry(blankToNull(e.getVenueCountry()));   // already upper-cased on write (V82)
+        o.setGenreFamily(PredictorSegmentKeys.genreKey(e.getGenre()));
         // venueType / indoorOpenAir stay NULL — no source in the data model.
 
         // A tier-less event (free/RSVP-style — EventValidator.validateForPublish requires no

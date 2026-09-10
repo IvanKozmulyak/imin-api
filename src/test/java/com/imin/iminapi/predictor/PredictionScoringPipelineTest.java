@@ -81,6 +81,17 @@ class PredictionScoringPipelineTest {
                 new PredictionInputSnapshot.CorpusLine("NONE", density, own, density - own, List.of(), null));
     }
 
+    /** Same snapshot (density 30 / own 5, so it earns tier A), with a display-cased genre. */
+    private PredictionInputSnapshot snapWithGenre(String displayGenre) {
+        PredictionInputSnapshot base = snap(30, 5);
+        return new PredictionInputSnapshot(
+                base.snapshotVersion(), base.eventId(), base.city(), base.country(), displayGenre,
+                base.capacity(), base.capacityBand(), base.eventDateIso(), base.dayOfWeek(), base.season(),
+                base.leadTimeDays(), base.currency(), base.tiers(), base.promos(),
+                base.organizerTenureDays(), base.priorEventCount(), base.holidayTableCovers(),
+                base.holidaysNearEvent(), base.comparables());
+    }
+
     /** Same snapshot, but retrieved at a WIDENED rung. */
     private PredictionInputSnapshot relaxedSnap(String rung) {
         PredictionInputSnapshot base = snap(10, 1);
@@ -244,6 +255,25 @@ class PredictionScoringPipelineTest {
         assertThat(c.filters()).isEqualTo("techno · 101–300 · summer · Amsterdam");
         assertThat(c.aggregates()).containsEntry("events", 10).containsEntry("own", 1);
         assertThat(c.aggregates()).doesNotContainKeys("avgAttendance"); // foreign aggregate suppressed
+    }
+
+    /**
+     * predictor-edge-3: PredictionScoringJob writes predictor_segment_status keys from
+     * event_outcomes.genre_family, which stores the MERGE key — so reading with the display
+     * spelling silently never matched and the §5 tripwire downgrade stopped applying.
+     */
+    @Test
+    void segmentTripwireMatchesRegardlessOfTheGenresDisplayCase() {
+        stubLedger();
+        PredictorSegmentStatus seg = new PredictorSegmentStatus();
+        seg.setSegmentKey("techno|B101_300");
+        seg.setLanguageTierOverride(PredictorSegmentStatus.OVERRIDE_DROP_ONE);
+        when(segments.findById("techno|B101_300")).thenReturn(Optional.of(seg));
+        when(scorer.score(any(), any(), isNull())).thenReturn(validOutput());
+
+        PredictionScoringPipeline.Scored scored = sut.score(event(), snapWithGenre(" Techno "));
+
+        assertThat(scored.result().confidenceTier()).isEqualTo("B"); // A dropped one
     }
 
     /**

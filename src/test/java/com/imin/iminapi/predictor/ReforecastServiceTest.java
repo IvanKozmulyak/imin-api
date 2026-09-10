@@ -214,6 +214,24 @@ class ReforecastServiceTest {
     }
 
     /**
+     * predictor-edge-3: the curves are keyed off event_outcomes.city / genre_family, which store
+     * MERGE keys — looking up with a display spelling would miss the event's own segment.
+     */
+    @Test
+    void pacingCurveIsLookedUpByTheMergeKeysNotTheDisplaySpellings() {
+        Event e = events.findActive(eventId).orElseThrow();
+        e.setVenueCity("Den Haag");
+        e.setGenre(" House & Techno ");
+        stubBands(ProjectionBand.TRACKING_60_85);
+
+        sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
+
+        verify(pacingCurves).lookup(org.mockito.ArgumentMatchers.eq("den haag"),
+                org.mockito.ArgumentMatchers.eq("NL"),
+                org.mockito.ArgumentMatchers.eq("house & techno"), any(), any());
+    }
+
+    /**
      * predictor-edge-9: the pacing block's relaxation is a display phrase and is absent at the
      * un-relaxed rung; the ledger's internal comparables JSON keeps the enum name.
      */

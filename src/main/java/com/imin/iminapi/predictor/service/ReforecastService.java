@@ -121,8 +121,11 @@ public class ReforecastService {
         if (capacity > 0 && startsAt != null && daysOut != null && daysOut >= 0) {
             CapacityBand band = CapacityBand.of(capacity);
             Season season = Season.of(startsAt, zone);
-            match = pacingCurves.lookup(nullBlank(e.getVenueCity()), nullBlank(e.getVenueCountry()),
-                    nullBlank(e.getGenre()), band, season).orElse(null);
+            // Merge keys (predictor-edge-3): the curves are keyed off event_outcomes.city /
+            // genre_family, which store keys — a display spelling would miss its own segment.
+            match = pacingCurves.lookup(PredictorSegmentKeys.cityKey(e.getVenueCity()),
+                    nullBlank(e.getVenueCountry()), PredictorSegmentKeys.genreKey(e.getGenre()),
+                    band, season).orElse(null);
             if (match != null) {
                 projection = engine.project(match.curve(), currentSold, daysOut, capacity);
             }

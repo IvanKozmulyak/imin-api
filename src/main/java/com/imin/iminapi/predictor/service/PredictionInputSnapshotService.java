@@ -102,7 +102,12 @@ public class PredictionInputSnapshotService {
             }
         }
 
-        ComparableCorpus cc = corpus.retrieve(e.getOrgId(), city, country, genreFamily, band, season);
+        // Segment on the MERGE keys (predictor-edge-3) while the snapshot keeps the display
+        // spellings: the corpus columns store keys, and the display strings are what the prompt
+        // and the FE `filters` line read. Keeping display in the snapshot also keeps the hash —
+        // hence the score cache — stable across this change.
+        ComparableCorpus cc = corpus.retrieve(e.getOrgId(), PredictorSegmentKeys.cityKey(city), country,
+                PredictorSegmentKeys.genreKey(genreFamily), band, season);
 
         return new PredictionInputSnapshot(
                 PredictionInputSnapshot.SNAPSHOT_VERSION,
