@@ -56,12 +56,24 @@ public interface EventOutcomeRepository extends JpaRepository<EventOutcome, UUID
      * with no end time can never satisfy it, and would otherwise occupy the single page forever
      * and starve the rows that can. Ordered (event date, then id) so paging is total and
      * repeatable rather than a heap-order slice.
+     *
+     * <p><b>Soft-deleted and CANCELLED events are excluded</b> (predictor-edge-10), matching
+     * {@code EventRepository.findActive}/{@code findAllPublished} — every other Event query
+     * carries the soft-delete filter. A cancelled event's tickets are refunded, so finalizing it
+     * would stamp {@code sold_total ≈ 0}, {@code sell_out = false} and {@code attendance ≈ 0};
+     * because {@code finalizedAt is not null} is the ONLY membership test the three corpus
+     * segment queries below apply, that row would then become a cross-org comparable for every
+     * other organizer in its city × genre × band × season and drag the aggregates — and
+     * {@code PacingCurveService}'s median/P25/P75 shapes — toward a result that never happened.
+     * It would also write fresh derived data for an event the org asked to have deleted.
      */
     @Query("""
             select o from EventOutcome o
              where o.finalizedAt is null
                and exists (select 1 from Event e
                             where e.id = o.eventId
+                              and e.deletedAt is null
+                              and e.status <> com.imin.iminapi.model.EventStatus.CANCELLED
                               and e.endsAt is not null
                               and e.endsAt < :cutoff)
              order by o.eventDate asc, o.eventId asc

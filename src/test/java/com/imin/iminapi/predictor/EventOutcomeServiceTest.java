@@ -17,10 +17,12 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.data.domain.PageRequest;
 
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -308,6 +310,35 @@ class EventOutcomeServiceTest {
         assertThat(fin.getSellOut()).isTrue();                  // sold 2 >= capacity 2
         assertThat(fin.getTimeToSellOutHours()).isNotNull();
         assertThat(fin.getTimeToSellOutHours()).isGreaterThanOrEqualTo(0);
+    }
+
+    /**
+     * predictor-edge-10: a cancelled or soft-deleted event must never become a comparable.
+     * Its tickets are refunded, so finalizing it stamps sold≈0 / sell_out=false / attendance≈0
+     * — and {@code finalizedAt is not null} is the ONLY membership test the three cross-org
+     * corpus segment queries apply, so the row would drag every other organizer's segment
+     * aggregates and pacing shapes down with a result that never happened.
+     */
+    @Test
+    void dueForFinalize_excludesSoftDeletedAndCancelledEvents() {
+        Instant cutoff = STARTS.plus(1, ChronoUnit.DAYS);
+
+        Event due = liveEvent();
+        service.freezeOnPublish(due);
+
+        Event deleted = liveEvent();
+        service.freezeOnPublish(deleted);
+        deleted.setDeletedAt(Instant.parse("2026-02-20T00:00:00Z"));
+        events.save(deleted);
+
+        Event cancelled = liveEvent();
+        service.freezeOnPublish(cancelled);
+        cancelled.setStatus(EventStatus.CANCELLED);
+        events.save(cancelled);
+
+        List<EventOutcome> page = outcomes.findDueForFinalize(cutoff, PageRequest.of(0, 50));
+
+        assertThat(page).extracting(EventOutcome::getEventId).containsExactly(due.getId());
     }
 
     @Test

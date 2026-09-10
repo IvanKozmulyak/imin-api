@@ -1,6 +1,7 @@
 package com.imin.iminapi.predictor;
 
 import com.imin.iminapi.model.Event;
+import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.predictor.config.PredictorProperties;
 import com.imin.iminapi.predictor.model.EventOutcome;
 import com.imin.iminapi.predictor.repository.EventOutcomeRepository;
@@ -38,6 +39,12 @@ class EventOutcomeFinalizeJobTest {
         return e;
     }
 
+    private Event cancelledEvent(UUID id, Instant endsAt) {
+        Event e = event(id, endsAt);
+        e.setStatus(EventStatus.CANCELLED);
+        return e;
+    }
+
     private EventOutcome outcome(UUID eventId) {
         EventOutcome o = new EventOutcome();
         o.setEventId(eventId);
@@ -66,7 +73,7 @@ class EventOutcomeFinalizeJobTest {
         for (int i = 0; i < 250; i++) {                       // > one 200-row page
             UUID id = UUID.randomUUID();
             remaining.add(outcome(id));
-            when(events.findById(id)).thenReturn(Optional.of(event(id, now.minus(5, ChronoUnit.DAYS))));
+            when(events.findActive(id)).thenReturn(Optional.of(event(id, now.minus(5, ChronoUnit.DAYS))));
         }
         serve(outcomes, remaining);
         doAnswer(inv -> {                                     // finalizing drops the row from the set
@@ -89,7 +96,7 @@ class EventOutcomeFinalizeJobTest {
         for (int i = 0; i < 250; i++) {
             UUID id = UUID.randomUUID();
             remaining.add(outcome(id));
-            when(events.findById(id)).thenReturn(Optional.of(event(id, now.minus(5, ChronoUnit.DAYS))));
+            when(events.findActive(id)).thenReturn(Optional.of(event(id, now.minus(5, ChronoUnit.DAYS))));
         }
         UUID stuck = remaining.get(0).getEventId();           // permanently fails, never leaves the set
         serve(outcomes, remaining);
@@ -106,6 +113,34 @@ class EventOutcomeFinalizeJobTest {
         verify(service, times(1)).finalize(any(), argThat(e -> e.getId().equals(stuck)), any());
     }
 
+    /**
+     * predictor-edge-10: the job re-reads through {@code findActive} (soft-delete filtered) and
+     * re-checks CANCELLED itself, so a cancelled or deleted event is never finalized into the
+     * cross-org comparable corpus even if the due query were to hand one back.
+     */
+    @Test
+    void neverFinalizesCancelledOrSoftDeletedEvents() {
+        EventOutcomeRepository outcomes = mock(EventOutcomeRepository.class);
+        EventRepository events = mock(EventRepository.class);
+        EventOutcomeService service = mock(EventOutcomeService.class);
+
+        UUID due = UUID.randomUUID();
+        UUID cancelled = UUID.randomUUID();
+        UUID deleted = UUID.randomUUID();   // findActive filters it out -> empty Optional
+
+        serve(outcomes, new ArrayList<>(List.of(outcome(due), outcome(cancelled), outcome(deleted))));
+        when(events.findActive(due)).thenReturn(Optional.of(event(due, now.minus(5, ChronoUnit.DAYS))));
+        when(events.findActive(cancelled))
+                .thenReturn(Optional.of(cancelledEvent(cancelled, now.minus(5, ChronoUnit.DAYS))));
+        when(events.findActive(deleted)).thenReturn(Optional.empty());
+
+        new EventOutcomeFinalizeJob(outcomes, events, service, new PredictorProperties(), clock).run();
+
+        verify(service, times(1)).finalize(any(), argThat(e -> e.getId().equals(due)), eq(now));
+        verify(service, never()).finalize(any(), argThat(e -> e.getId().equals(cancelled)), any());
+        verify(events, never()).findById(any());
+    }
+
     @Test
     void finalizesOnlyEventsEndedBeyondGrace() {
         EventOutcomeRepository outcomes = mock(EventOutcomeRepository.class);
@@ -118,9 +153,9 @@ class EventOutcomeFinalizeJobTest {
         UUID noEnd = UUID.randomUUID();     // null endsAt -> skip
 
         serve(outcomes, new ArrayList<>(List.of(outcome(due), outcome(tooRecent), outcome(noEnd))));
-        when(events.findById(due)).thenReturn(Optional.of(event(due, now.minus(5, ChronoUnit.DAYS))));
-        when(events.findById(tooRecent)).thenReturn(Optional.of(event(tooRecent, now.minus(1, ChronoUnit.DAYS))));
-        when(events.findById(noEnd)).thenReturn(Optional.of(event(noEnd, null)));
+        when(events.findActive(due)).thenReturn(Optional.of(event(due, now.minus(5, ChronoUnit.DAYS))));
+        when(events.findActive(tooRecent)).thenReturn(Optional.of(event(tooRecent, now.minus(1, ChronoUnit.DAYS))));
+        when(events.findActive(noEnd)).thenReturn(Optional.of(event(noEnd, null)));
 
         new EventOutcomeFinalizeJob(outcomes, events, service, props, clock).run();
 

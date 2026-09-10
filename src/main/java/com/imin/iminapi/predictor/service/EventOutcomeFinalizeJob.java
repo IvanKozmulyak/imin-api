@@ -1,6 +1,7 @@
 package com.imin.iminapi.predictor.service;
 
 import com.imin.iminapi.model.Event;
+import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.predictor.config.PredictorProperties;
 import com.imin.iminapi.predictor.model.EventOutcome;
 import com.imin.iminapi.predictor.repository.EventOutcomeRepository;
@@ -31,6 +32,11 @@ import java.util.UUID;
  * Java. Every published event has a not-yet-finalized row from the moment it publishes, so
  * a Java-side filter lets live and future events fill the page permanently and the corpus
  * silently stops growing.
+ *
+ * <p>Soft-deleted and CANCELLED events are never finalized (predictor-edge-10) — see
+ * {@code EventOutcomeRepository.findDueForFinalize}. Their rows stay unfinalized, which keeps
+ * them out of the cross-org comparable corpus, and they are counted as skipped rather than
+ * failed so the pass does not warn about them for the life of the event.
  *
  * <p>Idempotent: {@link EventOutcomeService#finalize} recomputes from source, and once
  * {@code finalizedAt} is set the row drops out of the candidate query — so a finished
@@ -70,6 +76,7 @@ public class EventOutcomeFinalizeJob {
         Set<UUID> attempted = new HashSet<>();
         int finalized = 0;
         int failed = 0;
+        int skipped = 0;
         List<EventOutcome> batch;
         boolean progressed;
         do {
@@ -78,11 +85,18 @@ public class EventOutcomeFinalizeJob {
             for (EventOutcome o : batch) {
                 if (!attempted.add(o.getEventId())) continue;
                 progressed = true;
-                Event e = events.findById(o.getEventId()).orElse(null);
+                // findActive, not findById: the non-filtering finder would hand back a
+                // soft-deleted event and this re-read is the belt to the query's braces
+                // (predictor-edge-10). Cancelled is checked here for the same reason.
+                Event e = events.findActive(o.getEventId()).orElse(null);
                 // Belt and braces: the query already excludes these, but never finalize an event
-                // that has not ended (or has vanished) on the strength of the query alone.
-                if (e == null || e.getEndsAt() == null || !e.getEndsAt().isBefore(cutoff)) {
-                    failed++;
+                // that has not ended (or has vanished, been cancelled or been deleted) on the
+                // strength of the query alone. These rows are INELIGIBLE, not failures — a
+                // cancelled event stays unfinalized for life, so counting it as a failure would
+                // fire the WARN below every night forever.
+                if (e == null || e.getStatus() == EventStatus.CANCELLED
+                        || e.getEndsAt() == null || !e.getEndsAt().isBefore(cutoff)) {
+                    skipped++;
                     continue;
                 }
                 try {
@@ -99,6 +113,10 @@ public class EventOutcomeFinalizeJob {
         } while (progressed && batch.size() == PAGE);
         if (failed > 0) {
             log.warn("EventOutcomeFinalizeJob: {} outcome(s) could not be finalized this pass", failed);
+        }
+        if (skipped > 0) {
+            log.debug("EventOutcomeFinalizeJob: {} outcome(s) skipped as ineligible (missing, deleted, "
+                    + "cancelled or not yet ended past the grace)", skipped);
         }
         if (finalized > 0) {
             log.info("EventOutcomeFinalizeJob: finalized {} event outcome(s)", finalized);
