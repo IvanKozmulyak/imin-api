@@ -359,6 +359,30 @@ class ReforecastServiceTest {
         verify(alertNotifier, times(2)).notifyBandChange(any(), any(), any(), any());
     }
 
+    /**
+     * predictor-edge-1: the alert's tone is the platform's tone vocabulary (green/amber). It
+     * shipped "up"/"down", which that vocabulary has no member for — so an up-crossing (the good
+     * news the alert exists to deliver) and a down-crossing rendered as the identical neutral
+     * chip and the direction signal was lost.
+     */
+    @Test
+    void bandCrossingToneIsGreenUpAndAmberDown() {
+        stubBands(
+                ProjectionBand.TRACKING_85_100, // establish
+                ProjectionBand.TRACKING_60_85,  // weakened → amber
+                ProjectionBand.TRACKING_85_100  // recovered → green
+        );
+        sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
+
+        ReforecastResult weakened = sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
+        assertThat(weakened.alert().tone()).isEqualTo("amber");
+        assertThat(weakened.alert().was()).isEqualTo(ProjectionBand.TRACKING_85_100.phrase());
+        assertThat(weakened.alert().now()).isEqualTo(ProjectionBand.TRACKING_60_85.phrase());
+
+        ReforecastResult recovered = sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
+        assertThat(recovered.alert().tone()).isEqualTo("green");
+    }
+
     // ---- helpers ---------------------------------------------------------------
 
     private void seedPrePublish(int attLow, int attHigh) {

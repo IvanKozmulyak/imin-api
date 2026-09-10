@@ -291,7 +291,10 @@ public class ReforecastService {
      */
     private ReforecastResult.Alert alertFor(Prior prior, ProjectionBand newBand) {
         if (prior != null && prior.band() != null && newBand != null && !prior.band().equals(newBand)) {
-            String tone = newBand.ordinal() > prior.band().ordinal() ? "up" : "down";
+            // The platform tone vocabulary, not "up"/"down" (predictor-edge-1): the dashboard
+            // switches on green/amber for the arrow and the chip colour, so anything else
+            // renders both directions identically.
+            String tone = newBand.ordinal() > prior.band().ordinal() ? "green" : "amber";
             return new ReforecastResult.Alert(tone, prior.band().phrase(), newBand.phrase(), clock.instant().toString());
         }
         return prior == null ? null : prior.alert();

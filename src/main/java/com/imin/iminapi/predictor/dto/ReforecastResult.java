@@ -52,12 +52,23 @@ public record ReforecastResult(
     public record RevenueRange(long low, long high) {}
 
     /**
-     * The most recent band-crossing alert (spec §4.2, task 86cav479r). {@code tone}: "up" when
-     * the band strengthened, "down" when it weakened. {@code was}/{@code now} are honest band
-     * phrases. Carried forward on unchanged recomputes so the served result always shows the
-     * last crossing; null until one fires.
+     * The most recent band-crossing alert (spec §4.2, task 86cav479r). {@code was}/{@code now}
+     * are honest band phrases. Carried forward on unchanged recomputes so the served result
+     * always shows the last crossing; null until one fires.
+     *
+     * <p>{@code tone} is the platform's tone vocabulary — {@code "green"} when the band
+     * strengthened, {@code "amber"} when it weakened. It used to be {@code "up"}/{@code "down"}
+     * (predictor-edge-1), which is not a member of that vocabulary: the dashboard switches on
+     * green/amber to pick the arrow and the chip colour, so BOTH directions rendered as the same
+     * neutral down-arrow chip and the alert carried no direction signal at all — the one thing it
+     * exists to deliver. The allowable values are published on the schema so the drift gate
+     * polices the pair.
      */
-    public record Alert(String tone, String was, String now, String firedAt) {}
+    public record Alert(
+            @io.swagger.v3.oas.annotations.media.Schema(allowableValues = {"green", "amber"},
+                    description = "green = the band strengthened, amber = it weakened.")
+            String tone,
+            String was, String now, String firedAt) {}
 
     /**
      * The ledger stamp (spec §5 write-before-render): the row backing the served result. Assembled
