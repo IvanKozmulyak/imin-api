@@ -25,7 +25,6 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -446,18 +445,15 @@ public class PosterOrchestrator {
     }
 
     private GeneratedPoster toDto(PosterVariantEntity e) {
-        Map<String, Object> overlays = new HashMap<>();
-        overlays.put("qr_code", false);
-        overlays.put("address", false);
         List<String> refs = e.getReferenceImagesUsed() == null || e.getReferenceImagesUsed().isBlank()
                 ? List.of() : List.of(e.getReferenceImagesUsed().split(","));
         return new GeneratedPoster(
                 e.getId(), e.getVariantStyle(), e.getRawUrl(), e.getFinalUrl(),
-                e.getSeed() != null ? e.getSeed() : 0L, e.getIdeogramPrompt(), refs, overlays,
+                e.getSeed() != null ? e.getSeed() : 0L, refs,
                 e.getStatus().name(), e.getFailureReason());
     }
 
     private GeneratedPoster failedPoster(UUID id, String style, String reason) {
-        return new GeneratedPoster(id, style, null, null, 0L, "", List.of(), Map.of(), "FAILED", reason);
+        return new GeneratedPoster(id, style, null, null, 0L, List.of(), "FAILED", reason);
     }
 }

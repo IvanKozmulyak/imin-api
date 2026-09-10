@@ -30,7 +30,6 @@ import org.mockito.ArgumentCaptor;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -84,9 +83,9 @@ class ConceptStudioServiceTest {
         OrchestrationResult result = new OrchestrationResult(
                 UUID.randomUUID(), "neon_underground",
                 List.of(
-                        new GeneratedPoster(UUID.randomUUID(), "people", "https://cdn/raw1.png", "https://cdn/p1.png", 1L, "prompt", List.of(), Map.of(), "COMPLETE", null),
-                        new GeneratedPoster(UUID.randomUUID(), "object",     "https://cdn/raw2.png", "https://cdn/p2.png", 2L, "prompt", List.of(), Map.of(), "COMPLETE", null),
-                        new GeneratedPoster(UUID.randomUUID(), "typographic",     "https://cdn/raw3.png", "https://cdn/p3.png", 3L, "prompt", List.of(), Map.of(), "COMPLETE", null)));
+                        new GeneratedPoster(UUID.randomUUID(), "people", "https://cdn/raw1.png", "https://cdn/p1.png", 1L, List.of(), "COMPLETE", null),
+                        new GeneratedPoster(UUID.randomUUID(), "object",     "https://cdn/raw2.png", "https://cdn/p2.png", 2L, List.of(), "COMPLETE", null),
+                        new GeneratedPoster(UUID.randomUUID(), "typographic",     "https://cdn/raw3.png", "https://cdn/p3.png", 3L, List.of(), "COMPLETE", null)));
         when(orchestrator.run(any(), any(), any(), anyLong(), any(), any(), any(), any())).thenReturn(result);
 
         when(pricing.recommend(any(), any(), any())).thenReturn(
@@ -139,9 +138,9 @@ class ConceptStudioServiceTest {
                 .thenReturn(new AiEventDescriptionService.GeneratedConcept(concept, List.of()));
         when(orchestrator.run(any(), any(), any(), anyLong(), any(), any(), any(), any())).thenReturn(new OrchestrationResult(
                 UUID.randomUUID(), "flat_graphic",
-                List.of(new GeneratedPoster(UUID.randomUUID(), "people", "raw", "url1", 1L, "p", List.of(), Map.of(), "COMPLETE", null),
-                        new GeneratedPoster(UUID.randomUUID(), "object",     "raw", "url2", 2L, "p", List.of(), Map.of(), "COMPLETE", null),
-                        new GeneratedPoster(UUID.randomUUID(), "typographic",     "raw", "url3", 3L, "p", List.of(), Map.of(), "COMPLETE", null))));
+                List.of(new GeneratedPoster(UUID.randomUUID(), "people", "raw", "url1", 1L, List.of(), "COMPLETE", null),
+                        new GeneratedPoster(UUID.randomUUID(), "object",     "raw", "url2", 2L, List.of(), "COMPLETE", null),
+                        new GeneratedPoster(UUID.randomUUID(), "typographic",     "raw", "url3", 3L, List.of(), "COMPLETE", null))));
         when(pricing.recommend(any(), any(), any())).thenReturn(
                 new PricingRecommendation(new BigDecimal("10.00"), new BigDecimal("20.00"), "ok"));
         when(overviewLlm.generate(any(), any())).thenReturn(new ConceptOverview(
@@ -176,7 +175,7 @@ class ConceptStudioServiceTest {
                 List.of()));
         when(orchestrator.run(any(), any(), any(), anyLong(), any(), any(), any(), any())).thenReturn(new OrchestrationResult(
                 UUID.randomUUID(), "brutalist_techno",
-                List.of(new GeneratedPoster(UUID.randomUUID(), "people", "raw", "u1", 1L, "p", List.of(), Map.of(), "COMPLETE", null))));
+                List.of(new GeneratedPoster(UUID.randomUUID(), "people", "raw", "u1", 1L, List.of(), "COMPLETE", null))));
         when(pricing.recommend(any(), any(), any())).thenReturn(
                 new PricingRecommendation(new BigDecimal("12.00"), new BigDecimal("24.00"), "ok"));
         when(overviewLlm.generate(any(), any())).thenReturn(
@@ -249,7 +248,7 @@ class ConceptStudioServiceTest {
                         List.of()));
         when(orchestrator.run(any(), any(), any(), anyLong(), any(), any(), any(), any())).thenReturn(new OrchestrationResult(
                 UUID.randomUUID(), "neon_underground",
-                List.of(new GeneratedPoster(UUID.randomUUID(), "people", "raw", "u1", 1L, "p", List.of(), Map.of(), "COMPLETE", null))));
+                List.of(new GeneratedPoster(UUID.randomUUID(), "people", "raw", "u1", 1L, List.of(), "COMPLETE", null))));
         when(pricing.recommend(any(), any(), any())).thenReturn(
                 new PricingRecommendation(new BigDecimal("12.00"), new BigDecimal("24.00"), "ok"));
         when(overviewLlm.generate(any(), any())).thenReturn(
