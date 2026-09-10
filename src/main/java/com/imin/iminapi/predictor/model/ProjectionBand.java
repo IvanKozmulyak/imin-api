@@ -35,10 +35,14 @@ public enum ProjectionBand {
 
     /**
      * Classify a RAW (unclamped) projected-final midpoint against capacity. Capacity &le; 0
-     * (no tiers) has no meaningful band → {@link #UNDER_60}.
+     * (no tiers, or every tier removed/zeroed after the score) is UNKNOWN capacity, not a tiny
+     * one: there is no band to report, so this answers {@code null} and the caller must serve no
+     * band and fire no alert (predictor-edge-14). Returning {@link #UNDER_60} used to put
+     * "tracking below 60% of capacity" in the organizer's chip — and in a dashboard notification
+     * — about an event whose tier quantities sum to 0. Mirrors {@code CapacityBand.of}.
      */
     public static ProjectionBand classify(double rawProjectedFinalMidpoint, int capacity) {
-        if (capacity <= 0) return UNDER_60;
+        if (capacity <= 0) return null;
         double ratio = rawProjectedFinalMidpoint / capacity;
         if (ratio >= 1.0) return SELL_OUT_LIKELY;
         if (ratio >= 0.85) return TRACKING_85_100;

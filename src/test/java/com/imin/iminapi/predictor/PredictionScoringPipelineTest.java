@@ -81,11 +81,34 @@ class PredictionScoringPipelineTest {
                 new PredictionInputSnapshot.CorpusLine("NONE", density, own, density - own, List.of(), null));
     }
 
+    /** Same snapshot (density 30 / own 5, so it earns tier A), with a display-cased genre. */
+    private PredictionInputSnapshot snapWithGenre(String displayGenre) {
+        PredictionInputSnapshot base = snap(30, 5);
+        return new PredictionInputSnapshot(
+                base.snapshotVersion(), base.eventId(), base.city(), base.country(), displayGenre,
+                base.capacity(), base.capacityBand(), base.eventDateIso(), base.dayOfWeek(), base.season(),
+                base.leadTimeDays(), base.currency(), base.tiers(), base.promos(),
+                base.organizerTenureDays(), base.priorEventCount(), base.holidayTableCovers(),
+                base.holidaysNearEvent(), base.comparables());
+    }
+
+    /** Same snapshot, but retrieved at a WIDENED rung. */
+    private PredictionInputSnapshot relaxedSnap(String rung) {
+        PredictionInputSnapshot base = snap(10, 1);
+        return new PredictionInputSnapshot(
+                base.snapshotVersion(), base.eventId(), base.city(), base.country(), base.genreFamily(),
+                base.capacity(), base.capacityBand(), base.eventDateIso(), base.dayOfWeek(), base.season(),
+                base.leadTimeDays(), base.currency(), base.tiers(), base.promos(),
+                base.organizerTenureDays(), base.priorEventCount(), base.holidayTableCovers(),
+                base.holidaysNearEvent(),
+                new PredictionInputSnapshot.CorpusLine(rung, 10, 1, 9, List.of(), null));
+    }
+
     private Stage0Output validOutput() {
         return new Stage0Output(
-                new PredictionResult.Band(35, 60),
-                new PredictionResult.Range(120, 210),
-                new PredictionResult.LongRange(120 * 1500L, 210 * 2400L),
+                new Stage0Scorer.RawBand(35, 60),
+                new Stage0Scorer.RawRange(120, 210),
+                new Stage0Scorer.RawLongRange(120 * 1500L, 210 * 2400L),
                 List.of(new PredictionResult.Factor("Saturday in summer", "supporting", "comparable Saturdays outperform"),
                         new PredictionResult.Factor("Prices inside band", "supporting", "tier prices within comparable range"),
                         new PredictionResult.Factor("Low own history", "opposing", "organizer has few completed events")),
@@ -94,8 +117,8 @@ class PredictionScoringPipelineTest {
 
     private Stage0Output invalidOutput() {
         // Over-capacity attendance — deterministic validator rejection.
-        return new Stage0Output(new PredictionResult.Band(35, 60),
-                new PredictionResult.Range(120, 9_999), null,
+        return new Stage0Output(new Stage0Scorer.RawBand(35, 60),
+                new Stage0Scorer.RawRange(120, 9_999), null,
                 validOutput().factors(), List.of());
     }
 
@@ -156,6 +179,27 @@ class PredictionScoringPipelineTest {
         assertThat(scored.result().factors()).isEmpty();
         verify(ledger, times(1)).record(any());                  // benchmark-only IS ledgered
         verify(scorer, times(2)).score(any(), any(), any());     // exactly one retry
+    }
+
+    /**
+     * predictor-edge-13 end to end: an output whose estimate objects are present but whose
+     * NUMBERS are missing must degrade to benchmark-only, not be served as a 0–0 forecast.
+     */
+    @Test
+    void outputWithEmptyEstimateObjectsDegradesToBenchmarkOnly() {
+        stubLedger();
+        Stage0Output empty = new Stage0Output(
+                new Stage0Scorer.RawBand(null, null), new Stage0Scorer.RawRange(null, null),
+                null, validOutput().factors(), List.of());
+        when(scorer.score(any(), any(), any())).thenReturn(empty);
+
+        PredictionScoringPipeline.Scored scored = sut.score(event(), snap(10, 1));
+
+        assertThat(scored.result().benchmarkOnly()).isTrue();
+        assertThat(scored.result().selloutBand()).isNull();     // never a served 0-0 band
+        assertThat(scored.result().attendanceRange()).isNull();
+        verify(scorer, times(2)).score(any(), any(), any());    // rejected, retried, then floored
+        verify(ledger, times(1)).record(any());
     }
 
     @Test
@@ -232,5 +276,56 @@ class PredictionScoringPipelineTest {
         assertThat(c.filters()).isEqualTo("techno · 101–300 · summer · Amsterdam");
         assertThat(c.aggregates()).containsEntry("events", 10).containsEntry("own", 1);
         assertThat(c.aggregates()).doesNotContainKeys("avgAttendance"); // foreign aggregate suppressed
+    }
+
+    /**
+     * predictor-edge-3: PredictionScoringJob writes predictor_segment_status keys from
+     * event_outcomes.genre_family, which stores the MERGE key — so reading with the display
+     * spelling silently never matched and the §5 tripwire downgrade stopped applying.
+     */
+    @Test
+    void segmentTripwireMatchesRegardlessOfTheGenresDisplayCase() {
+        stubLedger();
+        PredictorSegmentStatus seg = new PredictorSegmentStatus();
+        seg.setSegmentKey("techno|B101_300");
+        seg.setLanguageTierOverride(PredictorSegmentStatus.OVERRIDE_DROP_ONE);
+        when(segments.findById("techno|B101_300")).thenReturn(Optional.of(seg));
+        when(scorer.score(any(), any(), isNull())).thenReturn(validOutput());
+
+        PredictionScoringPipeline.Scored scored = sut.score(event(), snapWithGenre(" Techno "));
+
+        assertThat(scored.result().confidenceTier()).isEqualTo("B"); // A dropped one
+    }
+
+    /**
+     * predictor-edge-9: the un-relaxed case (the common one) shipped the literal "NONE", which
+     * is truthy — so the surface prefixed it with "Net widened" and named the rung with a Java
+     * constant. Null is the honest answer, and NON_NULL keeps the key out of the payload; the
+     * ledger's internal comparables JSON keeps the enum name for machine reads.
+     */
+    @Test
+    void unrelaxedComparablesShipNoRelaxationAtAll() throws Exception {
+        stubLedger();
+        when(scorer.score(any(), any(), isNull())).thenReturn(validOutput());
+
+        PredictionScoringPipeline.Scored scored = sut.score(event(), snap(10, 1));
+
+        assertThat(scored.result().comparables().relaxation()).isNull();
+        assertThat(com.imin.iminapi.predictor.service.PredictorJson.MAPPER
+                .writeValueAsString(scored.result())).doesNotContain("relaxation");
+        ArgumentCaptor<PredictionLedgerService.RecordCommand> cap =
+                ArgumentCaptor.forClass(PredictionLedgerService.RecordCommand.class);
+        verify(ledger).record(cap.capture());
+        assertThat(cap.getValue().comparablesJson()).contains("\"relaxation\":\"NONE\"");
+    }
+
+    @Test
+    void widenedComparablesShipADisplayPhraseNotTheEnumName() {
+        stubLedger();
+        when(scorer.score(any(), any(), isNull())).thenReturn(validOutput());
+
+        PredictionScoringPipeline.Scored scored = sut.score(event(), relaxedSnap("CITY_TO_COUNTRY"));
+
+        assertThat(scored.result().comparables().relaxation()).isEqualTo("across the country");
     }
 }

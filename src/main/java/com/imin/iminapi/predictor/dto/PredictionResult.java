@@ -101,7 +101,13 @@ public record PredictionResult(
      * {@code aggregates} is a FLAT map with display-ready keys, rendered generically by the FE
      * in benchmark-only mode; foreign-derived entries appear ONLY when the ≥5 privacy cluster
      * floor was met (§6.4), and figures are the already-rounded privacy-preserved values.
+     *
+     * <p>{@code relaxation} is a DISPLAY PHRASE and is ABSENT when the net was not widened
+     * (predictor-edge-9) — {@code RelaxationLevel.phrase()}, null at {@code NONE}. NON_NULL is
+     * declared here as well as on the enclosing record because the outer annotation does not
+     * reach a nested record's own properties.
      */
+    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
     public record Comparables(int clusterSize, int ownCount, String relaxation,
                               String filters, java.util.Map<String, Object> aggregates) {}
 }

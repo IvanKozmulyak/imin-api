@@ -48,7 +48,7 @@ class Stage0ScorerTest {
 
     @Test
     void scoreSendsOneStructuredCallWithHonestPrompt() {
-        Stage0Output out = new Stage0Output(new PredictionResult.Band(20, 55), null, null,
+        Stage0Output out = new Stage0Output(new Stage0Scorer.RawBand(20, 55), null, null,
                 List.of(), List.of());
         when(chat.prompt().options(any()).user(anyString()).call().entity(Stage0Output.class)).thenReturn(out);
 

@@ -559,6 +559,30 @@ imin:
     tier-b-min-density: ${PREDICTOR_TIER_B_MIN_DENSITY:8}
     tier-a-min-density: ${PREDICTOR_TIER_A_MIN_DENSITY:25}
     tier-a-own-min: ${PREDICTOR_TIER_A_OWN_MIN:3}
+    # ---- FORECAST phase (Stage 1 pacing / live re-forecast) ----
+    # Every key below is enumerated here on purpose: a @ConfigurationProperties field this file
+    # does not list binds ONLY under its relaxed name (IMIN_PREDICTOR_…), so the PREDICTOR_… name
+    # the javadoc documents would be silently inert — the GOOGLE_OAUTH_NATIVE_AUDIENCE trap.
+    # PredictorPropertiesBindingTest fails if a property or a documented variable is missing.
+    # Completed comparable events a segment needs before its pacing curve is trusted for a live
+    # projection; below it the re-forecast serves the labelled Stage 0 interim instead.
+    min-curve-events: ${PREDICTOR_MIN_CURVE_EVENTS:12}
+    # Upper bound (days-to-event) for the pacing-curve sample grid.
+    pacing-max-days-out: ${PREDICTOR_PACING_MAX_DAYS_OUT:90}
+    # Leading-edge debounce coalescing milestone/tier/campaign re-forecast triggers.
+    reforecast-debounce-seconds: ${PREDICTOR_REFORECAST_DEBOUNCE_SECONDS:60}
+    # +/- window (days) around the event date for the "competing nights on imin" signal.
+    competing-nights-window-days: ${PREDICTOR_COMPETING_NIGHTS_WINDOW_DAYS:1}
+    # Weather signal kill switch. false stops every outbound Open-Meteo call, checked per
+    # request, so it can be flipped without a deploy (WeatherService).
+    weather-enabled: ${PREDICTOR_WEATHER_ENABLED:true}
+    # Horizon cap (days-to-event) past which weather is reported null, never fabricated.
+    weather-max-horizon-days: ${PREDICTOR_WEATHER_MAX_HORIZON_DAYS:14}
+    # ---- Organizer-action reactivity (system-initiated recomputes) ----
+    # +/- debounce coalescing autosave bursts of organizer edits into one recompute.
+    action-debounce-seconds: ${PREDICTOR_ACTION_DEBOUNCE_SECONDS:120}
+    # Daily cap on SYSTEM-initiated re-scores/re-forecasts per event (a WARN logs at the cap).
+    system-rescores-per-event-per-day: ${PREDICTOR_SYSTEM_RESCORES_PER_EVENT_PER_DAY:10}
   ratelimit:
     login:
       capacity: 5

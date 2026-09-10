@@ -59,7 +59,8 @@ public class EventController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public EventDto create(@CurrentUser AuthPrincipal p, @RequestBody(required = false) EventPatchRequest body) {
+    public EventDto create(@CurrentUser AuthPrincipal p,
+                           @RequestBody(required = false) @jakarta.validation.Valid EventPatchRequest body) {
         return eventService.createDraft(p, body);
     }
 
@@ -72,7 +73,7 @@ public class EventController {
     public EventDto patch(@CurrentUser AuthPrincipal p,
                           @PathVariable UUID id,
                           @RequestHeader(value = "If-Match", required = false) String ifMatch,
-                          @RequestBody EventPatchRequest body) {
+                          @RequestBody @jakarta.validation.Valid EventPatchRequest body) {
         return eventService.patch(p, id, ifMatch, body);
     }
 

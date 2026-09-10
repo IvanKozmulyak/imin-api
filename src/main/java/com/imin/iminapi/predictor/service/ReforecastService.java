@@ -121,8 +121,11 @@ public class ReforecastService {
         if (capacity > 0 && startsAt != null && daysOut != null && daysOut >= 0) {
             CapacityBand band = CapacityBand.of(capacity);
             Season season = Season.of(startsAt, zone);
-            match = pacingCurves.lookup(nullBlank(e.getVenueCity()), nullBlank(e.getVenueCountry()),
-                    nullBlank(e.getGenre()), band, season).orElse(null);
+            // Merge keys (predictor-edge-3): the curves are keyed off event_outcomes.city /
+            // genre_family, which store keys — a display spelling would miss its own segment.
+            match = pacingCurves.lookup(PredictorSegmentKeys.cityKey(e.getVenueCity()),
+                    nullBlank(e.getVenueCountry()), PredictorSegmentKeys.genreKey(e.getGenre()),
+                    band, season).orElse(null);
             if (match != null) {
                 projection = engine.project(match.curve(), currentSold, daysOut, capacity);
             }
@@ -164,9 +167,11 @@ public class ReforecastService {
         ReforecastResult.Range range = new ReforecastResult.Range(p.finalLow(), p.finalHigh());
         ReforecastResult.RevenueRange revenue = revenueRange(e.getId(), currentSold, range);
         ReforecastResult.SellOutEta eta = sellOutEta(p, startsAt);
+        // relaxation ships as a display phrase, null at NONE (predictor-edge-9); the enum name
+        // stays in the narrator context and the ledger's internal comparables JSON.
         ReforecastResult.Pacing pacing = new ReforecastResult.Pacing(
                 curvePoints(match), eventCurvePoints(e.getId()), match.curve().eventsCount(),
-                match.relaxation().name());
+                match.relaxation().phrase());
 
         // Narration regenerates ONLY on a band change; otherwise reuse the prior verbatim. The kill
         // switch suppresses narration entirely — the numbers above are arithmetic and survive it.
@@ -190,35 +195,40 @@ public class ReforecastService {
         }
 
         ReforecastResult.Alert alert = alertFor(prior, newBand);
-        return new ReforecastResult("ready", 1, newBand.wire(), range, revenue, velocity, eta, pacing,
-                narration, alert, null, clock.instant());
+        return new ReforecastResult("ready", 1, newBand.wire(), newBand.phrase(), range, revenue,
+                velocity, eta, pacing, narration, alert, null, clock.instant());
     }
 
     // ---- stage 0 interim / insufficient ----------------------------------------
 
     /**
      * Below the curve threshold: lean on the latest pre-publish Stage 0 estimate as the interim,
-     * EXPLICITLY labelled {@code stage:0} (no blending). No prior score → {@code insufficient_data}.
+     * EXPLICITLY labelled {@code stage:0} (no blending). No prior score, or no capacity to band
+     * against → {@code insufficient_data}.
      */
     private ReforecastResult buildInterim(UUID eventId, int currentSold, int capacity, Double velocity, Prior prior) {
         PredictionResult pre = latestPrePublish(eventId);
         Instant at = clock.instant();
-        if (pre == null || pre.attendanceRange() == null) {
+        // Unknown capacity (no tiers, or every tier removed/zeroed since the score) has no band
+        // and therefore no projection frame at all (predictor-edge-14): every band is a fraction
+        // OF capacity, so answering one would be inventing the denominator. Say insufficient
+        // rather than serve a "ready" chip — and fire no alert — for an event with no capacity.
+        if (capacity <= 0 || pre == null || pre.attendanceRange() == null) {
             // Nothing forward-looking to lean on — say so rather than widen silently (§5).
-            return new ReforecastResult("insufficient_data", 0, null, null, null, velocity, null, null,
-                    null, prior == null ? null : prior.alert(), null, at);
+            return new ReforecastResult("insufficient_data", 0, null, null, null, null, velocity, null,
+                    null, null, prior == null ? null : prior.alert(), null, at);
         }
         int rawLow = pre.attendanceRange().low();
         int rawHigh = pre.attendanceRange().high();
-        int cap = capacity > 0 ? capacity : rawHigh;
-        int low = clamp(rawLow, 0, cap);
-        int high = clamp(rawHigh, low, cap);
+        int low = clamp(rawLow, 0, capacity);
+        int high = clamp(rawHigh, low, capacity);
+        // Non-null: capacity > 0 is guaranteed by the guard above.
         ProjectionBand band = ProjectionBand.classify((rawLow + rawHigh) / 2.0, capacity);
         ReforecastResult.Range range = new ReforecastResult.Range(low, high);
         ReforecastResult.RevenueRange revenue = revenueRange(eventId, currentSold, range);
         ReforecastResult.Alert alert = alertFor(prior, band);
-        return new ReforecastResult("ready", 0, band.wire(), range, revenue, velocity, null, null,
-                null, alert, null, at);
+        return new ReforecastResult("ready", 0, band.wire(), band.phrase(), range, revenue, velocity,
+                null, null, null, alert, null, at);
     }
 
     // ---- derived arithmetic fields ---------------------------------------------
@@ -281,7 +291,10 @@ public class ReforecastService {
      */
     private ReforecastResult.Alert alertFor(Prior prior, ProjectionBand newBand) {
         if (prior != null && prior.band() != null && newBand != null && !prior.band().equals(newBand)) {
-            String tone = newBand.ordinal() > prior.band().ordinal() ? "up" : "down";
+            // The platform tone vocabulary, not "up"/"down" (predictor-edge-1): the dashboard
+            // switches on green/amber for the arrow and the chip colour, so anything else
+            // renders both directions identically.
+            String tone = newBand.ordinal() > prior.band().ordinal() ? "green" : "amber";
             return new ReforecastResult.Alert(tone, prior.band().phrase(), newBand.phrase(), clock.instant().toString());
         }
         return prior == null ? null : prior.alert();
@@ -367,9 +380,25 @@ public class ReforecastService {
 
     private static ReforecastResult parseReforecast(String json) {
         try {
-            return PredictorJson.MAPPER.readValue(json, ReforecastResult.class);
+            return backfillBandLabel(PredictorJson.MAPPER.readValue(json, ReforecastResult.class));
         } catch (Exception ex) {
             return null;
+        }
+    }
+
+    /**
+     * Ledger rows written before {@code bandLabel} existed carry only the machine code
+     * (predictor-edge-8), and {@link #latestServable} re-serves those rows verbatim — the chip
+     * would have nothing to render until the next recompute. The phrase is a pure function of
+     * the code, so filling it in here is formatting, never a new claim: an unparseable code is
+     * left alone rather than guessed.
+     */
+    private static ReforecastResult backfillBandLabel(ReforecastResult r) {
+        if (r == null || r.band() == null || r.bandLabel() != null) return r;
+        try {
+            return r.withBandLabel(ProjectionBand.valueOf(r.band()).phrase());
+        } catch (IllegalArgumentException ex) {
+            return r;
         }
     }
 

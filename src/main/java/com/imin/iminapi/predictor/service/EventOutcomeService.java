@@ -130,13 +130,22 @@ public class EventOutcomeService {
 
     private void applyFrozenFields(EventOutcome o, Event e, boolean reconstructed) {
         o.setOrgId(e.getOrgId());
-        o.setCity(blankToNull(e.getVenueCity()));
-        o.setCountry(blankToNull(e.getVenueCountry()));
-        o.setGenreFamily(blankToNull(e.getGenre()));
+        // The MERGE keys, not the display spellings (predictor-edge-3): these two columns are
+        // matched by equality in the three comparable-corpus segment queries and are the
+        // components of PacingCurveService's segment keys, so "Techno"/"techno" must not be two
+        // segments. Nothing renders event_outcomes; the display spelling stays on the event row.
+        o.setCity(PredictorSegmentKeys.cityKey(e.getVenueCity()));
+        o.setCountry(blankToNull(e.getVenueCountry()));   // already upper-cased on write (V82)
+        o.setGenreFamily(PredictorSegmentKeys.genreKey(e.getGenre()));
         // venueType / indoorOpenAir stay NULL — no source in the data model.
 
+        // A tier-less event (free/RSVP-style — EventValidator.validateForPublish requires no
+        // tier) sums to 0, and the query COALESCEs to 0, so the caller can never pass null.
+        // Store NULL for a non-positive sum (predictor-edge-4): 0 would claim an event with a
+        // capacity of zero, join the ≤100 segment of every other org's corpus, and let finalize
+        // record a definitive "did not sell out" for a capacity nobody stated.
         int capacity = tiers.sumQuantityByEventId(e.getId());
-        o.setCapacity(capacity);
+        o.setCapacity(capacity > 0 ? capacity : null);
         o.setCapacityBand(CapacityBand.of(capacity));
 
         ZoneId zone = resolveZone(e.getTimezone());
@@ -222,10 +231,13 @@ public class EventOutcomeService {
         o.setSoldPerTierJson(writeJson(perTier, "[]"));
         o.setGrossRevenueMinor(grossRevenue);
 
+        // Unknown capacity → the sell-out FACT is undefined. NULL says that; false would be a
+        // definitive "did not sell out" for an event whose capacity was never stated
+        // (predictor-edge-4) — the same honesty rule as refundRate below.
         Integer capacity = o.getCapacity();
-        boolean sellOut = capacity != null && capacity > 0 && soldTotal >= capacity;
+        Boolean sellOut = (capacity == null || capacity <= 0) ? null : soldTotal >= capacity;
         o.setSellOut(sellOut);
-        if (sellOut) {
+        if (Boolean.TRUE.equals(sellOut)) {
             Instant lastSold = tickets.findLastSoldCreatedAt(e.getId());
             o.setTimeToSellOutHours(wholeHoursBetween(e.getPublishedAt(), lastSold));
         } else {
