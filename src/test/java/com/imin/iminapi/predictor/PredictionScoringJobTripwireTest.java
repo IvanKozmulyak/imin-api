@@ -210,6 +210,26 @@ class PredictionScoringJobTripwireTest {
         assertThat(PredictionScoringJob.ape(r, o)).isEqualByComparingTo(new BigDecimal("0.500000"));
     }
 
+    /**
+     * predictor-edge-17: ape is a ratio with no upper bound, but the column is NUMERIC(10,6).
+     * A large-capacity event with an attendance of 1 overflowed the UPDATE, so the render kept
+     * outcome_joined_at = null forever, was retried every monthly pass, and never entered the
+     * evaluation set.
+     */
+    @Test
+    void apeIsClampedToTheColumnCeilingInsteadOfOverflowing() {
+        PredictionResult r = resultWithBand(-1, -1, new PredictionResult.Range(10_000, 10_000));
+        EventOutcome o = new EventOutcome();
+        o.setAttendance(1);   // ratio ~ 9999 - fits; one more order of magnitude does not
+
+        assertThat(PredictionScoringJob.ape(r, o)).isEqualByComparingTo(new BigDecimal("9999.000000"));
+
+        PredictionResult huge = resultWithBand(-1, -1, new PredictionResult.Range(500_000, 500_000));
+        assertThat(PredictionScoringJob.ape(huge, o))
+                .isEqualByComparingTo(PredictionScoringJob.MAX_RATIO)
+                .matches(v -> v.precision() - v.scale() <= 4, "fits NUMERIC(10,6)");
+    }
+
     private static PredictionResult resultWithBand(int low, int high, PredictionResult.Range att) {
         PredictionResult.Band band = low < 0 ? null : new PredictionResult.Band(low, high);
         return new PredictionResult("pre_publish", 0, "B", band, att, null,

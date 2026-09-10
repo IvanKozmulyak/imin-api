@@ -149,13 +149,35 @@ public class PredictionScoringJob {
         return BigDecimal.valueOf((p - actual) * (p - actual)).setScale(6, RoundingMode.HALF_UP);
     }
 
-    /** |attendance midpoint − actual| / actual, or null without a numeric claim / positive actual. */
+    /**
+     * |attendance midpoint − actual| / actual, or null without a numeric claim / positive actual.
+     *
+     * <p>CLAMPED to {@link #MAX_RATIO} (predictor-edge-17). {@code prediction_ledger.ape} is
+     * NUMERIC(10,6) — four integer digits — while the raw ratio is unbounded below a tiny
+     * denominator: a 20 000-capacity event forecast at 10 000 whose recorded attendance is 1
+     * yields ~9999+, and PostgreSQL rejected the UPDATE with "numeric field overflow". Because
+     * {@code joinOutcome} is transactional and the job catches per row, that render kept
+     * {@code outcome_joined_at = null} forever, was retried every monthly pass, logged an ERROR
+     * every time, and never entered the evaluation set. A clamped ratio is still a truthful
+     * "off by at least 10 000x" for a metric whose only use is a segment mean.
+     */
     public static BigDecimal ape(PredictionResult r, EventOutcome o) {
         if (r == null || r.attendanceRange() == null) return null;
         Integer actual = o.getAttendance();
         if (actual == null || actual <= 0) return null;
         double mid = (r.attendanceRange().low() + r.attendanceRange().high()) / 2.0;
-        return BigDecimal.valueOf(Math.abs(mid - actual) / actual).setScale(6, RoundingMode.HALF_UP);
+        return clampRatio(BigDecimal.valueOf(Math.abs(mid - actual) / actual));
+    }
+
+    /**
+     * The ceiling of a NUMERIC(10,6) column: {@code prediction_ledger.ape} and
+     * {@code predictor_segment_status.mape} both carry it (V70:37, V72:30).
+     */
+    public static final BigDecimal MAX_RATIO = new BigDecimal("9999.999999");
+
+    /** Scale to the column and cap at its ceiling, so a write can never overflow. */
+    private static BigDecimal clampRatio(BigDecimal raw) {
+        return raw.setScale(6, RoundingMode.HALF_UP).min(MAX_RATIO);
     }
 
     private PredictionResult parse(PredictionLedger row) {
@@ -223,7 +245,10 @@ public class PredictionScoringJob {
         status.setScoredCount(Math.max(brierRows.size(), apeRows.size()));
         status.setBrier(meanBrier);
         status.setBaseRateBrier(baseRateBrier);
-        status.setMape(meanApe);
+        // Bounded by construction once every component is clamped (a mean of values <= MAX_RATIO
+        // cannot exceed it), but mape shares the NUMERIC(10,6) ceiling, so clamp on write too:
+        // one overflow here would stall the whole segment aggregation pass, not just one row.
+        status.setMape(meanApe == null ? null : clampRatio(meanApe));
         status.setUpdatedAt(now);
 
         boolean brierTrip = brierRows.size() >= TRIPWIRE_MIN_SCORED
