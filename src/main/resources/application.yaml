@@ -54,7 +54,6 @@ spring:
 replicate:
   # Retained only for the local-disk image-storage fallback (PosterImageStorage + WebConfig).
   # The Replicate image-prediction path was removed with the native Ideogram V3 migration.
-  api-token: ${REPLICATE_API_TOKEN:}
   image:
     storage-dir: ${REPLICATE_IMAGE_STORAGE_DIR:./generated-images}
 

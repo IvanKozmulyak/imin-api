@@ -12,7 +12,6 @@ import org.springframework.context.annotation.Import;
 import org.springframework.core.task.SimpleAsyncTaskExecutor;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.web.client.RestClient;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
@@ -24,9 +23,6 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 @SpringBootTest
 @Import(TestRateLimitConfig.class)
 class AsyncConfigTest {
-
-    @MockitoBean(name = "replicateRestClient")
-    RestClient replicateRestClient;
 
     @MockitoBean EventContentService eventContentService;
     @MockitoBean AuthService authService;

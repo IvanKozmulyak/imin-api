@@ -46,9 +46,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Import(TestRateLimitConfig.class)
 class GoogleWalletContextTest {
 
-    @MockitoBean(name = "replicateRestClient")
-    RestClient replicateRestClient;
-
     @MockitoBean EventContentService eventContentService;
     @MockitoBean AuthService authService;
 

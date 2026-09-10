@@ -7,14 +7,10 @@ import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.web.client.RestClient;
 
 @SpringBootTest
 @Import(TestRateLimitConfig.class)
 class IminApiApplicationTests {
-
-    @MockitoBean(name = "replicateRestClient")
-    RestClient replicateRestClient;
 
     @MockitoBean EventContentService eventContentService;
     @MockitoBean AuthService authService;

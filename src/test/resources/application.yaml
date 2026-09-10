@@ -42,7 +42,6 @@ openrouter:
   model: openai/gpt-4o
 
 replicate:
-  api-token: test-token
   model: ideogram-ai/ideogram-v3-turbo
   image:
     storage-dir: /tmp/imin-test-images
