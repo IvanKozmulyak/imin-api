@@ -27,22 +27,14 @@ class AsyncConfigTest {
     @MockitoBean EventContentService eventContentService;
     @MockitoBean AuthService authService;
 
-    @Autowired @Qualifier("campaignSendExecutor") Executor campaignSendExecutor;
     @Autowired @Qualifier("ticketEmailExecutor") Executor ticketEmailExecutor;
     @Autowired BeanFactory beanFactory;
-
-    @Test
-    void campaignSendExecutor_isSeparatePoolFromTicketExecutor() {
-        assertThat(campaignSendExecutor).isNotSameAs(ticketEmailExecutor);
-        ThreadPoolTaskExecutor pool = (ThreadPoolTaskExecutor) campaignSendExecutor;
-        assertThat(pool.getThreadNamePrefix()).isEqualTo("campaign-send-");
-    }
 
     /**
      * Eight {@code @Async} methods carry no qualifier (the audience projectors, the
      * predictor reforecast triggers and the reactivity listeners), and every one of
      * them is on an {@code AFTER_COMMIT} path — the audience one fires on every paid
-     * order. With four named {@code Executor} beans and no default, Spring's
+     * order. With three named {@code Executor} beans and no default, Spring's
      * {@code getDefaultExecutor} lookup fails twice over and
      * {@code AsyncExecutionInterceptor} falls back to a {@code SimpleAsyncTaskExecutor}:
      * a brand-new platform thread per task, no pool, no cap, each opening its own JDBC
