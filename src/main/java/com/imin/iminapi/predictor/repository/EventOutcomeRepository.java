@@ -80,12 +80,6 @@ public interface EventOutcomeRepository extends JpaRepository<EventOutcome, UUID
             """)
     List<EventOutcome> findDueForFinalize(@Param("cutoff") Instant cutoff, Pageable pageable);
 
-    /**
-     * Number of an org's events already snapshotted at publish. Used at freeze time to
-     * compute {@code prior_event_count} for the NEXT freeze (excludes the row being written).
-     */
-    long countByOrgId(UUID orgId);
-
     // ---------------------------------------------------------------------------
     // Comparable corpus segment queries — FINALIZED outcomes only (a comparable is
     // an event whose actual result is known). All params non-null (trap-free).
