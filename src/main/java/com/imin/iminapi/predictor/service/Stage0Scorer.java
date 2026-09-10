@@ -41,13 +41,35 @@ public class Stage0Scorer {
      * {@link RecCandidate} recommendations are RAW: the {@code RecommendationEngine} resolves
      * their tier reference to a real {@code tierId} and folds price/date into a structured
      * {@link PredictionResult.ActionTarget} before render.
+     *
+     * <p><b>Every number here is BOXED (predictor-edge-13).</b> These records are the
+     * deserialization target for raw model output, and Jackson binds an absent or explicitly
+     * null primitive component to 0 — so {@code "attendanceRange": {}} became a real record of
+     * zeros. The validator's presence rules only tested the whole object for null, and every
+     * bound below it passes at zero (0 ≤ 0 ≤ 0 ≤ 100; nothing exceeds capacity; no S-rule
+     * fires), so the output validated, was assembled with {@code benchmarkOnly=false} and served
+     * as {@code ready}: a 0–0% sell-out band and a 0–0 attendance range presented as a real
+     * forecast. Boxed components let {@link PredictionGuardrailValidator} tell a missing number
+     * from a stated zero and route the absence through the retry to benchmark-only, which is the
+     * honest "we have no number" surface. {@code PredictionScoringPipeline} converts these to
+     * the primitive {@link PredictionResult} carriers only AFTER validation passes, so the
+     * served wire shape is unchanged.
      */
     public record Stage0Output(
-            PredictionResult.Band selloutBand,
-            PredictionResult.Range attendanceRange,
-            PredictionResult.LongRange revenueRangeMinor,
+            RawBand selloutBand,
+            RawRange attendanceRange,
+            RawLongRange revenueRangeMinor,
             List<PredictionResult.Factor> factors,
             List<RecCandidate> recommendations) {}
+
+    /** Raw sell-out probability band in whole percent — boxed, see {@link Stage0Output}. */
+    public record RawBand(Integer lowPct, Integer highPct) {}
+
+    /** Raw integer range (attendance) — boxed, see {@link Stage0Output}. */
+    public record RawRange(Integer low, Integer high) {}
+
+    /** Raw long range (revenue in minor units) — boxed, see {@link Stage0Output}. */
+    public record RawLongRange(Long low, Long high) {}
 
     /**
      * A raw recommendation as the model emits it (task 86cav479w/86cav479z). {@code impact}:

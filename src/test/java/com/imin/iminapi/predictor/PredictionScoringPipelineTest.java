@@ -106,9 +106,9 @@ class PredictionScoringPipelineTest {
 
     private Stage0Output validOutput() {
         return new Stage0Output(
-                new PredictionResult.Band(35, 60),
-                new PredictionResult.Range(120, 210),
-                new PredictionResult.LongRange(120 * 1500L, 210 * 2400L),
+                new Stage0Scorer.RawBand(35, 60),
+                new Stage0Scorer.RawRange(120, 210),
+                new Stage0Scorer.RawLongRange(120 * 1500L, 210 * 2400L),
                 List.of(new PredictionResult.Factor("Saturday in summer", "supporting", "comparable Saturdays outperform"),
                         new PredictionResult.Factor("Prices inside band", "supporting", "tier prices within comparable range"),
                         new PredictionResult.Factor("Low own history", "opposing", "organizer has few completed events")),
@@ -117,8 +117,8 @@ class PredictionScoringPipelineTest {
 
     private Stage0Output invalidOutput() {
         // Over-capacity attendance — deterministic validator rejection.
-        return new Stage0Output(new PredictionResult.Band(35, 60),
-                new PredictionResult.Range(120, 9_999), null,
+        return new Stage0Output(new Stage0Scorer.RawBand(35, 60),
+                new Stage0Scorer.RawRange(120, 9_999), null,
                 validOutput().factors(), List.of());
     }
 
@@ -179,6 +179,27 @@ class PredictionScoringPipelineTest {
         assertThat(scored.result().factors()).isEmpty();
         verify(ledger, times(1)).record(any());                  // benchmark-only IS ledgered
         verify(scorer, times(2)).score(any(), any(), any());     // exactly one retry
+    }
+
+    /**
+     * predictor-edge-13 end to end: an output whose estimate objects are present but whose
+     * NUMBERS are missing must degrade to benchmark-only, not be served as a 0–0 forecast.
+     */
+    @Test
+    void outputWithEmptyEstimateObjectsDegradesToBenchmarkOnly() {
+        stubLedger();
+        Stage0Output empty = new Stage0Output(
+                new Stage0Scorer.RawBand(null, null), new Stage0Scorer.RawRange(null, null),
+                null, validOutput().factors(), List.of());
+        when(scorer.score(any(), any(), any())).thenReturn(empty);
+
+        PredictionScoringPipeline.Scored scored = sut.score(event(), snap(10, 1));
+
+        assertThat(scored.result().benchmarkOnly()).isTrue();
+        assertThat(scored.result().selloutBand()).isNull();     // never a served 0-0 band
+        assertThat(scored.result().attendanceRange()).isNull();
+        verify(scorer, times(2)).score(any(), any(), any());    // rejected, retried, then floored
+        verify(ledger, times(1)).record(any());
     }
 
     @Test

@@ -158,9 +158,9 @@ public class PredictionScoringPipeline {
                 PredictionSurface.PRE_PUBLISH.wire(),
                 0,
                 tier.wire(),
-                out.selloutBand(),
-                qualitativeOverride ? null : out.attendanceRange(),   // MAPE tripwire: numeric → qualitative
-                qualitativeOverride ? null : out.revenueRangeMinor(),
+                band(out.selloutBand()),
+                qualitativeOverride ? null : range(out.attendanceRange()),  // MAPE tripwire: numeric → qualitative
+                qualitativeOverride ? null : longRange(out.revenueRangeMinor()),
                 out.factors(),
                 // Normalize raw candidates → impact-ranked, tier-resolved, momentum-linked, ≤3.
                 recommendations.finalizeForRender(e.getId(), out.recommendations()),
@@ -169,6 +169,26 @@ public class PredictionScoringPipeline {
                 scorer.modelId(),
                 Stage0Scorer.PROMPT_VERSION,
                 clock.instant());
+    }
+
+    // ---- raw (boxed) → served (primitive) carriers -------------------------------
+    // Only reached once the validator has passed the output, which is where every component's
+    // presence is enforced (predictor-edge-13). The null checks below are structural, not a
+    // fallback: a missing number can never become a served 0.
+
+    private static PredictionResult.Band band(Stage0Scorer.RawBand b) {
+        if (b == null || b.lowPct() == null || b.highPct() == null) return null;
+        return new PredictionResult.Band(b.lowPct(), b.highPct());
+    }
+
+    private static PredictionResult.Range range(Stage0Scorer.RawRange r) {
+        if (r == null || r.low() == null || r.high() == null) return null;
+        return new PredictionResult.Range(r.low(), r.high());
+    }
+
+    private static PredictionResult.LongRange longRange(Stage0Scorer.RawLongRange r) {
+        if (r == null || r.low() == null || r.high() == null) return null;
+        return new PredictionResult.LongRange(r.low(), r.high());
     }
 
     /**

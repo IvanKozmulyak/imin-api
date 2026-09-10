@@ -141,9 +141,9 @@ class PredictionControllerTest {
 
     private static Stage0Scorer.Stage0Output validOutput() {
         return new Stage0Scorer.Stage0Output(
-                new PredictionResult.Band(35, 60),
-                new PredictionResult.Range(120, 210),
-                new PredictionResult.LongRange(120 * 1500L, 210 * 2400L),
+                new Stage0Scorer.RawBand(35, 60),
+                new Stage0Scorer.RawRange(120, 210),
+                new Stage0Scorer.RawLongRange(120 * 1500L, 210 * 2400L),
                 List.of(new PredictionResult.Factor("Saturday in summer", "supporting", "comparable Saturdays outperform"),
                         new PredictionResult.Factor("Prices inside band", "supporting", "tier prices within comparable range"),
                         new PredictionResult.Factor("Low own history", "opposing", "organizer has few completed events")),

@@ -139,22 +139,36 @@ public class PredictionGuardrailValidator {
             }
         }
 
-        // ---- P: the estimates must be PRESENT. Every coherence rule below is conditioned on
-        // presence, so an output that simply omits a requested field would sail through them and
-        // be served as `ready` — a status that claims an assessment the model never made. The
-        // rejection routes through the single retry and then benchmark-only, which is the honest
-        // "we have no number" surface. Never fill a missing field in.
-        PredictionResult.Range att = out.attendanceRange();
-        if (out.selloutBand() == null) {
+        // ---- P: the estimates must be PRESENT, COMPONENT BY COMPONENT. Every coherence rule
+        // below is conditioned on presence, so an output that omits a requested field would sail
+        // through them and be served as `ready` — a status that claims an assessment the model
+        // never made. And because the raw carriers are boxed (predictor-edge-13), a NUMBER that
+        // is missing inside a present object is caught here too: bound to 0 it satisfied every
+        // rule below and served a 0-0% band with a 0-0 attendance range as a real forecast.
+        // The rejection routes through the single retry and then benchmark-only, which is the
+        // honest "we have no number" surface. Never fill a missing field in.
+        Stage0Scorer.RawRange att = out.attendanceRange();
+        Stage0Scorer.RawBand band = out.selloutBand();
+        if (band == null) {
             errors.add("selloutBand is required - a scored result must carry a sell-out probability band");
+        } else {
+            if (band.lowPct() == null) errors.add("selloutBand.lowPct is required");
+            if (band.highPct() == null) errors.add("selloutBand.highPct is required");
         }
-        if (att == null && ctx.capacity() > 0) {
-            errors.add("attendanceRange is required when the draft has capacity (" + ctx.capacity()
-                    + ") - the sell-out band must be anchored to an attendance range");
+        if (att == null) {
+            if (ctx.capacity() > 0) {
+                errors.add("attendanceRange is required when the draft has capacity (" + ctx.capacity()
+                        + ") - the sell-out band must be anchored to an attendance range");
+            }
+        } else {
+            if (att.low() == null) errors.add("attendanceRange.low is required");
+            if (att.high() == null) errors.add("attendanceRange.high is required");
         }
+        boolean attComplete = att != null && att.low() != null && att.high() != null;
+        boolean bandComplete = band != null && band.lowPct() != null && band.highPct() != null;
 
         // ---- A: attendance range bounds
-        if (att != null) {
+        if (attComplete) {
             if (att.low() < 0) errors.add("attendanceRange.low must be >= 0, got " + att.low());
             if (att.high() < att.low()) errors.add("attendanceRange.high (" + att.high() + ") < low (" + att.low() + ")");
             if (att.high() > ctx.capacity()) {
@@ -163,13 +177,12 @@ public class PredictionGuardrailValidator {
         }
 
         // ---- B: sell-out band bounds + S1-S3 coherence with attendance-vs-capacity
-        PredictionResult.Band band = out.selloutBand();
-        if (band != null) {
+        if (bandComplete) {
             if (band.lowPct() < 0 || band.highPct() > 100 || band.lowPct() > band.highPct()) {
                 errors.add("selloutBand must satisfy 0 <= lowPct <= highPct <= 100, got "
                         + band.lowPct() + "-" + band.highPct());
             }
-            if (att != null && ctx.capacity() > 0) {
+            if (attComplete && ctx.capacity() > 0) {
                 if (att.high() < S1_ATT_FRACTION * ctx.capacity() && band.highPct() > S1_MAX_HIGH_PCT) {
                     errors.add("S1 incoherent: attendanceRange.high (" + att.high() + ") is under "
                             + (int) (S1_ATT_FRACTION * 100) + "% of capacity (" + ctx.capacity()
@@ -187,13 +200,19 @@ public class PredictionGuardrailValidator {
         }
 
         // ---- R: revenue coherence with attendance × tier price bounds (±10% tolerance)
-        PredictionResult.LongRange rev = out.revenueRangeMinor();
-        if (rev != null) {
+        // Revenue is optional as a WHOLE (benchmark-only / qualitative outputs carry none), but a
+        // present object must state both of its numbers — see the presence rules above.
+        Stage0Scorer.RawLongRange rev = out.revenueRangeMinor();
+        if (rev != null && (rev.low() == null || rev.high() == null)) {
+            errors.add("revenueRangeMinor is present but incomplete - low and high are both required "
+                    + "(omit the whole object to make no revenue claim)");
+        }
+        if (rev != null && rev.low() != null && rev.high() != null) {
             if (rev.low() < 0) errors.add("revenueRangeMinor.low must be >= 0, got " + rev.low());
             if (rev.high() < rev.low()) errors.add("revenueRangeMinor.high (" + rev.high() + ") < low (" + rev.low() + ")");
             if (ctx.minTierPriceMinor() == null || ctx.maxTierPriceMinor() == null) {
                 if (rev.high() > 0) errors.add("revenueRangeMinor present but the draft has no ticket tiers - drop it");
-            } else if (att != null) {
+            } else if (attComplete) {
                 long floor = (long) Math.floor(ctx.minTierPriceMinor() * (long) att.low() * (1.0 - REVENUE_TOLERANCE));
                 long ceil = (long) Math.ceil(ctx.maxTierPriceMinor() * (long) att.high() * (1.0 + REVENUE_TOLERANCE));
                 if (rev.low() < floor) {
