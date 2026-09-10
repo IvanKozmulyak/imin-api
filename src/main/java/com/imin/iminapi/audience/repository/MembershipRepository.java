@@ -268,16 +268,12 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
 
     // ---- DSAR erase ----
 
-    /** Count how many orgs reference this consumer — used to decide consumer row deletion */
-    @Query("select count(m) from Membership m where m.consumerId = :consumerId")
-    long countByConsumerId(@Param("consumerId") UUID consumerId);
-
     /**
      * Every membership for a consumer, ACROSS ORGS — the fan-out a buyer-initiated
      * Art.17 erasure needs (§7.2 step 2).
      *
-     * <p>Unscoped on purpose, and the third documented exception in this file
-     * after {@link #findAllByPhoneE164} and {@link #countByConsumerId}. The
+     * <p>Unscoped on purpose, and the second documented exception in this file
+     * after {@link #findAllByPhoneE164}. The
      * justification is the same shape: the subject here is the <i>person</i>, not
      * one org's list. A buyer deleting their imin account is exercising Art.17
      * against every controller at once, so "which orgs hold a copy of this human"
@@ -304,23 +300,6 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
      */
     @Query("select m from Membership m where m.phoneE164 = :phone")
     List<Membership> findAllByPhoneE164(@Param("phone") String phone);
-
-    // ---- send gate (FR-SND-1) ----
-
-    /**
-     * Candidates for the send gate: subscribed + has lawful basis + not suppressed.
-     * The gate service further filters against suppression_entries.
-     */
-    @Query("""
-            select m from Membership m
-             where m.orgId = :orgId
-               and m.status <> 'erase_pending'
-               and m.consentStatus = 'subscribed'
-               and m.consentBasis is not null
-               and m.membershipId in :membershipIds
-            """)
-    List<Membership> findSendCandidates(@Param("orgId") UUID orgId,
-                                         @Param("membershipIds") Collection<UUID> membershipIds);
 
     // ---- backfill ----
 

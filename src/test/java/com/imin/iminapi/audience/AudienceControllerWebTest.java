@@ -687,7 +687,7 @@ class AudienceControllerWebTest {
             }
 
             if (!hasOrgIdParam) {
-                // findSendCandidates and findCreatedSince and findByIdsAndOrgId take orgId
+                // findCreatedSince and findByIdsAndOrgId take orgId
                 // findByOrgIdAndConsumerId takes orgId
                 // If there's no orgId param, this is an unscoped method - FAIL
                 // But we need to allow "save" (already skipped) and Pageable variants
