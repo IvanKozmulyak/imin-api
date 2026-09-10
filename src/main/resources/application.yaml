@@ -287,7 +287,6 @@ imin:
     # HMAC secret for POST /api/v1/public/webhooks/sms (inbound STOP + delivery receipts).
     # Blank => every inbound webhook fails signature verification (fail closed).
     webhook-secret: ${IMIN_SMS_WEBHOOK_SECRET:}
-    webhook-tolerance-seconds: 300
   security:
     # Key for IpHasher's HMAC over the IP addresses stored beside rate-limit
     # counters. IpHasher's javadoc documents the knob as IMIN_IP_HASH_SECRET, but
