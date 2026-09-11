@@ -1,0 +1,19 @@
+PAYOUT PAUSED · ACTION NEEDED · imin
+
+Your payout for {{eventName}} is on hold.
+
+{{blockedReason}} The money is safe in your Stripe balance; it simply cannot leave it yet, and we have stopped trying on a schedule so this does not sit unnoticed in a log.
+
+PAYOUT ON HOLD
+{{amountFormatted}} — waiting to be sent for {{eventName}}
+
+WHAT TO DO
+- {{nextStep}}
+- Nothing is lost — the amount above stays in your Stripe balance until it can be paid out.
+- Ticket sales carry on — this affects the payout only, never your event or your buyers.
+
+Open your dashboard: {{dashboardUrl}}
+
+You're getting this because a payout for {{eventName}} could not be sent. We alert on a paused payout immediately: it is money you are owed, and only you can unblock it.
+
+imin.wtf · payout on hold for {{eventName}}

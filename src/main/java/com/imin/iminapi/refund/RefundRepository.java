@@ -115,4 +115,35 @@ public interface RefundRepository extends JpaRepository<Refund, UUID> {
                            com.imin.iminapi.refund.RefundStatus.SUCCEEDED)
     """)
     long sumActiveApplicationFeeRefundMinorByOrderId(java.util.UUID orderId);
+
+    /**
+     * The org's outstanding platform-funded refunds: SUCCEEDED refunds imin paid out of its own
+     * balance and has not yet pulled back off the connected account. Org-level, not event-level —
+     * the refund may belong to an event that has already paid out. Returned as rows, not a sum,
+     * because recovery reverses the destination transfer of each refund's own charge.
+     */
+    @Query("""
+        select r from Refund r
+        where r.platformFunded = true
+          and r.status = com.imin.iminapi.refund.RefundStatus.SUCCEEDED
+          and r.recoveredAt is null
+          and r.orderId in (select o.id from com.imin.iminapi.model.Order o where o.orgId = :orgId)
+        order by r.createdAt
+    """)
+    List<Refund> findUnrecoveredPlatformFundedByOrgId(@Param("orgId") UUID orgId);
+
+    /**
+     * Every org that still owes imin an unrecovered platform-funded refund. The payout sweep
+     * runs recovery for these BEFORE the candidate loop: an org whose events have all paid out
+     * has no payout candidate, so recovery driven from the per-event path alone would never
+     * reach it and the debt would sit forever.
+     */
+    @Query("""
+        select distinct o.orgId from Refund r
+          join com.imin.iminapi.model.Order o on o.id = r.orderId
+        where r.platformFunded = true
+          and r.status = com.imin.iminapi.refund.RefundStatus.SUCCEEDED
+          and r.recoveredAt is null
+    """)
+    List<UUID> findOrgIdsWithUnrecoveredPlatformFunded();
 }

@@ -34,7 +34,6 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
-import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -76,6 +75,7 @@ public class StripeCheckoutService {
     private final InventoryService inventoryService;
     private final FreeCheckoutService freeCheckoutService;
     private final StripeProperties props;
+    private final StripeProductService productService;
     private final Clock clock;
 
     public StripeCheckoutService(StripeClient stripeClient,
@@ -87,6 +87,7 @@ public class StripeCheckoutService {
                                   InventoryService inventoryService,
                                   FreeCheckoutService freeCheckoutService,
                                   StripeProperties props,
+                                  StripeProductService productService,
                                   Clock clock) {
         this.stripeClient = stripeClient;
         this.events = events;
@@ -97,6 +98,7 @@ public class StripeCheckoutService {
         this.inventoryService = inventoryService;
         this.freeCheckoutService = freeCheckoutService;
         this.props = props;
+        this.productService = productService;
         this.clock = clock;
     }
 
@@ -358,11 +360,33 @@ public class StripeCheckoutService {
         String currency = prelude.currency();
         Map<String, String> metadata = prelude.metadata();
 
-        // 6. Build the session.
+        // 6. Build the session. The ticket line is priced inline from tier.priceMinor rather
+        // than from the stored Stripe Price, which can be stale if a product re-sync missed;
+        // `product` keeps the promo coupon's applies_to.products scoping working.
+        SessionCreateParams.LineItem.PriceData.Builder ticketPrice =
+                SessionCreateParams.LineItem.PriceData.builder()
+                        .setCurrency(currency)
+                        .setUnitAmount((long) tier.getPriceMinor());
+        // A discount that rounds to nothing mints no coupon: Stripe rejects amount_off=0, and a
+        // promo that takes off zero needs neither a coupon nor a product to scope one to.
+        boolean couponNeeded = promo != null && priced.discountMinor() > 0L;
+        String ticketProductId =
+                resolveTicketProductId(tier, event, couponNeeded ? promo : null, reservationId);
+        if (ticketProductId != null) {
+            ticketPrice.setProduct(ticketProductId);
+        } else {
+            // No synced Product. Safe here only because there is no promo: a coupon has nothing
+            // to scope to and would discount the service-fee line as well (guarded above).
+            log.warn("Tier {} has no Stripe product id — pricing the line item with product_data",
+                    tier.getId());
+            ticketPrice.setProductData(SessionCreateParams.LineItem.PriceData.ProductData.builder()
+                    .setName(tier.getName())
+                    .build());
+        }
         SessionCreateParams.Builder builder = SessionCreateParams.builder()
                 .setMode(SessionCreateParams.Mode.PAYMENT)
                 .addLineItem(SessionCreateParams.LineItem.builder()
-                        .setPrice(tier.getStripePriceId())
+                        .setPriceData(ticketPrice.build())
                         .setQuantity((long) quantity)
                         .build());
 
@@ -383,7 +407,7 @@ public class StripeCheckoutService {
         }
 
         String couponId = null;
-        if (promo != null) {
+        if (couponNeeded) {
             // Create a one-shot Stripe Coupon on the platform account and attach it. The
             // coupon is scoped to the ticket Product (applies_to.products) so it never
             // discounts the service-fee line item — promos discount tickets only. This is
@@ -392,7 +416,8 @@ public class StripeCheckoutService {
             // PaymentIntent amount instead. `promo_id` metadata is stamped in the shared
             // prelude, so both flows carry it.
             try {
-                couponId = createOneShotCoupon(promo, eventId, tier.getStripeProductId());
+                couponId = createOneShotCoupon(promo, eventId, ticketProductId,
+                        priced.discountMinor(), currency);
             } catch (RuntimeException couponFailure) {
                 // createCheckout is deliberately NOT @Transactional, so nothing unwinds the
                 // inventory hold taken in the prelude above. A Stripe blip on the coupon call
@@ -693,6 +718,11 @@ public class StripeCheckoutService {
         if (promo != null) {
             metadata.put("promo_id", promo.getId().toString());
         }
+        // The total the buyer agreed to, frozen here: fulfilment compares the charge against
+        // this, never against a live price an organizer may edit while the session is open.
+        metadata.put(CheckoutAmountVerifier.EXPECTED_TOTAL_MINOR,
+                String.valueOf(priced.netTotalMinor() + applicationFee));
+        metadata.put(CheckoutAmountVerifier.EXPECTED_CURRENCY, currency);
 
         return new PaidPrelude(event, tier, org, promo, reservationId, expiresAt,
                 priced.subtotalMinor(), priced.discountMinor(), priced.netTotalMinor(),
@@ -751,7 +781,8 @@ public class StripeCheckoutService {
      * half-up to match Stripe Coupon behaviour, clamped at the subtotal so a
      * 100%+ discount stays at the subtotal rather than going negative.
      */
-    private static long computeDiscount(PromoCode promo, long subtotal) {
+    /** Package-visible so the one-shot coupon's amount_off is this exact figure, not a copy of it. */
+    static long computeDiscount(PromoCode promo, long subtotal) {
         if (promo == null) return 0L;
         long discount = Math.round(subtotal * (double) promo.getDiscountPct() / 100.0);
         return Math.min(discount, subtotal);
@@ -772,15 +803,41 @@ public class StripeCheckoutService {
     }
 
     /**
-     * Create a single-use Stripe Coupon that mirrors our promo. Duration=ONCE so the
-     * discount applies only to this checkout. When {@code ticketProductId} is set, the
-     * coupon is scoped via {@code applies_to.products} so it discounts the ticket only,
-     * never the buyer-visible service-fee line item. Metadata.promo_id lets the webhook
-     * tie a paid session back to our PromoCode row for usage tracking.
+     * The Stripe product the ticket line is priced against, syncing it once when a promo needs
+     * it. A coupon can only be confined to the ticket with {@code applies_to.products}; without
+     * a product it would also discount the service-fee line, so a promo checkout that still has
+     * no product id after the sync is refused rather than mis-charged.
      */
-    private String createOneShotCoupon(PromoCode promo, UUID eventId, String ticketProductId) {
+    private String resolveTicketProductId(TicketTier tier, Event event, PromoCode promo,
+                                          UUID reservationId) {
+        String productId = tier.getStripeProductId();
+        if (productId != null && !productId.isBlank()) return productId;
+        if (promo == null) return null;
+
+        productService.syncTier(tier, event);   // best-effort by contract; never throws
+        productId = tier.getStripeProductId();
+        if (productId != null && !productId.isBlank()) return productId;
+
+        releaseQuietly(reservationId, "TIER_PRODUCT_UNAVAILABLE");
+        log.error("Tier {} (event {}) has no Stripe product even after a sync — refusing the "
+                + "promo checkout rather than discounting the service fee too", tier.getId(), event.getId());
+        throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, ErrorCode.UPSTREAM_UNAVAILABLE,
+                "This promo code can't be applied right now — please try again");
+    }
+
+    /**
+     * Create a single-use Stripe Coupon that mirrors our promo. {@code amount_off} carries OUR
+     * computed discount to the cent — {@code percent_off} let Stripe round the ticket line on
+     * its own and disagree with the quote the buyer saw. Duration=ONCE, and scoped via
+     * {@code applies_to.products} so it discounts the ticket only, never the buyer-visible
+     * service-fee line item. Metadata.promo_id lets the webhook tie a paid session back to our
+     * PromoCode row for usage tracking.
+     */
+    private String createOneShotCoupon(PromoCode promo, UUID eventId, String ticketProductId,
+                                       long discountMinor, String currency) {
         CouponCreateParams.Builder params = CouponCreateParams.builder()
-                .setPercentOff(BigDecimal.valueOf(promo.getDiscountPct()))
+                .setAmountOff(discountMinor)
+                .setCurrency(currency)
                 .setDuration(CouponCreateParams.Duration.ONCE)
                 .setName(promo.getCode())
                 .putMetadata("promo_id", promo.getId().toString())

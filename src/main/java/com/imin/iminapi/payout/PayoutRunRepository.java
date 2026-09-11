@@ -94,4 +94,33 @@ public interface PayoutRunRepository extends JpaRepository<PayoutRun, UUID> {
             """)
     long sumAmountByEventAndStatusIn(@Param("eventId") UUID eventId,
                                      @Param("statuses") Collection<PayoutRunStatus> statuses);
+
+    /**
+     * The event's most recent run — the one the attempt cap parks {@code BLOCKED}, carrying
+     * the last failure reason. Highest {@code attempt} is the newest: attempts only ever
+     * increase, and a RETRYING run reuses its own.
+     */
+    Optional<PayoutRun> findFirstByEventIdOrderByAttemptDesc(UUID eventId);
+
+    /**
+     * Has this event already been parked for exactly this reason? Guards the nightly sweep
+     * against writing a second {@code BLOCKED} row — and sending a second email — for a block
+     * the organizer has not cleared yet.
+     */
+    boolean existsByEventIdAndStatusAndFailureReason(UUID eventId, PayoutRunStatus status, String failureReason);
+
+    /**
+     * True when the event carries a {@code BLOCKED} run that needs a HUMAN — i.e. any blocked
+     * run whose reason is not the self-healing {@code selfHealingReason}
+     * ({@link PayoutBlockReason#NO_BANK_ACCOUNT}). Such an event must never re-candidate: the
+     * attempt cap exists precisely so a doomed payout stops being retried nightly.
+     */
+    @Query("""
+            select count(r) > 0 from PayoutRun r
+             where r.eventId = :eventId
+               and r.status = com.imin.iminapi.payout.PayoutRunStatus.BLOCKED
+               and (r.failureReason is null or r.failureReason <> :selfHealingReason)
+            """)
+    boolean existsBlockedNeedingAHuman(@Param("eventId") UUID eventId,
+                                       @Param("selfHealingReason") String selfHealingReason);
 }

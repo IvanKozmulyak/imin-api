@@ -1,6 +1,9 @@
 package com.imin.iminapi.stripe;
 
 import com.imin.iminapi.config.TestRateLimitConfig;
+import com.imin.iminapi.dispute.DisputeRepository;
+import com.imin.iminapi.dispute.DisputeStatus;
+import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.payout.PayoutRun;
 import com.imin.iminapi.payout.PayoutRunRepository;
@@ -59,6 +62,7 @@ class SettlementIngestWebhookTest {
     @Autowired StripeWebhookService webhook;
     @Autowired StripeProperties props;
     @Autowired SettlementRepository settlements;
+    @Autowired DisputeRepository disputes;
     @Autowired OrganizationRepository orgs;
     @Autowired PayoutRunRepository payoutRuns;
     @Autowired JdbcTemplate jdbc;
@@ -67,6 +71,8 @@ class SettlementIngestWebhookTest {
     @MockitoBean StripeClient stripeClient;
     @MockitoBean PaidCheckoutService paidCheckoutService;
     @MockitoBean InventoryService inventoryService;
+    /** The dispute alert fires AFTER_COMMIT; mocked so no test ever reaches Resend. */
+    @MockitoBean EmailService email;
 
     private Organization org;
     private String acctId;
@@ -92,6 +98,8 @@ class SettlementIngestWebhookTest {
     }
 
     private void wipe() {
+        // disputes first: the rows FK to organizations.
+        disputes.deleteAll();
         payoutRuns.deleteAll();
         settlements.deleteAll();
         jdbc.update("DELETE FROM processed_webhook_events");
@@ -213,11 +221,17 @@ class SettlementIngestWebhookTest {
      * The ingest has to retrieve the charge by id, which {@link #stubChargeRetrieve} answers.
      */
     private String disputeEvent(String eventId, String disputeId, String chargeId, long amount) {
+        return disputeEvent(eventId, disputeId, chargeId, amount,
+                "charge.dispute.created", "needs_response");
+    }
+
+    private String disputeEvent(String eventId, String disputeId, String chargeId, long amount,
+                                String type, String status) {
         return """
             {
               "id": "%s",
               "object": "event",
-              "type": "charge.dispute.created",
+              "type": "%s",
               "api_version": "2026-04-22.dahlia",
               "created": %d,
               "account": "%s",
@@ -228,13 +242,13 @@ class SettlementIngestWebhookTest {
                   "amount": %d,
                   "currency": "eur",
                   "reason": "fraudulent",
-                  "status": "needs_response",
+                  "status": "%s",
                   "charge": "%s"
                 }
               }
             }
-            """.formatted(eventId, Instant.now().getEpochSecond(), acctId,
-                disputeId, amount, chargeId);
+            """.formatted(eventId, type, Instant.now().getEpochSecond(), acctId,
+                disputeId, amount, status, chargeId);
     }
 
     /**
@@ -658,5 +672,35 @@ class SettlementIngestWebhookTest {
         assertThat(s.getAmountMinor()).isEqualTo(4200L);                // amount untouched
         assertThat(settlements.findByStripeObjectId(disputeId)).isEmpty();   // no phantom row
         assertThat(settlements.findByOrgIdOrderByCreatedAtDesc(org.getId())).hasSize(1);
+    }
+
+    @Test
+    void disputeCreatedThenClosedUnblocksPayouts() throws Exception {
+        String transferId = "tr_" + UUID.randomUUID().toString().substring(0, 12);
+        String created = transferCreatedEvent("evt_unblock_seed", transferId, acctId, 4200, "eur");
+        webhook.handleV1Endpoint(created, sign(created));
+
+        String disputeId = "du_" + UUID.randomUUID().toString().substring(0, 12);
+        String chargeId = "ch_" + UUID.randomUUID().toString().substring(0, 12);
+        stubChargeRetrieve(chargeId, transferId);
+
+        String opened = disputeEvent("evt_unblock_open", disputeId, chargeId, 4200);
+        webhook.handleV1Endpoint(opened, sign(opened));
+        assertThat(disputes.countOpenByOrgId(org.getId()))
+                .as("while the dispute is open the org's payouts are frozen")
+                .isEqualTo(1L);
+
+        String lost = disputeEvent("evt_unblock_lost", disputeId, chargeId, 4200,
+                "charge.dispute.closed", "lost");
+        webhook.handleV1Endpoint(lost, sign(lost));
+
+        assertThat(disputes.countOpenByOrgId(org.getId()))
+                .as("a LOST dispute closes: it stops blocking, and is recovered from the event net")
+                .isZero();
+        assertThat(disputes.findByStripeDisputeId(disputeId).orElseThrow().getStatus())
+                .isEqualTo(DisputeStatus.LOST);
+        assertThat(settlements.findByStripeObjectId(transferId).orElseThrow().getStatus())
+                .as("the read-model keeps its annotation — it is no longer a gate")
+                .isEqualTo(SettlementStatus.FAILED);
     }
 }

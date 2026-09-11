@@ -68,6 +68,17 @@ public class StripeConnectStatusMirror {
             return; // leave existing columns; the next webhook will retry
         }
 
+        // A response without the recipient configuration carries no capability at all, so
+        // applyTo would project payoutsEnabled=false and brick checkout for a live org.
+        // An absent capability UNDER a present recipient is a real "not requested yet" state
+        // and still projects normally.
+        if (readTransferStatus(account) == null
+                && (account.getConfiguration() == null || account.getConfiguration().getRecipient() == null)) {
+            log.warn("[stripe-mirror] account {} came back without configuration.recipient — leaving the mirror untouched",
+                    stripeAccountId);
+            return;
+        }
+
         applyTo(org, account);
         orgs.save(org);
         // Track B Phase 1: the moment payouts go active, flip the account to a manual

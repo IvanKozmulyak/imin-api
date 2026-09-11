@@ -11,7 +11,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentMatchers;
 
+import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
@@ -36,6 +39,7 @@ import static org.mockito.Mockito.when;
 class StripeWebhookServiceTest {
 
     private static final String SECRET = "whsec_test_secret";
+    private static final Instant NOW = Instant.parse("2026-09-10T12:00:00Z");
 
     private StripeClient stripeClient;
     private StripeProperties props;
@@ -45,6 +49,8 @@ class StripeWebhookServiceTest {
     private PaidCheckoutService paidCheckoutService;
     private com.imin.iminapi.refund.RefundService refundService;
     private SettlementIngestService settlementIngest;
+    private com.imin.iminapi.dispute.DisputeIngestService disputeIngest;
+    private CheckoutAmountVerifier amountVerifier;
     private StripeWebhookService svc;
 
     /**
@@ -64,6 +70,13 @@ class StripeWebhookServiceTest {
         paidCheckoutService = mock(PaidCheckoutService.class);
         refundService = mock(com.imin.iminapi.refund.RefundService.class);
         settlementIngest = mock(SettlementIngestService.class);
+        disputeIngest = mock(com.imin.iminapi.dispute.DisputeIngestService.class);
+        amountVerifier = mock(CheckoutAmountVerifier.class);
+
+        // Default: nothing to recompute, so the amount gate stands aside. The two mismatch
+        // tests below stub a real verdict.
+        when(amountVerifier.verify(ArgumentMatchers.any(), ArgumentMatchers.any(), ArgumentMatchers.any()))
+                .thenReturn(new CheckoutAmountVerifier.Result(false, true, null, null, "test default"));
 
         // Default: issuance succeeds (first-time). Promo increment is now gated on this returning
         // true (so a duplicate delivery can't double-count); the "never increments" cases below
@@ -79,7 +92,8 @@ class StripeWebhookServiceTest {
         props = new StripeProperties();
         props.setWebhookSecretV1(SECRET);
         svc = new StripeWebhookService(stripeClient, props, promos, inventoryService, dedup,
-                paidCheckoutService, refundService, settlementIngest);
+                paidCheckoutService, refundService, settlementIngest, disputeIngest, amountVerifier,
+                Clock.fixed(NOW, ZoneOffset.UTC));
     }
 
     // ── helpers ────────────────────────────────────────────────────────────────
@@ -127,6 +141,11 @@ class StripeWebhookServiceTest {
      * a {@code PaymentIntent} object with the given metadata.
      */
     private String paymentIntentEvent(String eventId, String type, String metadataJson) {
+        return paymentIntentEvent(eventId, type, metadataJson, null);
+    }
+
+    /** As above, with an optional top-level {@code account} — i.e. a Connect-scoped delivery. */
+    private String paymentIntentEvent(String eventId, String type, String metadataJson, String account) {
         return """
             {
               "id": "%s",
@@ -134,6 +153,7 @@ class StripeWebhookServiceTest {
               "type": "%s",
               "api_version": "2026-04-22.dahlia",
               "created": %d,
+              %s
               "data": {
                 "object": {
                   "id": "pi_test_%s",
@@ -149,8 +169,31 @@ class StripeWebhookServiceTest {
                 eventId,
                 type,
                 Instant.now().getEpochSecond(),
+                account == null ? "" : "\"account\": \"" + account + "\",",
                 UUID.randomUUID().toString().substring(0, 8),
                 metadataJson);
+    }
+
+    /** A {@code payout.*} envelope with NO connected account — the wrong scope for payouts. */
+    private String platformScopedPayoutEvent(String eventId) {
+        return """
+            {
+              "id": "%s",
+              "object": "event",
+              "type": "payout.paid",
+              "api_version": "2026-04-22.dahlia",
+              "created": %d,
+              "data": {
+                "object": {
+                  "id": "po_test_1",
+                  "object": "payout",
+                  "amount": 4200,
+                  "currency": "eur",
+                  "status": "paid"
+                }
+              }
+            }
+            """.formatted(eventId, Instant.now().getEpochSecond());
     }
 
     private static String metaJson(UUID reservationId, UUID tierId, int qty) {
@@ -210,7 +253,10 @@ class StripeWebhookServiceTest {
             eq("re_test_1"),
             eq(com.imin.iminapi.refund.RefundStatus.SUCCEEDED),
             org.mockito.ArgumentMatchers.isNull(),
-            org.mockito.ArgumentMatchers.isNull());
+            org.mockito.ArgumentMatchers.isNull(),
+            eq("pi_test_xyz"),
+            eq("ch_test_xyz"),
+            eq(5000L));
     }
 
     @org.junit.jupiter.api.Test
@@ -223,7 +269,10 @@ class StripeWebhookServiceTest {
             eq("re_test_2"),
             eq(com.imin.iminapi.refund.RefundStatus.FAILED),
             eq("expired_or_canceled_card"),
-            eq("expired_or_canceled_card"));
+            eq("expired_or_canceled_card"),
+            eq("pi_test_xyz"),
+            eq("ch_test_xyz"),
+            eq(5000L));
     }
 
     @org.junit.jupiter.api.Test
@@ -235,7 +284,7 @@ class StripeWebhookServiceTest {
 
         // refundService called exactly once despite two webhook deliveries
         org.mockito.Mockito.verify(refundService, org.mockito.Mockito.times(1))
-            .handleWebhookStatusChange(eq("re_test_3"), any(), any(), any());
+            .handleWebhookStatusChange(eq("re_test_3"), any(), any(), any(), any(), any(), any());
     }
 
     @org.junit.jupiter.api.Test
@@ -250,7 +299,10 @@ class StripeWebhookServiceTest {
             eq("re_test_u1"),
             eq(com.imin.iminapi.refund.RefundStatus.SUCCEEDED),
             org.mockito.ArgumentMatchers.isNull(),
-            org.mockito.ArgumentMatchers.isNull());
+            org.mockito.ArgumentMatchers.isNull(),
+            eq("pi_test_xyz"),
+            eq("ch_test_xyz"),
+            eq(5000L));
     }
 
     @org.junit.jupiter.api.Test
@@ -263,7 +315,10 @@ class StripeWebhookServiceTest {
             eq("re_test_f1"),
             eq(com.imin.iminapi.refund.RefundStatus.FAILED),
             eq("lost_or_stolen_card"),
-            eq("lost_or_stolen_card"));
+            eq("lost_or_stolen_card"),
+            eq("pi_test_xyz"),
+            eq("ch_test_xyz"),
+            eq(5000L));
     }
 
     // ── endpoint must REJECT (non-2xx) so Stripe retries, never silently 200 ──────
@@ -410,13 +465,31 @@ class StripeWebhookServiceTest {
         verify(paidCheckoutService, never()).issuePaidOrder(any(PaymentIntent.class), any());
     }
 
-    // ── payment_intent.payment_failed → releaseReservation ─────────────────────
+    // ── payment_intent.payment_failed → release ONLY the async-terminal case ──────
 
     @Test
-    void paymentIntentFailed_callsReleaseReservation() throws Exception {
+    void paymentFailedDoesNotReleaseWhileRetryable() throws Exception {
+        // A declined card leaves the PaymentIntent payable inside its Checkout Session, so the
+        // seat must stay held; releasing it here is what produced [OVERSOLD] on the retry.
         UUID reservationId = UUID.randomUUID();
         UUID tierId = UUID.randomUUID();
-        String body = paymentIntentEvent("evt_pi_fail_1", "payment_intent.payment_failed",
+        when(inventoryService.isAsyncProcessing(reservationId)).thenReturn(false);
+        String body = paymentIntentEvent("evt_pi_fail_retryable", "payment_intent.payment_failed",
+                metaJson(reservationId, tierId, 3));
+
+        svc.handleV1Endpoint(body, sign(body));
+
+        verify(inventoryService, never()).releaseReservation(eq(reservationId), anyString());
+    }
+
+    @Test
+    void paymentFailedReleasesWhenAsyncProcessing() throws Exception {
+        // SEPA/iDEAL/Klarna: the intent reported `processing` days ago and has now definitively
+        // failed. Nothing can retry it, so the hold is terminal.
+        UUID reservationId = UUID.randomUUID();
+        UUID tierId = UUID.randomUUID();
+        when(inventoryService.isAsyncProcessing(reservationId)).thenReturn(true);
+        String body = paymentIntentEvent("evt_pi_fail_async", "payment_intent.payment_failed",
                 metaJson(reservationId, tierId, 3));
 
         svc.handleV1Endpoint(body, sign(body));
@@ -425,16 +498,157 @@ class StripeWebhookServiceTest {
     }
 
     @Test
-    void paymentIntentFailed_replayedTwice_releasesOnce() throws Exception {
+    void paymentIntentProcessingExtendsTheHoldInsteadOfReleasing() throws Exception {
         UUID reservationId = UUID.randomUUID();
         UUID tierId = UUID.randomUUID();
-        String body = paymentIntentEvent("evt_pi_fail_dedupe", "payment_intent.payment_failed",
+        props.setAsyncPaymentHoldDays(7);
+        String body = paymentIntentEvent("evt_pi_processing_1", "payment_intent.processing",
+                metaJson(reservationId, tierId, 2));
+
+        svc.handleV1Endpoint(body, sign(body));
+
+        verify(inventoryService).markAsyncProcessing(eq(reservationId),
+                eq(NOW.plus(Duration.ofDays(7))));
+        verify(inventoryService, never()).releaseReservation(any(UUID.class), anyString());
+        verify(paidCheckoutService, never()).issuePaidOrder(any(PaymentIntent.class), any());
+    }
+
+    // ── payment_intent.canceled → the deterministic terminal release ───────────
+
+    @Test
+    void paymentIntentCanceledReleasesTheHold() throws Exception {
+        UUID reservationId = UUID.randomUUID();
+        UUID tierId = UUID.randomUUID();
+        String body = paymentIntentEvent("evt_pi_canceled_1", "payment_intent.canceled",
+                metaJson(reservationId, tierId, 3));
+
+        svc.handleV1Endpoint(body, sign(body));
+
+        verify(inventoryService).releaseReservation(eq(reservationId), eq("WEBHOOK_CANCELED"));
+    }
+
+    @Test
+    void paymentIntentCanceled_replayedTwice_releasesOnce() throws Exception {
+        UUID reservationId = UUID.randomUUID();
+        UUID tierId = UUID.randomUUID();
+        String body = paymentIntentEvent("evt_pi_cancel_dedupe", "payment_intent.canceled",
                 metaJson(reservationId, tierId, 3));
 
         svc.handleV1Endpoint(body, sign(body));
         svc.handleV1Endpoint(body, sign(body));
 
-        verify(inventoryService, times(1)).releaseReservation(eq(reservationId), eq("WEBHOOK_FAILED"));
+        verify(inventoryService, times(1)).releaseReservation(eq(reservationId), eq("WEBHOOK_CANCELED"));
+    }
+
+    // ── checkout.session.async_payment_* ──────────────────────────────────────
+
+    @Test
+    void asyncPaymentFailedReleasesTheHold() throws Exception {
+        UUID reservationId = UUID.randomUUID();
+        UUID tierId = UUID.randomUUID();
+        String body = sessionEvent("evt_async_failed_1", "checkout.session.async_payment_failed",
+                "unpaid", metaJson(reservationId, tierId, 2));
+
+        svc.handleV1Endpoint(body, sign(body));
+
+        verify(inventoryService).releaseReservation(eq(reservationId), eq("WEBHOOK_ASYNC_FAILED"));
+    }
+
+    @Test
+    void asyncPaymentSucceededIsANoOp() throws Exception {
+        // Fulfilment stays on payment_intent.succeeded, exactly as for checkout.session.completed.
+        UUID reservationId = UUID.randomUUID();
+        UUID tierId = UUID.randomUUID();
+        String body = sessionEvent("evt_async_ok_1", "checkout.session.async_payment_succeeded",
+                "paid", metaJson(reservationId, tierId, 2));
+
+        svc.handleV1Endpoint(body, sign(body));
+
+        verify(inventoryService, never()).confirmSold(any(UUID.class));
+        verify(inventoryService, never()).releaseReservation(any(UUID.class), anyString());
+        verify(paidCheckoutService, never()).issuePaidOrder(any(PaymentIntent.class), any());
+    }
+
+    // ── amount / currency verification before fulfilment ──────────────────────
+
+    @Test
+    void amountMismatchIssuesNothingAndKeepsTheReservation() throws Exception {
+        UUID reservationId = UUID.randomUUID();
+        UUID tierId = UUID.randomUUID();
+        UUID promoId = UUID.randomUUID();
+        String metaJson = "{\"reservation_id\":\"" + reservationId
+                + "\",\"tier_id\":\"" + tierId
+                + "\",\"qty\":\"2\",\"promo_id\":\"" + promoId + "\"}";
+        // Priced at 2099; Stripe charged the payload's 1000.
+        when(amountVerifier.verify(ArgumentMatchers.any(), ArgumentMatchers.any(), ArgumentMatchers.any()))
+                .thenReturn(new CheckoutAmountVerifier.Result(true, false, 2099L, "eur", null));
+        String body = paymentIntentEvent("evt_pi_amount_mismatch", "payment_intent.succeeded", metaJson);
+
+        svc.handleV1Endpoint(body, sign(body));
+
+        verify(inventoryService, never()).confirmSold(any(UUID.class));
+        verify(inventoryService, never()).releaseReservation(any(UUID.class), anyString());
+        verify(paidCheckoutService, never()).issuePaidOrder(any(PaymentIntent.class), any());
+        verify(promos, never()).incrementUsedCount(any());
+    }
+
+    @Test
+    void currencyMismatchIssuesNothing() throws Exception {
+        UUID reservationId = UUID.randomUUID();
+        UUID tierId = UUID.randomUUID();
+        // Same total, wrong currency — the verifier reports it as the same mismatch verdict.
+        when(amountVerifier.verify(ArgumentMatchers.any(), ArgumentMatchers.any(), ArgumentMatchers.any()))
+                .thenReturn(new CheckoutAmountVerifier.Result(true, false, 1000L, "gbp", null));
+        String body = paymentIntentEvent("evt_pi_currency_mismatch", "payment_intent.succeeded",
+                metaJson(reservationId, tierId, 1));
+
+        svc.handleV1Endpoint(body, sign(body));
+
+        verify(inventoryService, never()).confirmSold(any(UUID.class));
+        verify(paidCheckoutService, never()).issuePaidOrder(any(PaymentIntent.class), any());
+    }
+
+    @Test
+    void matchingAmountStillFulfils() throws Exception {
+        UUID reservationId = UUID.randomUUID();
+        UUID tierId = UUID.randomUUID();
+        when(amountVerifier.verify(ArgumentMatchers.any(), ArgumentMatchers.any(), ArgumentMatchers.any()))
+                .thenReturn(new CheckoutAmountVerifier.Result(true, true, 1000L, "eur", null));
+        String body = paymentIntentEvent("evt_pi_amount_match", "payment_intent.succeeded",
+                metaJson(reservationId, tierId, 1));
+
+        svc.handleV1Endpoint(body, sign(body));
+
+        verify(inventoryService).confirmSold(eq(reservationId));
+        verify(paidCheckoutService).issuePaidOrder(any(PaymentIntent.class), any());
+    }
+
+    // ── scope gate: both Dashboard endpoints post to this same URL ─────────────
+
+    @Test
+    void connectScopedPaymentIntentSucceededIsIgnored() throws Exception {
+        // A connected-account copy of a fulfilment event is a duplicate of the platform one,
+        // with its own event id — the dedup table cannot catch it.
+        UUID reservationId = UUID.randomUUID();
+        UUID tierId = UUID.randomUUID();
+        String body = paymentIntentEvent("evt_pi_connect_scope", "payment_intent.succeeded",
+                metaJson(reservationId, tierId, 1), "acct_x");
+
+        svc.handleV1Endpoint(body, sign(body));
+
+        verify(inventoryService, never()).confirmSold(any(UUID.class));
+        verify(paidCheckoutService, never()).issuePaidOrder(any(PaymentIntent.class), any());
+        verify(paidCheckoutService, never()).prepareIssuance(any(PaymentIntent.class));
+    }
+
+    @Test
+    void platformScopedPayoutIsIgnored() throws Exception {
+        // Payouts settle ON the connected account; without one there is no org to resolve.
+        String body = platformScopedPayoutEvent("evt_payout_wrong_scope");
+
+        svc.handleV1Endpoint(body, sign(body));
+
+        verify(settlementIngest, never()).ingestPayout(any(), any(), any());
     }
 
     // ── checkout.session.expired → releaseReservation ─────────────────────────

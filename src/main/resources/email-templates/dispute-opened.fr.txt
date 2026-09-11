@@ -1,0 +1,19 @@
+CONTESTATION · ACTION REQUISE · imin
+
+Une contestation a été ouverte sur {{eventName}}.
+
+Un titulaire de carte a contesté son paiement auprès de sa banque. Nous avons révoqué les billets de cette commande afin qu'ils ne passent pas à l'entrée, et les virements vers votre organisation sont suspendus jusqu'à la clôture du litige.
+
+MONTANT CONTESTÉ
+{{amountFormatted}} — retenu sur le solde payable de cet événement
+
+LA SUITE
+- Envoyez vos preuves dans Stripe — c'est la banque qui tranche, et elle fixe le délai.
+- Les virements restent suspendus — ils reprennent automatiquement dès la clôture du litige, quelle qu'en soit l'issue.
+- Si le litige est perdu — le montant contesté reste déduit du solde payable de cet événement. S'il est gagné, il revient.
+
+Ouvrir votre tableau de bord: {{dashboardUrl}}
+
+Vous recevez ce message car un paiement pour {{eventName}} a été contesté. Nous envoyons ces alertes immédiatement car le délai de réponse est fixé par la banque du titulaire, pas par nous.
+
+imin.wtf · contestation sur {{eventName}}

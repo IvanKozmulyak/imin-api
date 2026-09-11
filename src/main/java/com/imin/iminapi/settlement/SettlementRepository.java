@@ -93,26 +93,4 @@ public interface SettlementRepository extends JpaRepository<Settlement, UUID> {
                                                         @Param("status") SettlementStatus status,
                                                         @Param("since") Instant since,
                                                         @Param("until") Instant until);
-
-    /**
-     * Track B Phase 2 dispute/hold guard (plan §4.2.3.1): does the org have any
-     * open dispute on a backing destination-charge TRANSFER row? Dispute
-     * annotations from {@code ingestDispute} land on the {@code transfer} row
-     * (flipped to {@code failed} while funds are at risk), so a non-zero count of
-     * {@code object_type='transfer' AND status='failed'} for the org means a payout
-     * must be skipped this tick.
-     *
-     * <p>Deliberately scoped to {@code TRANSFER}: a {@code FAILED} <i>payout</i> row
-     * is a bank-routing failure (closed external account), NOT a dispute, and must
-     * NOT block future payouts. Bind {@code FAILED} as a parameter so the converter
-     * maps it to the lowercase column value.
-     */
-    @Query("""
-            select count(s) from Settlement s
-             where s.orgId = :orgId
-               and s.objectType = com.imin.iminapi.settlement.SettlementObjectType.TRANSFER
-               and s.status = :failed
-            """)
-    long countOpenTransferDisputes(@Param("orgId") UUID orgId,
-                                   @Param("failed") SettlementStatus failed);
 }

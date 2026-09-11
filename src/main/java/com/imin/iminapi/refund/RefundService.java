@@ -12,6 +12,8 @@ import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.stripe.StripeRefundService;
+import com.stripe.exception.ApiConnectionException;
+import com.stripe.exception.RateLimitException;
 import com.stripe.exception.StripeException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -173,12 +175,12 @@ public class RefundService {
                 "One or more selected tickets were just refunded by another request");
         }
 
+        String stripeKey = stripeIdempotencyKey(orderId, idempotencyKey, ticketIds, refundAmountMinor, "");
         com.stripe.model.Refund stripeRefund;
         try {
             stripeRefund = stripeRefundService.create(
                 order.getStripePaymentIntentId(), refundAmountMinor, order.getCurrency(),
-                r.getReason(), appFeeRefundMinor,
-                stripeIdempotencyKey(orderId, idempotencyKey, ticketIds, refundAmountMinor));
+                r.getReason(), appFeeRefundMinor, true, stripeKey);
         } catch (StripeException e) {
             log.warn("[refund] Stripe refund failed orderId={} refundId={} status={} code={} — {}",
                 orderId, r.getId(), e.getStatusCode(), e.getCode(), e.getMessage());
@@ -188,25 +190,12 @@ public class RefundService {
             // derived from durable inputs rather than from the discarded row id — the retry
             // replays the identical Stripe request and Stripe returns the original Refund.
             if ("balance_insufficient".equals(e.getCode())) {
-                // reverse_transfer=true can't pull funds back when the connected account's
-                // balance is too low (e.g. already paid out). Surface a distinct, actionable
-                // error rather than a generic Stripe failure — and deliberately do NOT silently
-                // absorb the refund onto the platform balance; whether to do so is an operator
-                // money-policy decision, not a default to bake in here.
-                throw new ApiException(HttpStatus.CONFLICT, ErrorCode.ORDER_NOT_REFUNDABLE,
-                    "The connected account's balance is too low to fund this refund — funds may have "
-                    + "already been paid out. Top up the Stripe balance or contact support.",
-                    Map.of("stripeCode", "balance_insufficient"));
+                stripeRefund = fundFromPlatformBalance(order, r, refundAmountMinor, appFeeRefundMinor,
+                    orderId, idempotencyKey, ticketIds, e);
+                r.setPlatformFunded(true);
+            } else {
+                throw mapStripeFailure(e);
             }
-            HttpStatus status = e.getStatusCode() >= 500
-                ? HttpStatus.BAD_GATEWAY
-                : HttpStatus.UNPROCESSABLE_ENTITY;
-            ErrorCode code = e.getStatusCode() >= 500
-                ? ErrorCode.UPSTREAM_UNAVAILABLE
-                : ErrorCode.STRIPE_REFUND_FAILED;
-            Map<String, String> fields = e.getCode() == null ? null : Map.of("stripeCode", e.getCode());
-            throw new ApiException(status, code,
-                e.getMessage() == null ? "Stripe refund failed" : e.getMessage(), fields);
         }
 
         r.setStripeRefundId(stripeRefund.getId());
@@ -229,6 +218,59 @@ public class RefundService {
             r.getId(), orderId, refundAmountMinor, order.getCurrency(),
             appFeeRefundMinor, r.getStatus());
         return r;
+    }
+
+    /**
+     * Second and last attempt after {@code balance_insufficient}: the same refund with
+     * {@code reverse_transfer=false}, so the money leaves the PLATFORM balance instead of the
+     * connected account's. {@code platformFunded} marks it for recovery: the next payout tick
+     * reverses the destination transfer of this charge, which is what moves the money back.
+     *
+     * <p>A distinct idempotency key is mandatory — Stripe rejects a replayed key whose
+     * parameters differ, and {@code reverse_transfer} differs.
+     */
+    private com.stripe.model.Refund fundFromPlatformBalance(
+            Order order, Refund r, long refundAmountMinor, long appFeeRefundMinor,
+            UUID orderId, String idempotencyKey, List<UUID> ticketIds, StripeException original) {
+        try {
+            com.stripe.model.Refund funded = stripeRefundService.create(
+                order.getStripePaymentIntentId(), refundAmountMinor, order.getCurrency(),
+                r.getReason(), appFeeRefundMinor, false,
+                stripeIdempotencyKey(orderId, idempotencyKey, ticketIds, refundAmountMinor, ":platform"));
+            log.warn("[refund] connected balance short for orderId={} — refunded {} {} from the PLATFORM "
+                    + "balance; recovered from the org's next payout",
+                orderId, refundAmountMinor, order.getCurrency());
+            return funded;
+        } catch (StripeException | RuntimeException second) {
+            // The recovery attempt's own failure must never replace the balance_insufficient
+            // signal the operator has to act on, so it is logged and the original is thrown.
+            log.error("[refund] platform-funded retry ALSO failed orderId={} — {}", orderId,
+                second.getMessage(), second);
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.ORDER_NOT_REFUNDABLE,
+                "The connected account's balance is too low to fund this refund and the platform-funded "
+                + "retry failed too. Top up the Stripe balance or contact support.",
+                Map.of("stripeCode", original.getCode() == null ? "balance_insufficient" : original.getCode()));
+        }
+    }
+
+    /**
+     * A Stripe failure that never reached Stripe (connection error, status 0) or that Stripe
+     * asked us to slow down on (429) is RETRYABLE, not a 422 the client must give up on: the
+     * key from {@link #stripeIdempotencyKey} is derived from durable inputs, so a client retry
+     * replays the identical request and Stripe returns the original Refund rather than a second one.
+     */
+    private ApiException mapStripeFailure(StripeException e) {
+        Map<String, String> fields = e.getCode() == null ? null : Map.of("stripeCode", e.getCode());
+        String message = e.getMessage() == null ? "Stripe refund failed" : e.getMessage();
+        if (e instanceof ApiConnectionException || e.getStatusCode() == 0) {
+            return new ApiException(HttpStatus.BAD_GATEWAY, ErrorCode.UPSTREAM_UNAVAILABLE, message, fields);
+        }
+        if (e instanceof RateLimitException || e.getStatusCode() == 429) {
+            return new ApiException(HttpStatus.SERVICE_UNAVAILABLE, ErrorCode.UPSTREAM_UNAVAILABLE, message, fields);
+        }
+        HttpStatus status = e.getStatusCode() >= 500 ? HttpStatus.BAD_GATEWAY : HttpStatus.UNPROCESSABLE_ENTITY;
+        ErrorCode code = e.getStatusCode() >= 500 ? ErrorCode.UPSTREAM_UNAVAILABLE : ErrorCode.STRIPE_REFUND_FAILED;
+        return new ApiException(status, code, message, fields);
     }
 
     /**
@@ -257,12 +299,14 @@ public class RefundService {
      */
     @Transactional
     public void handleWebhookStatusChange(String stripeRefundId, RefundStatus newStatus,
-                                          String failureCode, String failureMessage) {
+                                          String failureCode, String failureMessage,
+                                          String stripePaymentIntentId, String stripeChargeId,
+                                          Long stripeAmountMinor) {
         Refund refund = refunds.findByStripeRefundId(stripeRefundId).orElse(null);
         if (refund == null) {
-            log.warn("[refund-webhook] no DB row for stripe refund {} — skipping (likely dashboard-initiated)",
-                stripeRefundId);
-            return;
+            refund = materializeUnknownRefund(stripeRefundId, stripePaymentIntentId,
+                stripeChargeId, stripeAmountMinor);
+            if (refund == null) return;
         }
         if (refund.getStatus() == newStatus) return;
         if (refund.getStatus().isTerminal()) {
@@ -302,6 +346,79 @@ public class RefundService {
                     refund.getId(), released);
             }
         }
+    }
+
+    /**
+     * A refund Stripe reports that we never created — the organizer refunded from the Stripe
+     * Dashboard. Back-resolve the Order from the payment intent and materialize the row so the
+     * money is not invisible to us; the caller then runs the normal status transition on it.
+     *
+     * <p>A refund of exactly the order's remaining total claims every still-refundable ticket,
+     * so the succeeded transition revokes them and decrements {@code sold}. A partial amount
+     * has no ticket mapping we can infer — the row is written with none and logged as
+     * {@code [UNMAPPED_PARTIAL_REFUND]} for an operator to reconcile.
+     *
+     * @return the materialized refund, or null when nothing could be resolved.
+     */
+    private Refund materializeUnknownRefund(String stripeRefundId, String stripePaymentIntentId,
+                                            String stripeChargeId, Long stripeAmountMinor) {
+        if (stripePaymentIntentId == null || stripePaymentIntentId.isBlank() || stripeAmountMinor == null) {
+            log.warn("[refund-webhook] no DB row for stripe refund {} and no payment intent/amount to "
+                + "back-resolve it — skipping", stripeRefundId);
+            return null;
+        }
+        Order order = orders.findByStripePaymentIntentId(stripePaymentIntentId).orElse(null);
+        if (order == null) {
+            log.warn("[refund-webhook] no DB row for stripe refund {} and no order for payment intent {} "
+                + "— skipping (likely another platform's refund)", stripeRefundId, stripePaymentIntentId);
+            return null;
+        }
+
+        long remaining = order.getTotalMinor() - refunds.sumActiveAmountByOrderId(order.getId());
+        boolean full = stripeAmountMinor == remaining;
+
+        Refund r = new Refund();
+        r.setOrderId(order.getId());
+        r.setStripeRefundId(stripeRefundId);
+        r.setStripeChargeId(stripeChargeId);
+        r.setStripePaymentIntentId(stripePaymentIntentId);
+        r.setAmountMinor(stripeAmountMinor);
+        r.setCurrency(order.getCurrency());
+        r.setApplicationFeeRefundMinor(computeAppFeeRefundMinor(order, stripeAmountMinor));
+        r.setReason(RefundReason.OTHER);
+        r.setStatus(RefundStatus.REQUESTED);
+        // No initiating user: the actor is in the Stripe Dashboard, not in imin.
+        r.setInitiatedByUserId(null);
+        r.setIdempotencyKey("stripe-webhook:" + stripeRefundId);
+        r = refunds.save(r);
+
+        if (!full) {
+            log.error("[UNMAPPED_PARTIAL_REFUND] orderId={} stripeRefundId={} amount={} — money moved, "
+                + "no ticket mapping; ops must reconcile", order.getId(), stripeRefundId, stripeAmountMinor);
+            return r;
+        }
+
+        List<UUID> candidates = tickets.findByOrderId(order.getId()).stream()
+            .filter(t -> !Ticket.STATE_REFUNDED.equals(t.getState()))
+            .map(Ticket::getId)
+            .toList();
+        Set<UUID> alreadyClaimed = candidates.isEmpty()
+            ? Set.of() : refundTickets.findRefundedTicketIds(candidates);
+        List<UUID> claimable = candidates.stream().filter(id -> !alreadyClaimed.contains(id)).toList();
+        try {
+            List<RefundTicket> rows = new ArrayList<>(claimable.size());
+            for (UUID ticketId : claimable) rows.add(new RefundTicket(r.getId(), ticketId));
+            // saveAllAndFlush, same as the create path: UNIQUE(refund_tickets.ticket_id) is the
+            // decision, and it is only consulted at flush time.
+            refundTickets.saveAllAndFlush(rows);
+        } catch (DataIntegrityViolationException race) {
+            log.error("[refund-webhook] stripe refund {} on order {} raced a ticket claim — row kept, "
+                + "tickets NOT mapped; ops must reconcile", stripeRefundId, order.getId());
+            return r;
+        }
+        log.warn("[refund-webhook] materialized dashboard-initiated refund {} on order {} amount={} — "
+            + "claimed {} ticket(s)", stripeRefundId, order.getId(), stripeAmountMinor, claimable.size());
+        return r;
     }
 
     private void releaseInventoryAndMarkTickets(Refund refund) {
@@ -372,16 +489,19 @@ public class RefundService {
      * inputs (a different ticket set, or a different amount because another refund landed
      * meanwhile) ⇒ different key, which is correct: that is genuinely a different refund,
      * and it also keeps Stripe from rejecting a reused key carrying changed parameters.
+     *
+     * <p>{@code suffix} separates the platform-funded second attempt from the first: same
+     * refund, different {@code reverse_transfer}, so it must not replay the first key.
      */
     static String stripeIdempotencyKey(UUID orderId, String clientKey,
-                                       List<UUID> ticketIds, long amountMinor) {
+                                       List<UUID> ticketIds, long amountMinor, String suffix) {
         String material = orderId + ":" + clientKey + ":"
             + ticketIds.stream().map(UUID::toString).sorted().collect(Collectors.joining(","))
-            + ":" + amountMinor;
+            + ":" + amountMinor + suffix;
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256")
                 .digest(material.getBytes(StandardCharsets.UTF_8));
-            // 7 + 64 chars, and StripeRefundService appends "_fee" — well inside Stripe's 255.
+            // 7 + 64 chars — well inside Stripe's 255.
             return "refund_" + HexFormat.of().formatHex(digest);
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 unavailable", e);

@@ -3,35 +3,32 @@ package com.imin.iminapi.stripe;
 import com.imin.iminapi.refund.RefundReason;
 import com.stripe.StripeClient;
 import com.stripe.exception.StripeException;
-import com.stripe.model.Charge;
 import com.stripe.model.Refund;
 import com.stripe.net.RequestOptions;
-import com.stripe.param.ApplicationFeeRefundCreateParams;
 import com.stripe.param.RefundCreateParams;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 /**
- * Wrapper around the Stripe SDK refund + application-fee-refund APIs.
+ * Wrapper around the Stripe SDK refund API. ONE Stripe call per logical refund.
  *
- * <p>Issues TWO Stripe API calls per logical refund:
- * <ol>
- *   <li>{@code refunds.create} with {@code reverse_transfer=true} so funds come
- *       back from the connected account, and {@code refund_application_fee=false}
- *       because we manage the fee refund explicitly in step 2.</li>
- *   <li>(when {@code appFeeRefundMinor > 0}) {@code applicationFees.refunds.create}
- *       with our computed proportional amount.</li>
- * </ol>
+ * <p>On a destination charge of {@code G} with {@code application_fee_amount = F} the
+ * platform holds {@code F} and the connected account holds {@code G − F}. A refund of
+ * {@code A} with {@code reverse_transfer=true} debits {@code A} from the platform and
+ * reverses {@code A·(G−F)/G} back to it, leaving the platform fee at {@code F·(1 − A/G)}
+ * and the organizer bearing its own proportional share. Buyer, platform and organizer are
+ * all made whole by that single call — an additional {@code ApplicationFee.Refund} would
+ * move a further {@code F·A/G} from the platform to the connected account, i.e. credit the
+ * organizer the platform fee twice.
  *
- * <p>Two-call design over Stripe's all-or-nothing {@code refund_application_fee}
- * flag because we issue proportional fee refunds on every refund — even one-shot
- * "full" refunds — so a second partial refund later doesn't get the fee returned
- * twice.
+ * <p>{@code refund_application_fee=false} stays: the proportional reversal above is the
+ * whole mechanism, and Stripe's all-or-nothing flag would refund the entire fee on a
+ * partial refund.
  *
- * <p>Idempotency keys are deterministic: the caller passes {@code idempotencyKey}
- * (derived from our refund row id) and we use {@code idempotencyKey + "_fee"}
- * for the application-fee refund. Replays return the same Stripe objects.
+ * <p>{@code reverseTransfer=false} is the platform-funded escape hatch: when the connected
+ * account's balance cannot cover the reversal, the refund is paid from the platform balance
+ * and recovered from the org's next payout (see {@code RefundService}).
  */
 @Service
 public class StripeRefundService {
@@ -45,17 +42,21 @@ public class StripeRefundService {
     }
 
     /**
+     * @param appFeeRefundMinor the platform-fee share attributable to this refund. Not sent
+     *                          to Stripe — the proportional transfer reversal already applies
+     *                          it — but logged and persisted for the payout net.
+     * @param reverseTransfer   {@code false} funds the refund from the PLATFORM balance.
      * @return the Stripe Refund object (with {@code id}, {@code charge}, {@code status} populated).
      * @throws StripeException unwrapped — caller maps to ApiException.
      */
     public Refund create(String paymentIntentId, long amountMinor, String currency,
                          RefundReason reason, long appFeeRefundMinor,
-                         String idempotencyKey) throws StripeException {
+                         boolean reverseTransfer, String idempotencyKey) throws StripeException {
 
         RefundCreateParams.Builder pb = RefundCreateParams.builder()
             .setPaymentIntent(paymentIntentId)
             .setAmount(amountMinor)
-            .setReverseTransfer(true)
+            .setReverseTransfer(reverseTransfer)
             .setRefundApplicationFee(false);
         String stripeReason = reason.toStripe();
         if (stripeReason != null) {
@@ -68,27 +69,9 @@ public class StripeRefundService {
 
         RequestOptions opts = RequestOptions.builder().setIdempotencyKey(idempotencyKey).build();
         Refund refund = stripeClient.refunds().create(params, opts);
-        log.info("[stripe-refund] created id={} status={} amount={} {} idemp={}",
-                refund.getId(), refund.getStatus(), amountMinor, currency, idempotencyKey);
-
-        if (appFeeRefundMinor > 0) {
-            String chargeId = refund.getCharge();
-            Charge charge = stripeClient.charges().retrieve(chargeId);
-            String appFeeId = charge.getApplicationFee();
-            if (appFeeId == null) {
-                // Direct charge or test mode without a fee — skip silently.
-                log.warn("[stripe-refund] charge {} has no application_fee — skipping fee refund (amount={})",
-                        chargeId, appFeeRefundMinor);
-            } else {
-                ApplicationFeeRefundCreateParams feeParams =
-                    ApplicationFeeRefundCreateParams.builder().setAmount(appFeeRefundMinor).build();
-                RequestOptions feeOpts = RequestOptions.builder()
-                    .setIdempotencyKey(idempotencyKey + "_fee").build();
-                stripeClient.applicationFees().refunds().create(appFeeId, feeParams, feeOpts);
-                log.info("[stripe-refund] created app-fee refund on fee={} amount={}",
-                        appFeeId, appFeeRefundMinor);
-            }
-        }
+        log.info("[stripe-refund] created id={} status={} amount={} {} feeShare={} reverseTransfer={} idemp={}",
+                refund.getId(), refund.getStatus(), amountMinor, currency, appFeeRefundMinor,
+                reverseTransfer, idempotencyKey);
         return refund;
     }
 }

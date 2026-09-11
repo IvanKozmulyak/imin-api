@@ -119,7 +119,7 @@ Required env vars:
 - `STRIPE_WEBHOOK_SECRET_V1` — whsec_... for the V1 payments webhook endpoint (`/api/v1/stripe/webhook/v1`, "Your account" scope).
 - `STRIPE_WEBHOOK_SECRET_CONNECT` — whsec_... for a second, "Connected accounts"-scoped endpoint on the SAME `/api/v1/stripe/webhook/v1` URL (delivers `payout.*`). Optional; the V1 handler tries it as a fallback secret. Blank ⇒ `payout.*` reconciliation is dark.
 - `STRIPE_WEBHOOK_SECRET_V2` — whsec_... for the V2 thin-events webhook endpoint (`/api/v1/stripe/webhook/v2`).
-- Optional: `STRIPE_APPLICATION_FEE_BPS` (default 500 = 5%), `STRIPE_PUBLIC_RETURN_URL_BASE` (default `http://localhost:3000`), `STRIPE_RETURN_URL_BASE` (default `http://localhost:5173`), `STRIPE_CHECKOUT_SESSION_TTL_MINUTES` (default 30, Stripe's documented minimum).
+- Optional: `STRIPE_APPLICATION_FEE_BPS` (default 500 = 5%), `STRIPE_PUBLIC_RETURN_URL_BASE` (default `https://app.imin.wtf`), `STRIPE_RETURN_URL_BASE` (default `https://dashboard.imin.wtf`; `application-dev.yaml` overrides both to localhost), `STRIPE_CHECKOUT_SESSION_TTL_MINUTES` (default 30, Stripe's documented minimum).
 
 Endpoints:
 - `POST /api/v1/orgs/{orgId}/stripe/connect` — idempotent create. Empty body.
@@ -141,9 +141,13 @@ Webhook setup (two endpoints, two signing secrets):
 V1 and V2 events ship in structurally different JSON payloads (Stripe's dashboard flags mixed endpoints with "you've selected events with two different payload styles"). We split them: each format gets its own URL and its own signing secret. Configure two endpoints in the Stripe Dashboard → Developers → Webhooks:
 
 1. **`POST /api/v1/stripe/webhook/v1`** — secret env `STRIPE_WEBHOOK_SECRET_V1`. Subscribe to:
-   - `payment_intent.succeeded` — fulfilment (confirm sold, issue Order + Tickets, increment promo usage)
-   - `payment_intent.payment_failed` — release the inventory hold for declines / 3DS failure
+   - `payment_intent.succeeded` — fulfilment (confirm sold, issue Order + Tickets, increment promo usage). The paid amount + currency are recomputed from the checkout metadata first; a mismatch logs `[AMOUNT_MISMATCH]`, issues nothing and leaves the reservation HELD.
+   - `payment_intent.processing` — an async method (SEPA/iDEAL/Klarna) was accepted; extends the hold to `STRIPE_ASYNC_PAYMENT_HOLD_DAYS` (default 7) instead of letting the 30-minute sweeper take the seat.
+   - `payment_intent.payment_failed` — **no longer releases a card hold.** A declined/3DS-failed intent is still payable inside its session, so the seat stays HELD and drains via `checkout.session.expired` or the `ReservationSweeper`; only a hold already marked async-processing is released here.
+   - `payment_intent.canceled` — the deterministic terminal signal: releases the hold (`WEBHOOK_CANCELED`). Also closes the loop on the sweeper's native-intent cancel.
    - `checkout.session.expired` — release the inventory hold when the buyer abandons the 30-minute session
+   - `checkout.session.async_payment_failed` — the async payment behind the session definitively failed; releases the hold (`WEBHOOK_ASYNC_FAILED`).
+   - `checkout.session.async_payment_succeeded` — deliberate no-op, like `checkout.session.completed`: fulfilment stays on `payment_intent.succeeded`.
    - `refund.updated` **and** `refund.failed` — refund status transitions (pending → succeeded/failed) for **all** refund types. These are the unified events (Acacia 2024-10-28); subscribe to both.
    - `charge.refund.updated` — legacy alias kept for "selected payment methods"; handled too (deduped). Subscribe alongside the `refund.*` events, do not rely on it alone.
    - **Track A settlements read-model ingestion** (these mirror Stripe payout/transfer state into the `settlements` table — they move NO money; fulfilment + refund money flow stays on the events above). These are **platform-account** events — subscribe them on THIS "Your account" endpoint:

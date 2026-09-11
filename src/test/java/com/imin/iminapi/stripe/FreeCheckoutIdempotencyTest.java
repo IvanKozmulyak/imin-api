@@ -117,7 +117,8 @@ class FreeCheckoutIdempotencyTest {
         freeCheckout = mock(FreeCheckoutService.class);
 
         svc = new StripeCheckoutService(stripeClient, events, tiers, orgs, promos, connect,
-                inventory, freeCheckout, new StripeProperties(), Clock.fixed(NOW, ZoneOffset.UTC));
+                inventory, freeCheckout, new StripeProperties(),
+                mock(StripeProductService.class), Clock.fixed(NOW, ZoneOffset.UTC));
 
         when(events.findPublic(eventId)).thenReturn(Optional.of(event()));
         when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(freeTier()));

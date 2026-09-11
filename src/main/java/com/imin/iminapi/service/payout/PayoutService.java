@@ -6,8 +6,10 @@ import com.imin.iminapi.controller.payout.dto.PayoutsStatusResponse;
 import com.imin.iminapi.controller.payout.dto.PayoutsSummaryResponse;
 import com.imin.iminapi.dto.PageResponse;
 import com.imin.iminapi.model.Event;
+import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.security.RoleGuard;
 import com.imin.iminapi.settlement.Settlement;
 import com.imin.iminapi.settlement.SettlementObjectType;
 import com.imin.iminapi.settlement.SettlementRepository;
@@ -173,6 +175,10 @@ public class PayoutService {
      * Connect status for the Payouts tab header. {@code stripeConnected} is the
      * mirror's readiness gate; {@code accountLast4} / {@code dashboardUrl} are
      * best-effort live Stripe reads that degrade to {@code null}.
+     *
+     * <p>{@code dashboardUrl} is an Express login link — a bearer credential to the
+     * org's Stripe dashboard — so it is minted for ADMIN+ only; the rest of the
+     * response stays MEMBER-readable.
      */
     @Transactional(readOnly = true)
     public PayoutsStatusResponse status(AuthPrincipal principal, UUID orgId) {
@@ -186,7 +192,8 @@ public class PayoutService {
         // Live reads only make sense once an account exists. last4 may still be
         // null (no external account attached yet); dashboardUrl only when ready.
         String last4 = (acctId == null) ? null : fetchAccountLast4(acctId);
-        String dashboardUrl = (acctId != null && mirror.readyToReceivePayments())
+        boolean mayOpenDashboard = RoleGuard.isAtLeast(principal, UserRole.ADMIN);
+        String dashboardUrl = (acctId != null && mirror.readyToReceivePayments() && mayOpenDashboard)
                 ? fetchDashboardUrl(acctId)
                 : null;
 

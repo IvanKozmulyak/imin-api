@@ -156,7 +156,7 @@ imin:
     # Printed by `stripe listen` for the V1 endpoint.
     webhook-secret-v1: ${STRIPE_WEBHOOK_SECRET_V1:}
     # Signing secret for /api/v1/stripe/webhook/v2 (V2 thin events:
-    # v2.core.account.requirements.updated, v2.core.account.recipient.capability_status_updated).
+    # v2.core.account[requirements].updated, v2.core.account[configuration.recipient].capability_status_updated).
     # Printed by `stripe listen` for the V2 endpoint.
     webhook-secret-v2: ${STRIPE_WEBHOOK_SECRET_V2:}
     # Signing secret for the SECOND endpoint on the same /webhook/v1 URL, scoped to
@@ -171,11 +171,14 @@ imin:
     # Base URL for the buyer's success/cancel pages (imin-public).
     public-return-url-base: ${STRIPE_PUBLIC_RETURN_URL_BASE:https://app.imin.wtf}
     # Fallback base URL for the organizer's Connect onboarding return/refresh (imin-webapp).
-    return-url-base: ${STRIPE_RETURN_URL_BASE:http://localhost:5173}
+    return-url-base: ${STRIPE_RETURN_URL_BASE:https://dashboard.imin.wtf}
     # Stripe Checkout session TTL in minutes. Stripe's documented minimum is 30
     # (anything shorter is rejected). Mirrored into TicketReservation.expires_at
     # so the ReservationSweeper releases stale holds even when webhooks miss.
     checkout-session-ttl-minutes: ${STRIPE_CHECKOUT_SESSION_TTL_MINUTES:30}
+    # How long a seat hold survives after payment_intent.processing: async methods
+    # (SEPA/iDEAL/Klarna) settle in days, not inside the 30-minute session window.
+    async-payment-hold-days: ${STRIPE_ASYNC_PAYMENT_HOLD_DAYS:7}
     # Master kill-switch for Track-B manual payouts (Phase 1/2). DEFAULT FALSE:
     # when false NOTHING flips an account schedule and no payout is ever created
     # (code inert on deploy). Only enable in prod AFTER the test-mode spike passes.
@@ -192,6 +195,9 @@ imin:
     # Timezone for resolving the payout buffer deadline (the business deadline,
     # not the event's local zone). Default Europe/Amsterdam.
     payout-zone: ${STRIPE_PAYOUT_ZONE:Europe/Amsterdam}
+    # Payout attempts per event before the run parks BLOCKED and a human has to act.
+    # A capped run is NEVER retried automatically; the organizer is emailed instead.
+    payout-max-attempts: ${STRIPE_PAYOUT_MAX_ATTEMPTS:3}
   email:
     api-key: ${RESEND_API_KEY:}
     from-address: ${IMIN_EMAIL_FROM_ADDRESS:noreply@imin.local}

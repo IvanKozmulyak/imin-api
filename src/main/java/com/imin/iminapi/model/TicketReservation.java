@@ -72,6 +72,15 @@ public class TicketReservation {
     private String releaseReason;
 
     /**
+     * When Stripe reported {@code payment_intent.processing} for an async payment method
+     * (SEPA/iDEAL/Klarna). Non-null AND {@code status = HELD} is the processing state:
+     * {@link #expiresAt} has been pushed out to the async hold window, and a
+     * {@code payment_intent.payment_failed} on this row is terminal, not retryable.
+     */
+    @Column(name = "async_processing_at")
+    private Instant asyncProcessingAt;
+
+    /**
      * The caller-supplied {@code Idempotency-Key} for the native PaymentIntent
      * flow, or null for every other path (the whole web flow, and native calls
      * that sent no key). Unique-indexed for the not-null subset, exactly like

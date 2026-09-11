@@ -32,6 +32,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
@@ -46,6 +47,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -86,6 +88,7 @@ class PaidFulfilmentReconcilerTest {
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
     @Autowired UserRepository users;
+    @Autowired JdbcTemplate jdbc;
 
     @MockitoBean StripeClient stripeClient;
 
@@ -106,6 +109,12 @@ class PaidFulfilmentReconcilerTest {
         when(stripeClient.checkout()).thenReturn(checkoutService);
         when(checkoutService.sessions()).thenReturn(sessionService);
         when(stripeClient.charges()).thenReturn(chargeService);
+
+        // lockAtLeastFor=PT1M would make every test after the first skip its tick. Expired,
+        // not deleted: ShedLock remembers the row exists and only ever UPDATEs it.
+        jdbc.update("UPDATE shedlock SET lock_until = ?, locked_at = ?",
+                java.sql.Timestamp.from(Instant.now().minusSeconds(600)),
+                java.sql.Timestamp.from(Instant.now().minusSeconds(900)));
 
         recorder.afterCommit.clear();
         tickets.deleteAll();
@@ -177,7 +186,48 @@ class PaidFulfilmentReconcilerTest {
                 .containsExactly(order.getId());
     }
 
+    /**
+     * The reconciler issues tickets, so it carries the same amount gate the webhook does —
+     * otherwise one permanently-lost webhook is all it takes to fulfil a PI charging an
+     * amount imin never priced.
+     */
+    @Test
+    void amount_mismatch_is_refused_instead_of_back_filled() throws Exception {
+        PaymentIntent pi = succeededTicketPi("pi_reconcile_mismatch", 999, 2);
+        stampExpectedTotal(pi, 3348, "eur");   // priced 33.48, charged 9.99
+        wireList(pi);
+
+        reconciler.reconcile();
+
+        verify(paymentIntentService).list(any(com.stripe.param.PaymentIntentListParams.class));
+        assertThat(orders.findByStripePaymentIntentId("pi_reconcile_mismatch"))
+                .as("a PI charging an amount we never priced must issue nothing")
+                .isEmpty();
+        assertThat(recorder.afterCommit).isEmpty();
+    }
+
+    @Test
+    void matching_stamped_amount_is_back_filled_as_before() throws Exception {
+        PaymentIntent pi = succeededTicketPi("pi_reconcile_match", 3348, 2);
+        stampExpectedTotal(pi, 3348, "eur");
+        wireList(pi);
+
+        reconciler.reconcile();
+
+        Order order = orders.findByStripePaymentIntentId("pi_reconcile_match").orElseThrow();
+        assertThat(tickets.findByOrderIdOrderByCreatedAtAsc(order.getId())).hasSize(2);
+        assertThat(recorder.afterCommit).containsExactly(order.getId());
+    }
+
     // ─── Stripe fixture helpers ──────────────────────────────────────────────
+
+    /** Adds the checkout-time price stamp the verifier compares the charge against. */
+    private void stampExpectedTotal(PaymentIntent pi, long expectedMinor, String currency) {
+        Map<String, String> meta = new java.util.HashMap<>(pi.getMetadata());
+        meta.put("expected_total_minor", String.valueOf(expectedMinor));
+        meta.put("expected_currency", currency);
+        pi.setMetadata(meta);
+    }
 
     private PaymentIntent succeededTicketPi(String id, long amount, int qty) throws Exception {
         PaymentIntent p = new PaymentIntent();

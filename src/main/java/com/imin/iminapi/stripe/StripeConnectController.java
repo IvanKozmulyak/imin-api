@@ -1,14 +1,19 @@
 package com.imin.iminapi.stripe;
 
+import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.CurrentUser;
+import com.imin.iminapi.security.RoleGuard;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.UUID;
 
 /**
- * Organizer-side Stripe Connect endpoints. All three require a Bearer token and that
+ * Organizer-side Stripe Connect endpoints. All four require a Bearer token and that
  * the authenticated user belongs to {@code orgId}.
+ *
+ * <p>The three POSTs are ADMIN+ — they mint onboarding surfaces that bind the org's
+ * legal entity and bank details to Stripe. {@code GET /status} stays MEMBER-readable.
  */
 @RestController
 @RequestMapping("/api/v1/orgs/{orgId}/stripe")
@@ -26,6 +31,7 @@ public class StripeConnectController {
      */
     @PostMapping("/connect")
     public ConnectResponse connect(@CurrentUser AuthPrincipal p, @PathVariable UUID orgId) {
+        RoleGuard.requireAtLeast(p, UserRole.ADMIN, "connect a Stripe account");
         var r = connect.getOrCreateAccount(p, orgId);
         return new ConnectResponse(r.accountId(), r.created());
     }
@@ -37,6 +43,7 @@ public class StripeConnectController {
      */
     @PostMapping("/account-session")
     public AccountSessionResponse accountSession(@CurrentUser AuthPrincipal p, @PathVariable UUID orgId) {
+        RoleGuard.requireAtLeast(p, UserRole.ADMIN, "start Stripe onboarding");
         return new AccountSessionResponse(connect.createAccountSession(p, orgId));
     }
 
@@ -44,6 +51,7 @@ public class StripeConnectController {
     public OnboardingLinkResponse onboardingLink(@CurrentUser AuthPrincipal p,
                                                   @PathVariable UUID orgId,
                                                   @RequestBody(required = false) OnboardingLinkRequest body) {
+        RoleGuard.requireAtLeast(p, UserRole.ADMIN, "start Stripe onboarding");
         String returnUrl = body == null ? null : body.returnUrl();
         String refreshUrl = body == null ? null : body.refreshUrl();
         return new OnboardingLinkResponse(connect.createOnboardingLink(p, orgId, returnUrl, refreshUrl));

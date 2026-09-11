@@ -1,0 +1,22 @@
+-- V125__reservation_async_processing.sql
+-- Keep a seat held while an async payment method settles.
+--
+-- WHY THIS EXISTS. Every hold expires with the Stripe Checkout Session, 30 minutes
+-- (V27). That is the right window for a card, and the wrong one for SEPA Direct Debit,
+-- iDEAL or Klarna, which report payment_intent.processing immediately and only settle
+-- days later. The ReservationSweeper released the seat long before the money arrived,
+-- so the late payment_intent.succeeded landed on a RELEASED row and InventoryService
+-- logged [OVERSOLD] — a real seat sold twice.
+--
+-- WHAT A NON-NULL VALUE MEANS. "Stripe told us this PaymentIntent is processing an
+-- async method." Together with status = 'HELD' it IS the processing state: the row is
+-- still a hold, its expires_at has been pushed out to STRIPE_ASYNC_PAYMENT_HOLD_DAYS,
+-- and a payment_intent.payment_failed on it is terminal rather than retryable.
+--
+-- No new ReservationStatus value: V27:29 pins status with an UNNAMED inline
+-- CHECK (status IN ('HELD','CONFIRMED','RELEASED')), and an unnamed check gets
+-- different auto-generated names in PostgreSQL and H2, so there is no portable
+-- ALTER TABLE ... DROP CONSTRAINT for it. The column carries the state instead.
+--
+-- Nullable, no backfill: every existing hold is a synchronous one, and NULL is that state.
+ALTER TABLE ticket_reservations ADD COLUMN async_processing_at TIMESTAMP WITH TIME ZONE NULL;

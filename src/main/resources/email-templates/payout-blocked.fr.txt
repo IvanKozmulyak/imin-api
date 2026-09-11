@@ -1,0 +1,19 @@
+VERSEMENT EN PAUSE · ACTION REQUISE · imin
+
+Votre versement pour {{eventName}} est en attente.
+
+{{blockedReason}} L'argent reste en sécurité sur votre solde Stripe ; il ne peut simplement pas encore en sortir, et nous avons arrêté les tentatives automatiques pour que cela ne finisse pas oublié dans un journal.
+
+VERSEMENT EN ATTENTE
+{{amountFormatted}} — à envoyer pour {{eventName}}
+
+QUE FAIRE
+- {{nextStep}}
+- Rien n'est perdu — le montant ci-dessus reste sur votre solde Stripe jusqu'au versement.
+- La billetterie continue — seul le versement est concerné, jamais votre événement ni votre public.
+
+Ouvrir votre tableau de bord: {{dashboardUrl}}
+
+Vous recevez cet e-mail car un versement pour {{eventName}} n'a pas pu être envoyé. Nous alertons immédiatement : c'est de l'argent qui vous revient et vous seul pouvez le débloquer.
+
+imin.wtf · versement en attente pour {{eventName}}

@@ -67,6 +67,26 @@ public interface TicketReservationRepository extends JpaRepository<TicketReserva
     """)
     int markReleased(@Param("id") UUID id, @Param("now") Instant now, @Param("reason") String reason);
 
+    /**
+     * Mark a still-HELD hold as settling asynchronously and push its expiry out to the
+     * async window, so the {@code ReservationSweeper} stops collecting it. Returns the row
+     * count: 0 means the row is no longer HELD or was already marked, which makes a
+     * redelivered {@code payment_intent.processing} a no-op instead of a second extension.
+     *
+     * <p>No tier lock is needed here — {@code reserved} does not move.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+        UPDATE TicketReservation r
+           SET r.asyncProcessingAt = :at,
+               r.expiresAt = :newExpiry
+         WHERE r.id = :id
+           AND r.status = com.imin.iminapi.model.ReservationStatus.HELD
+           AND r.asyncProcessingAt IS NULL
+    """)
+    int markAsyncProcessing(@Param("id") UUID id, @Param("at") Instant at,
+                            @Param("newExpiry") Instant newExpiry);
+
     /** Atomic conditional transition HELD → CONFIRMED, same race semantics as {@link #markReleased}. */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("""

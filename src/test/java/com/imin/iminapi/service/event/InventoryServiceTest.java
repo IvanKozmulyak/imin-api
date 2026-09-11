@@ -16,6 +16,7 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Optional;
@@ -29,7 +30,9 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class InventoryServiceTest {
@@ -332,5 +335,60 @@ class InventoryServiceTest {
         svc.attachSessionId(r.getId(), "cs_test_attach");
 
         verify(reservations, never()).save(any());
+    }
+
+    // ── markAsyncProcessing / isAsyncProcessing ───────────────────────────────
+
+    @Test
+    void markAsyncProcessingExtendsExpiryAndIsIdempotent() {
+        UUID id = UUID.randomUUID();
+        Instant newExpiry = NOW.plus(Duration.ofDays(7));
+        // First delivery wins the conditional update; the redelivery matches no row.
+        when(reservations.markAsyncProcessing(id, NOW, newExpiry)).thenReturn(1, 0);
+
+        svc.markAsyncProcessing(id, newExpiry);
+        svc.markAsyncProcessing(id, newExpiry);
+
+        verify(reservations, times(2)).markAsyncProcessing(id, NOW, newExpiry);
+        // reserved does not move, so no tier row is ever locked or written.
+        verifyNoInteractions(tiers);
+    }
+
+    @Test
+    void markAsyncProcessingIsANoOpOnAReleasedRow() {
+        UUID id = UUID.randomUUID();
+        Instant newExpiry = NOW.plus(Duration.ofDays(7));
+        // The conditional update is scoped to HELD rows, so a released hold matches nothing.
+        when(reservations.markAsyncProcessing(id, NOW, newExpiry)).thenReturn(0);
+
+        svc.markAsyncProcessing(id, newExpiry);
+
+        verifyNoInteractions(tiers);
+        verify(reservations, never()).save(any());
+    }
+
+    @Test
+    void isAsyncProcessing_trueWhenTheColumnIsSet() {
+        TicketReservation r = held(UUID.randomUUID(), 1);
+        r.setAsyncProcessingAt(NOW);
+        when(reservations.findById(r.getId())).thenReturn(Optional.of(r));
+
+        assertThat(svc.isAsyncProcessing(r.getId())).isTrue();
+    }
+
+    @Test
+    void isAsyncProcessing_falseOnAPlainHold() {
+        TicketReservation r = held(UUID.randomUUID(), 1);
+        when(reservations.findById(r.getId())).thenReturn(Optional.of(r));
+
+        assertThat(svc.isAsyncProcessing(r.getId())).isFalse();
+    }
+
+    @Test
+    void isAsyncProcessing_falseForAnUnknownReservation() {
+        UUID id = UUID.randomUUID();
+        when(reservations.findById(id)).thenReturn(Optional.empty());
+
+        assertThat(svc.isAsyncProcessing(id)).isFalse();
     }
 }

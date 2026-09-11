@@ -102,6 +102,15 @@ public class StripeConnectService {
             return new ConnectResult(org.getStripeAccountId(), false);
         }
 
+        // Serialize the create: two concurrent calls would both read a null id and mint two
+        // Stripe accounts. The row lock is held for the whole @Transactional method, and the
+        // id is read back as a scalar — an entity re-read would be served from the persistence
+        // context and hand back the same stale null we already have.
+        String lockedAccountId = orgs.lockAndReadStripeAccountId(orgId).orElse(null);
+        if (lockedAccountId != null && !lockedAccountId.isBlank()) {
+            return new ConnectResult(lockedAccountId, false);
+        }
+
         log.info("Stripe connect: creating account for org={} country={}",
                 orgId, org.getCountry());
 

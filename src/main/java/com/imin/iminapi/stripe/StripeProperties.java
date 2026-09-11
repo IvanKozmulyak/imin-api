@@ -26,7 +26,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *       (the imin-public site). Default {@code http://localhost:3000}.</li>
  *   <li>{@code return-url-base} — fallback for the organizer's Stripe Connect
  *       onboarding return/refresh URL (the imin-webapp). Default
- *       {@code http://localhost:5173}.</li>
+ *       {@code https://dashboard.imin.wtf} — prod-safe, like every other outbound-link
+ *       base here; {@code application-dev.yaml} overrides it to localhost.</li>
  *   <li>{@code checkout-session-ttl-minutes} — how long a Stripe Checkout Session
  *       stays valid; mirrored into the TicketReservation.expires_at so the
  *       sweeper releases stale holds even if the session.expired webhook misses.
@@ -47,6 +48,10 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *   <li>{@code payout-zone} — STRIPE_PAYOUT_ZONE. Timezone for resolving the
  *       payout buffer deadline (the business deadline, not the event's local
  *       zone). Default {@code Europe/Amsterdam}.</li>
+ *   <li>{@code async-payment-hold-days} — STRIPE_ASYNC_PAYMENT_HOLD_DAYS. How long a
+ *       seat hold survives once {@code payment_intent.processing} says an async method
+ *       (SEPA/iDEAL/Klarna) is settling; those clear in days, not in the 30-minute
+ *       checkout-session window. Default 7.</li>
  * </ul>
  */
 @ConfigurationProperties(prefix = "imin.stripe")
@@ -59,7 +64,7 @@ public class StripeProperties {
     private int applicationFeeBps = 500;
     private int applicationFeeFixedMinor = 99;
     private String publicReturnUrlBase = "http://localhost:3000";
-    private String returnUrlBase = "http://localhost:5173";
+    private String returnUrlBase = "https://dashboard.imin.wtf";
     private int checkoutSessionTtlMinutes = 30;
 
     // ----- Track B manual payouts (Phase 1/2). DEFAULT FALSE => inert on deploy. -----
@@ -67,6 +72,15 @@ public class StripeProperties {
     private int payoutBufferDays = 3;
     private int payoutReconcileAfterHours = 6;
     private String payoutZone = "Europe/Amsterdam";
+    /**
+     * How many payout attempts an event gets before its run is parked BLOCKED for a human.
+     * A capped run is never retried automatically — an endlessly re-failing payout is a
+     * configuration problem, and nightly retries only bury it in the logs.
+     */
+    private int payoutMaxAttempts = 3;
+
+    /** Days a seat stays held while an async payment method settles. */
+    private int asyncPaymentHoldDays = 7;
 
     public String getSecretKey() { return secretKey; }
     public void setSecretKey(String secretKey) { this.secretKey = secretKey; }
@@ -122,4 +136,12 @@ public class StripeProperties {
 
     public String getPayoutZone() { return payoutZone; }
     public void setPayoutZone(String payoutZone) { this.payoutZone = payoutZone; }
+
+    public int getPayoutMaxAttempts() { return payoutMaxAttempts; }
+    public void setPayoutMaxAttempts(int payoutMaxAttempts) { this.payoutMaxAttempts = payoutMaxAttempts; }
+
+    public int getAsyncPaymentHoldDays() { return asyncPaymentHoldDays; }
+    public void setAsyncPaymentHoldDays(int asyncPaymentHoldDays) {
+        this.asyncPaymentHoldDays = asyncPaymentHoldDays;
+    }
 }

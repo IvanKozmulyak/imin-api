@@ -2,6 +2,7 @@ package com.imin.iminapi.service.ticket;
 
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.service.event.InventoryService;
+import com.imin.iminapi.stripe.CheckoutAmountVerifier;
 import com.stripe.StripeClient;
 import com.stripe.exception.StripeException;
 import com.stripe.model.PaymentIntent;
@@ -31,6 +32,10 @@ import java.util.UUID;
  * <p>Both steps are idempotent: {@link InventoryService#confirmSold} no-ops on an already
  * confirmed/released hold, and {@link PaidCheckoutService#issuePaidOrder} no-ops when an Order
  * already exists for the PI. So a race with a late-arriving webhook is harmless.
+ *
+ * <p>The amount gate is the same one the webhook applies: this path issues tickets, so a PI
+ * charging something imin never priced must be refused here too, or the gate is one missed
+ * webhook away from being bypassed entirely.
  */
 @Component
 public class PaidFulfilmentReconciler {
@@ -47,17 +52,20 @@ public class PaidFulfilmentReconciler {
     private final OrderRepository orders;
     private final InventoryService inventoryService;
     private final PaidCheckoutService paidCheckoutService;
+    private final CheckoutAmountVerifier amountVerifier;
     private final Clock clock;
 
     public PaidFulfilmentReconciler(StripeClient stripeClient,
                                     OrderRepository orders,
                                     InventoryService inventoryService,
                                     PaidCheckoutService paidCheckoutService,
+                                    CheckoutAmountVerifier amountVerifier,
                                     Clock clock) {
         this.stripeClient = stripeClient;
         this.orders = orders;
         this.inventoryService = inventoryService;
         this.paidCheckoutService = paidCheckoutService;
+        this.amountVerifier = amountVerifier;
         this.clock = clock;
     }
 
@@ -82,6 +90,18 @@ public class PaidFulfilmentReconciler {
                 Map<String, String> meta = pi.getMetadata();
                 if (meta == null || meta.get("reservation_id") == null) continue; // not a ticket PI
                 if (orders.findByStripePaymentIntentId(pi.getId()).isPresent()) continue; // already fulfilled
+
+                // Same gate as the webhook: refuse to issue against an amount we never priced.
+                CheckoutAmountVerifier.Result amount =
+                        amountVerifier.verify(meta, pi.getAmount(), pi.getCurrency());
+                if (amount.checked() && !amount.match()) {
+                    log.error("[AMOUNT_MISMATCH] paymentIntentId={} reservationId={} eventId={} tierId={} "
+                                    + "qty={} expected={} {} actual={} {} — reconciler issued nothing",
+                            pi.getId(), meta.get("reservation_id"), meta.get("event_id"),
+                            meta.get("tier_id"), meta.get("qty"), amount.expectedMinor(),
+                            amount.expectedCurrency(), pi.getAmount(), pi.getCurrency());
+                    continue;
+                }
 
                 log.warn("[fulfilment-reconciler] succeeded PI {} has no Order — re-driving issuance", pi.getId());
                 try {

@@ -62,8 +62,21 @@ public class Refund {
     @Column(name = "failure_message", length = 500)
     private String failureMessage;
 
-    @Column(name = "initiated_by_user_id", nullable = false)
+    /** Null for a refund that originated in the Stripe Dashboard — there is no imin actor. */
+    @Column(name = "initiated_by_user_id")
     private UUID initiatedByUserId;
+
+    /** True when the connected balance was short and the platform fronted this refund. */
+    @Column(name = "platform_funded", nullable = false)
+    private boolean platformFunded;
+
+    /** When the fronted money was pulled back from the connected account; null while still owed. */
+    @Column(name = "recovered_at")
+    private Instant recoveredAt;
+
+    /** The Stripe transfer reversal that pulled it back ({@code trr_...}). */
+    @Column(name = "recovery_reversal_id", length = 64)
+    private String recoveryReversalId;
 
     @Column(name = "idempotency_key", nullable = false, length = 128)
     private String idempotencyKey;

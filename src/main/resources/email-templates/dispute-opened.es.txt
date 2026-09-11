@@ -1,0 +1,19 @@
+CONTRACARGO · ACCIÓN NECESARIA · imin
+
+Se abrió un contracargo en {{eventName}}.
+
+Un titular de tarjeta ha disputado su pago con su banco. Hemos revocado las entradas de ese pedido para que no puedan usarse en la puerta, y los pagos a tu organización quedan pausados hasta que se cierre la disputa.
+
+IMPORTE DISPUTADO
+{{amountFormatted}} — retenido del saldo pagadero de este evento
+
+QUÉ PASA AHORA
+- Envía tus pruebas en Stripe — decide el banco, y el plazo lo fija él.
+- Los pagos siguen pausados — se reanudan solos en cuanto se cierre la disputa, sea cual sea el resultado.
+- Si se pierde la disputa — el importe disputado se queda fuera del saldo pagadero de este evento. Si se gana, vuelve.
+
+Abre tu panel: {{dashboardUrl}}
+
+Recibes esto porque se ha disputado un pago de {{eventName}}. Enviamos los avisos de contracargo al instante porque el plazo de respuesta lo fija el banco del titular, no nosotros.
+
+imin.wtf · contracargo en {{eventName}}

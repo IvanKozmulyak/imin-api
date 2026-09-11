@@ -1,0 +1,19 @@
+PAGO EN PAUSA · ACCIÓN NECESARIA · imin
+
+Tu pago de {{eventName}} está en pausa.
+
+{{blockedReason}} El dinero está a salvo en tu saldo de Stripe; solo que aún no puede salir de ahí, y hemos dejado de intentarlo en automático para que esto no quede escondido en un registro.
+
+PAGO EN PAUSA
+{{amountFormatted}} — pendiente de enviar por {{eventName}}
+
+QU&Eacute; HACER
+- {{nextStep}}
+- No se pierde nada — el importe de arriba sigue en tu saldo de Stripe hasta que se pueda pagar.
+- Las ventas siguen — esto afecta solo al pago, nunca a tu evento ni a tu público.
+
+Abrir tu panel: {{dashboardUrl}}
+
+Recibes esto porque no pudimos enviar un pago de {{eventName}}. Avisamos de inmediato: es dinero que te corresponde y solo tú puedes desbloquearlo.
+
+imin.wtf · pago en pausa de {{eventName}}

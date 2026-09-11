@@ -40,7 +40,15 @@ public enum PayoutRunStatus {
      * {@code PARTIAL} lets the next sweep top the event up on a fresh attempt.
      */
     PARTIAL,
-    FAILED;
+    FAILED,
+    /**
+     * Parked: the payout cannot proceed and imin has STOPPED retrying it. Carries the cause in
+     * {@code failure_reason} — {@code NO_BANK_ACCOUNT} (self-heals the moment the organizer
+     * attaches a payout bank account) or, after {@code STRIPE_PAYOUT_MAX_ATTEMPTS} failed
+     * attempts, the last Stripe failure code (needs a human; the event never re-candidates).
+     * Counts as neither in-flight nor already-triggered: no money moved.
+     */
+    BLOCKED;
 
     /** Stable wire/DB form: lowercase (e.g. {@code submitted}). */
     public String toWire() {

@@ -1,6 +1,7 @@
 package com.imin.iminapi.stripe;
 
 import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.payout.PayoutArrivedEvent;
 import com.imin.iminapi.payout.PayoutRun;
 import com.imin.iminapi.payout.PayoutRunRepository;
 import com.imin.iminapi.payout.PayoutRunStatus;
@@ -18,6 +19,7 @@ import com.stripe.model.Transfer;
 import com.stripe.net.RequestOptions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -61,15 +63,18 @@ public class SettlementIngestService {
     private final OrganizationRepository orgs;
     private final PayoutRunRepository payoutRuns;
     private final StripeClient stripeClient;
+    private final ApplicationEventPublisher publisher;
 
     public SettlementIngestService(SettlementRepository settlements,
                                    OrganizationRepository orgs,
                                    PayoutRunRepository payoutRuns,
-                                   StripeClient stripeClient) {
+                                   StripeClient stripeClient,
+                                   ApplicationEventPublisher publisher) {
         this.settlements = settlements;
         this.orgs = orgs;
         this.payoutRuns = payoutRuns;
         this.stripeClient = stripeClient;
+        this.publisher = publisher;
     }
 
     /**
@@ -124,6 +129,10 @@ public class SettlementIngestService {
      * payout with no matching run (e.g. a Stripe-auto payout, or one not triggered by
      * imin) just upserts the settlement row with null attribution, unchanged.
      *
+     * <p>Settling a run also publishes {@code PayoutArrivedEvent} — the organizer-facing
+     * "your payout is on its way" notification, which until now the {@code payout_arrived}
+     * preference switched nothing on or off.</p>
+     *
      * @param payout          the deserialized Stripe Payout (non-null).
      * @param connectedAccount the {@code event.getAccount()} id this payout settled on; may be null.
      */
@@ -163,12 +172,17 @@ public class SettlementIngestService {
                 // the remainder forever with no alert. PARTIAL keeps the event eligible for
                 // a top-up on the next sweep.
                 boolean clamped = run.getRemainingMinor() > 0L;
+                boolean alreadySettled = run.getStatus() == PayoutRunStatus.PAID
+                        || run.getStatus() == PayoutRunStatus.PARTIAL;
                 run.setStatus(clamped ? PayoutRunStatus.PARTIAL : PayoutRunStatus.PAID);
                 run.setPaidAt(arrival != null ? arrival : Instant.now());
                 payoutRuns.save(run);
                 log.info("[payout-recon] run {} -> {} (po={} event={} paidAt={} remaining={})",
                         run.getId(), run.getStatus(), payout.getId(), run.getEventId(),
                         run.getPaidAt(), run.getRemainingMinor());
+                // "Your payout is on its way" — on the TRANSITION into settled only, so a
+                // redelivery of payout.paid cannot email the organizer a second time.
+                if (!alreadySettled) publisher.publishEvent(new PayoutArrivedEvent(run.getId()));
             } else if (status == SettlementStatus.FAILED) {
                 run.setStatus(PayoutRunStatus.FAILED);
                 if (failure != null) run.setFailureReason(failure);
@@ -217,17 +231,8 @@ public class SettlementIngestService {
         // Resolve the disputed charge → its backing transfer (tr_...). The Dispute carries no
         // transfer id directly. getChargeObject() is the EXPANDED charge, which a webhook body
         // never contains — so the id + retrieve is the real path, not the fallback.
-        Charge charge = dispute.getChargeObject();
-        if (charge == null) {
-            String chargeId = dispute.getCharge();
-            if (chargeId == null || chargeId.isBlank()) {
-                log.info("[settlement-ingest] dispute {} ({}) names no charge — cannot resolve a "
-                        + "backing transfer, skipping (disputes are not payouts)", dispute.getId(), eventType);
-                return;
-            }
-            charge = retrieveCharge(chargeId, connectedAccount, dispute.getId(), eventType);
-            if (charge == null) return;
-        }
+        Charge charge = resolveDisputedCharge(dispute, connectedAccount, eventType);
+        if (charge == null) return;
         String sourceTransfer = backingTransferOf(charge);
         if (sourceTransfer == null) {
             log.info("[settlement-ingest] dispute {} ({}) charge {} has no transfer/source_transfer — "
@@ -342,6 +347,27 @@ public class SettlementIngestService {
     }
 
     // ── internals ────────────────────────────────────────────────────────────────
+
+    /**
+     * The {@link Charge} a {@code charge.dispute.*} event is about, or null when it cannot be
+     * resolved. Webhook bodies are never expanded, so {@code dispute.getChargeObject()} is
+     * effectively always null on a real delivery and the id + retrieve is the real path.
+     * Public because {@code DisputeIngestService} needs the exact same resolution (and its
+     * connected-account retry) to find the order behind the dispute.
+     */
+    public Charge resolveDisputedCharge(Dispute dispute, String connectedAccount, String eventType) {
+        if (dispute == null) return null;
+        Charge expanded = dispute.getChargeObject();
+        if (expanded != null) return expanded;
+        String chargeId = dispute.getCharge();
+        if (chargeId == null || chargeId.isBlank()) {
+            log.info("[settlement-ingest] dispute {} ({}) names no charge — cannot resolve the "
+                    + "disputed charge", dispute.getId(), eventType);
+            return null;
+        }
+        return retrieveCharge(chargeId, connectedAccount, dispute.getId(), eventType);
+    }
+
 
     /**
      * Fetch a disputed Charge by id. A {@code charge.dispute.*} event delivered on the

@@ -202,6 +202,32 @@ class StripeConnectStatusMirrorTest {
         assertThat(saved.getValue().isStripeDetailsSubmitted()).isTrue();
     }
 
+    /**
+     * A response missing configuration.recipient carries no capability, so projecting it
+     * would flip a live org to payoutsEnabled=false and brick its checkout. The mirror
+     * leaves every column — and the manual-schedule hook — untouched instead.
+     */
+    @Test
+    void syncSkipsTheWriteWhenRecipientConfigurationIsAbsent() throws Exception {
+        StripeClient stripe = mock(StripeClient.class, Mockito.RETURNS_DEEP_STUBS);
+        OrganizationRepository orgs = mock(OrganizationRepository.class);
+        StripePayoutScheduleService schedule = mock(StripePayoutScheduleService.class);
+
+        Organization org = newOrg();
+        org.setStripePayoutsEnabled(true);
+        org.setStripeConnectState(StripeConnectState.ACTIVE);
+        when(orgs.findByStripeAccountId("acct_partial")).thenReturn(Optional.of(org));
+        when(stripe.v2().core().accounts().retrieve(eq("acct_partial"), any(AccountRetrieveParams.class)))
+                .thenReturn(StripeFixtures.accountWithoutRecipientConfiguration("acct_partial"));
+
+        new StripeConnectStatusMirror(stripe, orgs, schedule).syncFromStripe("acct_partial");
+
+        verify(orgs, never()).save(any());
+        verify(schedule, never()).ensureManual(any());
+        assertThat(org.isStripePayoutsEnabled()).isTrue();
+        assertThat(org.getStripeConnectState()).isEqualTo(StripeConnectState.ACTIVE);
+    }
+
     private static Organization newOrg() {
         Organization o = new Organization();
         o.setName("Test");

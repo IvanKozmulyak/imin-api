@@ -26,8 +26,12 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -37,7 +41,10 @@ import java.util.UUID;
  *   <li>{@link #handleV1Endpoint} — entry for {@code /api/v1/stripe/webhook/v1}.
  *       Parses V1 payloads via {@link Webhook#constructEvent} using
  *       {@code STRIPE_WEBHOOK_SECRET_V1}. Subscribes to {@code payment_intent.succeeded},
- *       {@code payment_intent.payment_failed}, {@code checkout.session.expired},
+ *       {@code payment_intent.processing}, {@code payment_intent.payment_failed},
+ *       {@code payment_intent.canceled}, {@code checkout.session.expired},
+ *       {@code checkout.session.async_payment_succeeded},
+ *       {@code checkout.session.async_payment_failed},
  *       {@code refund.updated}, {@code refund.failed}, {@code charge.refund.updated}, and the
  *       Track A settlements-ingestion events {@code transfer.created}, {@code transfer.reversed},
  *       {@code payout.created}, {@code payout.paid}, {@code payout.failed}, {@code charge.refunded},
@@ -77,6 +84,9 @@ public class StripeWebhookService {
     private final PaidCheckoutService paidCheckoutService;
     private final RefundService refundService;
     private final SettlementIngestService settlementIngest;
+    private final com.imin.iminapi.dispute.DisputeIngestService disputeIngest;
+    private final CheckoutAmountVerifier amountVerifier;
+    private final Clock clock;
 
     /**
      * Proxied self-reference so {@link #handleV1Endpoint} can invoke
@@ -107,7 +117,10 @@ public class StripeWebhookService {
                                 WebhookEventDedupService dedup,
                                 PaidCheckoutService paidCheckoutService,
                                 RefundService refundService,
-                                SettlementIngestService settlementIngest) {
+                                SettlementIngestService settlementIngest,
+                                com.imin.iminapi.dispute.DisputeIngestService disputeIngest,
+                                CheckoutAmountVerifier amountVerifier,
+                                Clock clock) {
         this.stripeClient = stripeClient;
         this.props = props;
         this.promos = promos;
@@ -116,6 +129,9 @@ public class StripeWebhookService {
         this.paidCheckoutService = paidCheckoutService;
         this.refundService = refundService;
         this.settlementIngest = settlementIngest;
+        this.disputeIngest = disputeIngest;
+        this.amountVerifier = amountVerifier;
+        this.clock = clock;
     }
 
     @Autowired
@@ -196,19 +212,44 @@ public class StripeWebhookService {
             return;
         }
 
+        // Scope gate. Both Dashboard endpoints post to this URL, so a Connect-scoped copy of a
+        // fulfilment event would otherwise be fulfilled a second time under a different event id.
+        if (!scopeMatches(type, event.getAccount())) {
+            log.warn("[stripe-webhook] v1 wrong-scope type={} eventId={} account={} — ignoring",
+                    type, eventId, event.getAccount());
+            return;
+        }
+
         switch (type) {
             case "payment_intent.succeeded" -> {
                 log.info("[stripe-webhook] v1 dispatch → payment_intent.succeeded eventId={}", eventId);
                 onPaymentIntentSucceeded(event);
             }
+            case "payment_intent.processing" -> {
+                log.info("[stripe-webhook] v1 dispatch → payment_intent.processing eventId={}", eventId);
+                onPaymentIntentProcessing(event);
+            }
             case "payment_intent.payment_failed" -> {
                 log.info("[stripe-webhook] v1 dispatch → payment_intent.payment_failed eventId={}", eventId);
                 onPaymentIntentFailed(event);
+            }
+            case "payment_intent.canceled" -> {
+                log.info("[stripe-webhook] v1 dispatch → payment_intent.canceled eventId={}", eventId);
+                onPaymentIntentCanceled(event);
             }
             case "checkout.session.expired" -> {
                 log.info("[stripe-webhook] v1 dispatch → checkout.session.expired eventId={}", eventId);
                 onCheckoutSessionExpired(event);
             }
+            case "checkout.session.async_payment_failed" -> {
+                log.info("[stripe-webhook] v1 dispatch → checkout.session.async_payment_failed eventId={}", eventId);
+                onAsyncPaymentFailed(event);
+            }
+            // The async twin of checkout.session.completed: money moved, but fulfilment stays on
+            // payment_intent.succeeded, which is the event that proves it.
+            case "checkout.session.async_payment_succeeded" -> log.info(
+                    "[stripe-webhook] v1 ignored type=checkout.session.async_payment_succeeded eventId={} — fulfilment is on payment_intent.succeeded",
+                    eventId);
             // refund.updated / refund.failed are the unified events that fire for ALL refund
             // types (Stripe Acacia 2024-10-28); charge.refund.updated is the legacy alias that
             // only fires for "selected payment methods". All three carry a Refund as
@@ -255,6 +296,42 @@ public class StripeWebhookService {
             default -> log.info("[stripe-webhook] v1 ignored type={} eventId={} — not subscribed",
                     type, eventId);
         }
+    }
+
+    /**
+     * Fulfilment and refund events are ours: they describe money on the PLATFORM account, and a
+     * connected-account copy of one is a duplicate we must not act on twice.
+     */
+    private static final Set<String> PLATFORM_SCOPED_TYPES = Set.of(
+            "payment_intent.succeeded",
+            "payment_intent.processing",
+            "payment_intent.payment_failed",
+            "payment_intent.canceled",
+            "checkout.session.expired",
+            "checkout.session.completed",
+            "checkout.session.async_payment_succeeded",
+            "checkout.session.async_payment_failed",
+            "refund.updated",
+            "refund.failed",
+            "charge.refund.updated");
+
+    /** Payouts settle ON the connected account, so a platform-scoped copy resolves to no org. */
+    private static final Set<String> CONNECT_SCOPED_TYPES = Set.of(
+            "payout.created", "payout.paid", "payout.failed");
+
+    /**
+     * Whether this delivery came in on the scope its handler is built for. {@code account} is
+     * null on the "Your account" endpoint and the connected {@code acct_...} on the other.
+     *
+     * <p>{@code transfer.*}, {@code charge.refunded} and {@code charge.dispute.*} are deliberately
+     * ungated: {@link SettlementIngestService} takes {@code event.getAccount()} as its org-resolution
+     * fallback and its charge retrieve retries on the connected account, so both scopes are
+     * supported ingestion paths, not duplicates.
+     */
+    private static boolean scopeMatches(String type, String account) {
+        if (PLATFORM_SCOPED_TYPES.contains(type)) return account == null;
+        if (CONNECT_SCOPED_TYPES.contains(type)) return account != null;
+        return true;
     }
 
     // ── V2 endpoint ────────────────────────────────────────────────────────────
@@ -383,6 +460,23 @@ public class StripeWebhookService {
         log.info("[stripe-webhook] payment_intent.succeeded paymentIntentId={} reservationId={} amount={} currency={}",
                 pi.getId(), reservationId, pi.getAmount(), pi.getCurrency());
 
+        // Refuse to fulfil an amount we never priced. Nothing is confirmed, issued or
+        // incremented; the reservation stays HELD and an operator picks it up from the log.
+        CheckoutAmountVerifier.Result amount =
+                amountVerifier.verify(meta, pi.getAmount(), pi.getCurrency());
+        if (!amount.checked()) {
+            // Never a refusal: a checkout created before the stamp existed is still a real,
+            // paid order. WARN so a stamp that stops arriving after the deploy is visible.
+            log.warn("[stripe-webhook] payment_intent.succeeded {} amount check skipped — {}",
+                    pi.getId(), amount.skipReason());
+        } else if (!amount.match()) {
+            log.error("[AMOUNT_MISMATCH] paymentIntentId={} reservationId={} eventId={} tierId={} qty={} "
+                            + "expected={} {} actual={} {}",
+                    pi.getId(), reservationId, meta.get("event_id"), meta.get("tier_id"), meta.get("qty"),
+                    amount.expectedMinor(), amount.expectedCurrency(), pi.getAmount(), pi.getCurrency());
+            return;
+        }
+
         // Resolve the buyer from Stripe BEFORE taking the tier lock. confirmSold below runs a
         // SELECT … FOR UPDATE on the ticket tier inside this transaction and holds it to commit,
         // and issuance needs up to two blocking Stripe round trips to find the buyer address.
@@ -433,10 +527,15 @@ public class StripeWebhookService {
     }
 
     /**
-     * Compensating release: PI failed (card declined, 3DS failure, etc.) → return
-     * the held seats to the pool now, rather than waiting for
-     * {@code checkout.session.expired} (which only fires when the session times
-     * out, not when an attempt fails inside the session).
+     * {@code payment_intent.payment_failed} is NOT terminal for a card: the same PaymentIntent
+     * stays payable inside its Checkout Session, so a buyer who fixes a decline or completes 3DS
+     * on the second try must still own the seat. Releasing here handed it away and the later
+     * {@code succeeded} landed on a RELEASED row — an {@code [OVERSOLD]} tier and a poller that
+     * had already answered FAILED.
+     *
+     * <p>The one case that IS terminal is an async method (SEPA/iDEAL/Klarna) that failed days
+     * after {@code payment_intent.processing}: that intent cannot be retried. Everything else
+     * drains through {@code checkout.session.expired} or the {@code ReservationSweeper}.
      */
     private void onPaymentIntentFailed(com.stripe.model.Event event) {
         PaymentIntent pi = extractPaymentIntent(event, "payment_intent.payment_failed");
@@ -446,11 +545,92 @@ public class StripeWebhookService {
         log.info("[stripe-webhook] payment_intent.payment_failed paymentIntentId={} reservationId={} lastError={}",
                 pi.getId(), reservationId,
                 pi.getLastPaymentError() == null ? null : pi.getLastPaymentError().getMessage());
-        if (reservationId != null) {
-            inventoryService.releaseReservation(reservationId, "WEBHOOK_FAILED");
-        } else {
+        if (reservationId == null) {
             log.info("[stripe-webhook] payment_intent.payment_failed {} has no reservation_id metadata — pre-V27 event, skipping",
                     pi.getId());
+            return;
+        }
+        if (inventoryService.isAsyncProcessing(reservationId)) {
+            inventoryService.releaseReservation(reservationId, "WEBHOOK_FAILED");
+            return;
+        }
+        log.info("[stripe-webhook] payment_intent.payment_failed {} reservation {} left HELD — the PaymentIntent is still retryable",
+                pi.getId(), reservationId);
+    }
+
+    /**
+     * {@code payment_intent.processing}: an async method (SEPA/iDEAL/Klarna) has been accepted and
+     * will settle in days, not in the 30-minute checkout window. Push the hold out to
+     * {@code imin.stripe.async-payment-hold-days} so the {@code ReservationSweeper} stops seeing
+     * the row as expired, and record that this hold is now async — which is what makes a later
+     * {@code payment_failed} on it terminal.
+     */
+    private void onPaymentIntentProcessing(com.stripe.model.Event event) {
+        PaymentIntent pi = extractPaymentIntent(event, "payment_intent.processing");
+        if (pi == null) return;
+
+        UUID reservationId = parseReservationId(pi.getMetadata());
+        log.info("[stripe-webhook] payment_intent.processing paymentIntentId={} reservationId={}",
+                pi.getId(), reservationId);
+        if (reservationId == null) {
+            log.info("[stripe-webhook] payment_intent.processing {} has no reservation_id metadata — pre-V27 event, skipping",
+                    pi.getId());
+            return;
+        }
+        Instant newExpiry = clock.instant().plus(Duration.ofDays(props.getAsyncPaymentHoldDays()));
+        inventoryService.markAsyncProcessing(reservationId, newExpiry);
+    }
+
+    /**
+     * {@code payment_intent.canceled} is the deterministic terminal signal a failed attempt is not:
+     * the intent can never be paid again, so the seats go back now instead of waiting for the
+     * session TTL. It also closes the loop on {@code ReservationSweeper.cancelIfNativeIntent},
+     * whose {@code paymentIntents().cancel} round-trips back here.
+     */
+    private void onPaymentIntentCanceled(com.stripe.model.Event event) {
+        PaymentIntent pi = extractPaymentIntent(event, "payment_intent.canceled");
+        if (pi == null) return;
+
+        UUID reservationId = parseReservationId(pi.getMetadata());
+        log.info("[stripe-webhook] payment_intent.canceled paymentIntentId={} reservationId={}",
+                pi.getId(), reservationId);
+        if (reservationId == null) {
+            log.info("[stripe-webhook] payment_intent.canceled {} has no reservation_id metadata — pre-V27 event, skipping",
+                    pi.getId());
+            return;
+        }
+        inventoryService.releaseReservation(reservationId, "WEBHOOK_CANCELED");
+    }
+
+    /**
+     * {@code checkout.session.async_payment_failed}: the SEPA/iDEAL/Klarna payment behind this
+     * session definitively failed. Terminal — release the hold, whose expiry was pushed days out
+     * by {@code payment_intent.processing}.
+     */
+    private void onAsyncPaymentFailed(com.stripe.model.Event event) {
+        EventDataObjectDeserializer dod = event.getDataObjectDeserializer();
+        Optional<StripeObject> obj = dod.getObject();
+        if (obj.isEmpty()) {
+            log.warn("checkout.session.async_payment_failed had no deserialized object — apiVersion={}",
+                    event.getApiVersion());
+            return;
+        }
+        if (!(obj.get() instanceof Session session)) {
+            log.warn("checkout.session.async_payment_failed deserialized to unexpected type: {}",
+                    obj.get().getClass().getName());
+            return;
+        }
+
+        UUID reservationId = parseReservationId(session.getMetadata());
+        log.info("[stripe-webhook] checkout.session.async_payment_failed sessionId={} reservationId={}",
+                session.getId(), reservationId);
+        if (reservationId != null) {
+            inventoryService.releaseReservation(reservationId, "WEBHOOK_ASYNC_FAILED");
+            return;
+        }
+        if (inventoryService.releaseReservationBySessionId(session.getId(), "WEBHOOK_ASYNC_FAILED")) {
+            log.info("[stripe-webhook] released reservation for session {} via session-id fallback",
+                    session.getId());
         }
     }
 
@@ -517,11 +697,16 @@ public class StripeWebhookService {
         RefundStatus newStatus = RefundStatus.fromStripe(stripeRefund.getStatus());
         log.info("[stripe-webhook] charge.refund.updated refundId={} status={} mapped={}",
             stripeRefund.getId(), stripeRefund.getStatus(), newStatus);
+        // The payment intent, charge and amount travel with the status so a refund we never
+        // created (organizer refunded from the Stripe Dashboard) can be back-resolved to its Order.
         refundService.handleWebhookStatusChange(
             stripeRefund.getId(),
             newStatus,
             stripeRefund.getFailureReason(),
-            stripeRefund.getFailureReason());   // Stripe Refund only exposes failure_reason
+            stripeRefund.getFailureReason(),   // Stripe Refund only exposes failure_reason
+            stripeRefund.getPaymentIntent(),
+            stripeRefund.getCharge(),
+            stripeRefund.getAmount());
     }
 
     // ── Track A settlements ingestion handlers ──────────────────────────────────
@@ -564,15 +749,17 @@ public class StripeWebhookService {
     }
 
     /**
-     * Handle the {@code charge.dispute.*} family: a dispute puts settled funds at risk (or
-     * reinstates them). Annotate the settlements read-model with the disputed amount + status.
-     * All four event types deliver a {@link com.stripe.model.Dispute} as {@code data.object}; the
-     * {@code eventType} string drives the won/lost/withdrawn/reinstated branch in the ingest service.
+     * Handle the {@code charge.dispute.*} family, which has two independent consumers. The
+     * settlements ingest annotates the read-model behind the Payouts UI; the dispute ingest
+     * owns the {@code disputes} registry — it revokes the buyer's tickets, tells the organizer,
+     * and is what the payout guard and the per-event net reduction read. Order matters only for
+     * the logs; both share this handler's transaction.
      */
     private void onDispute(com.stripe.model.Event event, String eventType) {
         com.stripe.model.Dispute dispute = extractDispute(event, eventType);
         if (dispute == null) return;
         settlementIngest.ingestDispute(dispute, event.getAccount(), eventType, createdAt(event));
+        disputeIngest.ingest(dispute, event.getAccount(), eventType, createdAt(event));
     }
 
     /**

@@ -1,0 +1,19 @@
+PAGO ENVIADO · imin
+
+Tu pago de {{eventName}} está en camino.
+
+Stripe ha enviado este pago a la cuenta bancaria de tu cuenta conectada. La mayoría de los bancos lo muestran en uno o dos días hábiles.
+
+PAGO ENVIADO
+{{amountFormatted}} — por {{eventName}}
+
+CONVIENE SABER
+- La fecha de llegada la marca tu banco — normalmente uno o dos días hábiles desde hoy.
+- Lo que hemos enviado — ingresos por entradas menos reembolsos y la comisión de imin; un saldo aún en proceso puede llegar en varios pagos.
+- Todos los pagos aparecen en tu panel, con el evento al que corresponden.
+
+Ver tus pagos: {{dashboardUrl}}
+
+Recibes esto porque tienes activadas las notificaciones de pagos. Puedes desactivarlas en tus ajustes de notificaciones.
+
+imin.wtf · pago enviado de {{eventName}}

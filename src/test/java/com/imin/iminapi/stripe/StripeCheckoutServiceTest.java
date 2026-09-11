@@ -59,6 +59,7 @@ class StripeCheckoutServiceTest {
     private StripeConnectService connectService;
     private InventoryService inventoryService;
     private FreeCheckoutService freeCheckoutService;
+    private StripeProductService productService;
     private StripeProperties props;
     private Clock clock;
     private StripeCheckoutService svc;
@@ -83,11 +84,12 @@ class StripeCheckoutServiceTest {
         connectService = mock(StripeConnectService.class);
         inventoryService = mock(InventoryService.class);
         freeCheckoutService = mock(FreeCheckoutService.class);
+        productService = mock(StripeProductService.class);
         props = new StripeProperties();
         clock = Clock.fixed(NOW, ZoneOffset.UTC);
 
         svc = new StripeCheckoutService(stripeClient, events, tiers, orgs, promos,
-                connectService, inventoryService, freeCheckoutService, props, clock);
+                connectService, inventoryService, freeCheckoutService, props, productService, clock);
 
         // Default happy-path wiring
         Event event = event();
@@ -165,6 +167,41 @@ class StripeCheckoutServiceTest {
         ord.verify(inventoryService).reserve(eq(tierId), eq(2), eq(expectedExpires),
                 isNull());
         ord.verify(sessionService).create(any(SessionCreateParams.class));
+    }
+
+    @Test
+    void ticketLineItemUsesTheTierPriceNotTheStoredStripePrice() throws Exception {
+        // The stored Stripe Price can be stale if a product re-sync missed; tier.priceMinor is
+        // what the buyer was quoted and what the amount gate later recomputes.
+        TicketTier t = tier();
+        t.setStripeProductId("prod_test_123");
+        when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(t));
+
+        svc.createCheckoutSession(eventId, tierId, 2, null);
+
+        ArgumentCaptor<SessionCreateParams> captor = ArgumentCaptor.forClass(SessionCreateParams.class);
+        verify(sessionService).create(captor.capture());
+        SessionCreateParams.LineItem ticketLine = captor.getValue().getLineItems().get(0);
+        assertThat(ticketLine.getPrice()).isNull();
+        assertThat(ticketLine.getQuantity()).isEqualTo(2L);
+        assertThat(ticketLine.getPriceData().getUnitAmount()).isEqualTo(1000L);
+        assertThat(ticketLine.getPriceData().getCurrency()).isEqualTo("eur");
+        // Keeps the one-shot coupon's applies_to.products scoping able to bind.
+        assertThat(ticketLine.getPriceData().getProduct()).isEqualTo("prod_test_123");
+    }
+
+    @Test
+    void fallsBackToProductDataWhenTheProductIdIsNull() throws Exception {
+        // Tier fixture has no stripeProductId — a promo then cannot be product-scoped.
+        svc.createCheckoutSession(eventId, tierId, 1, null);
+
+        ArgumentCaptor<SessionCreateParams> captor = ArgumentCaptor.forClass(SessionCreateParams.class);
+        verify(sessionService).create(captor.capture());
+        SessionCreateParams.LineItem.PriceData priceData =
+                captor.getValue().getLineItems().get(0).getPriceData();
+        assertThat(priceData.getProduct()).isNull();
+        assertThat(priceData.getProductData().getName()).isEqualTo("GA");
+        assertThat(priceData.getUnitAmount()).isEqualTo(1000L);
     }
 
     @Test
@@ -367,6 +404,10 @@ class StripeCheckoutServiceTest {
         promo.setUsedCount(0);
         promo.setEnabled(true);
         when(promos.findByEventId(eventId)).thenReturn(java.util.List.of(promo));
+        // A promo checkout needs a synced product to scope the coupon to (see the 503 test).
+        TicketTier withProduct = tier();
+        withProduct.setStripeProductId("prod_test_123");
+        when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(withProduct));
 
         com.stripe.service.CouponService coupons = mock(com.stripe.service.CouponService.class);
         when(stripeClient.coupons()).thenReturn(coupons);
@@ -387,6 +428,173 @@ class StripeCheckoutServiceTest {
         ord.verify(inventoryService).releaseReservation(eq(reservationId), eq("STRIPE_COUPON_FAILED"));
         // The session was never attempted, so nothing else needs unwinding.
         verify(sessionService, never()).create(any(SessionCreateParams.class));
+    }
+
+    /**
+     * percent_off let Stripe round the ticket line itself, so the hosted total could differ
+     * from the quote by a cent. amount_off carries our own computed discount exactly.
+     */
+    @Test
+    void couponIsAmountOffInTheEventCurrencyScopedToTheTicketProduct() throws Exception {
+        TicketTier withProduct = tier();
+        withProduct.setStripeProductId("prod_test_123");
+        when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(withProduct));
+        when(promos.findByEventId(eventId)).thenReturn(java.util.List.of(promo(20)));
+
+        com.stripe.service.CouponService coupons = mock(com.stripe.service.CouponService.class);
+        when(stripeClient.coupons()).thenReturn(coupons);
+        com.stripe.model.Coupon coupon = mock(com.stripe.model.Coupon.class);
+        when(coupon.getId()).thenReturn("co_test");
+        when(coupons.create(any(com.stripe.param.CouponCreateParams.class))).thenReturn(coupon);
+
+        svc.createCheckoutSession(eventId, tierId, 2, "VECHIRKA20");
+
+        ArgumentCaptor<com.stripe.param.CouponCreateParams> captor =
+                ArgumentCaptor.forClass(com.stripe.param.CouponCreateParams.class);
+        verify(coupons).create(captor.capture());
+        com.stripe.param.CouponCreateParams sent = captor.getValue();
+        assertThat(sent.getPercentOff()).isNull();
+        assertThat(sent.getAmountOff()).isEqualTo(400L);   // 20% of 2 × 1000
+        assertThat(sent.getCurrency()).isEqualTo("eur");
+        assertThat(sent.getAppliesTo().getProducts()).containsExactly("prod_test_123");
+    }
+
+    /**
+     * With no product to scope to, a coupon discounts the service-fee line as well. One sync
+     * attempt, then refuse — mis-charging the buyer is not the safer half of that choice.
+     */
+    @Test
+    void promoWithNoStripeProductIsRefusedAfterASyncAttempt() throws Exception {
+        when(promos.findByEventId(eventId)).thenReturn(java.util.List.of(promo(20)));
+
+        assertThatThrownBy(() -> svc.createCheckoutSession(eventId, tierId, 2, "VECHIRKA20"))
+                .isInstanceOf(ApiException.class)
+                .satisfies(ex -> {
+                    ApiException ae = (ApiException) ex;
+                    assertThat(ae.status()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+                    assertThat(ae.code())
+                            .isEqualTo(com.imin.iminapi.security.ErrorCode.UPSTREAM_UNAVAILABLE);
+                });
+
+        verify(productService).syncTier(any(TicketTier.class), any(Event.class));
+        verify(inventoryService).releaseReservation(eq(reservationId), eq("TIER_PRODUCT_UNAVAILABLE"));
+        verify(sessionService, never()).create(any(SessionCreateParams.class));
+    }
+
+    @Test
+    void promoProceedsWhenTheSyncSuppliesTheProductId() throws Exception {
+        when(promos.findByEventId(eventId)).thenReturn(java.util.List.of(promo(20)));
+        org.mockito.Mockito.doAnswer(inv -> {
+            ((TicketTier) inv.getArgument(0)).setStripeProductId("prod_synced");
+            return null;
+        }).when(productService).syncTier(any(TicketTier.class), any(Event.class));
+
+        com.stripe.service.CouponService coupons = mock(com.stripe.service.CouponService.class);
+        when(stripeClient.coupons()).thenReturn(coupons);
+        com.stripe.model.Coupon coupon = mock(com.stripe.model.Coupon.class);
+        when(coupon.getId()).thenReturn("co_test");
+        when(coupons.create(any(com.stripe.param.CouponCreateParams.class))).thenReturn(coupon);
+
+        svc.createCheckoutSession(eventId, tierId, 2, "VECHIRKA20");
+
+        ArgumentCaptor<SessionCreateParams> captor = ArgumentCaptor.forClass(SessionCreateParams.class);
+        verify(sessionService).create(captor.capture());
+        assertThat(captor.getValue().getLineItems().get(0).getPriceData().getProduct())
+                .isEqualTo("prod_synced");
+    }
+
+    /**
+     * The amount gate compares the charge against THIS stamp, not against the live tier price,
+     * so an organizer edit inside an open session cannot turn a paid order into a refusal.
+     */
+    @Test
+    void createCheckoutSession_stampsTheExpectedTotalTheBuyerAgreedTo() throws Exception {
+        svc.createCheckoutSession(eventId, tierId, 3, null);
+
+        ArgumentCaptor<SessionCreateParams> captor = ArgumentCaptor.forClass(SessionCreateParams.class);
+        verify(sessionService).create(captor.capture());
+        SessionCreateParams sent = captor.getValue();
+        // 3 × 1000 tickets + fee (5% of 3000 = 150, plus 99 × 3 = 297) = 3447.
+        assertThat(sent.getMetadata()).containsEntry("expected_total_minor", "3447");
+        assertThat(sent.getMetadata()).containsEntry("expected_currency", "eur");
+        assertThat(sent.getPaymentIntentData().getMetadata())
+                .as("the webhook reads the PI, so the stamp has to be on both")
+                .containsEntry("expected_total_minor", "3447");
+    }
+
+    /**
+     * The stamp has to be the DISCOUNTED total, and the coupon has to take off exactly the
+     * discount that produced it — a coupon and a stamp that disagree is a paid buyer the amount
+     * gate then refuses to issue tickets to.
+     */
+    @Test
+    void promoCheckout_stampsTheDiscountedTotalAndMintsAMatchingCoupon() throws Exception {
+        TicketTier withProduct = tier();
+        withProduct.setStripeProductId("prod_test");
+        when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(withProduct));
+        when(promos.findByEventId(eventId)).thenReturn(java.util.List.of(promo(20)));
+
+        com.stripe.service.CouponService coupons = mock(com.stripe.service.CouponService.class);
+        when(stripeClient.coupons()).thenReturn(coupons);
+        com.stripe.model.Coupon coupon = mock(com.stripe.model.Coupon.class);
+        when(coupon.getId()).thenReturn("co_test");
+        when(coupons.create(any(com.stripe.param.CouponCreateParams.class))).thenReturn(coupon);
+
+        svc.createCheckoutSession(eventId, tierId, 2, "VECHIRKA20");
+
+        ArgumentCaptor<com.stripe.param.CouponCreateParams> couponSent =
+                ArgumentCaptor.forClass(com.stripe.param.CouponCreateParams.class);
+        verify(coupons).create(couponSent.capture());
+        assertThat(couponSent.getValue().getAmountOff())
+                .as("20% of the 2 × 1000 subtotal, to the cent — never percent_off")
+                .isEqualTo(400L);
+
+        ArgumentCaptor<SessionCreateParams> captor = ArgumentCaptor.forClass(SessionCreateParams.class);
+        verify(sessionService).create(captor.capture());
+        SessionCreateParams sent = captor.getValue();
+        // 2 × 1000 − 400 discount = 1600, plus the fee on the UNDISCOUNTED subtotal
+        // (5% of 2000 = 100, plus 99 × 2 = 198) = 298. Total 1898.
+        assertThat(sent.getMetadata()).containsEntry("expected_total_minor", "1898");
+        assertThat(sent.getPaymentIntentData().getMetadata())
+                .containsEntry("expected_total_minor", "1898");
+    }
+
+    /**
+     * A percentage of a cheap ticket can round to nothing. Stripe rejects {@code amount_off: 0},
+     * so the coupon is skipped entirely — and the stamp is the undiscounted total, which is what
+     * the buyer is actually charged.
+     */
+    @Test
+    void aDiscountThatRoundsToZeroMintsNoCoupon() throws Exception {
+        TicketTier cheap = tier();
+        cheap.setPriceMinor(30);            // 0.30 — 1% of it rounds to 0
+        when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(cheap));
+        when(promos.findByEventId(eventId)).thenReturn(java.util.List.of(promo(1)));
+
+        com.stripe.service.CouponService coupons = mock(com.stripe.service.CouponService.class);
+        when(stripeClient.coupons()).thenReturn(coupons);
+
+        svc.createCheckoutSession(eventId, tierId, 1, "VECHIRKA20");
+
+        verify(coupons, never()).create(any(com.stripe.param.CouponCreateParams.class));
+        ArgumentCaptor<SessionCreateParams> captor = ArgumentCaptor.forClass(SessionCreateParams.class);
+        verify(sessionService).create(captor.capture());
+        SessionCreateParams sent = captor.getValue();
+        assertThat(sent.getDiscounts()).isNullOrEmpty();
+        // 30 + fee (5% of 30 = 2, plus 99) = 131 — nothing came off.
+        assertThat(sent.getMetadata()).containsEntry("expected_total_minor", "131");
+    }
+
+    private com.imin.iminapi.model.PromoCode promo(int pct) {
+        com.imin.iminapi.model.PromoCode p = new com.imin.iminapi.model.PromoCode();
+        p.setId(UUID.randomUUID());
+        p.setEventId(eventId);
+        p.setCode("VECHIRKA20");
+        p.setDiscountPct(pct);
+        p.setMaxUses(50);
+        p.setUsedCount(0);
+        p.setEnabled(true);
+        return p;
     }
 
     @Test

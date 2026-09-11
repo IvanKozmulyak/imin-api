@@ -178,6 +178,23 @@ final class StripeFixtures {
             """.formatted(id));
     }
 
+    /**
+     * A partial account response: {@code requirements} came back but the recipient
+     * configuration did not, so there is no capability to read at all. The mirror must
+     * refuse to project this rather than write payoutsEnabled=false.
+     */
+    static Account accountWithoutRecipientConfiguration(String id) {
+        return parse("""
+            {
+              "id": "%s",
+              "requirements": {
+                "summary": {},
+                "entries": []
+              }
+            }
+            """.formatted(id));
+    }
+
     private static String entriesJson(List<String> fields, String status) {
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < fields.size(); i++) {

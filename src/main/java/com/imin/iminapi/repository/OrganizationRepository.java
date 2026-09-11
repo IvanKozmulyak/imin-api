@@ -77,4 +77,14 @@ public interface OrganizationRepository extends JpaRepository<Organization, UUID
      */
     @Query(value = "SELECT * FROM organizations WHERE id = :id FOR UPDATE", nativeQuery = true)
     Optional<Organization> findByIdForUpdate(@Param("id") UUID id);
+
+    /**
+     * Take the same row lock but read the connected-account id as a SCALAR. An entity query
+     * returns the instance already in the persistence context, so the locked row's committed
+     * value never reaches the caller — the loser of a concurrent connect would still see its
+     * own stale null and call Stripe. A projection has no managed instance to be served from.
+     */
+    @Query(value = "SELECT stripe_account_id FROM organizations WHERE id = :id FOR UPDATE",
+            nativeQuery = true)
+    Optional<String> lockAndReadStripeAccountId(@Param("id") UUID id);
 }

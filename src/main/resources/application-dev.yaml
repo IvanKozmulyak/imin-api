@@ -34,6 +34,7 @@ imin.marketing.buyer-site-base-url: http://localhost:3000
 imin.marketing.api-public-base-url: http://localhost:8085
 # Local-dev URL overrides (prod-safe defaults live in application.yaml)
 imin.stripe.public-return-url-base: http://localhost:3000
+imin.stripe.return-url-base: http://localhost:5173
 imin.email.app-base-url: http://localhost:5173
 imin.email.buyer-site-base-url: http://localhost:3000
 # Emailed QR / pkpass links. This one is NEW here (2026-08-16): it used to ride

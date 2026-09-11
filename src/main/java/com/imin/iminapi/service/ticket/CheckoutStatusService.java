@@ -69,9 +69,12 @@ public class CheckoutStatusService {
      * {@code status: "failed"} but produced by nothing, which is how that went
      * unnoticed.)
      *
-     * <p>A RELEASED hold is the signal: the {@code payment_intent.payment_failed} /
-     * {@code checkout.session.expired} webhooks and the {@code ReservationSweeper}
-     * all land there, and none of them run while a payment can still succeed. HELD
+     * <p>A RELEASED hold is the signal, and only the terminal paths reach it:
+     * {@code checkout.session.expired}, {@code checkout.session.async_payment_failed},
+     * {@code payment_intent.canceled} and the {@code ReservationSweeper}. A
+     * {@code payment_intent.payment_failed} no longer releases a card hold — a declined or
+     * 3DS-failed intent is still payable inside its session, so the poller answers PENDING
+     * until the session expires, the sweeper collects it, or Stripe cancels it. HELD
      * (the normal webhook race) and CONFIRMED (money moved, issuance not landed yet
      * — the case the fulfilment reconciler covers) both stay PENDING; calling either
      * failed would be a lie to someone who has paid.

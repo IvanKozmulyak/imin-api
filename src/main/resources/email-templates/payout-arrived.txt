@@ -1,0 +1,19 @@
+PAYOUT SENT · imin
+
+Your {{eventName}} payout is on its way.
+
+Stripe has sent this payout to the bank account on your connected account. Most banks show it within one to two working days.
+
+PAYOUT SENT
+{{amountFormatted}} — for {{eventName}}
+
+GOOD TO KNOW
+- Your bank sets the arrival date — usually one to two working days from today.
+- What we sent — ticket revenue less refunds and the imin fee; a balance still settling can arrive in more than one payout.
+- Every payout is listed in your dashboard, with the event it belongs to.
+
+See your payouts: {{dashboardUrl}}
+
+You're getting this because payout notifications are on for your account. You can turn them off in your notification settings.
+
+imin.wtf · payout sent for {{eventName}}

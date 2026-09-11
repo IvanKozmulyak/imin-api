@@ -104,6 +104,50 @@ class StripeConnectServiceTest {
         verify(accountService, never()).create(any(AccountCreateParams.class));
     }
 
+    /**
+     * Two concurrent connects would both read a null account id and mint two Stripe accounts.
+     * The locking re-read must be the SCALAR projection: an entity {@code FOR UPDATE} re-read
+     * is served from the persistence context, so the loser would get its own stale null back
+     * and call Stripe anyway. Asserting on the scalar is what makes this test unfakeable —
+     * the entity path is explicitly asserted unused.
+     */
+    @Test
+    void getOrCreateAccountReadsTheLockedAccountIdAsAScalarBeforeCallingStripe() throws Exception {
+        Organization unlocked = org("FR");                 // the pre-lock read: no account yet
+        when(orgs.findById(orgId)).thenReturn(Optional.of(unlocked));
+        when(orgs.lockAndReadStripeAccountId(orgId)).thenReturn(Optional.of("acct_won_the_race"));
+
+        var result = svc.getOrCreateAccount(principal, orgId);
+
+        verify(orgs).lockAndReadStripeAccountId(orgId);
+        verify(orgs, never()).findByIdForUpdate(any());
+        assertThat(result.accountId()).isEqualTo("acct_won_the_race");
+        assertThat(result.created()).isFalse();
+        assertThat(unlocked.getStripeAccountId())
+                .as("the caller's own entity is still stale — the answer came from the locked read")
+                .isNull();
+        verify(accountService, never()).create(any(AccountCreateParams.class));
+        verify(orgs, never()).save(any(Organization.class));
+    }
+
+    /** The winner's path: nothing on the locked row, so Stripe is called and the id persisted. */
+    @Test
+    void getOrCreateAccountCreatesWhenTheLockedRowIsStillEmpty() throws Exception {
+        Organization org = org("FR");
+        when(orgs.findById(orgId)).thenReturn(Optional.of(org));
+        when(orgs.lockAndReadStripeAccountId(orgId)).thenReturn(Optional.empty());
+        Account created = mock(Account.class);
+        when(created.getId()).thenReturn("acct_fresh");
+        when(accountService.create(any(AccountCreateParams.class))).thenReturn(created);
+
+        var result = svc.getOrCreateAccount(principal, orgId);
+
+        assertThat(result.accountId()).isEqualTo("acct_fresh");
+        assertThat(result.created()).isTrue();
+        assertThat(org.getStripeAccountId()).isEqualTo("acct_fresh");
+        verify(orgs).save(org);
+    }
+
     @Test
     void createAccountSession_returns_clientSecret_with_account_onboarding_component_enabled() throws Exception {
         Organization org = org("FR");

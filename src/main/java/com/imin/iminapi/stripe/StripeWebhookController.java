@@ -20,7 +20,10 @@ import org.springframework.web.bind.annotation.RestController;
  *       envelope with the full object embedded in {@code data.object}. Routed to
  *       {@link #receiveV1(HttpEntity)} at {@code /api/v1/stripe/webhook/v1}.
  *       Subscribe this endpoint to: {@code payment_intent.succeeded},
- *       {@code payment_intent.payment_failed}, {@code checkout.session.expired},
+ *       {@code payment_intent.processing}, {@code payment_intent.payment_failed},
+ *       {@code payment_intent.canceled}, {@code checkout.session.expired},
+ *       {@code checkout.session.async_payment_succeeded},
+ *       {@code checkout.session.async_payment_failed},
  *       {@code refund.updated}, {@code refund.failed}, {@code charge.refund.updated}, and the
  *       Track A settlements events {@code transfer.created}, {@code transfer.reversed},
  *       {@code payout.created}, {@code payout.paid}, {@code payout.failed}, {@code charge.refunded},
@@ -30,8 +33,8 @@ import org.springframework.web.bind.annotation.RestController;
  *       that carries only the event id; the handler fetches the full payload via
  *       the v2 API. Routed to {@link #receiveV2(HttpEntity)} at
  *       {@code /api/v1/stripe/webhook/v2}. Subscribe to:
- *       {@code v2.core.account.requirements.updated},
- *       {@code v2.core.account.recipient.capability_status_updated}.</li>
+ *       {@code v2.core.account[requirements].updated},
+ *       {@code v2.core.account[configuration.recipient].capability_status_updated}.</li>
  * </ul>
  *
  * <p>Each endpoint has its own signing secret ({@code STRIPE_WEBHOOK_SECRET_V1} and

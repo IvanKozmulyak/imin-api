@@ -1,6 +1,7 @@
 package com.imin.iminapi.payout;
 
 import com.imin.iminapi.model.Event;
+import com.imin.iminapi.refund.RefundRepository;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.stripe.StripeProperties;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
@@ -16,6 +17,7 @@ import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.Instant;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * Track B (manual payouts) Phase 2 — the daily post-event payout job.
@@ -48,17 +50,20 @@ public class PostEventPayoutSweeper {
     private final StripeProperties props;
     private final EventRepository events;
     private final PayoutRunRepository payoutRuns;
+    private final RefundRepository refunds;
     private final PostEventPayoutService payoutService;
     private final Clock clock;
 
     public PostEventPayoutSweeper(StripeProperties props,
                                   EventRepository events,
                                   PayoutRunRepository payoutRuns,
+                                  RefundRepository refunds,
                                   PostEventPayoutService payoutService,
                                   Clock clock) {
         this.props = props;
         this.events = events;
         this.payoutRuns = payoutRuns;
+        this.refunds = refunds;
         this.payoutService = payoutService;
         this.clock = clock;
     }
@@ -75,6 +80,12 @@ public class PostEventPayoutSweeper {
         // after ~3 days. Polling Stripe for the po_ we stored closes the loop, and doing it
         // first means an org unblocked here can still be paid in the same tick.
         reconcileStaleSubmitted();
+
+        // ── step B — recover platform-funded refunds for EVERY org that owes one ──
+        // Before the candidate loop, because the per-event recovery inside payOneEvent only ever
+        // runs for an org that still HAS a candidate: an org whose events have all paid out would
+        // otherwise keep money imin fronted for a refund indefinitely.
+        recoverPlatformFundedDebt();
 
         // Resolve the buffer deadline in the configured payout zone (the business
         // deadline, not the event's local zone): an event qualifies when
@@ -103,6 +114,25 @@ public class PostEventPayoutSweeper {
             }
         }
         log.info("[payout-sweep] tick done processed={} errored={}", paid, failed);
+    }
+
+    /**
+     * Reverse the destination transfer behind every unrecovered platform-funded refund, one
+     * org at a time, each in its own {@code REQUIRES_NEW} transaction through the service proxy.
+     */
+    private void recoverPlatformFundedDebt() {
+        List<UUID> owing = refunds.findOrgIdsWithUnrecoveredPlatformFunded();
+        if (owing.isEmpty()) return;
+
+        log.info("[payout-sweep] {} org(s) owe an unrecovered platform-funded refund", owing.size());
+        for (UUID orgId : owing) {
+            try {
+                payoutService.recoverForOrg(orgId);
+            } catch (Exception ex) {
+                log.error("[payout-sweep] platform-funded recovery failed for org {} — {}",
+                        orgId, ex.getMessage(), ex);
+            }
+        }
     }
 
     /**

@@ -1,0 +1,19 @@
+VERSEMENT ENVOYÉ · imin
+
+Votre versement pour {{eventName}} est en route.
+
+Stripe a envoyé ce versement vers le compte bancaire rattaché à votre compte connecté. La plupart des banques l'affichent sous un à deux jours ouvrés.
+
+VERSEMENT ENVOY&Eacute;
+{{amountFormatted}} — pour {{eventName}}
+
+BON &Agrave; SAVOIR
+- C'est votre banque qui fixe la date d'arrivée — généralement un à deux jours ouvrés.
+- Ce que nous avons envoyé — recettes billetterie moins les remboursements et la commission imin ; un solde encore en cours peut arriver en plusieurs versements.
+- Chaque versement est listé dans votre tableau de bord, avec l'événement concerné.
+
+Voir vos versements: {{dashboardUrl}}
+
+Vous recevez cet e-mail car les notifications de versement sont activées sur votre compte. Vous pouvez les désactiver dans vos préférences de notifications.
+
+imin.wtf · versement envoyé pour {{eventName}}

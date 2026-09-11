@@ -159,6 +159,41 @@ public class InventoryService {
     }
 
     /**
+     * Record that an async payment method (SEPA/iDEAL/Klarna) is settling against this
+     * hold and push its expiry out to {@code newExpiry}, so the {@link ReservationSweeper}
+     * stops collecting a seat whose money is still on its way.
+     *
+     * <p>Idempotent and lock-free: the conditional update only fires on a still-HELD row
+     * that is not already marked, and {@code reserved} does not move, so no tier lock is
+     * taken. A redelivered {@code payment_intent.processing} affects 0 rows and is a no-op
+     * rather than a second extension.
+     */
+    @Transactional
+    public void markAsyncProcessing(UUID reservationId, Instant newExpiry) {
+        int won = reservations.markAsyncProcessing(reservationId, clock.instant(), newExpiry);
+        if (won == 0) {
+            log.info("markAsyncProcessing: {} is not an unmarked HELD row — no-op", reservationId);
+            return;
+        }
+        log.info("Reservation {} is settling asynchronously — hold extended to {}",
+                reservationId, newExpiry);
+    }
+
+    /**
+     * True when this hold is known to be settling asynchronously. The webhook uses it to
+     * tell a terminal async failure (release the seat) from a card decline the buyer can
+     * still retry inside the same session (keep the seat).
+     *
+     * <p>An unknown reservation answers false — nothing to release either way.
+     */
+    @Transactional(readOnly = true)
+    public boolean isAsyncProcessing(UUID reservationId) {
+        return reservations.findById(reservationId)
+                .map(r -> r.getAsyncProcessingAt() != null)
+                .orElse(false);
+    }
+
+    /**
      * Promote a {@code HELD} reservation to a confirmed sale. Decrements
      * {@code reserved} by the reservation's qty and increments {@code sold}.
      * Idempotent on already-CONFIRMED rows.

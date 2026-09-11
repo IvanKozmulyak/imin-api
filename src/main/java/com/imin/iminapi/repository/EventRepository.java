@@ -394,8 +394,8 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
      *       by {@code e.orgId} with {@code stripePayoutsEnabled = true},
      *       {@code stripePayoutScheduleManual = true} (the V44 column — the
      *       auditable guarantee the account is on a MANUAL schedule), a
-     *       non-blank {@code stripeAccountId}, and {@code stripeConnectState =
-     *       ACTIVE} (so a just-disabled account is excluded);</li>
+     *       non-blank {@code stripeAccountId}, and {@code stripeConnectState <>
+     *       DISABLED} (RESTRICTED still sells, so it is still paid);</li>
      *   <li>there is no {@code PLANNED}/{@code SUBMITTED}/{@code PAID} payout run
      *       for THIS event (per-event existence guard); and</li>
      *   <li><b>(double-pay HARD RULE, §4.0)</b> there is no in-flight
@@ -413,6 +413,10 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
      * {@code PostEventPayoutService}). Status literals are bound lowercase because
      * {@code PayoutRunStatus} persists via its converter.
      *
+     * <p>Eligibility is "sell ⇒ payable": the transfers capability being active
+     * ({@code stripePayoutsEnabled}) is the same gate checkout uses, so a RESTRICTED
+     * org that can take money can also be paid. Only terminal DISABLED is excluded.
+     *
      * @param cutoff {@code now − bufferDays} resolved in the payout zone; an event
      *               qualifies only when {@code endsAt < cutoff}.
      */
@@ -426,7 +430,7 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
                   WHERE o.id = e.orgId
                     AND o.stripePayoutsEnabled = true
                     AND o.stripePayoutScheduleManual = true
-                    AND o.stripeConnectState = com.imin.iminapi.stripe.StripeConnectState.ACTIVE
+                    AND o.stripeConnectState <> com.imin.iminapi.stripe.StripeConnectState.DISABLED
                     AND o.stripeAccountId IS NOT NULL
                     AND o.stripeAccountId <> ''
                     AND NOT EXISTS (
@@ -449,12 +453,15 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
      * Track B Phase 2 retention monitor (plan §7) — events that ENDED before
      * {@code retentionCutoff} (e.g. {@code now − 75 days}, a ~15-day margin under the
      * common 90-day Stripe retention window) and still carry sold revenue
-     * ({@code revenueMinor > 0}) for a manual-schedule, payout-eligible
-     * {@code ACTIVE} org. These are orgs that may be holding un-disbursed funds past
-     * the safe bound — the monitor cross-checks each against a PAID payout run and
-     * alerts on the stragglers so ops can force a payout before Stripe's deadline.
+     * ({@code revenueMinor > 0}) for a manual-schedule, payout-eligible org. These are
+     * orgs that may be holding un-disbursed funds past the safe bound — the monitor
+     * cross-checks each against a PAID payout run and alerts on the stragglers so ops
+     * can force a payout before Stripe's deadline.
      *
-     * <p>Same org-eligibility join as {@link #findPayoutCandidates}, with a
+     * <p>Same org-eligibility join as {@link #findPayoutCandidates} — including the
+     * "sell ⇒ payable" rule, so only terminal {@code DISABLED} is excluded. It has to
+     * match: an org this query drops is an org whose stranded funds nobody is warned
+     * about, and a RESTRICTED org is exactly the one most likely to strand them. Plus a
      * far older cutoff and a NOT EXISTS guard against an already-PAID payout run for the
      * event (an event we've already disbursed is not a straggler).
      *
@@ -476,7 +483,7 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
                   WHERE o.id = e.orgId
                     AND o.stripePayoutsEnabled = true
                     AND o.stripePayoutScheduleManual = true
-                    AND o.stripeConnectState = com.imin.iminapi.stripe.StripeConnectState.ACTIVE
+                    AND o.stripeConnectState <> com.imin.iminapi.stripe.StripeConnectState.DISABLED
                     AND o.stripeAccountId IS NOT NULL
                     AND o.stripeAccountId <> ''
                )
