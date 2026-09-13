@@ -59,6 +59,28 @@ public interface RefundRepository extends JpaRepository<Refund, UUID> {
     long sumSucceededRefundApplicationFeeMinorByEventId(@Param("eventId") UUID eventId);
 
     /**
+     * SUCCEEDED refund amounts for an event, counting only refunds of LIVE-mode orders
+     * (V130). The payout net excludes test-mode gross, so it must exclude the matching
+     * refunds too — netting a test refund off live gross would under-pay the organizer.
+     */
+    @Query("""
+            select coalesce(sum(r.amountMinor), 0) from Refund r
+             where r.orderId in (select o.id from com.imin.iminapi.model.Order o
+                                  where o.eventId = :eventId and o.testMode = false)
+               and r.status = com.imin.iminapi.refund.RefundStatus.SUCCEEDED
+            """)
+    long sumSucceededLiveRefundMinorByEventId(@Param("eventId") UUID eventId);
+
+    /** Application-fee portion of the SUCCEEDED refunds of LIVE-mode orders. Payout path. */
+    @Query("""
+            select coalesce(sum(r.applicationFeeRefundMinor), 0) from Refund r
+             where r.orderId in (select o.id from com.imin.iminapi.model.Order o
+                                  where o.eventId = :eventId and o.testMode = false)
+               and r.status = com.imin.iminapi.refund.RefundStatus.SUCCEEDED
+            """)
+    long sumSucceededLiveRefundApplicationFeeMinorByEventId(@Param("eventId") UUID eventId);
+
+    /**
      * Per-refund (updatedAt, amountMinor) pairs for SUCCEEDED refunds of an event,
      * since {@code since}. Used by the velocity service to bucket refunds by day
      * (subtracted from the gross revenue bar for the same day). {@code updatedAt}

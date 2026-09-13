@@ -101,6 +101,14 @@ public class Order {
     @Column(name = "stripe_payment_intent_id", length = 128)
     private String stripePaymentIntentId;
 
+    /**
+     * True when this order was taken while the API ran on a Stripe TEST key (V130).
+     * Test money never existed, so a test-mode order is excluded from the per-event payout
+     * net and from the payout-candidate queries — everything else reads orders unfiltered.
+     */
+    @Column(name = "test_mode", nullable = false)
+    private boolean testMode = false;
+
     /** Buyer phone captured on the order-confirmation SMS opt-in (§4). E.164, nullable. */
     @Column(name = "buyer_phone", length = 20)
     private String buyerPhone;

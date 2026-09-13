@@ -53,6 +53,7 @@ public class FreeCheckoutService {
     private final EmailProperties emailProps;
     private final Clock clock;
     private final org.springframework.context.ApplicationEventPublisher publisher;
+    private final com.imin.iminapi.stripe.StripeProperties stripeProps;
 
     public FreeCheckoutService(OrderRepository orders,
                                 TicketRepository tickets,
@@ -60,7 +61,8 @@ public class FreeCheckoutService {
                                 InventoryService inventory,
                                 EmailProperties emailProps,
                                 Clock clock,
-                                org.springframework.context.ApplicationEventPublisher publisher) {
+                                org.springframework.context.ApplicationEventPublisher publisher,
+                                com.imin.iminapi.stripe.StripeProperties stripeProps) {
         this.orders = orders;
         this.tickets = tickets;
         this.promos = promos;
@@ -68,6 +70,7 @@ public class FreeCheckoutService {
         this.emailProps = emailProps;
         this.clock = clock;
         this.publisher = publisher;
+        this.stripeProps = stripeProps;
     }
 
     /**
@@ -166,6 +169,9 @@ public class FreeCheckoutService {
         order.setTotalMinor(0L);
         order.setCurrency(event.getCurrency());
         order.setPaymentMethod("free");
+        // A free order moves no money, but it still belongs to the era of the running key
+        // (V130) — stamping it keeps the flag's meaning uniform across both checkout paths.
+        order.setTestMode(!stripeProps.isLiveKey());
         order.setAdsConsent(adsConsent);
         order.setMarketingOptIn(marketingOptIn);
         order.setBuyerLocale(EmailLocale.normalizeOrNull(buyerLocale));

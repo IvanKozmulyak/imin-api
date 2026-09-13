@@ -83,7 +83,9 @@ public class StripeConnectService {
      * Step 1 — Create the v2 connected account.
      *
      * Idempotent: if the org already has a connected account, return that id and {@code created=false}.
-     * Otherwise create one via the v2 Accounts API and persist the id.
+     * Otherwise create one via the v2 Accounts API and persist the id. An account whose recorded
+     * mode contradicts the running key counts as no account at all — it is replaced and the
+     * Connect mirror reset, which is the only way out of a test→live key swap.
      *
      * Sends server-side: display_name, contact_email, dashboard=express, identity.country (from org),
      * defaults: locale=en_us and fees/losses-collector=APPLICATION (the platform —
@@ -98,16 +100,26 @@ public class StripeConnectService {
     public ConnectResult getOrCreateAccount(AuthPrincipal principal, UUID orgId) {
         Organization org = loadOwnedOrg(principal, orgId);
 
-        if (org.getStripeAccountId() != null && !org.getStripeAccountId().isBlank()) {
-            return new ConnectResult(org.getStripeAccountId(), false);
+        // An account minted in the other Stripe mode is unusable and unrecoverable: it cannot be
+        // retrieved, charged or paid, and the early-return below would hand it back forever. Treat
+        // it as absent so the organizer can re-onboard under the running key.
+        String staleAccountId = org.getStripeAccountId();
+        if (nonBlank(staleAccountId) && !isModeMismatch(org)) {
+            return new ConnectResult(staleAccountId, false);
         }
 
         // Serialize the create: two concurrent calls would both read a null id and mint two
-        // Stripe accounts. The row lock is held for the whole @Transactional method, and the
-        // id is read back as a scalar — an entity re-read would be served from the persistence
-        // context and hand back the same stale null we already have.
+        // Stripe accounts. The row lock is held for the whole @Transactional method, and both
+        // columns are read back as scalars — an entity re-read would be served from the
+        // persistence context and hand back the same stale values we already have.
         String lockedAccountId = orgs.lockAndReadStripeAccountId(orgId).orElse(null);
-        if (lockedAccountId != null && !lockedAccountId.isBlank()) {
+        Boolean lockedLivemode = orgs.lockAndReadStripeLivemode(orgId).orElse(null);
+        // The mismatch is decided on the LOCKED row, never on the pre-lock entity: the loser of
+        // a concurrent connect reads the winner's fresh account here, and a stale mismatch would
+        // make it mint a second account and orphan the winner's.
+        boolean modeMismatch = nonBlank(lockedAccountId)
+                && lockedLivemode != null && lockedLivemode != props.isLiveKey();
+        if (nonBlank(lockedAccountId) && !modeMismatch) {
             return new ConnectResult(lockedAccountId, false);
         }
 
@@ -133,7 +145,19 @@ public class StripeConnectService {
             throw upstream("Failed to create Stripe connected account: " + e.getMessage(), e);
         }
 
+        if (modeMismatch) {
+            // The mirror described the abandoned account; carrying it over would report the org
+            // ACTIVE on an account that does not exist under this key.
+            log.warn("Stripe mode mismatch for org {} — account {} was created in {} mode; replaced "
+                            + "with {} under the running {} key and the Connect mirror reset",
+                    orgId, lockedAccountId, Boolean.TRUE.equals(lockedLivemode) ? "live" : "test",
+                    account.getId(), props.keyMode());
+            resetConnectMirror(org);
+        }
         org.setStripeAccountId(account.getId());
+        // Record which Stripe mode minted this acct_ so a later key swap is a provable
+        // mismatch rather than an unreadable 404 (see getStatusLive).
+        org.setStripeLivemode(props.isLiveKey());
         orgs.save(org);
         if (auditLogger != null) {
             // Only fires on a NEW account creation (the idempotent early-return above
@@ -334,6 +358,12 @@ public class StripeConnectService {
         if (!hasAccount(org)) {
             return notStarted();
         }
+        if (isModeMismatch(org)) {
+            // Same refusal as the money path, so the dashboard renders the "connect Stripe" CTA
+            // instead of an ACTIVE badge on an account this key cannot even read.
+            logModeMismatch(orgId, org);
+            return notStarted();
+        }
 
         if (mirror != null && shouldRefresh(org)) {
             mirror.syncFromStripe(org.getStripeAccountId());
@@ -369,6 +399,13 @@ public class StripeConnectService {
         if (!hasAccount(org)) {
             return notStarted();
         }
+        if (isModeMismatch(org)) {
+            // The stored acct_ belongs to the other Stripe mode: it cannot be retrieved, cannot
+            // be charged and cannot receive a transfer. The mirror would keep its stale value
+            // (syncFromStripe swallows the 404), so refuse here instead of selling into a void.
+            logModeMismatch(orgId, org);
+            return notStarted();
+        }
         if (mirror != null && shouldRefreshForCheckout(org)) {
             mirror.syncFromStripe(org.getStripeAccountId());
             org = orgs.findById(orgId).orElse(org);
@@ -380,6 +417,40 @@ public class StripeConnectService {
 
     private static boolean hasAccount(Organization org) {
         return org.getStripeAccountId() != null && !org.getStripeAccountId().isBlank();
+    }
+
+    /**
+     * Does the org's recorded Stripe mode contradict the running key's? {@code NULL} is
+     * "unknown" and never a mismatch — V129 stamps nothing, so an org that predates the column
+     * keeps behaving exactly as it did.
+     */
+    private boolean isModeMismatch(Organization org) {
+        Boolean stored = org.getStripeLivemode();
+        return stored != null && stored != props.isLiveKey();
+    }
+
+    private void logModeMismatch(UUID orgId, Organization org) {
+        log.error("Stripe mode mismatch for org {} — account {} was created in {} mode but the "
+                        + "running key is {} mode; treating the org as not connected",
+                orgId, org.getStripeAccountId(),
+                Boolean.TRUE.equals(org.getStripeLivemode()) ? "live" : "test",
+                props.keyMode());
+    }
+
+    /**
+     * Back to never-connected. A replacement account minted under a different key inherits none
+     * of the old account's onboarding state, and a NULL {@code updatedAt} means "never synced",
+     * which is what makes the next read refresh from Stripe.
+     */
+    private static void resetConnectMirror(Organization org) {
+        org.setStripeConnectState(StripeConnectState.NOT_STARTED);
+        org.setStripePayoutsEnabled(false);
+        org.setStripeDetailsSubmitted(false);
+        org.setStripePayoutScheduleManual(false);
+        org.setStripeRequirementsCurrentlyDue(new java.util.ArrayList<>());
+        org.setStripeRequirementsPastDue(new java.util.ArrayList<>());
+        org.setStripeDisabledReason(null);
+        org.setStripeConnectStatusUpdatedAt(null);
     }
 
     /** Refresh when not provably ready, or when an ACTIVE mirror is older than the freshness window. */

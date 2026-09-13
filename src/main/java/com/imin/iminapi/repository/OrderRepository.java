@@ -71,6 +71,22 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
     long sumApplicationFeeMinorByEventId(@Param("eventId") UUID eventId);
 
     /**
+     * Gross for an event counting ONLY live-mode orders (V130). The payout path's ceiling:
+     * a test-era order's money never existed, so paying it out would move real funds out of
+     * the organizer's balance against fake revenue. Deliberately separate from
+     * {@link #sumTotalMinorByEventId} — the organizer's own revenue readouts still show the
+     * full history, filtering them would rewrite what an organizer already saw.
+     */
+    @Query("select coalesce(sum(o.totalMinor), 0) from Order o "
+            + "where o.eventId = :eventId and o.testMode = false")
+    long sumLiveTotalMinorByEventId(@Param("eventId") UUID eventId);
+
+    /** Application fees for an event counting ONLY live-mode orders. Payout path — see above. */
+    @Query("select coalesce(sum(o.applicationFeeMinor), 0) from Order o "
+            + "where o.eventId = :eventId and o.testMode = false")
+    long sumLiveApplicationFeeMinorByEventId(@Param("eventId") UUID eventId);
+
+    /**
      * Created-at + total-minor pairs for orders since {@code since}. Used by the
      * sales-velocity service to bucket by day. Returned as {@code Object[]} to
      * avoid a per-row entity hydration cost — the only columns the caller needs

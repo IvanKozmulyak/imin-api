@@ -2,6 +2,8 @@ package com.imin.iminapi.stripe;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.util.regex.Pattern;
+
 /**
  * `imin.stripe.*` configuration bound from {@code application.yaml} (which sources env vars).
  *
@@ -84,6 +86,35 @@ public class StripeProperties {
 
     public String getSecretKey() { return secretKey; }
     public void setSecretKey(String secretKey) { this.secretKey = secretKey; }
+
+    /** Stripe encodes the mode in the key prefix: {@code sk_live_} standard, {@code rk_live_} restricted. */
+    private static final Pattern LIVE_KEY_PREFIX = Pattern.compile("^(sk|rk)_live_");
+
+    /**
+     * Is the running key a LIVE key? Trimmed first — a secret pasted into a Railway variable
+     * routinely carries a trailing newline or space, and a live key read as test would stamp
+     * every live order, payout run and dispute as test money and silently drop it out of the
+     * payout net. Anything that is not a live prefix (including a blank key, which
+     * {@link StripeConfig} refuses at startup anyway) is test.
+     */
+    public boolean isLiveKey() {
+        return LIVE_KEY_PREFIX.matcher(trimmedSecretKey()).find();
+    }
+
+    /**
+     * The secret key with surrounding whitespace removed, never null. A secret pasted into a
+     * Railway variable routinely carries a trailing newline — legal in the variable, illegal in
+     * an HTTP header — so {@link StripeConfig} builds the client from this, not from the raw
+     * value. Untrimmed, the key reads as live here while every Stripe call fails.
+     */
+    public String trimmedSecretKey() {
+        return secretKey == null ? "" : secretKey.trim();
+    }
+
+    /** {@code "live"} / {@code "test"} — the boot banner and every mode log line read this. */
+    public String keyMode() {
+        return isLiveKey() ? "live" : "test";
+    }
 
     public String getWebhookSecretV1() { return webhookSecretV1; }
     public void setWebhookSecretV1(String webhookSecretV1) { this.webhookSecretV1 = webhookSecretV1; }

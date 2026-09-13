@@ -27,6 +27,16 @@ public interface DisputeRepository extends JpaRepository<Dispute, UUID> {
     long sumMinorByEventIdAndStatusIn(@Param("eventId") UUID eventId,
                                       @Param("statuses") Collection<DisputeStatus> statuses);
 
+    /** Same sum, LIVE-mode rows only (V130) — the payout path's variant. */
+    @Query("""
+            select coalesce(sum(d.amountMinor), 0) from Dispute d
+             where d.eventId = :eventId
+               and d.status in :statuses
+               and d.testMode = false
+            """)
+    long sumLiveMinorByEventIdAndStatusIn(@Param("eventId") UUID eventId,
+                                          @Param("statuses") Collection<DisputeStatus> statuses);
+
     /**
      * The org-level payout gate: any OPEN dispute freezes every payout for the org, because
      * the connected balance is one shared pool and the funds may still be clawed back. A
@@ -53,5 +63,14 @@ public interface DisputeRepository extends JpaRepository<Dispute, UUID> {
      */
     default long sumOpenOrLostMinorByEventId(UUID eventId) {
         return sumMinorByEventIdAndStatusIn(eventId, List.of(DisputeStatus.OPEN, DisputeStatus.LOST));
+    }
+
+    /**
+     * The payout path's variant of {@link #sumOpenOrLostMinorByEventId}: LIVE-mode disputes
+     * only (V130). A test-era chargeback clawed back no real money, so subtracting it from a
+     * live net would withhold the organizer's own funds against a loss that never happened.
+     */
+    default long sumOpenOrLostLiveMinorByEventId(UUID eventId) {
+        return sumLiveMinorByEventIdAndStatusIn(eventId, List.of(DisputeStatus.OPEN, DisputeStatus.LOST));
     }
 }

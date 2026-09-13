@@ -7,6 +7,7 @@ import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.stripe.SettlementIngestService;
+import com.imin.iminapi.stripe.StripeProperties;
 import com.stripe.model.Charge;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,19 +48,22 @@ public class DisputeIngestService {
     private final OrganizationRepository orgs;
     private final SettlementIngestService settlementIngest;
     private final ApplicationEventPublisher publisher;
+    private final StripeProperties stripeProps;
 
     public DisputeIngestService(DisputeRepository disputes,
                                 OrderRepository orders,
                                 TicketRepository tickets,
                                 OrganizationRepository orgs,
                                 SettlementIngestService settlementIngest,
-                                ApplicationEventPublisher publisher) {
+                                ApplicationEventPublisher publisher,
+                                StripeProperties stripeProps) {
         this.disputes = disputes;
         this.orders = orders;
         this.tickets = tickets;
         this.orgs = orgs;
         this.settlementIngest = settlementIngest;
         this.publisher = publisher;
+        this.stripeProps = stripeProps;
     }
 
     /**
@@ -104,6 +108,9 @@ public class DisputeIngestService {
             row = new Dispute();
             row.setStripeDisputeId(stripeDispute.getId());
             row.setOrgId(orgId);
+            // Which Stripe mode delivered this chargeback (V130) — stamped once, on the first
+            // sighting, so a later lifecycle event cannot re-date it.
+            row.setTestMode(!stripeProps.isLiveKey());
             row.setOpenedAt(eventAt != null ? eventAt : Instant.now());
         }
         // Attribution can arrive late (an unreadable charge on the first delivery); never wipe

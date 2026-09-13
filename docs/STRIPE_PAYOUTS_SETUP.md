@@ -137,8 +137,10 @@ Run end-to-end in **test mode** before live:
 
 ## 7. Go-live gate
 
-- [ ] **Capability spike passed**: manual-schedule + acting-as-account Payout round-trip confirmed on a real
+- [x] **Capability spike passed**: manual-schedule + acting-as-account Payout round-trip confirmed on a real
       v2-recipient (`stripe_balance.stripe_transfers`-only) test account.
+      Passed 2026-09-11 on acct_1TX6jB2I8K7pqqUT (IT): balance_settings manual set + read back;
+      Payout.create acting as the account → po_1UEY4w2I8K7pqqUTtX1v5qsy; over-amount → balance_insufficient.
 - [ ] **Legal sign-off**: under destination charges **imin is merchant of record** and owns dispute/chargeback
       liability — VAT / consumer-protection / safeguarding accepted.
 - [ ] **Retention-deadline awareness**: once manual, funds must be disbursed within Stripe's retention window

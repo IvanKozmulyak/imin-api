@@ -402,6 +402,9 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
      *       ({@code PLANNED}/{@code SUBMITTED}) payout run for the SAME
      *       {@code stripe_account_id} — a connected balance is one shared pool, so
      *       at most one in-flight payout per org per tick.</li>
+     *   <li>its orders are not ALL test-mode (V130). A test-era event's gross is money
+     *       that never reached a real balance; paying it out would move live funds against
+     *       fake revenue. An event with no orders at all is untouched by this clause.</li>
      * </ul>
      *
      * <p>{@code Organization} has no JPA back-reference from {@code Event}, so the
@@ -445,6 +448,8 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
                     AND r1.status IN (com.imin.iminapi.payout.PayoutRunStatus.PLANNED,
                                       com.imin.iminapi.payout.PayoutRunStatus.SUBMITTED,
                                       com.imin.iminapi.payout.PayoutRunStatus.PAID))
+           AND (NOT EXISTS (SELECT 1 FROM com.imin.iminapi.model.Order ot WHERE ot.eventId = e.id AND ot.testMode = true)
+                OR EXISTS (SELECT 1 FROM com.imin.iminapi.model.Order ol WHERE ol.eventId = e.id AND ol.testMode = false))
          ORDER BY e.endsAt ASC
 """)
     List<Event> findPayoutCandidates(@Param("cutoff") Instant cutoff, Pageable pageable);
@@ -471,6 +476,10 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
      * ({@code gross − refunds − net app fee}) and skips when that is {@code <= 0}. This
      * monitor stays an APPROXIMATE alert by design — do not over-engineer the net into the
      * query. The PAID-run NOT EXISTS removes the common false positive (already disbursed).
+     *
+     * <p>Carries the same all-test-mode exclusion as {@link #findPayoutCandidates} (V130):
+     * an event whose only orders are test-era holds no real funds, so it is not a straggler
+     * and alerting on it would be a fabricated warning.
      */
     @Query("""
         SELECT e FROM Event e
@@ -491,6 +500,8 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
                  SELECT 1 FROM PayoutRun r
                   WHERE r.eventId = e.id
                     AND r.status = com.imin.iminapi.payout.PayoutRunStatus.PAID)
+           AND (NOT EXISTS (SELECT 1 FROM com.imin.iminapi.model.Order ot WHERE ot.eventId = e.id AND ot.testMode = true)
+                OR EXISTS (SELECT 1 FROM com.imin.iminapi.model.Order ol WHERE ol.eventId = e.id AND ol.testMode = false))
          ORDER BY e.endsAt ASC
 """)
     List<Event> findRetentionMonitorCandidates(@Param("retentionCutoff") Instant retentionCutoff, Pageable pageable);

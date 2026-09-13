@@ -223,15 +223,18 @@ public class PostEventPayoutService {
 
         // ── step 2 — per-event net (the ceiling). Fee EXCLUDED (§4.4). ──
         // Mirrors EventOverviewService: gross − refunds − max(0, appFee − appFeeRefunded).
-        long gross = orders.sumTotalMinorByEventId(eventId);
-        long refunded = refunds.sumSucceededRefundMinorByEventId(eventId);
-        long appFee = orders.sumApplicationFeeMinorByEventId(eventId);
-        long appFeeRefunded = refunds.sumSucceededRefundApplicationFeeMinorByEventId(eventId);
+        // LIVE-mode rows only, on every input (V130): test-era money never reached a real
+        // balance, so counting it here would disburse fake revenue out of the organizer's live
+        // funds — and a test-era dispute or payout run would shrink a live net for free.
+        long gross = orders.sumLiveTotalMinorByEventId(eventId);
+        long refunded = refunds.sumSucceededLiveRefundMinorByEventId(eventId);
+        long appFee = orders.sumLiveApplicationFeeMinorByEventId(eventId);
+        long appFeeRefunded = refunds.sumSucceededLiveRefundApplicationFeeMinorByEventId(eventId);
         long netAppFee = Math.max(0L, appFee - appFeeRefunded);
         // Chargebacks come off the top: the organizer bears the disputed FACE VALUE, imin
         // absorbs Stripe's separate dispute fee (which never reaches this table). A dispute
         // that is later won or reinstated leaves the OPEN/LOST sum and the net recovers.
-        long disputedMinor = disputes.sumOpenOrLostMinorByEventId(eventId);
+        long disputedMinor = disputes.sumOpenOrLostLiveMinorByEventId(eventId);
         long perEventNetMinor = Math.max(0L,
                 Math.max(0L, gross - refunded) - netAppFee - disputedMinor);
         if (disputedMinor > 0L) {
@@ -284,7 +287,7 @@ public class PostEventPayoutService {
         // A previous tick may have paid a CLAMPED amount (available balance short of the
         // net). That run carries remaining_minor and reconciles to PARTIAL, which keeps the
         // event a candidate; here we pay only the outstanding difference, never the net again.
-        long alreadyTriggered = payoutRuns.sumAmountByEventAndStatusIn(eventId, ALREADY_TRIGGERED);
+        long alreadyTriggered = payoutRuns.sumLiveAmountByEventAndStatusIn(eventId, ALREADY_TRIGGERED);
         long owedMinor = Math.max(0L, perEventNetMinor - alreadyTriggered);
         if (owedMinor <= 0L) {
             log.info("[payout] skip event {} org {} — net {} already fully triggered ({})",
@@ -327,6 +330,8 @@ public class PostEventPayoutService {
             r.setStatus(PayoutRunStatus.PLANNED);
             r.setAttempt(attempt);
             r.setIdempotencyKey(idem);
+            // Which Stripe mode is about to be asked for this payout (V130).
+            r.setTestMode(!props.isLiveKey());
             // UNIQUE(idempotency_key) makes concurrent replicas converge on one row;
             // a UNIQUE violation rolls THIS REQUIRES_NEW tx back and the event simply
             // retries on the next tick (expected, not an error).
@@ -587,6 +592,8 @@ public class PostEventPayoutService {
         r.setCurrency(event.getCurrency().toLowerCase(Locale.ROOT));
         r.setStatus(PayoutRunStatus.BLOCKED);
         r.setFailureReason(PayoutBlockReason.NO_BANK_ACCOUNT);
+        // Same stamp as a real run (V130): the era is the running key's, not the outcome's.
+        r.setTestMode(!props.isLiveKey());
         // attempt 0 = "no Stripe payout was ever attempted", so real attempts still start at
         // 1 and the attempt cap is not spent on a block the organizer can clear themselves.
         r.setAttempt(0);

@@ -89,6 +89,14 @@ public class PayoutRun {
     @Column(name = "failure_reason", columnDefinition = "text")
     private String failureReason;
 
+    /**
+     * True when this run was planned while the API ran on a Stripe TEST key (V130). A test-era
+     * payout moved nothing out of a live balance, so it never counts as already-triggered
+     * against a live event's net.
+     */
+    @Column(name = "test_mode", nullable = false)
+    private boolean testMode = false;
+
     @Column(name = "submitted_at")
     private Instant submittedAt;
 

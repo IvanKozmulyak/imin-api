@@ -65,6 +65,14 @@ public class Dispute {
     @Column(nullable = false, length = 32)
     private DisputeStatus status = DisputeStatus.OPEN;
 
+    /**
+     * True when this chargeback was first ingested while the API ran on a Stripe TEST key
+     * (V130). Test-era disputes clawed back no real money, so they withhold nothing from a
+     * live event's payout net.
+     */
+    @Column(name = "test_mode", nullable = false)
+    private boolean testMode = false;
+
     @Column(name = "opened_at")
     private Instant openedAt;
 

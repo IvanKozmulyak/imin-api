@@ -16,6 +16,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * so it has to actually execute on the engine the suite runs. H2 in PG-compat mode accepts
  * plain {@code FOR UPDATE} (it rejects the {@code FOR NO KEY UPDATE} a JPA pessimistic lock
  * would render), and the empty answer for an unset id is what tells the caller to call Stripe.
+ * {@link OrganizationRepository#lockAndReadStripeLivemode(UUID)} reads the mode off that same
+ * locked row, which is what decides whether the locked account is usable under the running key.
  */
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
@@ -42,6 +44,26 @@ class OrganizationRepositoryLockTest {
     @Test
     void emptyForAnOrgThatDoesNotExist() {
         assertThat(orgs.lockAndReadStripeAccountId(UUID.randomUUID())).isEmpty();
+    }
+
+    @Test
+    void readsTheLivemodeFlagOffTheLockedRow() {
+        Organization o = org("acct_locked_live");
+        o.setStripeLivemode(true);
+        UUID id = orgs.save(o).getId();
+
+        assertThat(orgs.lockAndReadStripeLivemode(id))
+                .as("the committed mode is what decides whether the locked account is usable")
+                .contains(true);
+    }
+
+    @Test
+    void livemodeIsEmptyWhenTheColumnWasNeverStamped() {
+        UUID id = orgs.save(org("acct_never_stamped")).getId();
+
+        assertThat(orgs.lockAndReadStripeLivemode(id))
+                .as("NULL is 'mode unknown', which is never a mismatch")
+                .isEmpty();
     }
 
     private Organization org(String stripeAccountId) {

@@ -87,4 +87,14 @@ public interface OrganizationRepository extends JpaRepository<Organization, UUID
     @Query(value = "SELECT stripe_account_id FROM organizations WHERE id = :id FOR UPDATE",
             nativeQuery = true)
     Optional<String> lockAndReadStripeAccountId(@Param("id") UUID id);
+
+    /**
+     * The Stripe mode of that SAME locked row, read as a scalar for the same reason. Whether
+     * the locked account is usable depends on the mode that minted it, so the mode has to come
+     * off the committed row too — judged from the pre-lock entity, the loser of a concurrent
+     * connect mints a second account. Empty = the column is NULL, i.e. mode never recorded.
+     */
+    @Query(value = "SELECT stripe_livemode FROM organizations WHERE id = :id FOR UPDATE",
+            nativeQuery = true)
+    Optional<Boolean> lockAndReadStripeLivemode(@Param("id") UUID id);
 }

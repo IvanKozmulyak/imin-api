@@ -6,6 +6,7 @@ import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.stripe.SettlementIngestService;
+import com.imin.iminapi.stripe.StripeProperties;
 import com.stripe.model.Charge;
 import com.stripe.net.ApiResource;
 import org.junit.jupiter.api.BeforeEach;
@@ -47,6 +48,7 @@ class DisputeIngestServiceTest {
     private OrganizationRepository orgs;
     private SettlementIngestService settlementIngest;
     private ApplicationEventPublisher publisher;
+    private StripeProperties stripeProps;
     private DisputeIngestService svc;
 
     private static final UUID ORG_ID = UUID.randomUUID();
@@ -61,7 +63,10 @@ class DisputeIngestServiceTest {
         orgs = mock(OrganizationRepository.class);
         settlementIngest = mock(SettlementIngestService.class);
         publisher = mock(ApplicationEventPublisher.class);
-        svc = new DisputeIngestService(disputes, orders, tickets, orgs, settlementIngest, publisher);
+        stripeProps = new StripeProperties();
+        stripeProps.setSecretKey("sk_test_dummy");
+        svc = new DisputeIngestService(disputes, orders, tickets, orgs, settlementIngest, publisher,
+                stripeProps);
 
         Charge charge = ApiResource.GSON.fromJson("""
                 { "id": "ch_1", "object": "charge", "payment_intent": "pi_1",
@@ -216,6 +221,51 @@ class DisputeIngestServiceTest {
 
         assertThat(revoked.getState()).isEqualTo(Ticket.STATE_ISSUED);
         verify(tickets).saveAll(anyList());
+    }
+
+    @Test
+    void aFirstSightingUnderALiveKeyIsStampedLive() {
+        stripeProps.setSecretKey("sk_live_dummy");
+
+        svc.ingest(stripeDispute("needs_response"), "acct_1", "charge.dispute.created",
+                Instant.parse("2026-09-11T10:00:00Z"));
+
+        assertThat(savedRow().isTestMode())
+                .as("a live chargeback must withhold its face value from the payout net")
+                .isFalse();
+    }
+
+    @Test
+    void aFirstSightingUnderATestKeyIsStampedTestMode() {
+        stripeProps.setSecretKey("sk_test_dummy");
+
+        svc.ingest(stripeDispute("needs_response"), "acct_1", "charge.dispute.created",
+                Instant.parse("2026-09-11T10:00:00Z"));
+
+        assertThat(savedRow().isTestMode())
+                .as("test-era money clawed nothing back, so it withholds nothing")
+                .isTrue();
+    }
+
+    @Test
+    void aLaterDeliveryDoesNotReStampAnExistingRow() {
+        Dispute existing = openRow();
+        existing.setTestMode(true);
+        when(disputes.findByStripeDisputeId("du_1")).thenReturn(Optional.of(existing));
+        stripeProps.setSecretKey("sk_live_dummy");
+
+        svc.ingest(stripeDispute("lost"), "acct_1", "charge.dispute.closed",
+                Instant.parse("2026-09-11T10:00:00Z"));
+
+        assertThat(savedRow().isTestMode())
+                .as("the era is the first sighting's, not that of whichever key is running later")
+                .isTrue();
+    }
+
+    private Dispute savedRow() {
+        ArgumentCaptor<Dispute> saved = ArgumentCaptor.forClass(Dispute.class);
+        verify(disputes).save(saved.capture());
+        return saved.getValue();
     }
 
     private Dispute openRow() {

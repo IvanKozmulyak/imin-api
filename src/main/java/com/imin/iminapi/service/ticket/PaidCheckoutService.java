@@ -12,6 +12,7 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
+import com.imin.iminapi.stripe.StripeProperties;
 import com.stripe.StripeClient;
 import com.stripe.exception.StripeException;
 import com.stripe.model.Charge;
@@ -60,6 +61,7 @@ public class PaidCheckoutService {
     private final StripeClient stripeClient;
     private final ApplicationEventPublisher publisher;
     private final MetaCapiOutboxWriter metaCapiOutboxWriter;
+    private final StripeProperties stripeProps;
 
     public PaidCheckoutService(OrderRepository orders,
                                 TicketRepository tickets,
@@ -67,7 +69,8 @@ public class PaidCheckoutService {
                                 TicketTierRepository tiers,
                                 StripeClient stripeClient,
                                 ApplicationEventPublisher publisher,
-                                MetaCapiOutboxWriter metaCapiOutboxWriter) {
+                                MetaCapiOutboxWriter metaCapiOutboxWriter,
+                                StripeProperties stripeProps) {
         this.orders = orders;
         this.tickets = tickets;
         this.events = events;
@@ -75,6 +78,7 @@ public class PaidCheckoutService {
         this.stripeClient = stripeClient;
         this.publisher = publisher;
         this.metaCapiOutboxWriter = metaCapiOutboxWriter;
+        this.stripeProps = stripeProps;
     }
 
     /**
@@ -180,6 +184,9 @@ public class PaidCheckoutService {
                 ? event.getCurrency()
                 : pi.getCurrency().toLowerCase(Locale.ROOT));
         order.setPaymentMethod("stripe");
+        // Which Stripe mode took this money (V130). A test-mode order is kept but never
+        // counted towards a live payout.
+        order.setTestMode(!stripeProps.isLiveKey());
         order.setStripePaymentIntentId(pi.getId());
         order.setStripeSessionId(resolved.sessionId());
         // Buyer's cookie-consent ads-consent decision (§7), stamped into the session/PI

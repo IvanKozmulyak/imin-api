@@ -61,6 +61,10 @@ public interface PayoutRunRepository extends JpaRepository<PayoutRun, UUID> {
      * Highest {@code attempt} recorded for an event, or {@code 0} when there are no runs.
      * Used to compute the next attempt (a fresh idempotency key after a FAILED run) without
      * loading every row.
+     *
+     * <p>Deliberately NOT filtered to live runs (V130): counting a test-era attempt only pushes
+     * the next idempotency key further from any key Stripe has already seen, which is the safe
+     * direction. Filtering could hand a live payout a key a test-era run already used.
      */
     @Query("select coalesce(max(r.attempt), 0) from PayoutRun r where r.eventId = :eventId")
     int maxAttemptByEventId(@Param("eventId") UUID eventId);
@@ -86,14 +90,19 @@ public interface PayoutRunRepository extends JpaRepository<PayoutRun, UUID> {
      * Fee-retention monitor (§4.4): total minor units imin has triggered as payouts
      * for an event across PAID/SUBMITTED runs. Any sum exceeding the event's
      * {@code gross - fee - refunds} is a bug to alert on. Bind the relevant statuses.
+     *
+     * <p>LIVE-mode runs only (V130): a test-era run moved nothing out of a live connected
+     * balance, so counting it as already triggered would silently shrink the first live
+     * payout by an amount the organizer never received.
      */
     @Query("""
             select coalesce(sum(r.amountMinor), 0) from PayoutRun r
              where r.eventId = :eventId
                and r.status in :statuses
+               and r.testMode = false
             """)
-    long sumAmountByEventAndStatusIn(@Param("eventId") UUID eventId,
-                                     @Param("statuses") Collection<PayoutRunStatus> statuses);
+    long sumLiveAmountByEventAndStatusIn(@Param("eventId") UUID eventId,
+                                         @Param("statuses") Collection<PayoutRunStatus> statuses);
 
     /**
      * The event's most recent run — the one the attempt cap parks {@code BLOCKED}, carrying
@@ -114,11 +123,16 @@ public interface PayoutRunRepository extends JpaRepository<PayoutRun, UUID> {
      * run whose reason is not the self-healing {@code selfHealingReason}
      * ({@link PayoutBlockReason#NO_BANK_ACCOUNT}). Such an event must never re-candidate: the
      * attempt cap exists precisely so a doomed payout stops being retried nightly.
+     *
+     * <p>LIVE-mode runs only (V130). The cutover script parks every non-terminal test-era run
+     * {@code blocked}, and an event that mixes test-era orders with live sales would otherwise
+     * be excluded from live payouts forever by a run that never moved a real cent.
      */
     @Query("""
             select count(r) > 0 from PayoutRun r
              where r.eventId = :eventId
                and r.status = com.imin.iminapi.payout.PayoutRunStatus.BLOCKED
+               and r.testMode = false
                and (r.failureReason is null or r.failureReason <> :selfHealingReason)
             """)
     boolean existsBlockedNeedingAHuman(@Param("eventId") UUID eventId,

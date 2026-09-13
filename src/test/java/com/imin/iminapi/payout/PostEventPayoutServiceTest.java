@@ -251,12 +251,19 @@ class PostEventPayoutServiceTest {
 
     private final FakeStripe fake = new FakeStripe();
     private Organization org;
+    private String originalSecretKey;
 
     @BeforeEach
     void setUp() {
         wipe();
         fake.reset();
         props.setPayoutScheduleManual(true);   // enable the money path for these tests
+        // Track B only ever runs under a live key in production, and the runs this suite creates
+        // are stamped from it (V130) — under the test-profile sk_test_ key they would be test-era
+        // money and drop out of the already-triggered subtraction. Mutating the shared
+        // StripeProperties singleton is safe only while test classes run sequentially.
+        originalSecretKey = props.getSecretKey();
+        props.setSecretKey("sk_live_dummy");
 
         StripeResponseGetter rg = mock(StripeResponseGetter.class);
         try {
@@ -280,6 +287,7 @@ class PostEventPayoutServiceTest {
     @AfterEach
     void tearDown() {
         props.setPayoutScheduleManual(false);
+        props.setSecretKey(originalSecretKey);
         wipe();
     }
 

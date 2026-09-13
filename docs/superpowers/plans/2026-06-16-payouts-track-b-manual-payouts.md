@@ -87,6 +87,18 @@ If `balance_settings` rejects the recipient account, or `Payout.create` can't ac
 
 Record the spike outcome inline in this file under a `## STEP 0 result` heading before proceeding.
 
+## STEP 0 result
+
+**PASSED 2026-09-11** on acct_1TX6jB2I8K7pqqUT (IT): balance_settings manual set + read back;
+Payout.create acting as the account → po_1UEY4w2I8K7pqqUTtX1v5qsy; over-amount →
+balance_insufficient.
+
+Also proven 2026-09-11: transfer reversal after a `reverse_transfer=false` refund on a
+destination charge (idempotent on replay, works against a pending balance; `charge.transfer`
+is null on the PI create response and populated on a later charge GET), and an `amount_off`
+coupon scoped to the ticket product inside Checkout (total 1898 = 2000 − 400 + 298, fee line
+untouched).
+
 ---
 
 ## 3. Phase 1 — Set accounts to manual payouts (+ backfill)

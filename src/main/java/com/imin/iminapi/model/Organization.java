@@ -118,6 +118,15 @@ public class Organization {
     private Instant stripeConnectStatusUpdatedAt;
 
     /**
+     * Stripe mode of the key that minted {@link #stripeAccountId} — true for a live key,
+     * false for a test key. NULL means the mode was never recorded and is always allowed:
+     * the guard in {@code StripeConnectService.getStatusLive} only refuses a mismatch it
+     * can prove, so V129 cannot brick an org it did not stamp.
+     */
+    @Column(name = "stripe_livemode")
+    private Boolean stripeLivemode;
+
+    /**
      * Org-level marketing send pause (V57, spec §7 complaint-rate circuit breaker).
      * Set by {@code ComplaintRateBreaker} when a campaign's complaint rate crosses
      * the ~0.1% threshold above the minimum-volume floor. While non-null the

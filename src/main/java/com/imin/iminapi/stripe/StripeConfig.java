@@ -25,8 +25,9 @@ public class StripeConfig {
 
     @Bean
     public StripeClient stripeClient(StripeProperties props) {
-        String key = props.getSecretKey();
-        if (key == null || key.isBlank()) {
+        // Trimmed: see StripeProperties.trimmedSecretKey().
+        String key = props.trimmedSecretKey();
+        if (key.isEmpty()) {
             // Fail fast — see README for setup. The user must set STRIPE_SECRET_KEY before booting.
             throw new IllegalStateException("STRIPE_SECRET_KEY is not set — see README for setup");
         }
@@ -34,6 +35,11 @@ public class StripeConfig {
             log.warn("STRIPE_WEBHOOK_SECRET_V1 is not set — POST /api/v1/stripe/webhook/v1 will reject all requests. "
                     + "Set it to the whsec_... printed by `stripe listen` for the V1 endpoint.");
         }
+        // Logged for both modes: this one line decides whether every order, payout run and
+        // dispute is stamped as real money. WARN, not ERROR — prod routes ERROR to Sentry, and
+        // a banner every boot is not an issue to triage.
+        log.warn("STRIPE MODE: {} — orders, payout runs and disputes are stamped from this mode",
+                props.keyMode());
         if (props.getWebhookSecretV2() == null || props.getWebhookSecretV2().isBlank()) {
             log.warn("STRIPE_WEBHOOK_SECRET_V2 is not set — POST /api/v1/stripe/webhook/v2 will reject all requests. "
                     + "Set it to the whsec_... printed by `stripe listen` for the V2 endpoint.");

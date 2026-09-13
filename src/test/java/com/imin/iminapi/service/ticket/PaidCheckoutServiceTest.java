@@ -16,6 +16,7 @@ import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.stripe.StripeProperties;
 import com.stripe.StripeClient;
 import com.stripe.model.Charge;
 import com.stripe.model.PaymentIntent;
@@ -56,6 +57,7 @@ class PaidCheckoutServiceTest {
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
     @Autowired UserRepository users;
+    @Autowired StripeProperties stripeProps;
 
     @MockitoBean StripeClient stripeClient;
 
@@ -65,9 +67,13 @@ class PaidCheckoutServiceTest {
 
     private Event event;
     private TicketTier tier;
+    private String originalSecretKey;
 
     @BeforeEach
     void setUp() throws Exception {
+        // StripeProperties is a shared singleton; the mode tests below swap the key and
+        // tearDown puts it back. Safe only while Surefire runs test classes sequentially.
+        originalSecretKey = stripeProps.getSecretKey();
         // Wire Stripe mocks for the PI-resolution code paths.
         checkoutService = mock(CheckoutService.class);
         sessionService = mock(SessionService.class);
@@ -120,6 +126,7 @@ class PaidCheckoutServiceTest {
 
     @AfterEach
     void tearDown() {
+        stripeProps.setSecretKey(originalSecretKey);
         tickets.deleteAll();
         orders.deleteAll();
         tiers.deleteAll();
@@ -154,6 +161,45 @@ class PaidCheckoutServiceTest {
             assertThat(t.getTierName()).isEqualTo("GA");
             assertThat(t.getState()).isEqualTo("issued");
         });
+    }
+
+    /**
+     * V130: which Stripe mode took the money, read off the running key at fulfilment. A live
+     * order filed as test money is silently dropped from the payout net and nothing else
+     * complains — so both branches are pinned.
+     */
+    @Test
+    void stamps_a_paid_order_as_live_money_under_a_live_key() throws Exception {
+        stripeProps.setSecretKey("sk_live_dummy");
+        PaymentIntent pi = pi("pi_test_live_stamp", 1500, "eur",
+                Map.of(
+                        "tier_id", tier.getId().toString(),
+                        "qty", "1",
+                        "event_id", event.getId().toString()));
+        wireBuyerEmail(pi, "buyer@example.com");
+        wireSessionLookup(pi, "cs_test_live_stamp", null);
+
+        service.issuePaidOrder(pi);
+
+        assertThat(orders.findByStripePaymentIntentId("pi_test_live_stamp").orElseThrow()
+                .isTestMode()).isFalse();
+    }
+
+    @Test
+    void stamps_a_paid_order_as_test_money_under_a_test_key() throws Exception {
+        stripeProps.setSecretKey("sk_test_dummy");
+        PaymentIntent pi = pi("pi_test_test_stamp", 1500, "eur",
+                Map.of(
+                        "tier_id", tier.getId().toString(),
+                        "qty", "1",
+                        "event_id", event.getId().toString()));
+        wireBuyerEmail(pi, "buyer@example.com");
+        wireSessionLookup(pi, "cs_test_test_stamp", null);
+
+        service.issuePaidOrder(pi);
+
+        assertThat(orders.findByStripePaymentIntentId("pi_test_test_stamp").orElseThrow()
+                .isTestMode()).isTrue();
     }
 
     @Test

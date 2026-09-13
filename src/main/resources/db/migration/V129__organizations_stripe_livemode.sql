@@ -1,0 +1,13 @@
+-- V129__organizations_stripe_livemode.sql
+-- Which Stripe mode minted organizations.stripe_account_id.
+--
+-- Production ran on sk_test_ from day one, so every stored acct_ is a test-mode object
+-- that a live key cannot retrieve. StripeConnectStatusMirror.syncFromStripe swallows the
+-- resulting 404 and leaves the mirror untouched, so a mode mismatch is indistinguishable
+-- from a Stripe outage and the org keeps selling against an account that cannot receive a
+-- cent. This column makes the mismatch a fact the checkout gate can read locally.
+--
+-- NULLABLE ON PURPOSE: NULL means "we never recorded a mode" and is always allowed. No
+-- backfill — guessing a mode for an existing row would be the same lie the column exists
+-- to stop, and a backfill that guessed wrong would brick every org at checkout.
+ALTER TABLE organizations ADD COLUMN stripe_livemode BOOLEAN;
