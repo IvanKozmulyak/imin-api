@@ -26,7 +26,7 @@ cd imin-api
 | Test class | What it asserts |
 |---|---|
 | `RefundServiceTest` (9) | Idempotency-key replay returns existing row, cross-org → 404, free order → 409 `ORDER_NOT_REFUNDABLE`, redeemed ticket → 409 `TICKET_REDEEMED`, already-refunded → 409 `TICKET_ALREADY_REFUNDED`, proportional fee math (599 × 5000/10000 → 300), happy path persists with Stripe IDs |
-| `StripeRefundServiceTest` (4) | `reverse_transfer=true`, `refund_application_fee=false`, idempotency key passed to Stripe SDK, separate `ApplicationFee.Refund.create()` call when `appFeeRefundMinor > 0`, OTHER reason omits Stripe enum |
+| `StripeRefundServiceTest` (5) | Per path, the two flags move together: `reverse_transfer=true` ⇒ `refund_application_fee=true` (the reversal pulls the gross, so Stripe must return the `F·A/G` fee share), platform-funded `reverse_transfer=false` ⇒ `refund_application_fee=false` (the payout sweep reverses `A − F·A/G` instead); exactly one Stripe call — no `ApplicationFee.Refund.create()`; amount/reason/idempotency key passed to the SDK; OTHER reason omits the Stripe enum |
 | `StripeWebhookServiceTest` (3 new) | `charge.refund.updated` with status=succeeded calls `handleWebhookStatusChange(SUCCEEDED)`, status=failed passes `failure_reason`, replay of same event id is deduped (handler invoked exactly once) |
 | `RefundControllerTest` (4) | Missing `Idempotency-Key` header → 400, cross-org → 404, happy path returns 202 with `RefundResponse`, empty `ticketIds` rejected by bean validation |
 | `RefundConfirmationEmailerTest` (3) | Builds email from refund + order + event + organization, missing refund skips, missing order email skips |

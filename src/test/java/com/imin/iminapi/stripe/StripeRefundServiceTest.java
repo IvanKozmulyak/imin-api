@@ -37,7 +37,7 @@ class StripeRefundServiceTest {
         appFeeSvc = mock(ApplicationFeeService.class);
         feeRefundSvc = mock(ApplicationFeeRefundService.class);
         when(stripeClient.refunds()).thenReturn(refundSvc);
-        // Stubbed but never expected — the point of fullRefundDoesNotCreateApplicationFeeRefund.
+        // Stubbed but never expected — the point of refundIssuesExactlyOneStripeCall.
         lenient().when(stripeClient.charges()).thenReturn(chargeSvc);
         lenient().when(stripeClient.applicationFees()).thenReturn(appFeeSvc);
         lenient().when(appFeeSvc.refunds()).thenReturn(feeRefundSvc);
@@ -54,7 +54,7 @@ class StripeRefundServiceTest {
     }
 
     @Test
-    void create_passesAmountReasonReverseTransferAndIdempotencyKey() throws Exception {
+    void create_passesAmountReasonAndIdempotencyKey() throws Exception {
         stubRefund("re_test_123");
 
         Refund out = service.create(
@@ -85,13 +85,8 @@ class StripeRefundServiceTest {
         assertThat(cap.getValue().getReason()).isNull();
     }
 
-    /**
-     * P0-3 repro. On a destination charge, reverse_transfer=true already leaves the platform
-     * fee at F·(1 − A/G); the extra ApplicationFee.Refund moved another F·A/G from the platform
-     * to the connected account, crediting the organizer the fee a second time on every refund.
-     */
     @Test
-    void fullRefundDoesNotCreateApplicationFeeRefund() throws Exception {
+    void refundIssuesExactlyOneStripeCall() throws Exception {
         stubRefund("re_test_2");
 
         service.create("pi_test_2", 2500L, "eur",
@@ -104,19 +99,37 @@ class StripeRefundServiceTest {
     }
 
     @Test
-    void refundStillSetsReverseTransferTrueAndRefundApplicationFeeFalse() throws Exception {
-        stubRefund("re_test_3");
+    void reverseTransferRefundAlsoRefundsTheApplicationFee() throws Exception {
+        stubRefund("re_fee_share");
 
-        service.create("pi_x", 1000L, "eur", RefundReason.OTHER, 50L, true, "k2");
+        service.create("pi_fee", 1149L, "eur", RefundReason.REQUESTED_BY_CUSTOMER, 149L, true, "k_fee");
 
         ArgumentCaptor<RefundCreateParams> cap = ArgumentCaptor.forClass(RefundCreateParams.class);
         verify(refundSvc).create(cap.capture(), any(RequestOptions.class));
         assertThat(cap.getValue().getReverseTransfer()).isEqualTo(Boolean.TRUE);
-        assertThat(cap.getValue().getRefundApplicationFee()).isEqualTo(Boolean.FALSE);
+        assertThat(cap.getValue().getRefundApplicationFee())
+            .as("the reversal pulls the GROSS off the connected balance, so Stripe must return "
+                + "the organizer's proportional fee share or the organizer eats the platform fee")
+            .isEqualTo(Boolean.TRUE);
     }
 
     @Test
-    void platformFundedRefundSetsReverseTransferFalse() throws Exception {
+    void reverseTransferRefundWithNoFeeDoesNotAskStripeToRefundOne() throws Exception {
+        stubRefund("re_no_fee");
+
+        service.create("pi_no_fee", 1000L, "eur", RefundReason.REQUESTED_BY_CUSTOMER, 0L, true, "k_no_fee");
+
+        ArgumentCaptor<RefundCreateParams> cap = ArgumentCaptor.forClass(RefundCreateParams.class);
+        verify(refundSvc).create(cap.capture(), any(RequestOptions.class));
+        assertThat(cap.getValue().getReverseTransfer()).isEqualTo(Boolean.TRUE);
+        assertThat(cap.getValue().getRefundApplicationFee())
+            .as("a charge with application_fee_amount = 0 has no fee to refund and Stripe "
+                + "rejects the flag")
+            .isEqualTo(Boolean.FALSE);
+    }
+
+    @Test
+    void platformFundedRefundKeepsTheFee() throws Exception {
         stubRefund("re_test_4");
 
         service.create("pi_y", 1000L, "eur", RefundReason.OTHER, 50L, false, "k3:platform");
@@ -126,6 +139,9 @@ class StripeRefundServiceTest {
         assertThat(cap.getValue().getReverseTransfer())
             .as("a platform-funded refund must NOT try to pull from the short connected balance")
             .isEqualTo(Boolean.FALSE);
-        assertThat(cap.getValue().getRefundApplicationFee()).isEqualTo(Boolean.FALSE);
+        assertThat(cap.getValue().getRefundApplicationFee())
+            .as("the payout sweep reverses amount − feeShare off the destination transfer, so a fee "
+                + "refund here would hand the connected account a share nothing claws back")
+            .isEqualTo(Boolean.FALSE);
     }
 }

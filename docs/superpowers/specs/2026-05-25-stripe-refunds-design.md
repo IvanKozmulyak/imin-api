@@ -23,13 +23,13 @@ Let organizers issue full or partial Stripe refunds on paid orders, with funds r
 | # | Decision | Rationale |
 |---|---|---|
 | 1 | Refund unit = list of ticket IDs (not freeform amount). Full refund = all non-refunded tickets in the order. | Orders have no `order_items` table — tickets are the line items. Eliminates "user typed $20.51 on $100 order" ambiguity. |
-| 2 | Set `reverse_transfer=true` and `refund_application_fee=false`, and issue **one** Stripe call. No explicit `ApplicationFee.Refund.create` — revised 2026-09-10. | On a destination charge the proportional transfer reversal already leaves the platform fee at `F·(1 − A/G)` and the organizer bearing its own share; a second fee refund credited the connected account the fee again. `reverse_transfer=false` is the platform-funded fallback when the connected balance is short. |
+| 2 | Issue **one** Stripe call with `reverse_transfer=true` and `refund_application_fee=true` — no explicit `ApplicationFee.Refund.create` (one-call revised 2026-09-10, fee flag corrected 2026-09-13). | The connected ledger at sale is `payment G`, `fee F`, **net G − F**, but `reverse_transfer` reverses the **gross** `A`, not `A·(G−F)/G`. So the fee flag is what returns the organizer's `F·A/G` share; with it `false` the organizer eats the whole platform fee (sandbox 2026-09-13: `payment_refund −1149`, `application_fees.amount_refunded = 0`). The flag is proportional, not all-or-nothing. `reverse_transfer=false` + `refund_application_fee=false` is the platform-funded fallback when the connected balance is short — there the sweep reverses `A − F·A/G` instead. |
 | 3 | Pure webhook-driven inventory release. The synchronous `POST` never decrements `tier.sold` or flips `ticket.state`; only the `charge.refund.updated` → `SUCCEEDED` webhook does. | Stripe refunds can stay `pending` for hours on debit cards. One code path = no double-release risk. |
 | 4 | Dedicated `refunds` table + `refund_tickets` join. Not fields on `orders`. | Orders can have multiple partial refunds over time, each with its own Stripe ID and status. Mirrors Stripe data model. |
 | 5 | Subscribe to `charge.refund.updated` only (not `charge.refunded`). | Sync API call seeds the row; the webhook is the sole authority for status transitions. |
 | 6 | Two-layer idempotency. Client supplies `Idempotency-Key` header (UUID generated when the modal opens). Server uses a deterministic Stripe `Idempotency-Key = "refund_" + refund.id` on `refunds.create`. | Survives double-click, network retry, server crash mid-call. |
 | 7 | New `Ticket.state = 'REFUNDED'`. Refunded tickets cannot be redeemed. | A refunded ticket's QR code must not scan at the door. |
-| 8 | `application_fee_refund_minor = round(orig_fee × refund_amount / charge_amount)` is kept as **bookkeeping only** — it is never sent to Stripe. | It is the platform-fee share attributable to the refund, which is what the payout net (`gross − refunds − max(0, appFee − appFeeRefunded)`) needs to land on zero for a fully refunded event. |
+| 8 | `application_fee_refund_minor = round(orig_fee × refund_amount / charge_amount)` is **bookkeeping only**: the number itself is never sent to Stripe (only the boolean `refund_application_fee` is), and Stripe computes its own proportional figure. | It is the platform-fee share attributable to the refund, which is what the payout net (`gross − refunds − max(0, appFee − appFeeRefunded)`) needs to land on zero for a fully refunded event, and what the platform-funded sweep subtracts (`A − F·A/G`). It **estimates** Stripe's proportional refund, so the two can differ by ≤1 minor unit per partial — never assert equality. |
 | 9 | Refund UI = "Orders" tab on `EventDetailPage`. No `/orders` route. | No orders page exists today; product is event-centric. Lowest-cost surface. |
 | 10 | Refund-confirmation email via `@Async` event listener mirroring the existing `TicketsIssuedEvent` pattern. | Webhooks must return 200 fast; Resend latency must not block ack. |
 
@@ -332,36 +332,29 @@ Idempotency stack on the webhook path:
 ## Stripe call details — StripeRefundService
 
 ```java
-StripeRefund create(String paymentIntentId, long amountMinor, String currency,
-                    RefundReason reason, long appFeeRefundMinor,
-                    String idempotencyKey) {
+Refund create(String paymentIntentId, long amountMinor, String currency,
+              RefundReason reason, long appFeeRefundMinor,
+              boolean reverseTransfer, String idempotencyKey) {
 
-  // (1) Refund the charge. Reverse the transfer to pull funds back from connected acct.
-  //     refund_application_fee = false; we issue an explicit ApplicationFee.Refund below.
-  RefundCreateParams params = RefundCreateParams.builder()
+  // ONE Stripe call. reverse_transfer pulls the GROSS off the connected balance, so
+  // refund_application_fee rides along and returns the organizer its proportional fee share.
+  RefundCreateParams.Builder pb = RefundCreateParams.builder()
     .setPaymentIntent(paymentIntentId)
     .setAmount(amountMinor)
-    .setReason(reason.toStripe())
-    .setReverseTransfer(true)
-    .setRefundApplicationFee(false)
-    .putMetadata("order_id", /* order id */)
-    .build();
-  RequestOptions opts = RequestOptions.builder().setIdempotencyKey(idempotencyKey).build();
-  StripeRefund r = stripeClient.refunds().create(params, opts);
-
-  // (2) Refund the application fee proportionally. Skipped when appFeeRefundMinor == 0.
-  if (appFeeRefundMinor > 0) {
-    String chargeId = r.getCharge();
-    String appFeeId = stripeClient.charges().retrieve(chargeId).getApplicationFee();
-    FeeRefundCreateOnApplicationFeeParams feeParams = FeeRefundCreateOnApplicationFeeParams.builder()
-      .setAmount(appFeeRefundMinor).build();
-    RequestOptions feeOpts = RequestOptions.builder()
-      .setIdempotencyKey(idempotencyKey + "_fee").build();
-    stripeClient.applicationFees().refunds().create(appFeeId, feeParams, feeOpts);
+    .setReverseTransfer(reverseTransfer)
+    .setRefundApplicationFee(reverseTransfer && appFeeRefundMinor > 0);
+  if (reason.toStripe() != null) {
+    pb.setReason(RefundCreateParams.Reason.valueOf(reason.name()));
   }
-  return r;
+  RequestOptions opts = RequestOptions.builder().setIdempotencyKey(idempotencyKey).build();
+  return stripeClient.refunds().create(pb.build(), opts);
 }
 ```
+
+`appFeeRefundMinor` is imin's own `round(F·A/G)` estimate, persisted for the payout net and never
+sent to Stripe, which computes its own proportional slice; it only gates the flag, because a charge
+with no application fee rejects `refund_application_fee=true`. `reverseTransfer=false` is the
+platform-funded path: the fee stays with the platform for the post-event payout sweep to settle.
 
 **Note on rounding**: across N partial refunds that together cover the full order, the per-refund proportional formula can leave a cumulative rounding error of at most N−1 cents in the application fee. Acceptable for Phase A. If precision matters later, switch to "compute the last refund's fee as `orig_app_fee − sum_of_prior_fee_refunds`".
 
