@@ -1,5 +1,6 @@
 package com.imin.iminapi.refund;
 
+import com.imin.iminapi.dispute.DisputeRepository;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.repository.OrderRepository;
@@ -41,6 +42,7 @@ class RefundServiceTest {
     RefundTicketRepository refundTickets = mock(RefundTicketRepository.class);
     StripeRefundService stripeRefunds = mock(StripeRefundService.class);
     TicketTierRepository tierRepo = mock(TicketTierRepository.class);
+    DisputeRepository disputes = mock(DisputeRepository.class);
     ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
     RefundService service;
 
@@ -55,7 +57,8 @@ class RefundServiceTest {
         userId = UUID.randomUUID();
         orderId = UUID.randomUUID();
         principal = new AuthPrincipal(userId, orgId, UserRole.OWNER, UUID.randomUUID());
-        service = new RefundService(orders, tickets, refunds, refundTickets, stripeRefunds, tierRepo, publisher);
+        service = new RefundService(orders, tickets, refunds, refundTickets, stripeRefunds, tierRepo,
+            disputes, publisher);
     }
 
     private Order paidOrder() {
@@ -210,6 +213,62 @@ class RefundServiceTest {
             .isInstanceOf(ApiException.class)
             .extracting(e -> ((ApiException) e).code())
             .isEqualTo(ErrorCode.TICKET_REDEEMED);
+    }
+
+    /**
+     * A charged-back order must never reach Stripe: the money is already being pulled
+     * back, and Stripe answers a refund on it with charge_disputed.
+     */
+    @Test
+    void open_dispute_blocks_the_refund_before_stripe() throws Exception {
+        Order o = paidOrder();
+        Ticket t1 = ticket(2500);
+        Ticket t2 = ticket(2500);
+        when(orders.findById(orderId)).thenReturn(Optional.of(o));
+        when(refunds.findByOrderIdAndIdempotencyKey(any(), any())).thenReturn(Optional.empty());
+        when(tickets.findByIdInAndOrderId(any(), eq(orderId))).thenReturn(List.of(t1));
+        when(tickets.findByOrderId(orderId)).thenReturn(List.of(t1, t2));
+        when(refunds.sumActiveAmountByOrderId(orderId)).thenReturn(0L);
+        when(refundTickets.findRefundedTicketIds(any())).thenReturn(Set.of());
+        com.stripe.model.Refund stripeStub = new com.stripe.model.Refund();
+        stripeStub.setId("re_1");
+        stripeStub.setStatus("pending");
+        when(stripeRefunds.create(anyString(), anyLong(), anyString(), any(), anyLong(),
+                org.mockito.ArgumentMatchers.anyBoolean(), anyString())).thenReturn(stripeStub);
+        when(refunds.save(any(Refund.class))).thenAnswer(inv -> {
+            Refund r = inv.getArgument(0);
+            if (r.getId() == null) r.setId(UUID.randomUUID());
+            return r;
+        });
+
+        when(disputes.hasOpenOrLostByOrderId(orderId)).thenReturn(true);
+
+        assertThatThrownBy(() ->
+            service.createRefund(orderId, principal, "k", List.of(t1.getId()), RefundReason.OTHER))
+            .isInstanceOf(ApiException.class)
+            .extracting(e -> ((ApiException) e).code())
+            .isEqualTo(ErrorCode.ORDER_DISPUTED);
+        verifyNoInteractions(stripeRefunds);
+    }
+
+    /**
+     * The guard sits AFTER the replay short-circuit: a refund taken before the chargeback
+     * keeps returning its own row, rather than 409ing a caller retrying a settled request.
+     */
+    @Test
+    void idempotent_replay_still_returns_its_row_on_a_disputed_order() {
+        Refund existing = new Refund();
+        existing.setId(UUID.randomUUID());
+        when(orders.findById(orderId)).thenReturn(Optional.of(paidOrder()));
+        when(refunds.findByOrderIdAndIdempotencyKey(orderId, "pre-dispute"))
+            .thenReturn(Optional.of(existing));
+        when(disputes.hasOpenOrLostByOrderId(orderId)).thenReturn(true);
+
+        Refund out = service.createRefund(orderId, principal, "pre-dispute",
+            List.of(UUID.randomUUID()), RefundReason.OTHER);
+
+        assertThat(out).isSameAs(existing);
+        verifyNoInteractions(stripeRefunds);
     }
 
     @Test

@@ -1,11 +1,13 @@
 package com.imin.iminapi.service.dashboard;
 
+import com.imin.iminapi.dispute.DisputeWithholding;
 import com.imin.iminapi.dto.dashboard.DashboardResponse;
 import com.imin.iminapi.dto.dashboard.DashboardResponse.*;
 import com.imin.iminapi.dto.event.EventDto;
 import com.imin.iminapi.model.AuditLog;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.User;
+import com.imin.iminapi.refund.RefundRepository;
 import com.imin.iminapi.repository.AuditLogRepository;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
@@ -23,6 +25,7 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 
 @Service
 public class DashboardService {
@@ -35,14 +38,19 @@ public class DashboardService {
     private final UserRepository users;
     private final OrderRepository orders;
     private final AuditLogRepository auditLogs;
+    private final RefundRepository refunds;
+    private final DisputeWithholding disputeWithholding;
 
     public DashboardService(EventRepository events, TicketTierRepository tiers, UserRepository users,
-                            OrderRepository orders, AuditLogRepository auditLogs) {
+                            OrderRepository orders, AuditLogRepository auditLogs,
+                            RefundRepository refunds, DisputeWithholding disputeWithholding) {
         this.events = events;
         this.tiers = tiers;
         this.users = users;
         this.orders = orders;
         this.auditLogs = auditLogs;
+        this.refunds = refunds;
+        this.disputeWithholding = disputeWithholding;
     }
 
     /**
@@ -70,8 +78,8 @@ public class DashboardService {
 
         Now nowDto = next.map(e -> {
             int totalQty = tiers.sumQuantityByEventId(e.getId());
-            int sold = tiers.sumSoldByEventId(e.getId());
-            long revenue = orders.sumTotalMinorByEventId(e.getId());
+            int sold = soldNetOfDisputes(e.getId());
+            long revenue = revenueNetOfRefundsAndDisputes(e.getId());
             int pct = totalQty == 0 ? 0 : (int) Math.round(100.0 * sold / totalQty);
             int daysOut = (int) Duration.between(now, e.getStartsAt()).toDays();
             return new Now(summaryWithLiveMetrics(e, sold, revenue), pct, Math.max(0, daysOut), totalQty);
@@ -82,8 +90,8 @@ public class DashboardService {
 
         LastEvent lastEvent = past.map(e -> {
             int capacity = tiers.sumQuantityByEventId(e.getId());
-            int sold = tiers.sumSoldByEventId(e.getId());
-            long revenue = orders.sumTotalMinorByEventId(e.getId());
+            int sold = soldNetOfDisputes(e.getId());
+            long revenue = revenueNetOfRefundsAndDisputes(e.getId());
             int avgTicket = sold == 0 ? 0 : (int) (revenue / sold);
             return new LastEvent(summaryWithLiveMetrics(e, sold, revenue),
                     new LastEventMetrics(sold, capacity, avgTicket, /* nps */ null));
@@ -94,6 +102,26 @@ public class DashboardService {
 
         return new DashboardResponse(new Greeting(firstName), nowDto, cycle, lastEvent,
                 /* prediction */ null, business, activity);
+    }
+
+    /**
+     * Per-event figures net of chargebacks, matching the event Overview and Sales tabs.
+     * TicketTier.sold is untouched by dispute ingest, so the revoked tickets come off here.
+     */
+    private int soldNetOfDisputes(UUID eventId) {
+        return Math.max(0, tiers.sumSoldByEventId(eventId)
+                - disputeWithholding.disputedTicketCount(eventId));
+    }
+
+    /**
+     * Gross less succeeded refunds less withheld chargebacks, clamped at 0 — the same
+     * expression the Overview and Sales tabs use. Dropping the refund term here made the
+     * org home read higher than Overview for any event that had ever refunded a ticket.
+     */
+    private long revenueNetOfRefundsAndDisputes(UUID eventId) {
+        return Math.max(0L, orders.sumTotalMinorByEventId(eventId)
+                - refunds.sumSucceededRefundMinorByEventId(eventId)
+                - disputeWithholding.withheldMinor(eventId));
     }
 
     private Cycle buildCycle(AuthPrincipal p, Instant now, DashboardPeriod period, long activeCount) {

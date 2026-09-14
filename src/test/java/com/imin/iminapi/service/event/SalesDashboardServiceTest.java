@@ -1,6 +1,9 @@
 package com.imin.iminapi.service.event;
 
 import com.imin.iminapi.config.TestRateLimitConfig;
+import com.imin.iminapi.dispute.Dispute;
+import com.imin.iminapi.dispute.DisputeRepository;
+import com.imin.iminapi.dispute.DisputeStatus;
 import com.imin.iminapi.dto.event.SalesDashboardResponse;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
@@ -52,6 +55,7 @@ class SalesDashboardServiceTest {
     @Autowired TicketRepository tickets;
     @Autowired RefundRepository refunds;
     @Autowired FunnelEventRepository funnel;
+    @Autowired DisputeRepository disputes;
 
     private Organization org;
     private User owner;
@@ -97,7 +101,7 @@ class SalesDashboardServiceTest {
     void tearDown() { wipe(); }
 
     private void wipe() {
-        funnel.deleteAll(); refunds.deleteAll(); tickets.deleteAll();
+        disputes.deleteAll(); funnel.deleteAll(); refunds.deleteAll(); tickets.deleteAll();
         orders.deleteAll(); tiers.deleteAll(); events.deleteAll();
         users.deleteAll(); orgs.deleteAll();
     }
@@ -237,6 +241,34 @@ class SalesDashboardServiceTest {
 
         SalesDashboardResponse r = service.dashboard(principal, event.getId());
         assertThat(r.tiles().netRevenueMinor()).isEqualTo(7000L); // 10000 - 3000
+    }
+
+    /**
+     * The Sales tab reads the same net as the Overview tab, or the two tabs disagree by
+     * exactly the disputed amount on the same event.
+     */
+    @Test
+    void net_revenue_also_subtracts_open_and_lost_disputes() {
+        Order kept = newOrder(10000);
+        newTicket(kept, ga, Ticket.STATE_ISSUED);
+        Order charged = newOrder(1149);
+        newTicket(charged, ga, Ticket.STATE_REVOKED);
+
+        Dispute d = new Dispute();
+        d.setStripeDisputeId("du_" + UUID.randomUUID().toString().substring(0, 12));
+        d.setOrgId(org.getId());
+        d.setEventId(event.getId());
+        d.setOrderId(charged.getId());
+        d.setAmountMinor(1149);
+        d.setCurrency("eur");
+        d.setStatus(DisputeStatus.OPEN);
+        d.setOpenedAt(Instant.now().minusSeconds(3600));
+        disputes.save(d);
+
+        SalesDashboardResponse r = service.dashboard(principal, event.getId());
+        assertThat(r.tiles().netRevenueMinor()).isEqualTo(10000L);  // 11149 − 1149
+        // tierAggregates already drops the revoked ticket, so sold needs no adjustment here.
+        assertThat(r.tiles().ticketsSold()).isEqualTo(1);
     }
 
     @Test

@@ -1,6 +1,9 @@
 package com.imin.iminapi.controller.order;
 
 import com.imin.iminapi.controller.order.dto.OrderRowResponse;
+import com.imin.iminapi.dispute.Dispute;
+import com.imin.iminapi.dispute.DisputeRepository;
+import com.imin.iminapi.dispute.DisputeWithholding;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Ticket;
@@ -18,8 +21,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -36,16 +41,34 @@ public class EventOrdersController {
     private static final int DEFAULT_LIMIT = 100;
     private static final int MAX_LIMIT = 500;
 
+    /**
+     * Lower sorts first, i.e. wins: OPEN, then LOST, then newest openedAt, then lowest id.
+     * The id is the tiebreak Stripe does not give us — two chargebacks opened in the same
+     * second would otherwise render whichever row the query happened to return first.
+     */
+    private static final Comparator<Dispute> GOVERNING_ORDER =
+            Comparator.comparingInt((Dispute d) -> switch (d.getStatus()) {
+                        case OPEN -> 0;
+                        case LOST -> 1;
+                        default -> 2;
+                    })
+                    .thenComparing(d -> d.getOpenedAt() == null ? Instant.EPOCH : d.getOpenedAt(),
+                            Comparator.reverseOrder())
+                    .thenComparing(Dispute::getId);
+
     private final EventRepository events;
     private final OrderRepository orders;
     private final TicketRepository tickets;
+    private final DisputeRepository disputes;
 
     public EventOrdersController(EventRepository events,
                                  OrderRepository orders,
-                                 TicketRepository tickets) {
+                                 TicketRepository tickets,
+                                 DisputeRepository disputes) {
         this.events = events;
         this.orders = orders;
         this.tickets = tickets;
+        this.disputes = disputes;
     }
 
     @GetMapping
@@ -60,11 +83,13 @@ public class EventOrdersController {
                 eventId, PageRequest.of(0, capped, Sort.by(Sort.Direction.DESC, "createdAt")));
         if (page.isEmpty()) return List.of();
 
-        Map<UUID, List<Ticket>> ticketsByOrder = loadTicketsByOrder(
-                page.stream().map(Order::getId).toList());
+        List<UUID> orderIds = page.stream().map(Order::getId).toList();
+        Map<UUID, List<Ticket>> ticketsByOrder = loadTicketsByOrder(orderIds);
+        Map<UUID, Dispute> disputeByOrder = loadGoverningDisputes(orderIds);
         List<OrderRowResponse> rows = new ArrayList<>(page.size());
         for (Order o : page) {
-            rows.add(toRow(o, ticketsByOrder.getOrDefault(o.getId(), List.of())));
+            rows.add(toRow(o, ticketsByOrder.getOrDefault(o.getId(), List.of()),
+                    disputeByOrder.get(o.getId())));
         }
         return rows;
     }
@@ -77,7 +102,22 @@ public class EventOrdersController {
         return byOrder;
     }
 
-    private static OrderRowResponse toRow(Order o, List<Ticket> orderTickets) {
+    /**
+     * One dispute per order for the page: the OPEN one, else the LOST one, else the most
+     * recently opened. An order can collect several chargebacks, and the row has to show
+     * the one that is actually governing its money.
+     */
+    private Map<UUID, Dispute> loadGoverningDisputes(Collection<UUID> orderIds) {
+        if (orderIds.isEmpty()) return Map.of();
+        Map<UUID, Dispute> governing = new HashMap<>();
+        for (Dispute d : disputes.findByOrderIdIn(orderIds)) {
+            governing.merge(d.getOrderId(), d,
+                    (a, b) -> GOVERNING_ORDER.compare(a, b) <= 0 ? a : b);
+        }
+        return governing;
+    }
+
+    private static OrderRowResponse toRow(Order o, List<Ticket> orderTickets, Dispute dispute) {
         int totalTickets = orderTickets.size();
         int refundedCount = (int) orderTickets.stream()
             .filter(t -> Ticket.STATE_REFUNDED.equals(t.getState()))
@@ -92,6 +132,13 @@ public class EventOrdersController {
         String status = inactiveCount == 0 ? "paid"
                       : inactiveCount == totalTickets ? "refunded"
                       : "partially_refunded";
+        // A chargeback revokes the tickets, so the ticket-derived status above reads
+        // "refunded" — a different event, with a Refund button that Stripe would reject.
+        // OPEN and LOST override it; WON / WITHDRAWN_REINSTATED gave the money back, so the
+        // row keeps its ticket-derived status and only carries the dispute for context.
+        boolean withholding = dispute != null
+                && DisputeWithholding.STATUSES.contains(dispute.getStatus());
+        if (withholding) status = "disputed";
 
         List<OrderRowResponse.TicketRow> ticketRows = orderTickets.stream()
             .map(t -> new OrderRowResponse.TicketRow(
@@ -108,7 +155,12 @@ public class EventOrdersController {
             refundedCount,
             status,
             o.getCreatedAt(),
-            ticketRows
+            ticketRows,
+            dispute == null ? null : new OrderRowResponse.DisputeRow(
+                dispute.getStatus().toWire(),
+                dispute.getAmountMinor(),
+                dispute.getCurrency(),
+                dispute.getOpenedAt())
         );
     }
 }

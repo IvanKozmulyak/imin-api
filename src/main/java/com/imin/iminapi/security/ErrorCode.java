@@ -37,6 +37,12 @@ public enum ErrorCode {
     UPSTREAM_UNAVAILABLE,
     MISSING_IDEMPOTENCY_KEY,
     ORDER_NOT_REFUNDABLE,
+    /**
+     * Refund refused: the order is charged back. Its own code because
+     * {@link #ORDER_NOT_REFUNDABLE} already means "no Stripe payment / zero amount",
+     * and {@link #INVALID_STATE} is rendered by the dashboard as a tier message.
+     */
+    ORDER_DISPUTED,
     TICKET_ALREADY_REFUNDED,
     TICKET_REDEEMED,
     STRIPE_REFUND_FAILED,

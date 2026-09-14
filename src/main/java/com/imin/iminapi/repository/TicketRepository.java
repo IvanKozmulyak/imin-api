@@ -67,6 +67,24 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
     List<Object[]> tierAggregates(@Param("eventId") UUID eventId);
 
     /**
+     * Tickets this event lost to a chargeback: {@code revoked} and belonging to an order
+     * with a dispute in one of {@code statuses}. Scoped through the disputes table rather
+     * than by state alone so a future revoke path cannot quietly move the sold figure.
+     */
+    @Query("""
+            select count(t) from Ticket t
+             where t.eventId = :eventId
+               and t.state = 'revoked'
+               and t.orderId in (select d.orderId from com.imin.iminapi.dispute.Dispute d
+                                  where d.eventId = :eventId
+                                    and d.orderId is not null
+                                    and d.status in :statuses)
+            """)
+    long countRevokedInDisputedOrders(
+            @Param("eventId") UUID eventId,
+            @Param("statuses") Collection<com.imin.iminapi.dispute.DisputeStatus> statuses);
+
+    /**
      * Every SOLD ticket for an event joined to its order, for the attendee CSV
      * export. Tuple shape: {@code [Ticket ticket, String buyerEmail, String orderToken, Instant purchasedAt]}.
      * Ordered oldest order first.

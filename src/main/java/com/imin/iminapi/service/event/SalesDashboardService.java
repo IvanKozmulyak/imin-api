@@ -1,5 +1,6 @@
 package com.imin.iminapi.service.event;
 
+import com.imin.iminapi.dispute.DisputeWithholding;
 import com.imin.iminapi.dto.event.SalesDashboardResponse;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.FunnelEvent;
@@ -38,19 +39,22 @@ public class SalesDashboardService {
     private final OrderRepository orders;
     private final RefundRepository refunds;
     private final FunnelEventRepository funnel;
+    private final DisputeWithholding disputeWithholding;
 
     public SalesDashboardService(EventRepository events,
                                  TicketTierRepository tiers,
                                  TicketRepository tickets,
                                  OrderRepository orders,
                                  RefundRepository refunds,
-                                 FunnelEventRepository funnel) {
+                                 FunnelEventRepository funnel,
+                                 DisputeWithholding disputeWithholding) {
         this.events = events;
         this.tiers = tiers;
         this.tickets = tickets;
         this.orders = orders;
         this.refunds = refunds;
         this.funnel = funnel;
+        this.disputeWithholding = disputeWithholding;
     }
 
     @Transactional(readOnly = true)
@@ -67,7 +71,9 @@ public class SalesDashboardService {
 
         long gross = orders.sumTotalMinorByEventId(eventId);
         long refunded = refunds.sumSucceededRefundMinorByEventId(eventId);
-        long netRevenueMinor = Math.max(0L, gross - refunded);
+        // Same chargeback exclusion as the Overview tab — ticketsSold above already drops
+        // revoked tickets, so without this the two tabs would disagree on revenue alone.
+        long netRevenueMinor = Math.max(0L, gross - refunded - disputeWithholding.withheldMinor(eventId));
 
         int capacity = tiers.sumQuantityByEventId(eventId);
         double capacityPct = capacity > 0 ? (ticketsSold * 100.0 / capacity) : 0.0;

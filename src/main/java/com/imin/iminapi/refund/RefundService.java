@@ -1,5 +1,6 @@
 package com.imin.iminapi.refund;
 
+import com.imin.iminapi.dispute.DisputeRepository;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.model.TicketTier;
@@ -57,6 +58,7 @@ public class RefundService {
     private final RefundTicketRepository refundTickets;
     private final StripeRefundService stripeRefundService;
     private final TicketTierRepository tierRepository;
+    private final DisputeRepository disputes;
     private final ApplicationEventPublisher publisher;
 
     public RefundService(OrderRepository orders,
@@ -65,6 +67,7 @@ public class RefundService {
                          RefundTicketRepository refundTickets,
                          StripeRefundService stripeRefundService,
                          TicketTierRepository tierRepository,
+                         DisputeRepository disputes,
                          ApplicationEventPublisher publisher) {
         this.orders = orders;
         this.tickets = tickets;
@@ -72,6 +75,7 @@ public class RefundService {
         this.refundTickets = refundTickets;
         this.stripeRefundService = stripeRefundService;
         this.tierRepository = tierRepository;
+        this.disputes = disputes;
         this.publisher = publisher;
     }
 
@@ -103,6 +107,14 @@ public class RefundService {
             log.info("[refund] idempotent replay orderId={} key={} → returning existing {}",
                 orderId, idempotencyKey, existing.get().getId());
             return existing.get();
+        }
+
+        // A charged-back order is already being clawed back, so refunding it would either
+        // pay the buyer twice or bounce off Stripe as charge_disputed. After the replay
+        // short-circuit on purpose: a refund taken before the dispute keeps returning its row.
+        if (disputes.hasOpenOrLostByOrderId(orderId)) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.ORDER_DISPUTED,
+                "Order is disputed and cannot be refunded");
         }
 
         if (ticketIds == null || ticketIds.isEmpty() || new HashSet<>(ticketIds).size() != ticketIds.size()) {

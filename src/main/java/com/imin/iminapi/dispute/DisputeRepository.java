@@ -54,6 +54,23 @@ public interface DisputeRepository extends JpaRepository<Dispute, UUID> {
                       @Param("testMode") boolean testMode,
                       @Param("now") Instant now);
 
+    /**
+     * Every dispute attached to any of these orders, for a listing that renders one row per
+     * order. One query for the page — the caller groups by {@code orderId} itself.
+     */
+    List<Dispute> findByOrderIdIn(Collection<UUID> orderIds);
+
+    long countByOrderIdAndStatusIn(UUID orderId, Collection<DisputeStatus> statuses);
+
+    @Query("""
+            select count(distinct d.orderId) from Dispute d
+             where d.eventId = :eventId
+               and d.orderId is not null
+               and d.status in :statuses
+            """)
+    long countDistinctOrderIdByEventIdAndStatusIn(@Param("eventId") UUID eventId,
+                                                  @Param("statuses") Collection<DisputeStatus> statuses);
+
     long countByOrgIdAndStatus(UUID orgId, DisputeStatus status);
 
     long countByOrderIdAndStatusAndIdNot(UUID orderId, DisputeStatus status, UUID excludedId);
@@ -101,7 +118,7 @@ public interface DisputeRepository extends JpaRepository<Dispute, UUID> {
      * money back — the sum simply stops counting it.
      */
     default long sumOpenOrLostMinorByEventId(UUID eventId) {
-        return sumMinorByEventIdAndStatusIn(eventId, List.of(DisputeStatus.OPEN, DisputeStatus.LOST));
+        return sumMinorByEventIdAndStatusIn(eventId, DisputeWithholding.STATUSES);
     }
 
     /**
@@ -110,6 +127,19 @@ public interface DisputeRepository extends JpaRepository<Dispute, UUID> {
      * live net would withhold the organizer's own funds against a loss that never happened.
      */
     default long sumOpenOrLostLiveMinorByEventId(UUID eventId) {
-        return sumLiveMinorByEventIdAndStatusIn(eventId, List.of(DisputeStatus.OPEN, DisputeStatus.LOST));
+        return sumLiveMinorByEventIdAndStatusIn(eventId, DisputeWithholding.STATUSES);
+    }
+
+    /**
+     * Orders on this event whose money is being withheld — one per order however many
+     * chargebacks it collected, because the organizer-facing counter counts orders.
+     */
+    default long countOpenOrLostOrdersByEventId(UUID eventId) {
+        return countDistinctOrderIdByEventIdAndStatusIn(eventId, DisputeWithholding.STATUSES);
+    }
+
+    /** Is this order's money at risk or already gone? The refund gate's question. */
+    default boolean hasOpenOrLostByOrderId(UUID orderId) {
+        return countByOrderIdAndStatusIn(orderId, DisputeWithholding.STATUSES) > 0;
     }
 }

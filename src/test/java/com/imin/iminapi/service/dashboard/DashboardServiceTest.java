@@ -1,10 +1,12 @@
 package com.imin.iminapi.service.dashboard;
 
+import com.imin.iminapi.dispute.DisputeWithholding;
 import com.imin.iminapi.dto.dashboard.DashboardResponse;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.model.UserRole;
+import com.imin.iminapi.refund.RefundRepository;
 import com.imin.iminapi.repository.AuditLogRepository;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
@@ -32,7 +34,10 @@ class DashboardServiceTest {
     UserRepository users = mock(UserRepository.class);
     OrderRepository orders = mock(OrderRepository.class);
     AuditLogRepository auditLogs = mock(AuditLogRepository.class);
-    DashboardService sut = new DashboardService(events, tiers, users, orders, auditLogs);
+    RefundRepository refunds = mock(RefundRepository.class);
+    DisputeWithholding disputeWithholding = mock(DisputeWithholding.class);
+    DashboardService sut = new DashboardService(events, tiers, users, orders, auditLogs,
+            refunds, disputeWithholding);
 
     private AuthPrincipal owner(UUID orgId) {
         return new AuthPrincipal(UUID.randomUUID(), orgId, UserRole.OWNER, UUID.randomUUID());
@@ -116,6 +121,76 @@ class DashboardServiceTest {
         assertThat(r.lastEvent().metrics().capacity()).isEqualTo(200);
         assertThat(r.lastEvent().metrics().avgTicketMinor()).isEqualTo(2400);
         assertThat(r.business().eventsPublished()).isEqualTo(6);
+    }
+
+    /**
+     * The org home reads the same per-event net as the event Overview and Sales tabs —
+     * a chargeback must not be a number that only one of three screens knows about.
+     */
+    @Test
+    void now_and_last_event_cards_are_net_of_disputes() {
+        UUID orgId = UUID.randomUUID();
+        AuthPrincipal p = owner(orgId);
+        User u = new User(); u.setId(p.userId()); u.setFirstName("Jaune"); u.setEmail("j@x.com");
+        when(users.findById(p.userId())).thenReturn(Optional.of(u));
+
+        Event next = new Event();
+        next.setId(UUID.randomUUID()); next.setOrgId(orgId);
+        next.setName("Next Night"); next.setSlug("next-night");
+        next.setStartsAt(Instant.now().plusSeconds(28L * 24 * 3600));
+        when(events.findUpcomingLive(eq(orgId), any(), any())).thenReturn(List.of(next));
+        when(tiers.sumQuantityByEventId(next.getId())).thenReturn(100);
+        when(tiers.sumSoldByEventId(next.getId())).thenReturn(4);
+        when(orders.sumTotalMinorByEventId(next.getId())).thenReturn(4196L);
+        when(disputeWithholding.disputedTicketCount(next.getId())).thenReturn(1);
+        when(disputeWithholding.withheldMinor(next.getId())).thenReturn(1149L);
+
+        when(events.findRecentPast(eq(orgId), any())).thenReturn(List.of());
+        when(events.countLive(orgId)).thenReturn(1L);
+        when(events.countPublished(orgId)).thenReturn(1L);
+        when(events.countPast(orgId)).thenReturn(0L);
+        stubEmptyAuxiliary(orgId);
+
+        DashboardResponse r = sut.build(p, DashboardPeriod.D30, DashboardPeriod.D90);
+
+        assertThat(r.now().nextEvent().sold()).isEqualTo(3);
+        assertThat(r.now().nextEvent().revenueMinor()).isEqualTo(3047L);
+        assertThat(r.now().pct()).isEqualTo(3);
+    }
+
+    /**
+     * Refunds come off the org-home card too. Subtracting only the chargeback left this
+     * number above the event Overview's for any event that had ever refunded a ticket.
+     */
+    @Test
+    void now_card_revenue_subtracts_refunds_as_well_as_disputes() {
+        UUID orgId = UUID.randomUUID();
+        AuthPrincipal p = owner(orgId);
+        User u = new User(); u.setId(p.userId()); u.setFirstName("Jaune"); u.setEmail("j@x.com");
+        when(users.findById(p.userId())).thenReturn(Optional.of(u));
+
+        Event next = new Event();
+        next.setId(UUID.randomUUID()); next.setOrgId(orgId);
+        next.setName("Next Night"); next.setSlug("next-night");
+        next.setStartsAt(Instant.now().plusSeconds(28L * 24 * 3600));
+        when(events.findUpcomingLive(eq(orgId), any(), any())).thenReturn(List.of(next));
+        when(tiers.sumQuantityByEventId(next.getId())).thenReturn(100);
+        when(tiers.sumSoldByEventId(next.getId())).thenReturn(4);
+        when(orders.sumTotalMinorByEventId(next.getId())).thenReturn(4596L);
+        when(refunds.sumSucceededRefundMinorByEventId(next.getId())).thenReturn(400L);
+        when(disputeWithholding.disputedTicketCount(next.getId())).thenReturn(1);
+        when(disputeWithholding.withheldMinor(next.getId())).thenReturn(1149L);
+
+        when(events.findRecentPast(eq(orgId), any())).thenReturn(List.of());
+        when(events.countLive(orgId)).thenReturn(1L);
+        when(events.countPublished(orgId)).thenReturn(1L);
+        when(events.countPast(orgId)).thenReturn(0L);
+        stubEmptyAuxiliary(orgId);
+
+        DashboardResponse r = sut.build(p, DashboardPeriod.D30, DashboardPeriod.D90);
+
+        // 4596 gross − 400 refunded − 1149 charged back.
+        assertThat(r.now().nextEvent().revenueMinor()).isEqualTo(3047L);
     }
 
     @Test

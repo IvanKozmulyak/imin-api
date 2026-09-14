@@ -1,5 +1,6 @@
 package com.imin.iminapi.service.event;
 
+import com.imin.iminapi.dispute.DisputeWithholding;
 import com.imin.iminapi.dto.event.EventOverviewResponse;
 import com.imin.iminapi.dto.event.EventOverviewResponse.Metrics;
 import com.imin.iminapi.dto.event.EventOverviewResponse.QuickAction;
@@ -54,19 +55,22 @@ public class EventOverviewService {
     private final OrderRepository orders;
     private final RefundRepository refunds;
     private final TicketRepository tickets;
+    private final DisputeWithholding disputeWithholding;
 
     public EventOverviewService(EventRepository events,
                                 PredictionRepository predictions,
                                 TicketTierRepository tiers,
                                 OrderRepository orders,
                                 RefundRepository refunds,
-                                TicketRepository tickets) {
+                                TicketRepository tickets,
+                                DisputeWithholding disputeWithholding) {
         this.events = events;
         this.predictions = predictions;
         this.tiers = tiers;
         this.orders = orders;
         this.refunds = refunds;
         this.tickets = tickets;
+        this.disputeWithholding = disputeWithholding;
     }
 
     @Transactional(readOnly = true)
@@ -77,10 +81,17 @@ public class EventOverviewService {
         int daysOut = e.getStartsAt() == null ? 0
                 : (int) Duration.between(Instant.now(), e.getStartsAt()).toDays();
         int capacity = tiers.sumQuantityByEventId(id);
-        int sold = tiers.sumSoldByEventId(id);
+
+        // Chargebacks come off all three headline numbers. Dispute ingest revokes the
+        // tickets but deliberately leaves TicketTier.sold alone, so the sold figure has to
+        // subtract the revoked count itself.
+        int disputedCount = disputeWithholding.disputedOrderCount(id);
+        long disputedMinor = disputeWithholding.withheldMinor(id);
+        int sold = Math.max(0, tiers.sumSoldByEventId(id) - disputeWithholding.disputedTicketCount(id));
+
         long gross = orders.sumTotalMinorByEventId(id);
         long refunded = refunds.sumSucceededRefundMinorByEventId(id);
-        long revenueMinor = Math.max(0L, gross - refunded);
+        long revenueMinor = Math.max(0L, gross - refunded - disputedMinor);
 
         // After-fees revenue: organizer's payout less the platform's
         // application fee (also netted by any refunded fee portion). Excludes
@@ -92,7 +103,7 @@ public class EventOverviewService {
         long revenueAfterFeesMinor = Math.max(0L, revenueMinor - netAppFee);
 
         Metrics m = new Metrics(sold, capacity, revenueMinor, revenueAfterFeesMinor,
-                e.getCurrency(), Math.max(0, daysOut));
+                e.getCurrency(), Math.max(0, daysOut), disputedCount, disputedMinor);
 
         // Recent buyers: skip fully-refunded orders, and within each order count
         // only non-refunded tickets (so the tier breakdown + amount reflect what
