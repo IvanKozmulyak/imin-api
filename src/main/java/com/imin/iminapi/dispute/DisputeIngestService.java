@@ -160,14 +160,15 @@ public class DisputeIngestService {
                     stripeDispute.getId(), eventType, status.toWire(), row.getOrderId(),
                     row.getEventId(), row.isTestMode(), revoked);
         } else if (fundsBack && previous != status) {
-            // Revocation is per ORDER, so the last open dispute on it is the one that may restore.
-            long stillOpen = order == null ? 0L
-                    : disputes.countOtherOpenByOrderId(order.getId(), row.getId());
-            if (stillOpen > 0L) {
+            // Revocation is per ORDER, so only the last WITHHOLDING dispute on it may restore —
+            // a LOST sibling keeps the tickets dead, or the sweep would re-revoke them anyway.
+            long stillWithholding = order == null ? 0L
+                    : disputes.countOtherOpenOrLostByOrderId(order.getId(), row.getId());
+            if (stillWithholding > 0L) {
                 log.info("[dispute] {} ({}) {} org={} event={} — tickets stay revoked: {} other OPEN "
-                                + "dispute(s) on order {}",
+                                + "or LOST dispute(s) on order {}",
                         stripeDispute.getId(), eventType, status.toWire(), orgId, row.getEventId(),
-                        stillOpen, row.getOrderId());
+                        stillWithholding, row.getOrderId());
             } else {
                 int restored = restoreTickets(order, stripeDispute.getId());
                 log.info("[dispute] {} ({}) {} org={} event={} — restored {} ticket(s), the event's net "
@@ -181,8 +182,17 @@ public class DisputeIngestService {
                     stripeDispute.getId(), eventType, orgId, row.getEventId(),
                     row.getAmountMinor(), row.getCurrency());
         } else {
-            log.info("[dispute] {} ({}) no state change (still {}) — nothing to do",
-                    stripeDispute.getId(), eventType, status.toWire());
+            // Belt for a dispute attributed before revocation existed — a resent webhook is the
+            // only way in. Private helper: a self-call would bypass the transactional proxy.
+            int revoked = revokeIfWithholding(row, order);
+            if (revoked > 0) {
+                log.warn("[dispute] {} ({}) no state change (still {}) — revoked {} still-live ticket(s) "
+                                + "on order {}",
+                        stripeDispute.getId(), eventType, status.toWire(), revoked, row.getOrderId());
+            } else {
+                log.info("[dispute] {} ({}) no state change (still {}) — nothing to do",
+                        stripeDispute.getId(), eventType, status.toWire());
+            }
         }
     }
 
@@ -245,6 +255,18 @@ public class DisputeIngestService {
         return true;
     }
 
+    /**
+     * Revoke an already-attributed dispute's still-live tickets — the sweep's second pass, for
+     * rows no attach path can reach because {@code order_id} was filled in before revocation
+     * existed. Idempotent: a converged order has nothing left to change.
+     *
+     * @return how many tickets THIS call revoked.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public int revokeAttributed(Dispute row, Order order) {
+        return revokeIfWithholding(row, order);
+    }
+
     // ── internals ────────────────────────────────────────────────────────────────
 
     /**
@@ -263,6 +285,16 @@ public class DisputeIngestService {
             return DisputeStatus.WITHDRAWN_REINSTATED;
         }
         return mapped;
+    }
+
+    /**
+     * The withholding guard in front of {@link #revokeTickets}: only OPEN (money at risk) and
+     * LOST (money gone) revoke. WON and WITHDRAWN_REINSTATED gave the money back.
+     */
+    private int revokeIfWithholding(Dispute row, Order order) {
+        if (row == null || order == null) return 0;
+        if (!DisputeWithholding.STATUSES.contains(row.getStatus())) return 0;
+        return revokeTickets(order, row.getStripeDisputeId());
     }
 
     /**

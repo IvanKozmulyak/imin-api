@@ -29,6 +29,24 @@ public interface DisputeRepository extends JpaRepository<Dispute, UUID> {
             Instant createdAfter, Pageable pageable);
 
     /**
+     * Attributed withholding disputes whose order still has a live ticket — the rows the sweep's
+     * second pass would actually change. The predicate mirrors the revoke skip rule, so once a
+     * row has converged it is simply not found again and the pass writes nothing.
+     *
+     * <p>{@code not in ('refunded','revoked')} rather than an enumerating list: legacy tickets
+     * carry {@code pre} as a synonym for {@code issued} and would otherwise stay scannable.
+     */
+    @Query("""
+            select d from Dispute d
+             where d.orderId is not null and d.status in :statuses and d.createdAt > :createdAfter
+               and exists (select 1 from com.imin.iminapi.model.Ticket t
+                            where t.orderId = d.orderId and t.state not in ('refunded', 'revoked'))
+            """)
+    List<Dispute> findAttributedWithLiveTickets(@Param("statuses") Collection<DisputeStatus> statuses,
+                                                @Param("createdAfter") Instant createdAfter,
+                                                Pageable pageable);
+
+    /**
      * Attach an orphan to the order that turned up later. {@code and d.orderId is null} is the
      * race guard: whichever of the checkout call site and the sweep gets there first wins, and
      * the loser updates 0 rows instead of overwriting an attribution.
@@ -73,7 +91,8 @@ public interface DisputeRepository extends JpaRepository<Dispute, UUID> {
 
     long countByOrgIdAndStatus(UUID orgId, DisputeStatus status);
 
-    long countByOrderIdAndStatusAndIdNot(UUID orderId, DisputeStatus status, UUID excludedId);
+    long countByOrderIdAndStatusInAndIdNot(UUID orderId, Collection<DisputeStatus> statuses,
+                                           UUID excludedId);
 
     @Query("""
             select coalesce(sum(d.amountMinor), 0) from Dispute d
@@ -104,12 +123,15 @@ public interface DisputeRepository extends JpaRepository<Dispute, UUID> {
     }
 
     /**
-     * OPEN disputes on the same order other than {@code excludedId}. A win only restores the
-     * order's tickets when this is zero — the tickets are per-order, so un-revoking them while a
-     * second chargeback on the same order is still live would hand back working entry.
+     * Withholding disputes on the same order other than {@code excludedId}. A win only restores
+     * the order's tickets when this is zero — the tickets are per-order, so un-revoking them
+     * while a second chargeback on the same order still withholds would hand back working entry.
+     *
+     * <p>OPEN <em>or</em> LOST, the same set every other withholding readout uses: a LOST sibling
+     * means that money is gone for good, and restoring over it would re-revoke on the next sweep.
      */
-    default long countOtherOpenByOrderId(UUID orderId, UUID excludedId) {
-        return countByOrderIdAndStatusAndIdNot(orderId, DisputeStatus.OPEN, excludedId);
+    default long countOtherOpenOrLostByOrderId(UUID orderId, UUID excludedId) {
+        return countByOrderIdAndStatusInAndIdNot(orderId, DisputeWithholding.STATUSES, excludedId);
     }
 
     /**

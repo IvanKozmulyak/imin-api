@@ -190,18 +190,18 @@ class DisputeIngestServiceTest {
 
     /**
      * Two chargebacks against the same order: the first to close must not hand the buyer working
-     * tickets back while the second is still live. Revocation is per order, so the last open
-     * dispute is the only one that may restore.
+     * tickets back while the second still withholds. A LOST sibling counts — that money is gone,
+     * and restoring over it would only be re-revoked by the next sweep.
      */
     @Test
-    void aWinLeavesTheTicketsRevokedWhileAnotherDisputeOnTheOrderIsStillOpen() {
+    void aWinLeavesTheTicketsRevokedWhileALostSiblingRemainsOnTheOrder() {
         Ticket revoked = new Ticket();
         revoked.setOrderId(ORDER_ID);
         revoked.setState(Ticket.STATE_REVOKED);
         when(tickets.findByOrderId(ORDER_ID)).thenReturn(List.of(revoked));
         Dispute row = openRow();
         when(disputes.findByStripeDisputeId("du_1")).thenReturn(Optional.of(row));
-        when(disputes.countOtherOpenByOrderId(ORDER_ID, row.getId())).thenReturn(1L);
+        when(disputes.countOtherOpenOrLostByOrderId(ORDER_ID, row.getId())).thenReturn(1L);
 
         svc.ingest(stripeDispute("won"), "acct_1", "charge.dispute.closed",
                 Instant.parse("2026-09-11T10:00:00Z"));
@@ -211,14 +211,14 @@ class DisputeIngestServiceTest {
     }
 
     @Test
-    void aWinRestoresTheTicketsOnceItIsTheLastOpenDisputeOnTheOrder() {
+    void aWinRestoresTheTicketsOnceItIsTheLastWithholdingDisputeOnTheOrder() {
         Ticket revoked = new Ticket();
         revoked.setOrderId(ORDER_ID);
         revoked.setState(Ticket.STATE_REVOKED);
         when(tickets.findByOrderId(ORDER_ID)).thenReturn(List.of(revoked));
         Dispute row = openRow();
         when(disputes.findByStripeDisputeId("du_1")).thenReturn(Optional.of(row));
-        when(disputes.countOtherOpenByOrderId(ORDER_ID, row.getId())).thenReturn(0L);
+        when(disputes.countOtherOpenOrLostByOrderId(ORDER_ID, row.getId())).thenReturn(0L);
 
         svc.ingest(stripeDispute("won"), "acct_1", "charge.dispute.closed",
                 Instant.parse("2026-09-11T10:00:00Z"));
@@ -484,6 +484,60 @@ class DisputeIngestServiceTest {
         when(orders.findByStripePaymentIntentId("pi_1")).thenReturn(Optional.of(order(false)));
         when(disputes.findByStripeDisputeId("du_1"))
                 .thenReturn(Optional.of(orphanRow(DisputeStatus.OPEN)));
+
+        svc.ingest(stripeDispute("won"), "acct_1", "charge.dispute.closed",
+                Instant.parse("2026-09-11T10:00:00Z"));
+
+        assertThat(live.getState()).isEqualTo(Ticket.STATE_ISSUED);
+        verify(tickets, never()).saveAll(anyList());
+    }
+
+    // ── a replay on a dispute that already carries its order ─────────────────────
+
+    /**
+     * A dispute attributed before revocation existed is unreachable by every attach path, so a
+     * resent webhook lands on the no-state-change branch — the last way in.
+     */
+    @Test
+    void aReplayOnAnAttributedOpenDisputeRevokesTheStillLiveTickets() {
+        Ticket live = new Ticket();
+        live.setOrderId(ORDER_ID);
+        live.setState(Ticket.STATE_ISSUED);
+        when(tickets.findByOrderId(ORDER_ID)).thenReturn(List.of(live));
+        when(disputes.findByStripeDisputeId("du_1")).thenReturn(Optional.of(openRow()));
+
+        svc.ingest(stripeDispute("needs_response"), "acct_1", "charge.dispute.created",
+                Instant.parse("2026-09-11T10:00:00Z"));
+
+        assertThat(live.getState()).isEqualTo(Ticket.STATE_REVOKED);
+        verify(tickets).saveAll(anyList());
+    }
+
+    /** One chargeback stays one alert: the first delivery already emailed the organizer. */
+    @Test
+    void aReplayOnAnAttributedOpenDisputePublishesNoSecondDisputeOpenedEvent() {
+        Ticket live = new Ticket();
+        live.setOrderId(ORDER_ID);
+        live.setState(Ticket.STATE_ISSUED);
+        when(tickets.findByOrderId(ORDER_ID)).thenReturn(List.of(live));
+        when(disputes.findByStripeDisputeId("du_1")).thenReturn(Optional.of(openRow()));
+
+        svc.ingest(stripeDispute("needs_response"), "acct_1", "charge.dispute.created",
+                Instant.parse("2026-09-11T10:00:00Z"));
+
+        verify(publisher, never()).publishEvent(any(DisputeOpenedEvent.class));
+    }
+
+    /** A dispute the organizer won withholds nothing, so the belt must leave its tickets alone. */
+    @Test
+    void aReplayOnAWonDisputeRevokesNothing() {
+        Ticket live = new Ticket();
+        live.setOrderId(ORDER_ID);
+        live.setState(Ticket.STATE_ISSUED);
+        when(tickets.findByOrderId(ORDER_ID)).thenReturn(List.of(live));
+        Dispute wonRow = openRow();
+        wonRow.setStatus(DisputeStatus.WON);
+        when(disputes.findByStripeDisputeId("du_1")).thenReturn(Optional.of(wonRow));
 
         svc.ingest(stripeDispute("won"), "acct_1", "charge.dispute.closed",
                 Instant.parse("2026-09-11T10:00:00Z"));

@@ -18,10 +18,12 @@ import com.stripe.StripeClient;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -29,6 +31,9 @@ import java.time.temporal.ChronoUnit;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 /**
  * The backstop half of the dispute-before-order race: a dispute ingested with no order attaches
@@ -47,6 +52,9 @@ class DisputeAttributionSweeperTest {
     @Autowired OrganizationRepository orgs;
     @Autowired UserRepository users;
     @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
+
+    /** Spied, not stubbed: the passes must really run — this only counts which rows pass 2 got. */
+    @MockitoSpyBean DisputeIngestService ingest;
 
     @MockitoBean StripeClient stripeClient;
 
@@ -186,6 +194,82 @@ class DisputeAttributionSweeperTest {
         assertThat(disputes.findById(orphan.getId()).orElseThrow().getOrderId()).isNull();
     }
 
+    /**
+     * The convergence case: order_id is already set, so no attach path can ever reach this row
+     * again and its ticket stayed scannable through the chargeback.
+     */
+    @Test
+    void revokesTicketsOnADisputeAlreadyAttachedToItsOrder() {
+        Order order = order("pi_sweep_attributed", false);
+        Ticket t = ticket(order);
+        attributed("du_sweep_attributed", order, Instant.now(), DisputeStatus.OPEN);
+
+        sweeper.sweep();
+
+        assertThat(tickets.findById(t.getId()).orElseThrow().getState())
+                .isEqualTo(Ticket.STATE_REVOKED);
+    }
+
+    /** A win gave the money back; pass 2 must not kill a working ticket over it. */
+    @Test
+    void leavesAWonAttributedDisputesTicketsAlone() {
+        Order order = order("pi_sweep_won", false);
+        Ticket t = ticket(order);
+        attributed("du_sweep_won", order, Instant.now(), DisputeStatus.WON);
+
+        sweeper.sweep();
+
+        assertThat(tickets.findById(t.getId()).orElseThrow().getState())
+                .isEqualTo(Ticket.STATE_ISSUED);
+    }
+
+    /** Same bound as pass 1: past the window a row needs a human, not another five-minute retry. */
+    @Test
+    void ignoresAnAttributedDisputeOlderThanTheWindow() {
+        Order order = order("pi_sweep_attr_old", false);
+        Ticket t = ticket(order);
+        attributed("du_sweep_attr_old", order, Instant.now().minus(4, ChronoUnit.DAYS),
+                DisputeStatus.OPEN);
+
+        sweeper.sweep();
+
+        assertThat(tickets.findById(t.getId()).orElseThrow().getState())
+                .isEqualTo(Ticket.STATE_ISSUED);
+    }
+
+    /**
+     * Both halves of one tick, on two different orders: the orphan attaches and is revoked by
+     * pass 1, the already-attributed row is revoked by pass 2, and pass 1's row is revoked
+     * exactly once — pass 2 is handed the ids pass 1 attached rather than inferring them from
+     * whatever the persistence context has flushed.
+     */
+    @Test
+    void bothPassesConvergeInOneTickAndPassOnesRowIsRevokedOnce() {
+        Order attachedLate = order("pi_sweep_mix_a", false);
+        Ticket ticketA = ticket(attachedLate);
+        Dispute orphanA = orphan("du_sweep_mix_a", "pi_sweep_mix_a", Instant.now(), DisputeStatus.OPEN);
+
+        Order alreadyAttributed = order("pi_sweep_mix_b", false);
+        Ticket ticketB = ticket(alreadyAttributed);
+        Dispute attributedB = attributed("du_sweep_mix_b", alreadyAttributed, Instant.now(),
+                DisputeStatus.OPEN);
+
+        sweeper.sweep();
+
+        assertThat(disputes.findById(orphanA.getId()).orElseThrow().getOrderId())
+                .isEqualTo(attachedLate.getId());
+        assertThat(tickets.findById(ticketA.getId()).orElseThrow().getState())
+                .isEqualTo(Ticket.STATE_REVOKED);
+        assertThat(tickets.findById(ticketB.getId()).orElseThrow().getState())
+                .isEqualTo(Ticket.STATE_REVOKED);
+
+        ArgumentCaptor<Dispute> passTwo = ArgumentCaptor.forClass(Dispute.class);
+        verify(ingest, times(1)).revokeAttributed(passTwo.capture(), any());
+        assertThat(passTwo.getValue().getId())
+                .as("pass 1 already revoked the orphan; pass 2 must act only on the other order")
+                .isEqualTo(attributedB.getId());
+    }
+
     // ── fixtures ─────────────────────────────────────────────────────────────
 
     private Order order(String paymentIntentId, boolean testMode) {
@@ -212,6 +296,15 @@ class DisputeAttributionSweeperTest {
         t.setPriceMinor(1500);
         t.setState(Ticket.STATE_ISSUED);
         return tickets.save(t);
+    }
+
+    /** A dispute that already carries its order — what pass 1 can never see. */
+    private Dispute attributed(String disputeId, Order order, Instant createdAt,
+                               DisputeStatus status) {
+        Dispute d = orphan(disputeId, order.getStripePaymentIntentId(), createdAt, status);
+        d.setOrderId(order.getId());
+        d.setEventId(order.getEventId());
+        return disputes.save(d);
     }
 
     private Dispute orphan(String disputeId, String paymentIntentId, Instant createdAt,

@@ -12,7 +12,10 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.UUID;
 
 /**
  * The backstop for {@code DisputeIngestService.attachOrphansForOrder}: a dispute whose order
@@ -51,20 +54,57 @@ public class DisputeAttributionSweeper {
     public void sweep() {
         // created_at, not opened_at: opened_at is nullable, created_at never is.
         Instant cutoff = Instant.now().minus(WINDOW);
+        // The hand-off between the passes is this set, not whatever the persistence context
+        // happens to have flushed by the time pass 2 runs its query.
+        Set<UUID> attachedThisTick = attachOrphans(cutoff);
+        revokeAttributed(cutoff, attachedThisTick);
+    }
+
+    /**
+     * Pass 1: a dispute that never found its order gets attached, and revoked on the way.
+     *
+     * @return the ids this tick attached, which pass 2 must not revoke a second time.
+     */
+    private Set<UUID> attachOrphans(Instant cutoff) {
         List<Dispute> orphans = disputes
                 .findByOrderIdIsNullAndStripePaymentIntentIdIsNotNullAndCreatedAtAfter(
                         cutoff, PageRequest.of(0, BATCH_SIZE));
-        if (orphans.isEmpty()) return;
+        if (orphans.isEmpty()) return Set.of();
 
-        int attached = 0;
+        Set<UUID> attached = new HashSet<>();
         for (Dispute row : orphans) {
             Order order = orders.findByStripePaymentIntentId(row.getStripePaymentIntentId()).orElse(null);
             if (order == null) continue;   // the order still has not been written
-            if (ingest.attachOrphan(row, order)) attached++;
+            if (ingest.attachOrphan(row, order)) attached.add(row.getId());
         }
-        if (attached > 0) {
+        if (!attached.isEmpty()) {
             log.warn("[dispute-sweep] attached {} of {} unattributed dispute(s) to their order",
-                    attached, orphans.size());
+                    attached.size(), orphans.size());
+        }
+        return attached;
+    }
+
+    /**
+     * Pass 2: a withholding dispute that already carries its order but whose tickets are still
+     * live. No attach path can reach such a row, so this is the only convergence. The finder
+     * mirrors the revoke skip rule, so once converged it returns nothing and this writes nothing.
+     */
+    private void revokeAttributed(Instant cutoff, Set<UUID> attachedThisTick) {
+        List<Dispute> attributed = disputes.findAttributedWithLiveTickets(
+                DisputeWithholding.STATUSES, cutoff, PageRequest.of(0, BATCH_SIZE));
+        if (attributed.isEmpty()) return;
+
+        int revokedOrders = 0;
+        for (Dispute row : attributed) {
+            if (row.getOrderId() == null) continue;
+            if (attachedThisTick.contains(row.getId())) continue;   // pass 1 already revoked it
+            Order order = orders.findById(row.getOrderId()).orElse(null);
+            if (order == null) continue;
+            if (ingest.revokeAttributed(row, order) > 0) revokedOrders++;
+        }
+        if (revokedOrders > 0) {
+            log.warn("[dispute-sweep] revoked tickets on {} attributed dispute(s) whose tickets "
+                    + "were still live", revokedOrders);
         }
     }
 }
