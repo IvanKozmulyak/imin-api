@@ -2,15 +2,15 @@ CHARGEBACK · ACTION NEEDED · imin
 
 A chargeback was opened on {{eventName}}.
 
-A cardholder has disputed their payment with their bank. We have revoked the tickets on that order so they cannot be used at the door, and payouts for your organization are paused until the dispute closes.
+A cardholder has disputed their payment with their bank. {{consequenceLine}} Payouts for your organization are paused until the dispute closes.
 
 DISPUTED AMOUNT
-{{amountFormatted}} — withheld from this event's payable balance
+{{amountFormatted}} — on hold while the dispute is open
 
 WHAT HAPPENS NEXT
 - Submit your evidence in Stripe — the bank decides, and the deadline is set by them.
 - Payouts stay paused — they resume automatically the moment the dispute closes, either way.
-- If the dispute is lost — the disputed amount stays off this event's payable balance. If it is won, it goes back.
+- If the dispute is lost — the disputed amount is not paid out. If it is won, it goes back.
 
 Open your dashboard: {{dashboardUrl}}
 

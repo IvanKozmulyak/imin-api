@@ -23,7 +23,9 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.never;
@@ -80,6 +82,8 @@ class DisputeIngestServiceTest {
         order.setEventId(EVENT_ID);
         when(orders.findByStripePaymentIntentId("pi_1")).thenReturn(Optional.of(order));
         when(tickets.findByOrderId(ORDER_ID)).thenReturn(List.of());
+        when(disputes.findByStripePaymentIntentIdAndOrderIdIsNull("pi_1"))
+                .thenReturn(List.of(orphan(DisputeStatus.OPEN)));
         when(disputes.save(any(Dispute.class))).thenAnswer(inv -> {
             Dispute d = inv.getArgument(0);
             if (d.getId() == null) d.setId(UUID.randomUUID());
@@ -262,7 +266,271 @@ class DisputeIngestServiceTest {
                 .isTrue();
     }
 
+    // ── late attachment (the dispute-before-order race) ───────────────────────────
+
+    /** The race's whole point: an OPEN dispute revoked nothing, so attaching must revoke now. */
+    @Test
+    void attachingAnOpenOrphanRevokesTheOrdersTickets() {
+        Ticket live = new Ticket();
+        live.setOrderId(ORDER_ID);
+        live.setState(Ticket.STATE_ISSUED);
+        when(tickets.findByOrderId(ORDER_ID)).thenReturn(List.of(live));
+        when(disputes.attachToOrder(any(), any(), any(), any(), anyBoolean(), any())).thenReturn(1);
+
+        int attached = svc.attachOrphansForOrder(order(false));
+
+        assertThat(attached).isEqualTo(1);
+        assertThat(live.getState()).isEqualTo(Ticket.STATE_REVOKED);
+        verify(tickets).saveAll(anyList());
+    }
+
+    /** A dispute already LOST when we matched it was never revoked at OPEN, and the money is gone. */
+    @Test
+    void attachingALostOrphanAlsoRevokes() {
+        Ticket live = new Ticket();
+        live.setOrderId(ORDER_ID);
+        live.setState(Ticket.STATE_ISSUED);
+        when(tickets.findByOrderId(ORDER_ID)).thenReturn(List.of(live));
+        when(disputes.findByStripePaymentIntentIdAndOrderIdIsNull("pi_1"))
+                .thenReturn(List.of(orphan(DisputeStatus.LOST)));
+        when(disputes.attachToOrder(any(), any(), any(), any(), anyBoolean(), any())).thenReturn(1);
+
+        svc.attachOrphansForOrder(order(false));
+
+        assertThat(live.getState()).isEqualTo(Ticket.STATE_REVOKED);
+    }
+
+    /** A dispute the organizer already won took nothing; attaching it must not kill the tickets. */
+    @Test
+    void attachingAWonOrphanRevokesNothing() {
+        Ticket live = new Ticket();
+        live.setOrderId(ORDER_ID);
+        live.setState(Ticket.STATE_ISSUED);
+        when(tickets.findByOrderId(ORDER_ID)).thenReturn(List.of(live));
+        when(disputes.findByStripePaymentIntentIdAndOrderIdIsNull("pi_1"))
+                .thenReturn(List.of(orphan(DisputeStatus.WON)));
+        when(disputes.attachToOrder(any(), any(), any(), any(), anyBoolean(), any())).thenReturn(1);
+
+        svc.attachOrphansForOrder(order(false));
+
+        assertThat(live.getState()).isEqualTo(Ticket.STATE_ISSUED);
+        verify(tickets, never()).saveAll(anyList());
+    }
+
+    /**
+     * {@code test_mode} is the ORDER's answer, not the running key's: a live-key sweep attaching
+     * a test-era orphan under {@code isLiveKey()} would withhold real face value from the net.
+     */
+    @Test
+    void lateAttachmentTakesTestModeFromTheOrderNotTheRunningKey() {
+        stripeProps.setSecretKey("sk_live_dummy");
+        when(disputes.attachToOrder(any(), any(), any(), any(), anyBoolean(), any())).thenReturn(1);
+
+        svc.attachOrphansForOrder(order(true));
+
+        verify(disputes).attachToOrder(eq(ORPHAN_ID), eq(ORDER_ID), eq(EVENT_ID), eq(ORG_ID), eq(true),
+                any());
+    }
+
+    /** The conditional UPDATE lost the race: another path already attached it, so do nothing. */
+    @Test
+    void aLostConditionalUpdateRevokesNothing() {
+        Ticket live = new Ticket();
+        live.setOrderId(ORDER_ID);
+        live.setState(Ticket.STATE_ISSUED);
+        when(tickets.findByOrderId(ORDER_ID)).thenReturn(List.of(live));
+        when(disputes.attachToOrder(any(), any(), any(), any(), anyBoolean(), any())).thenReturn(0);
+
+        int attached = svc.attachOrphansForOrder(order(false));
+
+        assertThat(attached).isZero();
+        assertThat(live.getState()).isEqualTo(Ticket.STATE_ISSUED);
+        verify(tickets, never()).saveAll(anyList());
+    }
+
+    /** An order that never reached Stripe has no PI to match on — and must not query for one. */
+    @Test
+    void anOrderWithNoPaymentIntentIsNotEvenLookedUp() {
+        Order noPi = order(false);
+        noPi.setStripePaymentIntentId(null);
+
+        assertThat(svc.attachOrphansForOrder(noPi)).isZero();
+        verify(disputes, never()).findByStripePaymentIntentIdAndOrderIdIsNull(anyString());
+    }
+
+    /**
+     * {@code ingest} already alerted the organizer on the transition into OPEN. Publishing again
+     * here would mean two chargeback emails for one chargeback.
+     */
+    @Test
+    void lateAttachmentPublishesNoSecondDisputeOpenedEvent() {
+        when(disputes.attachToOrder(any(), any(), any(), any(), anyBoolean(), any())).thenReturn(1);
+
+        svc.attachOrphansForOrder(order(false));
+
+        verify(publisher, never()).publishEvent(any(DisputeOpenedEvent.class));
+    }
+
+    /** The sweeper's entry point: it has already matched the row to an order itself. */
+    @Test
+    void attachOrphanRevokesForAnAlreadyMatchedRow() {
+        Ticket live = new Ticket();
+        live.setOrderId(ORDER_ID);
+        live.setState(Ticket.STATE_ISSUED);
+        when(tickets.findByOrderId(ORDER_ID)).thenReturn(List.of(live));
+        when(disputes.attachToOrder(any(), any(), any(), any(), anyBoolean(), any())).thenReturn(1);
+
+        assertThat(svc.attachOrphan(orphan(DisputeStatus.OPEN), order(false))).isTrue();
+        assertThat(live.getState()).isEqualTo(Ticket.STATE_REVOKED);
+    }
+
+    /** A withdrawn/reinstated dispute gave the money back; attaching it must not kill the tickets. */
+    @Test
+    void attachingAWithdrawnReinstatedOrphanRevokesNothing() {
+        Ticket live = new Ticket();
+        live.setOrderId(ORDER_ID);
+        live.setState(Ticket.STATE_ISSUED);
+        when(tickets.findByOrderId(ORDER_ID)).thenReturn(List.of(live));
+        when(disputes.findByStripePaymentIntentIdAndOrderIdIsNull("pi_1"))
+                .thenReturn(List.of(orphan(DisputeStatus.WITHDRAWN_REINSTATED)));
+        when(disputes.attachToOrder(any(), any(), any(), any(), anyBoolean(), any())).thenReturn(1);
+
+        svc.attachOrphansForOrder(order(false));
+
+        assertThat(live.getState()).isEqualTo(Ticket.STATE_ISSUED);
+        verify(tickets, never()).saveAll(anyList());
+    }
+
+    /**
+     * An orphan's org was guessed from the charge's transfer destination, which can disagree with
+     * the order's; the order is the precise answer and the payout freeze is counted per org.
+     */
+    @Test
+    void lateAttachmentTakesTheOrgFromTheOrderNotTheGuessedOne() {
+        Dispute guessedWrong = orphan(DisputeStatus.OPEN);
+        guessedWrong.setOrgId(UUID.randomUUID());
+        when(disputes.findByStripePaymentIntentIdAndOrderIdIsNull("pi_1"))
+                .thenReturn(List.of(guessedWrong));
+        when(disputes.attachToOrder(any(), any(), any(), any(), anyBoolean(), any())).thenReturn(1);
+
+        svc.attachOrphansForOrder(order(false));
+
+        verify(disputes).attachToOrder(eq(ORPHAN_ID), eq(ORDER_ID), eq(EVENT_ID), eq(ORG_ID),
+                eq(false), any());
+    }
+
+    // ── the same race seen by a later webhook delivery ────────────────────────────
+
+    /**
+     * The delivery that finally resolves the charge back-fills {@code order_id} — after which
+     * both attach paths (they filter {@code order_id is null}) can never see the row again. So
+     * this delivery is the last chance to revoke, and it has to take it.
+     */
+    @Test
+    void aLaterDeliveryThatFinallyFindsTheOrderRevokesItsTickets() {
+        Ticket live = new Ticket();
+        live.setOrderId(ORDER_ID);
+        live.setState(Ticket.STATE_ISSUED);
+        when(tickets.findByOrderId(ORDER_ID)).thenReturn(List.of(live));
+        when(orders.findByStripePaymentIntentId("pi_1")).thenReturn(Optional.of(order(false)));
+        Dispute guessedWrongOrg = orphanRow(DisputeStatus.OPEN);
+        guessedWrongOrg.setOrgId(UUID.randomUUID());
+        when(disputes.findByStripeDisputeId("du_1")).thenReturn(Optional.of(guessedWrongOrg));
+
+        svc.ingest(stripeDispute("needs_response"), "acct_1", "charge.dispute.funds_withdrawn",
+                Instant.parse("2026-09-11T10:00:00Z"));
+
+        assertThat(live.getState()).isEqualTo(Ticket.STATE_REVOKED);
+        verify(tickets).saveAll(anyList());
+        Dispute saved = savedRow();
+        assertThat(saved.getOrderId()).isEqualTo(ORDER_ID);
+        assertThat(saved.getEventId()).isEqualTo(EVENT_ID);
+        assertThat(saved.getOrgId())
+                .as("the order's org replaces the one guessed from the charge's destination")
+                .isEqualTo(ORG_ID);
+        assertThat(saved.isTestMode())
+                .as("the order, not the first sighting's key, records whether the money was real")
+                .isFalse();
+        verify(publisher, never())
+                .publishEvent(any(DisputeOpenedEvent.class));
+    }
+
+    /** Same path, dispute already lost by the time the order turned up: the money is gone. */
+    @Test
+    void aLaterDeliveryThatFindsTheOrderOnALostDisputeAlsoRevokes() {
+        Ticket live = new Ticket();
+        live.setOrderId(ORDER_ID);
+        live.setState(Ticket.STATE_ISSUED);
+        when(tickets.findByOrderId(ORDER_ID)).thenReturn(List.of(live));
+        when(orders.findByStripePaymentIntentId("pi_1")).thenReturn(Optional.of(order(false)));
+        when(disputes.findByStripeDisputeId("du_1"))
+                .thenReturn(Optional.of(orphanRow(DisputeStatus.OPEN)));
+
+        svc.ingest(stripeDispute("lost"), "acct_1", "charge.dispute.closed",
+                Instant.parse("2026-09-11T10:00:00Z"));
+
+        assertThat(live.getState()).isEqualTo(Ticket.STATE_REVOKED);
+        verify(publisher, never())
+                .publishEvent(any(DisputeOpenedEvent.class));
+    }
+
+    /** A dispute the organizer won by the time we matched it took nothing — revoke nothing. */
+    @Test
+    void aLaterDeliveryThatFindsTheOrderOnAWonDisputeRevokesNothing() {
+        Ticket live = new Ticket();
+        live.setOrderId(ORDER_ID);
+        live.setState(Ticket.STATE_ISSUED);
+        when(tickets.findByOrderId(ORDER_ID)).thenReturn(List.of(live));
+        when(orders.findByStripePaymentIntentId("pi_1")).thenReturn(Optional.of(order(false)));
+        when(disputes.findByStripeDisputeId("du_1"))
+                .thenReturn(Optional.of(orphanRow(DisputeStatus.OPEN)));
+
+        svc.ingest(stripeDispute("won"), "acct_1", "charge.dispute.closed",
+                Instant.parse("2026-09-11T10:00:00Z"));
+
+        assertThat(live.getState()).isEqualTo(Ticket.STATE_ISSUED);
+        verify(tickets, never()).saveAll(anyList());
+    }
+
+    /** The race's leftovers as a later delivery finds them: a row that never had an order. */
+    private static Dispute orphanRow(DisputeStatus status) {
+        Dispute existing = new Dispute();
+        existing.setId(UUID.randomUUID());
+        existing.setStripeDisputeId("du_1");
+        existing.setOrgId(ORG_ID);
+        existing.setStripePaymentIntentId("pi_1");
+        existing.setStatus(status);
+        existing.setTestMode(true);
+        existing.setLastEventAt(Instant.parse("2026-09-10T10:00:00Z"));
+        return existing;
+    }
+
+    private static final UUID ORPHAN_ID = UUID.randomUUID();
+
+    private static Dispute orphan(DisputeStatus status) {
+        Dispute d = new Dispute();
+        d.setId(ORPHAN_ID);
+        d.setStripeDisputeId("du_orphan");
+        d.setOrgId(ORG_ID);
+        d.setStripePaymentIntentId("pi_1");
+        d.setAmountMinor(4200);
+        d.setCurrency("eur");
+        d.setStatus(status);
+        return d;
+    }
+
+    private static Order order(boolean testMode) {
+        Order o = new Order();
+        o.setId(ORDER_ID);
+        o.setOrgId(ORG_ID);
+        o.setEventId(EVENT_ID);
+        o.setStripePaymentIntentId("pi_1");
+        o.setTestMode(testMode);
+        return o;
+    }
+
     private Dispute savedRow() {
+
         ArgumentCaptor<Dispute> saved = ArgumentCaptor.forClass(Dispute.class);
         verify(disputes).save(saved.capture());
         return saved.getValue();

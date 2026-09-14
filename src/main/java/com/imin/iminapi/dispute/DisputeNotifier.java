@@ -7,10 +7,12 @@ import com.imin.iminapi.email.EmailTemplateRenderer;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Notification;
 import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.NotificationRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.util.LogSafe;
 import com.imin.iminapi.util.MoneyFormat;
@@ -48,6 +50,7 @@ public class DisputeNotifier {
     private final OrganizationRepository orgs;
     private final NotificationRepository notifications;
     private final UserRepository users;
+    private final TicketRepository tickets;
     private final EmailService email;
     private final EmailTemplateRenderer renderer;
     private final EmailProperties emailProps;
@@ -57,6 +60,7 @@ public class DisputeNotifier {
                            OrganizationRepository orgs,
                            NotificationRepository notifications,
                            UserRepository users,
+                           TicketRepository tickets,
                            EmailService email,
                            EmailTemplateRenderer renderer,
                            EmailProperties emailProps) {
@@ -65,6 +69,7 @@ public class DisputeNotifier {
         this.orgs = orgs;
         this.notifications = notifications;
         this.users = users;
+        this.tickets = tickets;
         this.email = email;
         this.renderer = renderer;
         this.emailProps = emailProps;
@@ -98,13 +103,19 @@ public class DisputeNotifier {
         // 1) In-app notification for the organizer who created the event. An unattributed
         // dispute has no event and therefore no organizer user — email only in that case.
         UUID organizerUserId = event == null ? null : event.getCreatedBy();
+        String locale = organizerUserId == null
+                ? null : users.findById(organizerUserId).map(User::getLocale).orElse(null);
+        int revoked = revokedTicketCount(dispute.getOrderId());
         if (organizerUserId != null) {
             Notification n = new Notification();
             n.setUserId(organizerUserId);
             n.setKind("dispute.opened");
             n.setTitle("A chargeback was opened on " + eventName);
-            n.setBody(amountFormatted + " is being disputed. The buyer's tickets are revoked and "
-                    + "payouts are paused until it is resolved.");
+            // ponytail: the in-app row is English throughout, title included, so it takes the
+            // English consequence line rather than mixing two languages in one body.
+            n.setBody(amountFormatted + " is being disputed. "
+                    + consequenceLine(dispute.getOrderId(), revoked, null)
+                    + " Payouts are paused until it is resolved.");
             n.setLink(link);
             notifications.save(n);
         }
@@ -118,18 +129,69 @@ public class DisputeNotifier {
             return;
         }
 
-        String locale = organizerUserId == null
-                ? null : users.findById(organizerUserId).map(User::getLocale).orElse(null);
-
         Map<String, String> values = new LinkedHashMap<>();
         values.put("eventName", eventName);
         values.put("amountFormatted", amountFormatted);
         values.put("dashboardUrl", dashboardUrl);
+        values.put("consequenceLine", consequenceLine(dispute.getOrderId(), revoked, locale));
 
         EmailTemplateRenderer.Rendered r = renderer.render("dispute-opened", locale, values);
         email.send(to, subject(eventName, locale), r.html(), r.text());
         log.info("[dispute] sent chargeback notification for dispute {} to {}",
                 disputeId, LogSafe.email(to));
+    }
+
+    /** Tickets on the order that are revoked right now. No order ⇒ nothing was revoked. */
+    private int revokedTicketCount(UUID orderId) {
+        if (orderId == null) return 0;
+        return (int) tickets.findByOrderId(orderId).stream()
+                .filter(t -> Ticket.STATE_REVOKED.equals(t.getState()))
+                .count();
+    }
+
+    /**
+     * The one sentence in this email that must describe what actually happened. A dispute we
+     * could not match to an order revoked nothing; an order whose tickets were already refunded
+     * had nothing left to revoke. Claiming revocation in either case is simply false.
+     */
+    private static String consequenceLine(UUID orderId, int revoked, String locale) {
+        if (orderId == null) {
+            return EmailLocale.choose(locale,
+                    "We have not matched this payment to one of your orders yet, so no ticket has "
+                            + "been revoked; the moment we match it, the tickets on that order are "
+                            + "revoked automatically.",
+                    "Todavía no hemos asociado este pago a uno de tus pedidos, así que no se ha "
+                            + "revocado ninguna entrada; en cuanto lo asociemos, las entradas de ese "
+                            + "pedido se revocarán automáticamente.",
+                    "Nous n'avons pas encore rattaché ce paiement à l'une de vos commandes, donc "
+                            + "aucun billet n'a été révoqué ; dès que ce sera fait, les billets de "
+                            + "cette commande seront révoqués automatiquement.",
+                    "Ми ще не зіставили цей платіж із жодним із ваших замовлень, тому жодного квитка "
+                            + "не анульовано; щойно зіставимо, квитки того замовлення буде анульовано "
+                            + "автоматично.");
+        }
+        if (revoked == 0) {
+            return EmailLocale.choose(locale,
+                    "Nothing was left to revoke on that order - its tickets had already been refunded.",
+                    "No quedaba nada que revocar en ese pedido: sus entradas ya estaban reembolsadas.",
+                    "Il n'y avait plus rien à révoquer sur cette commande : ses billets avaient déjà "
+                            + "été remboursés.",
+                    "У тому замовленні не було чого анулювати: за його квитки вже зроблено повернення.");
+        }
+        if (revoked == 1) {
+            return EmailLocale.choose(locale,
+                    "The ticket on that order is revoked and will not open the door.",
+                    "La entrada de ese pedido está revocada y no servirá en la puerta.",
+                    "Le billet de cette commande est révoqué et ne passera pas à l'entrée.",
+                    "Квиток того замовлення анульовано, і на вході він не спрацює.");
+        }
+        // ponytail: Ukrainian carries the count in parentheses because the 2-4 / 5+ plural forms
+        // would need a real pluralizer, which no other email here has.
+        return EmailLocale.choose(locale,
+                "The " + revoked + " tickets on that order are revoked and will not open the door.",
+                "Las " + revoked + " entradas de ese pedido están revocadas y no servirán en la puerta.",
+                "Les " + revoked + " billets de cette commande sont révoqués et ne passeront pas à l'entrée.",
+                "Квитки того замовлення (" + revoked + ") анульовано, і на вході вони не спрацюють.");
     }
 
     private static String subject(String eventName, String locale) {

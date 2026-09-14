@@ -1,6 +1,9 @@
 package com.imin.iminapi.service.ticket;
 
 import com.imin.iminapi.config.TestRateLimitConfig;
+import com.imin.iminapi.dispute.Dispute;
+import com.imin.iminapi.dispute.DisputeRepository;
+import com.imin.iminapi.dispute.DisputeStatus;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.EventVisibility;
@@ -57,6 +60,7 @@ class PaidCheckoutServiceTest {
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
     @Autowired UserRepository users;
+    @Autowired DisputeRepository disputes;
     @Autowired StripeProperties stripeProps;
 
     @MockitoBean StripeClient stripeClient;
@@ -82,6 +86,7 @@ class PaidCheckoutServiceTest {
         when(checkoutService.sessions()).thenReturn(sessionService);
         when(stripeClient.charges()).thenReturn(chargeService);
 
+        disputes.deleteAll();
         tickets.deleteAll();
         orders.deleteAll();
         tiers.deleteAll();
@@ -127,6 +132,7 @@ class PaidCheckoutServiceTest {
     @AfterEach
     void tearDown() {
         stripeProps.setSecretKey(originalSecretKey);
+        disputes.deleteAll();
         tickets.deleteAll();
         orders.deleteAll();
         tiers.deleteAll();
@@ -508,6 +514,49 @@ class PaidCheckoutServiceTest {
 
         assertThat(orders.findByStripePaymentIntentId("pi_test_native_charge_email").orElseThrow()
                 .getEmail()).isEqualTo("from-charge@example.test");
+    }
+
+    /**
+     * The dispute-before-order race: charge.dispute.created landed first, so the registry row
+     * carries no order and revoked nothing. Creating the order must attach it and kill the QRs.
+     */
+    @Test
+    void disputeArrivingBeforeTheOrderIsAttachedWhenTheOrderIsCreated() throws Exception {
+        // The orphan was ingested test-mode; the order below is taken under a live key, and the
+        // order is what records whether the money was real.
+        stripeProps.setSecretKey("sk_live_dummy");
+        Dispute orphan = new Dispute();
+        orphan.setStripeDisputeId("du_race_1");
+        orphan.setOrgId(event.getOrgId());
+        orphan.setStripePaymentIntentId("pi_test_dispute_race");
+        orphan.setAmountMinor(3000);
+        orphan.setCurrency("eur");
+        orphan.setStatus(DisputeStatus.OPEN);
+        orphan.setTestMode(true);
+        orphan = disputes.save(orphan);
+
+        PaymentIntent pi = pi("pi_test_dispute_race", 3000, "eur",
+                Map.of(
+                        "tier_id", tier.getId().toString(),
+                        "qty", "2",
+                        "event_id", event.getId().toString()));
+        wireBuyerEmail(pi, "buyer@example.com");
+        wireSessionLookup(pi, "cs_test_dispute_race", null);
+
+        service.issuePaidOrder(pi);
+
+        Order order = orders.findByStripePaymentIntentId("pi_test_dispute_race").orElseThrow();
+        Dispute attached = disputes.findById(orphan.getId()).orElseThrow();
+        assertThat(attached.getOrderId())
+                .as("the dispute must find the order that arrived after it")
+                .isEqualTo(order.getId());
+        assertThat(attached.getEventId()).isEqualTo(event.getId());
+        assertThat(attached.isTestMode())
+                .as("test_mode comes from the order, which recorded whether the money was real")
+                .isEqualTo(order.isTestMode());
+        assertThat(tickets.findByOrderIdOrderByCreatedAtAsc(order.getId()))
+                .hasSize(2)
+                .allSatisfy(t -> assertThat(t.getState()).isEqualTo(Ticket.STATE_REVOKED));
     }
 
     // ─── Stripe fixture helpers ──────────────────────────────────────────────

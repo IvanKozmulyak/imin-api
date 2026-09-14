@@ -8,6 +8,7 @@ import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.stripe.SettlementIngestService;
 import com.imin.iminapi.stripe.StripeProperties;
+import com.imin.iminapi.util.Times;
 import com.stripe.model.Charge;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -104,6 +105,9 @@ public class DisputeIngestService {
 
         boolean firstSighting = row == null;
         DisputeStatus previous = firstSighting ? null : row.getStatus();
+        // An existing row with no order is the race's orphan: nothing was ever revoked for it,
+        // and once this delivery back-fills order_id neither attach path can reach it again.
+        boolean wasUnattributed = !firstSighting && row.getOrderId() == null;
         if (row == null) {
             row = new Dispute();
             row.setStripeDisputeId(stripeDispute.getId());
@@ -115,9 +119,16 @@ public class DisputeIngestService {
         }
         // Attribution can arrive late (an unreadable charge on the first delivery); never wipe
         // a value we already captured with a null from a thinner payload.
+        boolean attachedNow = order != null && wasUnattributed;
         if (order != null) {
             row.setOrderId(order.getId());
             row.setEventId(order.getEventId());
+            // Same rule as the attach paths: the order is the precise answer for both the org
+            // and whether the money was real; the first sighting could only guess them.
+            if (attachedNow) {
+                row.setOrgId(order.getOrgId());
+                row.setTestMode(order.isTestMode());
+            }
         }
         if (charge != null) row.setStripeChargeId(charge.getId());
         if (paymentIntentId != null) row.setStripePaymentIntentId(paymentIntentId);
@@ -139,6 +150,15 @@ public class DisputeIngestService {
                     stripeDispute.getId(), eventType, orgId, row.getEventId(), row.getOrderId(),
                     row.getAmountMinor(), row.getCurrency(), revoked);
             publisher.publishEvent(new DisputeOpenedEvent(row.getId()));
+        } else if (attachedNow
+                && (status == DisputeStatus.OPEN || status == DisputeStatus.LOST)) {
+            // The orphan finally found its order. No DisputeOpenedEvent: the first delivery
+            // already alerted the organizer, and one chargeback stays one alert.
+            int revoked = revokeTickets(order, stripeDispute.getId());
+            log.warn("[dispute] {} ({}) {} attributed late to order {} event={} test_mode={} "
+                            + "— revoked {} ticket(s)",
+                    stripeDispute.getId(), eventType, status.toWire(), row.getOrderId(),
+                    row.getEventId(), row.isTestMode(), revoked);
         } else if (fundsBack && previous != status) {
             // Revocation is per ORDER, so the last open dispute on it is the one that may restore.
             long stillOpen = order == null ? 0L
@@ -164,6 +184,65 @@ public class DisputeIngestService {
             log.info("[dispute] {} ({}) no state change (still {}) — nothing to do",
                     stripeDispute.getId(), eventType, status.toWire());
         }
+    }
+
+    /**
+     * Attach every orphan dispute recorded against this order's PaymentIntent — the
+     * dispute-before-order race, where {@code charge.dispute.created} was delivered before
+     * {@code payment_intent.succeeded} and so had no order to revoke.
+     *
+     * <p>Publishes no {@link DisputeOpenedEvent}: {@link #ingest} already published one on the
+     * transition into OPEN, so the organizer gets exactly one alert whichever path attaches.
+     *
+     * @return how many disputes this call attached.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public int attachOrphansForOrder(Order order) {
+        if (order == null) return 0;
+        String paymentIntentId = order.getStripePaymentIntentId();
+        if (paymentIntentId == null || paymentIntentId.isBlank()) return 0;
+        int attached = 0;
+        for (Dispute row : disputes.findByStripePaymentIntentIdAndOrderIdIsNull(paymentIntentId)) {
+            if (attach(row, order)) attached++;
+        }
+        return attached;
+    }
+
+    /**
+     * Attach one already-matched orphan — the sweeper's entry point, which found the order by
+     * PaymentIntent itself. Same consequences and same silence as {@link #attachOrphansForOrder}.
+     *
+     * @return {@code true} when THIS call won the conditional update.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public boolean attachOrphan(Dispute row, Order order) {
+        if (row == null || order == null) return false;
+        String paymentIntentId = order.getStripePaymentIntentId();
+        if (paymentIntentId == null || paymentIntentId.isBlank()) return false;
+        return attach(row, order);
+    }
+
+    /**
+     * The conditional UPDATE and its ticket consequence. {@code test_mode} comes from the ORDER
+     * rather than the running key: the order recorded whether the money was real, and a sweep
+     * under a live key would otherwise re-stamp a test-era orphan as live and withhold real
+     * face value from the event's payout net. {@code org_id} likewise: an orphan's org was
+     * guessed from the charge's transfer destination and the order is the precise answer.
+     */
+    private boolean attach(Dispute row, Order order) {
+        int updated = disputes.attachToOrder(row.getId(), order.getId(), order.getEventId(),
+                order.getOrgId(), order.isTestMode(), Times.nowMicros());
+        if (updated == 0) return false;   // another path attached it first — nothing to do
+
+        // OPEN was never revoked (there was no order to revoke), and neither was a dispute
+        // already LOST by the time we matched it — that money is gone. WON and
+        // WITHDRAWN_REINSTATED revoke nothing.
+        boolean revokes = row.getStatus() == DisputeStatus.OPEN || row.getStatus() == DisputeStatus.LOST;
+        int revoked = revokes ? revokeTickets(order, row.getStripeDisputeId()) : 0;
+        log.warn("[dispute] {} ({}) attached late to order {} event={} test_mode={} — revoked {} ticket(s)",
+                row.getStripeDisputeId(), row.getStatus().toWire(), order.getId(), order.getEventId(),
+                order.isTestMode(), revoked);
+        return true;
     }
 
     // ── internals ────────────────────────────────────────────────────────────────

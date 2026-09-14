@@ -1,5 +1,6 @@
 package com.imin.iminapi.service.ticket;
 
+import com.imin.iminapi.dispute.DisputeIngestService;
 import com.imin.iminapi.email.EmailLocale;
 import com.imin.iminapi.marketing.service.MetaCapiOutboxWriter;
 import com.imin.iminapi.model.CheckoutAttribution;
@@ -62,6 +63,7 @@ public class PaidCheckoutService {
     private final ApplicationEventPublisher publisher;
     private final MetaCapiOutboxWriter metaCapiOutboxWriter;
     private final StripeProperties stripeProps;
+    private final DisputeIngestService disputeIngest;
 
     public PaidCheckoutService(OrderRepository orders,
                                 TicketRepository tickets,
@@ -70,7 +72,8 @@ public class PaidCheckoutService {
                                 StripeClient stripeClient,
                                 ApplicationEventPublisher publisher,
                                 MetaCapiOutboxWriter metaCapiOutboxWriter,
-                                StripeProperties stripeProps) {
+                                StripeProperties stripeProps,
+                                DisputeIngestService disputeIngest) {
         this.orders = orders;
         this.tickets = tickets;
         this.events = events;
@@ -79,6 +82,7 @@ public class PaidCheckoutService {
         this.publisher = publisher;
         this.metaCapiOutboxWriter = metaCapiOutboxWriter;
         this.stripeProps = stripeProps;
+        this.disputeIngest = disputeIngest;
     }
 
     /**
@@ -242,6 +246,15 @@ public class PaidCheckoutService {
             t.setPriceMinor(tier.getPriceMinor());
             t.setState(Ticket.STATE_ISSUED);
             tickets.save(t);
+        }
+
+        // A chargeback delivered before this webhook revoked nothing; attach it now so the tickets
+        // are revoked in the same transaction. The issuance email still ships a QR for a revoked
+        // ticket — suppressing it is a deferred follow-up; the door check is what stops entry.
+        int attachedDisputes = disputeIngest.attachOrphansForOrder(order);
+        if (attachedDisputes > 0) {
+            log.warn("Order {} (PI {}) was already disputed — attached {} dispute(s) and revoked its tickets",
+                    order.getId(), pi.getId(), attachedDisputes);
         }
 
         publisher.publishEvent(new TicketsIssuedEvent(order.getId()));

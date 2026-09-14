@@ -15,7 +15,7 @@
 
   <!-- preheader -->
   <div style="display:none; max-height:0; overflow:hidden; opacity:0; mso-hide:all;">
-    Un titulaire de carte a contesté un paiement pour {{eventName}}. Ses billets sont révoqués et les virements sont suspendus jusqu'à la clôture.
+    Un titulaire de carte a contesté un paiement pour {{eventName}}. {{consequenceLine}} Les virements vers votre organisation sont suspendus jusqu'à la clôture.
   </div>
 
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f2fa; padding:32px 16px;">
@@ -48,7 +48,7 @@
           <tr>
             <td style="padding:10px 32px 0;">
               <p style="margin:0; font-size:14px; line-height:1.6; color:#7a738f;">
-                Un titulaire de carte a contesté son paiement auprès de sa banque. Nous avons révoqué les billets de cette commande afin qu&rsquo;ils ne passent pas à l&rsquo;entrée, et les virements vers votre organisation sont suspendus jusqu&rsquo;à la clôture du litige.
+                Un titulaire de carte a contesté son paiement auprès de sa banque. {{consequenceLine}} Les virements vers votre organisation sont suspendus jusqu&rsquo;à la clôture du litige.
               </p>
             </td>
           </tr>
@@ -61,7 +61,7 @@
                   <td style="padding:16px 18px; background:rgba(176,42,55,0.10); border:1px solid rgba(176,42,55,0.45); border-radius:6px;">
                     <div style="font-family:'Space Mono', ui-monospace, Menlo, Consolas, monospace; font-size:11px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:#b02a37;">MONTANT CONTEST&Eacute;</div>
                     <div style="margin-top:6px; font-size:32px; font-weight:700; letter-spacing:-0.6px; color:#11091f; line-height:1.1;">{{amountFormatted}}</div>
-                    <div style="margin-top:4px; font-size:13px; color:#11091f; line-height:1.5;">retenu sur le solde payable de cet événement</div>
+                    <div style="margin-top:4px; font-size:13px; color:#11091f; line-height:1.5;">retenu tant que le litige est ouvert</div>
                   </td>
                 </tr>
               </table>
@@ -80,7 +80,7 @@
                   <td style="padding:4px 0; font-size:14px; line-height:1.6; color:#11091f;">&bull;&nbsp;&nbsp;<strong style="font-weight:600;">Les virements restent suspendus</strong> &mdash; ils reprennent automatiquement d&egrave;s la cl&ocirc;ture du litige, quelle qu&rsquo;en soit l&rsquo;issue.</td>
                 </tr>
                 <tr>
-                  <td style="padding:4px 0; font-size:14px; line-height:1.6; color:#11091f;">&bull;&nbsp;&nbsp;<strong style="font-weight:600;">Si le litige est perdu</strong> &mdash; le montant contest&eacute; reste d&eacute;duit du solde payable de cet &eacute;v&eacute;nement. S&rsquo;il est gagn&eacute;, il revient.</td>
+                  <td style="padding:4px 0; font-size:14px; line-height:1.6; color:#11091f;">&bull;&nbsp;&nbsp;<strong style="font-weight:600;">Si le litige est perdu</strong> &mdash; le montant contest&eacute; n&rsquo;est pas vers&eacute;. S&rsquo;il est gagn&eacute;, il revient.</td>
                 </tr>
               </table>
             </td>

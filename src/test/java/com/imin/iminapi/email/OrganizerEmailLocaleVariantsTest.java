@@ -42,6 +42,7 @@ class OrganizerEmailLocaleVariantsTest {
         TEMPLATES.put("dispute-opened", Map.of(
                 "eventName", "Warehouse 7",
                 "amountFormatted", "42.00 EUR",
+                "consequenceLine", "__CONSEQUENCE_PLACEHOLDER__",
                 "dashboardUrl", "https://dashboard.imin.wtf/events/abc"));
 
         Map<String, String> milestone = Map.of(

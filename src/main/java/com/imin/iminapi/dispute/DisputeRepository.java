@@ -1,10 +1,13 @@
 package com.imin.iminapi.dispute;
 
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 
+import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
@@ -14,6 +17,42 @@ import java.util.UUID;
 public interface DisputeRepository extends JpaRepository<Dispute, UUID> {
 
     Optional<Dispute> findByStripeDisputeId(String stripeDisputeId);
+
+    /** Disputes for this PaymentIntent that never found their order — the race's leftovers. */
+    List<Dispute> findByStripePaymentIntentIdAndOrderIdIsNull(String stripePaymentIntentId);
+
+    /**
+     * Unattributed disputes recent enough to be worth re-checking. Bounded by the caller's
+     * {@link Pageable}: the sweep is a safety net, not a backfill.
+     */
+    List<Dispute> findByOrderIdIsNullAndStripePaymentIntentIdIsNotNullAndCreatedAtAfter(
+            Instant createdAfter, Pageable pageable);
+
+    /**
+     * Attach an orphan to the order that turned up later. {@code and d.orderId is null} is the
+     * race guard: whichever of the checkout call site and the sweep gets there first wins, and
+     * the loser updates 0 rows instead of overwriting an attribution.
+     *
+     * <p>{@code updatedAt} is passed in because {@code @PreUpdate} does not fire on a bulk
+     * update, and the caller must NOT {@code save} the entity afterwards — this write bypasses
+     * the persistence context, so the in-memory row is stale the moment it returns.
+     *
+     * <p>{@code clearAutomatically = false} on purpose: this runs inside paid fulfilment, and
+     * clearing would detach the order, tickets, tier and reservation that transaction still owns.
+     */
+    @Modifying(clearAutomatically = false, flushAutomatically = true)
+    @Query("""
+            update Dispute d
+               set d.orderId = :orderId, d.eventId = :eventId, d.orgId = :orgId,
+                   d.testMode = :testMode, d.updatedAt = :now
+             where d.id = :id and d.orderId is null
+            """)
+    int attachToOrder(@Param("id") UUID id,
+                      @Param("orderId") UUID orderId,
+                      @Param("eventId") UUID eventId,
+                      @Param("orgId") UUID orgId,
+                      @Param("testMode") boolean testMode,
+                      @Param("now") Instant now);
 
     long countByOrgIdAndStatus(UUID orgId, DisputeStatus status);
 

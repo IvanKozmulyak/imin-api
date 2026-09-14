@@ -15,7 +15,7 @@
 
   <!-- preheader -->
   <div style="display:none; max-height:0; overflow:hidden; opacity:0; mso-hide:all;">
-    A cardholder disputed a payment for {{eventName}}. Their tickets are revoked and payouts are paused until it is resolved.
+    A cardholder disputed a payment for {{eventName}}. {{consequenceLine}} Payouts for your organization are paused until it is resolved.
   </div>
 
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f2fa; padding:32px 16px;">
@@ -48,7 +48,7 @@
           <tr>
             <td style="padding:10px 32px 0;">
               <p style="margin:0; font-size:14px; line-height:1.6; color:#7a738f;">
-                A cardholder has disputed their payment with their bank. We have revoked the tickets on that order so they cannot be used at the door, and payouts for your organization are paused until the dispute closes.
+                A cardholder has disputed their payment with their bank. {{consequenceLine}} Payouts for your organization are paused until the dispute closes.
               </p>
             </td>
           </tr>
@@ -61,7 +61,7 @@
                   <td style="padding:16px 18px; background:rgba(176,42,55,0.10); border:1px solid rgba(176,42,55,0.45); border-radius:6px;">
                     <div style="font-family:'Space Mono', ui-monospace, Menlo, Consolas, monospace; font-size:11px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:#b02a37;">DISPUTED AMOUNT</div>
                     <div style="margin-top:6px; font-size:32px; font-weight:700; letter-spacing:-0.6px; color:#11091f; line-height:1.1;">{{amountFormatted}}</div>
-                    <div style="margin-top:4px; font-size:13px; color:#11091f; line-height:1.5;">withheld from this event&rsquo;s payable balance</div>
+                    <div style="margin-top:4px; font-size:13px; color:#11091f; line-height:1.5;">on hold while the dispute is open</div>
                   </td>
                 </tr>
               </table>
@@ -80,7 +80,7 @@
                   <td style="padding:4px 0; font-size:14px; line-height:1.6; color:#11091f;">&bull;&nbsp;&nbsp;<strong style="font-weight:600;">Payouts stay paused</strong> &mdash; they resume automatically the moment the dispute closes, either way.</td>
                 </tr>
                 <tr>
-                  <td style="padding:4px 0; font-size:14px; line-height:1.6; color:#11091f;">&bull;&nbsp;&nbsp;<strong style="font-weight:600;">If the dispute is lost</strong> &mdash; the disputed amount stays off this event&rsquo;s payable balance. If it is won, it goes back.</td>
+                  <td style="padding:4px 0; font-size:14px; line-height:1.6; color:#11091f;">&bull;&nbsp;&nbsp;<strong style="font-weight:600;">If the dispute is lost</strong> &mdash; the disputed amount is not paid out. If it is won, it goes back.</td>
                 </tr>
               </table>
             </td>
