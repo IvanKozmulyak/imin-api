@@ -84,6 +84,18 @@ public class ConsentService {
     public void capture(UUID orgId, UUID membershipId, String basis, String source,
                         String proofText, String channel, String textVersion, UUID orderId,
                         AuthPrincipal principal) {
+        capture(orgId, membershipId, basis, source, proofText, channel, textVersion, orderId,
+                null, principal);
+    }
+
+    /**
+     * As above, with who consented. Only {@link ConsentOrigin#DATA_SUBJECT} (the person's own
+     * fresh consent) lifts a profiling objection; imports, organizers and the global toggle never do.
+     */
+    @Transactional
+    public void capture(UUID orgId, UUID membershipId, String basis, String source,
+                        String proofText, String channel, String textVersion, UUID orderId,
+                        ConsentOrigin origin, AuthPrincipal principal) {
         Membership m = requireMembership(orgId, membershipId);
 
         ConsentRecord r = new ConsentRecord();
@@ -104,6 +116,9 @@ public class ConsentService {
         } else {
             m.setConsentStatus("subscribed");
             m.setConsentBasis(basis);
+        }
+        if (origin == ConsentOrigin.DATA_SUBJECT) {
+            m.setObjectedProfiling(false);
         }
         membershipRepo.save(m);
 
@@ -158,6 +173,10 @@ public class ConsentService {
         } else {
             m.setConsentStatus("unsubscribed");
             m.setConsentBasis(null);
+        }
+        // The person's own opt-out is also an Art.21 objection to profiling, on either channel.
+        if (origin == ConsentOrigin.DATA_SUBJECT) {
+            m.setObjectedProfiling(true);
         }
         membershipRepo.save(m);
 

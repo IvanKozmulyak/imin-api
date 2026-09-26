@@ -161,6 +161,17 @@ class BuyerAccountDeletionTest {
         }
     }
 
+    /** Memberships outlive the account (orders are kept), so the objection must stop profiling too. */
+    @Test
+    void delete_marks_every_membership_as_objecting_to_profiling() throws Exception {
+        UUID orgA = org("DelOrgProfA");
+        UUID mA = membership(orgA, consumer(primary), "subscribed");
+
+        requestDeletion().andExpect(status().isOk());
+
+        assertThat(membershipById(mA).isObjectedProfiling()).isTrue();
+    }
+
     /** The whole address set, not just the primary — §7.2's fan-out rule applies here too. */
     @Test
     void delete_unsubscribes_memberships_behind_every_verified_address() throws Exception {

@@ -121,6 +121,11 @@ public class ResendWebhookProjector {
                     // carrying the real orgId attributes the row correctly.
                     AuthPrincipal systemPrincipal = new AuthPrincipal(null, orgId, UserRole.MEMBER, null);
                     suppressionService.addMarketing(orgId, membershipId, "spam", systemPrincipal);
+                    // A spam report is the person objecting; no sticky opt-out row, only the profiling flag.
+                    membershipRepo.findByIdAndOrgId(membershipId, orgId).ifPresent(m -> {
+                        m.setObjectedProfiling(true);
+                        membershipRepo.save(m);
+                    });
                 }
                 complaintRateBreaker.evaluate(campaignId, orgId);
             }

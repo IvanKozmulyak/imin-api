@@ -31,6 +31,7 @@ class ResendWebhookProjectorTest {
     @Autowired ConsumerRepository consumerRepo;
     @Autowired SuppressionRepository suppressionRepo;
     @Autowired com.imin.iminapi.marketing.repository.CampaignRepository campaignRepo;
+    @Autowired com.imin.iminapi.audience.repository.MarketingOptOutRepository optOutRepo;
     @MockitoBean AuditLogger auditLogger;
 
     private record Fixture(UUID orgId, UUID campaignId, UUID membershipId, UUID recipientId, String email) {}
@@ -206,6 +207,26 @@ class ResendWebhookProjectorTest {
             .isEqualTo("complained");
         assertThat(suppressionRepo.findMarketingByOrgAndMembership(f.orgId(), f.membershipId()))
             .isPresent();
+    }
+
+    @Test
+    void complainedMarksTheMemberAsObjectingToProfiling() {
+        Fixture f = seed("spam-profiling@example.com");
+        projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
+            "spam-profiling@example.com", "email.complained", null, Instant.now());
+        Membership m = membershipRepo.findByIdAndOrgId(f.membershipId(), f.orgId()).orElseThrow();
+        assertThat(m.isObjectedProfiling()).isTrue();
+        String address = consumerRepo.findByConsumerId(m.getConsumerId()).orElseThrow().getNormalizedEmail();
+        assertThat(optOutRepo.findByEmailNormalized(address)).as("no sticky opt-out row").isEmpty();
+    }
+
+    @Test
+    void deliveredLeavesProfilingObjectionFalse() {
+        Fixture f = seed("delivered-profiling@example.com");
+        projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
+            "delivered-profiling@example.com", "email.delivered", null, Instant.now());
+        assertThat(membershipRepo.findByIdAndOrgId(f.membershipId(), f.orgId())
+            .orElseThrow().isObjectedProfiling()).isFalse();
     }
 
     @Test
