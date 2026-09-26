@@ -171,6 +171,6 @@ public class AudienceOrderProjector {
         consentService.capture(orgId, m.getMembershipId(), "explicit", "checkout",
                 "Ticked the marketing opt-in at checkout next to: \"" + proofTextOverride + "\""
                         + (orderIdForProof != null ? ", order " + orderIdForProof : ""),
-                "email", null);
+                "email", null, orderIdForProof, null);
     }
 }

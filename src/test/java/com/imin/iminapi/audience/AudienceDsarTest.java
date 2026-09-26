@@ -16,6 +16,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import com.imin.iminapi.audience.dto.DsarRecords;
+import com.imin.iminapi.audienceplan.model.FanFeature;
+import com.imin.iminapi.audienceplan.repository.FanFeatureRepository;
 
 import javax.sql.DataSource;
 import java.time.Instant;
@@ -59,6 +63,7 @@ class AudienceDsarTest {
     @Autowired DataSource dataSource;
 
     @MockitoBean AuditLogger auditLogger;
+    @MockitoSpyBean FanFeatureRepository fanFeatureRepo;
 
     private UUID orgA;
     private UUID orgB;
@@ -397,6 +402,48 @@ class AudienceDsarTest {
     }
 
     @Test
+    void execute_erase_deletes_fan_features_explicitly() {
+        UUID mid = seedMembership(orgA, "fanerase@d.com");
+        seedFanFeature(orgA, mid);
+
+        dsarService.executeErase(orgA, mid, principalA);
+
+        verify(fanFeatureRepo).deleteByMembershipId(mid);
+        assertThat(fanFeatureRepo.findById(mid)).isEmpty();
+    }
+
+    @Test
+    void export_records_include_fan_features() {
+        UUID mid = seedMembership(orgA, "fanexport@d.com");
+        seedFanFeature(orgA, mid);
+
+        DsarRecords records = dsarService.exportRecords(orgA, mid, principalA);
+
+        DsarRecords.FanFeatureRecord f = records.fanFeatures();
+        assertThat(f).isNotNull();
+        assertThat(f.paidOrders()).isEqualTo(2);
+        assertThat(f.firstPaidPurchaseAt()).isEqualTo(Instant.parse("2026-02-01T20:00:00Z"));
+        assertThat(f.lastPaidPurchaseAt()).isEqualTo(Instant.parse("2026-08-15T20:00:00Z"));
+        assertThat(f.guestClass()).isEqualTo("repeat");
+        assertThat(f.taste()).isEqualTo("{\"pop\":1.0}");
+        assertThat(f.cities()).isEqualTo("[\"metz\"]");
+        assertThat(f.formats()).isEqualTo("[\"club\"]");
+        assertThat(f.noShowN()).isEqualTo(1);
+        assertThat(f.avgGroupSize()).isEqualByComparingTo("1.5");
+        assertThat(f.sends30d()).isEqualTo(3);
+        assertThat(f.lastContactFromPersonAt()).isEqualTo(Instant.parse("2026-08-15T20:00:00Z"));
+        assertThat(f.logicVersion()).isEqualTo(1);
+        assertThat(f.updatedAt()).isNotNull();
+    }
+
+    @Test
+    void export_records_have_null_fan_features_when_none_computed() {
+        UUID mid = seedMembership(orgA, "nofan@d.com");
+
+        assertThat(dsarService.exportRecords(orgA, mid, principalA).fanFeatures()).isNull();
+    }
+
+    @Test
     void execute_erase_cascades_marketing_suppression() {
         UUID mid = seedSubscribed(orgA, "cascsup@d.com", "explicit");
 
@@ -567,6 +614,25 @@ class AudienceDsarTest {
         m.setOrgId(orgId);
         m.setConsumerId(consumer.getConsumerId());
         return membershipRepo.save(m).getMembershipId();
+    }
+
+    private void seedFanFeature(UUID orgId, UUID mid) {
+        FanFeature f = new FanFeature();
+        f.setMembershipId(mid);
+        f.setOrgId(orgId);
+        f.setPaidOrders(2);
+        f.setFirstPaidPurchaseAt(Instant.parse("2026-02-01T20:00:00Z"));
+        f.setLastPaidPurchaseAt(Instant.parse("2026-08-15T20:00:00Z"));
+        f.setFanClass("repeat");
+        f.setTaste("{\"pop\":1.0}");
+        f.setCities("[\"metz\"]");
+        f.setFormats("[\"club\"]");
+        f.setNoShowN(1);
+        f.setAvgGroupSize(new java.math.BigDecimal("1.5"));
+        f.setSends30d(3);
+        f.setLastContactFromPersonAt(Instant.parse("2026-08-15T20:00:00Z"));
+        f.setLogicVersion(1);
+        fanFeatureRepo.save(f);
     }
 
     private UUID seedSubscribed(UUID orgId, String email, String basis) {

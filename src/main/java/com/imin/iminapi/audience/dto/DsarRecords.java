@@ -25,8 +25,14 @@ public record DsarRecords(
         List<TicketRecord> tickets,
         List<FunnelRecord> funnelEvents,
         List<MetaCapiRecord> metaCapiEvents,
-        List<NotifySubscriptionRecord> notifySubscriptions
+        List<NotifySubscriptionRecord> notifySubscriptions,
+        FanFeatureRecord fanFeatures
 ) {
+    /** The same records with the plan-tool features attached; null when none were computed. */
+    public DsarRecords withFanFeatures(FanFeatureRecord features) {
+        return new DsarRecords(orders, tickets, funnelEvents, metaCapiEvents, notifySubscriptions, features);
+    }
+
     public record OrderRecord(
             UUID id,
             UUID eventId,
@@ -68,6 +74,22 @@ public record DsarRecords(
             String status,
             Instant sentAt,
             Instant createdAt) {}
+
+    /** Audience-plan features derived from this person's paid purchases; JSON fields verbatim. */
+    public record FanFeatureRecord(
+            int paidOrders,
+            Instant firstPaidPurchaseAt,
+            Instant lastPaidPurchaseAt,
+            String guestClass,
+            String taste,
+            String cities,
+            String formats,
+            int noShowN,
+            java.math.BigDecimal avgGroupSize,
+            int sends30d,
+            Instant lastContactFromPersonAt,
+            int logicVersion,
+            Instant updatedAt) {}
 
     /** A "tell me when tickets drop" registration. */
     public record NotifySubscriptionRecord(

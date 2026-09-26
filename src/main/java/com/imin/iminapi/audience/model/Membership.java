@@ -113,6 +113,10 @@ public class Membership {
     @Column(name = "consent_basis", length = 16)
     private String consentBasis;
 
+    /** True once the person objected to profiling (Art.21); the plan tool then keeps no taste. */
+    @Column(name = "objected_profiling", nullable = false)
+    private boolean objectedProfiling = false;
+
     // ---- denormalized SMS consent state (Phase 3 / §2.2 / §7) ----
 
     /** Buyer phone in E.164, projected from orders.buyer_phone. NULL until an opt-in arrives. */

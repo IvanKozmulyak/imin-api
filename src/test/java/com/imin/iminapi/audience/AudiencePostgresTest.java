@@ -299,6 +299,83 @@ class AudiencePostgresTest {
     }
 
     // =========================================================================
+    // Audience plan schema (V132/V133) on real Postgres
+    // =========================================================================
+
+    @Test
+    void audiencePlanSchema_consentColumnsAndFanFeatures_roundTrip() throws Exception {
+        UUID orderId = UUID.randomUUID();
+        UUID mid;
+        try (Connection c = dataSource.getConnection();
+             Statement s = c.createStatement();
+             ResultSet r = s.executeQuery(
+                     "SELECT membership_id, objected_profiling FROM memberships WHERE display_name = 'Alice Dupont'")) {
+            assertThat(r.next()).isTrue();
+            mid = r.getObject(1, UUID.class);
+            assertThat(r.getBoolean(2)).isFalse();
+        }
+
+        try (Connection c = dataSource.getConnection()) {
+            try (java.sql.PreparedStatement ps = c.prepareStatement(
+                    "INSERT INTO consent_records (id, membership_id, status, lawful_basis, source, text_version, order_id) "
+                            + "VALUES (?, ?, 'subscribed', 'explicit', 'checkout', 'checkout-named-v1', ?)")) {
+                ps.setObject(1, UUID.randomUUID());
+                ps.setObject(2, mid);
+                ps.setObject(3, orderId);
+                ps.executeUpdate();
+            }
+            try (java.sql.PreparedStatement ps = c.prepareStatement(
+                    "INSERT INTO fan_features (membership_id, org_id, taste, avg_group_size, logic_version) "
+                            + "VALUES (?, ?, '{\"pop\":1.0}', 1.667, 1)")) {
+                ps.setObject(1, mid);
+                ps.setObject(2, ORG_A);
+                ps.executeUpdate();
+            }
+            try (java.sql.PreparedStatement ps = c.prepareStatement(
+                    "SELECT text_version, order_id FROM consent_records WHERE membership_id = ?")) {
+                ps.setObject(1, mid);
+                try (ResultSet r = ps.executeQuery()) {
+                    assertThat(r.next()).isTrue();
+                    assertThat(r.getString(1)).isEqualTo("checkout-named-v1");
+                    assertThat(r.getObject(2, UUID.class)).isEqualTo(orderId);
+                }
+            }
+            try (java.sql.PreparedStatement ps = c.prepareStatement(
+                    "SELECT class, paid_orders, sends_30d, no_show_n, avg_group_size, taste FROM fan_features "
+                            + "WHERE org_id = ? AND class = 'none'")) {
+                ps.setObject(1, ORG_A);
+                try (ResultSet r = ps.executeQuery()) {
+                    assertThat(r.next()).isTrue();
+                    assertThat(r.getString(1)).isEqualTo("none");
+                    assertThat(r.getInt(2)).isZero();
+                    assertThat(r.getInt(3)).isZero();
+                    assertThat(r.getInt(4)).isZero();
+                    assertThat(r.getBigDecimal(5)).isEqualByComparingTo("1.667");
+                    assertThat(r.getString(6)).isEqualTo("{\"pop\":1.0}");
+                }
+            }
+            try (Statement s = c.createStatement();
+                 ResultSet r = s.executeQuery(
+                         "SELECT count(*) FROM pg_indexes WHERE indexname = 'ix_fan_features_org_class'")) {
+                assertThat(r.next()).isTrue();
+                assertThat(r.getInt(1)).isEqualTo(1);
+            }
+        }
+
+        // The FK cascade removes the feature row with its membership.
+        membershipRepo.deleteByIdAndOrgId(mid, ORG_A);
+        try (Connection c = dataSource.getConnection();
+             java.sql.PreparedStatement ps = c.prepareStatement(
+                     "SELECT count(*) FROM fan_features WHERE membership_id = ?")) {
+            ps.setObject(1, mid);
+            try (ResultSet r = ps.executeQuery()) {
+                assertThat(r.next()).isTrue();
+                assertThat(r.getInt(1)).isZero();
+            }
+        }
+    }
+
+    // =========================================================================
     // Helpers
     // =========================================================================
 

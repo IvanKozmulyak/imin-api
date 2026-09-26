@@ -9,6 +9,8 @@ import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.ErasedAddressRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.repository.SuppressionRepository;
+import com.imin.iminapi.audienceplan.model.FanFeature;
+import com.imin.iminapi.audienceplan.repository.FanFeatureRepository;
 import com.imin.iminapi.repository.NotifySubscriptionRepository;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.ApiException;
@@ -54,6 +56,7 @@ public class DsarService {
     private final com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository buyerAccountEmailRepo;
     private final ErasedAddressRepository erasedAddressRepo;
     private final DsarScopeService scopeService;
+    private final FanFeatureRepository fanFeatureRepo;
 
     public DsarService(MembershipRepository membershipRepo,
                        ConsumerRepository consumerRepo,
@@ -65,7 +68,8 @@ public class DsarService {
                        NotifySubscriptionRepository notifySubscriptionRepo,
                        com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository buyerAccountEmailRepo,
                        ErasedAddressRepository erasedAddressRepo,
-                       DsarScopeService scopeService) {
+                       DsarScopeService scopeService,
+                       FanFeatureRepository fanFeatureRepo) {
         this.membershipRepo = membershipRepo;
         this.consumerRepo = consumerRepo;
         this.consentRepo = consentRepo;
@@ -77,6 +81,7 @@ public class DsarService {
         this.buyerAccountEmailRepo = buyerAccountEmailRepo;
         this.erasedAddressRepo = erasedAddressRepo;
         this.scopeService = scopeService;
+        this.fanFeatureRepo = fanFeatureRepo;
     }
 
     /** Art.15 access — returns the membership (caller maps to DTO). Audited. */
@@ -122,7 +127,18 @@ public class DsarService {
         String normalizedEmail = consumerRepo.findByConsumerId(m.getConsumerId())
                 .map(c -> c.getNormalizedEmail())
                 .orElse(null);
-        return scopeService.collect(orgId, normalizedEmail);
+        return scopeService.collect(orgId, normalizedEmail)
+                .withFanFeatures(fanFeatureRepo.findById(membershipId)
+                        .map(DsarService::toRecord)
+                        .orElse(null));
+    }
+
+    private static DsarRecords.FanFeatureRecord toRecord(FanFeature f) {
+        return new DsarRecords.FanFeatureRecord(
+                f.getPaidOrders(), f.getFirstPaidPurchaseAt(), f.getLastPaidPurchaseAt(),
+                f.getFanClass(), f.getTaste(), f.getCities(), f.getFormats(), f.getNoShowN(),
+                f.getAvgGroupSize(), f.getSends30d(), f.getLastContactFromPersonAt(),
+                f.getLogicVersion(), f.getUpdatedAt());
     }
 
     /**
@@ -256,6 +272,9 @@ public class DsarService {
             // that is the scope of the erasure being performed.
             recordErasure(orgId, normalizedEmail);
         }
+
+        // 3c. Plan-tool features. The FK cascades too; deleting here keeps erasure independent of it.
+        fanFeatureRepo.deleteByMembershipId(membershipId);
 
         // 4. Delete membership (consent_records cascade via FK ON DELETE CASCADE)
         membershipRepo.deleteByIdAndOrgId(membershipId, orgId);

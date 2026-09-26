@@ -73,6 +73,17 @@ public class ConsentService {
     @Transactional
     public void capture(UUID orgId, UUID membershipId, String basis, String source,
                         String proofText, String channel, AuthPrincipal principal) {
+        capture(orgId, membershipId, basis, source, proofText, channel, null, null, principal);
+    }
+
+    /**
+     * As above, also recording the consent sentence's {@code textVersion} and the
+     * {@code orderId} it was given on. Either may be null.
+     */
+    @Transactional
+    public void capture(UUID orgId, UUID membershipId, String basis, String source,
+                        String proofText, String channel, String textVersion, UUID orderId,
+                        AuthPrincipal principal) {
         Membership m = requireMembership(orgId, membershipId);
 
         ConsentRecord r = new ConsentRecord();
@@ -82,6 +93,8 @@ public class ConsentService {
         r.setLawfulBasis(basis);
         r.setSource(source);
         r.setProofText(proofText);
+        r.setTextVersion(textVersion);
+        r.setOrderId(orderId);
         consentRepo.save(r);
 
         // M3: denormalize current state onto membership, per channel.

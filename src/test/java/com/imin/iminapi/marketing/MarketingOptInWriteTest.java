@@ -330,6 +330,8 @@ class MarketingOptInWriteTest {
         assertThat(proof.getProofText()).contains(sentence);
         assertThat(proof.getProofText()).contains(orderId.toString());
         assertThat(proof.getProofText()).doesNotContain("pre-ticked");
+        assertThat(proof.getOrderId()).isEqualTo(orderId);
+        assertThat(proof.getTextVersion()).isNull();
     }
 
     /** An opt-in flag with no proof sentence is not evidence of consent: nothing is recorded. */

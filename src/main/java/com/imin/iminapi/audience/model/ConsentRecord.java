@@ -43,6 +43,14 @@ public class ConsentRecord {
     @Column(name = "proof_text", columnDefinition = "TEXT")
     private String proofText;
 
+    /** Version of the consent sentence shown; null when the capture carried none. */
+    @Column(name = "text_version", length = 32)
+    private String textVersion;
+
+    /** Order the consent was given on (checkout); null for other sources. */
+    @Column(name = "order_id")
+    private UUID orderId;
+
     @Column(name = "occurred_at", nullable = false, updatable = false)
     private Instant occurredAt = Instant.now();
 

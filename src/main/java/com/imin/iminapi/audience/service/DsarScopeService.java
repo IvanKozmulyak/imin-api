@@ -132,7 +132,7 @@ public class DsarScopeService {
                                 s.getId(), s.getEventId(), s.getEmail(), s.getCreatedAt()))
                         .toList();
 
-        return new DsarRecords(orderRecords, ticketRecords, funnelRecords, metaRecords, notifyRecords);
+        return new DsarRecords(orderRecords, ticketRecords, funnelRecords, metaRecords, notifyRecords, null);
     }
 
     /**
@@ -212,6 +212,6 @@ public class DsarScopeService {
 
     private static DsarRecords empty() {
         return new DsarRecords(new ArrayList<>(), new ArrayList<>(), new ArrayList<>(),
-                new ArrayList<>(), new ArrayList<>());
+                new ArrayList<>(), new ArrayList<>(), null);
     }
 }
