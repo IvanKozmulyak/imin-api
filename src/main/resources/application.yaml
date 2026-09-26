@@ -857,6 +857,11 @@ imin:
     urgency-before-hours: 72
     urgency-min-sell-through-pct: 30
     urgency-max-sell-through-pct: 90
+  audience-plan:
+    # Dark by default; even when enabled only listed orgs pass. Blank list = nobody.
+    enabled: ${IMIN_AUDIENCE_PLAN_ENABLED:false}
+    # Comma-separated org UUIDs; a malformed entry fails startup.
+    beta-org-ids: ${IMIN_AUDIENCE_PLAN_BETA_ORGS:}
 
 sentry:
   dsn: ${SENTRY_DSN:}

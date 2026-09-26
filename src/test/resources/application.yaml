@@ -105,3 +105,6 @@ imin:
     access-key-id: test
     secret-access-key: test
     public-url-prefix: https://test-media.invalid/
+  audience-plan:
+    enabled: false
+    beta-org-ids: ""
