@@ -263,6 +263,12 @@ public class StripeCheckoutService {
                                          CheckoutAttribution attribution, String rawLocale,
                                          String rawIdempotencyKey, CheckoutConsent consent) {
         if (consent == null) consent = CheckoutConsent.NONE;
+        // As in StripePaymentIntentService.create: a bare boolean without the verbatim sentence is no opt-in.
+        if (marketingOptIn && consent.marketingOptInProofText() == null) {
+            log.warn("[hosted-checkout] event {} tier {} sent marketingOptIn=true with no "
+                    + "marketingOptInProofText — recording NO opt-in", eventId, tierId);
+            marketingOptIn = false;
+        }
         // Normalize first, so a malformed header is a 400 before anything is priced,
         // reserved or charged — and so both public checkout endpoints reject the same
         // header the same way.

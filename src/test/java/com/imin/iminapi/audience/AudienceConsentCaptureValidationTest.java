@@ -19,6 +19,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -115,5 +116,83 @@ class AudienceConsentCaptureValidationTest {
         Map<String, Object> body = validBody();
         body.put("proofText", "p".repeat(2001));
         expectRejected(body, "proofText");
+    }
+
+    @Test
+    @WithOrgA
+    void rejectsReservedExactSource() throws Exception {
+        Map<String, Object> body = validBody();
+        body.put("source", "checkout");
+        mvc.perform(post("/api/v1/audience/consent/capture")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(body)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
+                .andExpect(jsonPath("$.error.fields.source").value("is reserved for system-recorded consent"));
+        verify(consentService, never()).capture(any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    @WithOrgA
+    void rejectsReservedPrefixSource() throws Exception {
+        Map<String, Object> body = validBody();
+        body.put("source", "dsar_erase");
+        expectRejected(body, "source");
+    }
+
+    @Test
+    @WithOrgA
+    void acceptsOrganizerTypedSource() throws Exception {
+        Map<String, Object> body = validBody();
+        mvc.perform(post("/api/v1/audience/consent/capture")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(body)))
+                .andExpect(status().isOk());
+        verify(consentService).capture(any(), eq(UUID.fromString((String) body.get("membershipId"))),
+                eq("explicit"), eq("signup-form"), eq("Ticked the newsletter box on the signup form"),
+                eq("email"), any());
+    }
+
+    private Map<String, Object> unsubBody(String source) {
+        Map<String, Object> body = new HashMap<>();
+        body.put("membershipId", UUID.randomUUID().toString());
+        body.put("source", source);
+        return body;
+    }
+
+    @Test
+    @WithOrgA
+    void unsubscribe_rejectsReservedExactSource() throws Exception {
+        mvc.perform(post("/api/v1/audience/consent/unsubscribe")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(unsubBody("one_click"))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
+                .andExpect(jsonPath("$.error.fields.source").value("is reserved for system-recorded consent"));
+        verify(consentService, never()).unsubscribe(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    @WithOrgA
+    void unsubscribe_rejectsReservedPrefixSource() throws Exception {
+        mvc.perform(post("/api/v1/audience/consent/unsubscribe")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(unsubBody("dsar_object"))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
+                .andExpect(jsonPath("$.error.fields.source").exists());
+        verify(consentService, never()).unsubscribe(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    @WithOrgA
+    void unsubscribe_acceptsOrganizerTypedSource() throws Exception {
+        Map<String, Object> body = unsubBody("organizer-cleanup");
+        mvc.perform(post("/api/v1/audience/consent/unsubscribe")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(body)))
+                .andExpect(status().isOk());
+        verify(consentService).unsubscribe(any(), eq(UUID.fromString((String) body.get("membershipId"))),
+                eq("organizer-cleanup"), eq("email"), eq(ConsentOrigin.OPERATOR), any());
     }
 }

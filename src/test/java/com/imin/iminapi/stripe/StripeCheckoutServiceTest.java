@@ -45,6 +45,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+@org.junit.jupiter.api.extension.ExtendWith(org.springframework.boot.test.system.OutputCaptureExtension.class)
 class StripeCheckoutServiceTest {
 
     private static final Instant NOW = Instant.parse("2026-06-01T12:00:00Z");
@@ -891,5 +892,96 @@ class StripeCheckoutServiceTest {
                 any(), nullable(String.class), nullable(String.class),
                 any(com.imin.iminapi.model.CheckoutConsent.class));
         verify(sessionService, never()).create(any(SessionCreateParams.class));
+    }
+
+    // ---- Marketing opt-in without proof text (hosted endpoint) ---------------
+
+    private static final String PROOF = "Email me about similar events. Unsubscribe anytime.";
+
+    private SessionCreateParams paidCheckout(boolean marketingOptIn,
+                                             com.imin.iminapi.model.CheckoutConsent consent) throws Exception {
+        svc.createCheckout(eventId, tierId, 1, null, null, "buyer@example.com", false, marketingOptIn,
+                com.imin.iminapi.model.CheckoutAttribution.NONE, null, null, consent);
+        ArgumentCaptor<SessionCreateParams> captor = ArgumentCaptor.forClass(SessionCreateParams.class);
+        verify(sessionService).create(captor.capture());
+        return captor.getValue();
+    }
+
+    @Test
+    void hostedPaid_optInWithNoProofText_isDowngradedToFalse(
+            org.springframework.boot.test.system.CapturedOutput output) throws Exception {
+        SessionCreateParams sent = paidCheckout(true, new com.imin.iminapi.model.CheckoutConsent(true, null));
+
+        assertThat(sent.getMetadata()).containsEntry("marketing_opt_in", "false");
+        assertThat(sent.getPaymentIntentData().getMetadata()).containsEntry("marketing_opt_in", "false");
+        assertThat(sent.getMetadata()).doesNotContainKey(
+                com.imin.iminapi.model.CheckoutConsent.META_MARKETING_PROOF);
+        assertThat(output.getOut()).contains("[hosted-checkout] event " + eventId + " tier " + tierId
+                + " sent marketingOptIn=true with no marketingOptInProofText");
+    }
+
+    @Test
+    void hostedPaid_optInWithBlankProofText_isDowngradedToFalse() throws Exception {
+        SessionCreateParams sent = paidCheckout(true, new com.imin.iminapi.model.CheckoutConsent(true, "   "));
+
+        assertThat(sent.getMetadata()).containsEntry("marketing_opt_in", "false");
+        assertThat(sent.getPaymentIntentData().getMetadata()).containsEntry("marketing_opt_in", "false");
+    }
+
+    @Test
+    void hostedPaid_optInWithProofText_staysTrue(
+            org.springframework.boot.test.system.CapturedOutput output) throws Exception {
+        SessionCreateParams sent = paidCheckout(true, new com.imin.iminapi.model.CheckoutConsent(true, PROOF));
+
+        assertThat(sent.getMetadata()).containsEntry("marketing_opt_in", "true");
+        assertThat(sent.getPaymentIntentData().getMetadata()).containsEntry("marketing_opt_in", "true");
+        assertThat(sent.getMetadata()).containsEntry(
+                com.imin.iminapi.model.CheckoutConsent.META_MARKETING_PROOF, PROOF);
+        assertThat(output.getOut()).doesNotContain("[hosted-checkout]");
+    }
+
+    @Test
+    void hostedPaid_noOptIn_staysFalse() throws Exception {
+        SessionCreateParams sent = paidCheckout(false, new com.imin.iminapi.model.CheckoutConsent(true, PROOF));
+
+        assertThat(sent.getMetadata()).containsEntry("marketing_opt_in", "false");
+    }
+
+    private boolean freeCheckoutOptIn(boolean marketingOptIn,
+                                      com.imin.iminapi.model.CheckoutConsent consent) {
+        TicketTier freeTier = tier();
+        freeTier.setPriceMinor(0);
+        when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(freeTier));
+        com.imin.iminapi.model.Order order = new com.imin.iminapi.model.Order();
+        order.setId(UUID.randomUUID());
+        order.setToken("ord_optin");
+        when(freeCheckoutService.issueFreeOrder(any(), any(), eq(1), eq("free@example.com"),
+                isNull(), org.mockito.ArgumentMatchers.anyBoolean(), org.mockito.ArgumentMatchers.anyBoolean(),
+                any(), nullable(String.class), nullable(String.class),
+                any(com.imin.iminapi.model.CheckoutConsent.class)))
+                .thenReturn(order);
+
+        svc.createCheckout(eventId, tierId, 1, null, 0, "free@example.com", false, marketingOptIn,
+                com.imin.iminapi.model.CheckoutAttribution.NONE, null, null, consent);
+
+        ArgumentCaptor<Boolean> optIn = ArgumentCaptor.forClass(Boolean.class);
+        verify(freeCheckoutService).issueFreeOrder(any(), any(), eq(1), eq("free@example.com"),
+                isNull(), org.mockito.ArgumentMatchers.anyBoolean(), optIn.capture(),
+                any(), nullable(String.class), nullable(String.class),
+                any(com.imin.iminapi.model.CheckoutConsent.class));
+        return optIn.getValue();
+    }
+
+    @Test
+    void hostedFree_optInWithNoProofText_isDowngradedToFalse(
+            org.springframework.boot.test.system.CapturedOutput output) {
+        assertThat(freeCheckoutOptIn(true, com.imin.iminapi.model.CheckoutConsent.NONE)).isFalse();
+        assertThat(output.getOut()).contains("[hosted-checkout] event " + eventId + " tier " + tierId
+                + " sent marketingOptIn=true with no marketingOptInProofText");
+    }
+
+    @Test
+    void hostedFree_optInWithProofText_staysTrue() {
+        assertThat(freeCheckoutOptIn(true, new com.imin.iminapi.model.CheckoutConsent(true, PROOF))).isTrue();
     }
 }

@@ -211,6 +211,10 @@ public class AudienceController {
     @PostMapping("/consent/capture")
     public ResponseEntity<Void> captureConsent(@AuthenticationPrincipal AuthPrincipal principal,
                                                 @Valid @RequestBody ConsentRequest body) {
+        if (ReservedConsentSources.isReserved(body.source())) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID, "Validation failed",
+                    Map.of("source", "is reserved for system-recorded consent"));
+        }
         consentService.capture(principal.orgId(), body.membershipId(), body.basis(),
                 body.source(), body.proofText(), "email", principal);
         return ResponseEntity.ok().build();
@@ -224,6 +228,10 @@ public class AudienceController {
         // reason origin is a parameter the endpoint chooses rather than something
         // inferred from the string (§16 / ConsentOrigin). No sticky row: an organizer
         // tidying their audience must not bar that buyer from ever opting back in.
+        if (ReservedConsentSources.isReserved(body.source())) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID, "Validation failed",
+                    Map.of("source", "is reserved for system-recorded consent"));
+        }
         consentService.unsubscribe(principal.orgId(), body.membershipId(), body.source(), "email",
                 ConsentOrigin.OPERATOR, principal);
         return ResponseEntity.ok().build();
