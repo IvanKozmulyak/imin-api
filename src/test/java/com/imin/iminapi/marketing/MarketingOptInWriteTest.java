@@ -6,6 +6,8 @@ import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.AudienceOrderProjector;
 import com.imin.iminapi.audience.service.ConsentOrigin;
 import com.imin.iminapi.audience.service.ConsentService;
+import com.imin.iminapi.audience.service.MembershipProjector;
+import com.imin.iminapi.service.ticket.TicketsIssuedEvent;
 import com.imin.iminapi.audience.service.SendGateService;
 import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.*;
@@ -31,11 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * ads_consent) and the AudienceOrderProjector turns it into a channel='email' consent
  * proof that makes the membership SendGate-sendable.
  *
- * <p>The checkbox is PRE-TICKED (default ON) and worded as an opt-out, so the basis
- * recorded is {@code soft_opt_in} (ePrivacy Art.13(2)) and never {@code explicit} — a
- * pre-ticked box cannot evidence explicit consent (GDPR Recital 32). These tests pin
- * that basis, the honesty of the stored proof text, and the two rules that protect the
- * buyer: unsubscribed always beats default-on, and a soft opt-in is EMAIL-only.
+ * <p>A tick with the sentence the buyer read is {@code explicit}; without it nothing is recorded.
  */
 @SpringBootTest
 @Import(TestRateLimitConfig.class)
@@ -54,7 +52,10 @@ class MarketingOptInWriteTest {
     @Autowired MembershipRepository memberships;
     @Autowired ConsumerRepository consumers;
     @Autowired ConsentRecordRepository consentRecords;
+    @Autowired MembershipProjector membershipProjector;
     @Autowired DataSource dataSource;
+
+    private static final String PROOF = "Email me about similar events. Unsubscribe anytime.";
 
     private Event event;
     private TicketTier freeTier;
@@ -215,47 +216,6 @@ class MarketingOptInWriteTest {
         assertThat(persisted.getAnonId()).hasSize(64);
     }
 
-    /**
-     * The core of the soft-opt-in change: a checkout opt-in records basis='soft_opt_in',
-     * NOT 'explicit'. The box is pre-ticked, so 'explicit' would be a false audit record.
-     */
-    @Test
-    void projector_withOptIn_capturesSoftOptInEmailConsent() {
-        projector.upsertMembership(orgId, "optin-buyer@example.com", "optin-buyer@example.com",
-                null, false, /* emailOptIn */ true, UUID.randomUUID());
-
-        var m = membershipFor("optin-buyer@example.com");
-        assertThat(m.getConsentStatus()).isEqualTo("subscribed");
-        assertThat(m.getConsentBasis()).isEqualTo("soft_opt_in");
-        assertThat(m.getConsentBasis()).isNotEqualTo("explicit");
-    }
-
-    /**
-     * The stored proof must describe what actually happened — a pre-ticked box the buyer
-     * left ticked — and must never claim the buyer took an affirmative action. This is the
-     * record a regulator would read.
-     */
-    @Test
-    void projector_withOptIn_proofTextDescribesPreTickedBox_notAnAffirmativeAction() {
-        UUID orderId = UUID.randomUUID();
-        projector.upsertMembership(orgId, "proof-buyer@example.com", "proof-buyer@example.com",
-                null, false, true, orderId);
-
-        var m = membershipFor("proof-buyer@example.com");
-        var records = consentRecords.findByMembershipId(m.getMembershipId());
-        assertThat(records).hasSize(1);
-        var proof = records.get(0);
-
-        assertThat(proof.getChannel()).isEqualTo("email");
-        assertThat(proof.getLawfulBasis()).isEqualTo("soft_opt_in");
-        assertThat(proof.getSource()).isEqualTo("checkout");
-        // Says what happened...
-        assertThat(proof.getProofText()).contains("pre-ticked");
-        assertThat(proof.getProofText()).contains(orderId.toString());
-        // ...and does not claim the buyer actively opted in.
-        assertThat(proof.getProofText()).doesNotContain("Checked '");
-    }
-
     @Test
     void projector_withoutOptIn_leavesConsentUntouched() {
         projector.upsertMembership(orgId, "no-optin@example.com", "no-optin@example.com",
@@ -267,15 +227,14 @@ class MarketingOptInWriteTest {
     }
 
     /**
-     * UNSUBSCRIBED BEATS DEFAULT-ON, ALWAYS. A buyer who opted out and later buys another
-     * ticket must not be silently resurrected by a checkbox that defaults to ticked. This
-     * is the single most important guard on a default-on control.
+     * UNSUBSCRIBED BEATS A LATER OPT-IN, ALWAYS. A buyer who opted out and later buys another
+     * ticket is not resubscribed by the purchase, even with the box ticked and proof sent.
      */
     @Test
-    void projector_neverResubscribesAnUnsubscribedMember_evenWithDefaultOnOptIn() {
+    void projector_neverResubscribesAnUnsubscribedMember_evenWithCheckoutOptIn() {
         // Seed a member and unsubscribe them.
         projector.upsertMembership(orgId, "gone@example.com", "gone@example.com",
-                null, false, true, null);
+                null, false, true, null, PROOF);
         var m = membershipFor("gone@example.com");
         consentService.unsubscribe(orgId, m.getMembershipId(), "user-request",
                 ConsentOrigin.DATA_SUBJECT, null);
@@ -283,9 +242,9 @@ class MarketingOptInWriteTest {
         long proofsAfterUnsub = consentRecords
                 .findByMembershipId(m.getMembershipId()).size();
 
-        // They buy again with the pre-ticked box left ticked.
+        // They buy again and tick the box, with the proof sentence.
         projector.upsertMembership(orgId, "gone@example.com", "gone@example.com",
-                null, false, /* emailOptIn */ true, UUID.randomUUID());
+                null, false, /* emailOptIn */ true, UUID.randomUUID(), PROOF);
 
         // Still unsubscribed, still no lawful basis, and no new consent proof was written.
         var after = membershipFor("gone@example.com");
@@ -300,36 +259,29 @@ class MarketingOptInWriteTest {
         assertThat(gate.excluded().get(0).reason()).isEqualTo("marketing_unsubscribed");
     }
 
-    /**
-     * soft_opt_in is a lawful basis for EMAIL — SendGate clause 4 admits any non-null
-     * consent_basis, so a checkout opt-in makes the member sendable.
-     */
+    /** A checkout opt-in with proof is an explicit basis, which the email Send Gate admits. */
     @Test
-    void softOptIn_passesTheEmailSendGate() {
+    void checkoutOptIn_passesTheEmailSendGate() {
         projector.upsertMembership(orgId, "sendable@example.com", "sendable@example.com",
-                null, false, true, null);
+                null, false, true, null, PROOF);
 
         var m = membershipFor("sendable@example.com");
-        assertThat(m.getConsentBasis()).isEqualTo("soft_opt_in");
+        assertThat(m.getConsentBasis()).isEqualTo("explicit");
 
         var gate = sendGate.evaluate(orgId, List.of(m.getMembershipId()));
         assertThat(gate.sendable()).containsExactly(m.getMembershipId());
         assertThat(gate.excluded()).isEmpty();
     }
 
-    /**
-     * ...but it is EMAIL-only. An email soft opt-in must NOT make anyone SMS-sendable:
-     * SMS keeps requiring an explicit, unticked-by-default opt-in and lives on the
-     * separate sms_consent_* columns. Guards against the soft opt-in leaking channels.
-     */
+    /** ...but it is EMAIL-only: the SMS side lives on separate sms_consent_* columns. */
     @Test
-    void softOptIn_doesNotMakeTheMemberSmsSendable() {
+    void checkoutEmailOptIn_doesNotMakeTheMemberSmsSendable() {
         projector.upsertMembership(orgId, "email-only@example.com", "email-only@example.com",
-                null, false, /* emailOptIn */ true, null);
+                null, false, /* emailOptIn */ true, null, PROOF);
 
         var m = membershipFor("email-only@example.com");
-        // Email side: subscribed on a soft basis.
-        assertThat(m.getConsentBasis()).isEqualTo("soft_opt_in");
+        // Email side: subscribed on an explicit basis.
+        assertThat(m.getConsentBasis()).isEqualTo("explicit");
         // SMS side: completely untouched — never subscribed, no basis, no phone.
         assertThat(m.getSmsConsentStatus()).isEqualTo("never");
         assertThat(m.getSmsConsentBasis()).isNull();
@@ -339,7 +291,7 @@ class MarketingOptInWriteTest {
     }
 
     /**
-     * The SMS opt-in path is unchanged by the email soft opt-in: an SMS opt-in still
+     * The SMS opt-in path is unchanged by the email opt-in: an SMS opt-in still
      * records 'explicit'. Pins that the two channels' bases don't converge.
      */
     @Test
@@ -352,5 +304,73 @@ class MarketingOptInWriteTest {
         assertThat(m.getSmsConsentBasis()).isEqualTo("explicit");
         // Email side stays untouched by an SMS-only opt-in.
         assertThat(m.getConsentBasis()).isNull();
+    }
+
+    /** A ticked box with the sentence the buyer read is recorded as explicit consent, verbatim. */
+    @Test
+    void projector_withOptInAndProofText_recordsExplicitConsentWithVerbatimSentence() {
+        UUID orderId = UUID.randomUUID();
+        String sentence = "Email me about similar events. Unsubscribe anytime.";
+        projector.upsertMembership(orgId, "proof-buyer@example.com", "proof-buyer@example.com",
+                null, false, true, orderId, sentence);
+
+        var m = membershipFor("proof-buyer@example.com");
+        assertThat(m.getConsentStatus()).isEqualTo("subscribed");
+        assertThat(m.getConsentBasis()).isEqualTo("explicit");
+
+        var records = consentRecords.findByMembershipId(m.getMembershipId());
+        assertThat(records).hasSize(1);
+        var proof = records.get(0);
+        assertThat(proof.getChannel()).isEqualTo("email");
+        assertThat(proof.getLawfulBasis()).isEqualTo("explicit");
+        assertThat(proof.getSource()).isEqualTo("checkout");
+        assertThat(proof.getStatus()).isEqualTo("subscribed");
+        assertThat(proof.getProofText())
+                .startsWith("Ticked the marketing opt-in at checkout next to:");
+        assertThat(proof.getProofText()).contains(sentence);
+        assertThat(proof.getProofText()).contains(orderId.toString());
+        assertThat(proof.getProofText()).doesNotContain("pre-ticked");
+    }
+
+    /** An opt-in flag with no proof sentence is not evidence of consent: nothing is recorded. */
+    @Test
+    void projector_withOptInButNoProofText_recordsNoConsent() {
+        projector.upsertMembership(orgId, "no-proof@example.com", "no-proof@example.com",
+                null, false, true, UUID.randomUUID());
+
+        var m = membershipFor("no-proof@example.com");
+        assertThat(m.getConsentStatus()).isNotEqualTo("subscribed");
+        assertThat(m.getConsentBasis()).isNull();
+        assertThat(consentRecords.findByMembershipId(m.getMembershipId())).isEmpty();
+    }
+
+    /** A whitespace-only proof sentence is no proof either. */
+    @Test
+    void projector_withOptInButBlankProofText_recordsNoConsent() {
+        projector.upsertMembership(orgId, "blank-proof@example.com", "blank-proof@example.com",
+                null, false, true, UUID.randomUUID(), "   ");
+
+        var m = membershipFor("blank-proof@example.com");
+        assertThat(m.getConsentStatus()).isNotEqualTo("subscribed");
+        assertThat(m.getConsentBasis()).isNull();
+        assertThat(consentRecords.findByMembershipId(m.getMembershipId())).isEmpty();
+    }
+
+    /** A zero-total order involves no sale, so it can never ground a soft opt-in. */
+    @Test
+    void freeOrderWithOptIn_neverYieldsSoftOptIn() {
+        Order order = freeCheckout.issueFreeOrder(
+                event, freeTier, 1, "free-optin@example.com", null, false, true,
+                CheckoutAttribution.NONE, null, null,
+                new CheckoutConsent(true, "Email me about similar events. Unsubscribe anytime."));
+
+        // Plain instance so the projection runs synchronously on this thread.
+        new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService)
+                .onTicketsIssued(new TicketsIssuedEvent(order.getId()));
+
+        var m = membershipFor("free-optin@example.com");
+        assertThat(m.getConsentBasis()).isEqualTo("explicit");
+        assertThat(consentRecords.findByMembershipId(m.getMembershipId()))
+                .noneMatch(r -> "soft_opt_in".equals(r.getLawfulBasis()));
     }
 }

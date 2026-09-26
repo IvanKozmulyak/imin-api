@@ -115,13 +115,8 @@ public class StripePaymentIntentService {
     }
 
     /**
-     * As above, plus the V97 consent evidence the native client captured. The hosted sibling
-     * has threaded this end-to-end since V97; the native path hard-coded
-     * {@link CheckoutConsent#NONE}, so a native order landed with
-     * {@code orders.marketing_opt_in = true} and a {@code basis='soft_opt_in'} consent row
-     * minted from the server's own fallback sentence, with {@code terms_accepted_at} and
-     * {@code marketing_opt_in_proof} both NULL — precisely the Art. 7(1) evidence V97 exists
-     * to capture.
+     * As above, plus the V97 consent evidence the native client captured. The projector turns a
+     * ticked opt-in into a basis 'explicit' email consent only when this proof text is present.
      *
      * <p><b>An opt-in with no proof text is not recorded as an opt-in.</b> Consent we cannot
      * evidence is worth less than no consent, so the flag is downgraded to false (and logged)

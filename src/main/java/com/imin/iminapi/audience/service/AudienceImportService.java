@@ -6,6 +6,7 @@ import com.imin.iminapi.audience.dto.ImportResultResponse.ImportError;
 import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
+import com.imin.iminapi.audience.repository.ErasedAddressRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.repository.SuppressionRepository;
 import com.imin.iminapi.security.AuthPrincipal;
@@ -38,6 +39,10 @@ import java.util.regex.Pattern;
  *       contact.</li>
  *   <li><b>Explicit unsubscribes are never flipped.</b> A member who unsubscribed stays
  *       unsubscribed; the import counts them as {@code skippedUnsubscribed}.</li>
+ *   <li><b>Erased addresses stay erased.</b> An address on this org's erasure ledger is skipped
+ *       before any write and counted as {@code skippedErased}; one only on the platform-wide
+ *       ledger is skipped the same way but counted as the neutral {@code skippedOther}, so the
+ *       organizer never learns of an erasure made outside their org.</li>
  * </ol>
  */
 @Service
@@ -58,6 +63,7 @@ public class AudienceImportService {
     private final AudienceOrderProjector projector;
     private final ConsentService consentService;
     private final AuditLogger auditLogger;
+    private final ErasedAddressRepository erasedAddressRepo;
 
     public AudienceImportService(ConsumerRepository consumerRepo,
                                  MembershipRepository membershipRepo,
@@ -65,7 +71,8 @@ public class AudienceImportService {
                                  SuppressionService suppressionService,
                                  AudienceOrderProjector projector,
                                  ConsentService consentService,
-                                 AuditLogger auditLogger) {
+                                 AuditLogger auditLogger,
+                                 ErasedAddressRepository erasedAddressRepo) {
         this.consumerRepo = consumerRepo;
         this.membershipRepo = membershipRepo;
         this.suppressionRepo = suppressionRepo;
@@ -73,9 +80,10 @@ public class AudienceImportService {
         this.projector = projector;
         this.consentService = consentService;
         this.auditLogger = auditLogger;
+        this.erasedAddressRepo = erasedAddressRepo;
     }
 
-    private enum Classification { IMPORTED, UPDATED, SUPPRESSED, SKIPPED_UNSUBSCRIBED }
+    private enum Classification { IMPORTED, UPDATED, SUPPRESSED, SKIPPED_UNSUBSCRIBED, SKIPPED_ERASED, SKIPPED_OTHER }
 
     /**
      * Import (or, when {@code dryRun}, preview) the parsed contacts.
@@ -118,7 +126,8 @@ public class AudienceImportService {
             unique.put(normalized, row); // last occurrence wins
         }
 
-        int imported = 0, updated = 0, suppressed = 0, skippedUnsubscribed = 0;
+        int imported = 0, updated = 0, suppressed = 0, skippedUnsubscribed = 0, skippedErased = 0,
+                skippedOther = 0;
 
         // 2. Classify + (unless dryRun) apply each unique contact.
         for (Map.Entry<String, CsvContactParser.RawContact> e : unique.entrySet()) {
@@ -131,6 +140,8 @@ public class AudienceImportService {
                     case UPDATED -> updated++;
                     case SUPPRESSED -> suppressed++;
                     case SKIPPED_UNSUBSCRIBED -> skippedUnsubscribed++;
+                    case SKIPPED_ERASED -> skippedErased++;
+                    case SKIPPED_OTHER -> skippedOther++;
                 }
             } catch (RuntimeException ex) {
                 log.error("Import row {} ({}) failed: {}", row.rowNumber(), LogSafe.email(email),
@@ -143,12 +154,14 @@ public class AudienceImportService {
             auditLogger.record(principal, AuditActions.AUDIENCE_IMPORTED, "audience", null,
                     "CSV import: total=" + total + " imported=" + imported + " updated=" + updated
                             + " suppressed=" + suppressed + " skippedUnsubscribed=" + skippedUnsubscribed
+                            + " skippedErased=" + skippedErased
+                            + " skippedOther=" + skippedOther
                             + " invalidEmails=" + invalidEmails
                             + " attestationVersion=" + version);
         }
 
         return new ImportResultResponse(total, imported, updated, suppressed,
-                skippedUnsubscribed, invalidEmails, errors);
+                skippedUnsubscribed, skippedErased, skippedOther, invalidEmails, errors);
     }
 
     /**
@@ -157,6 +170,15 @@ public class AudienceImportService {
     private Classification process(java.util.UUID orgId, String email,
                                    CsvContactParser.RawContact row, boolean dryRun,
                                    AuthPrincipal principal, String attestationVersion) {
+        // Erased addresses are skipped before any write, including a preview; only this org's
+        // erasures are labelled as such, a platform-wide one lands in the neutral bucket.
+        if (erasedAddressRepo.existsForOrg(orgId, email)) {
+            return Classification.SKIPPED_ERASED;
+        }
+        if (erasedAddressRepo.existsPlatformWide(email)) {
+            return Classification.SKIPPED_OTHER;
+        }
+
         // ---- read current state (before any write) ----
         Consumer consumer = consumerRepo.findByNormalizedEmail(email).orElse(null);
         Membership existing = (consumer == null) ? null
@@ -191,7 +213,7 @@ public class AudienceImportService {
 
         // Upsert Consumer + Membership (idempotent). emailOptIn=false / smsOptIn=false so the
         // projector NEVER captures consent here — organizer-import consent is written below with
-        // the distinct source, and the projector's checkout soft-opt-in path must not fire.
+        // the distinct source, and the projector's checkout opt-in path must not fire.
         projector.upsertMembership(orgId, email, row.name(), phoneE164, false, false, null);
 
         if (c == Classification.IMPORTED || c == Classification.UPDATED) {

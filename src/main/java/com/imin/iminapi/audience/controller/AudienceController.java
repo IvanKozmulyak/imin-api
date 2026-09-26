@@ -12,6 +12,10 @@ import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -206,7 +210,7 @@ public class AudienceController {
 
     @PostMapping("/consent/capture")
     public ResponseEntity<Void> captureConsent(@AuthenticationPrincipal AuthPrincipal principal,
-                                                @RequestBody ConsentRequest body) {
+                                                @Valid @RequestBody ConsentRequest body) {
         consentService.capture(principal.orgId(), body.membershipId(), body.basis(),
                 body.source(), body.proofText(), "email", principal);
         return ResponseEntity.ok().build();
@@ -341,7 +345,11 @@ public class AudienceController {
     // ── Request body records ───────────────────────────────────────────────
 
     record HandoffRequest(java.util.List<UUID> membershipIds) {}
-    record ConsentRequest(UUID membershipId, String basis, String source, String proofText) {}
+    // soft_opt_in is never accepted here: it needs a sale-time opt-out an organizer's claim cannot show.
+    record ConsentRequest(@NotNull UUID membershipId,
+                          @NotBlank @Pattern(regexp = "explicit", message = "must be explicit") String basis,
+                          @NotBlank @Size(max = 64) String source,
+                          @NotBlank @Size(max = 2000) String proofText) {}
     record UnsubRequest(UUID membershipId, String source) {}
     record RectifyRequest(String displayName, String city, String notes) {}
 }

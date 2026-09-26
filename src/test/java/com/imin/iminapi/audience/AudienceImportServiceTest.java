@@ -13,6 +13,7 @@ import com.imin.iminapi.audience.service.AudienceImportService;
 import com.imin.iminapi.audience.service.ImportAttestation;
 import com.imin.iminapi.audience.service.ConsentOrigin;
 import com.imin.iminapi.audience.service.ConsentService;
+import com.imin.iminapi.audience.service.DsarService;
 import com.imin.iminapi.audience.service.CsvContactParser;
 import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.UserRole;
@@ -49,6 +50,7 @@ class AudienceImportServiceTest {
     @Autowired MembershipRepository membershipRepo;
     @Autowired SuppressionRepository suppressionRepo;
     @Autowired ConsentRecordRepository consentRepo;
+    @Autowired DsarService dsarService;
     @Autowired DataSource dataSource;
 
     // AuditLogger is best-effort; stub it so consent-capture audit writes don't hit UserRepository.
@@ -276,11 +278,96 @@ class AudienceImportServiceTest {
         assertThat(membershipFor("nophone@example.com").getPhoneE164()).isNull();
     }
 
+    // ── erasure ledger: an erased address is never rebuilt by an import ────────
+
+    @Test
+    void platformWideErasedAddress_isSkippedAsOther_andNoProfileIsRebuilt() {
+        dsarService.recordErasure(null, "gone@x.com");
+
+        ImportResultResponse r = importService.importContacts(rows("Gone@X.com"), false, principal);
+
+        assertThat(r.skippedOther()).isEqualTo(1);
+        assertThat(r.skippedErased()).isZero();
+        assertThat(r.imported()).isZero();
+        assertThat(r.suppressed()).isZero();
+        assertThat(r.errors()).isEmpty();
+        assertThat(consumerRepo.findByNormalizedEmail("gone@x.com")).isEmpty();
+        assertThat(consentRecordCount()).isZero();
+    }
+
+    @Test
+    void orgErasedAddress_isSkipped() {
+        dsarService.recordErasure(orgId, "gone@x.com");
+
+        ImportResultResponse r = importService.importContacts(rows("Gone@X.com"), false, principal);
+
+        assertThat(r.skippedErased()).isEqualTo(1);
+        assertThat(r.skippedOther()).isZero();
+        assertThat(r.imported()).isZero();
+        assertThat(r.suppressed()).isZero();
+        assertThat(r.errors()).isEmpty();
+        assertThat(consumerRepo.findByNormalizedEmail("gone@x.com")).isEmpty();
+        assertThat(consentRecordCount()).isZero();
+    }
+
+    /** Scope pin: another org's erasure does not bind this org. */
+    @Test
+    void addressErasedByAnotherOrgOnly_importsNormally() {
+        dsarService.recordErasure(UUID.randomUUID(), "other@x.com");
+
+        ImportResultResponse r = importService.importContacts(rows("other@x.com"), false, principal);
+
+        assertThat(r.imported()).isEqualTo(1);
+        assertThat(r.skippedErased()).isZero();
+        Membership m = membershipFor("other@x.com");
+        assertThat(m.getConsentStatus()).isEqualTo("subscribed");
+        assertThat(m.getConsentBasis()).isEqualTo("explicit");
+    }
+
+    /** An address on both ledgers is counted once, under this org's label. */
+    @Test
+    void addressOnBothLedgers_isCountedOnceAsErased() {
+        dsarService.recordErasure(null, "gone@x.com");
+        dsarService.recordErasure(orgId, "gone@x.com");
+
+        ImportResultResponse r = importService.importContacts(rows("gone@x.com"), false, principal);
+
+        assertThat(r.skippedErased()).isEqualTo(1);
+        assertThat(r.skippedOther()).isZero();
+        assertThat(r.errors()).isEmpty();
+        assertThat(consumerRepo.findByNormalizedEmail("gone@x.com")).isEmpty();
+    }
+
+    @Test
+    void dryRun_countsPlatformWideErasedAddressAsOther_withoutWriting() {
+        dsarService.recordErasure(null, "gone@x.com");
+
+        ImportResultResponse r = importService.importContacts(rows("gone@x.com"), true, principal);
+
+        assertThat(r.skippedOther()).isEqualTo(1);
+        assertThat(r.skippedErased()).isZero();
+        assertThat(r.errors()).isEmpty();
+        assertThat(consumerRepo.findByNormalizedEmail("gone@x.com")).isEmpty();
+        assertThat(consentRecordCount()).isZero();
+    }
+
+    private long consentRecordCount() {
+        try (java.sql.Connection c = dataSource.getConnection();
+             java.sql.Statement s = c.createStatement();
+             java.sql.ResultSet rs = s.executeQuery("select count(*) from consent_records")) {
+            rs.next();
+            return rs.getLong(1);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
     // ── wipe ───────────────────────────────────────────────────────────────────
 
     private void wipe() {
         try (java.sql.Connection c = dataSource.getConnection();
              java.sql.Statement s = c.createStatement()) {
+            s.execute("delete from erased_addresses");
             s.execute("delete from suppression_entries");
             s.execute("delete from consent_records");
             s.execute("delete from memberships");

@@ -58,7 +58,7 @@ public class StripeCheckoutController {
         // Nullable; treat null as false. Rides the buyer's cookie-consent ads-consent (§7)
         // into orders.ads_consent — the lawful basis gate for the server-side Meta CAPI event.
         boolean adsConsent = Boolean.TRUE.equals(body.adsConsent());
-        // Nullable; null => false. Pre-ticked soft opt-in — the buyer LEFT it ticked.
+        // Nullable; null => false. The buyer ticked the unticked-by-default marketing box.
         boolean marketingOptIn = Boolean.TRUE.equals(body.marketingOptIn());
         // Last-touch attribution the browser landed with (V62). All fields optional and
         // untrusted buyer input — the record trims, caps to the column widths, and
@@ -92,12 +92,8 @@ public class StripeCheckoutController {
                                    // imin-public consent banner (§7). Nullable; null ⇒ false.
                                    // Persisted to orders.ads_consent; gates the Meta CAPI event.
                                    Boolean adsConsent,
-                                   // Buyer's email-marketing SOFT opt-in from the buy page. The
-                                   // checkbox is PRE-TICKED (default on) and the buyer may untick
-                                   // it before paying, so true means "left ticked", not an
-                                   // affirmative action. Nullable; null => false. Persisted to
-                                   // orders.marketing_opt_in; becomes the channel='email',
-                                   // basis='soft_opt_in' consent proof row at fulfilment.
+                                   // Buyer ticked the unticked-by-default marketing box; becomes a basis
+                                   // 'explicit' email consent only with marketingOptInProofText, else none.
                                    Boolean marketingOptIn,
                                    // Last-touch attribution captured by imin-public on landing
                                    // (V62) and replayed here from sessionStorage — by the time the

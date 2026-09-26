@@ -6,7 +6,8 @@ import java.util.List;
  * Result of a POST /api/v1/audience/import (contact CSV upload).
  *
  * <p>Counts are honest and per-classification. For a non-dry-run:
- * {@code imported + updated + suppressed + skippedUnsubscribed} equals the number of
+ * {@code imported + updated + suppressed + skippedUnsubscribed + skippedErased + skippedOther}
+ * equals the number of
  * unique, valid contacts that were processed (duplicates within the file are collapsed
  * last-wins and never double-counted). {@code invalidEmails} counts rows whose email
  * failed validation. {@code total} is the number of data rows in the file (header
@@ -19,6 +20,10 @@ import java.util.List;
  * @param suppressed          contacts on the org marketing OR global deliverability suppression
  *                            list — imported/kept as members but NOT subscribed (guardrail)
  * @param skippedUnsubscribed existing members with an explicit unsubscribe — never re-subscribed
+ * @param skippedErased       addresses on this org's erasure ledger — no write at all, and
+ *                            deliberately no per-row error naming them
+ * @param skippedOther        addresses skipped for a reason not disclosed to the organizer (an
+ *                            erasure made outside this org) — no write, no per-row error
  * @param invalidEmails       rows whose email was blank or failed validation
  * @param errors              up to ~50 row-level problems for the organizer to fix
  */
@@ -28,6 +33,8 @@ public record ImportResultResponse(
         int updated,
         int suppressed,
         int skippedUnsubscribed,
+        int skippedErased,
+        int skippedOther,
         int invalidEmails,
         List<ImportError> errors) {
 

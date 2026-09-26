@@ -198,9 +198,8 @@ public class PaidCheckoutService {
         // gates the server-side Meta CAPI event (MetaCapiOutboxWriter). Absent/anything-but-
         // "true" defaults false (V60 default), so historical/unconsented orders never emit.
         order.setAdsConsent("true".equals(meta.get("ads_consent")));
-        // Email-marketing soft opt-in from the buy page (pre-ticked, buyer left it ticked),
-        // stamped into metadata by StripeCheckoutService. The AudienceOrderProjector turns
-        // it into the basis='soft_opt_in' consent row.
+        // Buyer ticked the (unticked-by-default) marketing box; the projector records basis
+        // 'explicit' only with the proof text below, and no consent without it.
         order.setMarketingOptIn("true".equals(meta.get("marketing_opt_in")));
         // Last-touch utm_* + anon_id (V62) captured on landing and carried through the
         // session/PI metadata. Missing keys → null: sessions created before V62 that were

@@ -16,10 +16,8 @@ import java.util.Map;
  * option; this one keeps the free and paid flows unable to drift, because both
  * end at {@link #applyTo(Order)}.
  *
- * <p>Both fields are optional. The buyer site has not shipped its half yet, and
- * an order that predates it must keep working exactly as before — so
- * {@link #NONE} writes nothing and {@code AudienceOrderProjector} falls back to
- * its own sentence when the proof text is absent.
+ * <p>Both fields are optional; {@link #NONE} writes nothing, and without proof text
+ * {@code AudienceOrderProjector} records no marketing consent for the order.
  */
 public record CheckoutConsent(boolean acceptedTerms, String marketingOptInProofText) {
 
