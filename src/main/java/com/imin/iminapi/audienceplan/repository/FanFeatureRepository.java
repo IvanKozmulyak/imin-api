@@ -10,6 +10,8 @@ import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.time.LocalDate;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -76,4 +78,41 @@ public interface FanFeatureRepository extends Repository<FanFeature, UUID> {
                                   and f.updatedAt >= :cutoff)
             """)
     long countStale(@Param("cutoff") Instant cutoff);
+    // ConsentGate: one shared SQL filter; see ConsentGateSql for the parameters.
+
+    @Query(value = ConsentGateSql.MAILABLE_IDS, nativeQuery = true)
+    List<Object> findMailableMembershipIds(@Param("orgId") UUID orgId,
+            @Param("namedSources") Collection<String> namedSources,
+            @Param("namedVersions") Collection<String> namedVersions,
+            @Param("provenanceSources") Collection<String> provenanceSources,
+            @Param("textVersionSources") Collection<String> textVersionSources,
+            @Param("personSources") Collection<String> personSources,
+            @Param("softOptInBases") Collection<String> softOptInBases,
+            @Param("cutoffAt") Instant cutoffAt,
+            @Param("cutoffDate") LocalDate cutoffDate);
+
+    /** Rows of {@code [reason, count]}; a null reason is the mailable count. */
+    @Query(value = ConsentGateSql.REASON_COUNTS, nativeQuery = true)
+    List<Object[]> countExclusionsByReason(@Param("orgId") UUID orgId,
+            @Param("namedSources") Collection<String> namedSources,
+            @Param("namedVersions") Collection<String> namedVersions,
+            @Param("provenanceSources") Collection<String> provenanceSources,
+            @Param("textVersionSources") Collection<String> textVersionSources,
+            @Param("personSources") Collection<String> personSources,
+            @Param("softOptInBases") Collection<String> softOptInBases,
+            @Param("cutoffAt") Instant cutoffAt,
+            @Param("cutoffDate") LocalDate cutoffDate);
+
+    /** Rows of {@code [membership_id, reason]} for those ids that belong to the org. */
+    @Query(value = ConsentGateSql.REASONS_FOR_IDS, nativeQuery = true)
+    List<Object[]> findExclusionReasons(@Param("orgId") UUID orgId,
+            @Param("namedSources") Collection<String> namedSources,
+            @Param("namedVersions") Collection<String> namedVersions,
+            @Param("provenanceSources") Collection<String> provenanceSources,
+            @Param("textVersionSources") Collection<String> textVersionSources,
+            @Param("personSources") Collection<String> personSources,
+            @Param("softOptInBases") Collection<String> softOptInBases,
+            @Param("cutoffAt") Instant cutoffAt,
+            @Param("cutoffDate") LocalDate cutoffDate,
+            @Param("ids") Collection<UUID> ids);
 }

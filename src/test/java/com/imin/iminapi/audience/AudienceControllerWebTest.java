@@ -374,7 +374,7 @@ class AudienceControllerWebTest {
         when(audienceService.getMember(eq(ORG_A), eq(MEMBER_A))).thenReturn(stubMember(MEMBER_A));
         when(dsarService.consentHistory(eq(ORG_A), eq(MEMBER_A))).thenReturn(List.of(
                 new ConsentHistoryEntry(Instant.parse("2025-02-01T10:00:00Z"), "email", true,
-                        "soft_opt_in", "checkout", "Left the pre-ticked box ticked at checkout")));
+                        "soft_opt_in", "checkout", "Left the pre-ticked box ticked at checkout", null, null)));
 
         mvc.perform(post("/api/v1/audience/members/" + MEMBER_A + "/export"))
                 .andExpect(status().isOk())
@@ -405,16 +405,21 @@ class AudienceControllerWebTest {
     void get_consent_history_returns_the_trail() throws Exception {
         when(dsarService.consentHistory(eq(ORG_A), eq(MEMBER_A))).thenReturn(List.of(
                 new ConsentHistoryEntry(Instant.parse("2025-02-01T10:00:00Z"), "email", true,
-                        "explicit", "signup_form", "Ticked the box on the signup form"),
+                        "explicit", "checkout", "Ticked the box at checkout", "2026-10-01",
+                        UUID.fromString("0f0f0f0f-0000-4000-8000-000000000001")),
                 new ConsentHistoryEntry(Instant.parse("2025-03-01T10:00:00Z"), "email", false,
-                        null, "one_click", null)));
+                        null, "one_click", null, null, null)));
 
         mvc.perform(get("/api/v1/audience/members/" + MEMBER_A + "/consent-history"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(2))
                 .andExpect(jsonPath("$[0].granted").value(true))
                 .andExpect(jsonPath("$[1].granted").value(false))
-                .andExpect(jsonPath("$[1].source").value("one_click"));
+                .andExpect(jsonPath("$[1].source").value("one_click"))
+                .andExpect(jsonPath("$[0].textVersion").value("2026-10-01"))
+                .andExpect(jsonPath("$[0].orderId").value("0f0f0f0f-0000-4000-8000-000000000001"))
+                .andExpect(jsonPath("$[1].textVersion").value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("$[1].orderId").value(org.hamcrest.Matchers.nullValue()));
     }
 
     @Test

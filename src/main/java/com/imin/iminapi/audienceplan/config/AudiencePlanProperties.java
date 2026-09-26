@@ -26,6 +26,9 @@ public class AudiencePlanProperties {
     /** Real sends of audience-plan campaigns; stays false until the platform legal gates clear. Blank binds false. */
     private Boolean sendsEnabled = Boolean.FALSE;
 
+    /** Lets ConsentGate count a soft opt-in grounded on a paid order; explicit consent only while false. Blank binds false. */
+    private Boolean softOptInEnabled = Boolean.FALSE;
+
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
     public Set<UUID> getBetaOrgIds() { return betaOrgIds; }
@@ -37,6 +40,8 @@ public class AudiencePlanProperties {
     public void setGenresFile(String genresFile) { this.genresFile = genresFile; }
     public Boolean getSendsEnabled() { return sendsEnabled; }
     public void setSendsEnabled(Boolean sendsEnabled) { this.sendsEnabled = Boolean.TRUE.equals(sendsEnabled); }
+    public Boolean getSoftOptInEnabled() { return softOptInEnabled; }
+    public void setSoftOptInEnabled(Boolean softOptInEnabled) { this.softOptInEnabled = Boolean.TRUE.equals(softOptInEnabled); }
 
     /** Blank elements (e.g. a trailing comma) convert to null; drop them rather than fail. */
     public void setBetaOrgIds(Set<UUID> betaOrgIds) {

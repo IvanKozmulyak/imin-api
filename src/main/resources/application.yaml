@@ -872,6 +872,8 @@ imin:
     genres-file: classpath:audienceplan/genres-v1.yaml
     # Real sends of audience-plan campaigns. Stays false until the platform legal gates (D9) clear.
     sends-enabled: ${IMIN_AUDIENCE_PLAN_SENDS_ENABLED:false}
+    # Soft opt-in on a paid order counts for the plan tool. Explicit consent only while false (D1).
+    soft-opt-in-enabled: ${IMIN_AUDIENCE_PLAN_SOFT_OPT_IN:false}
 
 sentry:
   dsn: ${SENTRY_DSN:}

@@ -3,6 +3,7 @@ package com.imin.iminapi.audience.dto;
 import com.imin.iminapi.audience.model.ConsentRecord;
 
 import java.time.Instant;
+import java.util.UUID;
 
 /**
  * One row of the append-only consent trail, as the outside world sees it.
@@ -23,7 +24,10 @@ public record ConsentHistoryEntry(
         boolean granted,
         String lawfulBasis,
         String source,
-        String proofText
+        String proofText,
+        // Version of the consent sentence shown and the order it was given on; null when absent.
+        String textVersion,
+        UUID orderId
 ) {
     public static ConsentHistoryEntry from(ConsentRecord r) {
         return new ConsentHistoryEntry(
@@ -32,6 +36,8 @@ public record ConsentHistoryEntry(
                 "subscribed".equals(r.getStatus()),
                 r.getLawfulBasis(),
                 r.getSource(),
-                r.getProofText());
+                r.getProofText(),
+                r.getTextVersion(),
+                r.getOrderId());
     }
 }

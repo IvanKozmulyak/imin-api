@@ -112,3 +112,4 @@ imin:
     priors-file: classpath:audienceplan/priors-v1.yaml
     genres-file: classpath:audienceplan/genres-v1.yaml
     sends-enabled: false
+    soft-opt-in-enabled: false

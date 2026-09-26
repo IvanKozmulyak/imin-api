@@ -126,6 +126,39 @@ class AudiencePlanAccessTest {
     }
 
     @Test
+    void softOptIn_defaultsFalse() {
+        assertThat(new AudiencePlanProperties().getSoftOptInEnabled()).isFalse();
+    }
+
+    @Test
+    void softOptIn_blankEnvVar_bindsFalse() {
+        runner.withPropertyValues("IMIN_AUDIENCE_PLAN_SOFT_OPT_IN=",
+                        "imin.audience-plan.soft-opt-in-enabled=${IMIN_AUDIENCE_PLAN_SOFT_OPT_IN:false}")
+                .run(ctx -> assertThat(ctx.getBean(AudiencePlanProperties.class).getSoftOptInEnabled()).isFalse());
+    }
+
+    @Test
+    void softOptIn_true_binds() {
+        runner.withPropertyValues("imin.audience-plan.soft-opt-in-enabled=true")
+                .run(ctx -> assertThat(ctx.getBean(AudiencePlanProperties.class).getSoftOptInEnabled()).isTrue());
+    }
+
+    @Test
+    void softOptIn_shippedYamlDefaultsToFalse() throws Exception {
+        String main = java.nio.file.Files.readString(java.nio.file.Path.of("src/main/resources/application.yaml"));
+        String test = java.nio.file.Files.readString(java.nio.file.Path.of("src/test/resources/application.yaml"));
+        assertThat(main).contains("soft-opt-in-enabled: ${IMIN_AUDIENCE_PLAN_SOFT_OPT_IN:false}");
+        assertThat(test).contains("soft-opt-in-enabled: false");
+    }
+
+    @Test
+    void softOptIn_nullSetter_staysFalse() {
+        AudiencePlanProperties props = new AudiencePlanProperties();
+        props.setSoftOptInEnabled(null);
+        assertThat(props.getSoftOptInEnabled()).isFalse();
+    }
+
+    @Test
     void sendsOff_audiencePlanOrigin_throws409() {
         AudiencePlanAccess access = new AudiencePlanAccess(new AudiencePlanProperties());
         assertThatThrownBy(() -> access.requireSendsAllowed("audience_plan"))

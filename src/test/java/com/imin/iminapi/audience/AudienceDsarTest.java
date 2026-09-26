@@ -167,6 +167,24 @@ class AudienceDsarTest {
     }
 
     @Test
+    void consent_history_carries_text_version_and_order_id() {
+        UUID mid = seedMembership(orgA, "trail-version@d.com");
+        UUID orderId = UUID.randomUUID();
+        consentService.capture(orgA, mid, "explicit", "checkout", "Ticked the box", "email",
+                "2026-10-01", orderId, principalA);
+        consentService.capture(orgA, mid, "explicit", "manual", "Typed by organizer", principalA);
+
+        List<com.imin.iminapi.audience.dto.ConsentHistoryEntry> history =
+                dsarService.consentHistory(orgA, mid);
+
+        assertThat(history).hasSize(2);
+        assertThat(history.get(0).textVersion()).isEqualTo("2026-10-01");
+        assertThat(history.get(0).orderId()).isEqualTo(orderId);
+        assertThat(history.get(1).textVersion()).isNull();
+        assertThat(history.get(1).orderId()).isNull();
+    }
+
+    @Test
     void consent_history_is_empty_for_a_member_who_never_consented() {
         UUID mid = seedMembership(orgA, "notrail@d.com");
         assertThat(dsarService.consentHistory(orgA, mid)).isEmpty();
