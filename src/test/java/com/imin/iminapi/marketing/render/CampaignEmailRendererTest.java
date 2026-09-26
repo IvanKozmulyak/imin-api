@@ -179,4 +179,35 @@ class CampaignEmailRendererTest {
         assertThat(r.html()).doesNotContain(UNSUB + "?utm");
         assertThat(r.html()).doesNotContain(UNSUB + "&utm");
     }
+
+    // ---- AI Act Art.50(2) marker (ADR-0005) ----
+
+    @Test
+    void aiGeneratedEmail_carriesTheDisclosureMetaInTheHead() {
+        CampaignEmailRenderer.Rendered r = renderer.render("S", "P", "Body", "camp-1", "email", UNSUB,
+                BuiltinTemplates.defaultTemplate(), null, null, null,
+                new com.imin.iminapi.service.ai.provenance.AiEmailDisclosure(false, true));
+
+        String head = r.html().substring(0, r.html().indexOf("</head>"));
+        assertThat(head).contains("<meta name=\"ai-disclosure\" content=\"mode=ai-originated\"/>")
+                .contains("<meta name=\"imin-ai-generated\" content=\"body\"/>");
+        // Machine-readable only: nothing visible is added to the text part.
+        assertThat(r.text()).doesNotContain("ai-disclosure").doesNotContain("imin-ai-generated");
+    }
+
+    @Test
+    void humanWrittenEmail_hasNoDisclosureMeta() {
+        CampaignEmailRenderer.Rendered r = renderer.render("S", "P", "Body", "camp-1", "email", UNSUB,
+                BuiltinTemplates.defaultTemplate(), null, null, null);
+
+        assertThat(r.html()).doesNotContain("ai-disclosure").doesNotContain("imin-ai-generated");
+    }
+
+    @Test
+    void nullDisclosure_rendersLikeNone() {
+        CampaignEmailRenderer.Rendered r = renderer.render("S", "P", "Body", "camp-1", "email", UNSUB,
+                BuiltinTemplates.defaultTemplate(), null, null, null, null);
+
+        assertThat(r.html()).doesNotContain("ai-disclosure");
+    }
 }

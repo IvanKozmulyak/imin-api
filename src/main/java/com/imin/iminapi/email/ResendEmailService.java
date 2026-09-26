@@ -25,6 +25,11 @@ public class ResendEmailService implements EmailService {
 
     @Override
     public void send(String to, String subject, String html, String text) {
+        send(to, subject, html, text, java.util.Map.of());
+    }
+
+    @Override
+    public void send(String to, String subject, String html, String text, java.util.Map<String, String> headers) {
         if (props.getApiKey() == null || props.getApiKey().isBlank()) {
             log.error("RESEND_API_KEY not configured; cannot send email to {}", LogSafe.email(to));
             throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, ErrorCode.INTERNAL,
@@ -43,6 +48,9 @@ public class ResendEmailService implements EmailService {
                 .text(text);
         if (props.getReplyTo() != null && !props.getReplyTo().isBlank()) {
             b.replyTo(props.getReplyTo());
+        }
+        if (headers != null && !headers.isEmpty()) {
+            b.headers(headers);
         }
         try {
             resend.emails().send(b.build());

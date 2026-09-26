@@ -8,6 +8,7 @@ import com.imin.iminapi.marketing.dto.EmailComposeVariantsResponse;
 import com.imin.iminapi.marketing.dto.EmailComposeVariantsResponse.EmailVariant;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
+import com.imin.iminapi.marketing.service.CampaignAiSuggestions;
 import com.imin.iminapi.marketing.service.EmailComposeVariantsService;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.UserRole;
@@ -31,6 +32,10 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
 import static org.mockito.Mockito.mock;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class EmailComposeVariantsServiceTest {
@@ -42,9 +47,10 @@ class EmailComposeVariantsServiceTest {
     private final OrganizationRepository organizations = mock(OrganizationRepository.class);
     private final SegmentRepository segments = mock(SegmentRepository.class);
     private final SegmentService segmentService = mock(SegmentService.class);
+    private final CampaignAiSuggestions aiSuggestions = mock(CampaignAiSuggestions.class);
 
     private final EmailComposeVariantsService sut =
-            new EmailComposeVariantsService(chat, campaigns, events, organizations, segments, segmentService);
+            new EmailComposeVariantsService(chat, campaigns, events, organizations, segments, segmentService, aiSuggestions);
 
     private final UUID orgId = UUID.randomUUID();
     private UUID campaignId;
@@ -257,5 +263,45 @@ class EmailComposeVariantsServiceTest {
                     assertThat(api.status()).isEqualTo(HttpStatus.NOT_FOUND);
                     assertThat(api.code()).isEqualTo(ErrorCode.NOT_FOUND);
                 });
+    }
+
+    // ---- AI Act Art.50 fingerprints (ADR-0005) ----
+
+    @Test
+    void recordsEveryModelSubject_andEveryPreheaderAndBody() {
+        stubCampaignNoEvent();
+        stubModel(List.of(
+                v("Subject one", "Pre one", "Body one"),
+                v("Subject two", "Pre two", "Body two")));
+
+        sut.generate(principal(), campaignId, 2, null);
+
+        verify(aiSuggestions).record(campaignId, CampaignAiSuggestions.SUBJECT,
+                List.of("Subject one", "Subject two"));
+        verify(aiSuggestions).record(campaignId, CampaignAiSuggestions.BODY,
+                List.of("Pre one", "Body one", "Pre two", "Body two"));
+    }
+
+    @Test
+    void fallbackVariant_isNotRecordedAsAiText() {
+        stubCampaignNoEvent();
+        stubModel(List.of());
+
+        EmailComposeVariantsResponse res = sut.generate(principal(), campaignId, null, null);
+
+        assertThat(res.variants()).hasSize(1);
+        verifyNoInteractions(aiSuggestions);
+    }
+
+    @Test
+    void aFingerprintWriteFailure_stillReturnsTheVariants() {
+        stubCampaignNoEvent();
+        stubModel(List.of(v("Subject one", "Pre one", "Body one")));
+        doThrow(new RuntimeException("db down")).when(aiSuggestions).record(any(), any(), any());
+
+        EmailComposeVariantsResponse res = sut.generate(principal(), campaignId, 1, null);
+
+        assertThat(res.variants()).extracting(EmailComposeVariantsResponse.EmailVariant::subject)
+                .containsExactly("Subject one");
     }
 }

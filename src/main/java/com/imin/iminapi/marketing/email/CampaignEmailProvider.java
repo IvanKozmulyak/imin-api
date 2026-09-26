@@ -12,7 +12,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
+import com.imin.iminapi.service.ai.provenance.AiEmailDisclosure;
+
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -34,9 +37,17 @@ public class CampaignEmailProvider {
         this.resend = resend;
     }
 
-    /** One outgoing email; unsubscribeUrl seeds the RFC 8058 headers. */
+    /**
+     * One outgoing email; unsubscribeUrl seeds the RFC 8058 headers, {@code ai} the Art.50(2)
+     * marker headers.
+     */
     public record OutgoingEmail(String from, String to, String subject,
-                                String html, String text, String unsubscribeUrl) {}
+                                String html, String text, String unsubscribeUrl, AiEmailDisclosure ai) {
+        public OutgoingEmail(String from, String to, String subject,
+                             String html, String text, String unsubscribeUrl) {
+            this(from, to, subject, html, text, unsubscribeUrl, AiEmailDisclosure.NONE);
+        }
+    }
 
     /** Sends the batch; returns provider message ids in the SAME order as the input. */
     public List<String> sendBatch(List<OutgoingEmail> emails) {
@@ -52,9 +63,7 @@ public class CampaignEmailProvider {
                     .subject(e.subject())
                     .html(e.html())
                     .text(e.text())
-                    .headers(Map.of(
-                            "List-Unsubscribe", "<" + e.unsubscribeUrl() + ">",
-                            "List-Unsubscribe-Post", "List-Unsubscribe=One-Click"))
+                    .headers(headers(e))
                     .build();
             options.add(o);
         }
@@ -68,6 +77,14 @@ public class CampaignEmailProvider {
         } catch (Exception ex) {
             throw classify(ex, emails.size());
         }
+    }
+
+    static Map<String, String> headers(OutgoingEmail e) {
+        Map<String, String> h = new LinkedHashMap<>();
+        h.put("List-Unsubscribe", "<" + e.unsubscribeUrl() + ">");
+        h.put("List-Unsubscribe-Post", "List-Unsubscribe=One-Click");
+        if (e.ai() != null) h.putAll(e.ai().headers());
+        return h;
     }
 
     /**

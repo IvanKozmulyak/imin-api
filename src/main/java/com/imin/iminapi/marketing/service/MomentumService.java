@@ -303,6 +303,9 @@ public class MomentumService {
         c.setSubject(clamp(text(draft, "subject", null), MAX_SUBJECT));
         c.setPreheader(clamp(text(draft, "preheader", null), MAX_PREHEADER));
         c.setBodyMd(text(draft, "bodyMd", null));
+        // MomentumCopyGenerator wrote this copy: mark it for the Art.50(2) marker.
+        c.setSubjectAiGenerated(c.getSubject() != null);
+        c.setBodyAiGenerated(c.getBodyMd() != null || c.getPreheader() != null);
         c.setCreatedBy(principal.userId());
         c.setCreatedAt(now);
         c.setUpdatedAt(now);

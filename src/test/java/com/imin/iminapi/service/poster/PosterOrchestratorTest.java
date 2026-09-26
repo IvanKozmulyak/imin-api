@@ -63,7 +63,7 @@ class PosterOrchestratorTest {
         logoCompositor = mock(BrandLogoCompositor.class);
 
         when(repo.save(any())).thenAnswer(inv -> inv.getArgument(0));
-        when(storage.writePng(any())).thenReturn("https://img/x.png");
+        when(storage.writePng(any(), any())).thenReturn("https://img/x.png");
         when(textSpecFactory.from(any()))
                 .thenReturn(new PosterTextSpec(List.of("TITLE"), List.of("TITLE"), "block"));
         when(referenceLibrary.topReferenceParts(any(), anyInt(), anyLong()))
@@ -203,7 +203,7 @@ class PosterOrchestratorTest {
 
         // 3 attempts x 3 variants rendered, but exactly one stored object per variant.
         verify(ideogram, times(6)).remix(any(), any(), anyInt(), anyLong(), any(), any(), any(), any());
-        verify(storage, times(3)).writePng(any());
+        verify(storage, times(3)).writePng(any(), any());
         assertThat(r.posters()).allSatisfy(p -> assertThat(p.rawUrl()).isNotNull());
     }
 
@@ -304,7 +304,7 @@ class PosterOrchestratorTest {
         // across 3 threads. A sequential thenReturn(...) would draw non-deterministically, so key
         // writePng on its byte[] argument (exactly as the existing remix test keys validateOrExplain
         // on the image bytes for the same reason). Composite mock returns {7}; raw render is {2}.
-        when(storage.writePng(any())).thenAnswer(inv -> {
+        when(storage.writePng(any(), any())).thenAnswer(inv -> {
             byte[] b = inv.getArgument(0);
             return (b.length > 0 && b[0] == 7) ? "https://img/composited.png" : "https://img/raw.png";
         });
@@ -339,7 +339,7 @@ class PosterOrchestratorTest {
                 .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 1L));
         when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
-        when(storage.writePng(any())).thenAnswer(inv -> {
+        when(storage.writePng(any(), any())).thenAnswer(inv -> {
             byte[] b = inv.getArgument(0);
             return (b.length > 0 && b[0] == 7) ? "https://img/composited.png" : "https://img/raw.png";
         });
@@ -362,7 +362,7 @@ class PosterOrchestratorTest {
                 .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{2}, 1L));
         when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
-        when(storage.writePng(any())).thenReturn("https://img/raw.png");
+        when(storage.writePng(any(), any())).thenReturn("https://img/raw.png");
         when(logoCompositor.composite(any(), any()))
                 .thenThrow(new RuntimeException("decode boom"));
 
@@ -477,7 +477,7 @@ class PosterOrchestratorTest {
                 .thenReturn(new IdeogramV3Client.IdeogramResult(new byte[]{5}, 2L));
         when(textValidation.validateOrExplain(any(), any())).thenReturn(textOk());
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
-        when(storage.writePng(any())).thenAnswer(inv -> {
+        when(storage.writePng(any(), any())).thenAnswer(inv -> {
             byte[] b = inv.getArgument(0);
             return (b.length > 0 && b[0] == 5) ? "https://img/regraded.png" : "https://img/raw.png";
         });
@@ -504,7 +504,7 @@ class PosterOrchestratorTest {
             return (img.length > 0 && img[0] == 5) ? textFail() : textOk();
         });
         when(styleValidation.validateOrExplain(any(), any(), any())).thenReturn(styleOk());
-        when(storage.writePng(any())).thenAnswer(inv -> {
+        when(storage.writePng(any(), any())).thenAnswer(inv -> {
             byte[] b = inv.getArgument(0);
             return (b.length > 0 && b[0] == 5) ? "https://img/regraded.png" : "https://img/raw.png";
         });

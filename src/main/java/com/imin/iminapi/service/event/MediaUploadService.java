@@ -7,6 +7,7 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.service.ai.provenance.ImageAiMarker;
 import com.imin.iminapi.storage.MediaStorage;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -88,6 +89,10 @@ public class MediaUploadService {
             // format is already validated via content-type + ftyp magic bytes in
             // validate(); a null here just means "duration unknown".
             durationSec = videoMetadata.probeMp4DurationSec(bytes);
+        }
+        if (kind == MediaKind.POSTER && Boolean.TRUE.equals(aiGenerated)) {
+            // AI Act Art.50(2): an AI poster carries the machine-readable marker in its bytes (ADR-0005).
+            bytes = markAiPoster(bytes);
         }
         // Hash the bytes into the key so each unique upload gets a unique URL.
         // Two reasons this matters: (1) R2 serves objects with Cache-Control: immutable,
@@ -222,6 +227,14 @@ public class MediaUploadService {
         verifyMagicBytes(bytes, contentType);
         if (kind == MediaKind.DJ_PHOTO) {
             verifyDjPhotoDimensions(bytes);
+        }
+    }
+
+    private static byte[] markAiPoster(byte[] bytes) {
+        try {
+            return ImageAiMarker.mark(bytes, ImageAiMarker.SourceType.TRAINED_ALGORITHMIC_MEDIA);
+        } catch (IllegalArgumentException ex) {
+            throw fieldErr("file", "image could not be processed");
         }
     }
 

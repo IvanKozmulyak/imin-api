@@ -29,8 +29,17 @@ public final class CampaignRequests {
             @Size(max = 200, message = "must be at most 200 characters") String preheader,
             String bodyMd,
             /** Email template key (V66): builtin key or saved-template UUID. Null → 'classic'. */
-            @Size(max = 64, message = "must be at most 64 characters") String templateKey
-    ) {}
+            @Size(max = 64, message = "must be at most 64 characters") String templateKey,
+            /** True when the subject is AI-generated. Only true is meaningful; the flag is sticky. */
+            Boolean subjectAiGenerated,
+            /** True when the preheader or body is AI-generated. Only true is meaningful; sticky. */
+            Boolean bodyAiGenerated
+    ) {
+        public CreateCampaignRequest(String channel, String name, UUID segmentId, UUID eventId,
+                                     String subject, String preheader, String bodyMd, String templateKey) {
+            this(channel, name, segmentId, eventId, subject, preheader, bodyMd, templateKey, null, null);
+        }
+    }
 
     /**
      * PATCH /campaigns/{id} — partial; an absent field is left unchanged. Draft-only.
@@ -54,8 +63,17 @@ public final class CampaignRequests {
             @Size(max = 200, message = "must be at most 200 characters") String preheader,
             String bodyMd,
             /** Email template key (V66) — applied only when non-null (draft-only, like the rest). */
-            @Size(max = 64, message = "must be at most 64 characters") String templateKey
-    ) {}
+            @Size(max = 64, message = "must be at most 64 characters") String templateKey,
+            /** True marks the subject AI-generated. False or absent never clears it (sticky). */
+            Boolean subjectAiGenerated,
+            /** True marks the preheader/body AI-generated. False or absent never clears it (sticky). */
+            Boolean bodyAiGenerated
+    ) {
+        public PatchCampaignRequest(String name, PatchableUuid segmentId, PatchableUuid eventId,
+                                    String subject, String preheader, String bodyMd, String templateKey) {
+            this(name, segmentId, eventId, subject, preheader, bodyMd, templateKey, null, null);
+        }
+    }
 
     /** POST /campaigns/{id}/test-send. When email is null the caller's own address is used. */
     public record TestSendRequest(String email) {}

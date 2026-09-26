@@ -206,6 +206,49 @@ class MomentumServiceTest {
     }
 
     @Test
+    void approve_marksTheModelWrittenSubjectAndBodyAsAiGenerated() {
+        UUID event = support.seedLiveEvent(5, 100, Instant.now(), Instant.now().plusSeconds(864000));
+        MomentumSuggestion s = seedSuggestion(support.orgIdOf(event), event);
+        AuthPrincipal principal = support.principalFor(support.orgIdOf(event));
+
+        var campaign = service.approve(principal, s.getId());
+
+        assertThat(campaign.subjectAiGenerated()).isTrue();
+        assertThat(campaign.bodyAiGenerated()).isTrue();
+        var saved = campaigns.findById(campaign.id()).orElseThrow();
+        assertThat(saved.isSubjectAiGenerated()).isTrue();
+        assertThat(saved.isBodyAiGenerated()).isTrue();
+    }
+
+    @Test
+    void approve_withAnEmptyDraft_marksNothing() {
+        UUID event = support.seedLiveEvent(5, 100, Instant.now(), Instant.now().plusSeconds(864000));
+        MomentumSuggestion s = seedSuggestion(support.orgIdOf(event), event);
+        s.setDraftPayload("{}");
+        suggestions.save(s);
+        AuthPrincipal principal = support.principalFor(support.orgIdOf(event));
+
+        var campaign = service.approve(principal, s.getId());
+
+        assertThat(campaign.subjectAiGenerated()).isFalse();
+        assertThat(campaign.bodyAiGenerated()).isFalse();
+    }
+
+    @Test
+    void approve_withOnlyAPreheader_marksTheBody() {
+        UUID event = support.seedLiveEvent(5, 100, Instant.now(), Instant.now().plusSeconds(864000));
+        MomentumSuggestion s = seedSuggestion(support.orgIdOf(event), event);
+        s.setDraftPayload("{\"preheader\":\"p\"}");
+        suggestions.save(s);
+        AuthPrincipal principal = support.principalFor(support.orgIdOf(event));
+
+        var campaign = service.approve(principal, s.getId());
+
+        assertThat(campaign.subjectAiGenerated()).isFalse();
+        assertThat(campaign.bodyAiGenerated()).isTrue();
+    }
+
+    @Test
     void dismissMarksDismissed() {
         UUID event = support.seedLiveEvent(5, 100, Instant.now(), Instant.now().plusSeconds(864000));
         MomentumSuggestion s = seedSuggestion(support.orgIdOf(event), event);

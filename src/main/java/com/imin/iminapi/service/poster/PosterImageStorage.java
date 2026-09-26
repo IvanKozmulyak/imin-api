@@ -1,5 +1,6 @@
 package com.imin.iminapi.service.poster;
 
+import com.imin.iminapi.service.ai.provenance.ImageAiMarker;
 import com.imin.iminapi.storage.MediaStorage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -7,6 +8,10 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.URI;
@@ -95,7 +100,12 @@ public class PosterImageStorage {
         }
     }
 
-    public String writePng(byte[] bytes) {
+    /**
+     * Stores an AI render with the machine-readable AI marker embedded (ADR-0005). A format the
+     * marker cannot write into is transcoded to PNG first; an undecodable one is stored unmarked.
+     */
+    public String writePng(byte[] rawBytes, ImageAiMarker.SourceType sourceType) {
+        byte[] bytes = markForStorage(rawBytes, sourceType);
         String id = UUID.randomUUID().toString();
 
         // Prefer object storage (R2): absolute, durable, CDN-cached URL.
@@ -121,5 +131,41 @@ public class PosterImageStorage {
         }
         log.debug("Wrote {} ({} bytes)", path, bytes.length);
         return apiPublicBaseUrl + AI_POSTER_LOCAL_PATH + filename;
+    }
+
+    // PNG/JPEG marked in place; anything ImageIO decodes is re-encoded as PNG and marked.
+    // ponytail: no WebP plugin on the classpath, so a WebP render ships unmarked (WARN) rather than failing.
+    private static byte[] markForStorage(byte[] raw, ImageAiMarker.SourceType sourceType) {
+        if (ImageAiMarker.supports(raw)) {
+            try {
+                return ImageAiMarker.mark(raw, sourceType);
+            } catch (IllegalArgumentException corrupt) {
+                log.warn("AI marker could not be written into the render ({}); trying a PNG re-encode",
+                        corrupt.getMessage());
+            }
+        }
+        byte[] png = transcodeToPng(raw);
+        if (png != null) {
+            try {
+                return ImageAiMarker.mark(png, sourceType);
+            } catch (IllegalArgumentException unexpected) {
+                log.warn("AI marker could not be written into the re-encoded PNG: {}", unexpected.getMessage());
+            }
+        }
+        log.warn("AI poster stored WITHOUT the machine-readable AI marker: undecodable image ({} bytes)",
+                raw == null ? 0 : raw.length);
+        return raw;
+    }
+
+    private static byte[] transcodeToPng(byte[] raw) {
+        if (raw == null || raw.length == 0) return null;
+        try {
+            BufferedImage img = ImageIO.read(new ByteArrayInputStream(raw));
+            if (img == null) return null;
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            return ImageIO.write(img, "PNG", out) ? out.toByteArray() : null;
+        } catch (IOException | RuntimeException e) {
+            return null;
+        }
     }
 }

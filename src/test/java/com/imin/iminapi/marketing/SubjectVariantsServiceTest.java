@@ -4,6 +4,7 @@ import com.imin.iminapi.marketing.dto.SubjectVariantsLlm;
 import com.imin.iminapi.marketing.dto.SubjectVariantsResponse;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
+import com.imin.iminapi.marketing.service.CampaignAiSuggestions;
 import com.imin.iminapi.marketing.service.SubjectVariantsService;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.repository.EventRepository;
@@ -28,6 +29,9 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class SubjectVariantsServiceTest {
@@ -37,9 +41,10 @@ class SubjectVariantsServiceTest {
     private final CampaignRepository campaigns = mock(CampaignRepository.class);
     private final EventRepository events = mock(EventRepository.class);
     private final TicketTierRepository tiers = mock(TicketTierRepository.class);
+    private final CampaignAiSuggestions aiSuggestions = mock(CampaignAiSuggestions.class);
 
     private final SubjectVariantsService sut =
-            new SubjectVariantsService(chat, campaigns, events, tiers);
+            new SubjectVariantsService(chat, campaigns, events, tiers, aiSuggestions);
 
     private final UUID orgId = UUID.randomUUID();
 
@@ -187,5 +192,40 @@ class SubjectVariantsServiceTest {
         SubjectVariantsResponse res = sut.generate(principal(), currentCampaignId, null);
 
         assertThat(res.variants()).containsExactly("One", "Two", "Three");
+    }
+
+    // ---- AI Act Art.50 fingerprints (ADR-0005) ----
+
+    @Test
+    void recordsOnlyTheModelWrittenSubjects_notThePaddedFallbacks() {
+        stubValidCampaignWithEvent();
+        stubModel(List.of("Only hours left for Warehouse Mass"));
+
+        sut.generate(principal(), currentCampaignId, null);
+
+        verify(aiSuggestions).record(currentCampaignId, CampaignAiSuggestions.SUBJECT,
+                List.of("Only hours left for Warehouse Mass"));
+    }
+
+    @Test
+    void llmFailure_recordsNothing() {
+        stubValidCampaignWithEvent();
+        when(chat.prompt().user(anyString()).call().entity(SubjectVariantsLlm.class))
+                .thenThrow(new RuntimeException("upstream down"));
+
+        sut.generate(principal(), currentCampaignId, null);
+
+        verifyNoInteractions(aiSuggestions);
+    }
+
+    @Test
+    void aFingerprintWriteFailure_stillReturnsTheVariants() {
+        stubValidCampaignWithEvent();
+        stubModel(List.of("A", "B", "C"));
+        doThrow(new RuntimeException("db down")).when(aiSuggestions).record(any(), any(), any());
+
+        SubjectVariantsResponse res = sut.generate(principal(), currentCampaignId, null);
+
+        assertThat(res.variants()).containsExactly("A", "B", "C");
     }
 }

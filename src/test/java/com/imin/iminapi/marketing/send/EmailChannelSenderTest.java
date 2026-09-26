@@ -105,6 +105,41 @@ class EmailChannelSenderTest {
         assertThat(sent.html().toLowerCase()).contains("unsubscribe");
     }
 
+    @Test
+    @SuppressWarnings("unchecked")
+    void aiGeneratedCampaign_handsTheDisclosureToTheProvider_andMarksTheHtml() {
+        Campaign c = campaignWithPending(1);
+        c.setSubjectAiGenerated(true);
+        campaigns.save(c);
+        when(provider.sendBatch(anyList())).thenReturn(List.of("id-a"));
+
+        sender.sendNextBatch(c);
+
+        ArgumentCaptor<List<CampaignEmailProvider.OutgoingEmail>> captor =
+                ArgumentCaptor.forClass(List.class);
+        verify(provider).sendBatch(captor.capture());
+        CampaignEmailProvider.OutgoingEmail sent = captor.getValue().get(0);
+        assertThat(sent.ai().subject()).isTrue();
+        assertThat(sent.ai().body()).isFalse();
+        assertThat(sent.html()).contains("<meta name=\"imin-ai-generated\" content=\"subject\"/>");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void humanWrittenCampaign_sendsNoDisclosure() {
+        Campaign c = campaignWithPending(1);
+        when(provider.sendBatch(anyList())).thenReturn(List.of("id-a"));
+
+        sender.sendNextBatch(c);
+
+        ArgumentCaptor<List<CampaignEmailProvider.OutgoingEmail>> captor =
+                ArgumentCaptor.forClass(List.class);
+        verify(provider).sendBatch(captor.capture());
+        CampaignEmailProvider.OutgoingEmail sent = captor.getValue().get(0);
+        assertThat(sent.ai().any()).isFalse();
+        assertThat(sent.html()).doesNotContain("ai-disclosure");
+    }
+
     /**
      * mkt-core-16 (P3): provider ids are matched to recipients purely by position, and
      * CampaignEmailProvider returns whatever Resend's data array held with no assertion that

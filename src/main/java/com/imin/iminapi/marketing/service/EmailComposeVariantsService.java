@@ -72,16 +72,19 @@ public class EmailComposeVariantsService {
     private final OrganizationRepository organizations;
     private final SegmentRepository segments;
     private final SegmentService segmentService;
+    private final CampaignAiSuggestions aiSuggestions;
 
     public EmailComposeVariantsService(ChatClient chat, CampaignRepository campaigns,
                                        EventRepository events, OrganizationRepository organizations,
-                                       SegmentRepository segments, SegmentService segmentService) {
+                                       SegmentRepository segments, SegmentService segmentService,
+                                       CampaignAiSuggestions aiSuggestions) {
         this.chat = chat;
         this.campaigns = campaigns;
         this.events = events;
         this.organizations = organizations;
         this.segments = segments;
         this.segmentService = segmentService;
+        this.aiSuggestions = aiSuggestions;
     }
 
     @Transactional(readOnly = true)
@@ -107,11 +110,30 @@ public class EmailComposeVariantsService {
                 if (valid.size() == count) break;
             }
         }
+        // Only model output is fingerprinted; the deterministic fallback below is not AI text.
+        recordOffered(campaign.getId(), valid);
         if (valid.isEmpty()) {
             // Model failed or everything was rejected — never return nothing for a valid campaign.
             valid.add(fallbackVariant(campaign, event, hasEvent));
         }
         return new EmailComposeVariantsResponse(valid);
+    }
+
+    private void recordOffered(UUID campaignId, List<EmailVariant> modelVariants) {
+        if (modelVariants.isEmpty()) return;
+        try {
+            aiSuggestions.record(campaignId, CampaignAiSuggestions.SUBJECT,
+                    modelVariants.stream().map(EmailVariant::subject).toList());
+            List<String> bodyParts = new ArrayList<>();
+            for (EmailVariant v : modelVariants) {
+                bodyParts.add(v.preheader());
+                bodyParts.add(v.bodyMarkdown());
+            }
+            aiSuggestions.record(campaignId, CampaignAiSuggestions.BODY, bodyParts);
+        } catch (RuntimeException e) {
+            // The client flag still marks an applied variant; losing the fingerprint must not cost the draft.
+            log.warn("compose-variants: could not record AI fingerprints for {}: {}", campaignId, e.getMessage());
+        }
     }
 
     private static int clampCount(Integer requested) {

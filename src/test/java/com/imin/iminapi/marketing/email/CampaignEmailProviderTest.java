@@ -143,4 +143,46 @@ class CampaignEmailProviderTest {
                 new CampaignEmailProvider.OutgoingEmail("f", "t@x", "s", "h", "t", "u"))))
                 .isInstanceOf(ApiException.class);
     }
+
+    // ---- AI Act Art.50(2) marker (ADR-0005) ----
+
+    @SuppressWarnings("unchecked")
+    private static List<CreateEmailOptions> sentOptions(List<CampaignEmailProvider.OutgoingEmail> in) throws Exception {
+        Resend resend = mock(Resend.class);
+        Batch batch = mock(Batch.class);
+        when(resend.batch()).thenReturn(batch);
+        org.mockito.ArgumentCaptor<List<CreateEmailOptions>> captor = org.mockito.ArgumentCaptor.forClass(List.class);
+        when(batch.send(captor.capture())).thenReturn(new CreateBatchEmailsResponse(List.of(new BatchEmail("m"))));
+        new CampaignEmailProvider(resend).sendBatch(in);
+        return captor.getValue();
+    }
+
+    @Test
+    void aiGeneratedEmail_carriesTheDisclosureHeaders_besideTheUnsubscribeHeaders() throws Exception {
+        List<CreateEmailOptions> sent = sentOptions(List.of(new CampaignEmailProvider.OutgoingEmail(
+                "f", "a@x", "s", "<p>h</p>", "t", "https://u",
+                new com.imin.iminapi.service.ai.provenance.AiEmailDisclosure(true, true))));
+
+        assertThat(sent.get(0).getHeaders())
+                .containsEntry("List-Unsubscribe", "<https://u>")
+                .containsEntry("List-Unsubscribe-Post", "List-Unsubscribe=One-Click")
+                .containsEntry("AI-Disclosure", "mode=ai-originated")
+                .containsEntry("X-IMIN-AI-Generated", "subject, body");
+    }
+
+    @Test
+    void humanWrittenEmail_hasOnlyTheUnsubscribeHeaders() throws Exception {
+        List<CreateEmailOptions> sent = sentOptions(List.of(new CampaignEmailProvider.OutgoingEmail(
+                "f", "a@x", "s", "<p>h</p>", "t", "https://u")));
+
+        assertThat(sent.get(0).getHeaders()).containsOnlyKeys("List-Unsubscribe", "List-Unsubscribe-Post");
+    }
+
+    @Test
+    void nullDisclosure_isTreatedAsNone() throws Exception {
+        List<CreateEmailOptions> sent = sentOptions(List.of(new CampaignEmailProvider.OutgoingEmail(
+                "f", "a@x", "s", "<p>h</p>", "t", "https://u", null)));
+
+        assertThat(sent.get(0).getHeaders()).containsOnlyKeys("List-Unsubscribe", "List-Unsubscribe-Post");
+    }
 }

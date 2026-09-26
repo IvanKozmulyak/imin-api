@@ -1,5 +1,6 @@
 package com.imin.iminapi.marketing.service;
 
+import com.imin.iminapi.service.ai.provenance.AiEmailDisclosure;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.model.Segment;
 import com.imin.iminapi.audience.service.SegmentService;
@@ -66,6 +67,7 @@ public class CampaignService {
     private final EventRepository events;
     private final MarketingEmailProperties emailProps;
     private final AudiencePlanAccess audiencePlanAccess;
+    private final CampaignAiSuggestions aiSuggestions;
 
     public CampaignService(CampaignRepository campaigns,
                            com.imin.iminapi.marketing.repository.CampaignRecipientRepository campaignRecipientRepository,
@@ -78,7 +80,8 @@ public class CampaignService {
                            CampaignEmailRenderer renderer, CampaignTemplateService templateService,
                            OrganizationRepository organizations, EventRepository events,
                            MarketingEmailProperties emailProps,
-                           AudiencePlanAccess audiencePlanAccess) {
+                           AudiencePlanAccess audiencePlanAccess,
+                           CampaignAiSuggestions aiSuggestions) {
         this.campaigns = campaigns;
         this.campaignRecipientRepository = campaignRecipientRepository;
         this.audit = audit;
@@ -95,6 +98,7 @@ public class CampaignService {
         this.events = events;
         this.emailProps = emailProps;
         this.audiencePlanAccess = audiencePlanAccess;
+        this.aiSuggestions = aiSuggestions;
     }
 
     @Transactional
@@ -115,6 +119,8 @@ public class CampaignService {
         c.setPreheader(req.preheader());
         c.setBodyMd(req.bodyMd());
         c.setTemplateKey(normalizeTemplateKey(req.templateKey()));
+        c.setSubjectAiGenerated(Boolean.TRUE.equals(req.subjectAiGenerated()));
+        c.setBodyAiGenerated(Boolean.TRUE.equals(req.bodyAiGenerated()));
         c.setCreatedBy(p.userId());
         c.setCreatedAt(now);
         c.setUpdatedAt(now);
@@ -187,6 +193,16 @@ public class CampaignService {
         if (req.preheader() != null) c.setPreheader(req.preheader());
         if (req.bodyMd() != null) c.setBodyMd(req.bodyMd());
         if (req.templateKey() != null) c.setTemplateKey(normalizeTemplateKey(req.templateKey()));
+        // AI provenance is sticky: the client's true, or saved text a model offered for this campaign.
+        if (Boolean.TRUE.equals(req.subjectAiGenerated())
+                || aiSuggestions.wasOffered(c.getId(), CampaignAiSuggestions.SUBJECT, req.subject())) {
+            c.setSubjectAiGenerated(true);
+        }
+        if (Boolean.TRUE.equals(req.bodyAiGenerated())
+                || aiSuggestions.wasOffered(c.getId(), CampaignAiSuggestions.BODY, req.bodyMd())
+                || aiSuggestions.wasOffered(c.getId(), CampaignAiSuggestions.BODY, req.preheader())) {
+            c.setBodyAiGenerated(true);
+        }
         c.setUpdatedAt(Instant.now());
         return CampaignDto.from(campaigns.save(c));
     }
@@ -209,6 +225,8 @@ public class CampaignService {
         copy.setSubject(src.getSubject());
         copy.setPreheader(src.getPreheader());
         copy.setBodyMd(src.getBodyMd());
+        copy.setSubjectAiGenerated(src.isSubjectAiGenerated());
+        copy.setBodyAiGenerated(src.isBodyAiGenerated());
         copy.setTemplateKey(src.getTemplateKey());
         copy.setBodyTemplate(src.getBodyTemplate());
         copy.setSenderId(src.getSenderId());
@@ -257,7 +275,12 @@ public class CampaignService {
         CampaignEmailRenderer.Rendered rendered = renderForTest(c);
         // Send BOTH parts (html + text) through the same shape the real batch send uses, so a
         // client shows the branded HTML — not a plain-text fallback.
-        email.send(to, "[TEST] " + c.getSubject(), rendered.html(), rendered.text());
+        AiEmailDisclosure ai = c.aiDisclosure();
+        if (ai.any()) {
+            email.send(to, "[TEST] " + c.getSubject(), rendered.html(), rendered.text(), ai.headers());
+        } else {
+            email.send(to, "[TEST] " + c.getSubject(), rendered.html(), rendered.text());
+        }
         audit.record(p, "CAMPAIGN_TEST_SENT", "campaign", c.getId(),
                 "Test email sent to organizer");
     }
@@ -291,7 +314,7 @@ public class CampaignService {
         return renderer.render(
                 subject, preheader, bodyMd,
                 c.getId().toString(), "email", unsubUrl,
-                template, brandName, posterUrl, ticketsUrl);
+                template, brandName, posterUrl, ticketsUrl, c.aiDisclosure());
     }
 
     /** Org brand/display name for the test header. Failure-isolated — a hiccup just omits it. */

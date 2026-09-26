@@ -56,13 +56,16 @@ public class SubjectVariantsService {
     private final CampaignRepository campaigns;
     private final EventRepository events;
     private final TicketTierRepository tiers;
+    private final CampaignAiSuggestions aiSuggestions;
 
     public SubjectVariantsService(ChatClient chat, CampaignRepository campaigns,
-                                  EventRepository events, TicketTierRepository tiers) {
+                                  EventRepository events, TicketTierRepository tiers,
+                                  CampaignAiSuggestions aiSuggestions) {
         this.chat = chat;
         this.campaigns = campaigns;
         this.events = events;
         this.tiers = tiers;
+        this.aiSuggestions = aiSuggestions;
     }
 
     /**
@@ -82,7 +85,25 @@ public class SubjectVariantsService {
 
         List<String> modelVariants = callModel(facts);
         List<String> result = cleanAndPad(modelVariants, baseName);
+        recordOffered(campaign.getId(), modelVariants, result);
         return new SubjectVariantsResponse(result);
+    }
+
+    /** Fingerprints the returned subjects the model wrote; padded fallbacks are not AI text. */
+    private void recordOffered(UUID campaignId, List<String> modelVariants, List<String> result) {
+        if (modelVariants == null || modelVariants.isEmpty()) return;
+        Set<String> fromModel = new java.util.HashSet<>();
+        for (String s : modelVariants) {
+            String v = normalize(s);
+            if (v != null) fromModel.add(v);
+        }
+        List<String> offered = result.stream().filter(fromModel::contains).toList();
+        if (offered.isEmpty()) return;
+        try {
+            aiSuggestions.record(campaignId, CampaignAiSuggestions.SUBJECT, offered);
+        } catch (RuntimeException e) {
+            log.warn("subject-variants: could not record AI fingerprints for {}: {}", campaignId, e.getMessage());
+        }
     }
 
     /** Single, non-looping LLM call. Any failure degrades to the deterministic fallback (never a 5xx). */

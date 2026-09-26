@@ -8,6 +8,7 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.service.ai.provenance.ImageAiMarker;
 import com.imin.iminapi.storage.InMemoryMediaStorage;
 import org.junit.jupiter.api.Test;
 
@@ -136,10 +137,56 @@ class MediaUploadServiceTest {
         when(events.findActive(e.getId())).thenReturn(Optional.of(e));
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        sut.upload(owner(orgId), e.getId(), MediaKind.POSTER, pngBytes(1024), "image/png",
+        sut.upload(owner(orgId), e.getId(), MediaKind.POSTER, realPngUnchecked(40, 50), "image/png",
                 "p.png", Boolean.TRUE);
 
         assertThat(e.getPosterAiGenerated()).isTrue();
+    }
+
+    @Test
+    void ai_poster_upload_stores_bytes_carrying_the_machine_readable_marker() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        MediaUploadResponse res = sut.upload(owner(orgId), e.getId(), MediaKind.POSTER,
+                realPngUnchecked(40, 50), "image/png", "p.png", Boolean.TRUE);
+
+        byte[] stored = storage.blobs().get(storage.keyFor(res.url()));
+        assertThat(ImageAiMarker.readDigitalSourceType(stored))
+                .isEqualTo(ImageAiMarker.SourceType.TRAINED_ALGORITHMIC_MEDIA.uri());
+        assertThat(e.getPosterUrl()).isEqualTo(res.url());
+    }
+
+    @Test
+    void organizer_poster_upload_is_stored_without_a_marker() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+        byte[] own = realPngUnchecked(40, 50);
+
+        MediaUploadResponse res = sut.upload(owner(orgId), e.getId(), MediaKind.POSTER,
+                own, "image/png", "p.png", Boolean.FALSE);
+
+        byte[] stored = storage.blobs().get(storage.keyFor(res.url()));
+        assertThat(stored).isEqualTo(own);
+        assertThat(ImageAiMarker.readDigitalSourceType(stored)).isNull();
+    }
+
+    @Test
+    void ai_poster_the_marker_cannot_be_written_into_is_rejected_and_nothing_is_stored() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+
+        assertThatThrownBy(() -> sut.upload(owner(orgId), e.getId(), MediaKind.POSTER,
+                pngBytes(1024), "image/png", "p.png", Boolean.TRUE))
+                .isInstanceOf(ApiException.class)
+                .satisfies(ex -> assertThat(((ApiException) ex).code()).isEqualTo(ErrorCode.FIELD_INVALID));
+        assertThat(storage.blobs()).isEmpty();
+        assertThat(e.getPosterUrl()).isNull();
     }
 
     /** A later plain upload replacing an AI poster must clear the claim. */

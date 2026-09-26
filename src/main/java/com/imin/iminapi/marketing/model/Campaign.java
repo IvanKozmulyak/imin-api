@@ -4,6 +4,7 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import com.imin.iminapi.service.ai.provenance.AiEmailDisclosure;
 import lombok.Getter;
 import lombok.Setter;
 
@@ -79,6 +80,14 @@ public class Campaign {
     @Column(name = "body_md")
     private String bodyMd;
 
+    /** The subject line came from a model (V145); sticky, drives the AI marker at send. */
+    @Column(name = "subject_ai_generated", nullable = false)
+    private boolean subjectAiGenerated;
+
+    /** The preheader or body came from a model (V145); sticky, drives the AI marker at send. */
+    @Column(name = "body_ai_generated", nullable = false)
+    private boolean bodyAiGenerated;
+
     @Column(name = "html_rendered")
     private String htmlRendered;
 
@@ -100,4 +109,9 @@ public class Campaign {
 
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
+
+    /** Which parts of this campaign's email are AI-generated, for the Art.50(2) marker. */
+    public AiEmailDisclosure aiDisclosure() {
+        return new AiEmailDisclosure(subjectAiGenerated, bodyAiGenerated);
+    }
 }

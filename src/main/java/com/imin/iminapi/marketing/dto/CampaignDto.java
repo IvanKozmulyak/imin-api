@@ -30,6 +30,10 @@ public record CampaignDto(
          * Never null on the wire — the column defaults to 'classic'.
          */
         String templateKey,
+        /** AI Act Art.50: the subject line is AI-generated (sticky once set). */
+        boolean subjectAiGenerated,
+        /** AI Act Art.50: the preheader or body is AI-generated (sticky once set). */
+        boolean bodyAiGenerated,
         Instant createdAt,
         Instant updatedAt,
         /**
@@ -62,6 +66,7 @@ public record CampaignDto(
                 c.getSegmentId(), c.getEventId(), c.getOrigin(), c.getMomentumSuggestionId(),
                 c.getScheduledAt(), c.getSentAt(), c.getRecipientCount(), c.getExcludedCount(),
                 c.getSubject(), c.getPreheader(), c.getBodyMd(), c.getTemplateKey(),
+                c.isSubjectAiGenerated(), c.isBodyAiGenerated(),
                 c.getCreatedAt(), c.getUpdatedAt(), revMinor);
     }
 }

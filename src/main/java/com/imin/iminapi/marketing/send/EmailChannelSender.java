@@ -23,6 +23,7 @@ import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.security.ApiException;
+import com.imin.iminapi.service.ai.provenance.AiEmailDisclosure;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -146,6 +147,7 @@ public class EmailChannelSender {
         // batched queries (membership -> consumer -> display_name), not per row.
         Map<UUID, String> firstNameByMembership = resolveFirstNames(c.getOrgId(), batch);
 
+        AiEmailDisclosure ai = c.aiDisclosure();
         List<CampaignEmailProvider.OutgoingEmail> outgoing = new ArrayList<>(batch.size());
         for (CampaignRecipient r : batch) {
             String unsubUrl = props.unsubscribeUrl(
@@ -159,10 +161,10 @@ public class EmailChannelSender {
             CampaignEmailRenderer.Rendered rendered = renderer.render(
                     subject, preheader, bodyMd,
                     c.getId().toString(), "email", unsubUrl,
-                    template, brandName, posterUrl, ticketsUrl);
+                    template, brandName, posterUrl, ticketsUrl, ai);
             outgoing.add(new CampaignEmailProvider.OutgoingEmail(
                     props.fromHeader(), r.getEmail(), subject,
-                    rendered.html(), rendered.text(), unsubUrl));
+                    rendered.html(), rendered.text(), unsubUrl, ai));
         }
 
         try {

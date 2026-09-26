@@ -16,6 +16,7 @@ import com.imin.iminapi.model.PosterVariantEntity;
 import com.imin.iminapi.model.PosterVariantStatus;
 import com.imin.iminapi.repository.PosterGenerationRepository;
 import com.imin.iminapi.service.ai.CreativeDirection;
+import com.imin.iminapi.service.ai.provenance.ImageAiMarker;
 import io.sentry.Sentry;
 import io.sentry.SentryLevel;
 import org.slf4j.Logger;
@@ -348,7 +349,7 @@ public class PosterOrchestrator {
     private GeneratedPoster accept(PosterVariantEntity entity, byte[] rawBytes,
                                    String verdict, List<Map<String, Object>> attempts,
                                    BrandSnapshot brand) {
-        String rawUrl = storage.writePng(rawBytes);
+        String rawUrl = storage.writePng(rawBytes, ImageAiMarker.SourceType.TRAINED_ALGORITHMIC_MEDIA);
         entity.setRawUrl(rawUrl);
         entity.setValidationVerdict(verdict);
         entity.setValidationAttemptsJson(serialize(attempts));
@@ -364,7 +365,8 @@ public class PosterOrchestrator {
                 // R2 round trip per branded variant and a failure mode (a transient read error ships
                 // the poster un-composited) that holding the bytes cannot have.
                 byte[] composited = logoCompositor.composite(rawBytes, brand.logoUrl());
-                finalUrl = storage.writePng(composited); // SECOND write → distinct object/URL
+                finalUrl = storage.writePng(composited,
+                        ImageAiMarker.SourceType.COMPOSITE_WITH_TRAINED_ALGORITHMIC_MEDIA); // SECOND write → distinct object/URL
                 compositeStatus = "APPLIED";
             } catch (RuntimeException e) {
                 log.warn("Logo composite failed; shipping un-composited poster: {}", e.getMessage());

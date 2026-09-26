@@ -396,4 +396,153 @@ class CampaignServiceTest {
         assertThat(detail.stats().opened()).isZero();
         assertThat(detail.stats().attributedPurchases()).isZero();
     }
+
+    // ---- AI Act Art.50 provenance (ADR-0005) ----
+
+    @Autowired com.imin.iminapi.marketing.service.CampaignAiSuggestions aiSuggestions;
+    @Autowired com.imin.iminapi.marketing.repository.CampaignRepository campaignRepo;
+
+    private CampaignDto draft() {
+        return service.create(principal(ORG),
+                new CreateCampaignRequest("email", "AI draft", null, null, null, null, null, null));
+    }
+
+    private static PatchCampaignRequest patch(String subject, String preheader, String bodyMd,
+                                              Boolean subjectAi, Boolean bodyAi) {
+        return new PatchCampaignRequest(null, null, null, subject, preheader, bodyMd, null, subjectAi, bodyAi);
+    }
+
+    @Test
+    void create_withoutFlags_isNotAiGenerated() {
+        CampaignDto d = draft();
+
+        assertThat(d.subjectAiGenerated()).isFalse();
+        assertThat(d.bodyAiGenerated()).isFalse();
+    }
+
+    @Test
+    void create_storesTheClientsTrueFlags() {
+        CampaignDto d = service.create(principal(ORG), new CreateCampaignRequest("email", "AI", null, null,
+                "S", "P", "B", null, true, true));
+
+        var saved = campaignRepo.findById(d.id()).orElseThrow();
+        assertThat(saved.isSubjectAiGenerated()).isTrue();
+        assertThat(saved.isBodyAiGenerated()).isTrue();
+        assertThat(service.get(principal(ORG), d.id()).subjectAiGenerated()).isTrue();
+        assertThat(service.detailWithStats(principal(ORG), d.id()).bodyAiGenerated()).isTrue();
+    }
+
+    @Test
+    void patch_clientTrue_setsTheFlags() {
+        CampaignDto d = draft();
+
+        CampaignDto out = service.patch(principal(ORG), d.id(), patch("S", null, "B", true, true));
+
+        assertThat(out.subjectAiGenerated()).isTrue();
+        assertThat(out.bodyAiGenerated()).isTrue();
+    }
+
+    @Test
+    void patch_clientFalse_neverClearsASetFlag() {
+        CampaignDto d = draft();
+        service.patch(principal(ORG), d.id(), patch("S", null, "B", true, true));
+
+        CampaignDto out = service.patch(principal(ORG), d.id(), patch("Rewritten", "P", "Rewritten body", false, false));
+
+        assertThat(out.subjectAiGenerated()).isTrue();
+        assertThat(out.bodyAiGenerated()).isTrue();
+    }
+
+    @Test
+    void patch_savingAnOfferedSubjectVerbatim_flagsTheSubjectWithoutAClientFlag() {
+        CampaignDto d = draft();
+        aiSuggestions.record(d.id(), "subject", List.of("Doors close soon"));
+
+        CampaignDto out = service.patch(principal(ORG), d.id(), patch("  Doors close soon \n", null, "My own words", null, null));
+
+        assertThat(out.subjectAiGenerated()).isTrue();
+        assertThat(out.bodyAiGenerated()).isFalse();
+    }
+
+    @Test
+    void patch_savingAnOfferedBody_flagsTheBody() {
+        CampaignDto d = draft();
+        aiSuggestions.record(d.id(), "body", List.of("Offered pre", "Line one\nLine two"));
+
+        CampaignDto out = service.patch(principal(ORG), d.id(), patch("Mine", null, "Line one\r\nLine two", null, null));
+
+        assertThat(out.subjectAiGenerated()).isFalse();
+        assertThat(out.bodyAiGenerated()).isTrue();
+    }
+
+    @Test
+    void patch_savingAnOfferedPreheader_flagsTheBody() {
+        CampaignDto d = draft();
+        aiSuggestions.record(d.id(), "body", List.of("Offered pre"));
+
+        CampaignDto out = service.patch(principal(ORG), d.id(), patch(null, "Offered pre", null, null, null));
+
+        assertThat(out.bodyAiGenerated()).isTrue();
+    }
+
+    @Test
+    void patch_textOfferedForAnotherCampaign_doesNotFlag() {
+        CampaignDto other = draft();
+        CampaignDto d = draft();
+        aiSuggestions.record(other.id(), "subject", List.of("Doors close soon"));
+
+        CampaignDto out = service.patch(principal(ORG), d.id(), patch("Doors close soon", null, null, null, null));
+
+        assertThat(out.subjectAiGenerated()).isFalse();
+    }
+
+    @Test
+    void patch_anOfferedSubjectSavedAsTheBody_doesNotFlagTheBody() {
+        CampaignDto d = draft();
+        aiSuggestions.record(d.id(), "subject", List.of("Doors close soon"));
+
+        CampaignDto out = service.patch(principal(ORG), d.id(), patch(null, null, "Doors close soon", null, null));
+
+        assertThat(out.bodyAiGenerated()).isFalse();
+    }
+
+    @Test
+    void duplicate_carriesTheFlags() {
+        CampaignDto d = service.create(principal(ORG), new CreateCampaignRequest("email", "AI", null, null,
+                "S", "P", "B", null, true, false));
+
+        CampaignDto copy = service.duplicate(principal(ORG), d.id());
+
+        assertThat(copy.subjectAiGenerated()).isTrue();
+        assertThat(copy.bodyAiGenerated()).isFalse();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void testSend_ofAnAiCampaign_carriesTheHeadersAndTheMeta() {
+        CampaignDto d = service.create(principal(ORG), new CreateCampaignRequest("email", "AI", null, null,
+                "Subject line", "Preheader", "Hello", null, false, true));
+
+        service.testSend(principal(ORG), d.id(), null);
+
+        ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<java.util.Map<String, String>> headers = ArgumentCaptor.forClass(java.util.Map.class);
+        verify(emailService).send(eq("organizer@example.com"), eq("[TEST] Subject line"), html.capture(),
+                anyString(), headers.capture());
+        assertThat(headers.getValue()).containsEntry("AI-Disclosure", "mode=ai-originated")
+                .containsEntry("X-IMIN-AI-Generated", "body");
+        assertThat(html.getValue()).contains("<meta name=\"imin-ai-generated\" content=\"body\"/>");
+    }
+
+    @Test
+    void testSend_ofAHumanCampaign_usesThePlainSend() {
+        CampaignDto d = service.create(principal(ORG), new CreateCampaignRequest("email", "Mine", null, null,
+                "Subject line", "Preheader", "Hello", null));
+
+        service.testSend(principal(ORG), d.id(), null);
+
+        verify(emailService).send(anyString(), anyString(), anyString(), anyString());
+        org.mockito.Mockito.verify(emailService, org.mockito.Mockito.never())
+                .send(anyString(), anyString(), anyString(), anyString(), any());
+    }
 }

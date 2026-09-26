@@ -1,5 +1,6 @@
 package com.imin.iminapi.marketing.render;
 
+import com.imin.iminapi.service.ai.provenance.AiEmailDisclosure;
 import com.imin.iminapi.marketing.template.BuiltinTemplates;
 import com.imin.iminapi.marketing.template.ResolvedTemplate;
 import com.imin.iminapi.marketing.template.TemplateHeader;
@@ -98,6 +99,15 @@ public class CampaignEmailRenderer {
                            String campaignId, String channel, String unsubscribeUrl,
                            ResolvedTemplate template, String brandName, String posterUrl,
                            String ticketsUrl) {
+        return render(subject, preheader, bodyMd, campaignId, channel, unsubscribeUrl,
+                template, brandName, posterUrl, ticketsUrl, AiEmailDisclosure.NONE);
+    }
+
+    /** @param ai which parts are AI-generated; non-empty adds the Art.50(2) meta tags to the head */
+    public Rendered render(String subject, String preheader, String bodyMd,
+                           String campaignId, String channel, String unsubscribeUrl,
+                           ResolvedTemplate template, String brandName, String posterUrl,
+                           String ticketsUrl, AiEmailDisclosure ai) {
         if (unsubscribeUrl == null || unsubscribeUrl.isBlank()) {
             throw new IllegalArgumentException(
                     "Cannot render campaign email without an unsubscribe URL (footer is mandatory)");
@@ -124,6 +134,7 @@ public class CampaignEmailRenderer {
 
         String html = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"/>"
                 + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"/>"
+                + (ai == null ? "" : ai.htmlMeta())
                 + "<link href=\"https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&family=Space+Mono&display=swap\" rel=\"stylesheet\"/>"
                 + "</head>"
                 + "<body style=\"margin:0;padding:0;background:" + pal.bg() + ";"
