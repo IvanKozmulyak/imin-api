@@ -1,8 +1,10 @@
 package com.imin.iminapi.marketing.webhook;
 
 import com.imin.iminapi.audience.repository.MembershipRepository;
+import com.imin.iminapi.audience.service.ConsentChanged;
 import com.imin.iminapi.audience.service.EmailNormalizer;
 import com.imin.iminapi.audience.service.SuppressionService;
+import com.imin.iminapi.audienceplan.repository.FanFeatureRepository;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.model.ProviderEvent;
@@ -13,6 +15,7 @@ import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.AuthPrincipal;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -44,17 +47,23 @@ public class ResendWebhookProjector {
     private final MembershipRepository membershipRepo;
     private final SuppressionService suppressionService;
     private final ComplaintRateBreaker complaintRateBreaker;
+    private final ApplicationEventPublisher events;
+    private final FanFeatureRepository fanFeatureRepo;
 
     public ResendWebhookProjector(CampaignRecipientRepository recipientRepo,
                                   CampaignRepository campaignRepo,
                                   MembershipRepository membershipRepo,
                                   SuppressionService suppressionService,
-                                  ComplaintRateBreaker complaintRateBreaker) {
+                                  ComplaintRateBreaker complaintRateBreaker,
+                                  ApplicationEventPublisher events,
+                                  FanFeatureRepository fanFeatureRepo) {
         this.recipientRepo = recipientRepo;
         this.campaignRepo = campaignRepo;
         this.membershipRepo = membershipRepo;
         this.suppressionService = suppressionService;
         this.complaintRateBreaker = complaintRateBreaker;
+        this.events = events;
+        this.fanFeatureRepo = fanFeatureRepo;
     }
 
     /**
@@ -122,9 +131,12 @@ public class ResendWebhookProjector {
                     AuthPrincipal systemPrincipal = new AuthPrincipal(null, orgId, UserRole.MEMBER, null);
                     suppressionService.addMarketing(orgId, membershipId, "spam", systemPrincipal);
                     // A spam report is the person objecting; no sticky opt-out row, only the profiling flag.
-                    membershipRepo.findByIdAndOrgId(membershipId, orgId).ifPresent(m -> {
+                    // Membership lock before fan_features, the projector's order; taste clears in this transaction.
+                    membershipRepo.lockByIdAndOrgId(membershipId, orgId).ifPresent(m -> {
                         m.setObjectedProfiling(true);
                         membershipRepo.save(m);
+                        fanFeatureRepo.clearProfiling(membershipId);
+                        events.publishEvent(new ConsentChanged(orgId, membershipId, false));
                     });
                 }
                 complaintRateBreaker.evaluate(campaignId, orgId);

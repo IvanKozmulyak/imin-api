@@ -9,6 +9,7 @@ import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -40,15 +41,18 @@ public class AudienceBackfillJob {
      * bean cannot inject itself eagerly.
      */
     private final ObjectProvider<AudienceBackfillJob> self;
+    private final ApplicationEventPublisher events;
 
     public AudienceBackfillJob(OrderRepository orderRepo,
                                AudienceOrderProjector projector,
                                ErasedAddressRepository erasedAddressRepo,
-                               ObjectProvider<AudienceBackfillJob> self) {
+                               ObjectProvider<AudienceBackfillJob> self,
+                               ApplicationEventPublisher events) {
         this.orderRepo = orderRepo;
         this.projector = projector;
         this.erasedAddressRepo = erasedAddressRepo;
         this.self = self;
+        this.events = events;
     }
 
     /**
@@ -111,5 +115,7 @@ public class AudienceBackfillJob {
         }
         log.info("AudienceBackfillJob: done — {} memberships processed, {} skipped (erased)",
                 processed, skippedErased);
+        // The fan-feature recompute chains on this rather than on a clock of its own.
+        events.publishEvent(new AudienceBackfillCompleted(processed, skippedErased));
     }
 }

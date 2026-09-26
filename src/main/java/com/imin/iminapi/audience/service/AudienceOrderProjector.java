@@ -9,6 +9,7 @@ import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.service.ticket.TicketsIssuedEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
@@ -40,17 +41,20 @@ public class AudienceOrderProjector {
     private final MembershipRepository membershipRepo;
     private final MembershipProjector projector;
     private final ConsentService consentService;
+    private final ApplicationEventPublisher events;
 
     public AudienceOrderProjector(OrderRepository orderRepo,
                                    ConsumerRepository consumerRepo,
                                    MembershipRepository membershipRepo,
                                    MembershipProjector projector,
-                                   ConsentService consentService) {
+                                   ConsentService consentService,
+                                   ApplicationEventPublisher events) {
         this.orderRepo = orderRepo;
         this.consumerRepo = consumerRepo;
         this.membershipRepo = membershipRepo;
         this.projector = projector;
         this.consentService = consentService;
+        this.events = events;
     }
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
@@ -67,6 +71,8 @@ public class AudienceOrderProjector {
             upsertMembership(order.getOrgId(), normalizedEmail, order.getEmail(),
                     order.getBuyerPhone(), order.isSmsMarketingOptIn(),
                     order.isMarketingOptIn(), order.getId(), order.getMarketingOptInProof());
+            // Downstream projections read the membership, so they follow this commit, not the order's.
+            events.publishEvent(new MembershipProjected(order.getOrgId(), normalizedEmail));
         } catch (Exception e) {
             log.error("AudienceOrderProjector failed for order {}: {}", event.orderId(), e.getMessage(), e);
         }

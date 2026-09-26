@@ -202,6 +202,11 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
     List<com.imin.iminapi.model.Order> findByOrgIdAndNormalizedEmail(@Param("orgId") UUID orgId,
                                                                       @Param("normalizedEmail") String normalizedEmail);
 
+    /** Batch lookup on the indexed {@code email_normalized} column; callers keep {@code normalizedEmails} non-empty. */
+    @Query("select o from Order o where o.orgId = :orgId and o.emailNormalized in :normalizedEmails")
+    List<com.imin.iminapi.model.Order> findByOrgIdAndNormalizedEmailIn(@Param("orgId") UUID orgId,
+                                                                        @Param("normalizedEmails") Collection<String> normalizedEmails);
+
     /**
      * Distinct (lowercased) buyer emails with their order-count for an org since
      * a cutoff. Lets us compute repeat-rate in Java without a window function.

@@ -154,6 +154,34 @@ class AudiencePlanAccessTest {
                 });
     }
 
+    // ---- isEnabled: the non-throwing form background work uses ----
+
+    @Test
+    void isEnabled_defaults_trueForAnyOrg() {
+        assertThat(new AudiencePlanAccess(new AudiencePlanProperties()).isEnabled(A)).isTrue();
+    }
+
+    @Test
+    void isEnabled_killSwitchOff_false() {
+        AudiencePlanProperties props = new AudiencePlanProperties();
+        props.setEnabled(false);
+        assertThat(new AudiencePlanAccess(props).isEnabled(A)).isFalse();
+    }
+
+    @Test
+    void isEnabled_nullOrg_false() {
+        assertThat(new AudiencePlanAccess(new AudiencePlanProperties()).isEnabled(null)).isFalse();
+    }
+
+    @Test
+    void isEnabled_nonBlankList_onlyListedOrgs() {
+        AudiencePlanProperties props = new AudiencePlanProperties();
+        props.setBetaOrgIds(Set.of(A));
+        AudiencePlanAccess access = new AudiencePlanAccess(props);
+        assertThat(access.isEnabled(A)).isTrue();
+        assertThat(access.isEnabled(B)).isFalse();
+    }
+
     private static void assertNotFound(AudiencePlanAccess access, UUID orgId) {
         assertThatThrownBy(() -> access.requireEnabled(orgId))
                 .isInstanceOfSatisfying(ApiException.class, e -> {

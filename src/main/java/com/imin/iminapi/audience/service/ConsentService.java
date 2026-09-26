@@ -8,10 +8,13 @@ import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.audienceplan.repository.FanFeatureRepository;
+import com.imin.iminapi.audienceplan.service.ImportProvenanceWriter;
 import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.service.audit.AuditLogger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -40,17 +43,23 @@ public class ConsentService {
     private final ConsumerRepository consumerRepo;
     private final MarketingOptOutRecorder optOutRecorder;
     private final AuditLogger auditLogger;
+    private final ApplicationEventPublisher events;
+    private final FanFeatureRepository fanFeatureRepo;
 
     public ConsentService(MembershipRepository membershipRepo,
                           ConsentRecordRepository consentRepo,
                           ConsumerRepository consumerRepo,
                           MarketingOptOutRecorder optOutRecorder,
-                          AuditLogger auditLogger) {
+                          AuditLogger auditLogger,
+                          ApplicationEventPublisher events,
+                          FanFeatureRepository fanFeatureRepo) {
         this.membershipRepo = membershipRepo;
         this.consentRepo = consentRepo;
         this.consumerRepo = consumerRepo;
         this.optOutRecorder = optOutRecorder;
         this.auditLogger = auditLogger;
+        this.events = events;
+        this.fanFeatureRepo = fanFeatureRepo;
     }
 
     /**
@@ -121,6 +130,8 @@ public class ConsentService {
             m.setObjectedProfiling(false);
         }
         membershipRepo.save(m);
+        // An import captures row by row; the nightly recompute picks those up instead.
+        events.publishEvent(new ConsentChanged(orgId, membershipId, ImportProvenanceWriter.SOURCE.equals(source)));
 
         // Public, unauthenticated captures (e.g. the SMS order-confirmation opt-in, §4)
         // have no organizer actor; the audit row requires a non-null org/actor, so skip
@@ -176,9 +187,14 @@ public class ConsentService {
         }
         // The person's own opt-out is also an Art.21 objection to profiling, on either channel.
         if (origin == ConsentOrigin.DATA_SUBJECT) {
+            // Membership lock before fan_features, the projector's order; cleared here, not via a droppable queue.
+            membershipRepo.lockByIdAndOrgId(membershipId, orgId);
             m.setObjectedProfiling(true);
+            fanFeatureRepo.clearProfiling(membershipId);
         }
         membershipRepo.save(m);
+        // The global toggle fans out over every org and sets no objection, so it can wait for the nightly pass.
+        events.publishEvent(new ConsentChanged(orgId, membershipId, origin == ConsentOrigin.DATA_SUBJECT_GLOBAL));
 
         // DATA_SUBJECT alone is sticky. OPERATOR is an organizer tidying their own list,
         // and DATA_SUBJECT_GLOBAL is the buyer's own master switch — reversible tomorrow,

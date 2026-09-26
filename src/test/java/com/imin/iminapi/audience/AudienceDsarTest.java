@@ -51,7 +51,7 @@ import static org.mockito.Mockito.*;
 @Import(TestRateLimitConfig.class)
 class AudienceDsarTest {
 
-    @Autowired MembershipRepository membershipRepo;
+    @MockitoSpyBean MembershipRepository membershipRepo;
     @Autowired ConsumerRepository consumerRepo;
     @Autowired ConsentRecordRepository consentRepo;
     @Autowired SuppressionRepository suppressionRepo;
@@ -301,6 +301,20 @@ class AudienceDsarTest {
     }
 
     @Test
+    void request_erase_deletes_fan_features_immediately() {
+        UUID mid = seedMembership(orgA, "eraseff@d.com");
+        seedFanFeature(orgA, mid);
+
+        dsarService.requestErase(orgA, mid, principalA);
+
+        // Taken by requestErase and again by the objection inside unsubscribe; both precede the delete.
+        var order = inOrder(membershipRepo, fanFeatureRepo);
+        order.verify(membershipRepo, atLeastOnce()).lockByIdAndOrgId(mid, orgA);
+        order.verify(fanFeatureRepo).deleteByMembershipId(mid);
+        assertThat(fanFeatureRepo.findById(mid)).isEmpty();
+    }
+
+    @Test
     void request_erase_audits_with_correct_action() {
         UUID mid = seedMembership(orgA, "eraseaudit@d.com");
         ArgumentCaptor<String> action = ArgumentCaptor.forClass(String.class);
@@ -414,7 +428,9 @@ class AudienceDsarTest {
 
         dsarService.executeErase(orgA, mid, principalA);
 
-        verify(fanFeatureRepo).deleteByMembershipId(mid);
+        var order = inOrder(membershipRepo, fanFeatureRepo);
+        order.verify(membershipRepo).lockByIdAndOrgId(mid, orgA);
+        order.verify(fanFeatureRepo).deleteByMembershipId(mid);
         assertThat(fanFeatureRepo.findById(mid)).isEmpty();
     }
 

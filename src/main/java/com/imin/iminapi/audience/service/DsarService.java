@@ -224,12 +224,16 @@ public class DsarService {
     public void requestErase(UUID orgId, UUID membershipId, AuthPrincipal principal) {
         requirePrivilegedRole(principal, "erase a data subject's record");
         require(orgId, membershipId);
+        // Membership row first, fan_features second: the same lock order as the projector's write.
+        membershipRepo.lockByIdAndOrgId(membershipId, orgId);
         consentService.unsubscribe(orgId, membershipId, "dsar_erase", "email",
                 ConsentOrigin.DATA_SUBJECT, principal);
         Membership m = require(orgId, membershipId);
         m.setStatus("erase_pending");
         m.setEraseAt(Instant.now().plus(30, ChronoUnit.DAYS));
         membershipRepo.save(m);
+        // Derived profile goes now, not after the grace period; the projector never rewrites an erase_pending row.
+        fanFeatureRepo.deleteByMembershipId(membershipId);
         auditLogger.record(principal, AuditActions.DSAR_ERASE_REQUESTED, "membership", membershipId,
                 "DSAR erase requested — pending 30d grace period");
     }
@@ -245,7 +249,8 @@ public class DsarService {
      */
     @Transactional
     public void executeErase(UUID orgId, UUID membershipId, AuthPrincipal principal) {
-        Membership m = membershipRepo.findByIdAndOrgId(membershipId, orgId).orElse(null);
+        // Locked first, like the projector's write, so fan_features is only touched under the membership lock.
+        Membership m = membershipRepo.lockByIdAndOrgId(membershipId, orgId).orElse(null);
         if (m == null) return; // already erased
         UUID consumerId = m.getConsumerId();
 

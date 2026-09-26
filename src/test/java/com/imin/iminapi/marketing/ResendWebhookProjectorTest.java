@@ -15,6 +15,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.event.ApplicationEvents;
+import org.springframework.test.context.event.RecordApplicationEvents;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -23,6 +25,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest
 @Import(TestRateLimitConfig.class)
+@RecordApplicationEvents
 class ResendWebhookProjectorTest {
 
     @Autowired ResendWebhookProjector projector;
@@ -33,6 +36,9 @@ class ResendWebhookProjectorTest {
     @Autowired com.imin.iminapi.marketing.repository.CampaignRepository campaignRepo;
     @Autowired com.imin.iminapi.audience.repository.MarketingOptOutRepository optOutRepo;
     @MockitoBean AuditLogger auditLogger;
+    @Autowired ApplicationEvents published;
+    @Autowired com.imin.iminapi.audienceplan.repository.FanFeatureRepository fanFeatureRepo;
+    @Autowired org.springframework.transaction.PlatformTransactionManager txManager;
 
     private record Fixture(UUID orgId, UUID campaignId, UUID membershipId, UUID recipientId, String email) {}
 
@@ -221,12 +227,49 @@ class ResendWebhookProjectorTest {
     }
 
     @Test
+    void complainedPublishesConsentChangedSoTasteClears() {
+        Fixture f = seed("spam-taste@example.com");
+        projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
+            "spam-taste@example.com", "email.complained", null, Instant.now());
+        assertThat(published.stream(com.imin.iminapi.audience.service.ConsentChanged.class))
+            .containsExactly(new com.imin.iminapi.audience.service.ConsentChanged(f.orgId(), f.membershipId(), false));
+    }
+
+    @Test
+    void complainedClearsTasteInsideTheWebhookTransaction() {
+        Fixture f = seed("spam-inline@example.com");
+        com.imin.iminapi.audienceplan.model.FanFeature seeded = new com.imin.iminapi.audienceplan.model.FanFeature();
+        seeded.setMembershipId(f.membershipId());
+        seeded.setOrgId(f.orgId());
+        seeded.setPaidOrders(2);
+        seeded.setFanClass("repeat");
+        seeded.setTaste("{\"pop\":1.0}");
+        seeded.setCities("[\"metz\"]");
+        seeded.setFormats("[\"club\"]");
+        seeded.setLogicVersion(1);
+        fanFeatureRepo.save(seeded);
+
+        // Read before commit: the after-commit listener has not run, so a cleared row proves the clear is inline.
+        var inside = new org.springframework.transaction.support.TransactionTemplate(txManager).execute(s -> {
+            projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
+                "spam-inline@example.com", "email.complained", null, Instant.now());
+            return fanFeatureRepo.findById(f.membershipId()).orElseThrow();
+        });
+
+        assertThat(inside.getTaste()).isEqualTo("{}");
+        assertThat(inside.getCities()).isEqualTo("[]");
+        assertThat(inside.getFormats()).isEqualTo("[]");
+        assertThat(inside.getPaidOrders()).isEqualTo(2);
+    }
+
+    @Test
     void deliveredLeavesProfilingObjectionFalse() {
         Fixture f = seed("delivered-profiling@example.com");
         projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
             "delivered-profiling@example.com", "email.delivered", null, Instant.now());
         assertThat(membershipRepo.findByIdAndOrgId(f.membershipId(), f.orgId())
             .orElseThrow().isObjectedProfiling()).isFalse();
+        assertThat(published.stream(com.imin.iminapi.audience.service.ConsentChanged.class)).isEmpty();
     }
 
     @Test

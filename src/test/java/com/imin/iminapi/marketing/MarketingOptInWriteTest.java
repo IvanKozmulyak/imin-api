@@ -391,7 +391,7 @@ class MarketingOptInWriteTest {
                 new CheckoutConsent(true, "Email me about similar events. Unsubscribe anytime."));
 
         // Plain instance so the projection runs synchronously on this thread.
-        new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService)
+        new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, e -> { })
                 .onTicketsIssued(new TicketsIssuedEvent(order.getId()));
 
         var m = membershipFor("free-optin@example.com");

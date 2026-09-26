@@ -6,6 +6,7 @@ import org.springframework.data.repository.Repository;
 import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 import org.springframework.data.repository.query.Param;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
 
@@ -21,6 +22,9 @@ public interface ConsentRecordRepository extends Repository<ConsentRecord, UUID>
     /** Fetch all consent records for a membership, chronological (for DSAR access + UI). */
     @Query("select c from ConsentRecord c where c.membershipId = :membershipId order by c.occurredAt asc")
     List<ConsentRecord> findByMembershipId(@Param("membershipId") UUID membershipId);
+
+    @Query("select c from ConsentRecord c where c.membershipId in :membershipIds")
+    List<ConsentRecord> findByMembershipIdIn(@Param("membershipIds") Collection<UUID> membershipIds);
 
     /**
      * Count unsubscribes across org (for unsubscribe rate metric).

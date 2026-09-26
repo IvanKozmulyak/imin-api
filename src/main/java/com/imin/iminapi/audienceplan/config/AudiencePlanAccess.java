@@ -25,10 +25,15 @@ public class AudiencePlanAccess {
      * return the same 404.
      */
     public void requireEnabled(UUID orgId) {
-        Set<UUID> allowed = props.getBetaOrgIds();
-        if (!props.isEnabled() || orgId == null || (!allowed.isEmpty() && !allowed.contains(orgId))) {
+        if (!isEnabled(orgId)) {
             throw ApiException.notFound("Audience plan");
         }
+    }
+
+    /** Non-throwing form for background work: false for a null org, the kill switch, or an org off a non-blank list. */
+    public boolean isEnabled(UUID orgId) {
+        Set<UUID> allowed = props.getBetaOrgIds();
+        return props.isEnabled() && orgId != null && (allowed.isEmpty() || allowed.contains(orgId));
     }
 
     /** The sends switch for audience-plan campaigns; other origins ignore it. */

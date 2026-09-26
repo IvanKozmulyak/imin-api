@@ -50,6 +50,14 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
 
     // ---- tenant-scoped reads ----
 
+    /**
+     * Row-locks the membership for the caller's transaction; fan_features writers and requestErase take it first.
+     * Native plain FOR UPDATE: the dialect's PESSIMISTIC_WRITE renders FOR NO KEY UPDATE, which H2 rejects.
+     */
+    @Query(value = "SELECT * FROM memberships WHERE membership_id = :id AND org_id = :orgId FOR UPDATE",
+            nativeQuery = true)
+    Optional<Membership> lockByIdAndOrgId(@Param("id") UUID id, @Param("orgId") UUID orgId);
+
     @Query("select m from Membership m where m.membershipId = :id and m.orgId = :orgId")
     Optional<Membership> findByIdAndOrgId(@Param("id") UUID id, @Param("orgId") UUID orgId);
 

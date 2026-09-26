@@ -27,11 +27,32 @@ class AudienceBackfillStartupTest {
                 mock(OrderRepository.class),
                 mock(AudienceOrderProjector.class),
                 mock(ErasedAddressRepository.class),
-                self);
+                self,
+                e -> { });
 
         job.onStartup();
 
         // The locked run() on the Spring-exposed bean, not this instance's own method body.
         verify(proxied).run();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void run_publishesCompletionWithItsCounts_soTheFanFeatureRecomputeChains() {
+        OrderRepository orders = mock(OrderRepository.class);
+        java.util.UUID orgId = java.util.UUID.randomUUID();
+        when(orders.findDistinctOrgAndEmailPairs()).thenReturn(java.util.List.of(
+                new Object[]{orgId, "kept@example.com"}, new Object[]{orgId, "gone@example.com"}));
+        ErasedAddressRepository erased = mock(ErasedAddressRepository.class);
+        com.imin.iminapi.audience.model.ErasedAddress gone = new com.imin.iminapi.audience.model.ErasedAddress();
+        gone.setEmailNormalized("gone@example.com");
+        when(erased.findAllEntries()).thenReturn(java.util.List.of(gone));
+        java.util.List<Object> published = new java.util.ArrayList<>();
+
+        new AudienceBackfillJob(orders, mock(AudienceOrderProjector.class), erased,
+                mock(ObjectProvider.class), published::add).run();
+
+        org.assertj.core.api.Assertions.assertThat(published)
+                .containsExactly(new com.imin.iminapi.audience.service.AudienceBackfillCompleted(1, 1));
     }
 }
