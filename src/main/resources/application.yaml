@@ -865,6 +865,8 @@ imin:
     logic-file: classpath:audienceplan/logic-v1.yaml
     priors-file: classpath:audienceplan/priors-v1.yaml
     genres-file: classpath:audienceplan/genres-v1.yaml
+    # Real sends of audience-plan campaigns. Stays false until the platform legal gates (D9) clear.
+    sends-enabled: ${IMIN_AUDIENCE_PLAN_SENDS_ENABLED:false}
 
 sentry:
   dsn: ${SENTRY_DSN:}

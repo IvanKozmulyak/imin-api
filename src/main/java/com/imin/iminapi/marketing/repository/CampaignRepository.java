@@ -93,7 +93,8 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
     /**
      * Spec §2.5: claim due campaigns — scheduled+due, retryable failed (attempts<3),
      * or stale sending (heartbeat > 5 min old, orphaned by a mid-send crash). SKIP LOCKED
-     * so multiple dispatcher instances don't double-claim.
+     * so multiple dispatcher instances don't double-claim. Audience-plan campaigns are left
+     * out while their sends switch is off, even if already scheduled.
      */
     @Query(value = """
         SELECT * FROM campaigns
@@ -103,11 +104,13 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
             OR (status = 'failed' AND attempts < 3)
             OR (status = 'sending' AND updated_at < :staleBefore)
           )
+          AND (:audiencePlanSendsEnabled = TRUE OR origin <> 'audience_plan')
         ORDER BY scheduled_at NULLS FIRST
         LIMIT 10
         FOR UPDATE SKIP LOCKED
         """, nativeQuery = true)
     java.util.List<com.imin.iminapi.marketing.model.Campaign> claimDue(
             @org.springframework.data.repository.query.Param("now") java.time.Instant now,
-            @org.springframework.data.repository.query.Param("staleBefore") java.time.Instant staleBefore);
+            @org.springframework.data.repository.query.Param("staleBefore") java.time.Instant staleBefore,
+            @org.springframework.data.repository.query.Param("audiencePlanSendsEnabled") boolean audiencePlanSendsEnabled);
 }

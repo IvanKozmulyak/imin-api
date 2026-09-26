@@ -4,6 +4,7 @@ import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.model.Segment;
 import com.imin.iminapi.audience.service.SegmentService;
 import com.imin.iminapi.audience.service.SendGateService;
+import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
 import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.marketing.dto.CampaignDto;
 import com.imin.iminapi.marketing.dto.CampaignRequests.CreateCampaignRequest;
@@ -64,6 +65,7 @@ public class CampaignService {
     private final OrganizationRepository organizations;
     private final EventRepository events;
     private final MarketingEmailProperties emailProps;
+    private final AudiencePlanAccess audiencePlanAccess;
 
     public CampaignService(CampaignRepository campaigns,
                            com.imin.iminapi.marketing.repository.CampaignRecipientRepository campaignRecipientRepository,
@@ -75,7 +77,8 @@ public class CampaignService {
                            org.springframework.context.ApplicationEventPublisher eventPublisher,
                            CampaignEmailRenderer renderer, CampaignTemplateService templateService,
                            OrganizationRepository organizations, EventRepository events,
-                           MarketingEmailProperties emailProps) {
+                           MarketingEmailProperties emailProps,
+                           AudiencePlanAccess audiencePlanAccess) {
         this.campaigns = campaigns;
         this.campaignRecipientRepository = campaignRecipientRepository;
         this.audit = audit;
@@ -91,6 +94,7 @@ public class CampaignService {
         this.organizations = organizations;
         this.events = events;
         this.emailProps = emailProps;
+        this.audiencePlanAccess = audiencePlanAccess;
     }
 
     @Transactional
@@ -197,7 +201,9 @@ public class CampaignService {
         copy.setChannel(src.getChannel());
         copy.setName(truncateName(src.getName() + " (copy)"));
         copy.setStatus("draft");
-        copy.setOrigin("manual");
+        // An audience-plan copy keeps its origin, so duplicating cannot bypass the sends switch.
+        copy.setOrigin(AudiencePlanAccess.CAMPAIGN_ORIGIN.equals(src.getOrigin())
+                ? AudiencePlanAccess.CAMPAIGN_ORIGIN : "manual");
         copy.setSegmentId(src.getSegmentId());
         copy.setEventId(src.getEventId());
         copy.setSubject(src.getSubject());
@@ -343,6 +349,7 @@ public class CampaignService {
         // stays a 404, before the CAS so a refusal never moves the state machine.
         com.imin.iminapi.security.RoleGuard.requireAtLeast(
                 principal, com.imin.iminapi.model.UserRole.ADMIN, "send a campaign");
+        audiencePlanAccess.requireSendsAllowed(c.getOrigin());
         // Fail fast on a channel nothing drains (mkt-core-7). CampaignRepository.claimDue
         // filters WHERE channel='email', so a scheduled SMS campaign was never claimed,
         // never failed and never timed out — it sat 'scheduled' for ever with no signal.
@@ -543,6 +550,7 @@ public class CampaignService {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
                     "Campaign is not retryable");
         }
+        audiencePlanAccess.requireSendsAllowed(c.getOrigin());
         c.setStatus("scheduled");
         c.setScheduledAt(Instant.now());
         c.setUpdatedAt(Instant.now());

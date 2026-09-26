@@ -1,5 +1,6 @@
 package com.imin.iminapi.marketing.send;
 
+import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
@@ -45,17 +46,20 @@ public class CampaignDispatcher {
     private final OrganizationRepository orgs;
     private final CampaignRecipientRepository recipients;
     private final MarketingGuardProperties guardProps;
+    private final AudiencePlanAccess audiencePlanAccess;
 
     public CampaignDispatcher(CampaignRepository campaigns, CampaignSendUnit sendUnit,
                               QuietHours quietHours, OrganizationRepository orgs,
                               CampaignRecipientRepository recipients,
-                              MarketingGuardProperties guardProps) {
+                              MarketingGuardProperties guardProps,
+                              AudiencePlanAccess audiencePlanAccess) {
         this.campaigns = campaigns;
         this.sendUnit = sendUnit;
         this.quietHours = quietHours;
         this.orgs = orgs;
         this.recipients = recipients;
         this.guardProps = guardProps;
+        this.audiencePlanAccess = audiencePlanAccess;
     }
 
     @Scheduled(fixedDelay = 30_000)
@@ -94,7 +98,8 @@ public class CampaignDispatcher {
      */
     private List<Campaign> claimDue(Instant now) {
         Instant staleBefore = now.minus(STALE_MINUTES, ChronoUnit.MINUTES);
-        List<Campaign> due = campaigns.claimDue(now, staleBefore);
+        // Audience-plan campaigns are held in SQL while their sends switch is off, so they never use up the LIMIT.
+        List<Campaign> due = campaigns.claimDue(now, staleBefore, audiencePlanAccess.sendsEnabled());
         List<Campaign> eligible = new ArrayList<>(due.size());
         Map<UUID, Organization> orgCache = new HashMap<>();
         Instant capWindowStart = now.minus(DAILY_CAP_WINDOW_HOURS, ChronoUnit.HOURS);

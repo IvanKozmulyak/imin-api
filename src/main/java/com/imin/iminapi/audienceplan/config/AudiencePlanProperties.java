@@ -23,6 +23,9 @@ public class AudiencePlanProperties {
 
     private String genresFile = "classpath:audienceplan/genres-v1.yaml";
 
+    /** Real sends of audience-plan campaigns; stays false until the platform legal gates clear. Blank binds false. */
+    private Boolean sendsEnabled = Boolean.FALSE;
+
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
     public Set<UUID> getBetaOrgIds() { return betaOrgIds; }
@@ -32,6 +35,8 @@ public class AudiencePlanProperties {
     public void setPriorsFile(String priorsFile) { this.priorsFile = priorsFile; }
     public String getGenresFile() { return genresFile; }
     public void setGenresFile(String genresFile) { this.genresFile = genresFile; }
+    public Boolean getSendsEnabled() { return sendsEnabled; }
+    public void setSendsEnabled(Boolean sendsEnabled) { this.sendsEnabled = Boolean.TRUE.equals(sendsEnabled); }
 
     /** Blank elements (e.g. a trailing comma) convert to null; drop them rather than fail. */
     public void setBetaOrgIds(Set<UUID> betaOrgIds) {

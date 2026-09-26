@@ -76,6 +76,9 @@ public enum ErrorCode {
      */
     ORG_HAS_RECORDS,
 
+    /** Scheduling or sending an audience-plan campaign while its sends switch is off. 409. */
+    AUDIENCE_SENDS_DISABLED,
+
     // ---- Buyer accounts ----
     /**
      * Unlinking this identity would leave the account with no way to sign in —

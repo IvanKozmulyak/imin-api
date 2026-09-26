@@ -111,3 +111,4 @@ imin:
     logic-file: classpath:audienceplan/logic-v1.yaml
     priors-file: classpath:audienceplan/priors-v1.yaml
     genres-file: classpath:audienceplan/genres-v1.yaml
+    sends-enabled: false

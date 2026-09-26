@@ -1,5 +1,6 @@
 package com.imin.iminapi.marketing.send;
 
+import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
@@ -48,18 +49,20 @@ public class CampaignSendUnit {
     private final RecipientMaterializer materializer;
     private final EmailChannelSender emailSender;
     private final ApplicationEventPublisher eventPublisher;
+    private final AudiencePlanAccess audiencePlanAccess;
     /** REQUIRES_NEW template: the campaign status flips commit on their own, like the batches. */
     private final TransactionTemplate newTx;
 
     public CampaignSendUnit(CampaignRepository campaigns, CampaignRecipientRepository recipients,
                             RecipientMaterializer materializer,
                             EmailChannelSender emailSender, ApplicationEventPublisher eventPublisher,
-                            PlatformTransactionManager txManager) {
+                            PlatformTransactionManager txManager, AudiencePlanAccess audiencePlanAccess) {
         this.campaigns = campaigns;
         this.recipients = recipients;
         this.materializer = materializer;
         this.emailSender = emailSender;
         this.eventPublisher = eventPublisher;
+        this.audiencePlanAccess = audiencePlanAccess;
         this.newTx = new TransactionTemplate(txManager);
         this.newTx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
@@ -73,10 +76,20 @@ public class CampaignSendUnit {
         // Drive batches until nothing claimable remains. Bounded loop; each call commits
         // its own batch and heartbeats.
         int guard = 0;
-        while (emailSender.sendNextBatch(c) && guard++ < 10_000) {
+        while (sendsAllowed(c) && emailSender.sendNextBatch(c) && guard++ < 10_000) {
             // keep sending
         }
+        if (!sendsAllowed(c)) {
+            // Same as the paused path: stays 'sending' with its queue intact; the claim resumes it once re-enabled.
+            log.warn("[send-unit] campaign {} held mid-send: audience plan sends are disabled", c.getId());
+            return;
+        }
         finish(c);
+    }
+
+    /** Re-read per batch so switching audience-plan sends off stops a drive already in progress. */
+    private boolean sendsAllowed(Campaign c) {
+        return audiencePlanAccess.sendsEnabled() || !AudiencePlanAccess.CAMPAIGN_ORIGIN.equals(c.getOrigin());
     }
 
     /**

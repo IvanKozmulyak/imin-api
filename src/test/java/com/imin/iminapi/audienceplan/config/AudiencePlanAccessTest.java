@@ -96,6 +96,64 @@ class AudiencePlanAccessTest {
                 });
     }
 
+    @Test
+    void sendsEnabled_defaultsFalse() {
+        assertThat(new AudiencePlanProperties().getSendsEnabled()).isFalse();
+    }
+
+    @Test
+    void sendsEnabled_blankEnvVar_bindsFalse() {
+        // The shipped placeholder, with the env var stubbed to empty so a local value cannot leak in.
+        runner.withPropertyValues("IMIN_AUDIENCE_PLAN_SENDS_ENABLED=",
+                        "imin.audience-plan.sends-enabled=${IMIN_AUDIENCE_PLAN_SENDS_ENABLED:false}")
+                .run(ctx -> {
+                    assertThat(ctx.getBean(AudiencePlanProperties.class).getSendsEnabled()).isFalse();
+                    assertThat(ctx.getBean(AudiencePlanAccess.class).sendsEnabled()).isFalse();
+                });
+    }
+
+    @Test
+    void sendsEnabled_shippedYamlDefaultsToFalse() throws Exception {
+        String yaml = java.nio.file.Files.readString(java.nio.file.Path.of("src/main/resources/application.yaml"));
+        assertThat(yaml).contains("sends-enabled: ${IMIN_AUDIENCE_PLAN_SENDS_ENABLED:false}");
+    }
+
+    @Test
+    void sendsEnabled_nullSetter_staysFalse() {
+        AudiencePlanProperties props = new AudiencePlanProperties();
+        props.setSendsEnabled(null);
+        assertThat(props.getSendsEnabled()).isFalse();
+    }
+
+    @Test
+    void sendsOff_audiencePlanOrigin_throws409() {
+        AudiencePlanAccess access = new AudiencePlanAccess(new AudiencePlanProperties());
+        assertThatThrownBy(() -> access.requireSendsAllowed("audience_plan"))
+                .isInstanceOfSatisfying(ApiException.class, e -> {
+                    assertThat(e.status()).isEqualTo(HttpStatus.CONFLICT);
+                    assertThat(e.code()).isEqualTo(ErrorCode.AUDIENCE_SENDS_DISABLED);
+                    assertThat(e.getMessage()).isEqualTo("Sending audience plan campaigns is not enabled yet");
+                });
+    }
+
+    @Test
+    void sendsOff_otherOrigins_pass() {
+        AudiencePlanAccess access = new AudiencePlanAccess(new AudiencePlanProperties());
+        assertThatCode(() -> access.requireSendsAllowed("manual")).doesNotThrowAnyException();
+        assertThatCode(() -> access.requireSendsAllowed("momentum")).doesNotThrowAnyException();
+        assertThatCode(() -> access.requireSendsAllowed(null)).doesNotThrowAnyException();
+    }
+
+    @Test
+    void sendsOn_audiencePlanOrigin_passes() {
+        runner.withPropertyValues("imin.audience-plan.sends-enabled=true")
+                .run(ctx -> {
+                    AudiencePlanAccess access = ctx.getBean(AudiencePlanAccess.class);
+                    assertThat(access.sendsEnabled()).isTrue();
+                    assertThatCode(() -> access.requireSendsAllowed("audience_plan")).doesNotThrowAnyException();
+                });
+    }
+
     private static void assertNotFound(AudiencePlanAccess access, UUID orgId) {
         assertThatThrownBy(() -> access.requireEnabled(orgId))
                 .isInstanceOfSatisfying(ApiException.class, e -> {
