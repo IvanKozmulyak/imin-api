@@ -21,10 +21,11 @@ import java.util.List;
  * Audience contact CSV import.
  * Base path: {@code /api/v1/audience/import}. orgId comes ONLY from the auth context.
  *
- * <p>Compliance posture: auto-subscribing on an organizer's assertion is a GDPR risk. The
- * required {@code attestation=true} flag, the {@code source='organizer_import'} audit trail,
- * and the absolute suppression-respect (see {@link AudienceImportService}) are what make it
- * defensible. This controller is the enforcement point for the attestation + size/row caps.
+ * <p>Compliance posture: only a row carrying its own proof of explicit consent is subscribed
+ * (see {@link AudienceImportService}); the required {@code attestation=true} flag records that the
+ * organizer vouches for that per-row evidence, and never subscribes anyone by itself. This
+ * controller is the enforcement point for the attestation + size/row caps, and records the
+ * file's SHA-256 and the optional import-level {@code proofRef}.
  */
 @RestController
 @RequestMapping("/api/v1/audience/import")
@@ -52,6 +53,12 @@ public class AudienceImportController {
             // Optional so an older dashboard keeps working; absent is recorded as
             // "unversioned" rather than guessed at.
             @RequestParam(value = "attestationVersion", required = false) String attestationVersion,
+            // Import-level evidence (e.g. a link to the platform's consent export); lifts the
+            // per-import cap on subscribed rows.
+            @RequestParam(value = "proofRef", required = false) String proofRef,
+            // SHA-256 of the organizer's original file, computed in the browser before the
+            // dashboard rewrites it; stored only when it is 64 hex characters.
+            @RequestParam(value = "originalFileSha256", required = false) String originalFileSha256,
             @RequestParam(value = "dryRun", defaultValue = "false") boolean dryRun) {
 
         // Attestation is the load-bearing consent gate — reject before any parsing or writes.
@@ -81,6 +88,23 @@ public class AudienceImportController {
         }
 
         List<CsvContactParser.RawContact> rows = CsvContactParser.parse(bytes, MAX_ROWS);
-        return importService.importContacts(rows, dryRun, principal, attestationVersion);
+        return importService.importContacts(rows, dryRun, principal,
+                new AudienceImportService.ImportOptions(attestationVersion, sha256Hex(bytes),
+                        sha256OrNull(originalFileSha256), proofRef));
+    }
+
+    static String sha256OrNull(String supplied) {
+        if (supplied == null) return null;
+        String s = supplied.trim().toLowerCase(java.util.Locale.ROOT);
+        return s.matches("[0-9a-f]{64}") ? s : null;
+    }
+
+    private static String sha256Hex(byte[] bytes) {
+        try {
+            return java.util.HexFormat.of().formatHex(
+                    java.security.MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 unavailable", e);
+        }
     }
 }

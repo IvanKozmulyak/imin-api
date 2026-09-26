@@ -68,6 +68,7 @@ public enum ErrorCode {
     IMPORT_TOO_MANY_ROWS,
     IMPORT_EMAIL_COLUMN_MISSING,
     IMPORT_INVALID_CSV,
+    IMPORT_FORBIDDEN_COLUMN,
 
     /**
      * DELETE /api/v1/orgs refused: the organization holds records imin cannot

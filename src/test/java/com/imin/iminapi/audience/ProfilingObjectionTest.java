@@ -205,10 +205,11 @@ class ProfilingObjectionTest {
         UUID mid = objectedButEmailSubscribed(orgId, address);
 
         importService.importContacts(
-                List.of(new CsvContactParser.RawContact(2, address, null, null)),
+                List.of(new CsvContactParser.RawContact(2, address, null, null, "shotgun", "2026-09-01",
+                        null, null, "opted_in", "proof-2")),
                 false, organizerOf(orgId));
 
-        assertThat(recordsOf(mid)).anySatisfy(r -> assertThat(r.getSource()).isEqualTo("organizer_import"));
+        assertThat(recordsOf(mid)).anySatisfy(r -> assertThat(r.getSource()).isEqualTo("organizer_import_row"));
         assertThat(load(orgId, mid).isObjectedProfiling()).isTrue();
     }
 

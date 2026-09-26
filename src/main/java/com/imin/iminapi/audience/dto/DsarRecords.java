@@ -26,11 +26,19 @@ public record DsarRecords(
         List<FunnelRecord> funnelEvents,
         List<MetaCapiRecord> metaCapiEvents,
         List<NotifySubscriptionRecord> notifySubscriptions,
-        FanFeatureRecord fanFeatures
+        FanFeatureRecord fanFeatures,
+        List<ImportProvenanceRecord> importProvenance
 ) {
     /** The same records with the plan-tool features attached; null when none were computed. */
     public DsarRecords withFanFeatures(FanFeatureRecord features) {
-        return new DsarRecords(orders, tickets, funnelEvents, metaCapiEvents, notifySubscriptions, features);
+        return new DsarRecords(orders, tickets, funnelEvents, metaCapiEvents, notifySubscriptions,
+                features, importProvenance);
+    }
+
+    /** The same records with the CSV-import provenance rows attached. */
+    public DsarRecords withImportProvenance(List<ImportProvenanceRecord> rows) {
+        return new DsarRecords(orders, tickets, funnelEvents, metaCapiEvents, notifySubscriptions,
+                fanFeatures, rows);
     }
 
     public record OrderRecord(
@@ -90,6 +98,20 @@ public record DsarRecords(
             Instant lastContactFromPersonAt,
             int logicVersion,
             Instant updatedAt) {}
+
+    /** Where an organizer's CSV import says this person came from, and whether it was accepted. */
+    public record ImportProvenanceRecord(
+            UUID importId,
+            int rowNumber,
+            String sourcePlatform,
+            java.time.LocalDate exportDate,
+            String events,
+            java.time.LocalDate lastPurchaseDate,
+            String marketingStatus,
+            String proofRef,
+            boolean accepted,
+            String rejectReason,
+            Instant createdAt) {}
 
     /** A "tell me when tickets drop" registration. */
     public record NotifySubscriptionRecord(

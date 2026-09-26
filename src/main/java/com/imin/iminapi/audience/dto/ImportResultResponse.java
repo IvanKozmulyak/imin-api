@@ -1,6 +1,7 @@
 package com.imin.iminapi.audience.dto;
 
 import java.util.List;
+import java.util.UUID;
 
 /**
  * Result of a POST /api/v1/audience/import (contact CSV upload).
@@ -14,11 +15,14 @@ import java.util.List;
  * excluded), so {@code total} minus the sum above equals the number of in-file
  * duplicates dropped.
  *
+ * <p>Consent split of the rows that landed as members:
+ * {@code rowsExplicit + rowsNoBasis + rowsUnsubscribed == imported + updated}.
+ *
  * @param total               data rows in the file (header row excluded)
- * @param imported            NEW memberships created and subscribed (basis=explicit, source=organizer_import)
- * @param updated             EXISTING memberships re-confirmed to subscribed
+ * @param imported            NEW memberships created
+ * @param updated             EXISTING memberships the file matched
  * @param suppressed          contacts on the org marketing OR global deliverability suppression
- *                            list — imported/kept as members but NOT subscribed (guardrail)
+ *                            list — kept as members but NOT subscribed (guardrail)
  * @param skippedUnsubscribed existing members with an explicit unsubscribe — never re-subscribed
  * @param skippedErased       addresses on this org's erasure ledger — no write at all, and
  *                            deliberately no per-row error naming them
@@ -26,6 +30,13 @@ import java.util.List;
  *                            erasure made outside this org) — no write, no per-row error
  * @param invalidEmails       rows whose email was blank or failed validation
  * @param errors              up to ~50 row-level problems for the organizer to fix
+ * @param rowsExplicit        rows subscribed as explicit consent on their own proof
+ *                            ({@code marketing_status=opted_in} + proof_ref + source_platform + export_date)
+ * @param rowsNoBasis         rows kept as members without a consent basis — not mailable
+ * @param rowsUnsubscribed    rows the file marks {@code unsubscribed} — put on the marketing suppression list
+ * @param rowsCapped          the part of {@code rowsNoBasis} held back by the per-import cap on
+ *                            subscribed rows (lifted by an import-level proof reference)
+ * @param importId            the stored import record; null for a preview
  */
 public record ImportResultResponse(
         int total,
@@ -36,7 +47,12 @@ public record ImportResultResponse(
         int skippedErased,
         int skippedOther,
         int invalidEmails,
-        List<ImportError> errors) {
+        List<ImportError> errors,
+        int rowsExplicit,
+        int rowsNoBasis,
+        int rowsUnsubscribed,
+        int rowsCapped,
+        UUID importId) {
 
     /** A single row-level problem. {@code row} is the 1-based file line number. */
     public record ImportError(int row, String email, String reason) {}

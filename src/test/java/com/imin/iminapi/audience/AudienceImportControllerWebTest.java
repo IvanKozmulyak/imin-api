@@ -121,6 +121,90 @@ class AudienceImportControllerWebTest {
                 .andExpect(jsonPath("$.imported").value(1));
     }
 
+    @Test
+    @WithOrgA
+    void provenance_import_returns_the_consent_split_and_records_hash_and_proof_ref() throws Exception {
+        String body = "email,source_platform,export_date,marketing_status,proof_ref\n"
+                + "alice@example.com,shotgun,2026-09-01,opted_in,screenshot-1\n"
+                + "bob@example.com,,,,\n"
+                + "carol@example.com,shotgun,2026-09-01,unsubscribed,\n";
+        String expectedSha = java.util.HexFormat.of().formatHex(
+                java.security.MessageDigest.getInstance("SHA-256").digest(body.getBytes(StandardCharsets.UTF_8)));
+
+        mvc.perform(multipart("/api/v1/audience/import")
+                        .file(csv(body))
+                        .param("attestation", "true")
+                        .param("attestationVersion", "v2-2026-09-27")
+                        .param("proofRef", "  https://platform.example/export  ")
+                        .param("originalFileSha256", " " + "AB".repeat(32) + " "))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.imported").value(3))
+                .andExpect(jsonPath("$.rowsExplicit").value(1))
+                .andExpect(jsonPath("$.rowsNoBasis").value(1))
+                .andExpect(jsonPath("$.rowsUnsubscribed").value(1))
+                .andExpect(jsonPath("$.rowsCapped").value(0))
+                .andExpect(jsonPath("$.importId").isNotEmpty());
+
+        try (java.sql.Connection c = dataSource.getConnection();
+             java.sql.Statement st = c.createStatement();
+             java.sql.ResultSet rs = st.executeQuery(
+                     "select uploaded_file_sha256, proof_ref, attestation_version, original_file_sha256 from audience_imports")) {
+            org.assertj.core.api.Assertions.assertThat(rs.next()).isTrue();
+            org.assertj.core.api.Assertions.assertThat(rs.getString(1)).isEqualTo(expectedSha);
+            org.assertj.core.api.Assertions.assertThat(rs.getString(2)).isEqualTo("https://platform.example/export");
+            org.assertj.core.api.Assertions.assertThat(rs.getString(3)).isEqualTo("v2-2026-09-27");
+            org.assertj.core.api.Assertions.assertThat(rs.getString(4)).isEqualTo("ab".repeat(32));
+        }
+    }
+
+    @Test
+    @WithOrgA
+    void a_malformed_original_file_hash_is_not_stored() throws Exception {
+        mvc.perform(multipart("/api/v1/audience/import")
+                        .file(csv("email\nalice@example.com\n"))
+                        .param("attestation", "true")
+                        .param("originalFileSha256", "not-a-hash"))
+                .andExpect(status().isOk());
+
+        try (java.sql.Connection c = dataSource.getConnection();
+             java.sql.Statement st = c.createStatement();
+             java.sql.ResultSet rs = st.executeQuery(
+                     "select original_file_sha256, uploaded_file_sha256 from audience_imports")) {
+            org.assertj.core.api.Assertions.assertThat(rs.next()).isTrue();
+            org.assertj.core.api.Assertions.assertThat(rs.getString(1)).isNull();
+            org.assertj.core.api.Assertions.assertThat(rs.getString(2)).hasSize(64);
+        }
+    }
+
+    @Test
+    @WithOrgA
+    void without_an_original_file_hash_only_the_uploaded_hash_is_stored() throws Exception {
+        mvc.perform(multipart("/api/v1/audience/import")
+                        .file(csv("email\nalice@example.com\n"))
+                        .param("attestation", "true"))
+                .andExpect(status().isOk());
+
+        try (java.sql.Connection c = dataSource.getConnection();
+             java.sql.Statement st = c.createStatement();
+             java.sql.ResultSet rs = st.executeQuery(
+                     "select original_file_sha256, uploaded_file_sha256 from audience_imports")) {
+            org.assertj.core.api.Assertions.assertThat(rs.next()).isTrue();
+            org.assertj.core.api.Assertions.assertThat(rs.getString(1)).isNull();
+            org.assertj.core.api.Assertions.assertThat(rs.getString(2)).hasSize(64);
+        }
+    }
+
+    @Test
+    @WithOrgA
+    void forbidden_column_returns_400_naming_the_column() throws Exception {
+        mvc.perform(multipart("/api/v1/audience/import")
+                        .file(csv("email,IBAN\nalice@example.com,FR76\n"))
+                        .param("attestation", "true"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("IMPORT_FORBIDDEN_COLUMN"))
+                .andExpect(jsonPath("$.error.fields.column").value("IBAN"));
+    }
+
     // ── caps + column detection ──────────────────────────────────────────────────
 
     @Test
@@ -160,6 +244,8 @@ class AudienceImportControllerWebTest {
     private void wipe() {
         try (java.sql.Connection c = dataSource.getConnection();
              java.sql.Statement s = c.createStatement()) {
+            s.execute("delete from import_row_provenance");
+            s.execute("delete from audience_imports");
             s.execute("delete from suppression_entries");
             s.execute("delete from consent_records");
             s.execute("delete from memberships");

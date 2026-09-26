@@ -22,10 +22,14 @@ import java.util.Set;
  *   <li><b>name</b> (optional): {@code name} / {@code full name} / {@code fullname}, or
  *       {@code first name} + {@code last name} combined</li>
  *   <li><b>phone</b> (optional): {@code phone}, {@code mobile}, {@code phone number}, {@code telephone}, …</li>
+ *   <li><b>provenance</b> (optional): {@code source_platform}, {@code export_date}, {@code events},
+ *       {@code last_purchase_date}, {@code marketing_status}, {@code proof_ref} — the names the
+ *       dashboard's column mapper writes</li>
  * </ul>
  *
- * <p>Never rejects a row for a bad phone or missing name — only the email column being
- * absent, or exceeding the row cap, aborts the whole file (400).
+ * <p>Never rejects a row for a bad phone or missing name. The whole file is refused (400) when
+ * the email column is absent, the row cap is exceeded, or a header names data that must never
+ * be imported (ID numbers, payment data, IP addresses, health data).
  */
 public final class CsvContactParser {
 
@@ -41,10 +45,37 @@ public final class CsvContactParser {
             Set.of("phone", "mobile", "phone number", "phonenumber", "phone_number",
                    "telephone", "mobile number", "cell", "tel");
 
+    static final String SOURCE_PLATFORM = "source_platform";
+    static final String EXPORT_DATE = "export_date";
+    static final String EVENTS = "events";
+    static final String LAST_PURCHASE_DATE = "last_purchase_date";
+    static final String MARKETING_STATUS = "marketing_status";
+    static final String PROOF_REF = "proof_ref";
+
+    /** Header words that alone mark a forbidden column. */
+    private static final Set<String> FORBIDDEN_WORDS = Set.of(
+            "passport", "ssn", "nir", "dni", "nie",
+            "iban", "cvv", "cvc", "pan",
+            "ip", "ipv4", "ipv6", "ipaddress",
+            "health", "medical", "allergy", "allergies", "disability", "diagnosis");
+    /** Word pairs that mark a forbidden column wherever they appear in the header. */
+    private static final List<String> FORBIDDEN_PHRASES = List.of(
+            "id number", "national id", "identity number", "id card", "social security", "tax id",
+            "card number", "credit card", "debit card", "bank account",
+            "ip address");
+
     private CsvContactParser() {}
 
     /** A single data row, pre-mapped to the columns we care about. Values are raw (untrimmed email). */
-    public record RawContact(int rowNumber, String rawEmail, String name, String rawPhone) {}
+    public record RawContact(int rowNumber, String rawEmail, String name, String rawPhone,
+                             String sourcePlatform, String exportDate, String events,
+                             String lastPurchaseDate, String marketingStatus, String proofRef) {
+
+        /** A row without provenance columns. */
+        public RawContact(int rowNumber, String rawEmail, String name, String rawPhone) {
+            this(rowNumber, rawEmail, name, rawPhone, null, null, null, null, null, null);
+        }
+    }
 
     /**
      * Parse the uploaded bytes into raw contacts.
@@ -70,9 +101,24 @@ public final class CsvContactParser {
 
         List<String> header = rows.get(0);
         int emailIdx = -1, fullNameIdx = -1, firstNameIdx = -1, lastNameIdx = -1, phoneIdx = -1;
+        int platformIdx = -1, exportDateIdx = -1, eventsIdx = -1, lastPurchaseIdx = -1,
+                statusIdx = -1, proofIdx = -1;
         for (int i = 0; i < header.size(); i++) {
             String h = header.get(i).trim().toLowerCase(java.util.Locale.ROOT);
+            if (isForbidden(h)) {
+                String column = header.get(i).trim();
+                throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.IMPORT_FORBIDDEN_COLUMN,
+                        "Column '" + column + "' is not allowed: files must not contain ID numbers, "
+                                + "payment data, IP addresses or health data",
+                        java.util.Map.of("column", column));
+            }
             if (emailIdx < 0 && EMAIL_HEADERS.contains(h)) emailIdx = i;
+            else if (platformIdx < 0 && SOURCE_PLATFORM.equals(h)) platformIdx = i;
+            else if (exportDateIdx < 0 && EXPORT_DATE.equals(h)) exportDateIdx = i;
+            else if (eventsIdx < 0 && EVENTS.equals(h)) eventsIdx = i;
+            else if (lastPurchaseIdx < 0 && LAST_PURCHASE_DATE.equals(h)) lastPurchaseIdx = i;
+            else if (statusIdx < 0 && MARKETING_STATUS.equals(h)) statusIdx = i;
+            else if (proofIdx < 0 && PROOF_REF.equals(h)) proofIdx = i;
             else if (fullNameIdx < 0 && FULL_NAME_HEADERS.contains(h)) fullNameIdx = i;
             else if (firstNameIdx < 0 && FIRST_NAME_HEADERS.contains(h)) firstNameIdx = i;
             else if (lastNameIdx < 0 && LAST_NAME_HEADERS.contains(h)) lastNameIdx = i;
@@ -96,9 +142,34 @@ public final class CsvContactParser {
             String phone = cell(row, phoneIdx);
             // file line number: header is line 1, first data row is line 2
             out.add(new RawContact(r + 1, email, name.isBlank() ? null : name.trim(),
-                    phone.isBlank() ? null : phone));
+                    phone.isBlank() ? null : phone,
+                    orNull(cell(row, platformIdx)), orNull(cell(row, exportDateIdx)),
+                    orNull(cell(row, eventsIdx)), orNull(cell(row, lastPurchaseIdx)),
+                    orNull(cell(row, statusIdx)), orNull(cell(row, proofIdx))));
         }
         return out;
+    }
+
+    /**
+     * True when a (lower-cased) header names data that must never be imported. Headers are
+     * split into words, so {@code customer_iban} and {@code IP Address} both match while
+     * {@code order id} and {@code shipping} do not.
+     */
+    static boolean isForbidden(String lowerHeader) {
+        String words = lowerHeader.replaceAll("[^a-z0-9]+", " ").trim();
+        if (words.isEmpty()) return false;
+        for (String w : words.split(" ")) {
+            if (FORBIDDEN_WORDS.contains(w)) return true;
+        }
+        String padded = " " + words + " ";
+        for (String phrase : FORBIDDEN_PHRASES) {
+            if (padded.contains(" " + phrase + " ")) return true;
+        }
+        return false;
+    }
+
+    private static String orNull(String v) {
+        return v.isBlank() ? null : v;
     }
 
     private static String cell(List<String> row, int idx) {

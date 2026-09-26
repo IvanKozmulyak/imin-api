@@ -115,4 +115,70 @@ class CsvContactParserTest {
         assertThat(rows).hasSize(1);
         assertThat(rows.get(0).rawEmail()).isEqualTo("alice@example.com");
     }
+
+    // ── provenance columns ──────────────────────────────────────────────────────
+
+    @Test
+    void provenance_columns_written_by_the_mapper_are_read() {
+        List<RawContact> rows = parse("email,source_platform,export_date,events,last_purchase_date,"
+                + "marketing_status,proof_ref\n"
+                + "a@x.com,shotgun,2026-09-01,Night A,2026-08-01,opted_in,screenshot-1\n");
+        RawContact r = rows.get(0);
+        assertThat(r.sourcePlatform()).isEqualTo("shotgun");
+        assertThat(r.exportDate()).isEqualTo("2026-09-01");
+        assertThat(r.events()).isEqualTo("Night A");
+        assertThat(r.lastPurchaseDate()).isEqualTo("2026-08-01");
+        assertThat(r.marketingStatus()).isEqualTo("opted_in");
+        assertThat(r.proofRef()).isEqualTo("screenshot-1");
+    }
+
+    @Test
+    void absent_or_blank_provenance_cells_are_null() {
+        RawContact r = parse("email,proof_ref\na@x.com,\n").get(0);
+        assertThat(r.proofRef()).isNull();
+        assertThat(r.sourcePlatform()).isNull();
+        assertThat(r.marketingStatus()).isNull();
+    }
+
+    // ── forbidden columns ───────────────────────────────────────────────────────
+
+    private static void assertForbidden(String header) {
+        assertThatThrownBy(() -> parse("email," + header + "\na@x.com,x\n"))
+                .isInstanceOf(ApiException.class)
+                .satisfies(e -> {
+                    ApiException ex = (ApiException) e;
+                    assertThat(ex.code()).isEqualTo(ErrorCode.IMPORT_FORBIDDEN_COLUMN);
+                    assertThat(ex.getMessage()).contains("'" + header + "'");
+                    assertThat(ex.fields()).containsEntry("column", header);
+                });
+    }
+
+    @Test
+    void id_number_column_is_rejected_by_name() {
+        assertForbidden("National ID");
+        assertForbidden("passport_number");
+    }
+
+    @Test
+    void payment_column_is_rejected_by_name() {
+        assertForbidden("IBAN");
+        assertForbidden("Card Number");
+    }
+
+    @Test
+    void ip_column_is_rejected_by_name() {
+        assertForbidden("IP Address");
+        assertForbidden("ip");
+    }
+
+    @Test
+    void health_column_is_rejected_by_name() {
+        assertForbidden("health_notes");
+        assertForbidden("Allergies");
+    }
+
+    @Test
+    void ordinary_columns_that_merely_contain_those_letters_are_allowed() {
+        assertThat(parse("email,Order ID,zip,shipping,company\na@x.com,1,75001,no,acme\n")).hasSize(1);
+    }
 }

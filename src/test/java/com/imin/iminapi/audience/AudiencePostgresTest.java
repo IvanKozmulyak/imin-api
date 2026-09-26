@@ -376,6 +376,53 @@ class AudiencePostgresTest {
     }
 
     // =========================================================================
+    // Import provenance schema on real Postgres
+    // =========================================================================
+
+    @Autowired com.imin.iminapi.audienceplan.repository.AudienceImportRepository importRepo;
+    @Autowired com.imin.iminapi.audienceplan.repository.ImportRowProvenanceRepository provenanceRepo;
+
+    @Test
+    void importProvenanceSchema_roundTrips_andCascadesWithTheMembership() throws Exception {
+        UUID mid;
+        try (Connection c = dataSource.getConnection();
+             Statement s = c.createStatement();
+             ResultSet r = s.executeQuery(
+                     "SELECT membership_id FROM memberships WHERE display_name = 'Alice Dupont'")) {
+            assertThat(r.next()).isTrue();
+            mid = r.getObject(1, UUID.class);
+        }
+
+        var imp = new com.imin.iminapi.audienceplan.model.AudienceImport();
+        imp.setOrgId(ORG_A);
+        imp.setUploadedFileSha256("ab".repeat(32));
+        imp.setOriginalFileSha256("cd".repeat(32));
+        imp.setExportDate(java.time.LocalDate.parse("2026-09-01"));
+        imp.setRowsTotal(1);
+        imp.setRowsExplicit(1);
+        imp = importRepo.save(imp);
+
+        var p = new com.imin.iminapi.audienceplan.model.ImportRowProvenance();
+        p.setImportId(imp.getId());
+        p.setMembershipId(mid);
+        p.setRowNumber(2);
+        p.setExportDate(java.time.LocalDate.parse("2026-09-01"));
+        p.setEvents("x".repeat(3000));
+        p.setMarketingStatus("opted_in");
+        p.setProofRef("screenshot-1");
+        p.setAccepted(true);
+        provenanceRepo.save(p);
+
+        assertThat(provenanceRepo.existsByMembershipIdAndAcceptedTrue(mid)).isTrue();
+        assertThat(importRepo.findById(imp.getId()).orElseThrow().getOriginalFileSha256()).isEqualTo("cd".repeat(32));
+        assertThat(importRepo.findById(imp.getId()).orElseThrow().getExportDate())
+                .isEqualTo(java.time.LocalDate.parse("2026-09-01"));
+
+        membershipRepo.deleteByIdAndOrgId(mid, ORG_A);
+        assertThat(provenanceRepo.findByMembershipIdOrderByCreatedAtAsc(mid)).isEmpty();
+    }
+
+    // =========================================================================
     // Helpers
     // =========================================================================
 
@@ -417,6 +464,8 @@ class AudiencePostgresTest {
     private void wipe() {
         try (Connection c = dataSource.getConnection();
              Statement  s = c.createStatement()) {
+            s.execute("DELETE FROM import_row_provenance");
+            s.execute("DELETE FROM audience_imports");
             s.execute("DELETE FROM suppression_entries");
             s.execute("DELETE FROM consent_records");
             s.execute("DELETE FROM segments");

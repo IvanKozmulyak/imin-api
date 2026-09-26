@@ -20,6 +20,10 @@ import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import com.imin.iminapi.audience.dto.DsarRecords;
 import com.imin.iminapi.audienceplan.model.FanFeature;
 import com.imin.iminapi.audienceplan.repository.FanFeatureRepository;
+import com.imin.iminapi.audienceplan.model.AudienceImport;
+import com.imin.iminapi.audienceplan.model.ImportRowProvenance;
+import com.imin.iminapi.audienceplan.repository.AudienceImportRepository;
+import com.imin.iminapi.audienceplan.repository.ImportRowProvenanceRepository;
 
 import javax.sql.DataSource;
 import java.time.Instant;
@@ -64,6 +68,8 @@ class AudienceDsarTest {
 
     @MockitoBean AuditLogger auditLogger;
     @MockitoSpyBean FanFeatureRepository fanFeatureRepo;
+    @MockitoSpyBean ImportRowProvenanceRepository provenanceRepo;
+    @Autowired AudienceImportRepository importRepo;
 
     private UUID orgA;
     private UUID orgB;
@@ -437,6 +443,47 @@ class AudienceDsarTest {
     }
 
     @Test
+    void execute_erase_deletes_import_provenance_explicitly() {
+        UUID mid = seedMembership(orgA, "proverase@d.com");
+        seedProvenance(orgA, mid);
+
+        dsarService.executeErase(orgA, mid, principalA);
+
+        verify(provenanceRepo).deleteByMembershipId(mid);
+        assertThat(provenanceRepo.findByMembershipIdOrderByCreatedAtAsc(mid)).isEmpty();
+    }
+
+    @Test
+    void export_records_include_import_provenance() {
+        UUID mid = seedMembership(orgA, "provexport@d.com");
+        UUID importId = seedProvenance(orgA, mid);
+
+        List<DsarRecords.ImportProvenanceRecord> rows =
+                dsarService.exportRecords(orgA, mid, principalA).importProvenance();
+
+        assertThat(rows).singleElement().satisfies(r -> {
+            assertThat(r.importId()).isEqualTo(importId);
+            assertThat(r.rowNumber()).isEqualTo(7);
+            assertThat(r.sourcePlatform()).isEqualTo("shotgun");
+            assertThat(r.exportDate()).isEqualTo(java.time.LocalDate.parse("2026-09-01"));
+            assertThat(r.events()).isEqualTo("Night A");
+            assertThat(r.lastPurchaseDate()).isEqualTo(java.time.LocalDate.parse("2026-08-01"));
+            assertThat(r.marketingStatus()).isEqualTo("opted_in");
+            assertThat(r.proofRef()).isEqualTo("screenshot-7");
+            assertThat(r.accepted()).isTrue();
+            assertThat(r.rejectReason()).isNull();
+            assertThat(r.createdAt()).isNotNull();
+        });
+    }
+
+    @Test
+    void export_records_have_no_import_provenance_when_never_imported() {
+        UUID mid = seedMembership(orgA, "noprov@d.com");
+
+        assertThat(dsarService.exportRecords(orgA, mid, principalA).importProvenance()).isEmpty();
+    }
+
+    @Test
     void export_records_have_null_fan_features_when_none_computed() {
         UUID mid = seedMembership(orgA, "nofan@d.com");
 
@@ -616,6 +663,25 @@ class AudienceDsarTest {
         return membershipRepo.save(m).getMembershipId();
     }
 
+    private UUID seedProvenance(UUID orgId, UUID mid) {
+        AudienceImport imp = new AudienceImport();
+        imp.setOrgId(orgId);
+        imp = importRepo.save(imp);
+        ImportRowProvenance p = new ImportRowProvenance();
+        p.setImportId(imp.getId());
+        p.setMembershipId(mid);
+        p.setRowNumber(7);
+        p.setSourcePlatform("shotgun");
+        p.setExportDate(java.time.LocalDate.parse("2026-09-01"));
+        p.setEvents("Night A");
+        p.setLastPurchaseDate(java.time.LocalDate.parse("2026-08-01"));
+        p.setMarketingStatus("opted_in");
+        p.setProofRef("screenshot-7");
+        p.setAccepted(true);
+        provenanceRepo.save(p);
+        return imp.getId();
+    }
+
     private void seedFanFeature(UUID orgId, UUID mid) {
         FanFeature f = new FanFeature();
         f.setMembershipId(mid);
@@ -683,6 +749,8 @@ class AudienceDsarTest {
     private void wipe() {
         try (java.sql.Connection c = dataSource.getConnection();
              java.sql.Statement s = c.createStatement()) {
+            s.execute("delete from import_row_provenance");
+            s.execute("delete from audience_imports");
             s.execute("delete from suppression_entries");
             s.execute("delete from consent_records");
             s.execute("delete from segments");

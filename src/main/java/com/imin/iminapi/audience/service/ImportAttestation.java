@@ -4,28 +4,13 @@ package com.imin.iminapi.audience.service;
  * What an organizer is asserting when they tick the CSV-import attestation box,
  * and which revision of that assertion they were shown.
  *
- * <h2>Why the wording is stored and not just the flag</h2>
- *
- * <p>{@code attestation=true} is the entire lawful basis for auto-subscribing a
- * list imin has never seen: the consent record says {@code explicit}, and the
- * send gate then treats it as real consent, on nothing but an organizer's word.
- * The proof text recorded who asserted it and when, but not <b>what they
- * asserted</b> — so a later edit to the dashboard's dialog copy would silently
- * rewrite what every past importer is on file as having claimed. Storing the
- * statement and its version freezes each assertion to the words that were on
- * screen when it was made.
- *
- * <p>{@link #STATEMENT} is the API's own statement of what the flag means, and
- * it is deliberately phrased in terms of the assertion rather than as a copy of
- * the dashboard's sentence: the dialog's exact wording lives in
- * {@code imin-webapp} and this class must not pretend to quote text it cannot
- * see. When the dashboard starts sending its own version string, that value is
- * recorded alongside — which is what makes the two reconcilable later.
- *
- * <p><b>Not changed here:</b> {@code consent_basis} stays {@code explicit} and
- * the send gate is untouched. Whether an organizer import should carry a
- * distinct basis and require re-permission before the first send is a product
- * decision, and it is the open half of this card.
+ * <p>The attestation no longer makes any row explicit: consent comes only from each
+ * row's own provenance ({@code marketing_status=opted_in} with a proof reference, a
+ * source platform and an export date). What the organizer attests to is that this
+ * per-row evidence is genuine. The statement and its version are frozen into each
+ * explicit row's proof text, and the version is stored as the row's
+ * {@code consent_records.text_version}, so a later edit to the dashboard copy cannot
+ * rewrite what a past importer is on file as having claimed.
  */
 public final class ImportAttestation {
 
@@ -35,12 +20,13 @@ public final class ImportAttestation {
     public static final String UNVERSIONED = "unversioned";
 
     /** Bump when the substance of what the organizer is asserting changes. */
-    public static final String CURRENT_VERSION = "2026-09-08";
+    public static final String CURRENT_VERSION = "2026-09-27";
 
     /** The assertion the attestation flag stands for. */
     public static final String STATEMENT =
-            "The organizer attested that every contact in this file gave them consent to be "
-            + "contacted by email about their events, and that they can evidence it on request.";
+            "The organizer attested that every row marked opted_in carries that person's own proof "
+            + "of explicit consent to be contacted by email about their events, that the list was "
+            + "not bought or rented, and that they can evidence each row on request.";
 
     /** {@code attestationVersion} as sent by the client, or {@link #UNVERSIONED}. */
     public static String version(String supplied) {
