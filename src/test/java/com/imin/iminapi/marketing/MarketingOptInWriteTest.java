@@ -17,13 +17,17 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import javax.sql.DataSource;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ThreadPoolExecutor;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -54,6 +58,7 @@ class MarketingOptInWriteTest {
     @Autowired ConsentRecordRepository consentRecords;
     @Autowired MembershipProjector membershipProjector;
     @Autowired DataSource dataSource;
+    @Autowired @Qualifier("taskExecutor") Executor asyncExecutor;
 
     private static final String PROOF = "Email me about similar events. Unsubscribe anytime.";
 
@@ -107,6 +112,8 @@ class MarketingOptInWriteTest {
     }
 
     private void cleanUp() {
+        // The AFTER_COMMIT @Async projector can still be inserting a membership; finish it before deleting.
+        drainAsync();
         // Audience rows use marker repositories without deleteAll — JDBC teardown (audience convention).
         try (var c = dataSource.getConnection(); var s = c.createStatement()) {
             s.execute("delete from consent_records");
@@ -121,6 +128,23 @@ class MarketingOptInWriteTest {
         events.deleteAll();
         users.deleteAll();
         orgs.deleteAll();
+    }
+
+    private void drainAsync() {
+        ThreadPoolExecutor tpe = ((ThreadPoolTaskExecutor) asyncExecutor).getThreadPoolExecutor();
+        long deadline = System.currentTimeMillis() + 10_000;
+        while (tpe.getCompletedTaskCount() < tpe.getTaskCount()
+                || !tpe.getQueue().isEmpty() || tpe.getActiveCount() > 0) {
+            if (System.currentTimeMillis() > deadline) {
+                throw new AssertionError("default async executor still busy after 10s");
+            }
+            try {
+                Thread.sleep(10);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
     }
 
     private com.imin.iminapi.audience.model.Membership membershipFor(String email) {
