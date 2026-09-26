@@ -1,0 +1,20 @@
+# Genre whitelist = the 8 event genre buckets (events.genre_key). Only music genres.
+version: 1
+whitelist:
+  - "house & techno"
+  - "bass & hard dance"
+  - "club / open format"
+  - "hip-hop & r&b"
+  - "latin & afrobeats"
+  - "rock & alternative"
+  - "pop"
+  - "jazz & acoustic"
+# Symmetric pairs; an assumption to calibrate.
+adjacency:
+  - ["house & techno", "club / open format"]
+  - ["club / open format", "bass & hard dance"]
+  - ["hip-hop & r&b", "latin & afrobeats"]
+  - ["pop", "club / open format"]
+  - ["rock & alternative", "jazz & acoustic"]
+# Terms that describe people, never genres; the loader refuses any key containing one.
+forbidden_terms: [queer, lgbt, gay, lesbian, diaspora, african, latino, latina, ethnic, religion, religious, christian, muslim, jewish, halal, kosher, politics, political, health, disability]

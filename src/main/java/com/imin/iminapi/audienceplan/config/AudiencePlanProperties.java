@@ -17,9 +17,21 @@ public class AudiencePlanProperties {
 
     private Set<UUID> betaOrgIds = Set.of();
 
+    private String logicFile = "classpath:audienceplan/logic-v1.yaml";
+
+    private String priorsFile = "classpath:audienceplan/priors-v1.yaml";
+
+    private String genresFile = "classpath:audienceplan/genres-v1.yaml";
+
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
     public Set<UUID> getBetaOrgIds() { return betaOrgIds; }
+    public String getLogicFile() { return logicFile; }
+    public void setLogicFile(String logicFile) { this.logicFile = logicFile; }
+    public String getPriorsFile() { return priorsFile; }
+    public void setPriorsFile(String priorsFile) { this.priorsFile = priorsFile; }
+    public String getGenresFile() { return genresFile; }
+    public void setGenresFile(String genresFile) { this.genresFile = genresFile; }
 
     /** Blank elements (e.g. a trailing comma) convert to null; drop them rather than fail. */
     public void setBetaOrgIds(Set<UUID> betaOrgIds) {

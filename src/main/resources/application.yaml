@@ -862,6 +862,9 @@ imin:
     enabled: ${IMIN_AUDIENCE_PLAN_ENABLED:false}
     # Comma-separated org UUIDs; a malformed entry fails startup.
     beta-org-ids: ${IMIN_AUDIENCE_PLAN_BETA_ORGS:}
+    logic-file: classpath:audienceplan/logic-v1.yaml
+    priors-file: classpath:audienceplan/priors-v1.yaml
+    genres-file: classpath:audienceplan/genres-v1.yaml
 
 sentry:
   dsn: ${SENTRY_DSN:}

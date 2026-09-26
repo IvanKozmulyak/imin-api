@@ -1,0 +1,34 @@
+# Audience plan logic v1 (tech spec §6 without priors and genre data). Thresholds are guesses to calibrate.
+version: 1
+modes: { warm_min_mailable: 50, hot_min_mailable: 500 }
+target_default_pct: 85
+min_segment_to_show: 10
+taste: { half_life_days: 180 }
+# First match wins; paid purchases with this organizer only. A missing bound means "no bound".
+classes:
+  - { key: loyal,       paid_orders_min: 3, days_since_last_paid_max: 90 }
+  - { key: repeat,      paid_orders_min: 2, paid_orders_max: 2, days_since_last_paid_max: 90 }
+  - { key: first_timer, paid_orders_min: 1, paid_orders_max: 1, days_since_last_paid_max: 90 }
+  - { key: lapsing,     days_since_last_paid_min: 91, days_since_last_paid_max: 180 }
+  - { key: dormant,     days_since_last_paid_min: 181, days_since_last_contact_max: 1095 }
+  - { key: imported,    paid_orders_max: 0, requires_import_basis: true }
+invite_other_genre_only_if_coverage_below: 0.15
+exclusions: [consent_gate_false, bought_this_event, emailed_last_48h, sends_this_event_gte_2, sends_30d_gte_4]
+coverage_verdict: { verdict_on: mid, strong: 0.30, medium: 0.15 }
+experiments:
+  holdout_pct: 15
+  holdout_min_mailable: 60
+  default_timing_arms: [launch, d3]
+# Open/click tracking is off for everyone, so there is no tracking rule here.
+legal:
+  retention_days: 1095
+  soft_opt_in_requires_paid_order_and_org_seller: true
+  es_robinson_check: false
+  # Consent source -> proof required before ConsentGate counts it as explicit.
+  explicit_sources:
+    checkout: organizer_named_text_version
+    organizer_import_row: provenance_row
+    door_qr: text_version
+    survey: text_version
+  # Checkout label versions that name the organizer; add one only with a reviewed change.
+  organizer_named_text_versions: []

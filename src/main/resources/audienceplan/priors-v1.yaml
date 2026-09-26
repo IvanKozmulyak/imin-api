@@ -1,0 +1,28 @@
+# Starting priors v1 (tech spec §6, data-sources §5). Every rate is [low, mid, high]; assumptions to calibrate.
+version: 1
+# Purchase rate per mailable invitee, and unsubscribes per send.
+classes:
+  loyal:       { purchase_rate: [0.12, 0.25, 0.40],   unsub_per_send: [0.001, 0.002, 0.004] }
+  repeat:      { purchase_rate: [0.06, 0.12, 0.20],   unsub_per_send: [0.0015, 0.003, 0.005] }
+  first_timer: { purchase_rate: [0.03, 0.06, 0.12],   unsub_per_send: [0.002, 0.0035, 0.006] }
+  lapsing:     { purchase_rate: [0.01, 0.025, 0.05],  unsub_per_send: [0.003, 0.005, 0.009] }
+  dormant:     { purchase_rate: [0.003, 0.008, 0.02], unsub_per_send: [0.005, 0.008, 0.015] }
+  imported:    { purchase_rate: [0.002, 0.006, 0.015], unsub_per_send: [0.005, 0.010, 0.020] }
+prior_strength_invitations: 20
+modifiers:
+  genre_fit: { same: 1.0, adjacent: 0.5, other: 0.2 }   # pure assumption, calibrate first
+  no_show_before: [0.4, 0.7, 1.0]
+  no_show_show_up_if_buy: [0.60, 0.75, 0.90]
+tickets_per_order: [1.3, 1.6, 2.2]
+show_up:
+  paid: [0.80, 0.88, 0.95]
+  free_rsvp: [0.50, 0.65, 0.75]
+reach_to_ticket:
+  meta_ads: { ctr: 0.027, landing_to_ticket: [0.02, 0.05, 0.08], verified: false, note: "US arts and entertainment, unverified" }
+  instagram_organic: unknown
+# Tribe size inputs (national concert proxies, not club data).
+tribe_size:
+  music_listeners:        { low: 0.94, high: 0.94, source: "CNM", derived: true, note: "computed from CNM, confirm at M0-5" }
+  bar_club_concert_goers: { low: 0.41, high: 0.44, source: "CNM", year: 2023 }
+  electronic_first:       { low: 0.09, high: 0.11, source: "Ekhoscènes", year: 2024 }
+  frequent_goers:         { low: 0.35, high: 0.35, source: "CNM", derived: true, note: "computed from CNM, confirm at M0-5" }

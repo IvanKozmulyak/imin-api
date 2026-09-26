@@ -108,3 +108,6 @@ imin:
   audience-plan:
     enabled: false
     beta-org-ids: ""
+    logic-file: classpath:audienceplan/logic-v1.yaml
+    priors-file: classpath:audienceplan/priors-v1.yaml
+    genres-file: classpath:audienceplan/genres-v1.yaml
