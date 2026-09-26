@@ -106,7 +106,7 @@ imin:
     secret-access-key: test
     public-url-prefix: https://test-media.invalid/
   audience-plan:
-    enabled: false
+    enabled: true
     beta-org-ids: ""
     logic-file: classpath:audienceplan/logic-v1.yaml
     priors-file: classpath:audienceplan/priors-v1.yaml

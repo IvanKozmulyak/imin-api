@@ -23,13 +23,28 @@ class AudiencePlanAccessTest {
             .withUserConfiguration(AudiencePlanConfig.class, AudiencePlanAccess.class);
 
     @Test
+    void defaults_openToAnyOrg() {
+        // Plain construction: no property source or env var can override the field defaults.
+        AudiencePlanProperties props = new AudiencePlanProperties();
+        assertThat(props.isEnabled()).isTrue();
+        assertThat(props.getBetaOrgIds()).isEmpty();
+        assertThatCode(() -> new AudiencePlanAccess(props).requireEnabled(A)).doesNotThrowAnyException();
+    }
+
+    @Test
     void disabled_throws404_evenWhenOrgListed() {
         runner.withPropertyValues("imin.audience-plan.enabled=false", "imin.audience-plan.beta-org-ids=" + A)
                 .run(ctx -> assertNotFound(ctx.getBean(AudiencePlanAccess.class), A));
     }
 
     @Test
-    void enabled_orgAbsent_throws404() {
+    void disabled_blankList_throws404() {
+        runner.withPropertyValues("imin.audience-plan.enabled=false", "imin.audience-plan.beta-org-ids=")
+                .run(ctx -> assertNotFound(ctx.getBean(AudiencePlanAccess.class), A));
+    }
+
+    @Test
+    void enabled_orgAbsentFromNonBlankList_throws404() {
         runner.withPropertyValues("imin.audience-plan.enabled=true", "imin.audience-plan.beta-org-ids=" + A)
                 .run(ctx -> assertNotFound(ctx.getBean(AudiencePlanAccess.class), B));
     }
@@ -43,11 +58,13 @@ class AudiencePlanAccessTest {
     }
 
     @Test
-    void enabled_blankList_throws404() {
+    void enabled_blankList_allowsAnyOrg() {
         runner.withPropertyValues("imin.audience-plan.enabled=true", "imin.audience-plan.beta-org-ids=")
                 .run(ctx -> {
                     assertThat(ctx.getBean(AudiencePlanProperties.class).getBetaOrgIds()).isEmpty();
-                    assertNotFound(ctx.getBean(AudiencePlanAccess.class), A);
+                    AudiencePlanAccess access = ctx.getBean(AudiencePlanAccess.class);
+                    assertThatCode(() -> access.requireEnabled(A)).doesNotThrowAnyException();
+                    assertThatCode(() -> access.requireEnabled(B)).doesNotThrowAnyException();
                 });
     }
 
@@ -58,12 +75,13 @@ class AudiencePlanAccessTest {
                     assertThat(ctx.getBean(AudiencePlanProperties.class).getBetaOrgIds()).isEqualTo(Set.of(A));
                     assertThatCode(() -> ctx.getBean(AudiencePlanAccess.class).requireEnabled(A))
                             .doesNotThrowAnyException();
+                    assertNotFound(ctx.getBean(AudiencePlanAccess.class), B);
                 });
     }
 
     @Test
-    void nullOrgId_throws404() {
-        runner.withPropertyValues("imin.audience-plan.enabled=true", "imin.audience-plan.beta-org-ids=" + A)
+    void nullOrgId_throws404_evenWithBlankList() {
+        runner.withPropertyValues("imin.audience-plan.enabled=true", "imin.audience-plan.beta-org-ids=")
                 .run(ctx -> assertNotFound(ctx.getBean(AudiencePlanAccess.class), null));
     }
 

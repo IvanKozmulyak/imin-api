@@ -858,9 +858,9 @@ imin:
     urgency-min-sell-through-pct: 30
     urgency-max-sell-through-pct: 90
   audience-plan:
-    # Dark by default; even when enabled only listed orgs pass. Blank list = nobody.
-    enabled: ${IMIN_AUDIENCE_PLAN_ENABLED:false}
-    # Comma-separated org UUIDs; a malformed entry fails startup.
+    # Open by default; false is a global kill switch (404).
+    enabled: ${IMIN_AUDIENCE_PLAN_ENABLED:true}
+    # Optional allow-list of org UUIDs, comma-separated; blank = all orgs. A malformed entry fails startup.
     beta-org-ids: ${IMIN_AUDIENCE_PLAN_BETA_ORGS:}
     logic-file: classpath:audienceplan/logic-v1.yaml
     priors-file: classpath:audienceplan/priors-v1.yaml

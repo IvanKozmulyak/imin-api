@@ -7,13 +7,13 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * Beta gate for the audience plan tool: only listed orgs pass, and only while enabled.
- * A blank org list means nobody.
+ * Global kill switch for the audience plan tool, open by default.
+ * A non-blank org list restricts access to those orgs; a blank list means all orgs.
  */
 @ConfigurationProperties(prefix = "imin.audience-plan")
 public class AudiencePlanProperties {
 
-    private boolean enabled = false;
+    private boolean enabled = true;
 
     private Set<UUID> betaOrgIds = Set.of();
 
