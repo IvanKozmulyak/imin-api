@@ -28,6 +28,10 @@ public class ImportRowProvenance {
     @Column(name = "membership_id", nullable = false)
     private UUID membershipId;
 
+    /** The consent record this accepted row proves; null for rejected rows. */
+    @Column(name = "consent_record_id")
+    private UUID consentRecordId;
+
     @Column(name = "row_number", nullable = false)
     private int rowNumber;
 

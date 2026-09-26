@@ -46,6 +46,11 @@ spring:
       url: ${REDIS_URL:redis://localhost:6380}
       repositories:
         enabled: false
+  mvc:
+    async:
+      # Tomcat's 30 s default would cut the streamed consent export short; that export
+      # bounds itself at 10 min, so the container bound sits just above it.
+      request-timeout: 11m
   servlet:
     multipart:
       max-file-size: 60MB

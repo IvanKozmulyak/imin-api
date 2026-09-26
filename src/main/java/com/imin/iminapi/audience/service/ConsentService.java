@@ -87,13 +87,13 @@ public class ConsentService {
 
     /**
      * As above, also recording the consent sentence's {@code textVersion} and the
-     * {@code orderId} it was given on. Either may be null.
+     * {@code orderId} it was given on. Either may be null. Returns the new record's id.
      */
     @Transactional
-    public void capture(UUID orgId, UUID membershipId, String basis, String source,
+    public UUID capture(UUID orgId, UUID membershipId, String basis, String source,
                         String proofText, String channel, String textVersion, UUID orderId,
                         AuthPrincipal principal) {
-        capture(orgId, membershipId, basis, source, proofText, channel, textVersion, orderId,
+        return capture(orgId, membershipId, basis, source, proofText, channel, textVersion, orderId,
                 null, principal);
     }
 
@@ -102,7 +102,7 @@ public class ConsentService {
      * fresh consent) lifts a profiling objection; imports, organizers and the global toggle never do.
      */
     @Transactional
-    public void capture(UUID orgId, UUID membershipId, String basis, String source,
+    public UUID capture(UUID orgId, UUID membershipId, String basis, String source,
                         String proofText, String channel, String textVersion, UUID orderId,
                         ConsentOrigin origin, AuthPrincipal principal) {
         Membership m = requireMembership(orgId, membershipId);
@@ -140,6 +140,7 @@ public class ConsentService {
             auditLogger.record(principal, AuditActions.CONSENT_CAPTURED, "membership",
                     membershipId, "Consent captured: channel=" + channel + " basis=" + basis + " source=" + source);
         }
+        return r.getId();
     }
 
     /**

@@ -37,9 +37,11 @@ public class ImportProvenanceWriter {
     public void recordExplicit(UUID orgId, UUID membershipId, UUID importId, int rowNumber,
                                ImportValidator.Decision d, String proofText, String textVersion,
                                AuthPrincipal principal) {
-        consentService.capture(orgId, membershipId, "explicit", SOURCE, proofText, "email",
-                textVersion, null, principal);
-        provenanceRepo.save(row(importId, membershipId, rowNumber, d, true, null));
+        UUID consentRecordId = consentService.capture(orgId, membershipId, "explicit", SOURCE,
+                proofText, "email", textVersion, null, principal);
+        ImportRowProvenance p = row(importId, membershipId, rowNumber, d, true, null);
+        p.setConsentRecordId(consentRecordId);
+        provenanceRepo.save(p);
     }
 
     /** The organizer's export says the person unsubscribed: suppress marketing for this org. */

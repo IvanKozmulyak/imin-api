@@ -37,6 +37,8 @@ public final class AuditActions {
     public static final String SUPPRESSION_ADDED        = "SUPPRESSION_ADDED";
     public static final String AUDIENCE_HANDOFF         = "AUDIENCE_HANDOFF";
     public static final String AUDIENCE_IMPORTED        = "AUDIENCE_IMPORTED";
+    /** The org's whole consent trail (every address and its proof) was downloaded. */
+    public static final String CONSENT_EXPORTED         = "CONSENT_EXPORTED";
     public static final String DSAR_ACCESS              = "DSAR_ACCESS";
     public static final String DSAR_EXPORT              = "DSAR_EXPORT";
     public static final String DSAR_RECTIFY             = "DSAR_RECTIFY";
