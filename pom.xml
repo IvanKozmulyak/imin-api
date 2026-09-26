@@ -277,6 +277,12 @@
             <artifactId>commonmark</artifactId>
             <version>0.24.0</version>
         </dependency>
+        <!-- Beta quantiles for the audience plan's response bands. -->
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-math3</artifactId>
+            <version>3.6.1</version>
+        </dependency>
     </dependencies>
     <dependencyManagement>
         <dependencies>

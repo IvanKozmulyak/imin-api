@@ -1,5 +1,7 @@
 package com.imin.iminapi.audienceplan.config;
 
+import com.imin.iminapi.audienceplan.engine.CalibrationSource;
+import com.imin.iminapi.audienceplan.engine.ResponseModel;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -14,5 +16,16 @@ public class AudiencePlanConfig {
     @Bean
     public AudiencePlanLogic audiencePlanLogic(ResourceLoader resources, AudiencePlanProperties props) {
         return LogicLoader.load(resources, props);
+    }
+
+    /** No stored outcomes yet, so every band is the YAML prior; replaced once outcomes are collected. */
+    @Bean
+    public CalibrationSource audiencePlanCalibrationSource() {
+        return CalibrationSource.NONE;
+    }
+
+    @Bean
+    public ResponseModel audiencePlanResponseModel(AudiencePlanLogic logic, CalibrationSource calibration) {
+        return new ResponseModel(logic, calibration);
     }
 }
