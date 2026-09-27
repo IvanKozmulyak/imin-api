@@ -6,6 +6,7 @@ import com.imin.iminapi.audience.model.SuppressionEntry;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -40,6 +41,12 @@ public record MemberDto(
         String notes,
         String lifecycle,
         RfmInfo rfm,
+        /** Guest class from fan_features; null when not computed yet or the audience plan is switched off. */
+        AudienceMemberClass guestClass,
+        /** Genre bucket to weight (sums to 1, empty when no whitelisted purchase); null like guestClass. */
+        Map<String, Double> taste,
+        /** Campaign emails sent to this member in the last 30 days; null when the audience plan is switched off. */
+        Integer sends30d,
         /**
          * The member's consent trail, newest last. Populated only on the DSAR
          * export path — a list of 50 members must not drag 50 consent tables
@@ -90,6 +97,9 @@ public record MemberDto(
                 m.getLifecycle(),
                 new RfmInfo(m.getRfmR(), m.getRfmF(), m.getRfmM()),
                 null,
+                null,
+                null,
+                null,
                 null
         );
     }
@@ -100,6 +110,15 @@ public record MemberDto(
                 orders, spendMinor, aovMinor, firstSeenAt, lastPurchaseAt, lastAttendedAt,
                 recencyDays, firstTouchSource, lawfulBasis, subscriptionStatus, suppression,
                 lastEmailOpenAt, lastEmailClickAt, nps, vibe, quote, tags, notes, lifecycle,
-                rfm, history, records);
+                rfm, guestClass, taste, sends30d, history, records);
+    }
+
+    /** Same member with the audience-plan read-model fields. */
+    public MemberDto withPlanFields(AudienceMemberClass guestClass, Map<String, Double> taste, Integer sends30d) {
+        return new MemberDto(membershipId, name, email, city, genres, events, attended, noShow,
+                orders, spendMinor, aovMinor, firstSeenAt, lastPurchaseAt, lastAttendedAt,
+                recencyDays, firstTouchSource, lawfulBasis, subscriptionStatus, suppression,
+                lastEmailOpenAt, lastEmailClickAt, nps, vibe, quote, tags, notes, lifecycle,
+                rfm, guestClass, taste, sends30d, consentHistory, dsarRecords);
     }
 }

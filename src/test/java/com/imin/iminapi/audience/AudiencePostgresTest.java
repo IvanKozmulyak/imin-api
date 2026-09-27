@@ -143,7 +143,7 @@ class AudiencePostgresTest {
         // This is the regression canary. Before the split, Hibernate bound
         // null String as bytea in a single-method query that contained lower(:search),
         // causing "function lower(bytea) does not exist" on Postgres.
-        MemberPage page = audienceService.listMembers(ORG_A, null, 50, null, null);
+        MemberPage page = audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(null, 50, null, null, null, null, null, null));
         assertThat(page).isNotNull();
         assertThat(page.items()).hasSize(3);
     }
@@ -151,7 +151,7 @@ class AudiencePostgresTest {
     @Test
     void caseA_listMembers_nullSearch_withLifecycle_doesNotThrow() {
         // Lifecycle filter with null search – also listByOrg branch
-        MemberPage page = audienceService.listMembers(ORG_A, null, 50, "firsttime", null);
+        MemberPage page = audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(null, 50, "firsttime", null, null, null, null, null));
         assertThat(page.items()).hasSize(1);
         assertThat(page.items().get(0).name()).isEqualTo("Bob Marley");
     }
@@ -163,21 +163,21 @@ class AudiencePostgresTest {
     @Test
     void caseB_listMembers_withSearch_returnsMatchingMember() {
         // "alice" should match "Alice Dupont" case-insensitively via lower()/like
-        MemberPage page = audienceService.listMembers(ORG_A, null, 50, null, "alice");
+        MemberPage page = audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(null, 50, null, "alice", null, null, null, null));
         assertThat(page.items()).hasSize(1);
         assertThat(page.items().get(0).name()).isEqualTo("Alice Dupont");
     }
 
     @Test
     void caseB_listMembers_withSearch_upperCase_matchesCaseInsensitively() {
-        MemberPage page = audienceService.listMembers(ORG_A, null, 50, null, "CARLOS");
+        MemberPage page = audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(null, 50, null, "CARLOS", null, null, null, null));
         assertThat(page.items()).hasSize(1);
         assertThat(page.items().get(0).name()).isEqualTo("Carlos Ruiz");
     }
 
     @Test
     void caseB_listMembers_withSearch_noMatch_returnsEmpty() {
-        MemberPage page = audienceService.listMembers(ORG_A, null, 50, null, "zzznomatch");
+        MemberPage page = audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(null, 50, null, "zzznomatch", null, null, null, null));
         assertThat(page.items()).isEmpty();
         assertThat(page.nextCursor()).isNull();
     }
@@ -189,7 +189,7 @@ class AudiencePostgresTest {
     @Test
     void caseC_pagination_cursorRoundTrip_noOverlap() {
         // limit=1 → first page has 1 item and a nextCursor
-        MemberPage page1 = audienceService.listMembers(ORG_A, null, 1, null, null);
+        MemberPage page1 = audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(null, 1, null, null, null, null, null, null));
         assertThat(page1.items()).hasSize(1);
         assertThat(page1.nextCursor()).as("Page 1 must produce a nextCursor").isNotNull();
 
@@ -197,13 +197,13 @@ class AudiencePostgresTest {
         String firstId = page1.items().get(0).membershipId(); // String in DTO
 
         // Page 2
-        MemberPage page2 = audienceService.listMembers(ORG_A, cursor1, 1, null, null);
+        MemberPage page2 = audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(cursor1, 1, null, null, null, null, null, null));
         assertThat(page2.items()).hasSize(1);
         String secondId = page2.items().get(0).membershipId();
         assertThat(secondId).isNotEqualTo(firstId);
 
         // Page 3 (last: 3 members total, 1 per page)
-        MemberPage page3 = audienceService.listMembers(ORG_A, page2.nextCursor(), 1, null, null);
+        MemberPage page3 = audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(page2.nextCursor(), 1, null, null, null, null, null, null));
         assertThat(page3.items()).hasSize(1);
         String thirdId = page3.items().get(0).membershipId();
         assertThat(thirdId).isNotIn(firstId, secondId);
@@ -216,12 +216,12 @@ class AudiencePostgresTest {
     void caseC_pagination_nullLastPurchaseDoesNotBreakSort() {
         // Alice has last_purchase=null; the sort key is (created_at DESC, membership_id DESC),
         // both non-null, so the null last_purchase must not cause an error in the cursor query.
-        MemberPage page1 = audienceService.listMembers(ORG_A, null, 2, null, null);
+        MemberPage page1 = audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(null, 2, null, null, null, null, null, null));
         assertThat(page1.items()).hasSize(2);
         String cursor = page1.nextCursor();
         assertThat(cursor).isNotNull();
 
-        MemberPage page2 = audienceService.listMembers(ORG_A, cursor, 2, null, null);
+        MemberPage page2 = audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(cursor, 2, null, null, null, null, null, null));
         assertThat(page2.items()).hasSize(1); // 3rd member
         // Combined: no duplicate IDs across pages
         List<String> allIds = page1.items().stream().map(MemberDto::membershipId).toList();
@@ -252,14 +252,14 @@ class AudiencePostgresTest {
 
     @Test
     void caseE_tenantScoping_orgBMemberNotVisibleToOrgA() {
-        MemberPage page = audienceService.listMembers(ORG_A, null, 50, null, null);
+        MemberPage page = audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(null, 50, null, null, null, null, null, null));
         List<String> names = page.items().stream().map(MemberDto::name).toList();
         assertThat(names).doesNotContain("Dana Other");
     }
 
     @Test
     void caseE_tenantScoping_orgAMembersNotVisibleToOrgB() {
-        MemberPage page = audienceService.listMembers(ORG_B, null, 50, null, null);
+        MemberPage page = audienceService.listMembers(ORG_B, new AudienceService.MemberListRequest(null, 50, null, null, null, null, null, null));
         assertThat(page.items()).hasSize(1);
         assertThat(page.items().get(0).name()).isEqualTo("Dana Other");
     }

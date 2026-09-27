@@ -195,4 +195,23 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
     int redeemAtomic(@Param("token") String token,
                       @Param("userId") UUID userId,
                       @Param("now") Instant now);
+
+    /**
+     * One row {@code [tickets, redeemed]}: tickets still held (not refunded or revoked) on paid orders
+     * (Stripe, non-zero, live mode) for this org's events that ended before {@code now}.
+     */
+    @Query("""
+            select count(t), coalesce(sum(case when t.state = 'redeemed' then 1 else 0 end), 0)
+              from Ticket t, Order o, Event e
+             where t.orderId = o.id
+               and o.eventId = e.id
+               and e.orgId = :orgId
+               and o.orgId = :orgId
+               and o.paymentMethod = 'stripe'
+               and o.totalMinor > 0
+               and o.testMode = false
+               and t.state not in ('refunded', 'revoked')
+               and coalesce(e.endsAt, e.startsAt) < :now
+            """)
+    List<Object[]> countShowUpForEndedPaidEvents(@Param("orgId") UUID orgId, @Param("now") java.time.Instant now);
 }

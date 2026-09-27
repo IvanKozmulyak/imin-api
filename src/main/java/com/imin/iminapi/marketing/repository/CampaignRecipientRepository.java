@@ -143,6 +143,20 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
                                               @Param("limit") int limit,
                                               @Param("now") java.time.Instant now);
 
+    /** Rows of {@code [membershipId, count]}: sends to these members by this org's campaigns since {@code since}. */
+    @Query("""
+            select r.membershipId, count(r) from CampaignRecipient r, com.imin.iminapi.marketing.model.Campaign c
+             where r.campaignId = c.id
+               and c.orgId = :orgId
+               and r.membershipId in :membershipIds
+               and r.status in ('sent','delivered','opened','clicked')
+               and r.lastEventAt >= :since
+             group by r.membershipId
+            """)
+    List<Object[]> countRecentSendsByMembership(@Param("orgId") UUID orgId,
+                                                @Param("membershipIds") java.util.Collection<UUID> membershipIds,
+                                                @Param("since") java.time.Instant since);
+
     /**
      * Count recent sends for a membership across all campaigns — backs the per-member
      * frequency floor in {@link com.imin.iminapi.marketing.service.CampaignVolumeGuard}

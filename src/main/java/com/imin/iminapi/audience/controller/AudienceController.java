@@ -11,6 +11,8 @@ import com.imin.iminapi.audience.service.*;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -72,8 +74,16 @@ public class AudienceController {
             @RequestParam(defaultValue = "50") int limit,
             @RequestParam(required = false) String lifecycle,
             @RequestParam(required = false) String search,
-            @RequestParam(required = false) String sort) {
-        return audienceService.listMembers(principal.orgId(), cursor, limit, lifecycle, search);
+            @Parameter(schema = @Schema(allowableValues = {"created_at", "spend_minor", "last_purchase", "events"}))
+            @RequestParam(required = false) String sort,
+            @Parameter(schema = @Schema(allowableValues = {"loyal", "repeat", "first_timer", "lapsing", "dormant", "imported", "none"}))
+            @RequestParam(required = false) String guestClass,
+            @Parameter(description = "One of the 8 event genre buckets, e.g. \"house & techno\"")
+            @RequestParam(required = false) String genre,
+            @Parameter(description = "true: only members ConsentGate lets the plan email; false: only the others")
+            @RequestParam(required = false) Boolean mailable) {
+        return audienceService.listMembers(principal.orgId(), new AudienceService.MemberListRequest(
+                cursor, limit, lifecycle, search, sort, guestClass, genre, mailable));
     }
 
     /** CSV export: GET /members?format=csv — routed only when format=csv is present. */

@@ -20,11 +20,13 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -48,6 +50,7 @@ public class ConsentGate {
             ERASE_PENDING, NO_EMAIL, UNSUBSCRIBED, SUPPRESSED, OBJECTED, NO_BASIS, LEGACY_UNPROVEN, RETENTION_3Y);
 
     static final String SOFT_OPT_IN = "soft_opt_in";
+    static final String EXPLICIT = "explicit";
 
     // The id list is bound twice per query; this keeps each statement far below Postgres's 32767 bind limit.
     static final int MAX_IDS_PER_QUERY = 1000;
@@ -55,8 +58,12 @@ public class ConsentGate {
     // Longer than any source (64) or text_version (32) column, so it never matches; stands in for an empty IN list.
     static final String NEVER_MATCHES = "~".repeat(65);
 
-    /** Org size, plan-mailable count and a count for every reason (0 when none); counts sum to members − mailable. */
-    public record Breakdown(int members, int mailable, Map<String, Integer> exclusions) {
+    /**
+     * Org size, plan-mailable count, a count for every reason (0 when none; they sum to members − mailable) and
+     * the mailable count by the lawful basis the gate accepted (explicit and soft_opt_in always present; sums to mailable).
+     */
+    public record Breakdown(int members, int mailable, Map<String, Integer> exclusions,
+                            Map<String, Integer> mailableByBasis) {
         public int legacyNotMailable() { return exclusions.getOrDefault(LEGACY_UNPROVEN, 0); }
     }
 
@@ -123,19 +130,60 @@ public class ConsentGate {
     public Breakdown breakdown(UUID orgId) {
         Map<String, Integer> exclusions = new LinkedHashMap<>();
         for (String reason : REASONS) exclusions.put(reason, 0);
-        if (orgId == null) return new Breakdown(0, 0, Collections.unmodifiableMap(exclusions));
+        Map<String, Integer> byBasis = new LinkedHashMap<>();
+        byBasis.put(EXPLICIT, 0);
+        byBasis.put(SOFT_OPT_IN, 0);
+        if (orgId == null) {
+            return new Breakdown(0, 0, Collections.unmodifiableMap(exclusions), Collections.unmodifiableMap(byBasis));
+        }
         Params p = params(orgId);
         int members = 0;
         int mailable = 0;
-        for (Object[] row : repo.countExclusionsByReason(orgId, p.namedSources, p.namedVersions,
+        for (Object[] row : repo.countVerdictsByReasonAndBasis(orgId, p.namedSources, p.namedVersions,
                 p.provenanceSources, p.textVersionSources, p.personSources, p.softOptInBases,
                 p.cutoffAt, p.cutoffDate)) {
-            int n = ((Number) row[1]).intValue();
+            int n = ((Number) row[2]).intValue();
             members += n;
-            if (row[0] == null) mailable += n;
-            else exclusions.merge((String) row[0], n, Integer::sum);
+            if (row[0] == null) {
+                mailable += n;
+                // A mailable verdict always carries its proven consent, so basis is never null here.
+                byBasis.merge((String) row[1], n, Integer::sum);
+            } else {
+                exclusions.merge((String) row[0], n, Integer::sum);
+            }
         }
-        return new Breakdown(members, mailable, Collections.unmodifiableMap(exclusions));
+        return new Breakdown(members, mailable, Collections.unmodifiableMap(exclusions),
+                Collections.unmodifiableMap(byBasis));
+    }
+
+    /** Parameters of {@link ConsentGateSql#MAILABLE_IDS} for this org, for a caller embedding it as a subquery. */
+    @Transactional(readOnly = true)
+    public Map<String, Object> sqlParameters(UUID orgId) {
+        Params p = params(orgId);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("orgId", orgId);
+        out.put("namedSources", p.namedSources);
+        out.put("namedVersions", p.namedVersions);
+        out.put("provenanceSources", p.provenanceSources);
+        out.put("textVersionSources", p.textVersionSources);
+        out.put("personSources", p.personSources);
+        out.put("softOptInBases", p.softOptInBases);
+        out.put("cutoffAt", p.cutoffAt);
+        out.put("cutoffDate", p.cutoffDate);
+        return Collections.unmodifiableMap(out);
+    }
+
+    /** Ids of the member's granting email consents the gate rejects as proof; empty for another org's member. */
+    @Transactional(readOnly = true)
+    public Set<UUID> unprovenGrantIds(UUID orgId, UUID membershipId) {
+        if (orgId == null || membershipId == null) return Set.of();
+        Params p = params(orgId);
+        Set<UUID> out = new HashSet<>();
+        for (Object id : repo.findUnprovenGrantIds(orgId, membershipId, p.namedSources, p.namedVersions,
+                p.provenanceSources, p.textVersionSources, p.softOptInBases)) {
+            out.add(uuid(id));
+        }
+        return out;
     }
 
     private record Params(List<String> namedSources, List<String> namedVersions, List<String> provenanceSources,

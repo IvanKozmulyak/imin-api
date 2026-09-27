@@ -1,6 +1,7 @@
 package com.imin.iminapi.audienceplan.repository;
 
 import com.imin.iminapi.audienceplan.model.FanFeature;
+import org.springframework.data.domain.Limit;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -91,9 +92,9 @@ public interface FanFeatureRepository extends Repository<FanFeature, UUID> {
             @Param("cutoffAt") Instant cutoffAt,
             @Param("cutoffDate") LocalDate cutoffDate);
 
-    /** Rows of {@code [reason, count]}; a null reason is the mailable count. */
-    @Query(value = ConsentGateSql.REASON_COUNTS, nativeQuery = true)
-    List<Object[]> countExclusionsByReason(@Param("orgId") UUID orgId,
+    /** Rows of {@code [reason, basis, count]}; a null reason is mailable. */
+    @Query(value = ConsentGateSql.REASON_BASIS_COUNTS, nativeQuery = true)
+    List<Object[]> countVerdictsByReasonAndBasis(@Param("orgId") UUID orgId,
             @Param("namedSources") Collection<String> namedSources,
             @Param("namedVersions") Collection<String> namedVersions,
             @Param("provenanceSources") Collection<String> provenanceSources,
@@ -115,4 +116,46 @@ public interface FanFeatureRepository extends Repository<FanFeature, UUID> {
             @Param("cutoffAt") Instant cutoffAt,
             @Param("cutoffDate") LocalDate cutoffDate,
             @Param("ids") Collection<UUID> ids);
+
+    /** Ids of one member's granting email consents that ConsentGate does not accept as proof. */
+    @Query(value = ConsentGateSql.UNPROVEN_GRANT_IDS, nativeQuery = true)
+    List<Object> findUnprovenGrantIds(@Param("orgId") UUID orgId,
+            @Param("membershipId") UUID membershipId,
+            @Param("namedSources") Collection<String> namedSources,
+            @Param("namedVersions") Collection<String> namedVersions,
+            @Param("provenanceSources") Collection<String> provenanceSources,
+            @Param("textVersionSources") Collection<String> textVersionSources,
+            @Param("softOptInBases") Collection<String> softOptInBases);
+
+    // ---- Audience read model ----
+
+    List<FanFeature> findByMembershipIdIn(Collection<UUID> membershipIds);
+
+    /** Rows of {@code [class, count]} over every member of the org; a member without a row counts as none. */
+    @Query("""
+            select coalesce(f.fanClass, 'none'), count(m)
+              from Membership m left join FanFeature f on f.membershipId = m.membershipId
+             where m.orgId = :orgId
+             group by coalesce(f.fanClass, 'none')
+            """)
+    List<Object[]> countByClass(@Param("orgId") UUID orgId);
+
+    /** First page of {@code [membershipId, taste]} rows, keyset-ordered by membership id. */
+    @Query("""
+            select f.membershipId, f.taste from FanFeature f
+             where f.orgId = :orgId and f.taste is not null
+             order by f.membershipId
+            """)
+    List<Object[]> findTastePage(@Param("orgId") UUID orgId, Limit limit);
+
+    /** Next page of {@code [membershipId, taste]} rows after {@code after}. */
+    @Query("""
+            select f.membershipId, f.taste from FanFeature f
+             where f.orgId = :orgId and f.taste is not null and f.membershipId > :after
+             order by f.membershipId
+            """)
+    List<Object[]> findTastePageAfter(@Param("orgId") UUID orgId, @Param("after") UUID after, Limit limit);
+
+    @Query("select count(f) from FanFeature f where f.orgId = :orgId and f.paidOrders >= :min")
+    long countWithPaidOrdersAtLeast(@Param("orgId") UUID orgId, @Param("min") int min);
 }

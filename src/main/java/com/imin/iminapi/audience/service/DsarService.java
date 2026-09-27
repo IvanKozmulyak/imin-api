@@ -1,5 +1,6 @@
 package com.imin.iminapi.audience.service;
 
+import com.imin.iminapi.audience.model.ConsentRecord;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsentRecordRepository;
 import com.imin.iminapi.audience.dto.ConsentHistoryEntry;
@@ -13,7 +14,10 @@ import com.imin.iminapi.audienceplan.model.FanFeature;
 import com.imin.iminapi.audienceplan.repository.FanFeatureRepository;
 import com.imin.iminapi.audienceplan.model.ImportRowProvenance;
 import com.imin.iminapi.audienceplan.repository.ImportRowProvenanceRepository;
+import com.imin.iminapi.audienceplan.service.ConsentGate;
+import com.imin.iminapi.model.Order;
 import com.imin.iminapi.repository.NotifySubscriptionRepository;
+import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
@@ -24,7 +28,10 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -60,6 +67,8 @@ public class DsarService {
     private final DsarScopeService scopeService;
     private final FanFeatureRepository fanFeatureRepo;
     private final ImportRowProvenanceRepository provenanceRepo;
+    private final ConsentGate consentGate;
+    private final OrderRepository orderRepo;
 
     public DsarService(MembershipRepository membershipRepo,
                        ConsumerRepository consumerRepo,
@@ -73,7 +82,9 @@ public class DsarService {
                        ErasedAddressRepository erasedAddressRepo,
                        DsarScopeService scopeService,
                        FanFeatureRepository fanFeatureRepo,
-                       ImportRowProvenanceRepository provenanceRepo) {
+                       ImportRowProvenanceRepository provenanceRepo,
+                       ConsentGate consentGate,
+                       OrderRepository orderRepo) {
         this.membershipRepo = membershipRepo;
         this.consumerRepo = consumerRepo;
         this.consentRepo = consentRepo;
@@ -87,6 +98,8 @@ public class DsarService {
         this.scopeService = scopeService;
         this.fanFeatureRepo = fanFeatureRepo;
         this.provenanceRepo = provenanceRepo;
+        this.consentGate = consentGate;
+        this.orderRepo = orderRepo;
     }
 
     /** Art.15 access — returns the membership (caller maps to DTO). Audited. */
@@ -180,8 +193,21 @@ public class DsarService {
     @Transactional(readOnly = true)
     public List<ConsentHistoryEntry> consentHistory(UUID orgId, UUID membershipId) {
         require(orgId, membershipId);
-        return consentRepo.findByMembershipId(membershipId).stream()
-                .map(ConsentHistoryEntry::from)
+        List<ConsentRecord> records = consentRepo.findByMembershipId(membershipId);
+        Set<UUID> unproven = consentGate.unprovenGrantIds(orgId, membershipId);
+        Set<UUID> orderIds = records.stream().map(ConsentRecord::getOrderId)
+                .filter(java.util.Objects::nonNull).collect(java.util.stream.Collectors.toSet());
+        Map<UUID, String> localeByOrder = new HashMap<>();
+        if (!orderIds.isEmpty()) {
+            for (Order o : orderRepo.findAllById(orderIds)) {
+                // Only this org's orders; a foreign order id must not leak its buyer's language.
+                if (orgId.equals(o.getOrgId()) && o.getBuyerLocale() != null) localeByOrder.put(o.getId(), o.getBuyerLocale());
+            }
+        }
+        return records.stream()
+                .map(r -> ConsentHistoryEntry.from(r,
+                        r.getOrderId() == null ? null : localeByOrder.get(r.getOrderId()),
+                        unproven.contains(r.getId())))
                 .toList();
     }
 

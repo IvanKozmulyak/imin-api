@@ -27,9 +27,13 @@ public record ConsentHistoryEntry(
         String proofText,
         // Version of the consent sentence shown and the order it was given on; null when absent.
         String textVersion,
-        UUID orderId
+        UUID orderId,
+        // Buyer's checkout language on that order; null without an order or when none was recorded.
+        String locale,
+        // True for a granting record ConsentGate does not accept as proof (reason legacy_unproven).
+        boolean legacy
 ) {
-    public static ConsentHistoryEntry from(ConsentRecord r) {
+    public static ConsentHistoryEntry from(ConsentRecord r, String locale, boolean legacy) {
         return new ConsentHistoryEntry(
                 r.getOccurredAt(),
                 r.getChannel(),
@@ -38,6 +42,8 @@ public record ConsentHistoryEntry(
                 r.getSource(),
                 r.getProofText(),
                 r.getTextVersion(),
-                r.getOrderId());
+                r.getOrderId(),
+                locale,
+                legacy);
     }
 }

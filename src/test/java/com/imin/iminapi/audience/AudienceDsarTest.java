@@ -374,7 +374,7 @@ class AudienceDsarTest {
      */
     @Test
     void a_malformed_cursor_is_a_400_not_a_500() {
-        assertThatThrownBy(() -> audienceService.listMembers(orgA, "not-a-cursor", 50, null, null))
+        assertThatThrownBy(() -> audienceService.listMembers(orgA, new AudienceService.MemberListRequest("not-a-cursor", 50, null, null, null, null, null, null)))
                 .isInstanceOfSatisfying(ApiException.class, e ->
                         assertThat(e.status()).isEqualTo(org.springframework.http.HttpStatus.BAD_REQUEST));
     }
@@ -400,7 +400,7 @@ class AudienceDsarTest {
         m.setEraseAt(Instant.now().plus(30, ChronoUnit.DAYS));
         membershipRepo.save(m);
 
-        assertThat(audienceService.listMembers(orgA, null, 50, null, null).items())
+        assertThat(audienceService.listMembers(orgA, new AudienceService.MemberListRequest(null, 50, null, null, null, null, null, null)).items())
                 .extracting(com.imin.iminapi.audience.dto.MemberDto::membershipId)
                 .doesNotContain(mid.toString());
         assertThat(audienceService.exportMembersCsv(orgA, null, null))

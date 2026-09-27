@@ -108,7 +108,7 @@ class AudienceControllerWebTest {
                 null, null, null, null, null,
                 List.of("vip"), "", "repeat",
                 new MemberDto.RfmInfo(4, 3, 5),
-                null, null
+                null, null, null, null, null
         );
     }
 
@@ -118,7 +118,7 @@ class AudienceControllerWebTest {
     @WithOrgA
     void get_members_returns_200_with_items() throws Exception {
         MemberDto dto = stubMember(MEMBER_A);
-        when(audienceService.listMembers(eq(ORG_A), isNull(), eq(50), isNull(), isNull()))
+        when(audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(null, 50, null, null, null, null, null, null)))
                 .thenReturn(new MemberPage(List.of(dto), null));
 
         mvc.perform(get("/api/v1/audience/members"))
@@ -132,20 +132,33 @@ class AudienceControllerWebTest {
     @Test
     @WithOrgA
     void get_members_with_cursor_passes_cursor_to_service() throws Exception {
-        when(audienceService.listMembers(eq(ORG_A), eq("someCursor"), eq(20), eq("vip"), isNull()))
-                .thenReturn(new MemberPage(List.of(), null));
+        when(audienceService.listMembers(eq(ORG_A), any())).thenReturn(new MemberPage(List.of(), null));
 
         mvc.perform(get("/api/v1/audience/members?cursor=someCursor&limit=20&lifecycle=vip"))
                 .andExpect(status().isOk());
 
-        verify(audienceService).listMembers(ORG_A, "someCursor", 20, "vip", null);
+        verify(audienceService).listMembers(ORG_A, new AudienceService.MemberListRequest("someCursor", 20, "vip", null, null, null, null, null));
+    }
+
+    @Test
+    @WithOrgA
+    void get_members_passes_sort_and_plan_filters_to_service() throws Exception {
+        when(audienceService.listMembers(eq(ORG_A), any())).thenReturn(new MemberPage(List.of(), null));
+
+        mvc.perform(get("/api/v1/audience/members")
+                        .param("sort", "spend_minor").param("guestClass", "loyal")
+                        .param("genre", "house & techno").param("mailable", "true").param("search", "ann"))
+                .andExpect(status().isOk());
+
+        verify(audienceService).listMembers(ORG_A,
+                new AudienceService.MemberListRequest(null, 50, null, "ann", "spend_minor", "loyal", "house & techno", true));
     }
 
     @Test
     @WithOrgA
     void get_members_with_next_cursor_included_in_response() throws Exception {
         MemberDto dto = stubMember(MEMBER_A);
-        when(audienceService.listMembers(any(), any(), anyInt(), any(), any()))
+        when(audienceService.listMembers(any(), any()))
                 .thenReturn(new MemberPage(List.of(dto), "nextCursorToken"));
 
         mvc.perform(get("/api/v1/audience/members"))
@@ -166,6 +179,32 @@ class AudienceControllerWebTest {
                 .andExpect(jsonPath("$.membershipId").value(MEMBER_A.toString()))
                 .andExpect(jsonPath("$.email").value("test@example.com"))
                 .andExpect(jsonPath("$.rfm.r").value(4));
+    }
+
+    @Test
+    @WithOrgA
+    void get_member_serializes_class_taste_and_sends() throws Exception {
+        MemberDto dto = stubMember(MEMBER_A).withPlanFields(AudienceMemberClass.FIRST_TIMER,
+                Map.of("house & techno", 1.0), 2);
+        when(audienceService.getMember(ORG_A, MEMBER_A)).thenReturn(dto);
+
+        mvc.perform(get("/api/v1/audience/members/" + MEMBER_A))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.guestClass").value("first_timer"))
+                .andExpect(jsonPath("$['taste']['house & techno']").value(1.0))
+                .andExpect(jsonPath("$.sends30d").value(2));
+    }
+
+    @Test
+    void openapi_publishes_the_AudienceMemberClass_marker() throws Exception {
+        String docs = mvc.perform(get("/v3/api-docs"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.components.schemas.AudienceMemberClass.enum").value(org.hamcrest.Matchers.contains(
+                        "loyal", "repeat", "first_timer", "lapsing", "dormant", "imported", "none")))
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(docs).contains("\"AudienceMemberClass\"").contains("\"first_timer\"")
+                .contains("\"legacyNotMailable\"").contains("\"showedUpPct\"");
     }
 
     /**
@@ -296,7 +335,7 @@ class AudienceControllerWebTest {
     @WithOrgA
     void get_metrics_returns_200() throws Exception {
         when(metricsService.compute(ORG_A))
-                .thenReturn(new AudienceMetricsDto(
+                .thenReturn(AudienceMetricsDto.base(
                         100L, 80L, 20L, 60L, 60.0,
                         List.of(5, 8, 10, 12, 15, 18, 20, 22),
                         75.0, 50L, 10L, 5.0, 0.1
@@ -308,6 +347,30 @@ class AudienceControllerWebTest {
                 .andExpect(jsonPath("$.buyers").value(80))
                 .andExpect(jsonPath("$.prospects").value(20))
                 .andExpect(jsonPath("$.listGrowth8w.length()").value(8));
+    }
+
+    @Test
+    @WithOrgA
+    void get_metrics_serializes_the_read_model_fields() throws Exception {
+        when(metricsService.compute(ORG_A)).thenReturn(new AudienceMetricsDto(
+                10L, 6L, 4L, 5L, 50.0, List.of(0, 0, 0, 0, 0, 0, 0, 1), 20.0, 5L, 0L, 0.0, 0.0,
+                3L, RateRange.of(1, 2), RateRange.of(2, 3), 4, 3,
+                Map.of("explicit", 4, "soft_opt_in", 0), Map.of("legacy_unproven", 3),
+                Map.of("loyal", 1L), Map.of("pop", 1.0), 1L));
+
+        mvc.perform(get("/api/v1/audience/metrics"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.newLast30Days").value(3))
+                .andExpect(jsonPath("$.showedUpPct.mid").value(50.0))
+                .andExpect(jsonPath("$.showedUpPct.n").value(2))
+                .andExpect(jsonPath("$.cameBackPct.n").value(3))
+                .andExpect(jsonPath("$.mailable").value(4))
+                .andExpect(jsonPath("$.legacyNotMailable").value(3))
+                .andExpect(jsonPath("$.mailableByBasis.explicit").value(4))
+                .andExpect(jsonPath("$.exclusions.legacy_unproven").value(3))
+                .andExpect(jsonPath("$.classCounts.loyal").value(1))
+                .andExpect(jsonPath("$.tasteShares.pop").value(1.0))
+                .andExpect(jsonPath("$.tasteMembers").value(1));
     }
 
     // ── POST /consent/capture — audit ArgumentCaptor ──────────────────────────
@@ -374,7 +437,7 @@ class AudienceControllerWebTest {
         when(audienceService.getMember(eq(ORG_A), eq(MEMBER_A))).thenReturn(stubMember(MEMBER_A));
         when(dsarService.consentHistory(eq(ORG_A), eq(MEMBER_A))).thenReturn(List.of(
                 new ConsentHistoryEntry(Instant.parse("2025-02-01T10:00:00Z"), "email", true,
-                        "soft_opt_in", "checkout", "Left the pre-ticked box ticked at checkout", null, null)));
+                        "soft_opt_in", "checkout", "Left the pre-ticked box ticked at checkout", null, null, null, true)));
 
         mvc.perform(post("/api/v1/audience/members/" + MEMBER_A + "/export"))
                 .andExpect(status().isOk())
@@ -392,7 +455,7 @@ class AudienceControllerWebTest {
     @Test
     @WithOrgA
     void get_members_omits_consent_history() throws Exception {
-        when(audienceService.listMembers(eq(ORG_A), isNull(), eq(50), isNull(), isNull()))
+        when(audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(null, 50, null, null, null, null, null, null)))
                 .thenReturn(new MemberPage(List.of(stubMember(MEMBER_A)), null));
 
         mvc.perform(get("/api/v1/audience/members"))
@@ -406,9 +469,9 @@ class AudienceControllerWebTest {
         when(dsarService.consentHistory(eq(ORG_A), eq(MEMBER_A))).thenReturn(List.of(
                 new ConsentHistoryEntry(Instant.parse("2025-02-01T10:00:00Z"), "email", true,
                         "explicit", "checkout", "Ticked the box at checkout", "2026-10-01",
-                        UUID.fromString("0f0f0f0f-0000-4000-8000-000000000001")),
+                        UUID.fromString("0f0f0f0f-0000-4000-8000-000000000001"), "fr", false),
                 new ConsentHistoryEntry(Instant.parse("2025-03-01T10:00:00Z"), "email", false,
-                        null, "one_click", null, null, null)));
+                        null, "one_click", null, null, null, null, false)));
 
         mvc.perform(get("/api/v1/audience/members/" + MEMBER_A + "/consent-history"))
                 .andExpect(status().isOk())
@@ -419,7 +482,10 @@ class AudienceControllerWebTest {
                 .andExpect(jsonPath("$[0].textVersion").value("2026-10-01"))
                 .andExpect(jsonPath("$[0].orderId").value("0f0f0f0f-0000-4000-8000-000000000001"))
                 .andExpect(jsonPath("$[1].textVersion").value(org.hamcrest.Matchers.nullValue()))
-                .andExpect(jsonPath("$[1].orderId").value(org.hamcrest.Matchers.nullValue()));
+                .andExpect(jsonPath("$[1].orderId").value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("$[0].locale").value("fr"))
+                .andExpect(jsonPath("$[0].legacy").value(false))
+                .andExpect(jsonPath("$[1].locale").value(org.hamcrest.Matchers.nullValue()));
     }
 
     @Test
@@ -913,7 +979,9 @@ class AudienceControllerWebTest {
 
         // First line must be the header
         String firstLine = body.lines().findFirst().orElse("");
-        assertThat(firstLine).contains("name").contains("email").contains("lifecycle");
+        assertThat(firstLine).isEqualTo("\"name\",\"email\",\"city\",\"lifecycle\",\"events\",\"attended\","
+                + "\"noShow\",\"orders\",\"spend\",\"recencyDays\",\"subscriptionStatus\","
+                + "\"lawfulBasis\",\"firstTouchSource\",\"tags\",\"nps\"");
 
         // Member data must appear somewhere in the body
         assertThat(body).contains("Test User");
@@ -948,7 +1016,7 @@ class AudienceControllerWebTest {
                 null, null, null, null, null,
                 List.of("tag1"), "", "repeat",
                 new MemberDto.RfmInfo(3, 2, 4),
-                null, null
+                null, null, null, null, null
         );
         when(audienceService.exportMembersCsv(eq(ORG_A), isNull(), isNull()))
                 .thenReturn(List.of(tricky));

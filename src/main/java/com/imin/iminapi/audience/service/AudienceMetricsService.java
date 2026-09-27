@@ -4,6 +4,8 @@ import com.imin.iminapi.audience.dto.AudienceMetricsDto;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsentRecordRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
+import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
+import com.imin.iminapi.audienceplan.service.AudienceReadModel;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -18,11 +20,17 @@ public class AudienceMetricsService {
 
     private final MembershipRepository membershipRepo;
     private final ConsentRecordRepository consentRepo;
+    private final AudiencePlanAccess planAccess;
+    private final AudienceReadModel readModel;
 
     public AudienceMetricsService(MembershipRepository membershipRepo,
-                                   ConsentRecordRepository consentRepo) {
+                                   ConsentRecordRepository consentRepo,
+                                   AudiencePlanAccess planAccess,
+                                   AudienceReadModel readModel) {
         this.membershipRepo = membershipRepo;
         this.consentRepo = consentRepo;
+        this.planAccess = planAccess;
+        this.readModel = readModel;
     }
 
     @Transactional(readOnly = true)
@@ -53,8 +61,15 @@ public class AudienceMetricsService {
         double unsubPct = subscribed == 0 ? 0.0 : (unsubCount * 100.0 / Math.max(subscribed, 1));
         double complaintPct = 0.0; // not tracked at Tier C
 
+        if (!planAccess.isEnabled(orgId)) {
+            return AudienceMetricsDto.base(total, buyers, prospects, subscribed,
+                    subscribedPct, growth, repeatPct, explicit, softOptIn, unsubPct, complaintPct);
+        }
+        AudienceReadModel.Metrics f = readModel.metrics(orgId);
         return new AudienceMetricsDto(total, buyers, prospects, subscribed,
-                subscribedPct, growth, repeatPct, explicit, softOptIn, unsubPct, complaintPct);
+                subscribedPct, growth, repeatPct, explicit, softOptIn, unsubPct, complaintPct,
+                f.newLast30Days(), f.showedUpPct(), f.cameBackPct(), f.mailable(), f.legacyNotMailable(),
+                f.mailableByBasis(), f.exclusions(), f.classCounts(), f.tasteShares(), f.tasteMembers());
     }
 
     private List<Integer> computeWeeklyGrowth(List<Membership> members, int weeks) {

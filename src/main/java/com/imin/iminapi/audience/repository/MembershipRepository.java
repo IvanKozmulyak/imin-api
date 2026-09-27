@@ -85,7 +85,7 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
     // (findByIdAndOrgId, findErasureDue) still see it — DSAR itself has to keep working.
     // See ERASE_PENDING_EXCLUDED below and SendGateService.evaluate.
 
-    // ---- keyset pagination (S2): sort by (created_at DESC, membership_id DESC) ----
+    // ---- CSV export: (created_at DESC, membership_id DESC); the paged list is MemberListQuery ----
     // search is split into its own methods: a nullable String fed into concat()/lower()
     // is bound by Hibernate as bytea when null, and Postgres rejects lower(bytea)
     // (H2 tolerates it). The no-search methods bind no :search param at all.
@@ -114,42 +114,6 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
                                   @Param("lifecycle") String lifecycle,
                                   @Param("search") String search,
                                   Pageable pageable);
-
-    /**
-     * Keyset page: rows with (createdAt, membershipId) strictly less than cursor values.
-     */
-    @Query("""
-            select m from Membership m
-             where m.orgId = :orgId
-               and m.status <> 'erase_pending'
-               and (:lifecycle is null or m.lifecycle = :lifecycle)
-               and (m.createdAt < :cursorAt
-                    or (m.createdAt = :cursorAt and m.membershipId < :cursorId))
-             order by m.createdAt desc, m.membershipId desc
-            """)
-    List<Membership> listByOrgAfterCursor(@Param("orgId") UUID orgId,
-                                           @Param("lifecycle") String lifecycle,
-                                           @Param("cursorAt") Instant cursorAt,
-                                           @Param("cursorId") UUID cursorId,
-                                           Pageable pageable);
-
-    @Query("""
-            select m from Membership m
-             where m.orgId = :orgId
-               and m.status <> 'erase_pending'
-               and (:lifecycle is null or m.lifecycle = :lifecycle)
-               and (lower(m.displayName) like lower(concat('%', :search, '%'))
-                    or lower(cast(m.membershipId as string)) like lower(concat('%', :search, '%')))
-               and (m.createdAt < :cursorAt
-                    or (m.createdAt = :cursorAt and m.membershipId < :cursorId))
-             order by m.createdAt desc, m.membershipId desc
-            """)
-    List<Membership> searchByOrgAfterCursor(@Param("orgId") UUID orgId,
-                                             @Param("lifecycle") String lifecycle,
-                                             @Param("search") String search,
-                                             @Param("cursorAt") Instant cursorAt,
-                                             @Param("cursorId") UUID cursorId,
-                                             Pageable pageable);
 
     // ---- segment resolution ----
 
@@ -223,6 +187,9 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
 
     @Query("select count(m) from Membership m where m.orgId = :orgId")
     long countByOrgId(@Param("orgId") UUID orgId);
+
+    @Query("select count(m) from Membership m where m.orgId = :orgId and m.createdAt >= :since")
+    long countCreatedSince(@Param("orgId") UUID orgId, @Param("since") Instant since);
 
     @Query("select count(m) from Membership m where m.orgId = :orgId and m.events > 0")
     long countBuyersByOrgId(@Param("orgId") UUID orgId);

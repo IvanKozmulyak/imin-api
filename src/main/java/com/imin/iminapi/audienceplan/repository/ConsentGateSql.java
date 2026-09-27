@@ -63,7 +63,7 @@ public final class ConsentGateSql {
             + " WHEN r.id IS NULL OR r.lawful_basis IS NULL THEN 'no_basis'"
             + " WHEN r.proven = 0 THEN 'legacy_unproven'"
             + " WHEN NOT " + CONTACT_WITHIN_RETENTION + " THEN 'retention_3y'"
-            + " ELSE NULL END AS reason"
+            + " ELSE NULL END AS reason, r.lawful_basis AS basis"
             + " FROM memberships m"
             + " LEFT JOIN consumers c ON c.consumer_id = m.consumer_id"
             + " LEFT JOIN (";
@@ -72,17 +72,25 @@ public final class ConsentGateSql {
             + " LEFT JOIN fan_features f ON f.membership_id = m.membership_id"
             + " WHERE m.org_id = :orgId";
 
-    /** One row per org member: {@code membership_id}, {@code reason} (null = mailable). */
+    /** One row per org member: {@code membership_id}, {@code reason} (null = mailable), {@code basis} of the verdict's consent. */
     static final String VERDICTS = VERDICT_HEAD + LATEST_CONSENT_HEAD + LATEST_CONSENT_TAIL + VERDICT_TAIL;
 
     public static final String MAILABLE_IDS =
             "SELECT g.membership_id FROM (" + VERDICTS + ") g WHERE g.reason IS NULL";
 
-    public static final String REASON_COUNTS =
-            "SELECT g.reason, COUNT(*) FROM (" + VERDICTS + ") g GROUP BY g.reason";
+    /** Rows of {@code [reason, basis, count]}; mailable rows are split by the basis the gate accepted. */
+    public static final String REASON_BASIS_COUNTS =
+            "SELECT g.reason, g.basis, COUNT(*) FROM (" + VERDICTS + ") g GROUP BY g.reason, g.basis";
 
     /** VERDICTS for given ids; the filter also sits inside the ranking so the rest of the org is never ranked. */
     public static final String REASONS_FOR_IDS = VERDICT_HEAD
             + LATEST_CONSENT_HEAD + " AND r.membership_id IN (:ids)" + LATEST_CONSENT_TAIL
             + VERDICT_TAIL + " AND m.membership_id IN (:ids)";
+
+    /** One member's granting email consents that PROVEN rejects (what the gate calls legacy_unproven). */
+    public static final String UNPROVEN_GRANT_IDS = "SELECT r.id FROM consent_records r"
+            + " JOIN memberships m ON m.membership_id = r.membership_id"
+            + " WHERE m.org_id = :orgId AND m.membership_id = :membershipId"
+            + " AND r.channel = 'email' AND r.status = 'subscribed' AND r.lawful_basis IS NOT NULL"
+            + " AND (CASE WHEN " + PROVEN + " THEN 1 ELSE 0 END) = 0";
 }
