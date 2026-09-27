@@ -44,7 +44,23 @@ public final class PlanCalculator {
      */
     public record Input(UUID orgId, String eventGenreKey, List<Tier> tiers, int targetPct, double ticketsPerOrder,
                         Map<String, Integer> consentGateExclusions, List<Person> mailable,
-                        Instant now, Instant eventStartsAt, ZoneId eventZone, Instant onSaleAt, CountRange tribeSize) {}
+                        Instant now, Instant eventStartsAt, ZoneId eventZone, Instant onSaleAt, CountRange tribeSize,
+                        Set<String> excludedClasses, int maxSegments) {
+
+        /** {@code excludedClasses} are the organizer's left-out classes; {@code maxSegments} 0 keeps every segment. */
+        public Input {
+            excludedClasses = excludedClasses == null ? Set.of() : Set.copyOf(excludedClasses);
+            if (maxSegments < 0) throw new IllegalArgumentException("max segments must be >= 0: " + maxSegments);
+        }
+
+        /** No organizer overrides: every class, every shown segment. */
+        public Input(UUID orgId, String eventGenreKey, List<Tier> tiers, int targetPct, double ticketsPerOrder,
+                     Map<String, Integer> consentGateExclusions, List<Person> mailable,
+                     Instant now, Instant eventStartsAt, ZoneId eventZone, Instant onSaleAt, CountRange tribeSize) {
+            this(orgId, eventGenreKey, tiers, targetPct, ticketsPerOrder, consentGateExclusions, mailable, now,
+                    eventStartsAt, eventZone, onSaleAt, tribeSize, Set.of(), 0);
+        }
+    }
 
     /** {@code fit} may be {@code UNKNOWN} for members with no taste yet; {@code rawExpected} is unrounded. */
     public record PlanSegment(String classKey, Fit fit, Band rate, Confidence confidence, double ticketsPerOrder,
@@ -98,8 +114,15 @@ public final class PlanCalculator {
         int target = target(capacity, in.targetPct());
         if (target == 0) throw new NoCapacityException();
 
+        // Excluded classes leave the segment pool but stay in the lawful mailable count that sets the mode.
         Set<UUID> distinct = new HashSet<>();
-        for (Person p : in.mailable()) distinct.add(p.membershipId());
+        List<Person> pool = new ArrayList<>();
+        int excludedByOrganizer = 0;
+        for (Person p : in.mailable()) {
+            if (!distinct.add(p.membershipId())) continue;
+            if (p.classKey() != null && in.excludedClasses().contains(p.classKey())) excludedByOrganizer++;
+            else pool.add(p);
+        }
         int mailable = distinct.size();
         Mode mode = ModeSelector.select(mailable, logic.logic().modes());
 
@@ -111,12 +134,21 @@ public final class PlanCalculator {
         Map<String, Integer> exclusions;
         if (mode == Mode.COLD) {
             // Logic bank 10.7: no segments in cold mode, the whole target is the gap.
-            exclusions = Exclusions.merge(in.consentGateExclusions(), Map.of());
+            exclusions = Exclusions.withPlanReasons(Exclusions.merge(in.consentGateExclusions(), Map.of()),
+                    excludedByOrganizer, 0);
         } else {
             CandidateBuilder.Result built = builder.build(new CandidateBuilder.Input(in.orgId(), in.eventGenreKey(), target,
-                    in.ticketsPerOrder(), in.consentGateExclusions(), in.mailable()));
+                    in.ticketsPerOrder(), in.consentGateExclusions(), pool));
+            // Segments arrive highest rate first; totals, coverage and invites cover only the kept ones.
+            // ponytail: the builder's other-genre gate saw every segment, so a cap can drop coverage it counted.
+            List<CandidateBuilder.Segment> kept = built.segments();
+            int capped = 0;
+            if (in.maxSegments() > 0 && kept.size() > in.maxSegments()) {
+                for (CandidateBuilder.Segment s : kept.subList(in.maxSegments(), kept.size())) capped += s.mailable();
+                kept = kept.subList(0, in.maxSegments());
+            }
             double low = 0, mid = 0, high = 0;
-            for (CandidateBuilder.Segment s : built.segments()) {
+            for (CandidateBuilder.Segment s : kept) {
                 Band raw = s.expectedTickets();
                 low += raw.low();
                 mid += raw.mid();
@@ -128,7 +160,7 @@ public final class PlanCalculator {
             smallGroups = built.smallGroupsNotShown();
             otherInvited = built.otherGenreInvited();
             otherHeldBack = built.otherGenreHeldBack();
-            exclusions = built.exclusions();
+            exclusions = Exclusions.withPlanReasons(built.exclusions(), excludedByOrganizer, capped);
         }
 
         Coverage coverage = CoverageVerdict.of(mode, expected, target, logic.logic().coverageVerdict());

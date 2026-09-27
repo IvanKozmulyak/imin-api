@@ -59,7 +59,9 @@ public class CandidateLoader {
         return builder.build(input(orgId, event, targetTickets, ticketsPerOrder));
     }
 
-    CandidateBuilder.Input input(UUID orgId, Event event, int targetTickets, double ticketsPerOrder) {
+    /** The builder input without running it: plan-mailable people plus the gate's reason counts. */
+    @Transactional(readOnly = true)
+    public CandidateBuilder.Input input(UUID orgId, Event event, int targetTickets, double ticketsPerOrder) {
         Objects.requireNonNull(orgId, "orgId");
         if (event == null || !orgId.equals(event.getOrgId())) {
             throw new IllegalArgumentException("event does not belong to the org");

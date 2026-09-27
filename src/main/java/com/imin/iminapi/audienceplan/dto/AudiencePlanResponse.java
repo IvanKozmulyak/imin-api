@@ -1,0 +1,85 @@
+package com.imin.iminapi.audienceplan.dto;
+
+import java.time.Instant;
+import java.time.LocalDate;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+/**
+ * One event's audience plan. Every count is a range; a null number is unknown (never 0). {@code expected} and the
+ * coverage ratios are null in cold mode; coverage ratios are truncated to 2 decimals.
+ */
+public record AudiencePlanResponse(
+        UUID id,
+        UUID eventId,
+        /* cold | warm | hot */
+        String mode,
+        int capacity,
+        int targetTickets,
+        int mailable,
+        TicketRange expected,
+        Coverage coverage,
+        Gap gap,
+        ReachNeeded reachNeeded,
+        Boolean gapExceedsTribe,
+        List<Segment> segments,
+        int smallGroupsNotShown,
+        boolean otherGenreInvited,
+        int otherGenreHeldBack,
+        Map<String, Integer> exclusions,
+        Timing timing,
+        List<NewPeopleGroup> newPeople,
+        List<Action> actions,
+        Assumptions assumptions,
+        Summary summary,
+        Versions versions,
+        Instant createdAt) {
+
+    public record TicketRange(int low, int mid, int high) {}
+
+    /** {@code verdict}: strong | medium | weak | cold. */
+    public record Coverage(Double low, Double mid, Double high, String verdict) {}
+
+    public record Gap(int low, int high) {}
+
+    /** {@code status}: estimated | unverified | unknown; bounds are null unless estimated. */
+    public record Reach(String status, Integer low, Integer high) {}
+
+    public record ReachNeeded(Reach metaAds, Reach instagramOrganic) {}
+
+    public record Rate(double low, double mid, double high) {}
+
+    /** {@code genreFit}: same | adjacent | other | unknown; {@code confidence}: own | imin | prior. */
+    public record Segment(String classKey, String genreFit, int mailable, Rate rate, double ticketsPerOrder,
+                          TicketRange expected, String confidence, SegmentReason reason) {}
+
+    /** The class rule bounds from the logic file (null = no bound) and the event genre behind the fit. */
+    public record SegmentReason(Integer paidOrdersMin, Integer paidOrdersMax, Integer daysSinceLastPaidMin,
+                                Integer daysSinceLastPaidMax, Integer daysSinceLastContactMax,
+                                boolean requiresImportBasis, String eventGenre, String genreFit) {}
+
+    /** Dates in the event timezone; {@code d3Date} is null when the D-3 arm is not after the launch date. */
+    public record Timing(LocalDate today, LocalDate eventDate, LocalDate launchDate, LocalDate d3Date,
+                         int daysToEvent, boolean eventStarted) {}
+
+    /** Empty until portraits exist. */
+    public record NewPeopleGroup(String label, SizeRange size, List<String> sources) {}
+
+    public record SizeRange(Integer low, Integer high) {}
+
+    /** {@code arm}: launch | d3. */
+    public record ArmDate(String arm, LocalDate date) {}
+
+    /** {@code type}: invite | import_with_proof | rethink_target; only invite names a segment, arms and holdout. */
+    public record Action(String type, String classKey, String genreFit, List<ArmDate> arms, Integer holdoutPct) {}
+
+    public record Assumptions(int targetPct, double ticketsPerOrder, List<String> excludeSegments) {}
+
+    /** Null until summaries are generated. */
+    public record Summary(String headline, List<String> segmentLines, String gapLine, List<String> actions,
+                          List<String> assumptions) {}
+
+    /** {@code model} is null until an LLM summary exists. */
+    public record Versions(int logic, int priors, String model) {}
+}

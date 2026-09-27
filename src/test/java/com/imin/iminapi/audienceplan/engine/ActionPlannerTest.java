@@ -219,4 +219,44 @@ class ActionPlannerTest {
         assertThat(ActionPlanner.plan(Verdict.STRONG, List.of(), timing(TODAY, EVENT), null, EXPERIMENTS)).isEmpty();
         assertThat(ActionPlanner.plan(Verdict.STRONG, List.of(), timing(TODAY, EVENT), false, EXPERIMENTS)).isEmpty();
     }
+    // ── step cap ───────────────────────────────────────────────────────────
+
+    private static Action invite(String classKey) {
+        return new Action(ActionType.INVITE, classKey, Fit.SAME, List.of(new ArmDate(TimingArm.LAUNCH, LAUNCH)), 15);
+    }
+
+    @Test
+    void topSteps_atOrUnderTheCap_keepsEveryAction() {
+        List<Action> actions = List.of(invite("loyal"), invite("repeat"), Action.of(ActionType.IMPORT_WITH_PROOF));
+        assertThat(ActionPlanner.topSteps(actions, 3)).containsExactlyElementsOf(actions);
+    }
+
+    @Test
+    void topSteps_overTheCap_keepsNonInvitesAndTheFirstInvitesInOrder() {
+        Action importStep = Action.of(ActionType.IMPORT_WITH_PROOF);
+        Action rethink = Action.of(ActionType.RETHINK_TARGET);
+        List<Action> actions = List.of(invite("loyal"), invite("repeat"), invite("first_timer"), importStep, rethink);
+
+        assertThat(ActionPlanner.topSteps(actions, 3)).containsExactly(invite("loyal"), importStep, rethink);
+    }
+
+    @Test
+    void topSteps_onlyInvitesOverTheCap_keepsTheFirstOnes() {
+        List<Action> actions = List.of(invite("loyal"), invite("repeat"), invite("first_timer"), invite("lapsing"));
+        assertThat(ActionPlanner.topSteps(actions, 3)).containsExactly(invite("loyal"), invite("repeat"),
+                invite("first_timer"));
+    }
+
+    @Test
+    void topSteps_moreNonInvitesThanTheCap_keepsTheFirstNonInvites() {
+        Action importStep = Action.of(ActionType.IMPORT_WITH_PROOF);
+        Action rethink = Action.of(ActionType.RETHINK_TARGET);
+        assertThat(ActionPlanner.topSteps(List.of(invite("loyal"), importStep, rethink), 1)).containsExactly(importStep);
+    }
+
+    @Test
+    void topSteps_negativeCap_isRefused() {
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> ActionPlanner.topSteps(List.of(), -1))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 }

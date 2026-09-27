@@ -79,6 +79,32 @@ public final class ActionPlanner {
         return List.copyOf(out);
     }
 
+    /**
+     * At most {@code max} steps: every non-invite action first claims a slot, the rest go to invites in segment
+     * order; the kept actions keep their original order.
+     */
+    public static List<Action> topSteps(List<Action> actions, int max) {
+        if (max < 0) throw new IllegalArgumentException("max must be >= 0: " + max);
+        if (actions.size() <= max) return List.copyOf(actions);
+        int otherSlots = (int) Math.min(max, actions.stream().filter(a -> a.type() != ActionType.INVITE).count());
+        int inviteSlots = max - otherSlots;
+        List<Action> out = new ArrayList<>();
+        int invites = 0;
+        int kept = 0;
+        for (Action a : actions) {
+            if (a.type() == ActionType.INVITE) {
+                if (invites < inviteSlots) {
+                    out.add(a);
+                    invites++;
+                }
+            } else if (kept < otherSlots) {
+                out.add(a);
+                kept++;
+            }
+        }
+        return List.copyOf(out);
+    }
+
     private static List<ArmDate> arms(Timing timing, List<TimingArm> configured) {
         List<ArmDate> arms = new ArrayList<>();
         for (TimingArm arm : configured) {

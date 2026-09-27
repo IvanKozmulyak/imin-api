@@ -86,6 +86,9 @@ public enum ErrorCode {
     /** Clearing legal name/contact while an audience-plan campaign is scheduled or sending. 409. */
     ORG_LEGAL_IDENTITY_IN_USE,
 
+    /** Audience plan refused: the event has no enabled ticket capacity to set a target against. 422. */
+    AUDIENCE_PLAN_NO_CAPACITY,
+
     // ---- Buyer accounts ----
     /**
      * Unlinking this identity would leave the account with no way to sign in —

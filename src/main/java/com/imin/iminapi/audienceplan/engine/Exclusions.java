@@ -18,6 +18,10 @@ public final class Exclusions {
     /** Mailable, but no class (no paid purchase and no proven import yet), so no class × genre segment fits. */
     public static final String NO_CLASS = "no_class";
     public static final String SMALL_GROUP = "small_group";
+    /** Mailable, but in a class the organizer left out of this plan. */
+    public static final String EXCLUDED_SEGMENT = "excluded_segment";
+    /** Mailable and segmented, but in a segment below the plan's top segments. */
+    public static final String SEGMENT_CAP = "segment_cap";
 
     /** Builder reasons in the order they are checked. */
     public static final List<String> BUILDER_REASONS =
@@ -35,6 +39,14 @@ public final class Exclusions {
     static Map<String, Integer> merge(Map<String, Integer> consentGate, Map<String, Integer> builder) {
         Map<String, Integer> out = new LinkedHashMap<>(consentGate);
         for (String reason : BUILDER_REASONS) out.merge(reason, builder.getOrDefault(reason, 0), Integer::sum);
+        return Collections.unmodifiableMap(out);
+    }
+
+    /** Appends the plan's own reasons (always present, 0 when none) after the gate and builder counts. */
+    static Map<String, Integer> withPlanReasons(Map<String, Integer> counts, int excludedSegment, int segmentCap) {
+        Map<String, Integer> out = new LinkedHashMap<>(counts);
+        out.merge(EXCLUDED_SEGMENT, excludedSegment, Integer::sum);
+        out.merge(SEGMENT_CAP, segmentCap, Integer::sum);
         return Collections.unmodifiableMap(out);
     }
 }
