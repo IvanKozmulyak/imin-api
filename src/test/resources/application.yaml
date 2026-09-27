@@ -52,6 +52,12 @@ poster:
   compositor:
     enabled: false
 
+# Probes the Resend domains API on every /actuator/health call; tests never reach Resend.
+management:
+  health:
+    resend-tracking:
+      enabled: false
+
 imin:
   stripe:
     # Dummy values — tests must mock all Stripe calls (no live network traffic in tests).

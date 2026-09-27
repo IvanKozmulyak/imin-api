@@ -71,6 +71,7 @@ public class EmailChannelSender {
     private final SendGateService sendGate;
     private final MarketingGuardProperties guardProps;
     private final SendPathGuard sendPathGuard;
+    private final AddressSourceLines addressSources;
 
     public EmailChannelSender(CampaignRecipientRepository recipients, CampaignRepository campaigns,
                               CampaignEmailRenderer renderer, CampaignEmailProvider provider,
@@ -79,7 +80,7 @@ public class EmailChannelSender {
                               OrganizationRepository organizations, EventRepository events,
                               MembershipRepository memberships, ConsumerRepository consumers,
                               SendGateService sendGate, MarketingGuardProperties guardProps,
-                              SendPathGuard sendPathGuard) {
+                              SendPathGuard sendPathGuard, AddressSourceLines addressSources) {
         this.recipients = recipients;
         this.campaigns = campaigns;
         this.renderer = renderer;
@@ -94,6 +95,7 @@ public class EmailChannelSender {
         this.sendGate = sendGate;
         this.guardProps = guardProps;
         this.sendPathGuard = sendPathGuard;
+        this.addressSources = addressSources;
     }
 
     /**
@@ -162,6 +164,8 @@ public class EmailChannelSender {
         // Per-recipient {{firstName}} — resolve display names for the whole batch in two
         // batched queries (membership -> consumer -> display_name), not per row.
         Map<UUID, String> firstNameByMembership = resolveFirstNames(c.getOrgId(), batch);
+        Map<UUID, String> sourceByMembership = addressSources.forFirstEmail(c.getOrgId(), batch.stream()
+                .map(CampaignRecipient::getMembershipId).filter(Objects::nonNull).distinct().toList());
 
         AiEmailDisclosure ai = c.aiDisclosure();
         List<CampaignEmailProvider.OutgoingEmail> outgoing = new ArrayList<>(batch.size());
@@ -177,7 +181,8 @@ public class EmailChannelSender {
             CampaignEmailRenderer.Rendered rendered = renderer.render(
                     subject, preheader, bodyMd,
                     c.getId().toString(), "email", unsubUrl,
-                    template, brandName, posterUrl, ticketsUrl, ai, sender);
+                    template, brandName, posterUrl, ticketsUrl, ai, sender,
+                    addressSource(r.getMembershipId() == null ? null : sourceByMembership.get(r.getMembershipId())));
             outgoing.add(new CampaignEmailProvider.OutgoingEmail(
                     from, r.getEmail(), subject,
                     rendered.html(), rendered.text(), unsubUrl, ai));
@@ -433,4 +438,10 @@ public class EmailChannelSender {
         return out;
     }
 
+    /** Art. 14 notice for an imported member's first email; the privacy page lives on the buyer site. */
+    private CampaignEmailRenderer.AddressSource addressSource(String platforms) {
+        if (platforms == null) return null;
+        String base = props.getBuyerSiteBaseUrl() == null ? "" : props.getBuyerSiteBaseUrl().replaceAll("/+$", "");
+        return new CampaignEmailRenderer.AddressSource(platforms, base.isEmpty() ? null : base + "/legal/privacy");
+    }
 }

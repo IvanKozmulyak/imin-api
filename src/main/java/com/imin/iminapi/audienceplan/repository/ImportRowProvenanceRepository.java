@@ -35,6 +35,14 @@ public interface ImportRowProvenanceRepository extends Repository<ImportRowProve
         long getRowCount();
     }
 
+    /** Accepted rows for these members from this org's own imports, oldest first. */
+    @Query("select p from ImportRowProvenance p, com.imin.iminapi.audienceplan.model.AudienceImport i"
+            + " where i.id = p.importId and i.orgId = :orgId"
+            + " and p.accepted = true and p.membershipId in :membershipIds"
+            + " order by p.createdAt asc, p.rowNumber asc")
+    List<ImportRowProvenance> findAcceptedByMembershipIds(@Param("orgId") UUID orgId,
+                                                          @Param("membershipIds") java.util.Collection<UUID> membershipIds);
+
     @Modifying
     @Transactional
     @Query("delete from ImportRowProvenance p where p.membershipId = :membershipId")

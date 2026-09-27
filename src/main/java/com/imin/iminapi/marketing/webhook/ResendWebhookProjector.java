@@ -142,12 +142,11 @@ public class ResendWebhookProjector {
                 complaintRateBreaker.evaluate(campaignId, orgId);
             }
             case ProviderEvent.TYPE_OPENED -> {
+                // Tracking is off for everyone: only the recipient row, never the membership.
                 if (r != null) { r.setOpenedAt(occurredAt); touch(r, occurredAt); }
-                if (membershipId != null) membershipRepo.recordEmailOpen(membershipId, occurredAt);
             }
             case ProviderEvent.TYPE_CLICKED -> {
                 if (r != null) { r.setClickedAt(occurredAt); touch(r, occurredAt); }
-                if (membershipId != null) membershipRepo.recordEmailClick(membershipId, occurredAt);
             }
             default -> { /* unknown type — logged and deduped upstream, no projection */ }
         }

@@ -273,23 +273,29 @@ class ResendWebhookProjectorTest {
     }
 
     @Test
-    void openedStampsRecipientAndMembership() {
+    void openedStampsRecipientOnly_membershipUnchanged() {
         Fixture f = seed("open@example.com");
         Instant when = Instant.now();
         projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
             "open@example.com", "email.opened", null, when);
-        assertThat(recipientRepo.findById(f.recipientId()).orElseThrow().getOpenedAt()).isNotNull();
-        assertThat(membershipRepo.findByIdAndOrgId(f.membershipId(), f.orgId())
-            .orElseThrow().getLastEmailOpen()).isNotNull();
+        CampaignRecipient r = recipientRepo.findById(f.recipientId()).orElseThrow();
+        assertThat(r.getOpenedAt()).isNotNull();
+        assertThat(r.getLastEventAt()).isNotNull();
+        Membership m = membershipRepo.findByIdAndOrgId(f.membershipId(), f.orgId()).orElseThrow();
+        assertThat(m.getLastEmailOpen()).isNull();
+        assertThat(m.getLastEmailClick()).isNull();
     }
 
     @Test
-    void clickedStampsRecipientAndMembership() {
+    void clickedStampsRecipientOnly_membershipUnchanged() {
         Fixture f = seed("click@example.com");
         projector.project(f.campaignId(), f.recipientId(), f.membershipId(),
             "click@example.com", "email.clicked", null, Instant.now());
-        assertThat(recipientRepo.findById(f.recipientId()).orElseThrow().getClickedAt()).isNotNull();
-        assertThat(membershipRepo.findByIdAndOrgId(f.membershipId(), f.orgId())
-            .orElseThrow().getLastEmailClick()).isNotNull();
+        CampaignRecipient r = recipientRepo.findById(f.recipientId()).orElseThrow();
+        assertThat(r.getClickedAt()).isNotNull();
+        assertThat(r.getLastEventAt()).isNotNull();
+        Membership m = membershipRepo.findByIdAndOrgId(f.membershipId(), f.orgId()).orElseThrow();
+        assertThat(m.getLastEmailOpen()).isNull();
+        assertThat(m.getLastEmailClick()).isNull();
     }
 }

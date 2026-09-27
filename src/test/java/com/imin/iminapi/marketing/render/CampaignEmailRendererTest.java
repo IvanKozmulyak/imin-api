@@ -255,4 +255,62 @@ class CampaignEmailRendererTest {
         assertThat(r.html()).doesNotContain("margin-bottom:6px");
         assertThat(r.text()).endsWith("---\nUnsubscribe: " + UNSUB);
     }
+    private static final String PRIVACY = "https://app.imin.wtf/legal/privacy";
+
+    private CampaignEmailRenderer.Rendered withSource(String platforms, String privacyUrl) {
+        return renderer.render("S", "P", "body", "camp-1", "email", UNSUB,
+                BuiltinTemplates.defaultTemplate(), null, null, null,
+                com.imin.iminapi.service.ai.provenance.AiEmailDisclosure.NONE,
+                new OrganizerIdentity("Night Org", null, null),
+                new CampaignEmailRenderer.AddressSource(platforms, privacyUrl));
+    }
+
+    private CampaignEmailRenderer.Rendered withSource(String platforms) {
+        return withSource(platforms, PRIVACY);
+    }
+
+    @Test
+    void addressSource_printsTheArt14LineWithProcessorRoleAndPrivacyLink_inHtmlAndText() {
+        CampaignEmailRenderer.Rendered r = withSource("Shotgun, Dice");
+
+        String footer = r.html().substring(r.html().indexOf("border-top:1px"));
+        assertThat(footer).contains("<div style=\"margin-bottom:6px;\">This organizer received your address from Shotgun, Dice."
+                + " IMIN processes it on the organizer&#39;s behalf; see the <a href=\"" + PRIVACY + "\" style=\"color:");
+        assertThat(footer).contains(";text-decoration:underline;\">privacy notice</a> for retention and your rights.</div>");
+        assertThat(footer.indexOf("received your address")).isLessThan(footer.indexOf(UNSUB));
+        assertThat(r.text()).endsWith("---\nNight Org\nThis organizer received your address from Shotgun, Dice."
+                + " IMIN processes it on the organizer's behalf; retention and your rights: " + PRIVACY
+                + "\nUnsubscribe: " + UNSUB);
+    }
+
+    @Test
+    void addressSource_withoutAPrivacyUrl_keepsTheProcessorSentence_andPrintsNoLink() {
+        CampaignEmailRenderer.Rendered r = withSource("Dice", null);
+
+        assertThat(r.html()).contains("received your address from Dice. IMIN processes it on the organizer&#39;s behalf.</div>");
+        assertThat(r.html()).doesNotContain("privacy notice");
+        assertThat(r.text()).contains("received your address from Dice. IMIN processes it on the organizer's behalf.\nUnsubscribe: ");
+    }
+
+    @Test
+    void addressSource_isEscapedAndSingleLined() {
+        CampaignEmailRenderer.Rendered r = withSource("<b>Dice</b>\nBcc: x", PRIVACY + "\"><script>");
+
+        assertThat(r.html()).contains("received your address from &lt;b&gt;Dice&lt;/b&gt; Bcc: x.");
+        assertThat(r.html()).doesNotContain("<b>Dice</b>").doesNotContain("<script>");
+        assertThat(r.html()).contains("href=\"" + PRIVACY + "&quot;&gt;&lt;script&gt;\"");
+        assertThat(r.text()).contains("received your address from <b>Dice</b> Bcc: x. IMIN processes");
+    }
+
+    @Test
+    void noAddressSource_printsNoLine() {
+        CampaignEmailRenderer.Rendered none = renderer.render("S", "P", "body", "camp-1", "email", UNSUB,
+                BuiltinTemplates.defaultTemplate(), null, null, null,
+                com.imin.iminapi.service.ai.provenance.AiEmailDisclosure.NONE,
+                new OrganizerIdentity("Night Org", null, null), null);
+        assertThat(none.html()).doesNotContain("received your address").doesNotContain("privacy notice");
+        assertThat(none.text()).endsWith("---\nNight Org\nUnsubscribe: " + UNSUB);
+        assertThat(withSource("  ").html()).doesNotContain("received your address").doesNotContain("privacy notice");
+        assertThat(withSource(null).text()).endsWith("---\nNight Org\nUnsubscribe: " + UNSUB);
+    }
 }

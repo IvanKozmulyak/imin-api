@@ -207,6 +207,18 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
     List<Object[]> countRecentSendsByMembership(@Param("membershipIds") java.util.Collection<UUID> membershipIds,
                                                 @Param("since") java.time.Instant since);
 
+    /** Which of these members already received an email from this org's campaigns (sent or further along). */
+    @Query("""
+            select distinct r.membershipId from CampaignRecipient r, com.imin.iminapi.marketing.model.Campaign c
+             where r.campaignId = c.id
+               and c.orgId = :orgId
+               and c.channel = 'email'
+               and r.membershipId in :membershipIds
+               and r.status in ('sent','delivered','complained','unsubscribed')
+            """)
+    List<UUID> findMembershipsAlreadyEmailed(@Param("orgId") UUID orgId,
+                                             @Param("membershipIds") java.util.Collection<UUID> membershipIds);
+
     /**
      * Rolling-window org send count — backs the per-org daily cap in the dispatcher
      * (spec §7). Joins recipients to their campaign by org, counting rows actually
