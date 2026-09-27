@@ -29,6 +29,9 @@ public class AudiencePlanProperties {
     /** Lets ConsentGate count a soft opt-in grounded on a paid order; explicit consent only while false. Blank binds false. */
     private Boolean softOptInEnabled = Boolean.FALSE;
 
+    /** Lets the nightly retention job remove basis past 3 years; false = dry run that only logs counts. Blank binds false. */
+    private Boolean retentionJobEnabled = Boolean.FALSE;
+
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
     public Set<UUID> getBetaOrgIds() { return betaOrgIds; }
@@ -42,6 +45,8 @@ public class AudiencePlanProperties {
     public void setSendsEnabled(Boolean sendsEnabled) { this.sendsEnabled = Boolean.TRUE.equals(sendsEnabled); }
     public Boolean getSoftOptInEnabled() { return softOptInEnabled; }
     public void setSoftOptInEnabled(Boolean softOptInEnabled) { this.softOptInEnabled = Boolean.TRUE.equals(softOptInEnabled); }
+    public Boolean getRetentionJobEnabled() { return retentionJobEnabled; }
+    public void setRetentionJobEnabled(Boolean retentionJobEnabled) { this.retentionJobEnabled = Boolean.TRUE.equals(retentionJobEnabled); }
 
     /** Blank elements (e.g. a trailing comma) convert to null; drop them rather than fail. */
     public void setBetaOrgIds(Set<UUID> betaOrgIds) {

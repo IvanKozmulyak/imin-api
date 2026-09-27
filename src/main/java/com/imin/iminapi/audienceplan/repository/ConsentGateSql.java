@@ -93,4 +93,46 @@ public final class ConsentGateSql {
             + " WHERE m.org_id = :orgId AND m.membership_id = :membershipId"
             + " AND r.channel = 'email' AND r.status = 'subscribed' AND r.lawful_basis IS NOT NULL"
             + " AND (CASE WHEN " + PROVEN + " THEN 1 ELSE 0 END) = 0";
+
+    /** Bulk attestation source written before per-row provenance existed. */
+    public static final String LEGACY_IMPORT_SOURCE = "organizer_import";
+
+    // Only a pre-provenance bulk import grants the email basis: the contact's real age is unknown.
+    static final String LEGACY_IMPORT_ONLY = "(EXISTS (SELECT 1 FROM consent_records li"
+            + " WHERE li.membership_id = m.membership_id AND li.channel = 'email' AND li.status = 'subscribed'"
+            + " AND li.source = '" + LEGACY_IMPORT_SOURCE + "')"
+            + " AND NOT EXISTS (SELECT 1 FROM consent_records lo"
+            + " WHERE lo.membership_id = m.membership_id AND lo.channel = 'email' AND lo.status = 'subscribed'"
+            + " AND lo.lawful_basis IS NOT NULL AND lo.source <> '" + LEGACY_IMPORT_SOURCE + "')"
+            + " AND NOT EXISTS (SELECT 1 FROM import_row_provenance lp WHERE lp.membership_id = m.membership_id))";
+
+    // Retention job: email-subscribed live members past the window, whatever their basis; only with a fresh
+    // fan_features row. CASE makes a missing consent row count as "no contact" rather than an unknown.
+    // Rows are [membership_id, legacy_import]; legacy_import = 1 marks a member the job must skip.
+    private static final String RETENTION_HEAD = "SELECT m.membership_id,"
+            + " CASE WHEN " + LEGACY_IMPORT_ONLY + " THEN 1 ELSE 0 END AS legacy_import"
+            + " FROM memberships m"
+            + " JOIN fan_features f ON f.membership_id = m.membership_id"
+            + " LEFT JOIN (";
+
+    private static final String RETENTION_TAIL = ") r ON r.membership_id = m.membership_id AND r.rn = 1"
+            + " WHERE m.org_id = :orgId AND m.status <> 'erase_pending' AND m.consent_status = 'subscribed'"
+            + " AND f.updated_at >= :freshSince"
+            + " AND (CASE WHEN " + CONTACT_WITHIN_RETENTION + " THEN 1 ELSE 0 END) = 0";
+
+    public static final String RETENTION_EXPIRED = RETENTION_HEAD
+            + LATEST_CONSENT_HEAD + LATEST_CONSENT_TAIL + RETENTION_TAIL;
+
+    public static final String RETENTION_EXPIRED_FOR_IDS = RETENTION_HEAD
+            + LATEST_CONSENT_HEAD + " AND r.membership_id IN (:ids)" + LATEST_CONSENT_TAIL
+            + RETENTION_TAIL + " AND m.membership_id IN (:ids)";
+
+    /** Count of the member's paid live orders (same org, by email) created at or after {@code cutoffAt}. */
+    public static final String PAID_ORDERS_SINCE = "SELECT COUNT(*) FROM memberships m"
+            + " JOIN consumers c ON c.consumer_id = m.consumer_id"
+            + " JOIN orders o ON o.org_id = m.org_id AND o.email_normalized = c.normalized_email"
+            + " WHERE m.org_id = :orgId AND m.membership_id = :membershipId"
+            + " AND o.payment_method = 'stripe' AND o.total_minor > 0 AND o.test_mode = FALSE"
+            + " AND o.created_at >= :cutoffAt"
+            + " AND EXISTS (SELECT 1 FROM tickets t WHERE t.order_id = o.id AND t.state NOT IN ('refunded', 'revoked'))";
 }

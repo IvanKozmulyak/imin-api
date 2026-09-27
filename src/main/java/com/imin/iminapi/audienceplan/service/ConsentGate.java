@@ -186,6 +186,52 @@ public class ConsentGate {
         return out;
     }
 
+    /**
+     * Retention targets and pre-provenance bulk imports, which the job skips.
+     * @param targets email-subscribed members past the window, as the gate counts it, with a fresh feature row
+     * @param importedWithoutProvenance past the window but basis only from a legacy {@code organizer_import}
+     */
+    public record RetentionScan(List<UUID> targets, int importedWithoutProvenance) {}
+
+    /** Members past the retention window; only feature rows written since {@code freshSince}. */
+    @Transactional(readOnly = true)
+    public RetentionScan retentionScan(UUID orgId, Instant freshSince) {
+        if (orgId == null || freshSince == null) return new RetentionScan(List.of(), 0);
+        Params p = params(orgId);
+        List<UUID> targets = new ArrayList<>();
+        int legacy = 0;
+        for (Object[] row : repo.findRetentionExpiredIds(orgId, p.namedSources, p.namedVersions, p.provenanceSources,
+                p.textVersionSources, p.personSources, p.softOptInBases, p.cutoffAt, p.cutoffDate, freshSince)) {
+            if (isLegacyImport(row[1])) legacy++;
+            else targets.add(uuid(row[0]));
+        }
+        return new RetentionScan(targets, legacy);
+    }
+
+    /** The same test for one member, read at the moment of the write; a legacy bulk import is never a target. */
+    @Transactional(readOnly = true)
+    public boolean isRetentionExpired(UUID orgId, UUID membershipId, Instant freshSince) {
+        if (orgId == null || membershipId == null || freshSince == null) return false;
+        Params p = params(orgId);
+        for (Object[] row : repo.findRetentionExpiredIdsAmong(orgId, p.namedSources, p.namedVersions,
+                p.provenanceSources, p.textVersionSources, p.personSources, p.softOptInBases, p.cutoffAt,
+                p.cutoffDate, freshSince, List.of(membershipId))) {
+            if (!isLegacyImport(row[1])) return true;
+        }
+        return false;
+    }
+
+    /** True when the member has a paid live order of this org on or after the retention cutoff (org timezone). */
+    @Transactional(readOnly = true)
+    public boolean hasPaidOrderWithinRetention(UUID orgId, UUID membershipId) {
+        if (orgId == null || membershipId == null) return false;
+        return repo.countPaidOrdersSince(orgId, membershipId, params(orgId).cutoffAt) > 0;
+    }
+
+    private static boolean isLegacyImport(Object flag) {
+        return flag instanceof Number n && n.intValue() != 0;
+    }
+
     private record Params(List<String> namedSources, List<String> namedVersions, List<String> provenanceSources,
                           List<String> textVersionSources, List<String> personSources,
                           List<String> softOptInBases, Instant cutoffAt, LocalDate cutoffDate) {}

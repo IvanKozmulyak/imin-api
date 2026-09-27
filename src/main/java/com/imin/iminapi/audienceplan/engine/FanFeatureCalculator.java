@@ -36,6 +36,9 @@ public final class FanFeatureCalculator {
     static final Set<String> PERSON_CONSENT_SOURCES =
             Set.of("checkout", "door_qr", "survey", "preference_centre_row", "order_confirmation");
 
+    /** Source of the retention job's unsubscribe; profiling stays empty until the person makes contact again. */
+    public static final String RETENTION_SOURCE = "retention_3y";
+
     /** Closed format keys, from the organizer wizard's event types; any other type is dropped. */
     static final Set<String> FORMAT_WHITELIST = Set.of("festival", "rave", "club", "concert", "open_air");
 
@@ -58,7 +61,7 @@ public final class FanFeatureCalculator {
                         Collection<Order> orders, Collection<Ticket> tickets, Collection<Event> events,
                         Collection<ConsentRecord> consents, Collection<Instant> surveyResponseAts) {}
 
-    /** {@code taste}, {@code cities} and {@code formats} are empty (not null) when nothing qualifies or the person objected; {@code avgGroupSize} is null with no paid order. */
+    /** {@code taste}, {@code cities} and {@code formats} are empty (not null) when nothing qualifies, the person objected or retention cleared them; {@code avgGroupSize} is null with no paid order. */
     public record Result(int paidOrders, Instant firstPaidPurchaseAt, Instant lastPaidPurchaseAt,
                          Integer daysSinceLastPaid, String fanClass, Map<String, Double> taste,
                          List<String> cities, List<String> formats, int noShowN, BigDecimal avgGroupSize,
@@ -96,7 +99,7 @@ public final class FanFeatureCalculator {
             firstOrderAtByEvent.merge(o.getEventId(), o.getCreatedAt(), (a, b) -> a.isBefore(b) ? a : b);
         }
 
-        boolean profile = !in.objectedProfiling();
+        boolean profile = !in.objectedProfiling() && !retentionCleared(in.consents(), lastContact);
         Map<String, Double> taste = !profile ? Map.of() : TasteCalculator.taste(
                 boughtEvents.values().stream()
                         .map(e -> new TasteCalculator.Purchase(e.getGenreKey(),
@@ -123,6 +126,16 @@ public final class FanFeatureCalculator {
         }
         for (Instant s : surveyResponseAts) latest = later(latest, s);
         return latest;
+    }
+
+    /** True when the latest email retention unsubscribe is not followed by contact from the person. */
+    static boolean retentionCleared(Collection<ConsentRecord> consents, Instant lastContact) {
+        Instant cleared = null;
+        for (ConsentRecord c : consents) {
+            if (!RETENTION_SOURCE.equals(c.getSource()) || !ClassRules.CHANNEL_EMAIL.equals(c.getChannel())) continue;
+            cleared = later(cleared, c.getOccurredAt());
+        }
+        return cleared != null && (lastContact == null || !lastContact.isAfter(cleared));
     }
 
     private static Instant later(Instant a, Instant b) {

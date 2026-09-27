@@ -159,6 +159,39 @@ class AudiencePlanAccessTest {
     }
 
     @Test
+    void retentionJob_defaultsFalse() {
+        assertThat(new AudiencePlanProperties().getRetentionJobEnabled()).isFalse();
+    }
+
+    @Test
+    void retentionJob_blankEnvVar_bindsFalse() {
+        runner.withPropertyValues("IMIN_AUDIENCE_RETENTION_ENABLED=",
+                        "imin.audience-plan.retention-job-enabled=${IMIN_AUDIENCE_RETENTION_ENABLED:false}")
+                .run(ctx -> assertThat(ctx.getBean(AudiencePlanProperties.class).getRetentionJobEnabled()).isFalse());
+    }
+
+    @Test
+    void retentionJob_true_binds() {
+        runner.withPropertyValues("imin.audience-plan.retention-job-enabled=true")
+                .run(ctx -> assertThat(ctx.getBean(AudiencePlanProperties.class).getRetentionJobEnabled()).isTrue());
+    }
+
+    @Test
+    void retentionJob_shippedYamlDefaultsToFalse() throws Exception {
+        String main = java.nio.file.Files.readString(java.nio.file.Path.of("src/main/resources/application.yaml"));
+        String test = java.nio.file.Files.readString(java.nio.file.Path.of("src/test/resources/application.yaml"));
+        assertThat(main).contains("retention-job-enabled: ${IMIN_AUDIENCE_RETENTION_ENABLED:false}");
+        assertThat(test).contains("retention-job-enabled: false");
+    }
+
+    @Test
+    void retentionJob_nullSetter_staysFalse() {
+        AudiencePlanProperties props = new AudiencePlanProperties();
+        props.setRetentionJobEnabled(null);
+        assertThat(props.getRetentionJobEnabled()).isFalse();
+    }
+
+    @Test
     void sendsOff_audiencePlanOrigin_throws409() {
         AudiencePlanAccess access = new AudiencePlanAccess(new AudiencePlanProperties());
         assertThatThrownBy(() -> access.requireSendsAllowed("audience_plan"))

@@ -113,3 +113,4 @@ imin:
     genres-file: classpath:audienceplan/genres-v1.yaml
     sends-enabled: false
     soft-opt-in-enabled: false
+    retention-job-enabled: false

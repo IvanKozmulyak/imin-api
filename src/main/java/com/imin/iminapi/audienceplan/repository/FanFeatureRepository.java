@@ -173,4 +173,38 @@ public interface FanFeatureRepository extends Repository<FanFeature, UUID> {
     List<Object[]> countCandidateSends(@Param("orgId") UUID orgId, @Param("eventId") UUID eventId,
             @Param("floorSince") Instant floorSince, @Param("monthSince") Instant monthSince,
             @Param("scanSince") Instant scanSince);
+    // ---- retention job ----
+
+    @Query("select distinct m.orgId from Membership m where m.consentStatus = 'subscribed' and m.status <> 'erase_pending'")
+    List<UUID> findOrgIdsWithSubscribedMembers();
+
+    /** Rows of [membership_id, legacy_import] past the retention window whose feature row was written at or after {@code freshSince}. */
+    @Query(value = ConsentGateSql.RETENTION_EXPIRED, nativeQuery = true)
+    List<Object[]> findRetentionExpiredIds(@Param("orgId") UUID orgId,
+            @Param("namedSources") Collection<String> namedSources,
+            @Param("namedVersions") Collection<String> namedVersions,
+            @Param("provenanceSources") Collection<String> provenanceSources,
+            @Param("textVersionSources") Collection<String> textVersionSources,
+            @Param("personSources") Collection<String> personSources,
+            @Param("softOptInBases") Collection<String> softOptInBases,
+            @Param("cutoffAt") Instant cutoffAt,
+            @Param("cutoffDate") LocalDate cutoffDate,
+            @Param("freshSince") Instant freshSince);
+
+    @Query(value = ConsentGateSql.RETENTION_EXPIRED_FOR_IDS, nativeQuery = true)
+    List<Object[]> findRetentionExpiredIdsAmong(@Param("orgId") UUID orgId,
+            @Param("namedSources") Collection<String> namedSources,
+            @Param("namedVersions") Collection<String> namedVersions,
+            @Param("provenanceSources") Collection<String> provenanceSources,
+            @Param("textVersionSources") Collection<String> textVersionSources,
+            @Param("personSources") Collection<String> personSources,
+            @Param("softOptInBases") Collection<String> softOptInBases,
+            @Param("cutoffAt") Instant cutoffAt,
+            @Param("cutoffDate") LocalDate cutoffDate,
+            @Param("freshSince") Instant freshSince,
+            @Param("ids") Collection<UUID> ids);
+
+    @Query(value = ConsentGateSql.PAID_ORDERS_SINCE, nativeQuery = true)
+    long countPaidOrdersSince(@Param("orgId") UUID orgId, @Param("membershipId") UUID membershipId,
+            @Param("cutoffAt") Instant cutoffAt);
 }

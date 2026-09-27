@@ -402,6 +402,68 @@ class FanFeatureCalculatorTest {
         assertThat(r.avgGroupSize()).isEqualByComparingTo(new BigDecimal("2.000"));
     }
 
+    // ---- retention clear (M1-12) ----
+
+    @Test
+    void retentionUnsubscribe_withoutLaterContact_emptiesProfiling_restStillComputed() {
+        Event e = event(TECHNO, daysAgo(1100));
+        e.setVenueCityKey("metz");
+        e.setType("Club");
+        paidOrder(e, daysAgo(1100), 1);
+        consent("unsubscribed", null, FanFeatureCalculator.RETENTION_SOURCE, daysAgo(3));
+        Result r = run();
+        assertThat(r.taste()).isEmpty();
+        assertThat(r.cities()).isEmpty();
+        assertThat(r.formats()).isEmpty();
+        assertThat(r.paidOrders()).isEqualTo(1);
+        assertThat(r.lastContactFromPersonAt()).isEqualTo(daysAgo(1100));
+    }
+
+    @Test
+    void purchaseAfterRetentionUnsubscribe_restoresProfiling() {
+        Event old = event(TECHNO, daysAgo(1100));
+        paidOrder(old, daysAgo(1100), 1);
+        consent("unsubscribed", null, FanFeatureCalculator.RETENTION_SOURCE, daysAgo(3));
+        Event fresh = event(TECHNO, daysAgo(1));
+        fresh.setVenueCityKey("metz");
+        paidOrder(fresh, daysAgo(1), 1);
+        Result r = run();
+        assertThat(r.taste()).containsOnlyKeys(TECHNO);
+        assertThat(r.cities()).containsExactly("metz");
+    }
+
+    @Test
+    void retentionUnsubscribeOnSmsChannel_doesNotEmptyProfiling() {
+        Event e = event(TECHNO, daysAgo(1100));
+        paidOrder(e, daysAgo(1100), 1);
+        consent("unsubscribed", null, FanFeatureCalculator.RETENTION_SOURCE, daysAgo(3)).setChannel("sms");
+        assertThat(run().taste()).containsOnlyKeys(TECHNO);
+    }
+
+    @Test
+    void operatorUnsubscribeWithAnotherSource_doesNotEmptyProfiling() {
+        Event e = event(TECHNO, daysAgo(1100));
+        paidOrder(e, daysAgo(1100), 1);
+        consent("unsubscribed", null, "manual", daysAgo(3));
+        assertThat(run().taste()).containsOnlyKeys(TECHNO);
+    }
+
+    @Test
+    void retentionCleared_contactAtTheSameInstantOrNone_staysCleared_laterContactLifts() {
+        ConsentRecord r = consent("unsubscribed", null, FanFeatureCalculator.RETENTION_SOURCE, daysAgo(3));
+        assertThat(FanFeatureCalculator.retentionCleared(List.of(r), null)).isTrue();
+        assertThat(FanFeatureCalculator.retentionCleared(List.of(r), daysAgo(3))).isTrue();
+        assertThat(FanFeatureCalculator.retentionCleared(List.of(r), daysAgo(2))).isFalse();
+        assertThat(FanFeatureCalculator.retentionCleared(List.of(), null)).isFalse();
+    }
+
+    @Test
+    void retentionCleared_latestOfSeveralClearsDecides() {
+        ConsentRecord first = consent("unsubscribed", null, FanFeatureCalculator.RETENTION_SOURCE, daysAgo(400));
+        ConsentRecord second = consent("unsubscribed", null, FanFeatureCalculator.RETENTION_SOURCE, daysAgo(3));
+        assertThat(FanFeatureCalculator.retentionCleared(List.of(second, first), daysAgo(10))).isTrue();
+    }
+
     // ---- inputs that must never count (C13, C14) ----
 
     @Test

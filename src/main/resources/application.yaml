@@ -874,6 +874,8 @@ imin:
     sends-enabled: ${IMIN_AUDIENCE_PLAN_SENDS_ENABLED:false}
     # Soft opt-in on a paid order counts for the plan tool. Explicit consent only while false (D1).
     soft-opt-in-enabled: ${IMIN_AUDIENCE_PLAN_SOFT_OPT_IN:false}
+    # Nightly 3-year retention job removes marketing basis. False = dry run that only logs counts.
+    retention-job-enabled: ${IMIN_AUDIENCE_RETENTION_ENABLED:false}
 
 sentry:
   dsn: ${SENTRY_DSN:}
