@@ -22,6 +22,19 @@ public interface ImportRowProvenanceRepository extends Repository<ImportRowProve
 
     boolean existsByMembershipIdAndAcceptedTrue(UUID membershipId);
 
+    /** Provenance rows still on file per import, grouped by outcome; no row-level data. */
+    @Query("select p.importId as importId, p.accepted as accepted, p.rejectReason as rejectReason,"
+            + " count(p) as rowCount from ImportRowProvenance p where p.importId in :importIds"
+            + " group by p.importId, p.accepted, p.rejectReason")
+    List<OutcomeCount> countOutcomesByImportIds(@Param("importIds") List<UUID> importIds);
+
+    interface OutcomeCount {
+        UUID getImportId();
+        boolean getAccepted();
+        String getRejectReason();
+        long getRowCount();
+    }
+
     @Modifying
     @Transactional
     @Query("delete from ImportRowProvenance p where p.membershipId = :membershipId")
