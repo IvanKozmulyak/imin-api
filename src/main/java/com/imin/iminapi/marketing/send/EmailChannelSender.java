@@ -14,6 +14,7 @@ import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.SendGateService;
+import com.imin.iminapi.audienceplan.service.SendPathGuard;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.marketing.service.CampaignTemplateService;
@@ -69,6 +70,7 @@ public class EmailChannelSender {
     private final ConsumerRepository consumers;
     private final SendGateService sendGate;
     private final MarketingGuardProperties guardProps;
+    private final SendPathGuard sendPathGuard;
 
     public EmailChannelSender(CampaignRecipientRepository recipients, CampaignRepository campaigns,
                               CampaignEmailRenderer renderer, CampaignEmailProvider provider,
@@ -76,7 +78,8 @@ public class EmailChannelSender {
                               CampaignTemplateService templateService,
                               OrganizationRepository organizations, EventRepository events,
                               MembershipRepository memberships, ConsumerRepository consumers,
-                              SendGateService sendGate, MarketingGuardProperties guardProps) {
+                              SendGateService sendGate, MarketingGuardProperties guardProps,
+                              SendPathGuard sendPathGuard) {
         this.recipients = recipients;
         this.campaigns = campaigns;
         this.renderer = renderer;
@@ -90,6 +93,7 @@ public class EmailChannelSender {
         this.consumers = consumers;
         this.sendGate = sendGate;
         this.guardProps = guardProps;
+        this.sendPathGuard = sendPathGuard;
     }
 
     /**
@@ -134,6 +138,7 @@ public class EmailChannelSender {
         // complained or was deliverability-suppressed in the meantime is diverted rather than
         // emailed — SendGateService is "THE ONLY path that yields sendable recipients".
         divertNoLongerSendable(c, batch);
+        divertGuarded(c, batch);
         // A row with no address can never be sent, and resend-java does not refuse it: a null
         // `to` is wrapped into a one-null list and fails on the wire, taking the whole batch
         // (and, via the dispatcher, the campaign) with it. Divert before assembling the batch.
@@ -288,6 +293,34 @@ public class EmailChannelSender {
             r.setLastEventAt(now);
             recipients.save(r);
             log.info("[email-sender] campaign {} recipient {} no longer sendable ({}) — skipping",
+                    c.getId(), r.getId(), reason);
+            return true;
+        });
+    }
+
+    /**
+     * Re-runs SendPathGuard over the batch: a holdout written, a cap reached by another campaign, or
+     * consent lost since materialisation diverts the row to {@code skipped} with that reason.
+     */
+    private void divertGuarded(Campaign c, List<CampaignRecipient> batch) {
+        List<UUID> membershipIds = batch.stream()
+                .map(CampaignRecipient::getMembershipId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (membershipIds.isEmpty()) return;
+        Instant now = Instant.now();
+        Map<UUID, String> reasonByMembership = sendPathGuard.skipReasons(c, membershipIds, now);
+        if (reasonByMembership.isEmpty()) return;
+        batch.removeIf(r -> {
+            String reason = r.getMembershipId() == null
+                    ? null : reasonByMembership.get(r.getMembershipId());
+            if (reason == null) return false;
+            r.setStatus("skipped");
+            r.setSkipReason(reason);
+            r.setLastEventAt(now);
+            recipients.save(r);
+            log.info("[email-sender] campaign {} recipient {} guarded ({}) — skipping",
                     c.getId(), r.getId(), reason);
             return true;
         });

@@ -24,6 +24,10 @@ import com.imin.iminapi.audienceplan.model.AudienceImport;
 import com.imin.iminapi.audienceplan.model.ImportRowProvenance;
 import com.imin.iminapi.audienceplan.repository.AudienceImportRepository;
 import com.imin.iminapi.audienceplan.repository.ImportRowProvenanceRepository;
+import com.imin.iminapi.audienceplan.model.AudienceAssignment;
+import com.imin.iminapi.audienceplan.model.AudienceExperiment;
+import com.imin.iminapi.audienceplan.repository.AudienceAssignmentRepository;
+import com.imin.iminapi.audienceplan.repository.AudienceExperimentRepository;
 
 import javax.sql.DataSource;
 import java.time.Instant;
@@ -70,6 +74,8 @@ class AudienceDsarTest {
     @MockitoSpyBean FanFeatureRepository fanFeatureRepo;
     @MockitoSpyBean ImportRowProvenanceRepository provenanceRepo;
     @Autowired AudienceImportRepository importRepo;
+    @MockitoSpyBean AudienceAssignmentRepository assignmentRepo;
+    @Autowired AudienceExperimentRepository experimentRepo;
 
     private UUID orgA;
     private UUID orgB;
@@ -488,6 +494,29 @@ class AudienceDsarTest {
     }
 
     @Test
+    void execute_erase_deletes_experiment_assignments_explicitly() {
+        UUID mid = seedMembership(orgA, "assignerase@d.com");
+        AudienceExperiment e = new AudienceExperiment();
+        e.setOrgId(orgA);
+        e.setEventId(UUID.randomUUID());
+        e.setArm("holdout");
+        e.setSeed(3L);
+        e.setMembers(1);
+        e = experimentRepo.save(e);
+        AudienceAssignment a = new AudienceAssignment();
+        a.setExperimentId(e.getId());
+        a.setMembershipId(mid);
+        a.setArm("holdout");
+        a.setAssignedAt(Instant.now());
+        assignmentRepo.save(a);
+
+        dsarService.executeErase(orgA, mid, principalA);
+
+        verify(assignmentRepo).deleteByMembershipId(mid);
+        assertThat(assignmentRepo.findByMembershipId(mid)).isEmpty();
+    }
+
+    @Test
     void export_records_include_import_provenance() {
         UUID mid = seedMembership(orgA, "provexport@d.com");
         UUID importId = seedProvenance(orgA, mid);
@@ -784,6 +813,8 @@ class AudienceDsarTest {
         try (java.sql.Connection c = dataSource.getConnection();
              java.sql.Statement s = c.createStatement()) {
             s.execute("delete from import_row_provenance");
+            s.execute("delete from audience_assignments");
+            s.execute("delete from audience_experiments");
             s.execute("delete from audience_imports");
             s.execute("delete from suppression_entries");
             s.execute("delete from consent_records");

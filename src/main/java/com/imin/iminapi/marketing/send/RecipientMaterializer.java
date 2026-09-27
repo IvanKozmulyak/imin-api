@@ -7,6 +7,7 @@ import com.imin.iminapi.audience.model.Segment;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.service.SegmentService;
 import com.imin.iminapi.audience.service.SendGateService;
+import com.imin.iminapi.audienceplan.service.SendPathGuard;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
@@ -42,17 +43,19 @@ public class RecipientMaterializer {
     private final CampaignRecipientRepository recipients;
     private final CampaignRepository campaigns;
     private final CampaignVolumeGuard volumeGuard;
+    private final SendPathGuard sendPathGuard;
 
     public RecipientMaterializer(SegmentService segmentService, SendGateService sendGate,
                                  ConsumerRepository consumers,
                                  CampaignRecipientRepository recipients, CampaignRepository campaigns,
-                                 CampaignVolumeGuard volumeGuard) {
+                                 CampaignVolumeGuard volumeGuard, SendPathGuard sendPathGuard) {
         this.segmentService = segmentService;
         this.sendGate = sendGate;
         this.consumers = consumers;
         this.recipients = recipients;
         this.campaigns = campaigns;
         this.volumeGuard = volumeGuard;
+        this.sendPathGuard = sendPathGuard;
     }
 
     /**
@@ -83,8 +86,10 @@ public class RecipientMaterializer {
 
         Map<String, Integer> summary = new TreeMap<>();
         Instant now = Instant.now();
+        // Holdout, per-event and 30-day caps, and ConsentGate for plan campaigns; checked again per batch.
+        Map<UUID, String> guarded = sendPathGuard.skipReasons(c, gate.sendable(), now);
         int pending = 0;
-        int frequencySkipped = 0;
+        int sendableSkipped = 0;
         for (UUID mid : gate.sendable()) {
             Membership m = byId.get(mid);
             CampaignRecipient r = new CampaignRecipient();
@@ -93,13 +98,19 @@ public class RecipientMaterializer {
             r.setMembershipId(mid);
             r.setEmail(m == null ? null : emailByConsumer.get(m.getConsumerId()));
             r.setLastEventAt(now);
-            // Per-member frequency floor (spec §7): a member contacted within the floor
-            // window is diverted to a skipped row rather than sent again.
-            if (volumeGuard.isFrequencyCapped(mid, now)) {
+            String guardReason = guarded.get(mid);
+            if (guardReason != null) {
+                r.setStatus("skipped");
+                r.setSkipReason(guardReason);
+                summary.merge(guardReason, 1, Integer::sum);
+                sendableSkipped++;
+            } else if (volumeGuard.isFrequencyCapped(mid, now)) {
+                // Per-member frequency floor (spec §7): a member contacted within the floor
+                // window is diverted to a skipped row rather than sent again.
                 r.setStatus("skipped");
                 r.setSkipReason("frequency_capped");
                 summary.merge("frequency_capped", 1, Integer::sum);
-                frequencySkipped++;
+                sendableSkipped++;
             } else {
                 r.setStatus("pending");
                 pending++;
@@ -122,7 +133,7 @@ public class RecipientMaterializer {
         }
 
         c.setRecipientCount(pending);
-        c.setExcludedCount(gate.excluded().size() + frequencySkipped);
+        c.setExcludedCount(gate.excluded().size() + sendableSkipped);
         c.setExclusionSummary(toJson(summary));
         campaigns.save(c);
     }

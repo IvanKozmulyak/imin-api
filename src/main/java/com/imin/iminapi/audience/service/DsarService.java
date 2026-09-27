@@ -11,6 +11,7 @@ import com.imin.iminapi.audience.repository.ErasedAddressRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.repository.SuppressionRepository;
 import com.imin.iminapi.audienceplan.model.FanFeature;
+import com.imin.iminapi.audienceplan.repository.AudienceAssignmentRepository;
 import com.imin.iminapi.audienceplan.repository.FanFeatureRepository;
 import com.imin.iminapi.audienceplan.model.ImportRowProvenance;
 import com.imin.iminapi.audienceplan.repository.ImportRowProvenanceRepository;
@@ -69,6 +70,7 @@ public class DsarService {
     private final ImportRowProvenanceRepository provenanceRepo;
     private final ConsentGate consentGate;
     private final OrderRepository orderRepo;
+    private final AudienceAssignmentRepository assignmentRepo;
 
     public DsarService(MembershipRepository membershipRepo,
                        ConsumerRepository consumerRepo,
@@ -84,7 +86,8 @@ public class DsarService {
                        FanFeatureRepository fanFeatureRepo,
                        ImportRowProvenanceRepository provenanceRepo,
                        ConsentGate consentGate,
-                       OrderRepository orderRepo) {
+                       OrderRepository orderRepo,
+                       AudienceAssignmentRepository assignmentRepo) {
         this.membershipRepo = membershipRepo;
         this.consumerRepo = consumerRepo;
         this.consentRepo = consentRepo;
@@ -100,6 +103,7 @@ public class DsarService {
         this.provenanceRepo = provenanceRepo;
         this.consentGate = consentGate;
         this.orderRepo = orderRepo;
+        this.assignmentRepo = assignmentRepo;
     }
 
     /** Art.15 access — returns the membership (caller maps to DTO). Audited. */
@@ -323,6 +327,8 @@ public class DsarService {
         fanFeatureRepo.deleteByMembershipId(membershipId);
         // 3d. Import provenance rows; the FK cascades too, deleted here for the same reason.
         provenanceRepo.deleteByMembershipId(membershipId);
+        // 3e. Experiment assignments; the FK cascades too, deleted here for the same reason.
+        assignmentRepo.deleteByMembershipId(membershipId);
 
         // 4. Delete membership (consent_records cascade via FK ON DELETE CASCADE)
         membershipRepo.deleteByIdAndOrgId(membershipId, orgId);

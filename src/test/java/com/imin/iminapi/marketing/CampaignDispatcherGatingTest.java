@@ -1,11 +1,13 @@
 package com.imin.iminapi.marketing;
 
+import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
 import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.marketing.send.CampaignDispatcher;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.OrganizationRepository;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -34,6 +36,7 @@ class CampaignDispatcherGatingTest {
     @Autowired CampaignRepository campaigns;
     @Autowired OrganizationRepository orgs;
     @Autowired JdbcTemplate jdbc;
+    @Autowired AudiencePlanProperties planProps;
 
     // The claim query is non-org-scoped with a LIMIT — other suite tests leave due/failed/
     // sending campaigns behind that would crowd out (or falsely include) this test's seeds.
@@ -42,6 +45,11 @@ class CampaignDispatcherGatingTest {
     void clearCampaigns() {
         jdbc.update("delete from campaign_recipients");
         jdbc.update("delete from campaigns");
+    }
+
+    @AfterEach
+    void restoreSendsSwitch() {
+        planProps.setSendsEnabled(false);
     }
 
     private Organization org(String tz, boolean paused) {
@@ -130,5 +138,24 @@ class CampaignDispatcherGatingTest {
             AWAKE.minus(1, ChronoUnit.MINUTES), AWAKE);
         List<UUID> claimed = dispatcher.claimDueCampaignIds(AWAKE);
         assertThat(claimed).contains(c.getId());
+    }
+
+    @Test
+    void audiencePlanArmStillWaitsOutQuietHoursWithSendsOn() {
+        planProps.setSendsEnabled(true);
+        Organization o = org("UTC", false);
+        // The claim query also requires legal identity for an audience_plan campaign;
+        // set it so this test isolates the quiet-hours behaviour it actually targets.
+        o.setLegalName("Disp SAS");
+        o.setLegalContact("legal@disp.test");
+        o = orgs.save(o);
+        Instant quietNow = Instant.parse("2026-07-14T03:00:00Z");
+        Campaign arm = campaign(o.getId(), "scheduled", 0,
+            quietNow.minus(1, ChronoUnit.MINUTES), quietNow);
+        arm.setOrigin("audience_plan");
+        campaigns.save(arm);
+
+        assertThat(dispatcher.claimDueCampaignIds(quietNow)).doesNotContain(arm.getId());
+        assertThat(dispatcher.claimDueCampaignIds(AWAKE)).contains(arm.getId());
     }
 }

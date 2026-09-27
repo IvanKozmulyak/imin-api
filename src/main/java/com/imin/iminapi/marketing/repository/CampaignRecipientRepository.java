@@ -172,6 +172,42 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
                                        @Param("since") java.time.Instant since);
 
     /**
+     * Rows of {@code [membershipId, sends]}: EMAILS that left for the event's campaigns, per given
+     * member — feeds {@code SendPathGuard}'s per-event cap. {@code c.channel = 'email'} scopes this
+     * to the email caps only; an SMS send about the same event must not count against them.
+     */
+    @Query("""
+            select r.membershipId, count(r) from CampaignRecipient r, com.imin.iminapi.marketing.model.Campaign c
+             where r.campaignId = c.id
+               and c.orgId = :orgId
+               and c.eventId = :eventId
+               and c.channel = 'email'
+               and r.membershipId in :membershipIds
+               and r.status in ('sent','delivered','opened','clicked')
+             group by r.membershipId
+            """)
+    List<Object[]> countEventSendsByMembership(@Param("orgId") UUID orgId,
+                                               @Param("eventId") UUID eventId,
+                                               @Param("membershipIds") java.util.Collection<UUID> membershipIds);
+
+    /**
+     * Rows of {@code [membershipId, sends]}: EMAILS that left since {@code since}, per given member —
+     * feeds {@code SendPathGuard}'s monthly cap. Joins {@code Campaign} (unlike the other overload
+     * of this name) so {@code c.channel = 'email'} can scope it to the email caps only.
+     */
+    @Query("""
+            select r.membershipId, count(r) from CampaignRecipient r, com.imin.iminapi.marketing.model.Campaign c
+             where r.campaignId = c.id
+               and c.channel = 'email'
+               and r.membershipId in :membershipIds
+               and r.status in ('sent','delivered','opened','clicked')
+               and r.lastEventAt >= :since
+             group by r.membershipId
+            """)
+    List<Object[]> countRecentSendsByMembership(@Param("membershipIds") java.util.Collection<UUID> membershipIds,
+                                                @Param("since") java.time.Instant since);
+
+    /**
      * Rolling-window org send count — backs the per-org daily cap in the dispatcher
      * (spec §7). Joins recipients to their campaign by org, counting rows actually
      * sent (or further along) with a send timestamp inside the window.
