@@ -67,7 +67,7 @@ class LogicLoaderTest {
         assertThat(p.showUpPaid()).isEqualTo(new Band(0.80, 0.88, 0.95));
         assertThat(p.showUpFreeRsvp()).isEqualTo(new Band(0.50, 0.65, 0.75));
         assertThat(p.priorStrengthInvitations()).isEqualTo(20);
-        assertThat(p.genreFit()).isEqualTo(new AudiencePlanLogic.GenreFit(1.0, 0.5, 0.2));
+        assertThat(p.genreFit()).isEqualTo(new AudiencePlanLogic.GenreFit(1.0, 0.5, 0.2, 1.0));
         assertThat(p.noShowBefore()).isEqualTo(new Band(0.4, 0.7, 1.0));
         assertThat(p.noShowShowUpIfBuy()).isEqualTo(new Band(0.60, 0.75, 0.90));
         assertThat(p.ticketsPerOrder()).isEqualTo(new Band(1.3, 1.6, 2.2));
@@ -219,6 +219,17 @@ class LogicLoaderTest {
     @Test
     void fractionAboveOne_fails() {
         assertPriorsFail(p -> p.replace("same: 1.0", "same: 1.5"), "priors.modifiers.genre_fit.same: must be between 0 and 1");
+    }
+
+    @Test
+    void unknownGenreFitOfZero_fails() {
+        assertPriorsFail(p -> p.replace("unknown: 1.0", "unknown: 0"),
+                "priors.modifiers.genre_fit.unknown: must be greater than 0");
+    }
+
+    @Test
+    void missingUnknownGenreFit_fails() {
+        assertPriorsFail(p -> p.replace(", unknown: 1.0", ""), "priors.modifiers.genre_fit.unknown: is missing");
     }
 
     @Test

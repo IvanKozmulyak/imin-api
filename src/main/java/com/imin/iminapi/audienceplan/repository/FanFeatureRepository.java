@@ -158,4 +158,19 @@ public interface FanFeatureRepository extends Repository<FanFeature, UUID> {
 
     @Query("select count(f) from FanFeature f where f.orgId = :orgId and f.paidOrders >= :min")
     long countWithPaidOrdersAtLeast(@Param("orgId") UUID orgId, @Param("min") int min);
+
+    // CandidateBuilder inputs; see CandidateSql.
+
+    /** Rows of {@code [membership_id, class, taste, no_show_n]} for the org's members. */
+    @Query(value = CandidateSql.FEATURES, nativeQuery = true)
+    List<Object[]> findCandidateFeatures(@Param("orgId") UUID orgId);
+
+    @Query(value = CandidateSql.BOUGHT_EVENT, nativeQuery = true)
+    List<Object> findMembershipIdsHoldingEventTicket(@Param("orgId") UUID orgId, @Param("eventId") UUID eventId);
+
+    /** Rows of {@code [membership_id, floor, event, month]} send counts. */
+    @Query(value = CandidateSql.SEND_COUNTS, nativeQuery = true)
+    List<Object[]> countCandidateSends(@Param("orgId") UUID orgId, @Param("eventId") UUID eventId,
+            @Param("floorSince") Instant floorSince, @Param("monthSince") Instant monthSince,
+            @Param("scanSince") Instant scanSince);
 }

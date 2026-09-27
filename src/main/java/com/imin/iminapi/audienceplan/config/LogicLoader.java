@@ -171,7 +171,8 @@ public final class LogicLoader {
                 root.positiveVersion(),
                 Map.copyOf(classes),
                 root.integer("prior_strength_invitations"),
-                new GenreFit(genreFit.fraction("same"), genreFit.fraction("adjacent"), genreFit.fraction("other")),
+                new GenreFit(genreFit.fraction("same"), genreFit.fraction("adjacent"), genreFit.fraction("other"),
+                        unknownFit(genreFit)),
                 modifiers.rateBand("no_show_before"),
                 modifiers.rateBand("no_show_show_up_if_buy"),
                 root.positiveBand("tickets_per_order"),
@@ -181,6 +182,15 @@ public final class LogicLoader {
                         meta.string("note")),
                 reach.optionalRateBand("instagram_organic"),
                 Map.copyOf(tribe));
+    }
+
+    /** A member without taste is scored, never zeroed out. */
+    private static double unknownFit(Node genreFit) {
+        double v = genreFit.fraction("unknown");
+        if (v <= 0) {
+            throw genreFit.invalid("unknown", "must be greater than 0");
+        }
+        return v;
     }
 
     private static SourcedRate sourcedRate(Node n) {

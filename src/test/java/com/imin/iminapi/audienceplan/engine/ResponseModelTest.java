@@ -46,6 +46,11 @@ class ResponseModelTest {
     }
 
     @Test
+    void unknownFit_isNeutral_theClassPriorExactly() {
+        assertBand(model(CalibrationSource.NONE).rate(ORG, "imported", Fit.UNKNOWN, 0).band(), 0.002, 0.006, 0.015);
+    }
+
+    @Test
     void noShowBefore_appliesBandwise() {
         assertBand(model(CalibrationSource.NONE).rate(ORG, "loyal", Fit.SAME, 1).band(), 0.048, 0.175, 0.40);
     }

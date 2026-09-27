@@ -17,7 +17,8 @@ public final class ResponseModel {
     /** Invitations of a class needed before its band is labelled as own or IMIN data. */
     public static final int CONFIDENT_INVITATIONS = 20;
 
-    public enum Fit { SAME, ADJACENT, OTHER }
+    /** {@code UNKNOWN}: the person has no taste yet, so no genre comparison is possible. */
+    public enum Fit { SAME, ADJACENT, OTHER, UNKNOWN }
 
     public enum Confidence { OWN, IMIN, PRIOR }
 
@@ -48,6 +49,7 @@ public final class ResponseModel {
             case SAME -> m.same();
             case ADJACENT -> m.adjacent();
             case OTHER -> m.other();
+            case UNKNOWN -> m.unknown();
         };
     }
 

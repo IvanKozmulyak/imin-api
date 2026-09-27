@@ -81,7 +81,8 @@ public record AudiencePlanLogic(Logic logic, Priors priors, Genres genres) {
 
     public record ClassPrior(Band purchaseRate, Band unsubPerSend) {}
 
-    public record GenreFit(double same, double adjacent, double other) {}
+    /** {@code unknown} applies to members with no taste yet; it is validated as {@code > 0}. */
+    public record GenreFit(double same, double adjacent, double other, double unknown) {}
 
     public record MetaAds(double ctr, Band landingToTicket, boolean verified, String note) {}
 
