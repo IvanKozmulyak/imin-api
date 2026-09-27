@@ -98,6 +98,12 @@ public class CandidateLoader {
                 breakdown.exclusions(), people);
     }
 
+    /** Distinct plan-mailable members of the org: the mailable count a plan's inputs hash is built from. */
+    @Transactional(readOnly = true)
+    public int mailableCount(UUID orgId) {
+        return new HashSet<>(gate.mailableMembershipIds(orgId)).size();
+    }
+
     private static int count(Object o) {
         return o == null ? 0 : ((Number) o).intValue();
     }

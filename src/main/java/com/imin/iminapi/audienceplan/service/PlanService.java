@@ -32,11 +32,16 @@ import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+
+import javax.sql.DataSource;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.sql.Connection;
+import java.sql.SQLException;
 import java.time.Clock;
 import java.time.DateTimeException;
 import java.time.Duration;
@@ -93,10 +98,13 @@ public class PlanService {
     private final AudiencePlanRepository plans;
     private final AudiencePlanSegmentRepository segments;
     private final Clock clock;
+    private final DataSource dataSource;
+    private volatile Boolean postgres;
 
     public PlanService(AudiencePlanAccess access, EventRepository events, TicketTierRepository tiers,
                        CandidateLoader candidates, AudiencePlanLogic logic, ResponseModel model,
-                       AudiencePlanRepository plans, AudiencePlanSegmentRepository segments, Clock clock) {
+                       AudiencePlanRepository plans, AudiencePlanSegmentRepository segments, Clock clock,
+                       DataSource dataSource) {
         this.access = access;
         this.events = events;
         this.tiers = tiers;
@@ -106,6 +114,7 @@ public class PlanService {
         this.plans = plans;
         this.segments = segments;
         this.clock = clock;
+        this.dataSource = dataSource;
     }
 
     /** The organizer's plan choices; the defaults are the logic file's target and the mid tickets per order. */
@@ -121,11 +130,52 @@ public class PlanService {
         Optional<AudiencePlan> latest = lockLatest(orgId, eventId);
         Assumptions assumptions = latest.map(PlanService::assumptionsOf).orElseGet(this::defaults);
         Prepared prepared = prepare(orgId, event, assumptions);
-        if (latest.isPresent() && latest.get().getInputsHash().equals(prepared.inputsHash())
-                && latest.get().getCreatedAt().isAfter(prepared.now().minus(FRESH_FOR))) {
+        if (latest.isPresent() && reusable(latest.get(), prepared.inputsHash(), prepared.now())) {
             return response(latest.get(), loc);
         }
         return response(persist(orgId, event, prepared, latest), loc);
+    }
+
+    /** What a background refresh did. */
+    public enum Refresh { CREATED, UNCHANGED, SKIPPED }
+
+    /**
+     * Background form of {@link #current}: same lock, assumptions and reuse rule, no response. Skips without writing
+     * when the event is gone, its org is switched off, it has started, or it cannot be planned (no date, no capacity).
+     */
+    @Transactional
+    public Refresh refresh(UUID eventId) {
+        Event event = events.findActive(eventId).orElse(null);
+        if (event == null || !access.isEnabled(event.getOrgId())) return Refresh.SKIPPED;
+        if (event.getStartsAt() == null || !event.getStartsAt().isAfter(clock.instant())) return Refresh.SKIPPED;
+        UUID orgId = event.getOrgId();
+        Optional<AudiencePlan> latest = lockLatest(orgId, eventId);
+        Assumptions assumptions = latest.map(PlanService::assumptionsOf).orElseGet(this::defaults);
+        try {
+            Prepared prepared = prepare(orgId, event, assumptions);
+            if (latest.isPresent() && reusable(latest.get(), prepared.inputsHash(), prepared.now())) {
+                return Refresh.UNCHANGED;
+            }
+            persist(orgId, event, prepared, latest);
+            return Refresh.CREATED;
+        } catch (ApiException e) {
+            // Thrown before any write (no capacity or no start date): the GET answers 422/409 for the same event.
+            return Refresh.SKIPPED;
+        }
+    }
+
+    /**
+     * Whether a GET would reuse {@code plan} as is, without computing a plan: the event's tiers and the org's
+     * mailable count are passed in so a list reads them once. Never writes.
+     */
+    public boolean isFresh(AudiencePlan plan, Event event, List<TicketTier> tierRows, int mailableCount) {
+        Instant now = clock.instant();
+        String hash = inputsHash(event, tierRows, zone(event.getTimezone()), now, mailableCount, assumptionsOf(plan));
+        return reusable(plan, hash, now);
+    }
+
+    private static boolean reusable(AudiencePlan plan, String inputsHash, Instant now) {
+        return plan.getInputsHash().equals(inputsHash) && plan.getCreatedAt().isAfter(now.minus(FRESH_FOR));
     }
 
     /** Always writes a new plan; an omitted override keeps the current plan's value. */
@@ -166,10 +216,33 @@ public class PlanService {
             Optional<AudiencePlan> locked = plans.lockCurrent(orgId, eventId).stream()
                     .filter(p -> p.getSupersededBy() == null).findFirst();
             if (locked.isPresent()) return locked;
-            // ponytail: the first plan of an event has no row to lock; see the plan's concurrency note.
-            if (latest(orgId, eventId).isEmpty()) return Optional.empty();
+            if (latest(orgId, eventId).isEmpty()) {
+                // No plan row to lock yet: a per-event lock serialises first plans, then a waiter reuses the winner's.
+                lockFirstPlan(eventId);
+                if (latest(orgId, eventId).isEmpty()) return Optional.empty();
+            }
         }
         return latest(orgId, eventId);
+    }
+
+    /** Held to commit; serialises the first plan of one event. Public so tests can hold the very same lock. */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void lockFirstPlan(UUID eventId) {
+        if (postgres()) plans.lockEventAdvisory(eventId);
+        else plans.lockEventRow(eventId);
+    }
+
+    private boolean postgres() {
+        Boolean p = postgres;
+        if (p == null) {
+            try (Connection c = dataSource.getConnection()) {
+                p = "PostgreSQL".equals(c.getMetaData().getDatabaseProductName());
+            } catch (SQLException e) {
+                throw new IllegalStateException("Cannot read the database product", e);
+            }
+            postgres = p;
+        }
+        return p;
     }
 
     private Assumptions defaults() {
@@ -198,6 +271,11 @@ public class PlanService {
 
         Set<UUID> mailable = new HashSet<>();
         for (Person p : loaded.mailable()) mailable.add(p.membershipId());
+        return new Prepared(input, inputsHash(event, tierRows, zone, now, mailable.size(), a), a, now);
+    }
+
+    private String inputsHash(Event event, List<TicketTier> tierRows, ZoneId zone, Instant now, int mailableCount,
+                              Assumptions a) {
         StringBuilder h = new StringBuilder("audience-plan-inputs/1");
         tierRows.stream().sorted(Comparator.comparing(TicketTier::getId))
                 .forEach(t -> h.append("|tier:").append(t.getId()).append(':').append(t.getQuantity())
@@ -208,14 +286,14 @@ public class PlanService {
                 .append("|zone:").append(zone.getId())
                 .append("|onSale:").append(event.getOnSaleAt())
                 .append("|today:").append(LocalDate.ofInstant(now, zone))
-                .append("|mailable:").append(mailable.size())
+                .append("|mailable:").append(mailableCount)
                 .append("|calibration:").append(CALIBRATION_VERSION)
                 .append("|logic:").append(logic.logicVersion())
                 .append("|priors:").append(logic.priorsVersion())
                 .append("|targetPct:").append(a.targetPct())
                 .append("|tpo:").append(a.ticketsPerOrder())
                 .append("|exclude:").append(String.join(",", new TreeSet<>(a.excludeSegments())));
-        return new Prepared(input, sha256(h.toString()), a, now);
+        return sha256(h.toString());
     }
 
     // ── persistence ────────────────────────────────────────────────────────

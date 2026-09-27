@@ -17,6 +17,9 @@ public interface TicketTierRepository extends JpaRepository<TicketTier, UUID> {
 
     Optional<TicketTier> findByIdAndEventId(UUID id, UUID eventId);
 
+    /** Every tier of these events, in sort order within each event; one round-trip for a list page. */
+    List<TicketTier> findByEventIdInOrderBySortOrderAsc(Collection<UUID> eventIds);
+
     List<TicketTier> findByEventIdAndEnabledTrueOrderBySortOrderAsc(UUID eventId);
 
     @Query("SELECT COALESCE(SUM(t.quantity), 0) FROM TicketTier t WHERE t.eventId = :eventId")

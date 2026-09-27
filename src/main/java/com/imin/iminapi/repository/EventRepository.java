@@ -45,6 +45,12 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
             @Param("now") Instant now,
             Pageable pageable);
 
+    /** An org's dated draft and published events starting after {@code from}, soonest first (audience plan list). */
+    @Query("SELECT e FROM Event e WHERE e.orgId = :orgId AND e.deletedAt IS NULL " +
+           "AND e.status IN (com.imin.iminapi.model.EventStatus.DRAFT, com.imin.iminapi.model.EventStatus.LIVE) " +
+           "AND e.startsAt IS NOT NULL AND e.startsAt > :from ORDER BY e.startsAt ASC, e.id ASC")
+    List<Event> findUpcomingForPlans(@Param("orgId") UUID orgId, @Param("from") Instant from, Pageable page);
+
     /**
      * Momentum Engine candidates (spec §6.1): every published, future, on-sale event
      * across ALL orgs. Mirrors {@link #findUpcomingLive} (LIVE + not-deleted + future

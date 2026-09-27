@@ -6,6 +6,7 @@ import org.springframework.data.repository.Repository;
 import org.springframework.data.repository.query.Param;
 import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -29,4 +30,21 @@ public interface AudiencePlanRepository extends Repository<AudiencePlan, UUID> {
     List<AudiencePlan> lockCurrent(@Param("orgId") UUID orgId, @Param("eventId") UUID eventId);
 
     List<AudiencePlan> findByOrgIdAndEventIdOrderByCreatedAtAsc(UUID orgId, UUID eventId);
+
+    /** Non-superseded plans of these events, newest first (the first row per event is its current plan). */
+    @Query("SELECT p FROM AudiencePlan p WHERE p.orgId = :orgId AND p.eventId IN :eventIds"
+            + " AND p.supersededBy IS NULL ORDER BY p.createdAt DESC")
+    List<AudiencePlan> findCurrentForEvents(@Param("orgId") UUID orgId, @Param("eventIds") Collection<UUID> eventIds);
+
+    /**
+     * Postgres: transaction-scoped advisory lock keyed by the event, so first plans serialise without locking the
+     * events row (a FOR UPDATE there would block every FK insert on the event, e.g. a checkout's order).
+     */
+    @Query(value = "SELECT count(*) FROM (SELECT pg_advisory_xact_lock(hashtextextended(CAST(:eventId AS text), 0))) l",
+            nativeQuery = true)
+    long lockEventAdvisory(@Param("eventId") UUID eventId);
+
+    /** H2 (tests only) has no advisory locks, so it falls back to the event row lock. */
+    @Query(value = "SELECT id FROM events WHERE id = :eventId FOR UPDATE", nativeQuery = true)
+    List<Object> lockEventRow(@Param("eventId") UUID eventId);
 }
