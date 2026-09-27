@@ -10,6 +10,7 @@ import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
 import com.imin.iminapi.audienceplan.config.AudiencePlanLogic.ClassRule;
 import com.imin.iminapi.audienceplan.dto.AudiencePlanRecomputeRequest;
 import com.imin.iminapi.audienceplan.dto.AudiencePlanResponse;
+import com.imin.iminapi.audienceplan.dto.AudiencePortraitResponse;
 import com.imin.iminapi.audienceplan.engine.ActionPlanner;
 import com.imin.iminapi.audienceplan.engine.CandidateBuilder;
 import com.imin.iminapi.audienceplan.engine.CandidateBuilder.Person;
@@ -88,6 +89,7 @@ public class PlanService {
     private static final TypeReference<LinkedHashMap<String, Integer>> COUNTS = new TypeReference<>() {};
     private static final TypeReference<List<AudiencePlanResponse.Action>> ACTIONS = new TypeReference<>() {};
     private static final TypeReference<Map<String, AudiencePlanResponse.Summary>> SUMMARIES = new TypeReference<>() {};
+    private static final TypeReference<List<AudiencePortraitResponse.NewPeopleGroup>> NEW_PEOPLE = new TypeReference<>() {};
 
     private final AudiencePlanAccess access;
     private final EventRepository events;
@@ -97,14 +99,15 @@ public class PlanService {
     private final PlanCalculator calculator;
     private final AudiencePlanRepository plans;
     private final AudiencePlanSegmentRepository segments;
+    private final PortraitService portraits;
     private final Clock clock;
     private final DataSource dataSource;
     private volatile Boolean postgres;
 
     public PlanService(AudiencePlanAccess access, EventRepository events, TicketTierRepository tiers,
                        CandidateLoader candidates, AudiencePlanLogic logic, ResponseModel model,
-                       AudiencePlanRepository plans, AudiencePlanSegmentRepository segments, Clock clock,
-                       DataSource dataSource) {
+                       AudiencePlanRepository plans, AudiencePlanSegmentRepository segments,
+                       PortraitService portraits, Clock clock, DataSource dataSource) {
         this.access = access;
         this.events = events;
         this.tiers = tiers;
@@ -113,6 +116,7 @@ public class PlanService {
         this.calculator = new PlanCalculator(logic, model);
         this.plans = plans;
         this.segments = segments;
+        this.portraits = portraits;
         this.clock = clock;
         this.dataSource = dataSource;
     }
@@ -120,7 +124,8 @@ public class PlanService {
     /** The organizer's plan choices; the defaults are the logic file's target and the mid tickets per order. */
     record Assumptions(int targetPct, double ticketsPerOrder, List<String> excludeSegments) {}
 
-    private record Prepared(PlanCalculator.Input input, String inputsHash, Assumptions assumptions, Instant now) {}
+    private record Prepared(PlanCalculator.Input input, String inputsHash, Assumptions assumptions, Instant now,
+                            List<AudiencePortraitResponse.NewPeopleGroup> newPeople) {}
 
     @Transactional
     public AudiencePlanResponse current(UUID orgId, UUID eventId, String locale) {
@@ -165,12 +170,14 @@ public class PlanService {
     }
 
     /**
-     * Whether a GET would reuse {@code plan} as is, without computing a plan: the event's tiers and the org's
-     * mailable count are passed in so a list reads them once. Never writes.
+     * Whether a GET would reuse {@code plan} as is, without computing a plan: the event's tiers, the org's mailable
+     * count and the event's portrait ({@link #newPeople}) are passed in so a list reads each once. Never writes.
      */
-    public boolean isFresh(AudiencePlan plan, Event event, List<TicketTier> tierRows, int mailableCount) {
+    public boolean isFresh(AudiencePlan plan, Event event, List<TicketTier> tierRows, int mailableCount,
+                           List<AudiencePortraitResponse.NewPeopleGroup> newPeople) {
         Instant now = clock.instant();
-        String hash = inputsHash(event, tierRows, zone(event.getTimezone()), now, mailableCount, assumptionsOf(plan));
+        String hash = inputsHash(event, tierRows, zone(event.getTimezone()), now, mailableCount, assumptionsOf(plan),
+                newPeople);
         return reusable(plan, hash, now);
     }
 
@@ -265,17 +272,22 @@ public class PlanService {
         ZoneId zone = zone(event.getTimezone());
         Instant now = clock.instant();
         CandidateBuilder.Input loaded = candidates.input(orgId, event, target, a.ticketsPerOrder());
+        List<AudiencePortraitResponse.NewPeopleGroup> newPeople = newPeople(event);
+        AudiencePortraitResponse.SizeRange regulars = PortraitService.regulars(newPeople);
+        GapCalculator.CountRange tribe = regulars == null ? null
+                : new GapCalculator.CountRange(regulars.low(), regulars.high());
         PlanCalculator.Input input = new PlanCalculator.Input(orgId, event.getGenreKey(), engineTiers, a.targetPct(),
                 a.ticketsPerOrder(), loaded.consentGateExclusions(), loaded.mailable(), now, event.getStartsAt(), zone,
-                event.getOnSaleAt(), null, Set.copyOf(a.excludeSegments()), MAX_SEGMENTS);
+                event.getOnSaleAt(), tribe, Set.copyOf(a.excludeSegments()), MAX_SEGMENTS);
 
         Set<UUID> mailable = new HashSet<>();
         for (Person p : loaded.mailable()) mailable.add(p.membershipId());
-        return new Prepared(input, inputsHash(event, tierRows, zone, now, mailable.size(), a), a, now);
+        return new Prepared(input, inputsHash(event, tierRows, zone, now, mailable.size(), a, newPeople), a, now,
+                newPeople);
     }
 
     private String inputsHash(Event event, List<TicketTier> tierRows, ZoneId zone, Instant now, int mailableCount,
-                              Assumptions a) {
+                              Assumptions a, List<AudiencePortraitResponse.NewPeopleGroup> newPeople) {
         StringBuilder h = new StringBuilder("audience-plan-inputs/1");
         tierRows.stream().sorted(Comparator.comparing(TicketTier::getId))
                 .forEach(t -> h.append("|tier:").append(t.getId()).append(':').append(t.getQuantity())
@@ -293,7 +305,23 @@ public class PlanService {
                 .append("|targetPct:").append(a.targetPct())
                 .append("|tpo:").append(a.ticketsPerOrder())
                 .append("|exclude:").append(String.join(",", new TreeSet<>(a.excludeSegments())));
+        // Only the figures the plan reads: a source's fetch date or stale flag alone must not recompute it.
+        for (AudiencePortraitResponse.NewPeopleGroup g : newPeople) {
+            h.append("|newPeople:").append(g.key()).append(':').append(String.join(",", g.cityKeys()))
+                    .append(':').append(g.size() == null ? "null" : g.size().low() + "-" + g.size().high())
+                    .append(':').append(g.method());
+        }
         return sha256(h.toString());
+    }
+
+    /** The open-data portrait of the event's genre and city; none when the genre is not a bucket or no city is set. */
+    List<AudiencePortraitResponse.NewPeopleGroup> newPeople(Event event) {
+        String genre = event.getGenreKey();
+        String city = event.getVenueCityKey();
+        if (genre == null || !logic.genres().whitelist().contains(genre) || city == null || city.isBlank()) {
+            return List.of();
+        }
+        return portraits.forCity(genre, city).groups();
     }
 
     // ── persistence ────────────────────────────────────────────────────────
@@ -341,6 +369,7 @@ public class PlanService {
         row.setD3Date(plan.timing().d3Date());
         row.setEventStarted(plan.timing().eventStarted());
         row.setActions(write(ActionPlanner.topSteps(plan.actions(), MAX_STEPS).stream().map(PlanService::action).toList()));
+        row.setNewPeople(write(prepared.newPeople()));
         row.setLogicVersion(plan.versions().logic());
         row.setPriorsVersion(plan.versions().priors());
         row.setCalibrationVersion(CALIBRATION_VERSION);
@@ -394,8 +423,10 @@ public class PlanService {
     private static AudiencePlanResponse.Action action(ActionPlanner.Action a) {
         List<AudiencePlanResponse.ArmDate> arms = a.arms().stream()
                 .map(d -> new AudiencePlanResponse.ArmDate(key(d.arm()), d.date())).toList();
+        List<String> options = a.type() == ActionPlanner.ActionType.RETHINK_TARGET
+                ? ActionPlanner.RETHINK_TARGET_OPTIONS : List.of();
         return new AudiencePlanResponse.Action(key(a.type()), a.classKey(), a.fit() == null ? null : key(a.fit()), arms,
-                a.holdoutPct());
+                a.holdoutPct(), options);
     }
 
     // ── response ───────────────────────────────────────────────────────────
@@ -421,7 +452,7 @@ public class PlanService {
                 p.getOtherGenreHeldBack(), read(p.getExclusions(), COUNTS),
                 new AudiencePlanResponse.Timing(p.getTodayDate(), p.getEventDate(), p.getLaunchDate(), p.getD3Date(),
                         (int) ChronoUnit.DAYS.between(p.getTodayDate(), p.getEventDate()), p.isEventStarted()),
-                List.of(),
+                p.getNewPeople() == null ? List.of() : read(p.getNewPeople(), NEW_PEOPLE),
                 read(p.getActions(), ACTIONS),
                 new AudiencePlanResponse.Assumptions(p.getTargetPct(), p.getTicketsPerOrder(),
                         read(p.getExcludedSegments(), STRINGS)),

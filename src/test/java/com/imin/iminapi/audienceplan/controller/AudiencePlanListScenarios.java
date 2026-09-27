@@ -11,6 +11,7 @@ import com.imin.iminapi.audienceplan.service.CandidateLoader;
 import com.imin.iminapi.audienceplan.service.PlanRefreshJob;
 import com.imin.iminapi.audienceplan.service.PlanService;
 import com.imin.iminapi.audienceplan.service.PlanService.Refresh;
+import com.imin.iminapi.audienceplan.service.PortraitService;
 import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
@@ -69,7 +70,10 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -102,6 +106,7 @@ abstract class AudiencePlanListScenarios {
     @Autowired TransactionTemplate tx;
     @Autowired Clock clock;
     @MockitoSpyBean CandidateLoader loader;
+    @MockitoSpyBean PortraitService portraits;
     @MockitoBean AuditLogger auditLogger;
 
     private final List<UUID> orgs = new ArrayList<>();
@@ -264,6 +269,49 @@ abstract class AudiencePlanListScenarios {
         getPlan(e).andExpect(status().isOk());
 
         list(null).andExpect(jsonPath("$[0].status").value("fresh"));
+    }
+
+    @Test
+    void list_metzPlanJustComputed_withItsPortrait_isFresh() throws Exception {
+        Event e = event(orgA, EventStatus.LIVE, 28, 300);
+        stub(e, List.of());
+        getPlan(e).andExpect(jsonPath("$.newPeople.length()").value(3))
+                .andExpect(jsonPath("$.newPeople[1].size.high").value(1460));
+
+        list(null).andExpect(jsonPath("$[0].status").value("fresh"));
+        assertThat(planRows(e)).isEqualTo(1);
+    }
+
+    @Test
+    void list_staleWhenThePortraitMoved() throws Exception {
+        Event e = event(orgA, EventStatus.LIVE, 28, 300);
+        stub(e, List.of());
+        getPlan(e).andExpect(status().isOk());
+        Long seeded = jdbc.queryForObject(
+                "select headline from city_open_data where city_key = 'metz' and dataset = 'insee_age'", Long.class);
+        try {
+            jdbc.update("update city_open_data set headline = ? where city_key = 'metz' and dataset = 'insee_age'",
+                    seeded + 1000);
+
+            list(null).andExpect(jsonPath("$[0].status").value("stale"));
+        } finally {
+            jdbc.update("update city_open_data set headline = ? where city_key = 'metz' and dataset = 'insee_age'",
+                    seeded);
+        }
+    }
+
+    @Test
+    void list_readsThePortraitOncePerGenreAndCity() throws Exception {
+        Event first = event(orgA, EventStatus.LIVE, 20, 300);
+        Event second = event(orgA, EventStatus.LIVE, 28, 300);
+        stub(first, List.of());
+        getPlan(first).andExpect(status().isOk());
+        getPlan(second).andExpect(status().isOk());
+        clearInvocations(portraits);
+
+        list(null).andExpect(jsonPath("$[0].status").value("fresh"))
+                .andExpect(jsonPath("$[1].status").value("fresh"));
+        verify(portraits, times(1)).forCity(HOUSE, "metz");
     }
 
     // ── refresh ────────────────────────────────────────────────────────────

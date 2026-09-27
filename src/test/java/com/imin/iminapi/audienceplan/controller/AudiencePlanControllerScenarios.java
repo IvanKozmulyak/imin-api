@@ -274,6 +274,160 @@ abstract class AudiencePlanControllerScenarios {
                 .andExpect(jsonPath("$.actions[0].arms.length()").value(0));
     }
 
+    // ── new people and target realism (open-data portrait) ──────────────────
+
+    @Test
+    void cold_metzHouse_listsThePortraitGroups_andATargetWithinTheTribe() throws Exception {
+        Event e = event(orgA, "Metz", "House & Techno", 300);
+        stub(e, List.of());
+
+        getPlan(e, null).andExpect(status().isOk())
+                .andExpect(jsonPath("$.mode").value("cold"))
+                .andExpect(jsonPath("$.gap.low").value(255))
+                .andExpect(jsonPath("$.newPeople.length()").value(3))
+                .andExpect(jsonPath("$.newPeople[0].key").value("genre_first"))
+                .andExpect(jsonPath("$.newPeople[0].origin").value("open_data"))
+                .andExpect(jsonPath("$.newPeople[0].kind").value("audience"))
+                .andExpect(jsonPath("$.newPeople[0].scope").value("fr_catchment"))
+                .andExpect(jsonPath("$.newPeople[0].cityKeys.length()").value(3))
+                .andExpect(jsonPath("$.newPeople[0].cityKeys[2]").value("nancy"))
+                .andExpect(jsonPath("$.newPeople[0].size.low").value(3180))
+                .andExpect(jsonPath("$.newPeople[0].size.high").value(4172))
+                .andExpect(jsonPath("$.newPeople[0].method").value("electronic_first"))
+                .andExpect(jsonPath("$.newPeople[0].sources[0].dataset").value("insee_age"))
+                .andExpect(jsonPath("$.newPeople[0].sources[0].licence").value("Licence Ouverte 2.0"))
+                .andExpect(jsonPath("$.newPeople[1].key").value("regulars"))
+                .andExpect(jsonPath("$.newPeople[1].kind").value("audience"))
+                .andExpect(jsonPath("$.newPeople[1].size.low").value(1113))
+                .andExpect(jsonPath("$.newPeople[1].size.high").value(1460))
+                .andExpect(jsonPath("$.newPeople[2].key").value("students"))
+                .andExpect(jsonPath("$.newPeople[2].kind").value("context"))
+                .andExpect(jsonPath("$.newPeople[2].size.low").value(52096))
+                .andExpect(jsonPath("$.newPeople[2].size.high").value(52096))
+                .andExpect(jsonPath("$.gapExceedsTribe").value(false))
+                .andExpect(jsonPath("$.actions.length()").value(1))
+                .andExpect(jsonPath("$.actions[0].type").value("import_with_proof"))
+                .andExpect(jsonPath("$.actions[0].options.length()").value(0));
+    }
+
+    @Test
+    void cold_targetAboveTheRegulars_isFlagged_withTheRethinkOptions() throws Exception {
+        // Target 85% of 2,000 = 1,700 > 1,460 regulars at most in the French part of the Metz area.
+        Event e = event(orgA, "Metz", "House & Techno", 2000);
+        stub(e, List.of());
+
+        getPlan(e, null).andExpect(status().isOk())
+                .andExpect(jsonPath("$.gap.low").value(1700))
+                .andExpect(jsonPath("$.gapExceedsTribe").value(true))
+                .andExpect(jsonPath("$.actions.length()").value(2))
+                .andExpect(jsonPath("$.actions[0].type").value("import_with_proof"))
+                .andExpect(jsonPath("$.actions[1].type").value("rethink_target"))
+                .andExpect(jsonPath("$.actions[1].classKey").value(nullValue()))
+                .andExpect(jsonPath("$.actions[1].arms.length()").value(0))
+                .andExpect(jsonPath("$.actions[1].options.length()").value(3))
+                .andExpect(jsonPath("$.actions[1].options[0]").value("smaller_room"))
+                .andExpect(jsonPath("$.actions[1].options[1]").value("other_date"))
+                .andExpect(jsonPath("$.actions[1].options[2]").value("stronger_lineup"));
+    }
+
+    @Test
+    void warm_rethinkKeepsItsSlot_withinThreeSteps() throws Exception {
+        // Gap 1,700 - 93 = 1,607 > 1,460; 52/1,700 is weak, so import and rethink take two of the three steps.
+        Event e = event(orgA, "Metz", "House & Techno", 2000);
+        stub(e, fixture());
+
+        getPlan(e, null).andExpect(status().isOk())
+                .andExpect(jsonPath("$.mode").value("warm"))
+                .andExpect(jsonPath("$.gapExceedsTribe").value(true))
+                .andExpect(jsonPath("$.newPeople.length()").value(3))
+                .andExpect(jsonPath("$.actions.length()").value(3))
+                .andExpect(jsonPath("$.actions[0].type").value("invite"))
+                .andExpect(jsonPath("$.actions[0].classKey").value("loyal"))
+                .andExpect(jsonPath("$.actions[0].options.length()").value(0))
+                .andExpect(jsonPath("$.actions[1].type").value("import_with_proof"))
+                .andExpect(jsonPath("$.actions[2].type").value("rethink_target"))
+                .andExpect(jsonPath("$.actions[2].options.length()").value(3));
+    }
+
+    @Test
+    void genreOutsideTheBuckets_hasNoNewPeople_andAnUnknownTribeVerdict() throws Exception {
+        Event e = event(orgA, "Metz", "Techno", 2000);
+        stub(e, List.of());
+
+        getPlan(e, null).andExpect(status().isOk())
+                .andExpect(jsonPath("$.newPeople.length()").value(0))
+                .andExpect(jsonPath("$.gapExceedsTribe").value(nullValue()))
+                .andExpect(jsonPath("$.actions.length()").value(1));
+    }
+
+    @Test
+    void genreWithoutAShareRate_hasNullSizes_andAnUnknownTribeVerdict() throws Exception {
+        Event e = event(orgA, "Metz", "Jazz & Acoustic", 2000);
+        stub(e, List.of());
+
+        getPlan(e, null).andExpect(status().isOk())
+                .andExpect(jsonPath("$.newPeople.length()").value(3))
+                .andExpect(jsonPath("$.newPeople[1].size").value(nullValue()))
+                .andExpect(jsonPath("$.newPeople[1].method").value("no_genre_share_rate"))
+                .andExpect(jsonPath("$.newPeople[2].size.low").value(52096))
+                .andExpect(jsonPath("$.gapExceedsTribe").value(nullValue()));
+    }
+
+    @Test
+    void reusedPlan_showsTheStoredGroups_andAPlanFromBeforePortraitsShowsNone() throws Exception {
+        Event e = event(orgA, "Metz", "House & Techno", 300);
+        stub(e, List.of());
+        String first = id(getPlan(e, null));
+
+        getPlan(e, null).andExpect(jsonPath("$.id").value(first))
+                .andExpect(jsonPath("$.newPeople.length()").value(3));
+
+        jdbc.update("update audience_plans set new_people = null, actions = ? where id = ?",
+                "[{\"type\":\"import_with_proof\",\"classKey\":null,\"genreFit\":null,\"arms\":[],\"holdoutPct\":null}]",
+                UUID.fromString(first));
+        getPlan(e, null).andExpect(jsonPath("$.id").value(first))
+                .andExpect(jsonPath("$.newPeople.length()").value(0))
+                .andExpect(jsonPath("$.actions[0].options.length()").value(0));
+    }
+
+    @Test
+    void changedOpenData_recomputesThePlan() throws Exception {
+        Event e = event(orgA, "Metz", "House & Techno", 300);
+        stub(e, List.of());
+        String first = id(getPlan(e, null));
+        Long seeded = jdbc.queryForObject(
+                "select headline from city_open_data where city_key = 'metz' and dataset = 'insee_age'", Long.class);
+        try {
+            jdbc.update("update city_open_data set headline = ? where city_key = 'metz' and dataset = 'insee_age'",
+                    seeded + 1000);
+
+            String second = id(getPlan(e, null).andExpect(jsonPath("$.newPeople[0].size.low").value(3215)));
+            assertThat(second).isNotEqualTo(first);
+            assertThat(supersededBy(first)).isEqualTo(second);
+        } finally {
+            jdbc.update("update city_open_data set headline = ? where city_key = 'metz' and dataset = 'insee_age'",
+                    seeded);
+        }
+    }
+
+    @Test
+    void aSourceDateOrStaleFlagAlone_reusesThePlan() throws Exception {
+        Event e = event(orgA, "Metz", "House & Techno", 300);
+        stub(e, List.of());
+        String first = id(getPlan(e, null));
+        Map<String, Object> seeded = jdbc.queryForMap(
+                "select fetched_at, expires_at from city_open_data where city_key = 'metz' and dataset = 'insee_age'");
+        try {
+            jdbc.update("update city_open_data set fetched_at = ?, expires_at = ? where city_key = 'metz' and dataset = 'insee_age'",
+                    Timestamp.from(Instant.parse("2020-01-01T00:00:00Z")), Timestamp.from(Instant.parse("2020-06-01T00:00:00Z")));
+
+            assertThat(id(getPlan(e, null))).isEqualTo(first);
+        } finally {
+            jdbc.update("update city_open_data set fetched_at = ?, expires_at = ? where city_key = 'metz' and dataset = 'insee_age'",
+                    seeded.get("fetched_at"), seeded.get("expires_at"));
+        }
+    }
+
     // ── access and refusals ────────────────────────────────────────────────
 
     @Test
@@ -648,6 +802,11 @@ abstract class AudiencePlanControllerScenarios {
 
     /** A live house night 28 days out (20:00 Paris), no on-sale date, with the given enabled tiers. */
     private Event event(UUID orgId, int... quantities) {
+        return event(orgId, null, "House & Techno", quantities);
+    }
+
+    /** The same night in {@code venueCity} (null = none) with {@code genre}. */
+    private Event event(UUID orgId, String venueCity, String genre, int... quantities) {
         User u = new User();
         u.setEmail("plan-owner-" + UUID.randomUUID() + "@example.com");
         u.setOrgId(orgId);
@@ -657,7 +816,8 @@ abstract class AudiencePlanControllerScenarios {
         e.setOrgId(orgId);
         e.setName("Plan Night");
         e.setSlug("plan-event-" + UUID.randomUUID().toString().substring(0, 12));
-        e.setGenre("House & Techno");
+        e.setGenre(genre);
+        if (venueCity != null) e.setVenueCity(venueCity);
         e.setVisibility(EventVisibility.PUBLIC);
         e.setStatus(EventStatus.LIVE);
         e.setPublishedAt(Instant.now().minusSeconds(3600));

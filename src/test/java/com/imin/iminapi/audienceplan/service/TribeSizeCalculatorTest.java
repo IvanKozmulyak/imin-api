@@ -106,6 +106,13 @@ class TribeSizeCalculatorTest {
     }
 
     @Test
+    void shareKey_namesTheRateCoveringTheGenre_orNothing() {
+        assertThat(calculator.shareKey("house & techno")).contains("electronic_first");
+        assertThat(calculator.shareKey("bass & hard dance")).contains("electronic_first");
+        assertThat(calculator.shareKey("pop")).isEmpty();
+    }
+
+    @Test
     void genreOutsideTheEightBuckets_isRejected() {
         assertThatThrownBy(() -> calculator.estimate("techno", List.of("metz")))
                 .isInstanceOf(IllegalArgumentException.class)

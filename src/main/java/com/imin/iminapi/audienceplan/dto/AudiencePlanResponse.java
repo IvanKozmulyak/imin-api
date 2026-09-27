@@ -29,7 +29,7 @@ public record AudiencePlanResponse(
         int otherGenreHeldBack,
         Map<String, Integer> exclusions,
         Timing timing,
-        List<NewPeopleGroup> newPeople,
+        List<AudiencePortraitResponse.NewPeopleGroup> newPeople,
         List<Action> actions,
         Assumptions assumptions,
         Summary summary,
@@ -63,16 +63,19 @@ public record AudiencePlanResponse(
     public record Timing(LocalDate today, LocalDate eventDate, LocalDate launchDate, LocalDate d3Date,
                          int daysToEvent, boolean eventStarted) {}
 
-    /** Empty until portraits exist. */
-    public record NewPeopleGroup(String label, SizeRange size, List<String> sources) {}
-
-    public record SizeRange(Integer low, Integer high) {}
-
     /** {@code arm}: launch | d3. */
     public record ArmDate(String arm, LocalDate date) {}
 
-    /** {@code type}: invite | import_with_proof | rethink_target; only invite names a segment, arms and holdout. */
-    public record Action(String type, String classKey, String genreFit, List<ArmDate> arms, Integer holdoutPct) {}
+    /**
+     * {@code type}: invite | import_with_proof | rethink_target; only invite names a segment, arms and holdout.
+     * {@code options} are copy keys, set on rethink_target only (empty otherwise, also on plans stored before them).
+     */
+    public record Action(String type, String classKey, String genreFit, List<ArmDate> arms, Integer holdoutPct,
+                         List<String> options) {
+        public Action {
+            options = options == null ? List.of() : List.copyOf(options);
+        }
+    }
 
     public record Assumptions(int targetPct, double ticketsPerOrder, List<String> excludeSegments) {}
 

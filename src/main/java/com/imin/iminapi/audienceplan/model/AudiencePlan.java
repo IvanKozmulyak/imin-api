@@ -126,6 +126,10 @@ public class AudiencePlan {
     @Column(name = "portrait_id")
     private UUID portraitId;
 
+    /** JSON list of the portrait's new-people groups; null on plans computed before portraits. */
+    @Column(name = "new_people", columnDefinition = "TEXT")
+    private String newPeople;
+
     /** JSON object locale → summary; null until one is generated. */
     @Column(columnDefinition = "TEXT")
     private String summaries;

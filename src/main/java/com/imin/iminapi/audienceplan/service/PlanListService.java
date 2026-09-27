@@ -2,6 +2,7 @@ package com.imin.iminapi.audienceplan.service;
 
 import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
 import com.imin.iminapi.audienceplan.dto.AudiencePlanListItem;
+import com.imin.iminapi.audienceplan.dto.AudiencePortraitResponse;
 import com.imin.iminapi.audienceplan.model.AudiencePlan;
 import com.imin.iminapi.audienceplan.repository.AudiencePlanRepository;
 import com.imin.iminapi.model.Event;
@@ -72,11 +73,15 @@ public class PlanListService {
                 : tiers.findByEventIdInOrderBySortOrderAsc(current.keySet()).stream()
                         .collect(Collectors.groupingBy(TicketTier::getEventId));
 
+        // A portrait depends only on (genre, city), so events sharing both read it once.
+        Map<PortraitKey, List<AudiencePortraitResponse.NewPeopleGroup>> portraits = new HashMap<>();
         List<AudiencePlanListItem> out = new ArrayList<>(upcoming.size());
         for (Event e : upcoming) {
             AudiencePlan p = current.get(e.getId());
             String status = p == null ? "none"
-                    : planService.isFresh(p, e, tiersByEvent.getOrDefault(e.getId(), List.of()), mailable)
+                    : planService.isFresh(p, e, tiersByEvent.getOrDefault(e.getId(), List.of()), mailable,
+                            portraits.computeIfAbsent(new PortraitKey(e.getGenreKey(), e.getVenueCityKey()),
+                                    k -> planService.newPeople(e)))
                     ? "fresh" : "stale";
             out.add(new AudiencePlanListItem(e.getId(), e.getName(), e.getStartsAt(),
                     e.getStatus().name().toLowerCase(Locale.ROOT), status,
@@ -86,6 +91,8 @@ public class PlanListService {
         }
         return List.copyOf(out);
     }
+
+    private record PortraitKey(String genre, String cityKey) {}
 
     /** Blank = now; a past instant is raised to now so started events never list. */
     static Instant from(String raw, Instant now) {

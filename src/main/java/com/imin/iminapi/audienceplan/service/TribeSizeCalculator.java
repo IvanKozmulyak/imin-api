@@ -58,9 +58,7 @@ public class TribeSizeCalculator {
             throw new IllegalArgumentException("At least one city is required");
         }
         List<String> cities = List.copyOf(new LinkedHashSet<>(cityKeys));
-        Optional<Map.Entry<String, SourcedRate>> share = logic.priors().tribeSize().entrySet().stream()
-                .filter(e -> e.getValue().genres().contains(genreKey))
-                .findFirst();
+        Optional<String> share = shareKey(genreKey);
         if (share.isEmpty()) {
             Estimate none = new Estimate(null, null, NO_SHARE_METHOD, List.of(), List.of());
             return new TribeSize(genreKey, cities, none, none);
@@ -84,7 +82,7 @@ public class TribeSizeCalculator {
             }
         }
 
-        String shareKey = share.get().getKey();
+        String shareKey = share.get();
         double low = population;
         double high = population;
         for (String key : List.of(LISTENERS, CONCERT_GOERS, shareKey)) {
@@ -101,6 +99,14 @@ public class TribeSizeCalculator {
         Estimate regulars = sized(known, low * frequent.low(), high * frequent.high(),
                 method + " × " + FREQUENT, inputs, sources);
         return new TribeSize(genreKey, cities, genreFirst, regulars);
+    }
+
+    /** The priors' genre-share rate key that covers {@code genreKey} (e.g. {@code electronic_first}), if any. */
+    public Optional<String> shareKey(String genreKey) {
+        return logic.priors().tribeSize().entrySet().stream()
+                .filter(e -> e.getValue().genres().contains(genreKey))
+                .map(Map.Entry::getKey)
+                .findFirst();
     }
 
     private static Estimate sized(boolean known, double low, double high, String method,

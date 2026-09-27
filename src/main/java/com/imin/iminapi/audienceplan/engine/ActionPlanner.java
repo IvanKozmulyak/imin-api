@@ -25,6 +25,9 @@ public final class ActionPlanner {
 
     public enum ActionType { INVITE, IMPORT_WITH_PROOF, RETHINK_TARGET }
 
+    /** Logic 7.5: the ways to rethink a target the tribe cannot fill, as copy keys for the UI. */
+    public static final List<String> RETHINK_TARGET_OPTIONS = List.of("smaller_room", "other_date", "stronger_lineup");
+
     public record ArmDate(TimingArm arm, LocalDate date) {}
 
     /** Only {@code INVITE} names a segment, arms and a holdout share; the others carry nulls and no arms. */
