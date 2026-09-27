@@ -10,6 +10,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
+import org.springframework.core.retry.RetryTemplate;
+import org.springframework.web.client.RestClient;
 
 @Configuration
 public class OpenRouterConfig {
@@ -31,25 +33,27 @@ public class OpenRouterConfig {
     @Bean
     @Primary
     public ChatClient openRouterChatClient() {
-        String normalizedBaseUrl = normalizeOpenRouterBaseUrl(baseUrl);
         log.info("Configuring OpenRouter ChatClient with baseUrl={}, model={}, temperature={}",
-                normalizedBaseUrl, model, temperature);
+                normalizeOpenRouterBaseUrl(baseUrl), model, temperature);
+        return chatClient(baseUrl, apiKey, model, temperature, RestClient.builder(), null);
+    }
 
-        // Every OpenRouter request carries the provider data-collection opt-out.
-        // It is a body field with no header equivalent, and OpenAiChatOptions models
-        // the OpenAI schema with no room for a vendor extension — so it goes in
-        // through the transport. See OpenRouterPrivacy.
+    /**
+     * An OpenRouter ChatClient over {@code http}; a null {@code retry} keeps Spring AI's default retries.
+     * Every request carries the provider data-collection opt-out through the transport (see OpenRouterPrivacy).
+     */
+    public static ChatClient chatClient(String baseUrl, String apiKey, String model, Double temperature,
+                                        RestClient.Builder http, RetryTemplate retry) {
         OpenAiApi openAiApi = OpenAiApi.builder()
-                .baseUrl(normalizedBaseUrl)
+                .baseUrl(normalizeOpenRouterBaseUrl(baseUrl))
                 .apiKey(apiKey)
-                .restClientBuilder(org.springframework.web.client.RestClient.builder()
-                        .requestInterceptor(OpenRouterPrivacy.bodyInjectingInterceptor()))
+                .restClientBuilder(http.requestInterceptor(OpenRouterPrivacy.bodyInjectingInterceptor()))
                 .build();
-        OpenAiChatModel chatModel = OpenAiChatModel.builder()
+        OpenAiChatModel.Builder chatModel = OpenAiChatModel.builder()
                 .openAiApi(openAiApi)
-                .defaultOptions(chatOptions(model, temperature))
-                .build();
-        return ChatClient.builder(chatModel).build();
+                .defaultOptions(chatOptions(model, temperature));
+        if (retry != null) chatModel.retryTemplate(retry);
+        return ChatClient.builder(chatModel.build()).build();
     }
 
     /**

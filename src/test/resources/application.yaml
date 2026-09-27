@@ -121,3 +121,10 @@ imin:
     soft-opt-in-enabled: false
     retention-job-enabled: false
     consent-gate-all-campaigns: false
+    # Off so no Spring test reaches OpenRouter; summary tests switch it on with a stubbed ChatClient.
+    summary-enabled: false
+    summary-model: ""
+    summary-price-input-usd-per-mtok: ""
+    summary-price-output-usd-per-mtok: ""
+    summary-daily-cap-per-org: ""
+    summary-timeout: ""

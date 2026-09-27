@@ -1,0 +1,22 @@
+{
+  "id": "gen-1790000000-rec",
+  "object": "chat.completion",
+  "created": 1790000000,
+  "model": "openai/gpt-4o-mini-2024-07-18",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "refusal": "I can't help with that."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 1210,
+    "completion_tokens": 190,
+    "total_tokens": 1400
+  }
+}

@@ -79,9 +79,14 @@ public record AudiencePlanResponse(
 
     public record Assumptions(int targetPct, double ticketsPerOrder, List<String> excludeSegments) {}
 
-    /** Null until summaries are generated. */
+    /**
+     * Null until the requested locale's summary is generated (lazily, after a GET). The five text fields are
+     * non-null when present. {@code aiGenerated} false = the code template; {@code aiDisclosure} is the ADR-0005
+     * marker {@code mode=ai-originated} on model text and null on the template, as is {@code model}.
+     */
     public record Summary(String headline, List<String> segmentLines, String gapLine, List<String> actions,
-                          List<String> assumptions) {}
+                          List<String> assumptions, String locale, boolean aiGenerated, String aiDisclosure,
+                          String model, Instant generatedAt) {}
 
     /** {@code model} is null until an LLM summary exists. */
     public record Versions(int logic, int priors, String model) {}

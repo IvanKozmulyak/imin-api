@@ -887,6 +887,17 @@ imin:
     retention-job-enabled: ${IMIN_AUDIENCE_RETENTION_ENABLED:false}
     # ConsentGate for every campaign, not only audience-plan ones (D6). Flip only after a prod count of who it drops.
     consent-gate-all-campaigns: ${IMIN_CONSENT_GATE_ALL_CAMPAIGNS:false}
+    # Plan summaries: generated lazily on the plan GET, per requested locale. False keeps summary null.
+    summary-enabled: ${IMIN_AUDIENCE_PLAN_SUMMARY_ENABLED:true}
+    # OpenRouter model for summaries; blank = openrouter.model.
+    summary-model: ${IMIN_AUDIENCE_PLAN_SUMMARY_MODEL:}
+    # USD per million prompt / completion tokens of that model; either blank leaves audience_plans.cost_usd null.
+    summary-price-input-usd-per-mtok: ${IMIN_AUDIENCE_PLAN_SUMMARY_PRICE_IN:}
+    summary-price-output-usd-per-mtok: ${IMIN_AUDIENCE_PLAN_SUMMARY_PRICE_OUT:}
+    # Model summary calls per org per UTC day (retries count); past it the template is used.
+    summary-daily-cap-per-org: ${IMIN_AUDIENCE_PLAN_SUMMARY_DAILY_CAP:50}
+    # Longest wait for one summary answer before the template is used.
+    summary-timeout: ${IMIN_AUDIENCE_PLAN_SUMMARY_TIMEOUT:30s}
 
 # resendTracking reports TRACKING_ON (ranked below UP, 200) so a Resend setting never fails the healthcheck.
 # A custom http-mapping replaces Boot's defaults, so down/out-of-service must be restated as 503.

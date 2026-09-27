@@ -1,0 +1,21 @@
+{
+  "id": "gen-1790000000-rec",
+  "object": "chat.completion",
+  "created": 1790000000,
+  "model": "openai/gpt-4o-mini-2024-07-18",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "```json\n{\n \"headline\": \"Your list could bring 26–93 of the 255 tickets you are aiming for.\",\n \"segmentLines\": [\n  \"Loyal guests who share this genre: 40 can be emailed, 8–26 tickets expected.\",\n  \"Repeat guests: 70 can be emailed, 7–22 tickets expected.\",\n  \"First-timers: 235 can be emailed, 11–45 tickets expected.\"\n ],\n \"gapLine\": \"You still need 162–229 tickets from people who are not on your list.\",\n \"actions\": [\n  \"Invite loyal guests on 26 September and 21 October 2026.\",\n  \"Invite repeat guests on 26 September and 21 October 2026.\",\n  \"Invite first-timers on 26 September and 21 October 2026; 15% are held back to measure the effect.\"\n ],\n \"assumptions\": [\n  \"The target is 85% of 300 tickets.\",\n  \"Each order is counted as 1.6 tickets.\"\n ]\n}\n```"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 1210,
+    "completion_tokens": 190,
+    "total_tokens": 1400
+  }
+}
