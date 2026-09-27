@@ -1,5 +1,6 @@
 package com.imin.iminapi.audienceplan.config;
 
+import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
 import org.springframework.http.HttpStatus;
@@ -46,6 +47,14 @@ public class AudiencePlanAccess {
         if (!sendsEnabled() && CAMPAIGN_ORIGIN.equals(campaignOrigin)) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.AUDIENCE_SENDS_DISABLED,
                     "Sending audience plan campaigns is not enabled yet");
+        }
+    }
+
+    /** Audience-plan campaigns need the org's legal name and contact for the email footer; other origins ignore it. */
+    public void requireLegalIdentity(String campaignOrigin, Organization org) {
+        if (CAMPAIGN_ORIGIN.equals(campaignOrigin) && (org == null || !org.hasLegalIdentity())) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.ORG_LEGAL_IDENTITY_MISSING,
+                    "Add the organization's legal name and legal contact before scheduling this campaign");
         }
     }
 }

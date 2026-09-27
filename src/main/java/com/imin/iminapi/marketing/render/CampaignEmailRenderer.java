@@ -11,6 +11,7 @@ import org.commonmark.parser.Parser;
 import org.commonmark.renderer.html.HtmlRenderer;
 import org.springframework.stereotype.Component;
 
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -108,6 +109,15 @@ public class CampaignEmailRenderer {
                            String campaignId, String channel, String unsubscribeUrl,
                            ResolvedTemplate template, String brandName, String posterUrl,
                            String ticketsUrl, AiEmailDisclosure ai) {
+        return render(subject, preheader, bodyMd, campaignId, channel, unsubscribeUrl,
+                template, brandName, posterUrl, ticketsUrl, ai, OrganizerIdentity.NONE);
+    }
+
+    /** @param sender printed in the footer (organizer name, legal name, legal contact); blank parts are omitted */
+    public Rendered render(String subject, String preheader, String bodyMd,
+                           String campaignId, String channel, String unsubscribeUrl,
+                           ResolvedTemplate template, String brandName, String posterUrl,
+                           String ticketsUrl, AiEmailDisclosure ai, OrganizerIdentity sender) {
         if (unsubscribeUrl == null || unsubscribeUrl.isBlank()) {
             throw new IllegalArgumentException(
                     "Cannot render campaign email without an unsubscribe URL (footer is mandatory)");
@@ -131,6 +141,7 @@ public class CampaignEmailRenderer {
                   + escape(preheader) + "</div>";
 
         String headerBlock = headerBlock(tokens, brandName, posterUrl);
+        List<String> footerParts = sender == null ? List.of() : sender.footerParts();
 
         String html = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"/>"
                 + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"/>"
@@ -149,11 +160,13 @@ public class CampaignEmailRenderer {
                 + headerBlock
                 + "<tr><td style=\"padding:28px 32px;font-size:15px;line-height:1.6;color:"
                 + pal.text() + ";\">" + bodyHtml + "</td></tr>"
-                + footerBlock(pal, unsubscribeUrl)
+                + footerBlock(pal, unsubscribeUrl, footerParts)
                 + "</table></td></tr></table></body></html>";
 
         String text = ticketsButtonText(bodyMd == null ? "" : bodyMd, ticketsUrl)
-                + "\n\n---\nUnsubscribe: " + unsubscribeUrl;
+                + "\n\n---\n"
+                + (footerParts.isEmpty() ? "" : String.join(" · ", footerParts) + "\n")
+                + "Unsubscribe: " + unsubscribeUrl;
 
         return new Rendered(html, text);
     }
@@ -274,10 +287,16 @@ public class CampaignEmailRenderer {
         return null;
     }
 
-    /** Mandatory unsubscribe footer — wording + link preserved, coloured by the muted token. */
-    private String footerBlock(TemplatePalette pal, String unsubscribeUrl) {
+    /** Mandatory footer: sender identity line (when known), then the unsubscribe wording + link. */
+    private String footerBlock(TemplatePalette pal, String unsubscribeUrl, List<String> identity) {
+        String identityLine = identity.isEmpty() ? ""
+                : "<div style=\"margin-bottom:6px;\">"
+                  + identity.stream().map(CampaignEmailRenderer::escape)
+                          .collect(java.util.stream.Collectors.joining(" &middot; "))
+                  + "</div>";
         return "<tr><td style=\"padding:20px 32px 28px;border-top:1px solid " + pal.muted()
                 + "33;font-size:12px;line-height:1.5;color:" + pal.muted() + ";\">"
+                + identityLine
                 + "You received this because you are on this organizer's list. "
                 + "<a href=\"" + escape(unsubscribeUrl) + "\" style=\"color:" + pal.muted()
                 + ";text-decoration:underline;\">Unsubscribe</a>."

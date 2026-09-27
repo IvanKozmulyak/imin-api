@@ -79,6 +79,8 @@ public class CampaignSendUnit {
         while (sendsAllowed(c) && emailSender.sendNextBatch(c) && guard++ < 10_000) {
             // keep sending
         }
+        // The sender failed it mid-drive (e.g. legal identity removed); finish() must not overwrite that.
+        if ("failed".equals(c.getStatus())) return;
         if (!sendsAllowed(c)) {
             // Same as the paused path: stays 'sending' with its queue intact; the claim resumes it once re-enabled.
             log.warn("[send-unit] campaign {} held mid-send: audience plan sends are disabled", c.getId());

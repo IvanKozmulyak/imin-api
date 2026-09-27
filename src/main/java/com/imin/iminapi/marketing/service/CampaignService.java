@@ -1,20 +1,20 @@
 package com.imin.iminapi.marketing.service;
 
-import com.imin.iminapi.service.ai.provenance.AiEmailDisclosure;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.model.Segment;
 import com.imin.iminapi.audience.service.SegmentService;
 import com.imin.iminapi.audience.service.SendGateService;
 import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
-import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.marketing.dto.CampaignDto;
 import com.imin.iminapi.marketing.dto.CampaignRequests.CreateCampaignRequest;
 import com.imin.iminapi.marketing.dto.CampaignRequests.PatchCampaignRequest;
 import com.imin.iminapi.marketing.dto.CampaignSummary;
 import com.imin.iminapi.marketing.dto.PreviewAudienceResponse;
+import com.imin.iminapi.marketing.email.CampaignEmailProvider;
 import com.imin.iminapi.marketing.email.MarketingEmailProperties;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.render.CampaignEmailRenderer;
+import com.imin.iminapi.marketing.render.OrganizerIdentity;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.marketing.template.ResolvedTemplate;
 import com.imin.iminapi.model.Event;
@@ -53,7 +53,7 @@ public class CampaignService {
     private final AuditLogger audit;
     private final SegmentService segments;
     private final SendGateService sendGate;
-    private final EmailService email;
+    private final CampaignEmailProvider provider;
     private final UserRepository users;
     private final CampaignAttributionService attribution;
     /** Read-only, org-scoped: resolves the recipient log's Person column display names. */
@@ -73,7 +73,7 @@ public class CampaignService {
                            com.imin.iminapi.marketing.repository.CampaignRecipientRepository campaignRecipientRepository,
                            AuditLogger audit,
                            SegmentService segments, SendGateService sendGate,
-                           EmailService email, UserRepository users,
+                           CampaignEmailProvider provider, UserRepository users,
                            CampaignAttributionService attribution,
                            com.imin.iminapi.audience.repository.MembershipRepository memberships,
                            org.springframework.context.ApplicationEventPublisher eventPublisher,
@@ -87,7 +87,7 @@ public class CampaignService {
         this.audit = audit;
         this.segments = segments;
         this.sendGate = sendGate;
-        this.email = email;
+        this.provider = provider;
         this.users = users;
         this.attribution = attribution;
         this.memberships = memberships;
@@ -271,16 +271,18 @@ public class CampaignService {
             throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID,
                     "Subject and body are required to send a test");
         }
-        String to = callerEmail(p);   // always the organizer — requestedEmail is advisory only
-        CampaignEmailRenderer.Rendered rendered = renderForTest(c);
-        // Send BOTH parts (html + text) through the same shape the real batch send uses, so a
-        // client shows the branded HTML — not a plain-text fallback.
-        AiEmailDisclosure ai = c.aiDisclosure();
-        if (ai.any()) {
-            email.send(to, "[TEST] " + c.getSubject(), rendered.html(), rendered.text(), ai.headers());
-        } else {
-            email.send(to, "[TEST] " + c.getSubject(), rendered.html(), rendered.text());
+        if (emailProps.getFromAddress() == null || emailProps.getFromAddress().isBlank()) {
+            throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, ErrorCode.INTERNAL,
+                    "Marketing email sender not configured");
         }
+        String to = callerEmail(p);   // always the organizer — requestedEmail is advisory only
+        Organization org = organizationOrNull(c.getOrgId());
+        String unsubUrl = emailProps.unsubscribeUrl("preview");
+        CampaignEmailRenderer.Rendered rendered = renderForTest(c, org, unsubUrl);
+        // Same provider, From and headers as the real batch send, so the test shows what fans will get.
+        provider.sendBatch(List.of(new CampaignEmailProvider.OutgoingEmail(
+                emailProps.fromHeader(org == null ? null : org.displayName()), to,
+                "[TEST] " + c.getSubject(), rendered.html(), rendered.text(), unsubUrl, c.aiDisclosure())));
         audit.record(p, "CAMPAIGN_TEST_SENT", "campaign", c.getId(),
                 "Test email sent to organizer");
     }
@@ -292,15 +294,14 @@ public class CampaignService {
      * row for a self-test, so a preview unsubscribe token stands in for the per-recipient signed
      * one — the footer is still present and honest, it just resolves to a preview optout.
      */
-    private CampaignEmailRenderer.Rendered renderForTest(Campaign c) {
+    private CampaignEmailRenderer.Rendered renderForTest(Campaign c, Organization org, String unsubUrl) {
         // resolve() coalesces null/blank/unknown template_key to the classic builtin, so a pre-V66
         // or NULL row still renders inside the branded shell rather than as bare text.
         ResolvedTemplate template = templateService.resolve(c.getOrgId(), c.getTemplateKey());
-        String brandName = brandName(c.getOrgId());
+        String brandName = org == null ? null : org.displayName();
         Event event = linkedEvent(c);
         String posterUrl = event == null ? null : event.getPosterUrl();
         String ticketsUrl = event == null ? null : emailProps.getBuyerSiteBaseUrl() + "/e/" + event.getId();
-        String unsubUrl = emailProps.unsubscribeUrl("preview");
         // A test send has no recipient, so resolve merge tags to a preview sample: the
         // neutral first-name fallback and the real event URL — so the tester sees resolved
         // text, not raw {{firstName}}/{{eventUrl}} tokens.
@@ -314,16 +315,19 @@ public class CampaignService {
         return renderer.render(
                 subject, preheader, bodyMd,
                 c.getId().toString(), "email", unsubUrl,
-                template, brandName, posterUrl, ticketsUrl, c.aiDisclosure());
+                template, brandName, posterUrl, ticketsUrl, c.aiDisclosure(), OrganizerIdentity.of(org));
     }
 
-    /** Org brand/display name for the test header. Failure-isolated — a hiccup just omits it. */
-    private String brandName(UUID orgId) {
+    /** Only audience-plan campaigns are refused without a legal identity; the org is read only for them. */
+    private void requireLegalIdentity(Campaign c) {
+        if (!AudiencePlanAccess.CAMPAIGN_ORIGIN.equals(c.getOrigin())) return;
+        audiencePlanAccess.requireLegalIdentity(c.getOrigin(), organizations.findById(c.getOrgId()).orElse(null));
+    }
+
+    /** The campaign's org for the test From, header and footer. Failure-isolated: a hiccup omits the identity. */
+    private Organization organizationOrNull(UUID orgId) {
         try {
-            Organization org = organizations.findById(orgId).orElse(null);
-            if (org == null) return null;
-            return org.getBrandName() != null && !org.getBrandName().isBlank()
-                    ? org.getBrandName() : org.getName();
+            return organizations.findById(orgId).orElse(null);
         } catch (Exception e) {
             return null;
         }
@@ -373,6 +377,7 @@ public class CampaignService {
         com.imin.iminapi.security.RoleGuard.requireAtLeast(
                 principal, com.imin.iminapi.model.UserRole.ADMIN, "send a campaign");
         audiencePlanAccess.requireSendsAllowed(c.getOrigin());
+        requireLegalIdentity(c);
         // Fail fast on a channel nothing drains (mkt-core-7). CampaignRepository.claimDue
         // filters WHERE channel='email', so a scheduled SMS campaign was never claimed,
         // never failed and never timed out — it sat 'scheduled' for ever with no signal.
@@ -574,6 +579,7 @@ public class CampaignService {
                     "Campaign is not retryable");
         }
         audiencePlanAccess.requireSendsAllowed(c.getOrigin());
+        requireLegalIdentity(c);
         c.setStatus("scheduled");
         c.setScheduledAt(Instant.now());
         c.setUpdatedAt(Instant.now());

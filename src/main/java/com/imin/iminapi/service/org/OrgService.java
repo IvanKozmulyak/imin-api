@@ -2,6 +2,8 @@ package com.imin.iminapi.service.org;
 
 import com.imin.iminapi.dto.OrganizationDto;
 import com.imin.iminapi.dto.org.OrgPatchRequest;
+import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
+import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.payout.PayoutRunRepository;
@@ -23,6 +25,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.List;
 
 @Service
 public class OrgService {
@@ -34,11 +37,12 @@ public class OrgService {
     private final SettlementRepository settlements;
     private final PayoutRunRepository payouts;
     private final AuditLogger audit;
+    private final CampaignRepository campaigns;
 
     public OrgService(OrganizationRepository orgs, IfMatchSupport ifMatch,
                       OrderRepository orders, TicketRepository tickets,
                       SettlementRepository settlements, PayoutRunRepository payouts,
-                      AuditLogger audit) {
+                      AuditLogger audit, CampaignRepository campaigns) {
         this.orgs = orgs;
         this.ifMatch = ifMatch;
         this.orders = orders;
@@ -46,6 +50,7 @@ public class OrgService {
         this.settlements = settlements;
         this.payouts = payouts;
         this.audit = audit;
+        this.campaigns = campaigns;
     }
 
     @Transactional(readOnly = true)
@@ -75,8 +80,29 @@ public class OrgService {
             o.setCountry(body.country().toUpperCase());
         }
         if (body.timezone() != null) o.setTimezone(body.timezone());
+        String legalName = body.legalName() != null ? blankToNull(body.legalName()) : o.getLegalName();
+        String legalContact = body.legalContact() != null ? blankToNull(body.legalContact()) : o.getLegalContact();
+        requireLegalIdentityKeptWhileQueued(o, legalName, legalContact);
+        o.setLegalName(legalName);
+        o.setLegalContact(legalContact);
         o.setUpdatedAt(Instant.now());
         return OrganizationDto.from(orgs.save(o));
+    }
+
+    /** A scheduled or sending audience-plan campaign needs the legal footer, so its identity cannot be cleared. */
+    private void requireLegalIdentityKeptWhileQueued(Organization o, String legalName, String legalContact) {
+        boolean clearing = o.hasLegalIdentity()
+                && (legalName == null || legalName.isBlank() || legalContact == null || legalContact.isBlank());
+        if (clearing && campaigns.existsByOrgIdAndOriginAndStatusIn(
+                o.getId(), AudiencePlanAccess.CAMPAIGN_ORIGIN, List.of("scheduled", "sending"))) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.ORG_LEGAL_IDENTITY_IN_USE,
+                    "Legal name and legal contact are needed while an audience plan campaign is scheduled or sending");
+        }
+    }
+
+    private static String blankToNull(String s) {
+        String t = s.trim();
+        return t.isEmpty() ? null : t;
     }
 
     /**

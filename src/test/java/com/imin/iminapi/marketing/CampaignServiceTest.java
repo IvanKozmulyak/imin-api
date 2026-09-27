@@ -1,7 +1,7 @@
 package com.imin.iminapi.marketing;
 
 import com.imin.iminapi.config.TestRateLimitConfig;
-import com.imin.iminapi.email.EmailService;
+import com.imin.iminapi.marketing.email.CampaignEmailProvider;
 import com.imin.iminapi.marketing.dto.CampaignDto;
 import com.imin.iminapi.marketing.dto.CampaignRequests.CreateCampaignRequest;
 import com.imin.iminapi.marketing.dto.CampaignRequests.PatchCampaignRequest;
@@ -37,7 +37,20 @@ class CampaignServiceTest {
 
     @Autowired CampaignService service;
     @MockitoBean AuditLogger auditLogger;
-    @MockitoBean EmailService emailService;
+    @MockitoBean CampaignEmailProvider provider;
+    @Autowired com.imin.iminapi.marketing.email.MarketingEmailProperties marketingProps;
+    private String savedFromAddress;
+
+    @org.junit.jupiter.api.BeforeEach
+    void configureMarketingSender() {
+        savedFromAddress = marketingProps.getFromAddress();
+        marketingProps.setFromAddress("contact@imin.support");
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void restoreMarketingSender() {
+        marketingProps.setFromAddress(savedFromAddress);
+    }
     @Autowired com.imin.iminapi.repository.UserRepository users;
     @Autowired com.imin.iminapi.repository.OrganizationRepository orgs;
 
@@ -47,6 +60,14 @@ class CampaignServiceTest {
     // correspond to a real users row. User.@Id is @GeneratedValue (persist rejects assigned ids),
     // so we seed a real User via save() and adopt its generated id here (in @BeforeEach).
     static UUID USER = UUID.fromString("00000000-0000-0000-0000-0000000000b3");
+
+    @SuppressWarnings("unchecked")
+    private CampaignEmailProvider.OutgoingEmail sentTest() {
+        ArgumentCaptor<List<CampaignEmailProvider.OutgoingEmail>> captor = ArgumentCaptor.forClass(List.class);
+        verify(provider).sendBatch(captor.capture());
+        assertThat(captor.getValue()).hasSize(1);
+        return captor.getValue().get(0);
+    }
 
     private AuthPrincipal principal(UUID org) {
         return new AuthPrincipal(USER, org, UserRole.OWNER, UUID.randomUUID());
@@ -214,16 +235,39 @@ class CampaignServiceTest {
     }
 
     @Test
-    void test_send_uses_the_email_service_and_targets_the_caller() {
+    void test_send_uses_the_marketing_provider_and_targets_the_caller() {
         // USER is resolved to its own address (seeded in @BeforeEach — see NOTE)
         CampaignDto d = service.create(principal(ORG),
                 new CreateCampaignRequest("email", "Test me", null, null,
                         "Subject line", "Preheader", "Hello **there**", null));
         service.testSend(principal(ORG), d.id(), null);
 
-        ArgumentCaptor<String> to = ArgumentCaptor.forClass(String.class);
-        verify(emailService).send(to.capture(), anyString(), anyString(), anyString());
-        assertThat(to.getValue()).isEqualTo("organizer@example.com");
+        CampaignEmailProvider.OutgoingEmail e = sentTest();
+        assertThat(e.to()).isEqualTo("organizer@example.com");
+        assertThat(e.subject()).isEqualTo("[TEST] Subject line");
+        assertThat(e.unsubscribeUrl()).contains("preview");
+    }
+
+    @Test
+    void test_send_isFromTheOrganizerViaImin_withTheLegalFooterInHtmlAndText() {
+        com.imin.iminapi.model.Organization o = new com.imin.iminapi.model.Organization();
+        o.setName("Night Org");
+        o.setBrandName("Night");
+        o.setSlug("ts-" + UUID.randomUUID().toString().substring(0, 8));
+        o.setContactEmail("ops@night.test");
+        o.setCountry("FR");
+        o.setLegalName("Night SAS");
+        o.setLegalContact("legal@night.test");
+        UUID orgId = orgs.save(o).getId();
+        CampaignDto d = service.create(principal(orgId),
+                new CreateCampaignRequest("email", "Footer", null, null, "Subject", "Pre", "Body", null));
+
+        service.testSend(principal(orgId), d.id(), null);
+
+        CampaignEmailProvider.OutgoingEmail e = sentTest();
+        assertThat(e.from()).isEqualTo("\"Night via IMIN\" <contact@imin.support>");
+        assertThat(e.html()).contains("Night &middot; Night SAS &middot; legal@night.test");
+        assertThat(e.text()).contains("Night · Night SAS · legal@night.test\nUnsubscribe: ");
     }
 
     @Test
@@ -236,14 +280,12 @@ class CampaignServiceTest {
                         "Subject line", "Preheader", "Hello **there**", "midnight"));
         service.testSend(principal(ORG), d.id(), null);
 
-        ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> text = ArgumentCaptor.forClass(String.class);
-        verify(emailService).send(anyString(), anyString(), html.capture(), text.capture());
-        assertThat(html.getValue()).contains("<!DOCTYPE html>");
-        assertThat(html.getValue()).contains("<strong>there</strong>"); // markdown was rendered
-        assertThat(html.getValue()).contains("#0f0a1f");                 // midnight template applied
-        assertThat(html.getValue().toLowerCase()).contains("unsubscribe");
-        assertThat(text.getValue()).contains("Unsubscribe:");            // plain-text part carries the footer too
+        CampaignEmailProvider.OutgoingEmail e = sentTest();
+        assertThat(e.html()).contains("<!DOCTYPE html>");
+        assertThat(e.html()).contains("<strong>there</strong>"); // markdown was rendered
+        assertThat(e.html()).contains("#0f0a1f");                 // midnight template applied
+        assertThat(e.html().toLowerCase()).contains("unsubscribe");
+        assertThat(e.text()).contains("Unsubscribe:");            // plain-text part carries the footer too
     }
 
     @Test
@@ -255,10 +297,21 @@ class CampaignServiceTest {
                         "Subject", "Pre", "Body copy", null));
         service.testSend(principal(ORG), d.id(), null);
 
-        ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
-        verify(emailService).send(anyString(), anyString(), html.capture(), anyString());
-        assertThat(html.getValue()).contains("<!DOCTYPE html>");
-        assertThat(html.getValue()).contains("#f4f2fa"); // classic page background
+        String html = sentTest().html();
+        assertThat(html).contains("<!DOCTYPE html>");
+        assertThat(html).contains("#f4f2fa"); // classic page background
+    }
+
+    @Test
+    void test_send_withoutAMarketingFromAddress_fails_andSendsNothing() {
+        marketingProps.setFromAddress("");
+        CampaignDto d = service.create(principal(ORG),
+                new CreateCampaignRequest("email", "No sender", null, null, "Subject", "Pre", "Body", null));
+
+        assertThatThrownBy(() -> service.testSend(principal(ORG), d.id(), null))
+                .isInstanceOf(ApiException.class)
+                .hasMessage("Marketing email sender not configured");
+        org.mockito.Mockito.verifyNoInteractions(provider);
     }
 
     @Test
@@ -518,31 +571,27 @@ class CampaignServiceTest {
     }
 
     @Test
-    @SuppressWarnings("unchecked")
     void testSend_ofAnAiCampaign_carriesTheHeadersAndTheMeta() {
         CampaignDto d = service.create(principal(ORG), new CreateCampaignRequest("email", "AI", null, null,
                 "Subject line", "Preheader", "Hello", null, false, true));
 
         service.testSend(principal(ORG), d.id(), null);
 
-        ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<java.util.Map<String, String>> headers = ArgumentCaptor.forClass(java.util.Map.class);
-        verify(emailService).send(eq("organizer@example.com"), eq("[TEST] Subject line"), html.capture(),
-                anyString(), headers.capture());
-        assertThat(headers.getValue()).containsEntry("AI-Disclosure", "mode=ai-originated")
+        CampaignEmailProvider.OutgoingEmail e = sentTest();
+        assertThat(e.to()).isEqualTo("organizer@example.com");
+        assertThat(e.subject()).isEqualTo("[TEST] Subject line");
+        assertThat(e.ai().headers()).containsEntry("AI-Disclosure", "mode=ai-originated")
                 .containsEntry("X-IMIN-AI-Generated", "body");
-        assertThat(html.getValue()).contains("<meta name=\"imin-ai-generated\" content=\"body\"/>");
+        assertThat(e.html()).contains("<meta name=\"imin-ai-generated\" content=\"body\"/>");
     }
 
     @Test
-    void testSend_ofAHumanCampaign_usesThePlainSend() {
+    void testSend_ofAHumanCampaign_carriesNoAiHeaders() {
         CampaignDto d = service.create(principal(ORG), new CreateCampaignRequest("email", "Mine", null, null,
                 "Subject line", "Preheader", "Hello", null));
 
         service.testSend(principal(ORG), d.id(), null);
 
-        verify(emailService).send(anyString(), anyString(), anyString(), anyString());
-        org.mockito.Mockito.verify(emailService, org.mockito.Mockito.never())
-                .send(anyString(), anyString(), anyString(), anyString(), any());
+        assertThat(sentTest().ai().any()).isFalse();
     }
 }

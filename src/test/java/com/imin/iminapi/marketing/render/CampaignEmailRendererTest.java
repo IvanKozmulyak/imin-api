@@ -210,4 +210,49 @@ class CampaignEmailRendererTest {
 
         assertThat(r.html()).doesNotContain("ai-disclosure");
     }
+
+    // ---- sender identity footer ----
+
+    private CampaignEmailRenderer.Rendered withSender(OrganizerIdentity sender) {
+        return renderer.render("S", "P", "body", "camp-1", "email", UNSUB,
+                BuiltinTemplates.defaultTemplate(), "Night Org", null, null,
+                com.imin.iminapi.service.ai.provenance.AiEmailDisclosure.NONE, sender);
+    }
+
+    @Test
+    void footerCarriesOrganizerNameLegalNameAndLegalContact_inHtmlAndText() {
+        CampaignEmailRenderer.Rendered r = withSender(
+                new OrganizerIdentity("Night Org", "Night SAS", "1 rue X, 57000 Metz"));
+
+        String footer = r.html().substring(r.html().indexOf("border-top"));
+        assertThat(footer).contains("Night Org &middot; Night SAS &middot; 1 rue X, 57000 Metz");
+        assertThat(footer).contains(UNSUB);
+        assertThat(r.text()).contains("---\nNight Org · Night SAS · 1 rue X, 57000 Metz\nUnsubscribe: " + UNSUB);
+    }
+
+    @Test
+    void footerOmitsMissingLegalParts() {
+        CampaignEmailRenderer.Rendered r = withSender(new OrganizerIdentity("Night Org", null, " "));
+
+        assertThat(r.html()).contains(">Night Org</div>");
+        assertThat(r.html()).doesNotContain("&middot;");
+        assertThat(r.text()).contains("---\nNight Org\nUnsubscribe: ");
+    }
+
+    @Test
+    void footerEscapesIdentityValues() {
+        CampaignEmailRenderer.Rendered r = withSender(
+                new OrganizerIdentity("<b>Night</b>", "A & B \"SAS\"", "legal@night.test"));
+
+        assertThat(r.html()).contains("&lt;b&gt;Night&lt;/b&gt; &middot; A &amp; B &quot;SAS&quot; &middot; legal@night.test");
+        assertThat(r.html()).doesNotContain("<b>Night</b>");
+    }
+
+    @Test
+    void noSenderIdentity_keepsTheUnsubscribeOnlyFooter() {
+        CampaignEmailRenderer.Rendered r = withSender(OrganizerIdentity.NONE);
+
+        assertThat(r.html()).doesNotContain("margin-bottom:6px");
+        assertThat(r.text()).endsWith("---\nUnsubscribe: " + UNSUB);
+    }
 }

@@ -6,6 +6,8 @@ import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.render.CampaignEmailRenderer;
 import com.imin.iminapi.marketing.render.MergeTags;
+import com.imin.iminapi.marketing.render.OrganizerIdentity;
+import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
 import com.imin.iminapi.audience.dto.ExclusionReason;
 import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.Membership;
@@ -23,6 +25,7 @@ import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.security.ApiException;
+import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.service.ai.provenance.AiEmailDisclosure;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -111,6 +114,12 @@ public class EmailChannelSender {
                     c.getOrgId(), c.getId());
             return false;
         }
+        Organization org = organization(c.getOrgId());
+        // Audience-plan mail must carry the legal footer: fail the campaign (rows stay pending) rather than loop.
+        if (AudiencePlanAccess.CAMPAIGN_ORIGIN.equals(c.getOrigin()) && (org == null || !org.hasLegalIdentity())) {
+            failForMissingLegalIdentity(c);
+            return false;
+        }
         List<CampaignRecipient> batch = new ArrayList<>(recipients.claimPendingBatch(c.getId(), BATCH_SIZE, Instant.now()));
         if (batch.isEmpty()) return false;
         // Idempotence belt-and-braces: only rows still 'pending' may be sent. The claim
@@ -136,7 +145,9 @@ public class EmailChannelSender {
         // Template, org brand name, and event poster are constant for the whole campaign —
         // resolve them ONCE per batch, not per recipient. Only the unsubscribe URL varies.
         ResolvedTemplate template = templateService.resolve(c.getOrgId(), c.getTemplateKey());
-        String brandName = brandName(c.getOrgId());
+        String brandName = org == null ? null : org.displayName();
+        OrganizerIdentity sender = OrganizerIdentity.of(org);
+        String from = props.fromHeader(brandName);
         Event event = linkedEvent(c);
         String posterUrl = event == null ? null : event.getPosterUrl();
         String ticketsUrl = ticketsUrl(c, event);
@@ -161,9 +172,9 @@ public class EmailChannelSender {
             CampaignEmailRenderer.Rendered rendered = renderer.render(
                     subject, preheader, bodyMd,
                     c.getId().toString(), "email", unsubUrl,
-                    template, brandName, posterUrl, ticketsUrl, ai);
+                    template, brandName, posterUrl, ticketsUrl, ai, sender);
             outgoing.add(new CampaignEmailProvider.OutgoingEmail(
-                    props.fromHeader(), r.getEmail(), subject,
+                    from, r.getEmail(), subject,
                     rendered.html(), rendered.text(), unsubUrl, ai));
         }
 
@@ -306,19 +317,28 @@ public class EmailChannelSender {
         });
     }
 
+    /** Terminal until the organizer restores the identity; the claim query skips it meanwhile. */
+    private void failForMissingLegalIdentity(Campaign c) {
+        Campaign fresh = campaigns.findByIdAndOrgId(c.getId(), c.getOrgId()).orElse(c);
+        fresh.setStatus("failed");
+        fresh.setAttempts((short) (fresh.getAttempts() + 1));
+        fresh.setLastError(ErrorCode.ORG_LEGAL_IDENTITY_MISSING.name());
+        fresh.setUpdatedAt(Instant.now());
+        campaigns.save(fresh);
+        c.setStatus("failed");
+        c.setLastError(fresh.getLastError());
+        log.warn("[email-sender] campaign {} failed: org {} has no legal name and contact", c.getId(), c.getOrgId());
+    }
+
     /**
-     * The organizer's header identity for the branded shell: brand name if set, else the org
-     * name. Failure-isolated — a lookup hiccup must not fail a live send, it just omits the
-     * header text (the template still renders).
+     * The campaign's org, for the header name, From and footer. Failure-isolated: a lookup hiccup
+     * must not fail a live send; it falls back to the configured From and no identity line.
      */
-    private String brandName(java.util.UUID orgId) {
+    private Organization organization(UUID orgId) {
         try {
-            Organization org = organizations.findById(orgId).orElse(null);
-            if (org == null) return null;
-            return org.getBrandName() != null && !org.getBrandName().isBlank()
-                    ? org.getBrandName() : org.getName();
+            return organizations.findById(orgId).orElse(null);
         } catch (Exception e) {
-            log.debug("[email-sender] brand-name lookup failed for org {}: {}", orgId, e.getMessage());
+            log.debug("[email-sender] org lookup failed for {}: {}", orgId, e.getMessage());
             return null;
         }
     }

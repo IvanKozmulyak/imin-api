@@ -22,8 +22,9 @@ import java.time.Instant;
  *       the only provider the webhook projector accepts.</li>
  *   <li>{@code fromAddress}/{@code fromName}/{@code fromHeader} — the configured marketing
  *       sender identity, verbatim from {@code imin.marketing.*} ({@code MarketingEmailProperties}).
- *       Empty string when unset. {@code fromHeader} is the provider's own
- *       {@code MarketingEmailProperties#fromHeader()} rendering, not a re-implementation.</li>
+ *       Empty string when unset. {@code fromHeader} is this org's actual From, rendered by the
+ *       same {@code MarketingEmailProperties#fromHeader(String)} the sender uses
+ *       ({@code "<brand or org name> via IMIN" <fromAddress>}).</li>
  *   <li>{@code sendingDomain} — the host part of the configured {@code fromAddress}
  *       ({@code contact@imin.support} ⇒ {@code imin.support}); empty when unset. This is the
  *       domain mail is sent FROM. It is <b>not</b> a verification status — {@code dns} carries that.</li>

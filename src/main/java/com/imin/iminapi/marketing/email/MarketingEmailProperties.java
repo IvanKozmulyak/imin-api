@@ -84,4 +84,17 @@ public class MarketingEmailProperties {
         if (fromName == null || fromName.isBlank()) return fromAddress;
         return fromName + " <" + fromAddress + ">";
     }
+
+    /**
+     * Per-organizer From: {@code "<organizer> via IMIN" <fromAddress>} on the configured address.
+     * Blank organizer or blank address falls back to {@link #fromHeader()}.
+     */
+    public String fromHeader(String organizer) {
+        String clean = com.imin.iminapi.marketing.render.OrganizerIdentity.singleLine(organizer);
+        if (clean.isEmpty() || fromAddress == null || fromAddress.isBlank()) return fromHeader();
+        String display = clean + " via IMIN";
+        // RFC 5322 quoted-string: escape backslash and double quote.
+        String quoted = "\"" + display.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+        return quoted + " <" + fromAddress + ">";
+    }
 }

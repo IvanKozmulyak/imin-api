@@ -67,6 +67,9 @@ class AudiencePlanSendsKillSwitchTest {
         o.setContactEmail("ks@test.com");
         o.setCountry("FR");
         o.setTimezone("UTC");
+        // Legal identity present so only the sends switch decides here.
+        o.setLegalName("Kill Switch SAS");
+        o.setLegalContact("legal@ks.test");
         org = orgs.save(o);
         props.setSendsEnabled(false);
     }

@@ -98,7 +98,7 @@ class MeControllerTest {
         UserDto user = new UserDto(USER, "ada@example.com", "Grace", "Hopper", "owner", "GH", ORG,
                 Instant.parse("2026-04-23T10:00:00Z"), "en");
         OrganizationDto org = new OrganizationDto(ORG, "Ada Co", "ada-co", "ada@example.com",
-                "GB", "UTC", "growth", 89, "EUR", Instant.parse("2026-04-23T10:00:00Z"));
+                "GB", "UTC", "growth", 89, "EUR", null, null, Instant.parse("2026-04-23T10:00:00Z"));
         when(profileService.patch(any(AuthPrincipal.class), any())).thenReturn(new MeResponse(user, org));
 
         mvc.perform(patch("/api/v1/me/profile")
@@ -119,7 +119,7 @@ class MeControllerTest {
         UserDto user = new UserDto(USER, "ada@example.com", "Grace", "Hopper", "owner", "GH", ORG,
                 Instant.parse("2026-04-23T10:00:00Z"), "uk");
         OrganizationDto org = new OrganizationDto(ORG, "Ada Co", "ada-co", "ada@example.com",
-                "GB", "UTC", "growth", 89, "EUR", Instant.parse("2026-04-23T10:00:00Z"));
+                "GB", "UTC", "growth", 89, "EUR", null, null, Instant.parse("2026-04-23T10:00:00Z"));
         when(profileService.patch(any(AuthPrincipal.class), any())).thenReturn(new MeResponse(user, org));
 
         mvc.perform(patch("/api/v1/me/profile")

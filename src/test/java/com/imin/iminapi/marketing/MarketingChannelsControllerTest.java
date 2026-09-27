@@ -72,6 +72,7 @@ class MarketingChannelsControllerTest {
     @Autowired CampaignRecipientRepository recipients;
     @Autowired ProviderEventRepository providerEvents;
     @Autowired JdbcTemplate jdbc;
+    @Autowired com.imin.iminapi.marketing.email.MarketingEmailProperties emailProps;
 
     /**
      * Mocked so the channels read never hits the real Resend domains API. Default: absent DNS
@@ -197,6 +198,26 @@ class MarketingChannelsControllerTest {
                 .andExpect(jsonPath("$.email.reputation").doesNotExist())
                 .andExpect(jsonPath("$.sms.reputation").doesNotExist())
                 .andExpect(jsonPath("$.sms.encoding").doesNotExist());
+    }
+
+    @Test
+    void fromHeaderIsTheOrgsOwnFromViaImin() throws Exception {
+        String savedAddress = emailProps.getFromAddress();
+        String savedName = emailProps.getFromName();
+        emailProps.setFromAddress("contact@imin.support");
+        emailProps.setFromName("Alex");
+        try {
+            String orgName = orgs.findById(orgA).orElseThrow().getName();
+            mvc.perform(get("/api/v1/marketing/channels").with(authentication(authA)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.email.fromAddress").value("contact@imin.support"))
+                    .andExpect(jsonPath("$.email.fromName").value("Alex"))
+                    .andExpect(jsonPath("$.email.fromHeader")
+                            .value("\"" + orgName + " via IMIN\" <contact@imin.support>"));
+        } finally {
+            emailProps.setFromAddress(savedAddress);
+            emailProps.setFromName(savedName);
+        }
     }
 
     @Test

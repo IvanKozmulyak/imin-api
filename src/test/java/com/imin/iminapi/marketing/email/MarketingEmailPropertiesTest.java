@@ -32,4 +32,52 @@ class MarketingEmailPropertiesTest {
         assertThat(p.getApiPublicBaseUrl()).isEqualTo("https://api.imin.wtf");
         assertThat(p.unsubscribeUrl("t")).doesNotContain("localhost");
     }
+
+    private static MarketingEmailProperties imin() {
+        MarketingEmailProperties p = new MarketingEmailProperties();
+        p.setFromAddress("hello@imin.support");
+        p.setFromName("imin");
+        return p;
+    }
+
+    @Test
+    void fromHeaderForOrganizer_isOrganizerViaIminOnTheConfiguredAddress() {
+        assertThat(imin().fromHeader("Night Org")).isEqualTo("\"Night Org via IMIN\" <hello@imin.support>");
+    }
+
+    @Test
+    void fromHeaderForOrganizer_escapesQuotesAndBackslashes() {
+        assertThat(imin().fromHeader("The \"Best\" \\ Club"))
+                .isEqualTo("\"The \\\"Best\\\" \\\\ Club via IMIN\" <hello@imin.support>");
+    }
+
+    @Test
+    void fromHeaderForOrganizer_stripsLineBreaks() {
+        assertThat(imin().fromHeader("Night\r\nBcc: x@y.z"))
+                .isEqualTo("\"Night  Bcc: x@y.z via IMIN\" <hello@imin.support>");
+    }
+
+    @Test
+    void fromHeaderForOrganizer_blankOrganizerFallsBackToConfiguredHeader() {
+        assertThat(imin().fromHeader(" ")).isEqualTo("imin <hello@imin.support>");
+        assertThat(imin().fromHeader(null)).isEqualTo("imin <hello@imin.support>");
+    }
+
+    @Test
+    void fromHeaderForOrganizer_blankAddressFallsBackToConfiguredHeader() {
+        MarketingEmailProperties p = new MarketingEmailProperties();
+        p.setFromAddress("");
+        assertThat(p.fromHeader("Night Org")).isEqualTo("");
+    }
+
+    @Test
+    void fromHeaderForOrganizer_stripsUnicodeSeparatorsAndBidiOverrides() {
+        assertThat(imin().fromHeader("Night\u2028Bcc\u2029x\u202E\u200F"))
+                .isEqualTo("\"Night Bcc x via IMIN\" <hello@imin.support>");
+    }
+
+    @Test
+    void fromHeaderForOrganizer_onlyFormatCharactersFallsBackToConfiguredHeader() {
+        assertThat(imin().fromHeader("\u202E\u200B")).isEqualTo("imin <hello@imin.support>");
+    }
 }

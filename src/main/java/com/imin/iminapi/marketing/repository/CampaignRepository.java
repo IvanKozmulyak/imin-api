@@ -90,11 +90,15 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
     List<Campaign> findByOrgCreatedSince(@Param("orgId") UUID orgId,
                                          @Param("since") java.time.Instant since);
 
+    /** True when the org has a campaign of this origin in one of the given statuses. */
+    boolean existsByOrgIdAndOriginAndStatusIn(UUID orgId, String origin, java.util.Collection<String> statuses);
+
     /**
      * Spec §2.5: claim due campaigns — scheduled+due, retryable failed (attempts<3),
      * or stale sending (heartbeat > 5 min old, orphaned by a mid-send crash). SKIP LOCKED
      * so multiple dispatcher instances don't double-claim. Audience-plan campaigns are left
-     * out while their sends switch is off, even if already scheduled.
+     * out while their sends switch is off, even if already scheduled, and while their org
+     * lacks a legal name or legal contact, so a held campaign never loops or eats the LIMIT.
      */
     @Query(value = """
         SELECT * FROM campaigns
@@ -105,6 +109,11 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
             OR (status = 'sending' AND updated_at < :staleBefore)
           )
           AND (:audiencePlanSendsEnabled = TRUE OR origin <> 'audience_plan')
+          AND (origin <> 'audience_plan' OR EXISTS (
+                SELECT 1 FROM organizations o
+                WHERE o.id = campaigns.org_id
+                  AND TRIM(COALESCE(o.legal_name, '')) <> ''
+                  AND TRIM(COALESCE(o.legal_contact, '')) <> ''))
         ORDER BY scheduled_at NULLS FIRST
         LIMIT 10
         FOR UPDATE SKIP LOCKED

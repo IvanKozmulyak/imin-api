@@ -143,7 +143,7 @@ public class MarketingChannelsService {
                 ProviderEvent.PROVIDER_RESEND,
                 fromAddress,
                 fromName,
-                emailProps.fromHeader(),
+                emailProps.fromHeader(org.displayName()),
                 sendingDomain(fromAddress),
                 dns,
                 sendingEnabled,

@@ -72,6 +72,25 @@ public class Organization {
     @Column(name = "brand_logo_on_posters", nullable = false)
     private boolean brandLogoOnPosters = true;
 
+    /** Registered legal name, printed in every marketing email footer (V141). */
+    @Column(name = "legal_name", length = 200)
+    private String legalName;
+
+    /** Legal contact: an email address or a one-line postal address (V141). */
+    @Column(name = "legal_contact", length = 320)
+    private String legalContact;
+
+    /** True when both legal name and legal contact are set. */
+    public boolean hasLegalIdentity() {
+        return legalName != null && !legalName.isBlank()
+                && legalContact != null && !legalContact.isBlank();
+    }
+
+    /** Organizer display name for email: brand name if set, else the org name. */
+    public String displayName() {
+        return brandName != null && !brandName.isBlank() ? brandName : name;
+    }
+
     /**
      * Stripe v2 connected account id (acct_...) — null until the org has called
      * `POST /api/v1/orgs/{orgId}/stripe/connect`. Populated once and never changed;

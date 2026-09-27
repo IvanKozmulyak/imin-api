@@ -15,11 +15,14 @@ public record OrganizationDto(
         String plan,
         int planMonthlyEuros,
         String currency,
+        String legalName,
+        String legalContact,
         Instant updatedAt
 ) {
     public static OrganizationDto from(Organization o) {
         return new OrganizationDto(o.getId(), o.getName(), o.getSlug(), o.getContactEmail(),
                 o.getCountry(), o.getTimezone(), o.getPlan(),
-                o.getPlanMonthlyEuros(), o.getCurrency(), o.getUpdatedAt());
+                o.getPlanMonthlyEuros(), o.getCurrency(),
+                o.getLegalName(), o.getLegalContact(), o.getUpdatedAt());
     }
 }

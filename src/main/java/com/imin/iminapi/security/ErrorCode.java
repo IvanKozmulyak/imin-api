@@ -80,6 +80,12 @@ public enum ErrorCode {
     /** Scheduling or sending an audience-plan campaign while its sends switch is off. 409. */
     AUDIENCE_SENDS_DISABLED,
 
+    /** Scheduling or sending an audience-plan campaign for an org without legal name and contact. 409. */
+    ORG_LEGAL_IDENTITY_MISSING,
+
+    /** Clearing legal name/contact while an audience-plan campaign is scheduled or sending. 409. */
+    ORG_LEGAL_IDENTITY_IN_USE,
+
     // ---- Buyer accounts ----
     /**
      * Unlinking this identity would leave the account with no way to sign in —

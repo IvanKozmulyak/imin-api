@@ -65,7 +65,7 @@ class OrgControllerTest {
 
     private OrganizationDto sampleOrg() {
         return new OrganizationDto(ORG, "Test Org", "test-org", "test@example.com", "DE",
-                "Europe/Berlin", "growth", 89, "EUR", Instant.parse("2026-04-23T10:00:00Z"));
+                "Europe/Berlin", "growth", 89, "EUR", null, null, Instant.parse("2026-04-23T10:00:00Z"));
     }
 
     @Test
@@ -89,7 +89,7 @@ class OrgControllerTest {
     @WithStubUser
     void patch_returns_updated() throws Exception {
         OrganizationDto updated = new OrganizationDto(ORG, "Updated Org", "updated-org", "test@example.com", "DE",
-                "Europe/Berlin", "growth", 89, "EUR", Instant.parse("2026-04-23T11:00:00Z"));
+                "Europe/Berlin", "growth", 89, "EUR", null, null, Instant.parse("2026-04-23T11:00:00Z"));
         when(orgService.patch(any(AuthPrincipal.class), any(), any())).thenReturn(updated);
         mvc.perform(patch("/api/v1/org")
                         .header("If-Match", "\"2026-04-23T10:00:00Z\"")
@@ -105,5 +105,83 @@ class OrgControllerTest {
         mvc.perform(delete("/api/v1/org"))
                 .andExpect(status().isNoContent());
         verify(orgService).delete(any(AuthPrincipal.class));
+    }
+
+    @Test
+    @WithStubUser
+    void get_returns_legal_identity() throws Exception {
+        OrganizationDto withLegal = new OrganizationDto(ORG, "Test Org", "test-org", "test@example.com", "DE",
+                "Europe/Berlin", "growth", 89, "EUR", "Test Org GmbH", "legal@test.org",
+                Instant.parse("2026-04-23T10:00:00Z"));
+        when(orgService.get(any(AuthPrincipal.class))).thenReturn(withLegal);
+        mvc.perform(get("/api/v1/org"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.legalName").value("Test Org GmbH"))
+                .andExpect(jsonPath("$.legalContact").value("legal@test.org"));
+    }
+
+    @Test
+    @WithStubUser
+    void patch_accepts_legal_fields_at_their_bounds() throws Exception {
+        when(orgService.patch(any(AuthPrincipal.class), any(), any())).thenReturn(sampleOrg());
+        String name = "n".repeat(200);
+        String contact = "c".repeat(320);
+        mvc.perform(patch("/api/v1/org")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("legalName", name, "legalContact", contact))))
+                .andExpect(status().isOk());
+        var captor = org.mockito.ArgumentCaptor.forClass(com.imin.iminapi.dto.org.OrgPatchRequest.class);
+        verify(orgService).patch(any(AuthPrincipal.class), any(), captor.capture());
+        org.assertj.core.api.Assertions.assertThat(captor.getValue().legalName()).isEqualTo(name);
+        org.assertj.core.api.Assertions.assertThat(captor.getValue().legalContact()).isEqualTo(contact);
+    }
+
+    @Test
+    @WithStubUser
+    void patch_rejects_legal_name_over_200() throws Exception {
+        mvc.perform(patch("/api/v1/org")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("legalName", "n".repeat(201)))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
+                .andExpect(jsonPath("$.error.fields.legalName").exists());
+    }
+
+    @Test
+    @WithStubUser
+    void patch_rejects_legal_contact_over_320() throws Exception {
+        mvc.perform(patch("/api/v1/org")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("legalContact", "c".repeat(321)))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
+                .andExpect(jsonPath("$.error.fields.legalContact").exists());
+    }
+
+    @Test
+    @WithStubUser
+    void patch_rejects_multi_line_legal_fields() throws Exception {
+        mvc.perform(patch("/api/v1/org")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of(
+                                "legalName", "Night SAS\r\nBcc: x@y.z", "legalContact", "1 rue X\n57000 Metz"))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.fields.legalName").value("must be a single line"))
+                .andExpect(jsonPath("$.error.fields.legalContact").value("must be a single line"));
+    }
+
+    @Test
+    @WithStubUser
+    void patch_measures_legal_fields_after_trimming() throws Exception {
+        when(orgService.patch(any(AuthPrincipal.class), any(), any())).thenReturn(sampleOrg());
+        String name = "n".repeat(200);
+        mvc.perform(patch("/api/v1/org")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("legalName", "  " + name + " \n", "legalContact", "\t c "))))
+                .andExpect(status().isOk());
+        var captor = org.mockito.ArgumentCaptor.forClass(com.imin.iminapi.dto.org.OrgPatchRequest.class);
+        verify(orgService).patch(any(AuthPrincipal.class), any(), captor.capture());
+        org.assertj.core.api.Assertions.assertThat(captor.getValue().legalName()).isEqualTo(name);
+        org.assertj.core.api.Assertions.assertThat(captor.getValue().legalContact()).isEqualTo("c");
     }
 }

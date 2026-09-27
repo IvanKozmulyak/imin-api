@@ -26,7 +26,7 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** The claim query's boolean audience-plan hold on real Postgres (H2 accepts more than PG does). */
+/** The claim query's audience-plan holds (sends switch, legal identity) on real Postgres (H2 accepts more than PG does). */
 @Testcontainers(disabledWithoutDocker = true)
 @SpringBootTest
 @Import(TestRateLimitConfig.class)
@@ -57,20 +57,27 @@ class CampaignClaimPostgresTest {
 
     private Campaign plan;
     private Campaign manual;
+    private UUID orgId;
 
     @BeforeEach
     void seed() {
         jdbc.update("delete from campaign_recipients");
         jdbc.update("delete from campaigns");
+        orgId = org("PG Claim SAS", "legal@pgc.test");
+        plan = campaign(orgId, "audience_plan");
+        manual = campaign(orgId, "manual");
+    }
+
+    private UUID org(String legalName, String legalContact) {
         Organization o = new Organization();
         o.setName("PG Claim Org");
         o.setSlug("pgc-" + UUID.randomUUID().toString().substring(0, 8));
         o.setContactEmail("pgc@test.com");
         o.setCountry("FR");
         o.setTimezone("UTC");
-        UUID orgId = orgs.save(o).getId();
-        plan = campaign(orgId, "audience_plan");
-        manual = campaign(orgId, "manual");
+        o.setLegalName(legalName);
+        o.setLegalContact(legalContact);
+        return orgs.save(o).getId();
     }
 
     private Campaign campaign(UUID orgId, String origin) {
@@ -107,5 +114,21 @@ class CampaignClaimPostgresTest {
     @Test
     void sendsOn_claimsBoth() {
         assertThat(claim(true)).containsExactlyInAnyOrder(plan.getId(), manual.getId());
+    }
+
+    @Test
+    void sendsOn_audiencePlanOfOrgWithoutLegalName_isNotClaimed() {
+        Campaign held = campaign(org(null, "legal@x.test"), "audience_plan");
+
+        assertThat(claim(true)).doesNotContain(held.getId()).contains(plan.getId(), manual.getId());
+    }
+
+    @Test
+    void sendsOn_audiencePlanOfOrgWithBlankContact_isNotClaimed_butItsManualIs() {
+        UUID noContact = org("X SAS", "  ");
+        Campaign held = campaign(noContact, "audience_plan");
+        Campaign otherManual = campaign(noContact, "manual");
+
+        assertThat(claim(true)).doesNotContain(held.getId()).contains(otherManual.getId());
     }
 }
