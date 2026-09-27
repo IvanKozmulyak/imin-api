@@ -1,0 +1,4 @@
+city_key,ref_period,fetched_on,source_url,pop_18_35,pop_total
+metz,2023,2026-09-27,https://api.insee.fr/melodi/data/DS_RP_TD_POPULATION_AGESEX_PRINC?GEO=COM-57463&SEX=_T&maxResult=10000,38065,122572
+nancy,2023,2026-09-27,https://api.insee.fr/melodi/data/DS_RP_TD_POPULATION_AGESEX_PRINC?GEO=COM-54395&SEX=_T&maxResult=10000,43154,103671
+thionville,2023,2026-09-27,https://api.insee.fr/melodi/data/DS_RP_TD_POPULATION_AGESEX_PRINC?GEO=COM-57672&SEX=_T&maxResult=10000,10473,42658

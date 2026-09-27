@@ -1,0 +1,1755 @@
+{
+  "observations" : [ {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y0"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1212.50832
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y1"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1111.43991
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y10"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1224.64746
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y11"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1222.36476
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y12"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1306.05497
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y13"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1320.966
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y14"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1315.84406
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y15"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1294.45518
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y16"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1422.01639
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y17"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1423.6722
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y18"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 2448.55343
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y19"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 2502.62169
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y2"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1116.5208
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y20"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 2545.96027
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y21"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 2540.85158
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y22"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 2361.83623
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y23"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 2321.52122
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y24"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 2203.76341
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y25"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 2176.02008
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y26"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 2080.07475
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y27"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 2162.94145
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y28"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1914.09032
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y29"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 2081.05517
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y3"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1238.54975
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y30"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 2013.15268
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y31"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1850.7858
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y32"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1796.7579
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y33"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1644.58951
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y34"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1787.08787
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y35"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1633.33825
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y36"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1675.10562
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y37"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1562.84118
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y38"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1499.37091
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y39"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1568.75893
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y4"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1197.80955
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y40"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1463.05344
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y41"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1417.27232
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y42"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1349.17476
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y43"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1557.77856
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y44"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1484.59441
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y45"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1314.85385
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y46"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1316.99162
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y47"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1702.00294
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y48"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1546.40825
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y49"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1407.99532
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y5"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1159.99642
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y50"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1410.51855
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y51"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1295.87212
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y52"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1445.8149
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y53"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1302.57831
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y54"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1357.58455
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y55"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1285.72028
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y56"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1299.48781
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y57"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1292.98134
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y58"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1288.8189
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y59"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1309.20717
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y6"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1163.12731
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y60"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1276.07838
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y61"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1334.26451
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y62"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1082.23063
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y63"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1339.02552
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y64"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1310.63783
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y65"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1364.56888
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y66"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1298.29719
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y67"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1231.21613
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y68"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1307.80041
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y69"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1180.74923
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y7"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1240.85916
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y70"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1178.56109
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y71"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1007.96056
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y72"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1006.06357
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y73"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1091.42382
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y74"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1096.76652
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y75"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 924.83376
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y76"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 905.93064
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y77"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 768.9274
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y78"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 683.62443
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y79"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 651.97971
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y8"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1308.22557
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y80"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 562.63275
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y81"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 527.9234
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y82"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 455.22938
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y83"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 467.40825
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y84"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 456.03408
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y85"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 416.14241
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y86"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 488.64439
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y87"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 356.98877
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y88"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 339.53262
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y89"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 319.10621
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y9"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 1266.57388
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y90"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 253.22344
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y91"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 294.3578
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y92"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 196.27281
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y93"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 163.77274
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y94"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 137.3042
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y95"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 107.3901
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y96"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 66.67157
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y97"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 58.02779
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y98"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 31.67511
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y99"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 34.66097
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "Y_GE100"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 32.6416
+      }
+    }
+  }, {
+    "attributes" : {
+      "OBS_STATUS" : "A"
+    },
+    "dimensions" : {
+      "GEO" : "2026-COM-57463",
+      "SEX" : "_T",
+      "FREQ" : "A",
+      "TIME_PERIOD" : "2023",
+      "RP_MEASURE" : "POP",
+      "AGE" : "_T"
+    },
+    "measures" : {
+      "OBS_VALUE_NIVEAU" : {
+        "value" : 122572.0
+      }
+    }
+  } ],
+  "identifier" : "DS_RP_TD_POPULATION_AGESEX_PRINC",
+  "paging" : {
+    "first" : "https://api.insee.fr/melodi/data/DS_RP_TD_POPULATION_AGESEX_PRINC?GEO=COM-57463&SEX=_T&maxResult=10000&page=1"
+  },
+  "publisher" : {
+    "id" : "INSEE",
+    "label" : [ {
+      "content" : "Institut national de la statistique et des etudes economiques (INSEE)",
+      "lang" : "fr"
+    }, {
+      "content" : "National Institute of Statistics and Economic Studies",
+      "lang" : "en"
+    } ]
+  },
+  "title" : {
+    "en" : "Detailed population by sex and age – Detailed data (POP1)",
+    "fr" : "Population détaillée par sexe et âge – Données détaillées (POP1)"
+  }
+}
