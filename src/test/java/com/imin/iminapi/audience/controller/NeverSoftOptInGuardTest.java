@@ -1,6 +1,8 @@
 package com.imin.iminapi.audience.controller;
 
 import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
+import com.imin.iminapi.audienceplan.dto.DoorOptInRequest;
+import com.imin.iminapi.audienceplan.service.DoorOptInService;
 import com.imin.iminapi.audience.repository.ConsentRecordRepository;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
@@ -61,6 +63,7 @@ class NeverSoftOptInGuardTest {
     @Autowired MembershipProjector membershipProjector;
     @Autowired AudienceImportService importService;
     @Autowired SmsConsentService smsConsentService;
+    @Autowired DoorOptInService doorOptIn;
     @Autowired AudienceController audienceController;
     @Autowired Validator validator;
     @Autowired OrderRepository orders;
@@ -216,6 +219,18 @@ class NeverSoftOptInGuardTest {
         assertNoSoftOptInAnywhere();
     }
 
+    @Test
+    void doorQrOptIn_recordsExplicit() {
+        String url = doorOptIn.setEnabled(organizer, event.getId(), true).doorUrl();
+        String token = url.substring(url.indexOf("?t=") + 3);
+        doorOptIn.optIn(event.getId(), new DoorOptInRequest(token, "door-guard@example.com", true,
+                "Email me about events by Guard Org. I agree to receive email marketing.",
+                "door-org-named-2026-09", "en"));
+
+        assertThat(basesOf("door-guard@example.com")).containsExactly("explicit");
+        assertNoSoftOptInAnywhere();
+    }
+
     /** Covers paths not driven above (buyer preference centre, anything added later): every capture passes explicit. */
     @Test
     void sourceScan_everyConsentCaptureCallPassesExplicit() throws IOException {
@@ -233,7 +248,7 @@ class NeverSoftOptInGuardTest {
                 if (!basis.equals("\"explicit\"") && !validatedBody) offenders.add(file.getFileName() + ": " + basis);
             }
         }
-        assertThat(calls).as("capture call sites found").isGreaterThanOrEqualTo(5);
+        assertThat(calls).as("capture call sites found").isGreaterThanOrEqualTo(6);
         assertThat(offenders).isEmpty();
     }
 

@@ -19,6 +19,11 @@ public interface ConsentRecordRepository extends Repository<ConsentRecord, UUID>
 
     ConsentRecord save(ConsentRecord record);
 
+    /** Distinct members who gave an email consent at this event's door. */
+    @Query("select count(distinct c.membershipId) from ConsentRecord c where c.eventId = :eventId"
+            + " and c.source = :source and c.channel = 'email' and c.status = 'subscribed'")
+    long countMembersByEventAndSource(@Param("eventId") UUID eventId, @Param("source") String source);
+
     /** Fetch all consent records for a membership, chronological (for DSAR access + UI). */
     @Query("select c from ConsentRecord c where c.membershipId = :membershipId order by c.occurredAt asc")
     List<ConsentRecord> findByMembershipId(@Param("membershipId") UUID membershipId);

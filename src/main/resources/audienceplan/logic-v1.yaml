@@ -33,3 +33,6 @@ legal:
   # Checkout label versions that name the organizer; add one only with a reviewed change.
   # checkout-org-named-2026-09: "Email me about events by {organizer}. …" (imin-public + fan-app, en/es/fr/uk).
   organizer_named_text_versions: [checkout-org-named-2026-09]
+  # Door QR sentence versions the public door endpoint accepts; add one only with a reviewed change.
+  # door-org-named-2026-09: "Email me about events by {organizer}. …" (imin-public door page, en/es/fr/uk).
+  door_qr_text_versions: [door-org-named-2026-09]

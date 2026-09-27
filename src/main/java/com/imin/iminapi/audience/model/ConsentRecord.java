@@ -51,6 +51,10 @@ public class ConsentRecord {
     @Column(name = "order_id")
     private UUID orderId;
 
+    /** The event the consent was given at (door QR); null elsewhere (V142). */
+    @Column(name = "event_id")
+    private UUID eventId;
+
     @Column(name = "occurred_at", nullable = false, updatable = false)
     private Instant occurredAt = Instant.now();
 

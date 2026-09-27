@@ -105,6 +105,15 @@ public class ConsentService {
     public UUID capture(UUID orgId, UUID membershipId, String basis, String source,
                         String proofText, String channel, String textVersion, UUID orderId,
                         ConsentOrigin origin, AuthPrincipal principal) {
+        return capture(orgId, membershipId, basis, source, proofText, channel, textVersion, orderId,
+                null, origin, principal);
+    }
+
+    /** As above, also recording the event the consent was given at (door QR); null elsewhere. */
+    @Transactional
+    public UUID capture(UUID orgId, UUID membershipId, String basis, String source,
+                        String proofText, String channel, String textVersion, UUID orderId,
+                        UUID eventId, ConsentOrigin origin, AuthPrincipal principal) {
         Membership m = requireMembership(orgId, membershipId);
 
         ConsentRecord r = new ConsentRecord();
@@ -116,6 +125,7 @@ public class ConsentService {
         r.setProofText(proofText);
         r.setTextVersion(textVersion);
         r.setOrderId(orderId);
+        r.setEventId(eventId);
         consentRepo.save(r);
 
         // M3: denormalize current state onto membership, per channel.

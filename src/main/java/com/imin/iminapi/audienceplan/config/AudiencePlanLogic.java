@@ -60,7 +60,8 @@ public record AudiencePlanLogic(Logic logic, Priors priors, Genres genres) {
             boolean softOptInRequiresPaidOrderAndOrgSeller,
             boolean esRobinsonCheck,
             Map<String, ProofRequirement> explicitSources,
-            Set<String> organizerNamedTextVersions) {}
+            Set<String> organizerNamedTextVersions,
+            Set<String> doorQrTextVersions) {}
 
     /** What a consent source needs before it counts as explicit. */
     public enum ProofRequirement { ORGANIZER_NAMED_TEXT_VERSION, PROVENANCE_ROW, TEXT_VERSION }

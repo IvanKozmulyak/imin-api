@@ -294,6 +294,19 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
                                @Param("latitude") Double latitude,
                                @Param("longitude") Double longitude);
 
+    /** Door QR switch and token; like the geocode fill it leaves {@code updated_at} (the PATCH ETag) alone. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("""
+        UPDATE Event e
+           SET e.doorOptinEnabled = :enabled,
+               e.doorOptinToken = :token
+         WHERE e.id = :id
+    """)
+    int updateDoorOptin(@Param("id") UUID id,
+                        @Param("enabled") boolean enabled,
+                        @Param("token") String token);
+
     /**
      * Bulk transition: LIVE events whose {@code endsAt} is in the past become PAST.
      * Events with {@code null endsAt} are excluded — no end date means the event has

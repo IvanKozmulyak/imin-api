@@ -631,6 +631,11 @@ imin:
       # later actually mail from our sending domain.
       capacity: 20
       window-minutes: 60
+    door-optin:
+      # Public door QR sign-up, keyed per client IP. Higher than notify-subscribe because a whole
+      # queue on the venue's Wi-Fi shares one IP; every stored row is a real marketing consent.
+      capacity: 60
+      window-minutes: 15
     wallet-pass:
       # Signed .pkpass minting, keyed per client IP (forward-headers-strategy=framework
       # makes getRemoteAddr the real client IP in prod). Three DB reads, an RSA

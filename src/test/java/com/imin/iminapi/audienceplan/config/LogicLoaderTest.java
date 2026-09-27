@@ -117,6 +117,12 @@ class LogicLoaderTest {
     }
 
     @Test
+    void doorQrTextVersions_holdExactlyTheDoorPageVersion() {
+        assertThat(shipped().logic().legal().doorQrTextVersions())
+                .containsExactly("door-org-named-2026-09");
+    }
+
+    @Test
     void instagramOrganicUnknown_loadsEmptyNotZero() {
         assertThat(shipped().priors().instagramOrganic()).isEqualTo(Optional.empty());
     }

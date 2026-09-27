@@ -173,6 +173,14 @@ public class Event {
     @Column(name = "dj_photo_rights_attestation_version", length = 32)
     private String djPhotoRightsAttestationVersion;
 
+    /** Door QR opt-in page is open for this event (V142). */
+    @Column(name = "door_optin_enabled", nullable = false)
+    private boolean doorOptinEnabled = false;
+
+    /** URL token of the door page; set on first enable and kept, so a printed QR stays valid. */
+    @Column(name = "door_optin_token", length = 32)
+    private String doorOptinToken;
+
     @PrePersist
     void onPersist() {
         venueCityKey = com.imin.iminapi.util.EventNormalization.cityKey(venueCity);

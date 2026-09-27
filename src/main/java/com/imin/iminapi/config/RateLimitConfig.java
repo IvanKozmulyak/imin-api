@@ -57,6 +57,10 @@ public class RateLimitConfig {
     private int notifySubscribeCapacity;
     @Value("${imin.ratelimit.notify-subscribe.window-minutes}")
     private int notifySubscribeWindow;
+    @Value("${imin.ratelimit.door-optin.capacity}")
+    private int doorOptinCapacity;
+    @Value("${imin.ratelimit.door-optin.window-minutes}")
+    private int doorOptinWindow;
     @Value("${imin.ratelimit.wallet-pass.capacity}")
     private int walletPassCapacity;
     @Value("${imin.ratelimit.wallet-pass.window-minutes}")
@@ -178,6 +182,10 @@ public class RateLimitConfig {
         // route is a spam relay.
         configs.put("notify-subscribe", BucketConfiguration.builder()
                 .addLimit(Bandwidth.simple(notifySubscribeCapacity, Duration.ofMinutes(notifySubscribeWindow)))
+                .build());
+        // Public door QR sign-up, keyed per client IP; each stored row is a marketing consent.
+        configs.put("door-optin", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(doorOptinCapacity, Duration.ofMinutes(doorOptinWindow)))
                 .build());
         // Signed .pkpass minting on the public per-ticket asset endpoint, keyed per
         // client IP. Unauthenticated, and each call is three DB reads plus an RSA
