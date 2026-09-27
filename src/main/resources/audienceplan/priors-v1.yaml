@@ -25,5 +25,7 @@ reach_to_ticket:
 tribe_size:
   music_listeners:        { low: 0.94, high: 0.94, source: "CNM", derived: true, note: "computed from CNM, confirm at M0-5" }
   bar_club_concert_goers: { low: 0.41, high: 0.44, source: "CNM", year: 2023 }
-  electronic_first:       { low: 0.09, high: 0.11, source: "Ekhoscènes", year: 2024 }
+  # genres = the buckets this genre share describes (assumption: Ekhoscènes "electronic" is not split by bucket).
+  # A bucket on no share has no tribe size yet (null, never borrowed).
+  electronic_first:       { low: 0.09, high: 0.11, source: "Ekhoscènes", year: 2024, genres: ["house & techno", "bass & hard dance"] }
   frequent_goers:         { low: 0.35, high: 0.35, source: "CNM", derived: true, note: "computed from CNM, confirm at M0-5" }

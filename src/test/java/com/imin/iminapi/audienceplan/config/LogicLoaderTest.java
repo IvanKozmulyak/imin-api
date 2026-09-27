@@ -74,10 +74,11 @@ class LogicLoaderTest {
         assertThat(p.metaAds()).isEqualTo(new AudiencePlanLogic.MetaAds(
                 0.027, new Band(0.02, 0.05, 0.08), false, "US arts and entertainment, unverified"));
         assertThat(p.tribeSize()).isEqualTo(Map.of(
-                "music_listeners", new SourcedRate(0.94, 0.94, "CNM", null, true, DERIVED_NOTE),
-                "bar_club_concert_goers", new SourcedRate(0.41, 0.44, "CNM", 2023, false, null),
-                "electronic_first", new SourcedRate(0.09, 0.11, "Ekhoscènes", 2024, false, null),
-                "frequent_goers", new SourcedRate(0.35, 0.35, "CNM", null, true, DERIVED_NOTE)));
+                "music_listeners", new SourcedRate(0.94, 0.94, "CNM", null, true, DERIVED_NOTE, Set.of()),
+                "bar_club_concert_goers", new SourcedRate(0.41, 0.44, "CNM", 2023, false, null, Set.of()),
+                "electronic_first", new SourcedRate(0.09, 0.11, "Ekhoscènes", 2024, false, null,
+                        Set.of("house & techno", "bass & hard dance")),
+                "frequent_goers", new SourcedRate(0.35, 0.35, "CNM", null, true, DERIVED_NOTE, Set.of())));
     }
 
     @Test
@@ -465,6 +466,24 @@ class LogicLoaderTest {
     void tribeRateNonPositiveYear_fails() {
         assertPriorsFail(p -> p.replace("source: \"Ekhoscènes\", year: 2024", "source: \"Ekhoscènes\", year: 0"),
                 "priors.tribe_size.electronic_first.year: must be positive");
+    }
+
+    @Test
+    void tribeShareGenreNotWhitelisted_fails() {
+        assertPriorsFail(p -> p.replace("\"bass & hard dance\"]", "\"techno\"]"),
+                "priors.tribe_size.electronic_first.genres: 'techno' is not a whitelisted genre");
+    }
+
+    @Test
+    void tribeShareGenreOnTwoRates_fails() {
+        assertPriorsFail(p -> p.replace("year: 2023 }", "year: 2023, genres: [\"house & techno\"] }"),
+                "priors.tribe_size.electronic_first.genres: 'house & techno' already has a share on bar_club_concert_goers");
+    }
+
+    @Test
+    void tribeShareGenresNotAList_fails() {
+        assertPriorsFail(p -> p.replace("year: 2023 }", "year: 2023, genres: \"pop\" }"),
+                "priors.tribe_size.bar_club_concert_goers.genres: expected a list");
     }
 
     // ---- helpers ----

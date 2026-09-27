@@ -66,6 +66,14 @@ public final class LogicLoader {
                 throw new IllegalStateException("audience plan priors: class '" + rule.key() + "' has no prior");
             }
         }
+        priors.tribeSize().forEach((key, rate) -> {
+            for (String genre : rate.genres()) {
+                if (!genres.whitelist().contains(genre)) {
+                    throw new IllegalStateException("audience plan priors.tribe_size." + key + ".genres: '" + genre
+                            + "' is not a whitelisted genre");
+                }
+            }
+        });
         return new AudiencePlanLogic(logic, priors, genres);
     }
 
@@ -175,8 +183,16 @@ public final class LogicLoader {
         Node meta = reach.map("meta_ads");
         Map<String, SourcedRate> tribe = new LinkedHashMap<>();
         Node tribeNode = root.map("tribe_size");
+        Map<String, String> shareOwner = new LinkedHashMap<>();
         for (String key : tribeNode.keys()) {
-            tribe.put(key, sourcedRate(tribeNode.map(key)));
+            SourcedRate rate = sourcedRate(tribeNode.map(key));
+            for (String genre : rate.genres()) {
+                String owner = shareOwner.putIfAbsent(genre, key);
+                if (owner != null) {
+                    throw tribeNode.map(key).invalid("genres", "'" + genre + "' already has a share on " + owner);
+                }
+            }
+            tribe.put(key, rate);
         }
         return new Priors(
                 root.positiveVersion(),
@@ -214,6 +230,7 @@ public final class LogicLoader {
         if (source.isBlank()) {
             throw n.invalid("source", "must not be blank");
         }
+        Set<String> genres = n.map().get("genres") == null ? Set.of() : Set.copyOf(n.strings("genres"));
         boolean derived = n.optionalBoolean("derived");
         if (derived) {
             // Our own computation from the source, so there is no published year to cite.
@@ -224,13 +241,13 @@ public final class LogicLoader {
             if (note.isBlank()) {
                 throw n.invalid("note", "must not be blank");
             }
-            return new SourcedRate(low, high, source, null, true, note);
+            return new SourcedRate(low, high, source, null, true, note, genres);
         }
         int year = n.integer("year");
         if (year <= 0) {
             throw n.invalid("year", "must be positive");
         }
-        return new SourcedRate(low, high, source, year, false, null);
+        return new SourcedRate(low, high, source, year, false, null, genres);
     }
 
     private static Genres parseGenres(Node root) {

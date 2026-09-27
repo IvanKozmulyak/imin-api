@@ -93,9 +93,11 @@ public record AudiencePlanLogic(Logic logic, Priors priors, Genres genres) {
 
     /**
      * A research rate range with its source and year. A derived rate is our own computation from the source:
-     * it has no year and carries a note instead.
+     * it has no year and carries a note instead. {@code genres} is non-empty only on a genre-share rate and names
+     * the genre buckets it describes.
      */
-    public record SourcedRate(double low, double high, String source, Integer year, boolean derived, String note) {}
+    public record SourcedRate(double low, double high, String source, Integer year, boolean derived, String note,
+                              Set<String> genres) {}
 
     /** {@code adjacency} is symmetric: each key maps to its neighbours. */
     public record Genres(
