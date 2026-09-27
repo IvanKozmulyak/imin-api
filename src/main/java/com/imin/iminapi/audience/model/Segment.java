@@ -19,6 +19,10 @@ import java.util.UUID;
 @Setter
 public class Segment {
 
+    public static final String ORIGIN_ORGANIZER = "organizer";
+    /** A static arm segment of an audience-plan invitation; hidden from the Audience tab. */
+    public static final String ORIGIN_AUDIENCE_PLAN = "audience_plan";
+
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
@@ -43,6 +47,10 @@ public class Segment {
      */
     @Column(name = "prebuilt_key", length = 32)
     private String prebuiltKey;
+
+    /** organizer | audience_plan */
+    @Column(nullable = false, length = 32)
+    private String origin = ORIGIN_ORGANIZER;
 
     /** JSON array of {field, operator, value} */
     @Column(name = "rules_json", columnDefinition = "TEXT")

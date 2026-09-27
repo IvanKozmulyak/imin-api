@@ -31,6 +31,10 @@ public interface AudienceAssignmentRepository extends Repository<AudienceAssignm
     List<UUID> findHeldOut(@Param("orgId") UUID orgId, @Param("eventId") UUID eventId,
                            @Param("membershipIds") Collection<UUID> membershipIds);
 
+    /** Everyone assigned to one experiment, id-sorted. */
+    @Query("select a.membershipId from AudienceAssignment a where a.experimentId = :experimentId order by a.membershipId")
+    List<UUID> findMembershipIds(@Param("experimentId") UUID experimentId);
+
     @Modifying
     @Transactional
     @Query("delete from AudienceAssignment a where a.membershipId = :membershipId")

@@ -45,6 +45,10 @@ public class AudienceExperiment {
     @Column(nullable = false)
     private long seed;
 
+    /** The holdout percentage the invitation asked for; null on rows written before it was recorded. */
+    @Column(name = "holdout_pct")
+    private Integer holdoutPct;
+
     @Column(name = "created_at", nullable = false, insertable = false, updatable = false)
     private Instant createdAt;
 }

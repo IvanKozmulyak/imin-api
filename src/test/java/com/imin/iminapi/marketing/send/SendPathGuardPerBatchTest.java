@@ -17,7 +17,10 @@ import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.OrderFixtures;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -50,6 +53,8 @@ class SendPathGuardPerBatchTest {
     @Autowired AudienceExperimentRepository experiments;
     @Autowired AudienceAssignmentRepository assignments;
     @Autowired OrganizationRepository organizations;
+    @Autowired UserRepository users;
+    @Autowired EventRepository events;
     @MockitoBean CampaignEmailProvider provider;
     @Autowired AudiencePlanProperties props;
 
@@ -144,8 +149,10 @@ class SendPathGuardPerBatchTest {
 
     @Test
     void memberHeldOutAfterMaterialisationIsSkippedNotSent() {
-        UUID orgId = UUID.randomUUID();
-        UUID eventId = UUID.randomUUID();
+        // A real event: experiments reference events (V154 FK).
+        var event = OrderFixtures.event(organizations, users, events, "Batch", Instant.now().plus(7, ChronoUnit.DAYS));
+        UUID orgId = event.getOrgId();
+        UUID eventId = event.getId();
         Campaign c = campaign(orgId, eventId, "manual");
         CampaignRecipient keep = pendingRow(c, orgId);
         CampaignRecipient held = pendingRow(c, orgId);

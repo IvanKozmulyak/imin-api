@@ -498,7 +498,7 @@ class AudienceDsarTest {
         UUID mid = seedMembership(orgA, "assignerase@d.com");
         AudienceExperiment e = new AudienceExperiment();
         e.setOrgId(orgA);
-        e.setEventId(UUID.randomUUID());
+        e.setEventId(seedEvent(orgA).getId());
         e.setArm("holdout");
         e.setSeed(3L);
         e.setMembers(1);

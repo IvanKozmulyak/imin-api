@@ -73,6 +73,7 @@ public class SegmentService {
     public List<Segment> listSegments(UUID orgId) {
         return segmentRepo.findByOrgId(orgId).stream()
                 .filter(seg -> !PrebuiltSegment.isRetired(seg.getPrebuiltKey()))
+                .filter(seg -> !Segment.ORIGIN_AUDIENCE_PLAN.equals(seg.getOrigin()))
                 .toList();
     }
 
@@ -137,6 +138,10 @@ public class SegmentService {
 
     @Transactional
     public void deleteSegment(UUID orgId, UUID segmentId, AuthPrincipal principal) {
+        // An arm segment is hidden and backs a plan campaign, so it is not the organizer's to delete.
+        segmentRepo.findByIdAndOrgId(segmentId, orgId)
+                .filter(seg -> Segment.ORIGIN_AUDIENCE_PLAN.equals(seg.getOrigin()))
+                .ifPresent(seg -> { throw ApiException.notFound("Segment"); });
         int rows = segmentRepo.deleteByIdAndOrgIdAndNotPrebuilt(segmentId, orgId);
         if (rows == 0) throw ApiException.notFound("Segment");
         auditLogger.record(principal, AuditActions.SEGMENT_DELETED, "segment", segmentId, "Segment deleted");

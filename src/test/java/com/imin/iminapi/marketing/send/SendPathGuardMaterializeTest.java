@@ -21,6 +21,10 @@ import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
+import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.OrderFixtures;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -55,6 +59,9 @@ class SendPathGuardMaterializeTest {
     @Autowired ConsentRecordRepository consentRecords;
     @Autowired AudiencePlanProperties props;
     @Autowired MomentumPlanTarget planTarget;
+    @Autowired OrganizationRepository orgRepo;
+    @Autowired UserRepository userRepo;
+    @Autowired EventRepository eventRepo;
 
     @AfterEach
     void resetFlag() {
@@ -122,8 +129,10 @@ class SendPathGuardMaterializeTest {
 
     @Test
     void holdoutMemberOfTheEventIsMaterializedAsSkippedForAManualCampaign() {
-        UUID orgId = UUID.randomUUID();
-        UUID eventId = UUID.randomUUID();
+        // A real event: experiments reference events (V154 FK).
+        var event = OrderFixtures.event(orgRepo, userRepo, eventRepo, "Mat", Instant.now().plus(7, ChronoUnit.DAYS));
+        UUID orgId = event.getOrgId();
+        UUID eventId = event.getId();
         Membership keep = member(orgId);
         Membership held = member(orgId);
         AudienceExperiment e = new AudienceExperiment();

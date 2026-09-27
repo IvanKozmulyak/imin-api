@@ -14,6 +14,10 @@ import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
+import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.OrderFixtures;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -54,14 +58,23 @@ class SendPathGuardTest {
     @MockitoSpyBean AudienceAssignmentRepository assignments;
     @MockitoBean ConsentGate consentGate;
     @Autowired AudiencePlanProperties props;
+    @Autowired OrganizationRepository orgRepo;
+    @Autowired UserRepository userRepo;
+    @Autowired EventRepository eventRepo;
 
     UUID orgId;
     UUID eventId;
 
     @BeforeEach
     void setUp() {
-        orgId = UUID.randomUUID();
-        eventId = UUID.randomUUID();
+        // Experiments reference a real event (V154 FK); its org is the test org.
+        var event = realEvent();
+        orgId = event.getOrgId();
+        eventId = event.getId();
+    }
+
+    private com.imin.iminapi.model.Event realEvent() {
+        return OrderFixtures.event(orgRepo, userRepo, eventRepo, "Guard", NOW.plus(7, ChronoUnit.DAYS));
     }
 
     @AfterEach
@@ -158,7 +171,7 @@ class SendPathGuardTest {
     @Test
     void holdoutOfAnotherEventIsNotSkipped() {
         UUID held = member();
-        assign(orgId, UUID.randomUUID(), "holdout", held);
+        assign(orgId, realEvent().getId(), "holdout", held);
 
         assertThat(guard.skipReasons(campaign(eventId, "manual"), List.of(held), NOW)).isEmpty();
     }
