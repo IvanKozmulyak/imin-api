@@ -22,8 +22,8 @@ import static org.assertj.core.api.Assertions.*;
 
 /**
  * Segment tests:
- * - resolve(rules).size() == count(resolve) for each of the 7 prebuilt segments
- * - each of 7 prebuilt predicates matches correctly
+ * - resolve(rules).size() == count(resolve) for each provisioned prebuilt segment
+ * - each prebuilt predicate matches correctly
  * - static snapshot frozen while dynamic re-evaluates
  * - custom rule JSON evaluated correctly
  * - segment isolation: segments from orgA not visible to orgB
@@ -35,6 +35,7 @@ class AudienceSegmentTest {
     @Autowired MembershipRepository membershipRepo;
     @Autowired ConsumerRepository consumerRepo;
     @Autowired SegmentRepository segmentRepo;
+    @Autowired ConsentRecordRepository consentRepo;
     @Autowired AudienceOrderProjector orderProjector;
     @Autowired SegmentService segmentService;
     @Autowired OrganizationRepository orgRepo;
@@ -241,46 +242,60 @@ class AudienceSegmentTest {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Prebuilt segment 5: Promoters (nps >= 9)
+    // Promoters: retired until NPS is collected
     // ─────────────────────────────────────────────────────────────────────────
 
     @Test
-    void prebuilt_promoters_matches_nps_gte_9() {
+    void promoters_is_not_provisioned_for_a_new_org() {
         segmentService.ensurePrebuiltSegments(orgA);
-        Segment seg = findPrebuilt(orgA, "Promoters");
+
+        assertThat(segmentRepo.findByOrgId(orgA)).extracting(Segment::getPrebuiltKey)
+                .doesNotContain(PrebuiltSegment.PROMOTERS.key())
+                .hasSize(6);
+    }
+
+    @Test
+    void an_existing_promoters_row_is_hidden_from_the_list_but_still_resolves() {
+        segmentService.ensurePrebuiltSegments(orgA);
+        Segment legacy = new Segment();
+        legacy.setOrgId(orgA);
+        legacy.setName("Promoters");
+        legacy.setKind("dynamic");
+        legacy.setPrebuilt(true);
+        legacy.setPrebuiltKey(PrebuiltSegment.PROMOTERS.key());
+        legacy.setRulesJson(PrebuiltSegment.PROMOTERS.rulesJson());
+        legacy = segmentRepo.save(legacy);
 
         Membership promoter = seedMembership(orgA, "prom@s.com");
         promoter.setNps((short) 9);
         membershipRepo.save(promoter);
+        seedMembership(orgA, "nonps@s.com");
 
-        Membership highPromoter = seedMembership(orgA, "highprom@s.com");
-        highPromoter.setNps((short) 10);
-        membershipRepo.save(highPromoter);
-
-        Membership notPromoter = seedMembership(orgA, "notprom@s.com");
-        notPromoter.setNps((short) 8);
-        membershipRepo.save(notPromoter);
-
-        Membership noNps = seedMembership(orgA, "nonps@s.com");
-        // nps=null by default
-
-        List<Membership> resolved = segmentService.resolveMembers(orgA, seg);
-        assertThat(resolved).extracting(Membership::getMembershipId)
-                .containsExactlyInAnyOrder(promoter.getMembershipId(), highPromoter.getMembershipId());
+        assertThat(segmentService.listSegments(orgA)).extracting(Segment::getId).doesNotContain(legacy.getId());
+        assertThat(segmentService.listSegments(orgA)).hasSize(6);
+        assertThat(segmentService.resolveMembers(orgA, legacy)).extracting(Membership::getMembershipId)
+                .containsExactly(promoter.getMembershipId());
     }
 
     @Test
-    void prebuilt_promoters_resolve_count_equals_resolve_size() {
+    void a_retired_promoters_row_does_not_block_creating_a_segment_with_that_name() {
         segmentService.ensurePrebuiltSegments(orgA);
-        Segment seg = findPrebuilt(orgA, "Promoters");
+        Segment legacy = new Segment();
+        legacy.setOrgId(orgA);
+        legacy.setName("Promoters");
+        legacy.setKind("dynamic");
+        legacy.setPrebuilt(true);
+        legacy.setPrebuiltKey(PrebuiltSegment.PROMOTERS.key());
+        legacy.setRulesJson(PrebuiltSegment.PROMOTERS.rulesJson());
+        segmentRepo.save(legacy);
 
-        Membership p = seedMembership(orgA, "p2@s.com");
-        p.setNps((short) 9);
-        membershipRepo.save(p);
+        Segment created = segmentService.createSegment(orgA, " promoters ", "dynamic", null, principalA);
 
-        SegmentResolveDto dto = segmentService.resolve(orgA, seg.getId());
-        List<Membership> list = segmentService.resolveMembers(orgA, seg);
-        assertThat(dto.matched()).isEqualTo(list.size());
+        assertThat(created.getName()).isEqualTo("promoters");
+        assertThat(segmentService.listSegments(orgA)).extracting(Segment::getId).contains(created.getId());
+        assertThatThrownBy(() -> segmentService.createSegment(orgA, "PROMOTERS", "dynamic", null, principalA))
+                .isInstanceOfSatisfying(com.imin.iminapi.security.ApiException.class,
+                        e -> assertThat(e.status()).isEqualTo(org.springframework.http.HttpStatus.CONFLICT));
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -657,7 +672,7 @@ class AudienceSegmentTest {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Ensure 7 prebuilt segments are provisioned exactly once
+    // Ensure the 6 provisioned prebuilt segments are created exactly once
     // ─────────────────────────────────────────────────────────────────────────
 
     @Test
@@ -667,7 +682,7 @@ class AudienceSegmentTest {
 
         List<Segment> segments = segmentRepo.findByOrgId(orgA);
         long prebuilt = segments.stream().filter(Segment::isPrebuilt).count();
-        assertThat(prebuilt).isEqualTo(7);
+        assertThat(prebuilt).isEqualTo(6);
     }
 
     @Test
@@ -693,12 +708,19 @@ class AudienceSegmentTest {
         segmentService.ensurePrebuiltSegments(orgA);
         Segment seg = findPrebuilt(orgA, "Repeat");
 
-        // Member with consent
+        // Member with a proven consent (door QR, text version, recent)
         Membership withConsent = seedMembership(orgA, "consented@s.com");
         withConsent.setEvents(3);
         withConsent.setConsentStatus("subscribed");
         withConsent.setConsentBasis("explicit");
         membershipRepo.save(withConsent);
+        ConsentRecord proof = new ConsentRecord();
+        proof.setMembershipId(withConsent.getMembershipId());
+        proof.setStatus("subscribed");
+        proof.setLawfulBasis("explicit");
+        proof.setSource("door_qr");
+        proof.setTextVersion("door-v1");
+        consentRepo.save(proof);
 
         // Member without consent
         Membership noConsent = seedMembership(orgA, "noconsent@s.com");
@@ -711,6 +733,7 @@ class AudienceSegmentTest {
         assertThat(dto.mailable()).isEqualTo(1);
         assertThat(dto.excluded()).isEqualTo(1);
         assertThat(dto.mailable()).isLessThanOrEqualTo(dto.matched());
+        assertThat(dto.exclusions()).containsEntry("no_basis", 1);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -753,6 +776,7 @@ class AudienceSegmentTest {
              java.sql.Statement s = c.createStatement()) {
             s.execute("delete from suppression_entries");
             s.execute("delete from consent_records");
+            s.execute("delete from fan_features");
             s.execute("delete from segments");
             s.execute("delete from memberships");
             s.execute("delete from consumers");

@@ -129,6 +129,14 @@ public interface FanFeatureRepository extends Repository<FanFeature, UUID> {
 
     // ---- Audience read model ----
 
+    /** Rows of {@code [membershipId, class, taste, cities]} for the segment rule engine; the org comes from the membership. */
+    @Query("""
+            select f.membershipId, f.fanClass, f.taste, f.cities
+              from FanFeature f, com.imin.iminapi.audience.model.Membership m
+             where m.membershipId = f.membershipId and m.orgId = :orgId
+            """)
+    List<Object[]> findSegmentFactsByOrgId(@Param("orgId") UUID orgId);
+
     List<FanFeature> findByMembershipIdIn(Collection<UUID> membershipIds);
 
     /** Rows of {@code [class, count]} over every member of the org; a member without a row counts as none. */

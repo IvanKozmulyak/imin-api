@@ -27,15 +27,20 @@ import java.util.TreeSet;
  *       {@code events}, {@code spend_minor} (cents), {@code recency} (days since last purchase),
  *       {@code no_show}, {@code nps}</li>
  *   <li><b>Enum</b> (equality only): {@code lifecycle}, {@code consent_status}, {@code consent_basis}</li>
+ *   <li><b>Set</b> ({@code ==} or {@code in}): {@code guest_class}, {@code genre} (the 8 buckets), {@code city}</li>
  * </ul>
- * Rules are conjunctive (AND). An empty rule list matches everyone.
+ * A draft is one AND group. {@code nps} (not collected yet) and {@code attended_event} (picked in the editor)
+ * are reported as unsupported. An empty rule list matches everyone.
  */
 public final class SegmentRuleSchema {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     /** Numeric fields the engine reads as longs. */
-    static final Set<String> NUMERIC_FIELDS = Set.of("events", "spend_minor", "recency", "no_show", "nps");
+    static final Set<String> NUMERIC_FIELDS = Set.of("events", "spend_minor", "recency", "no_show");
+
+    /** Set fields the engine matches by membership; {@code in} takes comma-separated values. */
+    static final Set<String> SET_FIELDS = Set.of("guest_class", "genre", "city");
 
     /** Enum fields the engine compares by equality, mapped to their allowed values. */
     static final Map<String, Set<String>> ENUM_VALUES = Map.of(
@@ -65,7 +70,7 @@ public final class SegmentRuleSchema {
      * (deduplicated, capped at {@link #MAX_RULES}) plus a human-readable reason for every part
      * that was dropped. Tolerant of nulls throughout — untrusted model output.
      */
-    public static Result validate(List<SegmentDraftLlm.Rule> raw) {
+    public static Result validate(List<SegmentDraftLlm.Rule> raw, Set<String> genreBuckets) {
         List<ValidRule> valid = new ArrayList<>();
         List<String> unsupported = new ArrayList<>();
         Set<String> seen = new LinkedHashSet<>();
@@ -112,6 +117,31 @@ public final class SegmentRuleSchema {
                     continue;
                 }
                 addIfNew(valid, seen, unsupported, new ValidRule(field, "==", val));
+            } else if (SET_FIELDS.contains(field)) {
+                String op = "in".equalsIgnoreCase(rawOp) ? "in"
+                        : (rawOp.isEmpty() || "==".equals(canonicalOp(rawOp))) ? "==" : null;
+                if (op == null) {
+                    unsupported.add("\"" + describe(field) + "\" only supports is or is one of, not \"" + rawOp + "\"");
+                    continue;
+                }
+                List<String> values = SegmentRules.values(new SegmentRules.Rule(field, op, rawVal)).stream()
+                        .map(v -> v.toLowerCase(Locale.ROOT)).distinct().toList();
+                if (values.isEmpty()) {
+                    unsupported.add("\"" + describe(field) + "\" needs a value");
+                    continue;
+                }
+                Set<String> allowed = "guest_class".equals(field) ? SegmentRules.GUEST_CLASSES
+                        : "genre".equals(field) ? genreBuckets : null;
+                if (allowed != null && !allowed.containsAll(values)) {
+                    unsupported.add("\"" + describe(field) + "\" must be one of " + String.join(", ", new TreeSet<>(allowed)));
+                    continue;
+                }
+                String value = String.join(",", values);
+                addIfNew(valid, seen, unsupported, new ValidRule(field, values.size() == 1 ? "==" : "in", value));
+            } else if ("nps".equals(field)) {
+                unsupported.add("NPS scores aren't collected yet");
+            } else if ("attended_event".equals(field)) {
+                unsupported.add("\"Attended event\" needs the event picked in the segment editor");
             } else {
                 String shown = r.field() == null ? "" : r.field().trim();
                 unsupported.add("\"" + shown + "\" isn't a filterable attribute");
@@ -176,7 +206,9 @@ public final class SegmentRuleSchema {
             case "spend_minor" -> "Spent " + moneyPhrase(op, v) + " in total.";
             case "recency" -> recencyPhrase(op, v);
             case "no_show" -> "Was a no-show for " + countPhrase(op, v) + " " + plural(v, "event") + ".";
-            case "nps" -> "Gave an NPS score " + countPhrase(op, v) + ".";
+            case "guest_class" -> "Guest class is " + oneOf(v, "or") + ".";
+            case "genre" -> "Bought tickets for " + oneOf(v, "or") + " events.";
+            case "city" -> "Bought tickets for events in " + oneOf(v, "or") + ".";
             case "lifecycle" -> "Lifecycle stage is " + capitalize(v) + ".";
             case "consent_status" -> "Subscription status is " + v + ".";
             case "consent_basis" -> "Consent basis is " + v.replace('_', ' ') + ".";
@@ -192,6 +224,10 @@ public final class SegmentRuleSchema {
             case "recency" -> "days since last purchase";
             case "no_show" -> "no-shows";
             case "nps" -> "NPS score";
+            case "guest_class" -> "guest class";
+            case "genre" -> "genre";
+            case "city" -> "city";
+            case "attended_event" -> "attended event";
             case "lifecycle" -> "lifecycle stage";
             case "consent_status" -> "subscription status";
             case "consent_basis" -> "consent basis";
@@ -243,6 +279,12 @@ public final class SegmentRuleSchema {
         }
         if (cents % 100 == 0) return "€" + (cents / 100);
         return String.format(Locale.ROOT, "€%.2f", cents / 100.0);
+    }
+
+    private static String oneOf(String commaValues, String joiner) {
+        List<String> parts = List.of(commaValues.split(","));
+        if (parts.size() == 1) return parts.get(0);
+        return String.join(", ", parts.subList(0, parts.size() - 1)) + " " + joiner + " " + parts.get(parts.size() - 1);
     }
 
     private static String plural(String value, String noun) {

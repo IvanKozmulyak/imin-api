@@ -1,7 +1,7 @@
 package com.imin.iminapi.audience.service;
 
 /**
- * The seven system-provisioned segments, keyed by a stable identifier rather than by the
+ * The system-provisioned segments, keyed by a stable identifier rather than by the
  * display name.
  *
  * <p>Segment resolution used to {@code switch} on {@code segment.getName()}, so any segment
@@ -26,8 +26,9 @@ public enum PrebuiltSegment {
             "[{\"field\":\"recency\",\"operator\":\">=\",\"value\":\"90\"},{\"field\":\"consent_status\",\"operator\":\"==\",\"value\":\"subscribed\"}]"),
     FIRST_TIMERS("First-timers",
             "[{\"field\":\"events\",\"operator\":\"==\",\"value\":\"1\"}]"),
+    // Retired until NPS is collected: never provisioned and hidden, but an existing row still resolves.
     PROMOTERS("Promoters",
-            "[{\"field\":\"nps\",\"operator\":\">=\",\"value\":\"9\"}]"),
+            "[{\"field\":\"nps\",\"operator\":\">=\",\"value\":\"9\"}]", true),
     BOUGHT_NO_SHOWED("Bought-no-showed",
             "[{\"field\":\"no_show\",\"operator\":\">\",\"value\":\"0\"}]"),
     NEWEST_30D("Newest-30d",
@@ -35,10 +36,26 @@ public enum PrebuiltSegment {
 
     private final String displayName;
     private final String rulesJson;
+    private final boolean retired;
 
     PrebuiltSegment(String displayName, String rulesJson) {
+        this(displayName, rulesJson, false);
+    }
+
+    PrebuiltSegment(String displayName, String rulesJson, boolean retired) {
         this.displayName = displayName;
         this.rulesJson = rulesJson;
+        this.retired = retired;
+    }
+
+    public boolean retired() {
+        return retired;
+    }
+
+    /** True for the key of a retired prebuilt, which the segment list hides. */
+    public static boolean isRetired(String key) {
+        PrebuiltSegment p = byKey(key);
+        return p != null && p.retired;
     }
 
     /** The name the segment is provisioned with. Display only — never routed on. */

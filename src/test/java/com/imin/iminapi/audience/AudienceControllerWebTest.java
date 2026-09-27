@@ -207,6 +207,18 @@ class AudienceControllerWebTest {
                 .contains("\"legacyNotMailable\"").contains("\"showedUpPct\"");
     }
 
+    @Test
+    void openapi_publishes_the_SegmentRuleGroup_marker_and_the_preview_endpoint() throws Exception {
+        mvc.perform(get("/v3/api-docs"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.components.schemas.SegmentRuleGroup.properties.combinator.enum")
+                        .value(org.hamcrest.Matchers.contains("and", "or", "not")))
+                .andExpect(jsonPath("$.components.schemas.SegmentRuleGroup.properties.rules").exists())
+                .andExpect(jsonPath("$.components.schemas.SegmentResolveDto.properties.exclusions").exists())
+                .andExpect(jsonPath("$.components.schemas.SegmentDto.properties.ruleGroups").exists())
+                .andExpect(jsonPath("$.paths['/api/v1/audience/segments/preview'].post").exists());
+    }
+
     /**
      * Cross-org isolation: org A accessing org B's member ID must get 404, NOT 403.
      * The service throws ApiException.notFound which maps to HTTP 404.
@@ -937,10 +949,38 @@ class AudienceControllerWebTest {
     @WithOrgA
     void segment_handoff_cross_org_segment_returns_404() throws Exception {
         UUID foreignSegId = UUID.randomUUID();
-        when(segmentService.listSegments(ORG_A)).thenReturn(List.of()); // org A has no segments
+        when(segmentService.requireSegmentForOrg(ORG_A, foreignSegId))
+                .thenThrow(ApiException.notFound("Segment"));
 
         mvc.perform(post("/api/v1/audience/segments/" + foreignSegId + "/handoff"))
                 .andExpect(status().isNotFound());
+        verify(sendGateService, never()).handoff(any(), any(), any());
+    }
+
+    @Test
+    @WithOrgA
+    void segment_handoff_still_hands_off_a_retired_promoters_row() throws Exception {
+        UUID segId = UUID.randomUUID();
+        Segment promoters = new Segment();
+        promoters.setId(segId);
+        promoters.setOrgId(ORG_A);
+        promoters.setName("Promoters");
+        promoters.setKind("dynamic");
+        promoters.setPrebuilt(true);
+        promoters.setPrebuiltKey(PrebuiltSegment.PROMOTERS.key());
+        Membership member = new Membership();
+        member.setMembershipId(MEMBER_A);
+        when(segmentService.requireSegmentForOrg(ORG_A, segId)).thenReturn(promoters);
+        when(segmentService.resolveMembers(ORG_A, promoters)).thenReturn(List.of(member));
+        when(sendGateService.handoff(eq(ORG_A), eq(List.of(MEMBER_A)), any()))
+                .thenReturn(new HandoffResponse(1, List.of(MEMBER_A.toString()), List.of(), "/campaigns"));
+
+        mvc.perform(post("/api/v1/audience/segments/" + segId + "/handoff"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.recipientCount").value(1));
+
+        verify(sendGateService).handoff(eq(ORG_A), eq(List.of(MEMBER_A)), any());
+        verify(segmentService, never()).listSegments(any());
     }
 
     // ── /segments/{id}/resolve ────────────────────────────────────────────────
@@ -950,14 +990,47 @@ class AudienceControllerWebTest {
     void get_segment_resolve_returns_dto() throws Exception {
         UUID segId = UUID.randomUUID();
         when(segmentService.resolve(ORG_A, segId))
-                .thenReturn(new SegmentResolveDto(25, 20, 5, 45000L));
+                .thenReturn(new SegmentResolveDto(25, 20, 5, 45000L,
+                        java.util.Map.of("unsubscribed", 3, "legacy_unproven", 2)));
 
         mvc.perform(get("/api/v1/audience/segments/" + segId + "/resolve"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.matched").value(25))
                 .andExpect(jsonPath("$.mailable").value(20))
                 .andExpect(jsonPath("$.excluded").value(5))
-                .andExpect(jsonPath("$.avgLtvMinor").value(45000));
+                .andExpect(jsonPath("$.avgLtvMinor").value(45000))
+                .andExpect(jsonPath("$.exclusions.unsubscribed").value(3))
+                .andExpect(jsonPath("$.exclusions.legacy_unproven").value(2));
+    }
+
+    @Test
+    @WithOrgA
+    void post_segment_preview_passes_structured_groups_as_canonical_json() throws Exception {
+        when(segmentService.previewValidated(eq(ORG_A), anyString()))
+                .thenReturn(new SegmentResolveDto(4, 1, 3, 0L, java.util.Map.of("no_basis", 3)));
+
+        mvc.perform(post("/api/v1/audience/segments/preview")
+                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                        .content("{\"rulesJson\":{\"groups\":[{\"combinator\":\"not\",\"rules\":"
+                                + "[{\"field\":\"genre\",\"operator\":\"==\",\"value\":\"pop\"}]}]}}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.matched").value(4))
+                .andExpect(jsonPath("$.exclusions.no_basis").value(3));
+
+        verify(segmentService).previewValidated(ORG_A,
+                "{\"groups\":[{\"combinator\":\"not\",\"rules\":[{\"field\":\"genre\",\"operator\":\"==\",\"value\":\"pop\"}]}]}");
+    }
+
+    @Test
+    @WithOrgA
+    void post_segment_preview_without_body_previews_everyone() throws Exception {
+        when(segmentService.previewValidated(ORG_A, null))
+                .thenReturn(new SegmentResolveDto(0, 0, 0, 0L, java.util.Map.of()));
+
+        mvc.perform(post("/api/v1/audience/segments/preview"))
+                .andExpect(status().isOk());
+
+        verify(segmentService).previewValidated(ORG_A, null);
     }
 
     // ── CSV export: GET /members?format=csv ───────────────────────────────────

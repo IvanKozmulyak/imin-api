@@ -47,9 +47,10 @@ public class AiSegmentService {
     }
 
     public AiSegmentDraftResponse draft(AuthPrincipal p, String prompt) {
-        SegmentDraftLlm llm = callModel(prompt);
+        SegmentDraftLlm llm = callModel(prompt, segmentService.genreBuckets());
 
-        SegmentRuleSchema.Result result = SegmentRuleSchema.validate(llm == null ? null : llm.rules());
+        SegmentRuleSchema.Result result = SegmentRuleSchema.validate(llm == null ? null : llm.rules(),
+                segmentService.genreBuckets());
         List<SegmentRuleSchema.ValidRule> valid = result.rules();
 
         // Merge the model's own "couldn't express" list with the parts the validator stripped.
@@ -61,7 +62,7 @@ public class AiSegmentService {
         // When nothing valid could be derived, make sure the caller gets at least one reason.
         if (!createAllowed && unsupported.isEmpty()) {
             unsupported = List.of("Couldn't map that description to any available filter. Try describing "
-                    + "total spend, events attended, recency, NPS score, lifecycle stage, or subscription status.");
+                    + "total spend, events attended, recency, guest class, genre, city, lifecycle stage, or subscription status.");
         }
 
         String rulesJson = SegmentRuleSchema.canonicalJson(valid); // "[]" when empty
@@ -97,9 +98,9 @@ public class AiSegmentService {
     }
 
     /** Single, non-looping LLM call. Any failure degrades to a null draft (never a 5xx). */
-    private SegmentDraftLlm callModel(String prompt) {
+    private SegmentDraftLlm callModel(String prompt, java.util.Set<String> genreBuckets) {
         try {
-            return chat.prompt().user(buildPrompt(prompt)).call().entity(SegmentDraftLlm.class);
+            return chat.prompt().user(buildPrompt(prompt, genreBuckets)).call().entity(SegmentDraftLlm.class);
         } catch (Exception e) {
             log.warn("Segment-draft LLM call failed; degrading to empty draft: {}", e.getMessage());
             return null;
@@ -130,7 +131,7 @@ public class AiSegmentService {
      * The schema-constrained prompt. The model may ONLY emit fields/operators/values listed here;
      * anything else it must place in {@code unsupported} rather than invent a filter.
      */
-    private String buildPrompt(String description) {
+    private String buildPrompt(String description, java.util.Set<String> genreBuckets) {
         return """
                 You convert an event organizer's plain-language audience description into STRUCTURED
                 FILTERS for our contact database. You may ONLY use the fields, operators and values
@@ -143,17 +144,21 @@ public class AiSegmentService {
                 - recency       days since the contact's last purchase (SMALLER = more recent;
                                 "in the last 6 months" -> recency <= 180; "inactive 90+ days" -> recency >= 90)
                 - no_show       number of events the contact bought for but did NOT attend
-                - nps           the contact's NPS score, 0-10 (promoters are nps >= 9)
 
                 ENUM fields (equality only — operator "=="; value must be EXACTLY one of the listed):
                 - lifecycle       one of: prospect, firsttime, repeat, vip, lapsing, dormant, wonback
                 - consent_status  one of: never, subscribed, unsubscribed
                 - consent_basis   one of: explicit, soft_opt_in
 
+                SET fields (operator "==" for one value, "in" for several, comma-separated):
+                - guest_class  one of: loyal, repeat, first_timer, lapsing, dormant, imported, none
+                - genre        genre of events they bought tickets for, one of: %s
+                - city         city of events they bought tickets for (e.g. "metz")
+
                 All rules are combined with AND (every rule must match). We CANNOT express: OR
-                conditions, negation / "not", genre or music taste, city or location, email opens or
-                clicks, or any date other than recency-in-days. Put any such request part in
-                "unsupported" using the organizer's own words.
+                conditions, negation / "not", a specific event, NPS or ratings, genres outside the
+                list above, email opens or clicks, or any date other than recency-in-days. Put any
+                such request part in "unsupported" using the organizer's own words.
 
                 If the organizer means their whole audience with no filter (e.g. "everyone", "all my
                 contacts"), set "allContacts" to true and return an empty "rules" array.
@@ -168,6 +173,7 @@ public class AiSegmentService {
 
                 Organizer's description:
                 %s
-                """.formatted(description == null ? "" : description.trim());
+                """.formatted(String.join(", ", new java.util.TreeSet<>(genreBuckets)),
+                        description == null ? "" : description.trim());
     }
 }

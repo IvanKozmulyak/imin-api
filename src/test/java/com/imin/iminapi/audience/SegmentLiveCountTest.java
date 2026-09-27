@@ -16,6 +16,7 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 /**
@@ -27,6 +28,7 @@ import static org.mockito.Mockito.*;
 class SegmentLiveCountTest {
 
     private MembershipRepository membershipRepo;
+    private com.imin.iminapi.audienceplan.service.ConsentGate consentGate;
     private SegmentService segmentService;
 
     private final UUID orgId = UUID.randomUUID();
@@ -34,8 +36,13 @@ class SegmentLiveCountTest {
     @BeforeEach
     void setUp() {
         membershipRepo = mock(MembershipRepository.class);
+        consentGate = mock(com.imin.iminapi.audienceplan.service.ConsentGate.class);
         segmentService = new SegmentService(mock(SegmentRepository.class), membershipRepo,
-                mock(OrganizationRepository.class), mock(AuditLogger.class));
+                mock(OrganizationRepository.class), mock(AuditLogger.class),
+                mock(com.imin.iminapi.audienceplan.repository.FanFeatureRepository.class),
+                mock(com.imin.iminapi.repository.EventRepository.class),
+                consentGate,
+                mock(com.imin.iminapi.audienceplan.config.AudiencePlanLogic.class));
     }
 
     @Test
@@ -125,6 +132,34 @@ class SegmentLiveCountTest {
         assertThat(segmentService.liveCount(orgId, seg)).isEqualTo(2);
     }
 
+    /** matched counts only members the gate gave a verdict for, so it always equals mailable + excluded. */
+    @Test
+    void a_member_the_gate_returns_no_verdict_for_is_not_counted_as_matched() {
+        com.imin.iminapi.audience.model.Membership covered = membership(10_000);
+        com.imin.iminapi.audience.model.Membership unsubscribed = membership(10_000);
+        com.imin.iminapi.audience.model.Membership uncovered = membership(10_000);
+        when(membershipRepo.findAllByOrgId(orgId)).thenReturn(List.of(covered, unsubscribed, uncovered));
+        when(consentGate.reasons(eq(orgId), any())).thenReturn(java.util.Map.of(
+                covered.getMembershipId(), java.util.Optional.empty(),
+                unsubscribed.getMembershipId(), java.util.Optional.of("unsubscribed")));
+
+        var dto = segmentService.previewRules(orgId, null);
+
+        assertThat(dto.matched()).isEqualTo(2);
+        assertThat(dto.mailable()).isEqualTo(1);
+        assertThat(dto.excluded()).isEqualTo(1);
+        assertThat(dto.exclusions()).containsEntry("unsubscribed", 1);
+        assertThat(dto.exclusions().values().stream().mapToInt(Integer::intValue).sum()).isEqualTo(1);
+    }
+
+    private com.imin.iminapi.audience.model.Membership membership(long spend) {
+        com.imin.iminapi.audience.model.Membership m = new com.imin.iminapi.audience.model.Membership();
+        m.setMembershipId(UUID.randomUUID());
+        m.setOrgId(orgId);
+        m.setSpendMinor(spend);
+        return m;
+    }
+
     private Segment prebuilt(PrebuiltSegment key) {
         Segment s = new Segment();
         s.setOrgId(orgId);
@@ -137,6 +172,6 @@ class SegmentLiveCountTest {
     }
 
     private SegmentRuleRow row(int events) {
-        return new SegmentRuleRow(events, 0L, null, 0, null, "repeat", "subscribed", "explicit");
+        return new SegmentRuleRow(UUID.randomUUID(), events, 0L, null, 0, null, "repeat", "subscribed", "explicit");
     }
 }

@@ -8,6 +8,11 @@ import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.model.Segment;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.repository.SegmentRepository;
+import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
+import com.imin.iminapi.audienceplan.repository.FanFeatureRepository;
+import com.imin.iminapi.audienceplan.service.ConsentGate;
+import com.imin.iminapi.model.Event;
+import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
@@ -31,35 +36,44 @@ public class SegmentService {
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(SegmentService.class);
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final TypeReference<List<Map<String, String>>> RULES_TYPE = new TypeReference<>() {};
-
-    /** Numeric membership fields the rule engine (matchRule) compares with a parsed long. */
-    private static final Set<String> NUMERIC_FIELDS =
-            Set.of("events", "spend_minor", "recency", "no_show", "nps");
-    /** String membership fields the rule engine compares by equality. */
-    private static final Set<String> STRING_FIELDS =
-            Set.of("lifecycle", "consent_status", "consent_basis");
-    /** Comparison operators the rule engine understands. */
-    private static final Set<String> OPERATORS = Set.of(">=", "<=", ">", "<", "==");
 
     private final SegmentRepository segmentRepo;
     private final MembershipRepository membershipRepo;
     private final OrganizationRepository orgRepo;
     private final AuditLogger auditLogger;
+    private final FanFeatureRepository fanFeatureRepo;
+    private final EventRepository eventRepo;
+    private final ConsentGate consentGate;
+    private final AudiencePlanLogic planLogic;
 
     public SegmentService(SegmentRepository segmentRepo,
                           MembershipRepository membershipRepo,
                           OrganizationRepository orgRepo,
-                          AuditLogger auditLogger) {
+                          AuditLogger auditLogger,
+                          FanFeatureRepository fanFeatureRepo,
+                          EventRepository eventRepo,
+                          ConsentGate consentGate,
+                          AudiencePlanLogic planLogic) {
         this.segmentRepo = segmentRepo;
         this.membershipRepo = membershipRepo;
         this.orgRepo = orgRepo;
         this.auditLogger = auditLogger;
+        this.fanFeatureRepo = fanFeatureRepo;
+        this.eventRepo = eventRepo;
+        this.consentGate = consentGate;
+        this.planLogic = planLogic;
+    }
+
+    /** The 8 genre bucket keys a {@code genre} rule accepts. */
+    public Set<String> genreBuckets() {
+        return Set.copyOf(planLogic.genres().whitelist());
     }
 
     @Transactional(readOnly = true)
     public List<Segment> listSegments(UUID orgId) {
-        return segmentRepo.findByOrgId(orgId);
+        return segmentRepo.findByOrgId(orgId).stream()
+                .filter(seg -> !PrebuiltSegment.isRetired(seg.getPrebuiltKey()))
+                .toList();
     }
 
     @Transactional
@@ -69,13 +83,13 @@ public class SegmentService {
             throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID, "Validation failed",
                     Map.of("name", "Segment name is required"));
         }
-        validateRulesJson(rulesJson);
+        validateRulesJson(orgId, rulesJson);
         // Names are how organizers tell segments apart, and a second "VIP" beside the
         // prebuilt one is exactly the row that used to be resolved with somebody else's
         // rules. Resolution no longer routes on the name (see PrebuiltSegment), so this is
         // a clarity guard rather than a correctness one — hence a clean 409 at create time
         // instead of a destructive de-duplicating migration over segments organizers own.
-        if (segmentRepo.existsByOrgIdAndName(orgId, trimmedName)) {
+        if (segmentRepo.existsByOrgIdAndName(orgId, trimmedName) && visibleNameTaken(orgId, trimmedName)) {
             throw ApiException.duplicate("name", "A segment named \"" + trimmedName + "\" already exists");
         }
         Segment s = new Segment();
@@ -89,47 +103,31 @@ public class SegmentService {
         return saved;
     }
 
+    /** A retired prebuilt is hidden from the list, so its name does not block a new segment. */
+    private boolean visibleNameTaken(UUID orgId, String name) {
+        String wanted = name.toLowerCase(Locale.ROOT);
+        return listSegments(orgId).stream()
+                .anyMatch(seg -> seg.getName() != null && seg.getName().toLowerCase(Locale.ROOT).equals(wanted));
+    }
+
     /**
-     * Validate that {@code rulesJson} (when present) is a JSON array of {field, operator, value}
-     * rules the engine actually supports — see {@link #matchRule}. A null/blank value means
-     * "everyone" and is valid. Anything unparseable or referencing an unknown field/operator, or
-     * a non-numeric value on a numeric field, is rejected with a clean 400 rather than being
-     * silently coerced (the old engine matched such rules against nobody) or blowing up as a 500.
+     * Rejects rules the engine cannot run with a clean 400 (see {@link SegmentRules}): unreadable JSON,
+     * unknown fields or operators, non-numeric values on numeric fields, genres outside the 8 buckets and
+     * events of another org. Null/blank means everyone and is valid.
      */
-    void validateRulesJson(String rulesJson) {
-        if (rulesJson == null || rulesJson.isBlank()) return;
-        List<Map<String, String>> rules;
-        try {
-            rules = MAPPER.readValue(rulesJson, RULES_TYPE);
-        } catch (Exception e) {
-            throw ruleError("must be a JSON array of {field, operator, value} rules");
-        }
-        for (int i = 0; i < rules.size(); i++) {
-            Map<String, String> rule = rules.get(i);
-            String field = rule.get("field");
-            String op = rule.get("operator");
-            String val = rule.get("value");
-            if (field == null || field.isBlank()) {
-                throw ruleError("rule " + (i + 1) + " is missing a field");
-            }
-            boolean numeric = NUMERIC_FIELDS.contains(field);
-            if (!numeric && !STRING_FIELDS.contains(field)) {
-                throw ruleError("rule " + (i + 1) + " uses an unknown field '" + field + "'");
-            }
-            if (op == null || !OPERATORS.contains(op)) {
-                throw ruleError("rule " + (i + 1) + " uses an unsupported operator '" + op + "'");
-            }
-            if (val == null || val.isBlank()) {
-                throw ruleError("rule " + (i + 1) + " is missing a value");
-            }
-            if (numeric) {
-                try {
-                    Long.parseLong(val.trim());
-                } catch (NumberFormatException nfe) {
-                    throw ruleError("rule " + (i + 1) + " on '" + field + "' needs a numeric value");
-                }
-            }
-        }
+    void validateRulesJson(UUID orgId, String rulesJson) {
+        String problem = SegmentRules.problem(rulesJson, genreBuckets(), ids -> foreignEvents(orgId, ids));
+        if (problem != null) throw ruleError(problem);
+    }
+
+    private Set<UUID> foreignEvents(UUID orgId, Set<UUID> ids) {
+        Set<UUID> own = eventRepo.findAllById(ids).stream()
+                .filter(e -> orgId.equals(e.getOrgId()))
+                .map(Event::getId)
+                .collect(Collectors.toSet());
+        Set<UUID> foreign = new LinkedHashSet<>(ids);
+        foreign.removeAll(own);
+        return foreign;
     }
 
     private ApiException ruleError(String message) {
@@ -181,15 +179,32 @@ public class SegmentService {
     @Transactional(readOnly = true)
     public SegmentResolveDto resolve(UUID orgId, UUID segmentId) {
         Segment s = requireSegment(orgId, segmentId);
-        List<Membership> matched = resolveMembers(orgId, s);
+        return counts(orgId, resolveMembers(orgId, s));
+    }
+
+    /**
+     * Matched, ConsentGate-mailable and a count per exclusion reason; the reasons sum to {@code excluded}.
+     * {@code matched} counts only members the gate returned a verdict for, so matched = mailable + excluded.
+     */
+    private SegmentResolveDto counts(UUID orgId, List<Membership> matched) {
         long avgLtv = matched.isEmpty() ? 0
                 : matched.stream().mapToLong(Membership::getSpendMinor).sum() / matched.size();
-        // mailable = subscribed + lawful basis + not counted here (gate not called in resolve — count only)
-        long mailable = matched.stream()
-                .filter(m -> "subscribed".equals(m.getConsentStatus()) && m.getConsentBasis() != null)
-                .count();
-        int excluded = matched.size() - (int) mailable;
-        return new SegmentResolveDto(matched.size(), (int) mailable, excluded, avgLtv);
+        Map<String, Integer> exclusions = new LinkedHashMap<>();
+        for (String reason : ConsentGate.REASONS) exclusions.put(reason, 0);
+        int mailable = 0;
+        if (!matched.isEmpty()) {
+            Map<UUID, Optional<String>> verdicts = consentGate.reasons(orgId,
+                    matched.stream().map(Membership::getMembershipId).toList());
+            for (Membership m : matched) {
+                Optional<String> reason = verdicts.get(m.getMembershipId());
+                if (reason == null) continue;       // no verdict (not this org's member): not counted as matched
+                if (reason.isEmpty()) mailable++;
+                else exclusions.merge(reason.get(), 1, Integer::sum);
+            }
+        }
+        int excluded = exclusions.values().stream().mapToInt(Integer::intValue).sum();
+        return new SegmentResolveDto(mailable + excluded, mailable, excluded, avgLtv,
+                Collections.unmodifiableMap(exclusions));
     }
 
     /** Resolve members matching a segment's rules. For static segments, returns snapshot members. */
@@ -227,90 +242,90 @@ public class SegmentService {
     }
 
     private List<Membership> applyJsonRules(UUID orgId, String rulesJson) {
-        // Generic rule evaluation — load all memberships and filter in Java
-        // For Tier C with reasonable org sizes this is acceptable
+        // Generic rule evaluation: load the org's memberships and filter in Java.
         List<Membership> all = membershipRepo.findAllByOrgId(orgId);
-        List<Map<String, String>> rules = parseRules(rulesJson);
+        SegmentRules.Parsed rules = parseRules(rulesJson);
         if (rules == null) return List.of();
-        if (rules.isEmpty()) return all;
+        if (rules.everyone()) return all;
+        SegmentFacts facts = loadFacts(orgId, rules);
         return all.stream()
-                .filter(m -> rulesMatch(SegmentRuleRow.of(m), rules))
+                .filter(m -> SegmentRules.matches(rules, SegmentRuleRow.of(m), facts))
                 .collect(Collectors.toList());
     }
 
     /**
-     * Parsed rules, an EMPTY list for "no rules" (matches everyone, the documented meaning
-     * of a blank rules_json) and {@code null} for a rule set the engine could not read.
-     *
-     * <p>Those last two must not collapse into one another. An unreadable rule set used to
-     * fall back to "the entire audience" — the wrong direction by a mile for a list that
-     * feeds RecipientMaterializer. validateRulesJson guards the create path, but rows
-     * written before it, a truncated TEXT value or any future writer all land here.
+     * Parsed rules, "everyone" for no rules (the documented meaning of a blank rules_json) and
+     * {@code null} for a rule set the engine could not read or holding any rule it cannot run, which matches nobody: falling back to the
+     * entire audience would be the wrong direction for a list that feeds RecipientMaterializer.
      */
-    private List<Map<String, String>> parseRules(String rulesJson) {
-        if (rulesJson == null || rulesJson.isBlank()) return List.of();
-        try {
-            return MAPPER.readValue(rulesJson, RULES_TYPE);
-        } catch (Exception e) {
-            log.warn("Segment rules_json could not be parsed; the segment matches nobody: {}",
-                    e.getMessage());
+    private SegmentRules.Parsed parseRules(String rulesJson) {
+        SegmentRules.Parsed parsed = SegmentRules.parse(rulesJson);
+        if (parsed == null) {
+            log.warn("Segment rules_json could not be parsed; the segment matches nobody");
             return null;
         }
+        if (!SegmentRules.runnable(parsed)) {
+            // A rule the engine cannot run is false; inside a not group that would mean everyone.
+            log.warn("Segment rules_json holds a rule the engine cannot run; the segment matches nobody");
+            return null;
+        }
+        return parsed;
     }
 
-    private boolean rulesMatch(SegmentRuleRow row, List<Map<String, String>> rules) {
-        for (Map<String, String> rule : rules) {
-            String field = rule.get("field");
-            String op = rule.get("operator");
-            String val = rule.get("value");
-            if (!matchRule(row, field, op, val)) return false;
+    /** Fan features and ticket facts, read only for the fields the rules use. */
+    SegmentFacts loadFacts(UUID orgId, SegmentRules.Parsed rules) {
+        Set<String> fields = rules.fields();
+        Map<UUID, SegmentFacts.Features> features = Map.of();
+        if (fields.stream().anyMatch(SegmentRules.FAN_FEATURE_FIELDS::contains)) {
+            features = new HashMap<>();
+            for (Object[] row : fanFeatureRepo.findSegmentFactsByOrgId(orgId)) {
+                features.put((UUID) row[0], new SegmentFacts.Features(
+                        (String) row[1], tasteGenres((String) row[2]), jsonStrings((String) row[3])));
+            }
         }
-        return true;
+        Map<UUID, Set<String>> attended = Map.of();
+        Set<UUID> eventIds = new LinkedHashSet<>();
+        for (SegmentRules.Rule r : rules.rulesOn("attended_event")) {
+            for (String v : SegmentRules.values(r)) {
+                try {
+                    eventIds.add(UUID.fromString(v));
+                } catch (IllegalArgumentException ignored) {
+                    // Not an event id: that value matches nobody.
+                }
+            }
+        }
+        if (!eventIds.isEmpty()) {
+            attended = new HashMap<>();
+            for (Object[] row : membershipRepo.findAttendedEventPairs(orgId, eventIds)) {
+                attended.computeIfAbsent((UUID) row[0], k -> new HashSet<>())
+                        .add(row[1].toString().toLowerCase(Locale.ROOT));
+            }
+        }
+        return new SegmentFacts(features, attended);
     }
 
-    /**
-     * Numeric or string comparison is decided by the FIELD, not by whether the value
-     * happens to parse as a long. It used to be the latter: a rule on an enum field with a
-     * numeric-looking value took the numeric branch, where an unknown field fell through to
-     * {@code default -> 0}, so {@code consent_status == 0} matched every member in the org.
-     * An unknown field or a non-numeric value on a numeric field now matches nobody.
-     */
-    private boolean matchRule(SegmentRuleRow row, String field, String op, String val) {
-        if (field == null || op == null || val == null) return false;
-        if (STRING_FIELDS.contains(field)) {
-            String actual = switch (field) {
-                case "lifecycle"      -> row.lifecycle();
-                case "consent_status" -> row.consentStatus();
-                case "consent_basis"  -> row.consentBasis();
-                default               -> null;
-            };
-            // Only equality is meaningful on these; ordering operators are accepted at
-            // create time but have never meant anything here.
-            return val.equals(actual);
-        }
-        if (!NUMERIC_FIELDS.contains(field)) return false;
-        long v;
+    /** Buckets with a positive weight in a taste JSON object. */
+    private static Set<String> tasteGenres(String json) {
+        if (json == null || json.isBlank()) return Set.of();
         try {
-            v = Long.parseLong(val.trim());
-        } catch (NumberFormatException e) {
-            return false;
+            Map<String, Double> taste = MAPPER.readValue(json, new TypeReference<Map<String, Double>>() {});
+            Set<String> out = new HashSet<>();
+            taste.forEach((k, v) -> {
+                if (v != null && v > 0) out.add(k);
+            });
+            return out;
+        } catch (Exception e) {
+            return Set.of();
         }
-        long actual = switch (field) {
-            case "events"      -> row.events();
-            case "spend_minor" -> row.spendMinor();
-            case "recency"     -> row.recencyDays() == null ? Long.MAX_VALUE : row.recencyDays();
-            case "no_show"     -> row.noShow();
-            case "nps"         -> row.nps() == null ? Long.MIN_VALUE : row.nps();
-            default            -> 0;
-        };
-        return switch (op) {
-            case ">="  -> actual >= v;
-            case "<="  -> actual <= v;
-            case ">"   -> actual > v;
-            case "<"   -> actual < v;
-            case "=="  -> actual == v;
-            default    -> false;
-        };
+    }
+
+    private static Set<String> jsonStrings(String json) {
+        if (json == null || json.isBlank()) return Set.of();
+        try {
+            return new HashSet<>(MAPPER.readValue(json, new TypeReference<List<String>>() {}));
+        } catch (Exception e) {
+            return Set.of();
+        }
     }
 
     /**
@@ -341,10 +356,11 @@ public class SegmentService {
             };
         }
         List<SegmentRuleRow> rows = membershipRepo.findRuleRowsByOrgId(orgId);
-        List<Map<String, String>> rules = parseRules(segment.getRulesJson());
-        if (rules == null) return 0;               // unreadable rules match nobody
-        if (rules.isEmpty()) return rows.size();   // no rules means everyone
-        return (int) rows.stream().filter(r -> rulesMatch(r, rules)).count();
+        SegmentRules.Parsed rules = parseRules(segment.getRulesJson());
+        if (rules == null) return 0;                 // unreadable rules match nobody
+        if (rules.everyone()) return rows.size();    // no rules means everyone
+        SegmentFacts facts = loadFacts(orgId, rules);
+        return (int) rows.stream().filter(r -> SegmentRules.matches(rules, r, facts)).count();
     }
 
     private List<UUID> parseSnapshotIds(String json) {
@@ -382,6 +398,7 @@ public class SegmentService {
         orgRepo.findByIdForUpdate(orgId);
         if (segmentRepo.hasPrebuiltSegments(orgId)) return; // re-check under the lock
         for (PrebuiltSegment pb : PrebuiltSegment.values()) {
+            if (pb.retired()) continue;
             Segment s = new Segment();
             s.setOrgId(orgId);
             s.setName(pb.displayName());
@@ -425,13 +442,13 @@ public class SegmentService {
      */
     @Transactional(readOnly = true)
     public SegmentResolveDto previewRules(UUID orgId, String rulesJson) {
-        List<Membership> matched = applyJsonRules(orgId, rulesJson);
-        long avgLtv = matched.isEmpty() ? 0
-                : matched.stream().mapToLong(Membership::getSpendMinor).sum() / matched.size();
-        long mailable = matched.stream()
-                .filter(m -> "subscribed".equals(m.getConsentStatus()) && m.getConsentBasis() != null)
-                .count();
-        int excluded = matched.size() - (int) mailable;
-        return new SegmentResolveDto(matched.size(), (int) mailable, excluded, avgLtv);
+        return counts(orgId, applyJsonRules(orgId, rulesJson));
+    }
+
+    /** {@link #previewRules} for organizer-typed rules: invalid rules are a 400, not an empty preview. */
+    @Transactional(readOnly = true)
+    public SegmentResolveDto previewValidated(UUID orgId, String rulesJson) {
+        validateRulesJson(orgId, rulesJson);
+        return previewRules(orgId, rulesJson);
     }
 }

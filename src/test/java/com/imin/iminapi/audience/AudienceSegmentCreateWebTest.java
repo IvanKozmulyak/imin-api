@@ -135,20 +135,21 @@ class AudienceSegmentCreateWebTest {
     // ── List: lazy prebuilt seeding, idempotent ───────────────────────────────
 
     @Test
-    void list_seeds_seven_prebuilt_segments_and_is_idempotent() throws Exception {
-        // First list: org has never been seeded → the endpoint provisions the 7 prebuilts.
+    void list_seeds_six_prebuilt_segments_and_is_idempotent() throws Exception {
+        // First list: org has never been seeded → the endpoint provisions the 6 live prebuilts (no Promoters).
         mvc.perform(get("/api/v1/audience/segments").with(authentication(auth)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.length()").value(7));
+                .andExpect(jsonPath("$.length()").value(6))
+                .andExpect(jsonPath("$[?(@.name == 'Promoters')]").isEmpty());
 
         // Second list: no duplicate seeding.
         mvc.perform(get("/api/v1/audience/segments").with(authentication(auth)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.length()").value(7));
+                .andExpect(jsonPath("$.length()").value(6));
 
         long prebuilt = segmentRepo.findByOrgId(orgId).stream()
                 .filter(com.imin.iminapi.audience.model.Segment::isPrebuilt).count();
-        org.assertj.core.api.Assertions.assertThat(prebuilt).isEqualTo(7);
+        org.assertj.core.api.Assertions.assertThat(prebuilt).isEqualTo(6);
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────

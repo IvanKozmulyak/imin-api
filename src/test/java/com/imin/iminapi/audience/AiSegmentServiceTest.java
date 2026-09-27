@@ -43,6 +43,18 @@ class AiSegmentServiceTest {
 
     private final UUID orgId = UUID.randomUUID();
 
+    private static final java.util.Set<String> BUCKETS = java.util.Set.of("house & techno", "bass & hard dance",
+            "club / open format", "hip-hop & r&b", "latin & afrobeats", "rock & alternative", "pop", "jazz & acoustic");
+
+    private static SegmentRuleSchema.Result validate(List<Rule> rules) {
+        return SegmentRuleSchema.validate(rules, BUCKETS);
+    }
+
+    @org.junit.jupiter.api.BeforeEach
+    void buckets() {
+        when(segmentService.genreBuckets()).thenReturn(BUCKETS);
+    }
+
     private AuthPrincipal principal() {
         return new AuthPrincipal(UUID.randomUUID(), orgId, UserRole.OWNER, UUID.randomUUID());
     }
@@ -53,45 +65,85 @@ class AiSegmentServiceTest {
 
     private void stubPreview(int matched, int mailable) {
         when(segmentService.previewRules(any(), anyString()))
-                .thenReturn(new SegmentResolveDto(matched, mailable, matched - mailable, 5000L));
+                .thenReturn(new SegmentResolveDto(matched, mailable, matched - mailable, 5000L, java.util.Map.of()));
     }
 
     // ── SegmentRuleSchema: valid shapes pass ──────────────────────────────────
 
     @Test
     void validator_accepts_every_supported_field_and_operator() {
-        SegmentRuleSchema.Result r = SegmentRuleSchema.validate(List.of(
+        SegmentRuleSchema.Result r = validate(List.of(
                 new Rule("events", ">=", "2"),
                 new Rule("spend_minor", ">", "10000"),
                 new Rule("recency", "<=", "180"),
                 new Rule("no_show", ">", "0"),
-                new Rule("nps", ">=", "9"),
                 new Rule("lifecycle", "==", "vip"),
                 new Rule("consent_status", "==", "subscribed"),
-                new Rule("consent_basis", "==", "explicit")));
+                new Rule("consent_basis", "==", "explicit"),
+                new Rule("guest_class", "in", "loyal, repeat"),
+                new Rule("genre", "==", "house & techno"),
+                new Rule("city", "is", "Metz")));
 
         assertThat(r.unsupported()).isEmpty();
-        assertThat(r.rules()).hasSize(8);
+        assertThat(r.rules()).hasSize(10);
+        assertThat(r.rules()).contains(
+                new SegmentRuleSchema.ValidRule("guest_class", "in", "loyal,repeat"),
+                new SegmentRuleSchema.ValidRule("genre", "==", "house & techno"),
+                new SegmentRuleSchema.ValidRule("city", "==", "metz"));
         assertThat(SegmentRuleSchema.canonicalJson(r.rules()))
                 .contains("\"field\":\"events\"").contains("\"operator\":\">=\"").contains("\"value\":\"2\"");
     }
 
     @Test
     void validator_strips_unknown_field_and_reports_it() {
-        SegmentRuleSchema.Result r = SegmentRuleSchema.validate(List.of(
+        SegmentRuleSchema.Result r = validate(List.of(
                 new Rule("events", ">=", "2"),
                 new Rule("total_revenue", ">", "100"),   // hallucinated field
-                new Rule("genre", "==", "techno")));      // not filterable
+                new Rule("genre", "==", "techno")));      // not one of the 8 buckets
 
         assertThat(r.rules()).extracting(SegmentRuleSchema.ValidRule::field).containsExactly("events");
         assertThat(r.unsupported()).hasSize(2);
         assertThat(r.unsupported()).anySatisfy(s -> assertThat(s).contains("total_revenue"));
-        assertThat(r.unsupported()).anySatisfy(s -> assertThat(s).contains("genre"));
+        assertThat(r.unsupported()).anySatisfy(s -> assertThat(s).contains("genre").contains("house & techno"));
+    }
+
+    @Test
+    void validator_lists_nps_and_attended_event_as_unsupported() {
+        SegmentRuleSchema.Result r = validate(List.of(
+                new Rule("nps", ">=", "9"),
+                new Rule("attended_event", "==", UUID.randomUUID().toString())));
+
+        assertThat(r.rules()).isEmpty();
+        assertThat(r.unsupported()).containsExactly(
+                "NPS scores aren't collected yet",
+                "\"Attended event\" needs the event picked in the segment editor");
+    }
+
+    @Test
+    void validator_rejects_ordering_on_set_fields_and_unknown_guest_class() {
+        SegmentRuleSchema.Result r = validate(List.of(
+                new Rule("genre", ">", "pop"),
+                new Rule("guest_class", "in", "loyal,superfan")));
+
+        assertThat(r.rules()).isEmpty();
+        assertThat(r.unsupported()).hasSize(2);
+        assertThat(r.unsupported().get(0)).contains("is one of");
+        assertThat(r.unsupported().get(1)).contains("guest class").contains("first_timer");
+    }
+
+    @Test
+    void validator_explains_the_set_fields() {
+        assertThat(SegmentRuleSchema.explain(new SegmentRuleSchema.ValidRule("guest_class", "in", "loyal,repeat")))
+                .isEqualTo("Guest class is loyal or repeat.");
+        assertThat(SegmentRuleSchema.explain(new SegmentRuleSchema.ValidRule("genre", "==", "pop")))
+                .isEqualTo("Bought tickets for pop events.");
+        assertThat(SegmentRuleSchema.explain(new SegmentRuleSchema.ValidRule("city", "in", "metz,nancy,lyon")))
+                .isEqualTo("Bought tickets for events in metz, nancy or lyon.");
     }
 
     @Test
     void validator_rejects_non_numeric_value_and_bad_enum_value() {
-        SegmentRuleSchema.Result r = SegmentRuleSchema.validate(List.of(
+        SegmentRuleSchema.Result r = validate(List.of(
                 new Rule("spend_minor", ">", "a lot"),       // not a number
                 new Rule("lifecycle", "==", "superfan")));    // not in the enum
 
@@ -101,7 +153,7 @@ class AiSegmentServiceTest {
 
     @Test
     void validator_rejects_negation_and_ordering_on_enum_fields() {
-        SegmentRuleSchema.Result r = SegmentRuleSchema.validate(List.of(
+        SegmentRuleSchema.Result r = validate(List.of(
                 new Rule("consent_status", "!=", "unsubscribed"),  // negation not expressible
                 new Rule("lifecycle", ">", "repeat")));            // ordering meaningless for enum
 
@@ -112,7 +164,7 @@ class AiSegmentServiceTest {
 
     @Test
     void validator_canonicalizes_operator_synonyms_and_currency_values() {
-        SegmentRuleSchema.Result r = SegmentRuleSchema.validate(List.of(
+        SegmentRuleSchema.Result r = validate(List.of(
                 new Rule("events", "gte", "2"),
                 new Rule("spend_minor", "greater_than", "€10,000")));
 
@@ -276,18 +328,20 @@ class AiSegmentServiceTest {
                                 List.of(new Rule("consent_status", "==", "subscribed"), new Rule("recency", ">=", "90")),
                                 false, List.of()),
                         2, true, false),
-                // 6. promoters — supported
+                // 6. promoters — NPS is not collected, so unsupported
                 new Phrasing("promoters who rated us 9 or 10",
                         new SegmentDraftLlm("Promoters", List.of(new Rule("nps", ">=", "9")), false, List.of()),
-                        1, true, false),
+                        0, false, true),
                 // 7. bought but no-showed — supported
                 new Phrasing("folks who bought but didn't show up",
                         new SegmentDraftLlm("No-shows", List.of(new Rule("no_show", ">", "0")), false, List.of()),
                         1, true, false),
-                // 8. genre + city — fully unsupported
+                // 8. genre + city — both supported now
                 new Phrasing("fans of house music in Berlin",
-                        new SegmentDraftLlm("House heads", List.of(), false, List.of("house music", "Berlin")),
-                        0, false, true),
+                        new SegmentDraftLlm("House heads",
+                                List.of(new Rule("genre", "==", "house & techno"), new Rule("city", "==", "berlin")),
+                                false, List.of()),
+                        2, true, false),
                 // 9. spend + email-open — partial (email opens not filterable)
                 new Phrasing("people who spent more than €50 and opened my last newsletter",
                         new SegmentDraftLlm("Engaged spenders", List.of(new Rule("spend_minor", ">", "5000")), false,

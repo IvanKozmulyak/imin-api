@@ -166,6 +166,13 @@ public class AudienceController {
                 .body(csv);
     }
 
+    /** Counts for unsaved rules (the segment editor's live count); nothing is persisted. */
+    @PostMapping("/segments/preview")
+    public SegmentResolveDto previewSegment(@AuthenticationPrincipal AuthPrincipal principal,
+                                            @RequestBody(required = false) SegmentPreviewRequest body) {
+        return segmentService.previewValidated(principal.orgId(), body == null ? null : body.rulesJsonAsString());
+    }
+
     @GetMapping("/segments/{id}/resolve")
     public SegmentResolveDto resolve(@AuthenticationPrincipal AuthPrincipal principal,
                                      @PathVariable UUID id) {
@@ -177,9 +184,8 @@ public class AudienceController {
     @PostMapping("/segments/{id}/handoff")
     public HandoffResponse segmentHandoff(@AuthenticationPrincipal AuthPrincipal principal,
                                            @PathVariable UUID id) {
-        Segment s = segmentService.listSegments(principal.orgId()).stream()
-                .filter(seg -> seg.getId().equals(id)).findFirst()
-                .orElseThrow(() -> com.imin.iminapi.security.ApiException.notFound("Segment"));
+        // By id, not via the list: a retired prebuilt is hidden there but a campaign may still point at it.
+        Segment s = segmentService.requireSegmentForOrg(principal.orgId(), id);
         List<UUID> memberIds = segmentService.resolveMembers(principal.orgId(), s).stream()
                 .map(com.imin.iminapi.audience.model.Membership::getMembershipId).toList();
         return sendGateService.handoff(principal.orgId(), memberIds, principal);

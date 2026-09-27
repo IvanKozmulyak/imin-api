@@ -175,13 +175,32 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
      */
     @Query("""
             select new com.imin.iminapi.audience.service.SegmentRuleRow(
-                       m.events, m.spendMinor, m.recencyDays, m.noShow,
+                       m.membershipId, m.events, m.spendMinor, m.recencyDays, m.noShow,
                        m.nps, m.lifecycle, m.consentStatus, m.consentBasis)
               from Membership m
              where m.orgId = :orgId
                and m.status <> 'erase_pending'
             """)
     List<com.imin.iminapi.audience.service.SegmentRuleRow> findRuleRowsByOrgId(@Param("orgId") UUID orgId);
+
+    /**
+     * Rows of {@code [membershipId, eventId]}: the member holds a ticket that is not refunded or revoked,
+     * on a non-test order of this org, for one of {@code eventIds}. Orders link to members by email.
+     */
+    @Query("""
+            select distinct m.membershipId, o.eventId
+              from Membership m, com.imin.iminapi.audience.model.Consumer c, com.imin.iminapi.model.Order o
+             where c.consumerId = m.consumerId
+               and o.orgId = m.orgId
+               and o.emailNormalized = c.normalizedEmail
+               and m.orgId = :orgId
+               and o.eventId in :eventIds
+               and o.testMode = false
+               and exists (select 1 from com.imin.iminapi.model.Ticket t
+                            where t.orderId = o.id and t.state not in ('refunded', 'revoked'))
+            """)
+    List<Object[]> findAttendedEventPairs(@Param("orgId") UUID orgId,
+                                          @Param("eventIds") java.util.Collection<UUID> eventIds);
 
     // ---- metrics ----
 
