@@ -1,5 +1,6 @@
 package com.imin.iminapi.audienceplan.service;
 
+import com.imin.iminapi.audience.model.Segment;
 import com.imin.iminapi.audience.repository.SegmentRepository;
 import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
 import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
@@ -99,7 +100,7 @@ public class SendPathGuard {
     private boolean sendsToPlanSnapshot(Campaign c) {
         if (!MOMENTUM_ORIGIN.equals(c.getOrigin()) || c.getSegmentId() == null) return false;
         return segments.findByIdAndOrgId(c.getSegmentId(), c.getOrgId())
-                .map(s -> MomentumPlanTarget.SNAPSHOT_KEY.equals(s.getPrebuiltKey()))
+                .map(s -> Segment.ORIGIN_MOMENTUM.equals(s.getOrigin()))
                 .orElse(false);
     }
 

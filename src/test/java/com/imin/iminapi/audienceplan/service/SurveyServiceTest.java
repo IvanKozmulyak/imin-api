@@ -9,7 +9,10 @@ import com.imin.iminapi.audience.repository.MarketingOptOutRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.repository.SuppressionRepository;
 import com.imin.iminapi.audience.service.AudienceOrderProjector;
+import com.imin.iminapi.audience.dto.ExclusionReason;
+import com.imin.iminapi.audience.service.ConsentOrigin;
 import com.imin.iminapi.audience.service.ConsentService;
+import com.imin.iminapi.audience.service.SendGateService;
 import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
 import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
 import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
@@ -50,6 +53,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -81,6 +85,7 @@ class SurveyServiceTest {
     @Autowired AudiencePlanLogic logic;
     @Autowired EmailProperties emailProps;
     @Autowired ConsentGate gate;
+    @Autowired SendGateService sendGate;
     @Autowired JdbcTemplate jdbc;
 
     private UUID orgId;
@@ -210,9 +215,38 @@ class SurveyServiceTest {
         assertThat(c.get("order_id")).isNull();
         assertThat((String) c.get("proof_text")).contains("\"" + TEXT + "\"").contains("(locale fr)")
                 .contains(event.getId().toString());
+        assertThat(c.get("confirmation_required")).isEqualTo(true);
+        assertThat(c.get("confirmed_at")).isNull();
+    }
+
+    @Test
+    void consentAlone_isMailableByNeitherGateUntilConfirmed() {
+        service.submit(token, consented("pending@survey.test", TEXT, VERSION));
+
+        Map<String, Object> m = membership("pending@survey.test");
+        UUID mid = (UUID) m.get("membership_id");
+        assertThat(m.get("consent_status")).isEqualTo("never");
+        assertThat(m.get("consent_basis")).isNull();
+        SendGateService.GateResult send = sendGate.evaluate(orgId, List.of(mid));
+        assertThat(send.sendable()).isEmpty();
+        assertThat(send.excluded()).extracting(ExclusionReason::reason).containsExactly("no_lawful_basis");
+        assertThat(gate.reasons(orgId, List.of(mid))).containsEntry(mid, Optional.of(ConsentGate.NO_BASIS));
+    }
+
+    @Test
+    void consentOfAMemberWithACheckoutConsent_keepsThemMailableByBothGates() {
+        projector.upsertMembership(orgId, "buyer@survey.test", null);
+        UUID mid = (UUID) membership("buyer@survey.test").get("membership_id");
+        consentService.capture(orgId, mid, "explicit", "checkout", "Ticked at checkout", "email",
+                "checkout-org-named-2026-09", null, ConsentOrigin.DATA_SUBJECT, null);
+
+        service.submit(token, consented("buyer@survey.test", TEXT, VERSION));
+
+        Map<String, Object> m = membership("buyer@survey.test");
         assertThat(m.get("consent_status")).isEqualTo("subscribed");
         assertThat(m.get("consent_basis")).isEqualTo("explicit");
-        assertThat(gate.canMarket(orgId, (UUID) m.get("membership_id"))).isTrue();
+        assertThat(sendGate.evaluate(orgId, List.of(mid)).sendable()).containsExactly(mid);
+        assertThat(gate.canMarket(orgId, mid)).isTrue();
     }
 
     @Test

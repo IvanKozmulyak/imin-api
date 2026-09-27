@@ -440,6 +440,21 @@ abstract class RetentionJobScenarios {
     }
 
     @Test
+    void legacyBulkImportPlusASignUpAwaitingConfirmation_stillSkipped() {
+        UUID mid = member(orgA);
+        consent(mid, "explicit", "organizer_import", null, Instant.parse("2035-01-01T12:00:00Z"));
+        consent(mid, "explicit", "door_qr", "door-v1", Instant.parse("2035-02-01T12:00:00Z"));
+        jdbc.update("update consent_records set confirmation_required = TRUE where membership_id = ? and source = ?",
+                mid, "door_qr");
+        contact(mid, DAY_BEFORE_CUTOFF);
+
+        RetentionJob.Result r = job(true).run();
+
+        assertThat(r.importedWithoutProvenance()).isEqualTo(1);
+        assertUntouched(mid);
+    }
+
+    @Test
     void legacyBulkImportWithProvenanceRow_cleared() {
         UUID mid = member(orgA);
         consent(mid, "explicit", "organizer_import", null, Instant.parse("2035-01-01T12:00:00Z"));

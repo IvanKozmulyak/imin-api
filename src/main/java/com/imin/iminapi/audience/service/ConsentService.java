@@ -126,20 +126,24 @@ public class ConsentService {
         r.setTextVersion(textVersion);
         r.setOrderId(orderId);
         r.setEventId(eventId);
+        r.setConfirmationRequired(ConsentConfirmation.required(source));
         consentRepo.save(r);
 
-        // M3: denormalize current state onto membership, per channel.
-        if ("sms".equals(channel)) {
-            m.setSmsConsentStatus("subscribed");
-            m.setSmsConsentBasis(basis);
-        } else {
-            m.setConsentStatus("subscribed");
-            m.setConsentBasis(basis);
+        // An unconfirmed address grants nothing yet: membership state and any objection wait for the confirmation.
+        if (!r.isAwaitingConfirmation()) {
+            // M3: denormalize current state onto membership, per channel.
+            if ("sms".equals(channel)) {
+                m.setSmsConsentStatus("subscribed");
+                m.setSmsConsentBasis(basis);
+            } else {
+                m.setConsentStatus("subscribed");
+                m.setConsentBasis(basis);
+            }
+            if (origin == ConsentOrigin.DATA_SUBJECT) {
+                m.setObjectedProfiling(false);
+            }
+            membershipRepo.save(m);
         }
-        if (origin == ConsentOrigin.DATA_SUBJECT) {
-            m.setObjectedProfiling(false);
-        }
-        membershipRepo.save(m);
         // An import captures row by row; the nightly recompute picks those up instead.
         events.publishEvent(new ConsentChanged(orgId, membershipId, ImportProvenanceWriter.SOURCE.equals(source)));
 

@@ -73,6 +73,7 @@ class MomentumPlanTargetTest {
         plan.setTargetTickets(255);
         plan.setTicketsPerOrder(1.6);
         when(access.isEnabled(orgId)).thenReturn(true);
+        when(access.sendsEnabled()).thenReturn(true);
         when(plans.findFirstByOrgIdAndEventIdAndSupersededByIsNullOrderByCreatedAtDesc(orgId, event.getId()))
                 .thenReturn(Optional.of(plan));
         when(assignments.findHeldOut(any(), any(), anyCollection())).thenReturn(List.of());
@@ -88,6 +89,26 @@ class MomentumPlanTargetTest {
         when(access.isEnabled(orgId)).thenReturn(false);
         assertThat(target.best(event)).isEmpty();
         verifyNoInteractions(plans, candidates);
+    }
+
+    @Test
+    void audienceSendsOff_noTarget_andNothingRead() {
+        when(access.sendsEnabled()).thenReturn(false);
+        stored(seg(0, "loyal", "same", 40, 16));
+        built(segment("loyal", Fit.SAME, ids(40)));
+
+        assertThat(target.best(event)).isEmpty();
+        verifyNoInteractions(plans, planSegments, candidates, assignments);
+    }
+
+    @Test
+    void audienceSendsOn_targetsThePlanSegment() {
+        stored(seg(0, "loyal", "same", 40, 16));
+        List<UUID> loyal = ids(40);
+        built(segment("loyal", Fit.SAME, loyal));
+
+        assertThat(target.best(event).orElseThrow().membershipIds()).containsExactlyElementsOf(loyal);
+        verify(access).sendsEnabled();
     }
 
     @Test
@@ -204,7 +225,8 @@ class MomentumPlanTargetTest {
         assertThat(s.getOrgId()).isEqualTo(orgId);
         assertThat(s.getKind()).isEqualTo("static");
         assertThat(s.isPrebuilt()).isFalse();
-        assertThat(s.getPrebuiltKey()).isEqualTo(MomentumPlanTarget.SNAPSHOT_KEY);
+        assertThat(s.getOrigin()).isEqualTo(Segment.ORIGIN_MOMENTUM);
+        assertThat(s.getPrebuiltKey()).isNull();
         assertThat(s.getRulesJson()).isNull();
         assertThat(s.getName()).isEqualTo("Momentum: loyal guests, same genre fit · Night Kit");
         for (UUID m : members) assertThat(s.getSnapshotIds()).contains("\"" + m + "\"");

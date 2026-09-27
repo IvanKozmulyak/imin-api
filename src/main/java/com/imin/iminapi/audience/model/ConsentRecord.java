@@ -55,8 +55,21 @@ public class ConsentRecord {
     @Column(name = "event_id")
     private UUID eventId;
 
+    /** True for a sign-up whose address must be confirmed before it grants anything. */
+    @Column(name = "confirmation_required", nullable = false)
+    private boolean confirmationRequired;
+
+    /** When the address was confirmed; the only column a later confirmation may set. */
+    @Column(name = "confirmed_at")
+    private Instant confirmedAt;
+
     @Column(name = "occurred_at", nullable = false, updatable = false)
     private Instant occurredAt = Instant.now();
+
+    /** Recorded but not yet a lawful basis for either send gate. */
+    public boolean isAwaitingConfirmation() {
+        return confirmationRequired && confirmedAt == null;
+    }
 
     @PrePersist
     void onPersist() {

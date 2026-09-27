@@ -122,6 +122,8 @@ public final class FanFeatureCalculator {
             if (!ClassRules.STATUS_SUBSCRIBED.equals(c.getStatus())) continue;
             if (!ClassRules.BASIS_EXPLICIT.equals(c.getLawfulBasis())) continue;
             if (!PERSON_CONSENT_SOURCES.contains(c.getSource())) continue;
+            // Anyone can type an address at the door; only a confirmed one is contact from the person.
+            if (c.isAwaitingConfirmation()) continue;
             latest = later(latest, c.getOccurredAt());
         }
         for (Instant s : surveyResponseAts) latest = later(latest, s);

@@ -38,6 +38,10 @@ public final class ConsentGateSql {
             + " WHERE p2.membership_id = m.membership_id AND p2.accepted = TRUE"
             + " AND p2.last_purchase_date IS NOT NULL AND p2.last_purchase_date >= :cutoffDate))";
 
+    // A door/survey sign-up whose address is not yet confirmed grants nothing, so it never ranks.
+    static final String CONFIRMED_R = "(r.confirmation_required = FALSE OR r.confirmed_at IS NOT NULL)";
+    static final String CONFIRMED_LO = "(lo.confirmation_required = FALSE OR lo.confirmed_at IS NOT NULL)";
+
     // Latest subscribing email consent per member: on equal occurred_at a proven record wins, then the higher id.
     private static final String LATEST_CONSENT_HEAD = "SELECT x.id, x.membership_id, x.lawful_basis, x.source,"
             + " x.occurred_at, x.proven, ROW_NUMBER() OVER (PARTITION BY x.membership_id"
@@ -45,7 +49,8 @@ public final class ConsentGateSql {
             + " FROM (SELECT r.id, r.membership_id, r.lawful_basis, r.source, r.occurred_at,"
             + " CASE WHEN " + PROVEN + " THEN 1 ELSE 0 END AS proven"
             + " FROM consent_records r JOIN memberships m ON m.membership_id = r.membership_id"
-            + " WHERE m.org_id = :orgId AND r.channel = 'email' AND r.status = 'subscribed'";
+            + " WHERE m.org_id = :orgId AND r.channel = 'email' AND r.status = 'subscribed'"
+            + " AND " + CONFIRMED_R;
 
     private static final String LATEST_CONSENT_TAIL = ") x";
 
@@ -103,7 +108,8 @@ public final class ConsentGateSql {
             + " AND li.source = '" + LEGACY_IMPORT_SOURCE + "')"
             + " AND NOT EXISTS (SELECT 1 FROM consent_records lo"
             + " WHERE lo.membership_id = m.membership_id AND lo.channel = 'email' AND lo.status = 'subscribed'"
-            + " AND lo.lawful_basis IS NOT NULL AND lo.source <> '" + LEGACY_IMPORT_SOURCE + "')"
+            + " AND lo.lawful_basis IS NOT NULL AND lo.source <> '" + LEGACY_IMPORT_SOURCE + "'"
+            + " AND " + CONFIRMED_LO + ")"
             + " AND NOT EXISTS (SELECT 1 FROM import_row_provenance lp WHERE lp.membership_id = m.membership_id))";
 
     // Retention job: email-subscribed live members past the window, whatever their basis; only with a fresh

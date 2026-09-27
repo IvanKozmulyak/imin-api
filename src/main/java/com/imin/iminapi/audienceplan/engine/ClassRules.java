@@ -21,11 +21,13 @@ public final class ClassRules {
     /**
      * True iff the latest subscribing email consent record is explicit with source {@code organizer_import_row}.
      * Only the per-row import writes that source, so this is false for every legacy bulk import.
+     * A sign-up still awaiting confirmation is not a basis, so it cannot hide the import either.
      */
     public static boolean importBasisValid(Collection<ConsentRecord> consents) {
         return consents.stream()
                 .filter(c -> CHANNEL_EMAIL.equals(c.getChannel()))
                 .filter(c -> STATUS_SUBSCRIBED.equals(c.getStatus()))
+                .filter(c -> !c.isAwaitingConfirmation())
                 .max(Comparator.comparing(ConsentRecord::getOccurredAt))
                 .map(c -> BASIS_EXPLICIT.equals(c.getLawfulBasis()) && SOURCE_IMPORT_ROW.equals(c.getSource()))
                 .orElse(false);

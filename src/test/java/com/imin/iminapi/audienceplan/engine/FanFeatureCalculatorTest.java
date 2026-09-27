@@ -208,6 +208,18 @@ class FanFeatureCalculatorTest {
         assertThat(run().lastContactFromPersonAt()).isEqualTo(daysAgo(30));
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"door_qr", "survey"})
+    void signUpAwaitingConfirmation_doesNotRefreshLastContact_untilConfirmed(String source) {
+        paidOrder(event(TECHNO, daysAgo(1096)), daysAgo(1096), 1);
+        ConsentRecord c = consent("subscribed", "explicit", source, daysAgo(30));
+        c.setConfirmationRequired(true);
+        assertThat(run().lastContactFromPersonAt()).isEqualTo(daysAgo(1096));
+
+        c.setConfirmedAt(daysAgo(29));
+        assertThat(run().lastContactFromPersonAt()).isEqualTo(daysAgo(30));
+    }
+
     @Test
     void organizerTypedManualConsent_doesNotRefreshLastContact() {
         paidOrder(event(TECHNO, daysAgo(1096)), daysAgo(1096), 1);
@@ -271,6 +283,18 @@ class FanFeatureCalculatorTest {
         consent("subscribed", "explicit", "organizer_import_row", daysAgo(50));
         consent("unsubscribed", null, "unsubscribe_link", daysAgo(1));
         assertThat(run().fanClass()).isEqualTo("imported");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"door_qr", "survey"})
+    void importRowFollowedByLaterPendingSignUp_keepsImportBasis_untilConfirmed(String source) {
+        consent("subscribed", "explicit", "organizer_import_row", daysAgo(50));
+        ConsentRecord pending = consent("subscribed", "explicit", source, daysAgo(5));
+        pending.setConfirmationRequired(true);
+        assertThat(run().fanClass()).isEqualTo("imported");
+
+        pending.setConfirmedAt(daysAgo(4));
+        assertThat(run().fanClass()).isEqualTo("none");
     }
 
     @Test

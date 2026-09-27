@@ -7,12 +7,14 @@ import com.imin.iminapi.audience.service.*;
 import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.*;
 import com.imin.iminapi.repository.*;
+import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.service.audit.AuditLogger;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.HttpStatus;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import javax.sql.DataSource;
@@ -275,6 +277,24 @@ class AudienceSegmentTest {
         assertThat(segmentService.listSegments(orgA)).hasSize(6);
         assertThat(segmentService.resolveMembers(orgA, legacy)).extracting(Membership::getMembershipId)
                 .containsExactly(promoter.getMembershipId());
+    }
+
+    @Test
+    void a_momentum_snapshot_is_hidden_from_the_list_and_cannot_be_deleted() {
+        segmentService.ensurePrebuiltSegments(orgA);
+        Segment snapshot = new Segment();
+        snapshot.setOrgId(orgA);
+        snapshot.setName("Momentum: loyal guests, same genre fit");
+        snapshot.setKind("static");
+        snapshot.setOrigin(Segment.ORIGIN_MOMENTUM);
+        snapshot.setSnapshotIds("[]");
+        UUID id = segmentRepo.save(snapshot).getId();
+
+        assertThat(segmentService.listSegments(orgA)).extracting(Segment::getId).doesNotContain(id).hasSize(6);
+        assertThatThrownBy(() -> segmentService.deleteSegment(orgA, id, principalA))
+                .isInstanceOfSatisfying(ApiException.class,
+                        e -> assertThat(e.status()).isEqualTo(HttpStatus.NOT_FOUND));
+        assertThat(segmentRepo.findByIdAndOrgId(id, orgA)).isPresent();
     }
 
     @Test

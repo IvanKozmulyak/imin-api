@@ -8,6 +8,7 @@ import com.imin.iminapi.audience.service.SegmentService;
 import com.imin.iminapi.audienceplan.engine.CandidateBuilder;
 import com.imin.iminapi.audienceplan.engine.ResponseModel;
 import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
+import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
 import com.imin.iminapi.audienceplan.config.PlanRefreshExecutor;
 import com.imin.iminapi.audienceplan.model.AudienceAssignment;
 import com.imin.iminapi.audienceplan.model.AudienceExperiment;
@@ -107,6 +108,8 @@ class MomentumEvaluatorTest {
     MembershipRepository memberships;
     @Autowired
     SegmentService segmentService;
+    @Autowired
+    AudiencePlanProperties planProps;
     @MockitoSpyBean
     PlanService planService;
     @Autowired
@@ -136,6 +139,11 @@ class MomentumEvaluatorTest {
         } catch (Exception e) {
             throw new RuntimeException("wipe() failed: " + e.getMessage(), e);
         }
+    }
+
+    @AfterEach
+    void sendsOff() {
+        planProps.setSendsEnabled(false);
     }
 
     /** Each fired trigger queues a plan refresh; let it finish before the rows it locks are deleted. */
@@ -356,6 +364,7 @@ class MomentumEvaluatorTest {
 
     @Test
     void planTarget_draftSendsToThePlansBestSegment_withoutTheEventsHoldouts() {
+        planProps.setSendsEnabled(true);
         UUID event = support.seedLiveEvent(5, 100,
                 Instant.now().minusSeconds(50L * 3600),
                 Instant.now().plusSeconds(30L * 86400));
@@ -381,6 +390,25 @@ class MomentumEvaluatorTest {
         List<UUID> recipients = segmentService.resolveMembershipIds(org, target);
         assertThat(recipients).hasSize(12).doesNotContainAnyElementsOf(held);
         assertThat(loyal).containsAll(recipients);
+    }
+
+    @Test
+    void planTarget_audienceSendsOff_draftKeepsTheRepeatSegment() {
+        UUID event = support.seedLiveEvent(5, 100,
+                Instant.now().minusSeconds(50L * 3600),
+                Instant.now().plusSeconds(30L * 86400));
+        UUID org = support.orgIdOf(event);
+        UUID plan = storedPlan(org, event);
+        storedSegment(plan, 0, "loyal", "same", 14, 9);
+        when(candidates.build(eq(org), any(), anyInt(), anyDouble())).thenReturn(new CandidateBuilder.Result(
+                List.of(segment("loyal", ResponseModel.Fit.SAME, members(org, 14))), 0, false, 0, Map.of()));
+        echoSegmentId();
+
+        evaluator.runOnce();
+
+        MomentumSuggestion made = suggestions.findByEventIdAndStatus(event, "suggested").stream()
+                .filter(x -> "launch_push".equals(x.getTriggerType())).findFirst().orElseThrow();
+        assertThat(draftSegmentId(made)).isEqualTo(segmentService.defaultTargetSegmentId(org));
     }
 
     @Test

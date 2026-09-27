@@ -2,6 +2,8 @@ package com.imin.iminapi.audienceplan.service;
 
 import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.Membership;
+import com.imin.iminapi.audience.model.Segment;
+import com.imin.iminapi.audience.repository.SegmentRepository;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
@@ -61,6 +63,7 @@ class SendPathGuardTest {
     @Autowired OrganizationRepository orgRepo;
     @Autowired UserRepository userRepo;
     @Autowired EventRepository eventRepo;
+    @Autowired SegmentRepository segments;
 
     UUID orgId;
     UUID eventId;
@@ -335,6 +338,42 @@ class SendPathGuardTest {
         guard.skipReasons(campaign(eventId, "manual"), List.of(m), NOW);
 
         verify(consentGate, never()).reasons(any(), anyCollection());
+    }
+
+    @Test
+    void momentumCampaignOnAMomentumSegmentSkipsAMemberConsentGateExcludes() {
+        UUID legacy = member();
+        when(consentGate.reasons(any(), anyCollection()))
+                .thenReturn(Map.of(legacy, Optional.of(ConsentGate.OBJECTED)));
+        Campaign c = campaign(null, "momentum");
+        c.setSegmentId(segment(Segment.ORIGIN_MOMENTUM));
+        c = campaigns.save(c);
+
+        assertThat(guard.skipReasons(c, List.of(legacy), NOW))
+                .containsExactly(Map.entry(legacy, SendPathGuard.CONSENT_GATE));
+        verify(consentGate).reasons(orgId, List.of(legacy));
+    }
+
+    @Test
+    void momentumCampaignOnAnOrganizerSegmentNeverAsksConsentGate() {
+        UUID m = member();
+        Campaign c = campaign(null, "momentum");
+        c.setSegmentId(segment(Segment.ORIGIN_ORGANIZER));
+        c = campaigns.save(c);
+
+        assertThat(guard.skipReasons(c, List.of(m), NOW)).isEmpty();
+        verify(consentGate, never()).reasons(any(), anyCollection());
+    }
+
+    private UUID segment(String origin) {
+        Segment s = new Segment();
+        s.setOrgId(orgId);
+        s.setName("Momentum target");
+        s.setKind("static");
+        s.setOrigin(origin);
+        s.setCreatedAt(NOW);
+        s.setUpdatedAt(NOW);
+        return segments.save(s).getId();
     }
 
     @Test

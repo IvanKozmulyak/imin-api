@@ -33,8 +33,6 @@ import java.util.UUID;
 public class MomentumPlanTarget {
 
     static final int MAX_NAME = 128;
-    /** Marks a static segment as a plan-derived Momentum snapshot, so SendPathGuard applies ConsentGate at send. */
-    public static final String SNAPSHOT_KEY = "MOMENTUM_PLAN";
     private static final ObjectMapper JSON = new ObjectMapper();
 
     /** The chosen plan segment and its members as of now, holdouts already removed. */
@@ -61,10 +59,11 @@ public class MomentumPlanTarget {
         this.logic = logic;
     }
 
-    /** Reads only; nothing is written until {@link #snapshot}. */
+    /** Reads only; nothing is written until {@link #snapshot}. Empty while audience-plan sends are off. */
     public Optional<Target> best(Event event) {
         UUID orgId = event.getOrgId();
-        if (!access.isEnabled(orgId)) return Optional.empty();
+        // Plan profiling must not pick live Momentum recipients before the plan's own sends are allowed.
+        if (!access.isEnabled(orgId) || !access.sendsEnabled()) return Optional.empty();
         Optional<AudiencePlan> plan =
                 plans.findFirstByOrgIdAndEventIdAndSupersededByIsNullOrderByCreatedAtDesc(orgId, event.getId());
         if (plan.isEmpty()) return Optional.empty();
@@ -107,7 +106,8 @@ public class MomentumPlanTarget {
         s.setOrgId(orgId);
         s.setName(name(eventName, target));
         s.setKind("static");
-        s.setPrebuiltKey(SNAPSHOT_KEY);
+        // The origin makes SendPathGuard apply ConsentGate at send and hides the row from the Segments list.
+        s.setOrigin(Segment.ORIGIN_MOMENTUM);
         try {
             s.setSnapshotIds(JSON.writeValueAsString(ids));
         } catch (JsonProcessingException e) {

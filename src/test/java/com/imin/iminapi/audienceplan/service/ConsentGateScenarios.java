@@ -294,6 +294,44 @@ abstract class ConsentGateScenarios {
         assertReason(gate(), orgA, mid, ConsentGate.LEGACY_UNPROVEN);
     }
 
+    // ── door QR and survey sign-ups awaiting confirmation ──────────────────
+
+    @ParameterizedTest
+    @ValueSource(strings = {"door_qr", "survey"})
+    void signUpAwaitingConfirmation_isNoBasis(String source) {
+        UUID mid = member(orgA);
+        awaiting(mid, source, RECENT, null);
+        contact(mid, RECENT);
+
+        assertReason(gate(), orgA, mid, ConsentGate.NO_BASIS);
+    }
+
+    @Test
+    void signUpAwaitingConfirmation_leavesAnEarlierProvenCheckoutDeciding() {
+        UUID mid = member(orgA);
+        consent(mid, "explicit", "checkout", NAMED_VERSION, null, RECENT.minus(5, ChronoUnit.DAYS));
+        awaiting(mid, "door_qr", RECENT, null);
+
+        assertMailable(gate(), orgA, mid);
+    }
+
+    @Test
+    void signUpAwaitingConfirmation_isNotContactWithinRetention() {
+        UUID mid = member(orgA);
+        consent(mid, "explicit", "checkout", NAMED_VERSION, null, Instant.parse("2020-01-01T12:00:00Z"));
+        awaiting(mid, "door_qr", RECENT, null);
+
+        assertReason(gate(), orgA, mid, ConsentGate.RETENTION_3Y);
+    }
+
+    @Test
+    void confirmedSignUp_isMailable() {
+        UUID mid = member(orgA);
+        awaiting(mid, "survey", RECENT, RECENT.plusSeconds(60));
+
+        assertMailable(gate(), orgA, mid);
+    }
+
     @Test
     void latestSubscribingRecordDecides() {
         UUID proven = member(orgA);
@@ -832,6 +870,14 @@ abstract class ConsentGateScenarios {
         consentRepo.save(record(mid, basis, source, textVersion, orderId, at));
         jdbc.update("update memberships set consent_status = 'subscribed', consent_basis = ? where membership_id = ?",
                 basis, mid);
+    }
+
+    /** A door/survey sign-up as ConsentService writes it: flagged, membership state untouched; confirmed when given. */
+    void awaiting(UUID mid, String source, Instant at, Instant confirmedAt) {
+        ConsentRecord r = record(mid, "explicit", source, "door-v1", null, at);
+        r.setConfirmationRequired(true);
+        r.setConfirmedAt(confirmedAt);
+        consentRepo.save(r);
     }
 
     UUID consentId(UUID mid, String basis, String source, String textVersion, Instant at) {

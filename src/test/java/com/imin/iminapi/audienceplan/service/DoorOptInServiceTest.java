@@ -10,7 +10,10 @@ import com.imin.iminapi.audience.repository.MarketingOptOutRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.repository.SuppressionRepository;
 import com.imin.iminapi.audience.service.AudienceOrderProjector;
+import com.imin.iminapi.audience.dto.ExclusionReason;
+import com.imin.iminapi.audience.service.ConsentOrigin;
 import com.imin.iminapi.audience.service.ConsentService;
+import com.imin.iminapi.audience.service.SendGateService;
 import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
 import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
 import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
@@ -48,6 +51,7 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -60,6 +64,7 @@ class DoorOptInServiceTest {
 
     private static final String ORG_NAME = "Vechirka Door";
     private static final String VERSION = "door-org-named-2026-09";
+    private static final String CHECKOUT_VERSION = "checkout-org-named-2026-09";
     private static final String TEXT = "Email me about events by " + ORG_NAME
             + ". I agree to receive email marketing and can unsubscribe any time, one click in every email.";
 
@@ -78,6 +83,7 @@ class DoorOptInServiceTest {
     @Autowired AudiencePlanLogic logic;
     @Autowired EmailProperties emailProps;
     @Autowired ConsentGate gate;
+    @Autowired SendGateService sendGate;
     @Autowired JdbcTemplate jdbc;
 
     private UUID orgId;
@@ -138,10 +144,54 @@ class DoorOptInServiceTest {
         assertThat(c.get("order_id")).isNull();
         assertThat((String) c.get("proof_text")).contains("\"" + TEXT + "\"").contains("(locale fr)")
                 .contains(event.getId().toString());
-        Map<String, Object> m = membership("guest@door.test");
+        assertThat(c.get("confirmation_required")).isEqualTo(true);
+        assertThat(c.get("confirmed_at")).isNull();
+    }
+
+    // ── pending confirmation ───────────────────────────────────────────────
+
+    @Test
+    void signUpAlone_isMailableByNeitherGateUntilConfirmed() {
+        service.optIn(event.getId(), body("pending@door.test", true, TEXT, VERSION, "en"));
+
+        Map<String, Object> m = membership("pending@door.test");
+        UUID mid = (UUID) m.get("membership_id");
+        assertThat(m.get("consent_status")).isEqualTo("never");
+        assertThat(m.get("consent_basis")).isNull();
+        SendGateService.GateResult send = sendGate.evaluate(orgId, List.of(mid));
+        assertThat(send.sendable()).isEmpty();
+        assertThat(send.excluded()).extracting(ExclusionReason::reason).containsExactly("no_lawful_basis");
+        assertThat(gate.reasons(orgId, List.of(mid))).containsEntry(mid, Optional.of(ConsentGate.NO_BASIS));
+        assertThat(gate.canMarket(orgId, mid)).isFalse();
+    }
+
+    @Test
+    void signUpOfAMemberWithACheckoutConsent_keepsThemMailableByBothGates() {
+        projector.upsertMembership(orgId, "buyer@door.test", null);
+        UUID mid = (UUID) membership("buyer@door.test").get("membership_id");
+        consentService.capture(orgId, mid, "explicit", "checkout", "Ticked at checkout", "email",
+                CHECKOUT_VERSION, null, ConsentOrigin.DATA_SUBJECT, null);
+
+        service.optIn(event.getId(), body("buyer@door.test", true, TEXT, VERSION, "en"));
+
+        Map<String, Object> m = membership("buyer@door.test");
         assertThat(m.get("consent_status")).isEqualTo("subscribed");
         assertThat(m.get("consent_basis")).isEqualTo("explicit");
-        assertThat(gate.canMarket(orgId, (UUID) m.get("membership_id"))).isTrue();
+        assertThat(sendGate.evaluate(orgId, List.of(mid)).sendable()).containsExactly(mid);
+        assertThat(gate.canMarket(orgId, mid)).isTrue();
+        assertThat(consentRows("buyer@door.test")).extracting(r -> r.get("source"))
+                .containsExactlyInAnyOrder("checkout", "door_qr");
+    }
+
+    @Test
+    void confirmedSignUp_isMailableByTheGate() {
+        service.optIn(event.getId(), body("confirmed@door.test", true, TEXT, VERSION, "en"));
+        UUID mid = (UUID) membership("confirmed@door.test").get("membership_id");
+
+        jdbc.update("update consent_records set confirmed_at = ? where membership_id = ?",
+                Timestamp.from(Instant.now()), mid);
+
+        assertThat(gate.canMarket(orgId, mid)).isTrue();
     }
 
     @ParameterizedTest
@@ -154,13 +204,14 @@ class DoorOptInServiceTest {
     }
 
     @Test
-    void existingObjection_isLiftedByTheGuestsOwnTick() {
+    void existingObjection_staysUntilTheSignUpIsConfirmed() {
         projector.upsertMembership(orgId, "objector@door.test", null);
         jdbc.update("update memberships set objected_profiling = true where org_id = ?", orgId);
 
         service.optIn(event.getId(), body("objector@door.test", true, TEXT, VERSION, "en"));
 
-        assertThat(membership("objector@door.test").get("objected_profiling")).isEqualTo(false);
+        assertThat(membership("objector@door.test").get("objected_profiling")).isEqualTo(true);
+        assertThat(consentRows("objector@door.test")).hasSize(1);
     }
 
     @Test

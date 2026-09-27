@@ -22,6 +22,8 @@ public class Segment {
     public static final String ORIGIN_ORGANIZER = "organizer";
     /** A static arm segment of an audience-plan invitation; hidden from the Audience tab. */
     public static final String ORIGIN_AUDIENCE_PLAN = "audience_plan";
+    /** A static snapshot a Momentum draft sends to, taken from the audience plan; hidden like plan arms. */
+    public static final String ORIGIN_MOMENTUM = "momentum";
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
@@ -48,7 +50,7 @@ public class Segment {
     @Column(name = "prebuilt_key", length = 32)
     private String prebuiltKey;
 
-    /** organizer | audience_plan */
+    /** organizer | audience_plan | momentum */
     @Column(nullable = false, length = 32)
     private String origin = ORIGIN_ORGANIZER;
 
@@ -65,6 +67,11 @@ public class Segment {
 
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt = Instant.now();
+
+    /** A system-made segment backing a campaign: not listed, and not the organizer's to delete. */
+    public boolean isSystemOrigin() {
+        return ORIGIN_AUDIENCE_PLAN.equals(origin) || ORIGIN_MOMENTUM.equals(origin);
+    }
 
     @PrePersist
     void onPersist() {
