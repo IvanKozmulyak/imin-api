@@ -298,16 +298,71 @@ class CandidateBuilderTest {
 
         Result r = build(people);
 
-        assertThat(r.segments()).extracting(Segment::classKey).containsExactly("loyal", "repeat", "first_timer");
-        Segment loyal = r.segments().get(0);
+        // Most expected mid first: first_timer 22.56, loyal 16.00, repeat 13.44.
+        assertThat(r.segments()).extracting(Segment::classKey).containsExactly("first_timer", "loyal", "repeat");
+        Segment loyal = r.segments().get(1);
         assertThat(loyal.mailable()).isEqualTo(40);
         assertThat(loyal.fit()).isEqualTo(Fit.SAME);
         assertThat(loyal.confidence()).isEqualTo(Confidence.PRIOR);
         assertThat(loyal.rate()).isEqualTo(new Band(0.12, 0.25, 0.40));
         assertBand(loyal.expectedTickets(), 7.68, 16.00, 25.60);
-        assertBand(r.segments().get(1).expectedTickets(), 6.72, 13.44, 22.40);
-        assertBand(r.segments().get(2).expectedTickets(), 11.28, 22.56, 45.12);
+        assertBand(r.segments().get(2).expectedTickets(), 6.72, 13.44, 22.40);
+        assertBand(r.segments().get(0).expectedTickets(), 11.28, 22.56, 45.12);
         assertThat(r.otherGenreInvited()).isFalse();
+    }
+
+    // ── ranking ────────────────────────────────────────────────────────────
+
+    @Test
+    void bigLowRateSegment_outranksTinyHighRateOne() {
+        List<Person> people = new ArrayList<>(same("loyal", 10));
+        people.addAll(same("lapsing", 200));
+
+        Result r = build(people);
+
+        // loyal 10 × .25 × 1.6 = 4.0; lapsing 200 × .025 × 1.6 = 8.0.
+        assertThat(r.segments()).extracting(Segment::classKey).containsExactly("lapsing", "loyal");
+    }
+
+    @Test
+    void equalExpectedMid_higherRateFirst() {
+        List<Person> people = new ArrayList<>(same("repeat", 25, LIKES_JAZZ));
+        people.addAll(same("lapsing", 24, Map.of()));
+
+        Result r = build(people);
+
+        // repeat other 25 × .024 = lapsing unknown 24 × .025; lapsing loses on class order and fit, wins on rate.
+        assertThat(r.segments().get(0).expectedTickets().mid()).isEqualTo(r.segments().get(1).expectedTickets().mid());
+        assertThat(r.segments().get(0).rate().mid()).isGreaterThan(r.segments().get(1).rate().mid());
+        assertThat(r.segments()).extracting(Segment::classKey, Segment::fit).containsExactly(
+                org.assertj.core.groups.Tuple.tuple("lapsing", Fit.UNKNOWN),
+                org.assertj.core.groups.Tuple.tuple("repeat", Fit.OTHER));
+    }
+
+    @Test
+    void equalExpectedMidAndRate_classOrderOfTheLogicFileFirst() {
+        List<Person> people = new ArrayList<>(same("first_timer", 10));
+        people.addAll(same("repeat", 10, Map.of(CLUB, 1.0)));
+
+        Result r = build(people);
+
+        // repeat adjacent .12 × .5 = first_timer same .06.
+        assertThat(r.segments().get(0).rate().mid()).isEqualTo(r.segments().get(1).rate().mid());
+        assertThat(r.segments()).extracting(Segment::classKey, Segment::fit).containsExactly(
+                org.assertj.core.groups.Tuple.tuple("repeat", Fit.ADJACENT),
+                org.assertj.core.groups.Tuple.tuple("first_timer", Fit.SAME));
+    }
+
+    @Test
+    void equalExpectedMidRateAndClass_closerFitFirst() {
+        List<Person> people = new ArrayList<>(same("loyal", 10, Map.of()));
+        people.addAll(same("loyal", 10));
+
+        Result r = build(people);
+
+        // unknown's modifier is 1.0, so both segments carry the same rate and expected tickets.
+        assertThat(r.segments().get(0).expectedTickets().mid()).isEqualTo(r.segments().get(1).expectedTickets().mid());
+        assertThat(r.segments()).extracting(Segment::fit).containsExactly(Fit.SAME, Fit.UNKNOWN);
     }
 
     @Test

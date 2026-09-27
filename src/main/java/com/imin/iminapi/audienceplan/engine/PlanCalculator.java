@@ -139,7 +139,7 @@ public final class PlanCalculator {
         } else {
             CandidateBuilder.Result built = builder.build(new CandidateBuilder.Input(in.orgId(), in.eventGenreKey(), target,
                     in.ticketsPerOrder(), in.consentGateExclusions(), pool));
-            // Segments arrive highest rate first; totals, coverage and invites cover only the kept ones.
+            // Segments arrive most expected mid tickets first; totals, coverage and invites cover only the kept ones.
             // ponytail: the builder's other-genre gate saw every segment, so a cap can drop coverage it counted.
             List<CandidateBuilder.Segment> kept = built.segments();
             int capped = 0;

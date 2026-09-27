@@ -174,10 +174,11 @@ public final class CandidateBuilder {
         return new Segment(key.classKey(), key.fit(), rate.band(), rate.confidence(), expected, ids);
     }
 
-    /** Highest mid rate first, then class order of the logic file, then closer fit. */
+    /** Most expected mid tickets first, so a top-N cap keeps the biggest contributors; then rate, class order, fit. */
     private Comparator<Segment> order() {
         List<String> classOrder = logic.logic().classes().stream().map(AudiencePlanLogic.ClassRule::key).toList();
-        return Comparator.<Segment>comparingDouble(s -> -s.rate().mid())
+        return Comparator.<Segment>comparingDouble(s -> -s.expectedTickets().mid())
+                .thenComparingDouble(s -> -s.rate().mid())
                 .thenComparingInt(s -> classOrder.indexOf(s.classKey()))
                 .thenComparing(Segment::fit);
     }

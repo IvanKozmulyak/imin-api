@@ -114,19 +114,36 @@ class PlanCalculatorOverridesTest {
     // ── top-segment cap ─────────────────────────────────────────────────────
 
     @Test
-    void cap_keepsTheHighestRateSegments_andTotalsCoverOnlyThose() {
+    void cap_keepsTheMostExpectedSegments_andTotalsCoverOnlyThose() {
         List<Person> all = fixture();
         all.addAll(people("lapsing", 20));
 
         Plan p = CALC.calculate(input(all, Set.of(), 3));
 
-        assertThat(p.segments()).extracting(PlanSegment::classKey).containsExactly("loyal", "repeat", "first_timer");
+        assertThat(p.segments()).extracting(PlanSegment::classKey).containsExactly("first_timer", "loyal", "repeat");
         assertThat(p.expected()).isEqualTo(new Tickets(26, 52, 93));
         assertThat(p.coverage()).isEqualTo(new Coverage(0.10, 0.20, 0.36, Verdict.MEDIUM));
         assertThat(p.gap()).isEqualTo(new Gap(162, 229));
         assertThat(p.mailable()).isEqualTo(365);
         assertThat(p.exclusions()).containsEntry(Exclusions.SEGMENT_CAP, 20).containsEntry(Exclusions.EXCLUDED_SEGMENT, 0);
-        assertThat(invitedClasses(p)).containsExactly("loyal", "repeat", "first_timer");
+        assertThat(invitedClasses(p)).containsExactly("first_timer", "loyal", "repeat");
+    }
+
+    @Test
+    void cap_dropsTheSmallestExpectedSegment_notTheLowestRate() {
+        List<Person> all = new ArrayList<>(people("loyal", 10));
+        all.addAll(people("repeat", 20));
+        all.addAll(people("first_timer", 110));
+        all.addAll(people("lapsing", 200));
+
+        Plan p = CALC.calculate(input(all, Set.of(), 3));
+
+        // Expected mid: first_timer 10.56, lapsing 8.00, loyal 4.00, repeat 3.84 (dropped).
+        assertThat(p.segments()).extracting(PlanSegment::classKey).containsExactly("first_timer", "lapsing", "loyal");
+        // low 5.28 + 3.20 + 1.92, mid 10.56 + 8.00 + 4.00, high 21.12 + 16.00 + 6.40.
+        assertThat(p.expected()).isEqualTo(new Tickets(10, 23, 44));
+        assertThat(p.exclusions()).containsEntry(Exclusions.SEGMENT_CAP, 20);
+        assertThat(invitedClasses(p)).containsExactly("first_timer", "lapsing", "loyal");
     }
 
     @Test
@@ -138,7 +155,7 @@ class PlanCalculatorOverridesTest {
 
         // lapsing 20 × .01/.025/.05 × 1.6 adds 0.32 / 0.80 / 1.60 to 25.68 / 52.00 / 93.12.
         assertThat(p.segments()).extracting(PlanSegment::classKey)
-                .containsExactly("loyal", "repeat", "first_timer", "lapsing");
+                .containsExactly("first_timer", "loyal", "repeat", "lapsing");
         assertThat(p.expected()).isEqualTo(new Tickets(26, 53, 95));
         assertThat(p.exclusions()).containsEntry(Exclusions.SEGMENT_CAP, 0);
     }

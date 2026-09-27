@@ -107,12 +107,12 @@ class PlanCalculatorTest {
         assertThat(p.targetTickets()).isEqualTo(255);
         assertThat(p.mailable()).isEqualTo(345);
         assertThat(p.segments()).hasSize(3);
-        assertSegment(p.segments().get(0), "loyal", 40, new Band(.12, .25, .40), new Band(7.68, 16.00, 25.60),
-                new Tickets(8, 16, 26));
-        assertSegment(p.segments().get(1), "repeat", 70, new Band(.06, .12, .20), new Band(6.72, 13.44, 22.40),
-                new Tickets(7, 13, 22));
-        assertSegment(p.segments().get(2), "first_timer", 235, new Band(.03, .06, .12), new Band(11.28, 22.56, 45.12),
+        assertSegment(p.segments().get(0), "first_timer", 235, new Band(.03, .06, .12), new Band(11.28, 22.56, 45.12),
                 new Tickets(11, 23, 45));
+        assertSegment(p.segments().get(1), "loyal", 40, new Band(.12, .25, .40), new Band(7.68, 16.00, 25.60),
+                new Tickets(8, 16, 26));
+        assertSegment(p.segments().get(2), "repeat", 70, new Band(.06, .12, .20), new Band(6.72, 13.44, 22.40),
+                new Tickets(7, 13, 22));
         assertThat(p.expected()).isEqualTo(new Tickets(26, 52, 93));
         assertThat(p.coverage()).isEqualTo(new Coverage(0.10, 0.20, 0.36, Verdict.MEDIUM));
         assertThat(p.gap()).isEqualTo(new Gap(162, 229));
@@ -129,9 +129,9 @@ class PlanCalculatorTest {
         assertThat(p.timing().d3Date()).isEqualTo(D3);
         List<ArmDate> arms = List.of(new ArmDate(TimingArm.LAUNCH, LAUNCH), new ArmDate(TimingArm.D3, D3));
         assertThat(p.actions()).containsExactly(
+                new Action(ActionType.INVITE, "first_timer", Fit.SAME, arms, 15),
                 new Action(ActionType.INVITE, "loyal", Fit.SAME, arms, 0),
-                new Action(ActionType.INVITE, "repeat", Fit.SAME, arms, 15),
-                new Action(ActionType.INVITE, "first_timer", Fit.SAME, arms, 15));
+                new Action(ActionType.INVITE, "repeat", Fit.SAME, arms, 15));
         assertThat(p.assumptions()).isEqualTo(new PlanCalculator.Assumptions(85, 1.6));
         assertThat(p.versions()).isEqualTo(new PlanCalculator.Versions(1, 1));
     }
