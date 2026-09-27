@@ -547,6 +547,44 @@ class AudienceDsarTest {
     }
 
     @Test
+    void export_records_keep_historic_opens_and_clicks() {
+        UUID mid = seedMembership(orgA, "engaged@d.com");
+        setEngagement(mid, Instant.parse("2026-05-01T10:00:00Z"), Instant.parse("2026-05-02T10:00:00Z"));
+
+        DsarRecords.EmailEngagementRecord e = dsarService.exportRecords(orgA, mid, principalA).emailEngagement();
+
+        assertThat(e).isNotNull();
+        assertThat(e.lastOpenedAt()).isEqualTo(Instant.parse("2026-05-01T10:00:00Z"));
+        assertThat(e.lastClickedAt()).isEqualTo(Instant.parse("2026-05-02T10:00:00Z"));
+    }
+
+    @Test
+    void export_records_keep_a_click_without_an_open() {
+        UUID mid = seedMembership(orgA, "clickonly@d.com");
+        setEngagement(mid, null, Instant.parse("2026-05-02T10:00:00Z"));
+
+        DsarRecords.EmailEngagementRecord e = dsarService.exportRecords(orgA, mid, principalA).emailEngagement();
+
+        assertThat(e).isNotNull();
+        assertThat(e.lastOpenedAt()).isNull();
+        assertThat(e.lastClickedAt()).isEqualTo(Instant.parse("2026-05-02T10:00:00Z"));
+    }
+
+    @Test
+    void export_records_have_null_engagement_when_none_held() {
+        UUID mid = seedMembership(orgA, "unengaged@d.com");
+
+        assertThat(dsarService.exportRecords(orgA, mid, principalA).emailEngagement()).isNull();
+    }
+
+    private void setEngagement(UUID mid, Instant open, Instant click) {
+        new org.springframework.jdbc.core.JdbcTemplate(dataSource).update(
+                "update memberships set last_email_open = ?, last_email_click = ? where membership_id = ?",
+                open == null ? null : java.sql.Timestamp.from(open),
+                click == null ? null : java.sql.Timestamp.from(click), mid);
+    }
+
+    @Test
     void export_records_have_null_fan_features_when_none_computed() {
         UUID mid = seedMembership(orgA, "nofan@d.com");
 

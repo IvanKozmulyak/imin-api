@@ -105,7 +105,7 @@ class AudienceControllerWebTest {
                 Instant.parse("2025-06-01T00:00:00Z"),
                 14, "organic",
                 "explicit", "subscribed", null,
-                null, null, null, null, null,
+                null, null, null,
                 List.of("vip"), "", "repeat",
                 new MemberDto.RfmInfo(4, 3, 5),
                 null, null, null, null, null
@@ -193,6 +193,40 @@ class AudienceControllerWebTest {
                 .andExpect(jsonPath("$.guestClass").value("first_timer"))
                 .andExpect(jsonPath("$['taste']['house & techno']").value(1.0))
                 .andExpect(jsonPath("$.sends30d").value(2));
+    }
+
+    @Test
+    @WithOrgA
+    void member_json_has_no_open_or_click_fields() throws Exception {
+        when(audienceService.getMember(ORG_A, MEMBER_A)).thenReturn(stubMember(MEMBER_A));
+        when(audienceService.listMembers(eq(ORG_A), any()))
+                .thenReturn(new MemberPage(List.of(stubMember(MEMBER_A)), null));
+
+        for (var req : List.of(get("/api/v1/audience/members/" + MEMBER_A),
+                post("/api/v1/audience/members/" + MEMBER_A + "/export"))) {
+            String body = mvc.perform(req).andExpect(status().isOk())
+                    .andReturn().getResponse().getContentAsString();
+            assertThat(body).contains("\"membershipId\"").doesNotContain("lastEmailOpenAt")
+                    .doesNotContain("lastEmailClickAt");
+        }
+        String list = mvc.perform(get("/api/v1/audience/members")).andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        assertThat(list).contains("\"membershipId\"").doesNotContain("lastEmailOpenAt")
+                .doesNotContain("lastEmailClickAt");
+    }
+
+    @Test
+    void openapi_drops_open_and_click_from_MemberDto_and_publishes_EmailEngagementRecord() throws Exception {
+        String docs = mvc.perform(get("/v3/api-docs"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.components.schemas.MemberDto.properties.membershipId").exists())
+                .andExpect(jsonPath("$.components.schemas.MemberDto.properties.lastEmailOpenAt").doesNotExist())
+                .andExpect(jsonPath("$.components.schemas.MemberDto.properties.lastEmailClickAt").doesNotExist())
+                .andExpect(jsonPath("$.components.schemas.EmailEngagementRecord.properties.lastOpenedAt").exists())
+                .andExpect(jsonPath("$.components.schemas.EmailEngagementRecord.properties.lastClickedAt").exists())
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(docs).doesNotContain("lastEmailOpenAt").doesNotContain("lastEmailClickAt");
     }
 
     @Test
@@ -1086,7 +1120,7 @@ class AudienceControllerWebTest {
                 Instant.parse("2025-06-01T00:00:00Z"),
                 Instant.parse("2025-06-01T00:00:00Z"),
                 7, "organic", "explicit", "subscribed", null,
-                null, null, null, null, null,
+                null, null, null,
                 List.of("tag1"), "", "repeat",
                 new MemberDto.RfmInfo(3, 2, 4),
                 null, null, null, null, null
@@ -1101,6 +1135,20 @@ class AudienceControllerWebTest {
 
         // RFC4180: the name field must be wrapped in double-quotes and internal quotes doubled
         assertThat(body).contains("\"Smith, \"\"DJ\"\" Joe\"");
+    }
+
+    @Test
+    @WithOrgA
+    void get_members_csv_header_is_pinned_without_open_or_click() throws Exception {
+        when(audienceService.exportMembersCsv(eq(ORG_A), isNull(), isNull())).thenReturn(List.of());
+
+        String body = mvc.perform(get("/api/v1/audience/members?format=csv").accept("text/csv"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(body).isEqualTo("\"name\",\"email\",\"city\",\"lifecycle\",\"events\",\"attended\","
+                + "\"noShow\",\"orders\",\"spend\",\"recencyDays\",\"subscriptionStatus\","
+                + "\"lawfulBasis\",\"firstTouchSource\",\"tags\",\"nps\"\r\n");
     }
 
     // ── CSV export: GET /segments/{id}/snapshot ───────────────────────────────

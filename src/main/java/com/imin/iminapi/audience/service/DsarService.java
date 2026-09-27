@@ -155,7 +155,9 @@ public class DsarService {
                         .orElse(null))
                 .withImportProvenance(provenanceRepo.findByMembershipIdOrderByCreatedAtAsc(membershipId).stream()
                         .map(DsarService::toRecord)
-                        .toList());
+                        .toList())
+                .withEmailEngagement(m.getLastEmailOpen() == null && m.getLastEmailClick() == null ? null
+                        : new DsarRecords.EmailEngagementRecord(m.getLastEmailOpen(), m.getLastEmailClick()));
     }
 
     private static DsarRecords.ImportProvenanceRecord toRecord(ImportRowProvenance p) {

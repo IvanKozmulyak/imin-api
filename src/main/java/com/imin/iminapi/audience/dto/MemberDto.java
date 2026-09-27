@@ -32,8 +32,6 @@ public record MemberDto(
         String lawfulBasis,          // 'explicit' | 'soft_opt_in' | null
         String subscriptionStatus,   // 'subscribed' | 'unsubscribed' | 'never'
         SuppressionInfo suppression, // null if not suppressed
-        Instant lastEmailOpenAt,
-        Instant lastEmailClickAt,
         Integer nps,
         String vibe,
         String quote,
@@ -87,8 +85,6 @@ public record MemberDto(
                 m.getConsentBasis(),
                 m.getConsentStatus(),
                 suppInfo,
-                m.getLastEmailOpen(),
-                m.getLastEmailClick(),
                 m.getNps() != null ? m.getNps().intValue() : null,
                 m.getVibe(),
                 m.getQuote(),
@@ -109,7 +105,7 @@ public record MemberDto(
         return new MemberDto(membershipId, name, email, city, genres, events, attended, noShow,
                 orders, spendMinor, aovMinor, firstSeenAt, lastPurchaseAt, lastAttendedAt,
                 recencyDays, firstTouchSource, lawfulBasis, subscriptionStatus, suppression,
-                lastEmailOpenAt, lastEmailClickAt, nps, vibe, quote, tags, notes, lifecycle,
+                nps, vibe, quote, tags, notes, lifecycle,
                 rfm, guestClass, taste, sends30d, history, records);
     }
 
@@ -118,7 +114,7 @@ public record MemberDto(
         return new MemberDto(membershipId, name, email, city, genres, events, attended, noShow,
                 orders, spendMinor, aovMinor, firstSeenAt, lastPurchaseAt, lastAttendedAt,
                 recencyDays, firstTouchSource, lawfulBasis, subscriptionStatus, suppression,
-                lastEmailOpenAt, lastEmailClickAt, nps, vibe, quote, tags, notes, lifecycle,
+                nps, vibe, quote, tags, notes, lifecycle,
                 rfm, guestClass, taste, sends30d, consentHistory, dsarRecords);
     }
 }

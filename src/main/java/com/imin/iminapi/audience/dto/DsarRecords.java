@@ -27,18 +27,25 @@ public record DsarRecords(
         List<MetaCapiRecord> metaCapiEvents,
         List<NotifySubscriptionRecord> notifySubscriptions,
         FanFeatureRecord fanFeatures,
-        List<ImportProvenanceRecord> importProvenance
+        List<ImportProvenanceRecord> importProvenance,
+        EmailEngagementRecord emailEngagement
 ) {
     /** The same records with the plan-tool features attached; null when none were computed. */
     public DsarRecords withFanFeatures(FanFeatureRecord features) {
         return new DsarRecords(orders, tickets, funnelEvents, metaCapiEvents, notifySubscriptions,
-                features, importProvenance);
+                features, importProvenance, emailEngagement);
     }
 
     /** The same records with the CSV-import provenance rows attached. */
     public DsarRecords withImportProvenance(List<ImportProvenanceRecord> rows) {
         return new DsarRecords(orders, tickets, funnelEvents, metaCapiEvents, notifySubscriptions,
-                fanFeatures, rows);
+                fanFeatures, rows, emailEngagement);
+    }
+
+    /** The same records with the historic open/click timestamps; null when none are held. */
+    public DsarRecords withEmailEngagement(EmailEngagementRecord engagement) {
+        return new DsarRecords(orders, tickets, funnelEvents, metaCapiEvents, notifySubscriptions,
+                fanFeatures, importProvenance, engagement);
     }
 
     public record OrderRecord(
@@ -112,6 +119,9 @@ public record DsarRecords(
             boolean accepted,
             String rejectReason,
             Instant createdAt) {}
+
+    /** Last open and click recorded on the membership before tracking was switched off; no longer written. */
+    public record EmailEngagementRecord(Instant lastOpenedAt, Instant lastClickedAt) {}
 
     /** A "tell me when tickets drop" registration. */
     public record NotifySubscriptionRecord(
