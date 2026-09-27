@@ -79,7 +79,8 @@ public class StripePaymentIntentController {
         // Both fields optional: an absent one means "not recorded", never "declined", and
         // nothing here gates the purchase.
         CheckoutConsent consent = new CheckoutConsent(
-                Boolean.TRUE.equals(body.acceptedTerms()), body.marketingOptInProofText());
+                Boolean.TRUE.equals(body.acceptedTerms()), body.marketingOptInProofText(),
+                body.marketingOptInTextVersion());
 
         StripePaymentIntentService.NativeIntent intent = intents.create(
                 eventId, body.tierId(), quantity, body.promoCode(), body.expectedPriceMinor(),
@@ -109,5 +110,6 @@ public class StripePaymentIntentController {
                                         // Optional: a client that sends neither is recorded as
                                         // "not captured", which is what every pre-V97 order is.
                                         Boolean acceptedTerms,
-                                        @Size(max = 500) String marketingOptInProofText) {}
+                                        @Size(max = 500) String marketingOptInProofText,
+                                        @Size(max = 32) String marketingOptInTextVersion) {}
 }

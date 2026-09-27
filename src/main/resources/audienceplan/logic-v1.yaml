@@ -31,4 +31,5 @@ legal:
     door_qr: text_version
     survey: text_version
   # Checkout label versions that name the organizer; add one only with a reviewed change.
-  organizer_named_text_versions: []
+  # checkout-org-named-2026-09: "Email me about events by {organizer}. …" (imin-public + fan-app, en/es/fr/uk).
+  organizer_named_text_versions: [checkout-org-named-2026-09]

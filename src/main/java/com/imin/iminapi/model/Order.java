@@ -146,6 +146,10 @@ public class Order {
     @Column(name = "marketing_opt_in_proof", length = 500)
     private String marketingOptInProof;
 
+    /** Version id of that sentence, sent by the buyer site with it (V151). Null ⇒ none sent. */
+    @Column(name = "marketing_opt_in_text_version", length = 32)
+    private String marketingOptInTextVersion;
+
     /**
      * When the buyer accepted the terms of sale at checkout (V97). Null for every
      * order placed before the buyer site started sending it — absence means "not

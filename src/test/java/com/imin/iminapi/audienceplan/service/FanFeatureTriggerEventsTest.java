@@ -1,5 +1,6 @@
 package com.imin.iminapi.audienceplan.service;
 
+import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
@@ -46,6 +47,7 @@ class FanFeatureTriggerEventsTest {
     @Autowired TicketRepository tickets;
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
+    @Autowired AudiencePlanLogic planLogic;
     @Autowired UserRepository users;
     @Autowired ConsumerRepository consumers;
     @Autowired MembershipRepository memberships;
@@ -115,7 +117,7 @@ class FanFeatureTriggerEventsTest {
                 "  " + email.toUpperCase() + " ", Instant.now(), Ticket.STATE_ISSUED);
         List<Object> captured = new ArrayList<>();
 
-        new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, captured::add)
+        new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, captured::add, orgs, planLogic)
                 .onTicketsIssued(new TicketsIssuedEvent(o.getId()));
 
         assertThat(captured).containsExactly(new MembershipProjected(org.id(), email));
@@ -125,7 +127,7 @@ class FanFeatureTriggerEventsTest {
     void ticketsIssued_unknownOrder_publishesNothing() {
         List<Object> captured = new ArrayList<>();
 
-        new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, captured::add)
+        new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, captured::add, orgs, planLogic)
                 .onTicketsIssued(new TicketsIssuedEvent(UUID.randomUUID()));
 
         assertThat(captured).isEmpty();

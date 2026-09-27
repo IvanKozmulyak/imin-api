@@ -1,5 +1,6 @@
 package com.imin.iminapi.marketing;
 
+import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
 import com.imin.iminapi.audience.repository.ConsentRecordRepository;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
@@ -52,6 +53,7 @@ class MarketingOptInWriteTest {
     @Autowired TicketTierRepository tiers;
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
+    @Autowired AudiencePlanLogic planLogic;
     @Autowired UserRepository users;
     @Autowired MembershipRepository memberships;
     @Autowired ConsumerRepository consumers;
@@ -358,6 +360,65 @@ class MarketingOptInWriteTest {
         assertThat(proof.getTextVersion()).isNull();
     }
 
+    /** The label's version id lands on the consent record beside the sentence and the order. */
+    @Test
+    void projector_withOptInProofAndTextVersion_recordsTheVersion() {
+        UUID orderId = UUID.randomUUID();
+        projector.upsertMembership(orgId, "versioned@example.com", "versioned@example.com",
+                null, false, true, orderId, "Email me about Arty Farty's events.", "checkout-org-named-2026-09");
+
+        var records = consentRecords.findByMembershipId(membershipFor("versioned@example.com").getMembershipId());
+        assertThat(records).hasSize(1);
+        assertThat(records.get(0).getTextVersion()).isEqualTo("checkout-org-named-2026-09");
+        assertThat(records.get(0).getOrderId()).isEqualTo(orderId);
+        assertThat(records.get(0).getLawfulBasis()).isEqualTo("explicit");
+    }
+
+    private static final String SHIPPED_VERSION = "checkout-org-named-2026-09";
+
+    /** Free checkout with this label and version, projected synchronously; returns the recorded versions. */
+    private List<String> projectedVersions(String email, String label, String version) {
+        Order order = freeCheckout.issueFreeOrder(
+                event, freeTier, 1, email, null, false, true,
+                CheckoutAttribution.NONE, null, null, new CheckoutConsent(true, label, version));
+        assertThat(orders.findById(order.getId()).orElseThrow().getMarketingOptInTextVersion()).isEqualTo(version);
+
+        new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, e -> { }, orgs, planLogic)
+                .onTicketsIssued(new TicketsIssuedEvent(order.getId()));
+
+        // The context's own async projector may record the same order a second time.
+        var records = consentRecords.findByMembershipId(membershipFor(email).getMembershipId());
+        assertThat(records).isNotEmpty().allSatisfy(r -> assertThat(r.getOrderId()).isEqualTo(order.getId()));
+        return records.stream().map(r -> r.getTextVersion()).toList();
+    }
+
+    /** Free checkout → order column → projected consent record: a listed version naming the org survives. */
+    @Test
+    void freeOrder_listedVersionAndLabelNamingTheOrg_keepsTheVersion() {
+        assertThat(projectedVersions("named@example.com", "Email me about events by OptIn Org.", SHIPPED_VERSION))
+                .containsOnly(SHIPPED_VERSION);
+    }
+
+    /** Case and compatibility forms fold on both sides, so full-width upper case still names the org. */
+    @Test
+    void freeOrder_labelNamingTheOrgInAnotherForm_keepsTheVersion() {
+        assertThat(projectedVersions("folded@example.com", "Email me about events by \uFF2F\uFF30\uFF34\uFF29\uFF2E \uFF2F\uFF32\uFF27.", SHIPPED_VERSION))
+                .containsOnly(SHIPPED_VERSION);
+    }
+
+    /** A listed version whose sentence does not contain the org's name is a client claim only. */
+    @Test
+    void freeOrder_labelMissingTheOrgName_dropsTheVersion() {
+        assertThat(projectedVersions("unnamed@example.com", "Email me about events by Arty Farty.", SHIPPED_VERSION))
+                .containsOnly((String) null);
+    }
+
+    @Test
+    void freeOrder_versionNotOnTheAllowlist_dropsTheVersion() {
+        assertThat(projectedVersions("unlisted@example.com", "Email me about events by OptIn Org.", "checkout-other-v1"))
+                .containsOnly((String) null);
+    }
+
     /** An opt-in flag with no proof sentence is not evidence of consent: nothing is recorded. */
     @Test
     void projector_withOptInButNoProofText_recordsNoConsent() {
@@ -391,7 +452,7 @@ class MarketingOptInWriteTest {
                 new CheckoutConsent(true, "Email me about similar events. Unsubscribe anytime."));
 
         // Plain instance so the projection runs synchronously on this thread.
-        new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, e -> { })
+        new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, e -> { }, orgs, planLogic)
                 .onTicketsIssued(new TicketsIssuedEvent(order.getId()));
 
         var m = membershipFor("free-optin@example.com");

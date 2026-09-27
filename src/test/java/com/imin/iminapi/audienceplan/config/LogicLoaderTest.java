@@ -111,8 +111,9 @@ class LogicLoaderTest {
     }
 
     @Test
-    void organizerNamedTextVersions_loadEmpty() {
-        assertThat(shipped().logic().legal().organizerNamedTextVersions()).isEmpty();
+    void organizerNamedTextVersions_holdExactlyTheCheckoutLabelVersion() {
+        assertThat(shipped().logic().legal().organizerNamedTextVersions())
+                .containsExactly("checkout-org-named-2026-09");
     }
 
     @Test

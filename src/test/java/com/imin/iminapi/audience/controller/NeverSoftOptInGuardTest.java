@@ -1,5 +1,6 @@
 package com.imin.iminapi.audience.controller;
 
+import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
 import com.imin.iminapi.audience.repository.ConsentRecordRepository;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
@@ -67,6 +68,7 @@ class NeverSoftOptInGuardTest {
     @Autowired TicketTierRepository tiers;
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
+    @Autowired AudiencePlanLogic planLogic;
     @Autowired UserRepository users;
     @Autowired MembershipRepository memberships;
     @Autowired ConsumerRepository consumers;
@@ -119,7 +121,7 @@ class NeverSoftOptInGuardTest {
         freeTier = tiers.save(freeTier);
 
         // Plain instance so the projection runs synchronously on this thread.
-        projector = new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, events -> { });
+        projector = new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, events -> { }, orgs, planLogic);
     }
 
     @AfterEach

@@ -6,6 +6,7 @@ import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.security.RateLimiter;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
@@ -33,7 +34,8 @@ public class StripeCheckoutController {
 
     @PostMapping("/{eventId}/checkout")
     public CheckoutResponse create(@PathVariable UUID eventId,
-                                    @RequestBody CheckoutRequest body,
+                                    // @Valid makes the record's @Size/@Min/@Max real; without it they are documentation.
+                                    @Valid @RequestBody CheckoutRequest body,
                                     // Optional, and optional on purpose. imin-public sends no
                                     // such header today (lib/api/public-events.ts) and must keep
                                     // working unchanged, so an absent key means "unkeyed", not
@@ -69,7 +71,8 @@ public class StripeCheckoutController {
         // has not shipped its half, and an absent field must mean "not recorded"
         // rather than "declined" — nothing here gates the purchase.
         CheckoutConsent consent = new CheckoutConsent(
-                Boolean.TRUE.equals(body.acceptedTerms()), body.marketingOptInProofText());
+                Boolean.TRUE.equals(body.acceptedTerms()), body.marketingOptInProofText(),
+                body.marketingOptInTextVersion());
         StripeCheckoutService.CheckoutResult result = checkout.createCheckout(eventId, body.tierId(), quantity,
                 promoCode, body.expectedPriceMinor(), body.email(), adsConsent, marketingOptIn,
                 attribution, body.locale(), idempotencyKey, consent);
@@ -127,7 +130,10 @@ public class StripeCheckoutController {
                                    // site owns the copy — so it sends it rather than the server
                                    // guessing. Absent ⇒ the server's own description of the act
                                    // is stored instead. Capped to the column width.
-                                   @Size(max = 500) String marketingOptInProofText) {}
+                                   @Size(max = 500) String marketingOptInProofText,
+                                   // Version id of that sentence (≤ 32). ConsentGate trusts a checkout
+                                   // consent only when it is on logic-v1.yaml's organizer-named list.
+                                   @Size(max = 32) String marketingOptInTextVersion) {}
 
     /**
      * {@code url} is unchanged and still first — imin-public reads only that.

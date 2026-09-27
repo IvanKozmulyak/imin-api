@@ -80,6 +80,8 @@ abstract class ConsentGateScenarios {
     static final Instant NOW = Instant.parse("2026-09-27T10:00:00Z");
     static final LocalDate CUTOFF_DATE = LocalDate.parse("2023-09-28");
     static final String NAMED_VERSION = "checkout-named-v1";
+    /** The version imin-public and the fan-app send with the organizer-named checkout label. */
+    static final String SHIPPED_LABEL_VERSION = "checkout-org-named-2026-09";
     static final Instant RECENT = NOW.minus(10, ChronoUnit.DAYS);
     static final UUID LOW_ID_1 = UUID.fromString("00000000-0000-0000-0000-000000000001");
     static final UUID LOW_ID_2 = UUID.fromString("00000000-0000-0000-0000-000000000002");
@@ -221,7 +223,26 @@ abstract class ConsentGateScenarios {
     }
 
     @Test
-    void checkout_withShippedEmptyAllowlist_isLegacyUnproven() {
+    void checkout_withShippedLabelVersion_isMailableUnderShippedLogic() {
+        UUID mid = member(orgA);
+        consent(mid, "explicit", "checkout", SHIPPED_LABEL_VERSION, UUID.randomUUID(), RECENT);
+
+        ConsentGate shipped = new ConsentGate(fanRepo, orgRepo, shippedLogic, props(false), clock());
+        assertMailable(shipped, orgA, mid);
+    }
+
+    @Test
+    void checkout_withNullVersion_isLegacyUnprovenUnderShippedLogic() {
+        UUID mid = member(orgA);
+        consent(mid, "explicit", "checkout", null, UUID.randomUUID(), RECENT);
+        contact(mid, RECENT);
+
+        ConsentGate shipped = new ConsentGate(fanRepo, orgRepo, shippedLogic, props(false), clock());
+        assertReason(shipped, orgA, mid, ConsentGate.LEGACY_UNPROVEN);
+    }
+
+    @Test
+    void checkout_withTestOnlyVersion_isLegacyUnprovenUnderShippedLogic() {
         UUID mid = member(orgA);
         consent(mid, "explicit", "checkout", NAMED_VERSION, UUID.randomUUID(), RECENT);
         contact(mid, RECENT);
