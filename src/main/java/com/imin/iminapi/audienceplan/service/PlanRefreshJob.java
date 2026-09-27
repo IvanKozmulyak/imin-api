@@ -33,17 +33,23 @@ public class PlanRefreshJob {
     private final PlanService plans;
     private final EventRepository events;
     private final Clock clock;
+    private final InviteOnPublishService invites;
     /** Calls {@link #run()} through the proxy so its scheduler lock applies. */
     private final ObjectProvider<PlanRefreshJob> self;
 
-    public PlanRefreshJob(PlanService plans, EventRepository events, Clock clock, ObjectProvider<PlanRefreshJob> self) {
+    public PlanRefreshJob(PlanService plans, EventRepository events, Clock clock, ObjectProvider<PlanRefreshJob> self,
+                          InviteOnPublishService invites) {
         this.plans = plans;
         this.events = events;
         this.clock = clock;
         this.self = self;
+        this.invites = invites;
     }
 
-    /** After the publish commits, off the request thread; a failure is logged and never reaches the publish. */
+    /**
+     * After the publish commits, off the request thread: refresh the plan, then run the invitations stored for the
+     * publish against it. Each step is caught on its own; a failure is logged and never reaches the publish.
+     */
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     @Async(PlanRefreshExecutor.NAME)
     public void onEventPublished(PredictorReactivityEvents.EventPublished published) {
@@ -52,6 +58,12 @@ public class PlanRefreshJob {
             log.info("PlanRefreshJob: publish of event {} -> plan {}", published.eventId(), r);
         } catch (Exception e) {
             log.warn("PlanRefreshJob: plan refresh on publish failed for event {}: {} {}", published.eventId(),
+                    e.getClass().getSimpleName(), LogSafe.redact(e.getMessage()));
+        }
+        try {
+            invites.runOnPublish(published.eventId());
+        } catch (Exception e) {
+            log.warn("PlanRefreshJob: invitations on publish failed for event {}: {} {}", published.eventId(),
                     e.getClass().getSimpleName(), LogSafe.redact(e.getMessage()));
         }
     }

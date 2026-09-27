@@ -7,6 +7,7 @@ import com.imin.iminapi.predictor.service.PredictorReactivityEvents;
 import com.imin.iminapi.repository.EventRepository;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.junit.jupiter.api.Test;
+import org.mockito.InOrder;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -21,6 +22,8 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -32,6 +35,7 @@ class PlanRefreshJobTest {
     private final PlanService plans = mock(PlanService.class);
     private final EventRepository events = mock(EventRepository.class);
     private final Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
+    private final InviteOnPublishService invites = mock(InviteOnPublishService.class);
 
     @Test
     void run_countsEachOutcome_andKeepsGoingPastAFailingEvent() {
@@ -45,7 +49,7 @@ class PlanRefreshJobTest {
         when(plans.refresh(failing.getId())).thenThrow(new IllegalStateException("boom"));
         when(plans.refresh(skipped.getId())).thenReturn(Refresh.SKIPPED);
 
-        PlanRefreshJob.Result r = new PlanRefreshJob(plans, events, clock, null).run();
+        PlanRefreshJob.Result r = new PlanRefreshJob(plans, events, clock, null, invites).run();
 
         assertThat(r).isEqualTo(new PlanRefreshJob.Result(4, 1, 1, 1, 1));
         verify(plans).refresh(skipped.getId());
@@ -54,7 +58,7 @@ class PlanRefreshJobTest {
     @Test
     void run_withNoOnSaleEvents_writesNothing() {
         when(events.findMomentumCandidates(NOW)).thenReturn(List.of());
-        assertThat(new PlanRefreshJob(plans, events, clock, null).run())
+        assertThat(new PlanRefreshJob(plans, events, clock, null, invites).run())
                 .isEqualTo(new PlanRefreshJob.Result(0, 0, 0, 0, 0));
     }
 
@@ -64,12 +68,48 @@ class PlanRefreshJobTest {
         UUID bad = UUID.randomUUID();
         when(plans.refresh(ok)).thenReturn(Refresh.CREATED);
         when(plans.refresh(bad)).thenThrow(new IllegalStateException("boom"));
-        PlanRefreshJob job = new PlanRefreshJob(plans, events, clock, null);
+        PlanRefreshJob job = new PlanRefreshJob(plans, events, clock, null, invites);
 
         job.onEventPublished(new PredictorReactivityEvents.EventPublished(ok));
         verify(plans).refresh(ok);
         assertThatCode(() -> job.onEventPublished(new PredictorReactivityEvents.EventPublished(bad)))
                 .doesNotThrowAnyException();
+    }
+
+    @Test
+    void onEventPublished_refreshesThePlan_thenRunsTheStoredInvitations() {
+        UUID id = UUID.randomUUID();
+        when(plans.refresh(id)).thenReturn(Refresh.CREATED);
+
+        new PlanRefreshJob(plans, events, clock, null, invites)
+                .onEventPublished(new PredictorReactivityEvents.EventPublished(id));
+
+        InOrder order = inOrder(plans, invites);
+        order.verify(plans).refresh(id);
+        order.verify(invites).runOnPublish(id);
+    }
+
+    @Test
+    void onEventPublished_stillRunsTheInvitations_whenTheRefreshFails() {
+        UUID id = UUID.randomUUID();
+        when(plans.refresh(id)).thenThrow(new IllegalStateException("boom"));
+
+        new PlanRefreshJob(plans, events, clock, null, invites)
+                .onEventPublished(new PredictorReactivityEvents.EventPublished(id));
+
+        verify(invites).runOnPublish(id);
+    }
+
+    @Test
+    void onEventPublished_swallowsAFailingInvitationRun() {
+        UUID id = UUID.randomUUID();
+        when(plans.refresh(id)).thenReturn(Refresh.UNCHANGED);
+        doThrow(new IllegalStateException("db down")).when(invites).runOnPublish(id);
+        PlanRefreshJob job = new PlanRefreshJob(plans, events, clock, null, invites);
+
+        assertThatCode(() -> job.onEventPublished(new PredictorReactivityEvents.EventPublished(id)))
+                .doesNotThrowAnyException();
+        verify(invites).runOnPublish(id);
     }
 
     @Test
@@ -80,7 +120,7 @@ class PlanRefreshJobTest {
         ObjectProvider<PlanRefreshJob> self = mock(ObjectProvider.class);
         when(self.getObject()).thenReturn(proxied);
 
-        assertThatCode(() -> new PlanRefreshJob(plans, events, clock, self).scheduled()).doesNotThrowAnyException();
+        assertThatCode(() -> new PlanRefreshJob(plans, events, clock, self, invites).scheduled()).doesNotThrowAnyException();
         verify(proxied).run();
     }
 

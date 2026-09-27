@@ -318,7 +318,7 @@ public class InvitationService {
     }
 
     /** Known, distinct arms in canonical order. */
-    private static List<String> arms(String field, List<String> raw) {
+    static List<String> arms(String field, List<String> raw) {
         if (raw == null || raw.isEmpty()) throw invalid(field, "at least one arm is required");
         List<String> known = canonicalArms();
         Set<String> picked = new HashSet<>();
