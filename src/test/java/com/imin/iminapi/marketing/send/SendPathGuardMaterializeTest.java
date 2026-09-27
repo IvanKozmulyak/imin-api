@@ -1,12 +1,15 @@
 package com.imin.iminapi.marketing.send;
 
+import com.imin.iminapi.audience.model.ConsentRecord;
 import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.model.Segment;
+import com.imin.iminapi.audience.repository.ConsentRecordRepository;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.SegmentService;
 import com.imin.iminapi.audience.service.SendGateService;
+import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
 import com.imin.iminapi.audienceplan.model.AudienceAssignment;
 import com.imin.iminapi.audienceplan.model.AudienceExperiment;
 import com.imin.iminapi.audienceplan.repository.AudienceAssignmentRepository;
@@ -17,6 +20,7 @@ import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -24,6 +28,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.UUID;
 
@@ -46,6 +51,27 @@ class SendPathGuardMaterializeTest {
     @Autowired AudienceAssignmentRepository assignments;
     @MockitoBean SendGateService sendGate;
     @MockitoBean SegmentService segmentService;
+    @Autowired ConsentRecordRepository consentRecords;
+    @Autowired AudiencePlanProperties props;
+
+    @AfterEach
+    void resetFlag() {
+        props.setConsentGateAllCampaigns(false);
+    }
+
+    // Latest subscribing email consent from a checkout; the version decides proven vs legacy_unproven.
+    private Membership checkoutConsent(Membership m, String textVersion) {
+        ConsentRecord r = new ConsentRecord();
+        r.setMembershipId(m.getMembershipId());
+        r.setStatus("subscribed");
+        r.setLawfulBasis("explicit");
+        r.setSource("checkout");
+        r.setProofText("proof");
+        r.setTextVersion(textVersion);
+        r.setOccurredAt(Instant.now().minus(10, ChronoUnit.DAYS));
+        consentRecords.save(r);
+        return m;
+    }
 
     private Campaign campaign(UUID orgId, UUID eventId, String origin) {
         Campaign c = new Campaign();
@@ -143,5 +169,58 @@ class SendPathGuardMaterializeTest {
         assertThat(campaigns.findByIdAndOrgId(plan.getId(), orgId).orElseThrow().getExclusionSummary())
                 .isEqualTo("{\"consent_gate\":1}");
         assertThat(rowOf(manual, unproven).getStatus()).isEqualTo("pending");
+    }
+
+    @Test
+    void flagOffManualCampaignReachesALegacyUnprovenMember() {
+        UUID orgId = UUID.randomUUID();
+        Membership legacy = checkoutConsent(member(orgId), null);
+        segmentOf(orgId, List.of(legacy));
+        Campaign c = campaign(orgId, null, "manual");
+
+        materializer.materialize(c);
+
+        assertThat(rowOf(c, legacy).getStatus()).isEqualTo("pending");
+        Campaign reloaded = campaigns.findByIdAndOrgId(c.getId(), orgId).orElseThrow();
+        assertThat(reloaded.getRecipientCount()).isEqualTo(1);
+        assertThat(reloaded.getExcludedCount()).isZero();
+    }
+
+    @Test
+    void flagOnManualCampaignSkipsALegacyUnprovenMemberAndKeepsAProvenOne() {
+        props.setConsentGateAllCampaigns(true);
+        UUID orgId = UUID.randomUUID();
+        Membership legacy = checkoutConsent(member(orgId), null);
+        Membership proven = checkoutConsent(member(orgId), "checkout-org-named-2026-09");
+        segmentOf(orgId, List.of(legacy, proven));
+        Campaign c = campaign(orgId, null, "manual");
+
+        materializer.materialize(c);
+
+        CampaignRecipient skipped = rowOf(c, legacy);
+        assertThat(skipped.getStatus()).isEqualTo("skipped");
+        assertThat(skipped.getSkipReason()).isEqualTo(SendPathGuard.CONSENT_GATE);
+        assertThat(rowOf(c, proven).getStatus()).isEqualTo("pending");
+        Campaign reloaded = campaigns.findByIdAndOrgId(c.getId(), orgId).orElseThrow();
+        assertThat(reloaded.getRecipientCount()).isEqualTo(1);
+        assertThat(reloaded.getExcludedCount()).isEqualTo(1);
+        assertThat(reloaded.getExclusionSummary()).isEqualTo("{\"consent_gate\":1}");
+    }
+
+    @Test
+    void flagOnMomentumDraftSkipsALegacyUnprovenMember() {
+        props.setConsentGateAllCampaigns(true);
+        UUID orgId = UUID.randomUUID();
+        Membership legacy = checkoutConsent(member(orgId), null);
+        segmentOf(orgId, List.of(legacy));
+        Campaign c = campaign(orgId, UUID.randomUUID(), "momentum");
+
+        materializer.materialize(c);
+
+        CampaignRecipient skipped = rowOf(c, legacy);
+        assertThat(skipped.getStatus()).isEqualTo("skipped");
+        assertThat(skipped.getSkipReason()).isEqualTo(SendPathGuard.CONSENT_GATE);
+        assertThat(campaigns.findByIdAndOrgId(c.getId(), orgId).orElseThrow().getExclusionSummary())
+                .isEqualTo("{\"consent_gate\":1}");
     }
 }

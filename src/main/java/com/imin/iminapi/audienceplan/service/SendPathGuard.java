@@ -1,6 +1,7 @@
 package com.imin.iminapi.audienceplan.service;
 
 import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
+import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
 import com.imin.iminapi.audienceplan.repository.AudienceAssignmentRepository;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
@@ -20,7 +21,8 @@ import java.util.UUID;
 
 /**
  * Send-time skips on top of SendGateService: for a campaign about an event, its holdout members and the
- * per-event and 30-day send caps; for an audience-plan campaign, ConsentGate as well.
+ * per-event and 30-day send caps; for an audience-plan campaign, or every campaign while
+ * {@code consent-gate-all-campaigns} is on, ConsentGate as well.
  */
 @Service
 public class SendPathGuard {
@@ -42,19 +44,22 @@ public class SendPathGuard {
     private final AudienceAssignmentRepository assignments;
     private final CampaignRecipientRepository recipients;
     private final ConsentGate consentGate;
+    private final AudiencePlanProperties props;
 
     public SendPathGuard(AudienceAssignmentRepository assignments, CampaignRecipientRepository recipients,
-                         ConsentGate consentGate) {
+                         ConsentGate consentGate, AudiencePlanProperties props) {
         this.assignments = assignments;
         this.recipients = recipients;
         this.consentGate = consentGate;
+        this.props = props;
     }
 
     /** Skip reason per member that must not be emailed by this campaign now; members absent may be sent. */
     public Map<UUID, String> skipReasons(Campaign c, Collection<UUID> membershipIds, Instant now) {
         boolean aboutEvent = c.getEventId() != null;
-        boolean planCampaign = AudiencePlanAccess.CAMPAIGN_ORIGIN.equals(c.getOrigin());
-        if ((!aboutEvent && !planCampaign) || membershipIds == null) return Map.of();
+        boolean consentGated = AudiencePlanAccess.CAMPAIGN_ORIGIN.equals(c.getOrigin())
+                || Boolean.TRUE.equals(props.getConsentGateAllCampaigns());
+        if ((!aboutEvent && !consentGated) || membershipIds == null) return Map.of();
         List<UUID> ids = membershipIds.stream().filter(Objects::nonNull).distinct().toList();
         if (ids.isEmpty()) return Map.of();
 
@@ -70,7 +75,7 @@ public class SendPathGuard {
                 collect(recipients.countRecentSendsByMembership(chunk, monthSince), recentSends);
             }
         }
-        Map<UUID, Optional<String>> gate = planCampaign ? consentGate.reasons(c.getOrgId(), ids) : Map.of();
+        Map<UUID, Optional<String>> gate = consentGated ? consentGate.reasons(c.getOrgId(), ids) : Map.of();
 
         Map<UUID, String> out = new HashMap<>();
         for (UUID id : ids) {
@@ -79,7 +84,7 @@ public class SendPathGuard {
             else if (eventSends.getOrDefault(id, 0L) >= EVENT_CAP_SENDS) reason = EVENT_CAP;
             else if (recentSends.getOrDefault(id, 0L) >= MONTHLY_CAP_SENDS) reason = MONTHLY_CAP;
             // A member ConsentGate did not return (another org, or gone) is not mailable either.
-            else if (planCampaign && gate.getOrDefault(id, Optional.of(CONSENT_GATE)).isPresent()) reason = CONSENT_GATE;
+            else if (consentGated && gate.getOrDefault(id, Optional.of(CONSENT_GATE)).isPresent()) reason = CONSENT_GATE;
             if (reason != null) out.put(id, reason);
         }
         return out;

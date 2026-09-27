@@ -876,6 +876,8 @@ imin:
     soft-opt-in-enabled: ${IMIN_AUDIENCE_PLAN_SOFT_OPT_IN:false}
     # Nightly 3-year retention job removes marketing basis. False = dry run that only logs counts.
     retention-job-enabled: ${IMIN_AUDIENCE_RETENTION_ENABLED:false}
+    # ConsentGate for every campaign, not only audience-plan ones (D6). Flip only after a prod count of who it drops.
+    consent-gate-all-campaigns: ${IMIN_CONSENT_GATE_ALL_CAMPAIGNS:false}
 
 sentry:
   dsn: ${SENTRY_DSN:}

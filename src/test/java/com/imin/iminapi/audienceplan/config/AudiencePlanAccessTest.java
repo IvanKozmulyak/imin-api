@@ -192,6 +192,39 @@ class AudiencePlanAccessTest {
     }
 
     @Test
+    void consentGateAllCampaigns_defaultsFalse() {
+        assertThat(new AudiencePlanProperties().getConsentGateAllCampaigns()).isFalse();
+    }
+
+    @Test
+    void consentGateAllCampaigns_blankEnvVar_bindsFalse() {
+        runner.withPropertyValues("IMIN_CONSENT_GATE_ALL_CAMPAIGNS=",
+                        "imin.audience-plan.consent-gate-all-campaigns=${IMIN_CONSENT_GATE_ALL_CAMPAIGNS:false}")
+                .run(ctx -> assertThat(ctx.getBean(AudiencePlanProperties.class).getConsentGateAllCampaigns()).isFalse());
+    }
+
+    @Test
+    void consentGateAllCampaigns_true_binds() {
+        runner.withPropertyValues("imin.audience-plan.consent-gate-all-campaigns=true")
+                .run(ctx -> assertThat(ctx.getBean(AudiencePlanProperties.class).getConsentGateAllCampaigns()).isTrue());
+    }
+
+    @Test
+    void consentGateAllCampaigns_shippedYamlDefaultsToFalse() throws Exception {
+        String main = java.nio.file.Files.readString(java.nio.file.Path.of("src/main/resources/application.yaml"));
+        String test = java.nio.file.Files.readString(java.nio.file.Path.of("src/test/resources/application.yaml"));
+        assertThat(main).contains("consent-gate-all-campaigns: ${IMIN_CONSENT_GATE_ALL_CAMPAIGNS:false}");
+        assertThat(test).contains("consent-gate-all-campaigns: false");
+    }
+
+    @Test
+    void consentGateAllCampaigns_nullSetter_staysFalse() {
+        AudiencePlanProperties props = new AudiencePlanProperties();
+        props.setConsentGateAllCampaigns(null);
+        assertThat(props.getConsentGateAllCampaigns()).isFalse();
+    }
+
+    @Test
     void sendsOff_audiencePlanOrigin_throws409() {
         AudiencePlanAccess access = new AudiencePlanAccess(new AudiencePlanProperties());
         assertThatThrownBy(() -> access.requireSendsAllowed("audience_plan"))

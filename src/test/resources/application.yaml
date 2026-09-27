@@ -114,3 +114,4 @@ imin:
     sends-enabled: false
     soft-opt-in-enabled: false
     retention-job-enabled: false
+    consent-gate-all-campaigns: false

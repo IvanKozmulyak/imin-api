@@ -4,6 +4,7 @@ import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
+import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
 import com.imin.iminapi.audienceplan.model.AudienceAssignment;
 import com.imin.iminapi.audienceplan.model.AudienceExperiment;
 import com.imin.iminapi.audienceplan.repository.AudienceAssignmentRepository;
@@ -17,6 +18,7 @@ import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.OrganizationRepository;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
@@ -49,6 +51,12 @@ class SendPathGuardPerBatchTest {
     @Autowired AudienceAssignmentRepository assignments;
     @Autowired OrganizationRepository organizations;
     @MockitoBean CampaignEmailProvider provider;
+    @Autowired AudiencePlanProperties props;
+
+    @AfterEach
+    void resetFlag() {
+        props.setConsentGateAllCampaigns(false);
+    }
 
     /** An audience_plan send requires the org's legal identity (org-identity gate) before this guard is even reached. */
     private UUID orgWithLegalIdentity() {
@@ -179,6 +187,35 @@ class SendPathGuardPerBatchTest {
         UUID orgId = orgWithLegalIdentity();
         Campaign c = campaign(orgId, null, "audience_plan");
         // SendGate admits this member; ConsentGate does not (no consent record proves the basis).
+        CampaignRecipient unproven = pendingRow(c, orgId);
+
+        sender.sendNextBatch(c);
+
+        CampaignRecipient skipped = recipients.findById(unproven.getId()).orElseThrow();
+        assertThat(skipped.getStatus()).isEqualTo("skipped");
+        assertThat(skipped.getSkipReason()).isEqualTo(SendPathGuard.CONSENT_GATE);
+        verify(provider, Mockito.never()).sendBatch(anyList());
+    }
+
+    @Test
+    void flagOffManualCampaignMemberWithoutProvenConsentIsSent() {
+        UUID orgId = orgWithLegalIdentity();
+        Campaign c = campaign(orgId, null, "manual");
+        CampaignRecipient unproven = pendingRow(c, orgId);
+        when(provider.sendBatch(anyList())).thenAnswer(inv ->
+                ((List<?>) inv.getArgument(0)).stream().map(x -> "msg-" + UUID.randomUUID()).toList());
+
+        sender.sendNextBatch(c);
+
+        assertThat(recipients.findById(unproven.getId()).orElseThrow().getStatus()).isEqualTo("sent");
+        assertThat(sentBatch()).extracting(CampaignEmailProvider.OutgoingEmail::to).containsExactly(unproven.getEmail());
+    }
+
+    @Test
+    void flagOnManualCampaignMemberWithoutProvenConsentIsSkippedAtSendTime() {
+        props.setConsentGateAllCampaigns(true);
+        UUID orgId = orgWithLegalIdentity();
+        Campaign c = campaign(orgId, null, "manual");
         CampaignRecipient unproven = pendingRow(c, orgId);
 
         sender.sendNextBatch(c);

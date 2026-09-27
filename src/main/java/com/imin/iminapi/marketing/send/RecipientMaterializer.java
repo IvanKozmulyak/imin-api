@@ -86,7 +86,7 @@ public class RecipientMaterializer {
 
         Map<String, Integer> summary = new TreeMap<>();
         Instant now = Instant.now();
-        // Holdout, per-event and 30-day caps, and ConsentGate for plan campaigns; checked again per batch.
+        // Holdout, per-event and 30-day caps, and ConsentGate (plan campaigns, or all when flagged); checked again per batch.
         Map<UUID, String> guarded = sendPathGuard.skipReasons(c, gate.sendable(), now);
         int pending = 0;
         int sendableSkipped = 0;
