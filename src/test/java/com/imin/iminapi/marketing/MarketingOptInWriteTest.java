@@ -10,7 +10,9 @@ import com.imin.iminapi.audience.service.ConsentService;
 import com.imin.iminapi.audience.service.MembershipProjector;
 import com.imin.iminapi.service.ticket.TicketsIssuedEvent;
 import com.imin.iminapi.audience.service.SendGateService;
+import com.imin.iminapi.audienceplan.config.FanFeatureExecutors;
 import com.imin.iminapi.config.TestRateLimitConfig;
+import com.imin.iminapi.support.AsyncDrain;
 import com.imin.iminapi.model.*;
 import com.imin.iminapi.repository.*;
 import com.imin.iminapi.service.event.FreeCheckoutService;
@@ -21,14 +23,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
-import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import javax.sql.DataSource;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Executor;
-import java.util.concurrent.ThreadPoolExecutor;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -61,6 +61,7 @@ class MarketingOptInWriteTest {
     @Autowired MembershipProjector membershipProjector;
     @Autowired DataSource dataSource;
     @Autowired @Qualifier("taskExecutor") Executor asyncExecutor;
+    @Autowired @Qualifier(FanFeatureExecutors.LIVE) Executor fanFeatureExecutor;
 
     private static final String PROOF = "Email me about similar events. Unsubscribe anytime.";
 
@@ -114,7 +115,7 @@ class MarketingOptInWriteTest {
     }
 
     private void cleanUp() {
-        // The AFTER_COMMIT @Async projector can still be inserting a membership; finish it before deleting.
+        // The AFTER_COMMIT async projectors can still be writing membership rows; finish them before deleting.
         drainAsync();
         // Audience rows use marker repositories without deleteAll — JDBC teardown (audience convention).
         try (var c = dataSource.getConnection(); var s = c.createStatement()) {
@@ -133,20 +134,9 @@ class MarketingOptInWriteTest {
     }
 
     private void drainAsync() {
-        ThreadPoolExecutor tpe = ((ThreadPoolTaskExecutor) asyncExecutor).getThreadPoolExecutor();
-        long deadline = System.currentTimeMillis() + 10_000;
-        while (tpe.getCompletedTaskCount() < tpe.getTaskCount()
-                || !tpe.getQueue().isEmpty() || tpe.getActiveCount() > 0) {
-            if (System.currentTimeMillis() > deadline) {
-                throw new AssertionError("default async executor still busy after 10s");
-            }
-            try {
-                Thread.sleep(10);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return;
-            }
-        }
+        AsyncDrain.drain(asyncExecutor);
+        // The membership commit on that pool queues a fan-feature recompute on its own pool.
+        AsyncDrain.drain(fanFeatureExecutor);
     }
 
     private com.imin.iminapi.audience.model.Membership membershipFor(String email) {

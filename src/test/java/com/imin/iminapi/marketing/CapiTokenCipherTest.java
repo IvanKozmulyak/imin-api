@@ -50,9 +50,11 @@ class CapiTokenCipherTest {
     void rejectsTamperedCiphertext() {
         CapiTokenCipher cipher = new CapiTokenCipher(TEST_KEY_B64);
         String enc = cipher.encrypt("token");
-        // Flip a character in the base64 body — GCM auth tag must reject it.
-        String tampered = enc.substring(0, enc.length() - 2)
-                + (enc.endsWith("A") ? "B" : "A") + enc.charAt(enc.length() - 1);
+        // Flip one bit of the first ciphertext byte (after the 12-byte IV); GCM must reject it.
+        byte[] raw = Base64.getDecoder().decode(enc);
+        raw[12] ^= 0x01;
+        String tampered = Base64.getEncoder().encodeToString(raw);
+        assertThat(tampered).isNotEqualTo(enc);
         assertThatThrownBy(() -> cipher.decrypt(tampered))
                 .isInstanceOf(IllegalStateException.class);
     }

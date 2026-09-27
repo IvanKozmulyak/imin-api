@@ -8,16 +8,21 @@ import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.OrganizationRepository;
+import net.javacrumbs.shedlock.core.LockConfiguration;
+import net.javacrumbs.shedlock.core.LockProvider;
+import net.javacrumbs.shedlock.core.SimpleLock;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -38,7 +43,20 @@ class CampaignDailyCapDuringDrainTest {
     @Autowired CampaignRepository campaigns;
     @Autowired CampaignRecipientRepository recipients;
     @Autowired OrganizationRepository orgs;
+    @Autowired LockProvider lockProvider;
     @MockitoBean CampaignEmailProvider provider;
+
+    /** Holds the scheduled dispatcher's lock so its 30s tick cannot claim the campaign mid-seed. */
+    private SimpleLock holdSchedulerLock() throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 20_000;
+        while (System.currentTimeMillis() < deadline) {
+            Optional<SimpleLock> lock = lockProvider.lock(new LockConfiguration(
+                    Instant.now(), "campaign_dispatcher", Duration.ofMinutes(2), Duration.ZERO));
+            if (lock.isPresent()) return lock.get();
+            Thread.sleep(100);
+        }
+        throw new AssertionError("campaign_dispatcher lock still held after 20s");
+    }
 
     private Organization awakeOrg() {
         int hourNowUtc = Instant.now().atZone(ZoneOffset.UTC).getHour();
@@ -52,7 +70,16 @@ class CampaignDailyCapDuringDrainTest {
     }
 
     @Test
-    void drainStopsAtTheDailyCapAndLeavesTheRestQueued() {
+    void drainStopsAtTheDailyCapAndLeavesTheRestQueued() throws InterruptedException {
+        SimpleLock schedulerLock = holdSchedulerLock();
+        try {
+            drainWithTheSchedulerHeld();
+        } finally {
+            schedulerLock.unlock();
+        }
+    }
+
+    private void drainWithTheSchedulerHeld() {
         Campaign c = new Campaign();
         c.setId(UUID.randomUUID());
         c.setOrgId(awakeOrg().getId());

@@ -12,6 +12,7 @@ import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.ConsentService;
 import com.imin.iminapi.audience.service.SuppressionService;
 import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
+import com.imin.iminapi.audienceplan.config.FanFeatureExecutors;
 import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
 import com.imin.iminapi.audienceplan.model.AudienceImport;
 import com.imin.iminapi.audienceplan.model.FanFeature;
@@ -20,6 +21,7 @@ import com.imin.iminapi.audienceplan.repository.AudienceImportRepository;
 import com.imin.iminapi.audienceplan.repository.FanFeatureRepository;
 import com.imin.iminapi.audienceplan.repository.ImportRowProvenanceRepository;
 import com.imin.iminapi.config.TestRateLimitConfig;
+import com.imin.iminapi.support.AsyncDrain;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.EventVisibility;
@@ -43,6 +45,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.AdditionalAnswers;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -60,6 +63,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.Executor;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -104,6 +108,7 @@ abstract class ConsentGateScenarios {
     @Autowired OrderRepository orderRepo;
     @Autowired TicketRepository ticketRepo;
     @Autowired JdbcTemplate jdbc;
+    @Autowired @Qualifier(FanFeatureExecutors.LIVE) Executor fanFeatureExecutor;
     @MockitoBean AuditLogger auditLogger;
 
     UUID orgA;
@@ -120,6 +125,7 @@ abstract class ConsentGateScenarios {
 
     @AfterEach
     void tearDown() {
+        AsyncDrain.drain(fanFeatureExecutor);
         for (UUID org : orgs) {
             List<UUID> mids = jdbc.queryForList("select membership_id from memberships where org_id = ?", UUID.class, org);
             List<UUID> cids = jdbc.queryForList("select consumer_id from memberships where org_id = ?", UUID.class, org);
@@ -844,6 +850,8 @@ abstract class ConsentGateScenarios {
     }
 
     void contact(UUID mid, Instant at) {
+        // A consent capture queues a projector insert of this row; let it land first, then overwrite it.
+        AsyncDrain.drain(fanFeatureExecutor);
         UUID orgId = jdbc.queryForObject("select org_id from memberships where membership_id = ?", UUID.class, mid);
         FanFeature f = new FanFeature();
         f.setMembershipId(mid);

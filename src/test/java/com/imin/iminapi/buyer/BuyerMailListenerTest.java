@@ -14,7 +14,9 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -22,7 +24,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
 
 /**
@@ -46,13 +47,16 @@ class BuyerMailListenerTest {
 
     /** A slow Resend must not be able to hold a database connection open. */
     @Test
-    void the_send_happens_with_no_transaction_in_scope() {
+    void the_send_happens_with_no_transaction_in_scope() throws InterruptedException {
         AtomicReference<Boolean> txActive = new AtomicReference<>(null);
         AtomicBoolean sameThread = new AtomicBoolean(true);
         Thread caller = Thread.currentThread();
+        CountDownLatch answered = new CountDownLatch(1);
         doAnswer(invocation -> {
             txActive.set(TransactionSynchronizationManager.isActualTransactionActive());
             sameThread.set(Thread.currentThread() == caller);
+            // Counted down last: Mockito records the call before this body runs, so verify alone can read too early.
+            answered.countDown();
             return null;
         }).when(email).send(anyString(), anyString(), anyString(), anyString());
 
@@ -60,7 +64,8 @@ class BuyerMailListenerTest {
                 publisher.publishEvent(new BuyerMailEvents.AccountExistsNotice(
                         "ada@example.com", "en")));
 
-        verify(email, timeout(10_000)).send(anyString(), anyString(), anyString(), anyString());
+        assertThat(answered.await(10, TimeUnit.SECONDS)).as("the mail was sent").isTrue();
+        verify(email).send(anyString(), anyString(), anyString(), anyString());
         assertThat(txActive.get())
                 .as("the listener must run after the commit, outside the transaction")
                 .isFalse();
