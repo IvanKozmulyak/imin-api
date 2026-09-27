@@ -2,6 +2,7 @@ package com.imin.iminapi.marketing.service;
 
 import com.imin.iminapi.audience.service.SegmentService;
 import com.imin.iminapi.audience.service.SendGateService;
+import com.imin.iminapi.audienceplan.service.MomentumPlanTarget;
 import com.imin.iminapi.marketing.model.MomentumSuggestion;
 import com.imin.iminapi.marketing.model.MomentumTriggerType;
 import com.imin.iminapi.marketing.dto.MomentumDraftPayload;
@@ -14,6 +15,7 @@ import com.imin.iminapi.repository.TicketTierRepository;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -44,13 +46,16 @@ public class MomentumEvaluator {
     private final SendGateService sendGate;
     private final SegmentService segments;
     private final MomentumNotifier notifier;
+    private final MomentumPlanTarget planTarget;
+    private final ApplicationEventPublisher publisher;
 
     public MomentumEvaluator(EventRepository events, OrderRepository orders,
                              TicketTierRepository tiers, TicketRepository tickets,
                              MomentumSuggestionRepository suggestions,
                              MomentumThresholds thresholds, MomentumCopyGenerator copy,
                              SendGateService sendGate, SegmentService segments,
-                             MomentumNotifier notifier) {
+                             MomentumNotifier notifier, MomentumPlanTarget planTarget,
+                             ApplicationEventPublisher publisher) {
         this.events = events;
         this.orders = orders;
         this.tiers = tiers;
@@ -61,6 +66,8 @@ public class MomentumEvaluator {
         this.sendGate = sendGate;
         this.segments = segments;
         this.notifier = notifier;
+        this.planTarget = planTarget;
+        this.publisher = publisher;
     }
 
     @Scheduled(cron = "0 0 * * * *") // top of every hour
@@ -94,7 +101,7 @@ public class MomentumEvaluator {
         }
     }
 
-    private void evaluateOne(Event e, Instant now) {
+    void evaluateOne(Event e, Instant now) {
         // sold = TICKETS sold (SUM of tier.sold), the same figure SalesDashboardService
         // reports — NOT orders.countByEventId (one order can hold several tickets).
         int sold = tiers.sumSoldByEventId(e.getId());
@@ -132,18 +139,78 @@ public class MomentumEvaluator {
             return;
         }
 
-        // Resolve target segment (v1: the org's prebuilt "Repeat" segment) -> membership ids.
-        UUID segmentId = segments.defaultTargetSegmentId(e.getOrgId());
-        List<UUID> memberIds = segments.resolveMembershipIds(e.getOrgId(), segmentId);
-
-        // Guardrail: min-audience floor via SendGate (spec §6.1).
-        int sendable = sendGate.evaluate(e.getOrgId(), memberIds).sendable().size();
-        if (sendable < thresholds.getMinAudienceFloor()) {
-            log.info("Momentum: event {} trigger {} skipped — audience {} < floor {}",
-                    e.getId(), fired.wireValue(), sendable, thresholds.getMinAudienceFloor());
-            return;
+        // The event's audience plan is refreshed off-thread; this draft still uses the plan stored now.
+        try {
+            publisher.publishEvent(new MomentumTriggered(e.getOrgId(), e.getId(), fired.wireValue()));
+        } catch (RuntimeException ex) {
+            log.warn("Momentum: plan refresh for event {} not queued: {}", e.getId(), ex.getMessage());
         }
 
+        // Target: the plan's best segment (holdouts removed) when it clears the floor, else the prebuilt Repeat.
+        MomentumPlanTarget.Target planned = planTarget(e);
+        if (planned != null) {
+            int plannedSendable = sendGate.evaluate(e.getOrgId(), planned.membershipIds()).sendable().size();
+            if (plannedSendable < thresholds.getMinAudienceFloor()) {
+                log.info("Momentum: event {} plan target {}/{} below floor ({} < {}), using Repeat",
+                        e.getId(), planned.classKey(), planned.genreFit(), plannedSendable,
+                        thresholds.getMinAudienceFloor());
+                planned = null;
+            }
+        }
+
+        UUID segmentId = null;
+        if (planned != null) {
+            try {
+                segmentId = planTarget.snapshot(e.getOrgId(), e.getName(), planned);
+            } catch (RuntimeException ex) {
+                log.warn("Momentum: plan snapshot for event {} failed, using Repeat: {}", e.getId(), ex.getMessage());
+                planned = null;
+            }
+        }
+        if (planned == null) {
+            segmentId = segments.defaultTargetSegmentId(e.getOrgId());
+            List<UUID> memberIds = segments.resolveMembershipIds(e.getOrgId(), segmentId);
+
+            // Guardrail: min-audience floor via SendGate (spec §6.1).
+            int sendable = sendGate.evaluate(e.getOrgId(), memberIds).sendable().size();
+            if (sendable < thresholds.getMinAudienceFloor()) {
+                log.info("Momentum: event {} trigger {} skipped — audience {} < floor {}",
+                        e.getId(), fired.wireValue(), sendable, thresholds.getMinAudienceFloor());
+                return;
+            }
+        }
+
+        String why;
+        try {
+            why = persistSuggestion(e, fired, m, segmentId, now);
+        } catch (RuntimeException ex) {
+            if (planned != null) {
+                try {
+                    planTarget.discard(e.getOrgId(), segmentId);
+                } catch (RuntimeException cleanup) {
+                    ex.addSuppressed(cleanup);
+                }
+            }
+            throw ex;
+        }
+        // Best-effort in-app ping in its OWN (REQUIRES_NEW) transaction — a failure here
+        // cannot roll back the suggestion just persisted (see MomentumNotifier).
+        notifier.notifyOwner(e.getOrgId(), fired.wireValue(), why);
+    }
+
+    /** Null when the plan gives no usable target; a plan failure never stops the Repeat fallback. */
+    private MomentumPlanTarget.Target planTarget(Event e) {
+        try {
+            return planTarget.best(e).orElse(null);
+        } catch (RuntimeException ex) {
+            log.warn("Momentum: plan target for event {} unavailable, using Repeat: {}", e.getId(), ex.getMessage());
+            return null;
+        }
+    }
+
+    /** Writes the suggestion and returns its "why" line. */
+    private String persistSuggestion(Event e, MomentumTriggerType fired, MomentumMetrics m, UUID segmentId,
+                                   Instant now) {
         MomentumDraftPayload draft = copy.generate(
                 fired,
                 e.getName(),
@@ -163,9 +230,7 @@ public class MomentumEvaluator {
         s.setDraftPayload(toDraftJson(draft));
         s.setSuggestedAt(now);
         suggestions.save(s);
-        // Best-effort in-app ping in its OWN (REQUIRES_NEW) transaction — a failure here
-        // cannot roll back the suggestion just persisted (see MomentumNotifier).
-        notifier.notifyOwner(e.getOrgId(), fired.wireValue(), draft.why());
+        return draft.why();
     }
 
     /** First matching rule, evaluated most-urgent first (spec §6.1). */

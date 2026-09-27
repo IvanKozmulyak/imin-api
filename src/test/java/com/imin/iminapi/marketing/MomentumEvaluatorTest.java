@@ -1,5 +1,24 @@
 package com.imin.iminapi.marketing;
 
+import com.imin.iminapi.audience.model.Consumer;
+import com.imin.iminapi.audience.model.Membership;
+import com.imin.iminapi.audience.repository.ConsumerRepository;
+import com.imin.iminapi.audience.repository.MembershipRepository;
+import com.imin.iminapi.audience.service.SegmentService;
+import com.imin.iminapi.audienceplan.engine.CandidateBuilder;
+import com.imin.iminapi.audienceplan.engine.ResponseModel;
+import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
+import com.imin.iminapi.audienceplan.config.PlanRefreshExecutor;
+import com.imin.iminapi.audienceplan.model.AudienceAssignment;
+import com.imin.iminapi.audienceplan.model.AudienceExperiment;
+import com.imin.iminapi.audienceplan.model.AudiencePlan;
+import com.imin.iminapi.audienceplan.model.AudiencePlanSegment;
+import com.imin.iminapi.audienceplan.repository.AudienceAssignmentRepository;
+import com.imin.iminapi.audienceplan.repository.AudienceExperimentRepository;
+import com.imin.iminapi.audienceplan.repository.AudiencePlanRepository;
+import com.imin.iminapi.audienceplan.repository.AudiencePlanSegmentRepository;
+import com.imin.iminapi.audienceplan.service.CandidateLoader;
+import com.imin.iminapi.audienceplan.service.PlanService;
 import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.model.MomentumSuggestion;
 import com.imin.iminapi.marketing.repository.MomentumSuggestionRepository;
@@ -12,18 +31,30 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 
 import javax.sql.DataSource;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Executor;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyDouble;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -59,6 +90,29 @@ class MomentumEvaluatorTest {
     @Autowired
     DataSource dataSource;
 
+    // The plan's members come from CandidateLoader (covered by its own tests); everything else here is real.
+    @MockitoBean
+    CandidateLoader candidates;
+    @Autowired
+    AudiencePlanRepository plans;
+    @Autowired
+    AudiencePlanSegmentRepository planSegments;
+    @Autowired
+    AudienceExperimentRepository experiments;
+    @Autowired
+    AudienceAssignmentRepository assignments;
+    @Autowired
+    ConsumerRepository consumers;
+    @Autowired
+    MembershipRepository memberships;
+    @Autowired
+    SegmentService segmentService;
+    @MockitoSpyBean
+    PlanService planService;
+    @Autowired
+    @Qualifier(PlanRefreshExecutor.NAME)
+    Executor planRefreshExecutor;
+
     // Shared H2 context — clear momentum_suggestions AND the fixtures the seeder created,
     // in FK-safe order, both before and after each test (audience convention). Without this,
     // (1) 'suggested' rows leaked from MomentumRepositoryTest or an earlier evaluator test are
@@ -67,9 +121,12 @@ class MomentumEvaluatorTest {
     @BeforeEach
     @AfterEach
     void wipe() {
+        drainPlanRefreshes();
         try (java.sql.Connection c = dataSource.getConnection();
              java.sql.Statement s = c.createStatement()) {
             s.execute("delete from momentum_suggestions");
+            s.execute("delete from audience_assignments");
+            s.execute("delete from audience_experiments");
             s.execute("delete from orders");
             s.execute("delete from ticket_tiers");
             s.execute("delete from events");
@@ -78,6 +135,21 @@ class MomentumEvaluatorTest {
             s.execute("delete from organizations");
         } catch (Exception e) {
             throw new RuntimeException("wipe() failed: " + e.getMessage(), e);
+        }
+    }
+
+    /** Each fired trigger queues a plan refresh; let it finish before the rows it locks are deleted. */
+    private void drainPlanRefreshes() {
+        ThreadPoolTaskExecutor pool = (ThreadPoolTaskExecutor) planRefreshExecutor;
+        long deadline = System.currentTimeMillis() + 10_000;
+        while ((pool.getActiveCount() > 0 || !pool.getThreadPoolExecutor().getQueue().isEmpty())
+                && System.currentTimeMillis() < deadline) {
+            try {
+                Thread.sleep(20);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
         }
     }
 
@@ -280,5 +352,154 @@ class MomentumEvaluatorTest {
 
         assertThat(suggestions.findByEventIdAndStatus(event, "suggested"))
                 .extracting(MomentumSuggestion::getTriggerType).contains("launch_push");
+    }
+
+    @Test
+    void planTarget_draftSendsToThePlansBestSegment_withoutTheEventsHoldouts() {
+        UUID event = support.seedLiveEvent(5, 100,
+                Instant.now().minusSeconds(50L * 3600),
+                Instant.now().plusSeconds(30L * 86400));
+        UUID org = support.orgIdOf(event);
+        List<UUID> loyal = members(org, 14);
+        UUID plan = storedPlan(org, event);
+        storedSegment(plan, 0, "repeat", "same", 30, 4);
+        storedSegment(plan, 1, "loyal", "same", 14, 9);
+        when(candidates.build(eq(org), any(), anyInt(), anyDouble())).thenReturn(new CandidateBuilder.Result(
+                List.of(segment("repeat", ResponseModel.Fit.SAME, members(org, 30)),
+                        segment("loyal", ResponseModel.Fit.SAME, loyal)),
+                0, false, 0, Map.of()));
+        List<UUID> held = List.of(loyal.get(0), loyal.get(5));
+        for (UUID m : held) holdout(org, event, m);
+        echoSegmentId();
+
+        evaluator.runOnce();
+
+        MomentumSuggestion made = suggestions.findByEventIdAndStatus(event, "suggested").stream()
+                .filter(x -> "launch_push".equals(x.getTriggerType())).findFirst().orElseThrow();
+        UUID target = draftSegmentId(made);
+        assertThat(target).isNotEqualTo(segmentService.defaultTargetSegmentId(org));
+        List<UUID> recipients = segmentService.resolveMembershipIds(org, target);
+        assertThat(recipients).hasSize(12).doesNotContainAnyElementsOf(held);
+        assertThat(loyal).containsAll(recipients);
+    }
+
+    @Test
+    void firedTrigger_refreshesTheEventsPlanOffThread() {
+        UUID event = support.seedLiveEvent(5, 100,
+                Instant.now().minusSeconds(50L * 3600),
+                Instant.now().plusSeconds(30L * 86400));
+
+        evaluator.runOnce();
+
+        verify(planService, timeout(10_000)).refresh(event);
+    }
+
+    @Test
+    void noPlan_draftKeepsTheRepeatSegment() {
+        UUID event = support.seedLiveEvent(5, 100,
+                Instant.now().minusSeconds(50L * 3600),
+                Instant.now().plusSeconds(30L * 86400));
+        UUID org = support.orgIdOf(event);
+        echoSegmentId();
+
+        evaluator.runOnce();
+
+        MomentumSuggestion made = suggestions.findByEventIdAndStatus(event, "suggested").stream()
+                .filter(x -> "launch_push".equals(x.getTriggerType())).findFirst().orElseThrow();
+        assertThat(draftSegmentId(made)).isEqualTo(segmentService.defaultTargetSegmentId(org));
+    }
+
+    /** MomentumCopyGenerator echoes the segment id it is given into the draft; the stub does the same. */
+    private void echoSegmentId() {
+        when(copy.generate(any(), any(), any(), any(), any(), any(), any())).thenAnswer(inv ->
+                new MomentumDraftPayload("s", "p", "b", String.valueOf((UUID) inv.getArgument(6)), null, "why"));
+    }
+
+    private UUID draftSegmentId(MomentumSuggestion s) {
+        String json = s.getDraftPayload();
+        int at = json.indexOf("\"segmentId\":\"");
+        assertThat(at).isNotNegative();
+        int from = at + "\"segmentId\":\"".length();
+        return UUID.fromString(json.substring(from, from + 36));
+    }
+
+    private List<UUID> members(UUID org, int n) {
+        List<UUID> ids = new ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            Consumer c = new Consumer();
+            c.setNormalizedEmail("momentum-plan-" + UUID.randomUUID() + "@example.com");
+            c = consumers.save(c);
+            Membership m = new Membership();
+            m.setOrgId(org);
+            m.setConsumerId(c.getConsumerId());
+            m.setConsentStatus("subscribed");
+            m.setConsentBasis("explicit");
+            ids.add(memberships.save(m).getMembershipId());
+        }
+        return ids;
+    }
+
+    private void holdout(UUID org, UUID event, UUID membershipId) {
+        AudienceExperiment e = new AudienceExperiment();
+        e.setOrgId(org);
+        e.setEventId(event);
+        e.setArm("holdout");
+        e.setSeed(7L);
+        e.setMembers(1);
+        e = experiments.save(e);
+        AudienceAssignment a = new AudienceAssignment();
+        a.setExperimentId(e.getId());
+        a.setMembershipId(membershipId);
+        a.setArm("holdout");
+        a.setAssignedAt(Instant.now());
+        assignments.save(a);
+    }
+
+    private UUID storedPlan(UUID org, UUID event) {
+        AudiencePlan p = new AudiencePlan();
+        p.setId(UUID.randomUUID());
+        p.setOrgId(org);
+        p.setEventId(event);
+        p.setMode("warm");
+        p.setCapacity(100);
+        p.setTargetPct(85);
+        p.setTargetTickets(85);
+        p.setTicketsPerOrder(1.6);
+        p.setExcludedSegments("[]");
+        p.setMailable(44);
+        p.setVerdict("weak");
+        p.setReachNeeded("{}");
+        p.setExclusions("{}");
+        p.setTodayDate(LocalDate.now());
+        p.setEventDate(LocalDate.now().plusDays(30));
+        p.setLaunchDate(LocalDate.now());
+        p.setActions("[]");
+        p.setLogicVersion(1);
+        p.setPriorsVersion(1);
+        p.setInputsHash("h");
+        p.setCreatedAt(Instant.now());
+        return plans.save(p).getId();
+    }
+
+    private void storedSegment(UUID plan, int position, String classKey, String fit, int mailable, int mid) {
+        AudiencePlanSegment s = new AudiencePlanSegment();
+        s.setId(UUID.randomUUID());
+        s.setPlanId(plan);
+        s.setPosition(position);
+        s.setClassKey(classKey);
+        s.setGenreFit(fit);
+        s.setMailable(mailable);
+        s.setTicketsPerOrder(1.6);
+        s.setExpectedLow(mid - 1);
+        s.setExpectedMid(mid);
+        s.setExpectedHigh(mid + 1);
+        s.setConfidence("prior");
+        s.setReason("{}");
+        planSegments.save(s);
+    }
+
+    private static CandidateBuilder.Segment segment(String classKey, ResponseModel.Fit fit, List<UUID> ids) {
+        AudiencePlanLogic.Band band = new AudiencePlanLogic.Band(0.1, 0.2, 0.3);
+        return new CandidateBuilder.Segment(classKey, fit, band, ResponseModel.Confidence.PRIOR, band, ids);
     }
 }

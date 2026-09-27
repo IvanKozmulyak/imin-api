@@ -14,6 +14,7 @@ import com.imin.iminapi.audienceplan.model.AudienceAssignment;
 import com.imin.iminapi.audienceplan.model.AudienceExperiment;
 import com.imin.iminapi.audienceplan.repository.AudienceAssignmentRepository;
 import com.imin.iminapi.audienceplan.repository.AudienceExperimentRepository;
+import com.imin.iminapi.audienceplan.service.MomentumPlanTarget;
 import com.imin.iminapi.audienceplan.service.SendPathGuard;
 import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.model.Campaign;
@@ -53,6 +54,7 @@ class SendPathGuardMaterializeTest {
     @MockitoBean SegmentService segmentService;
     @Autowired ConsentRecordRepository consentRecords;
     @Autowired AudiencePlanProperties props;
+    @Autowired MomentumPlanTarget planTarget;
 
     @AfterEach
     void resetFlag() {
@@ -222,5 +224,45 @@ class SendPathGuardMaterializeTest {
         assertThat(skipped.getSkipReason()).isEqualTo(SendPathGuard.CONSENT_GATE);
         assertThat(campaigns.findByIdAndOrgId(c.getId(), orgId).orElseThrow().getExclusionSummary())
                 .isEqualTo("{\"consent_gate\":1}");
+    }
+
+    @Test
+    void momentumDraftOnAPlanSnapshot_skipsAMemberWhoObjectedToProfilingAfterTheSnapshot() {
+        UUID orgId = UUID.randomUUID();
+        Membership stays = checkoutConsent(member(orgId), "checkout-org-named-2026-09");
+        Membership objects = checkoutConsent(member(orgId), "checkout-org-named-2026-09");
+        UUID snapshotId = planTarget.snapshot(orgId, "Night Kit", new MomentumPlanTarget.Target("loyal", "same",
+                List.of(stays.getMembershipId(), objects.getMembershipId())));
+        objects.setObjectedProfiling(true);
+        memberships.save(objects);
+        segmentOf(orgId, List.of(stays, objects));
+        Campaign c = campaign(orgId, UUID.randomUUID(), "momentum");
+        c.setSegmentId(snapshotId);
+        c = campaigns.save(c);
+
+        materializer.materialize(c);
+
+        CampaignRecipient skipped = rowOf(c, objects);
+        assertThat(skipped.getStatus()).isEqualTo("skipped");
+        assertThat(skipped.getSkipReason()).isEqualTo(SendPathGuard.CONSENT_GATE);
+        assertThat(rowOf(c, stays).getStatus()).isEqualTo("pending");
+        Campaign reloaded = campaigns.findByIdAndOrgId(c.getId(), orgId).orElseThrow();
+        assertThat(reloaded.getRecipientCount()).isEqualTo(1);
+        assertThat(reloaded.getExcludedCount()).isEqualTo(1);
+        assertThat(reloaded.getExclusionSummary()).isEqualTo("{\"consent_gate\":1}");
+    }
+
+    @Test
+    void flagOffMomentumDraftOnANonSnapshotSegment_reachesAMemberWhoObjectedToProfiling() {
+        UUID orgId = UUID.randomUUID();
+        Membership objects = checkoutConsent(member(orgId), "checkout-org-named-2026-09");
+        objects.setObjectedProfiling(true);
+        memberships.save(objects);
+        segmentOf(orgId, List.of(objects));
+        Campaign c = campaign(orgId, UUID.randomUUID(), "momentum");
+
+        materializer.materialize(c);
+
+        assertThat(rowOf(c, objects).getStatus()).isEqualTo("pending");
     }
 }
