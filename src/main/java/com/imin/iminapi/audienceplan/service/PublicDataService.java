@@ -57,7 +57,8 @@ public class PublicDataService {
 
     /** Request-time read that never calls a source: the stored row, stale once expired, or empty. */
     public Optional<OpenDataValue> get(String cityKey, OpenDataset dataset) {
-        if (cities.find(cityKey).isEmpty()) return Optional.empty();
+        Optional<OpenDataCity> city = cities.find(cityKey);
+        if (city.isEmpty() || !dataset.covers(city.get().country())) return Optional.empty();
         Instant now = clock.instant();
         return rows.findByCityKeyAndDataset(cityKey, dataset.key())
                 .map(row -> toValue(row, !row.getExpiresAt().isAfter(now)));
@@ -69,7 +70,8 @@ public class PublicDataService {
      */
     public Optional<OpenDataValue> refresh(String cityKey, OpenDataset dataset) {
         Optional<OpenDataCity> city = cities.find(cityKey);
-        if (city.isEmpty()) return Optional.empty();
+        // A French-only source is never asked about a town abroad.
+        if (city.isEmpty() || !dataset.covers(city.get().country())) return Optional.empty();
         Optional<CityOpenData> cached = rows.findByCityKeyAndDataset(cityKey, dataset.key());
         Instant now = clock.instant();
         if (cached.isPresent() && cached.get().getExpiresAt().isAfter(now)) {

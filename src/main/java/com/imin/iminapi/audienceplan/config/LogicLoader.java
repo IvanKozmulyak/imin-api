@@ -1,6 +1,7 @@
 package com.imin.iminapi.audienceplan.config;
 
 import com.imin.iminapi.audienceplan.config.AudiencePlanLogic.Band;
+import com.imin.iminapi.audienceplan.config.AudiencePlanLogic.CatchmentRule;
 import com.imin.iminapi.audienceplan.config.AudiencePlanLogic.BandPoint;
 import com.imin.iminapi.audienceplan.config.AudiencePlanLogic.ClassPrior;
 import com.imin.iminapi.audienceplan.config.AudiencePlanLogic.ClassRule;
@@ -138,7 +139,16 @@ public final class LogicLoader {
                         legal.bool("es_robinson_check"),
                         Map.copyOf(sources),
                         Set.copyOf(legal.strings("organizer_named_text_versions")),
-                        Set.copyOf(legal.strings("door_qr_text_versions"))));
+                        Set.copyOf(legal.strings("door_qr_text_versions"))),
+                catchment(root.map("catchment")));
+    }
+
+    private static CatchmentRule catchment(Node n) {
+        int radius = n.integer("radius_km");
+        if (radius <= 0) {
+            throw n.invalid("radius_km", "must be a positive integer");
+        }
+        return new CatchmentRule(radius);
     }
 
     private static ProofRequirement proof(Node sources, String source) {

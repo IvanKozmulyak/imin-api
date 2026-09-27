@@ -6,6 +6,7 @@ import java.time.Instant;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.entry;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class OpenDataSeedTest {
@@ -25,11 +26,11 @@ class OpenDataSeedTest {
     }
 
     @Test
-    void everyCityHasEveryDatasetOnce() {
+    void everyCityHasEveryDatasetCoveringItsCountryOnceAndNoOther() {
         for (OpenDataCity city : cities.all()) {
             for (OpenDataset d : OpenDataset.values()) {
                 assertThat(rows.stream().filter(r -> r.cityKey().equals(city.cityKey()) && r.dataset() == d))
-                        .as(city.cityKey() + " " + d.key()).hasSize(1);
+                        .as(city.cityKey() + " " + d.key()).hasSize(d.covers(city.country()) ? 1 : 0);
             }
         }
     }
@@ -48,6 +49,7 @@ class OpenDataSeedTest {
     @Test
     void sourceUrlsAreTheOnesTheFetchersSend() {
         for (OpenDataCity city : cities.all()) {
+            if (!"FR".equals(city.country())) continue;
             assertThat(row(city.cityKey(), OpenDataset.INSEE_AGE).sourceUrl()).isEqualTo(InseeMelodiFetcher.url(city));
             assertThat(row(city.cityKey(), OpenDataset.STUDENTS).sourceUrl()).isEqualTo(MesrAtlasFetcher.url(city));
             assertThat(row(city.cityKey(), OpenDataset.FRONTALIERS).sourceUrl()).isEqualTo(IgssFrontaliersFetcher.URL);
@@ -62,6 +64,31 @@ class OpenDataSeedTest {
                 .containsEntry("pub", 14L).containsEntry("music_venue", 1L);
         assertThat(OpenDataset.OSM_VENUES.licence()).isEqualTo("ODbL 1.0");
         assertThat(OpenDataset.OSM_VENUES.attribution()).isEqualTo("© OpenStreetMap contributors");
+    }
+
+    @Test
+    void centroidsArePinnedWikidataCoordinatesInMicrodegrees() {
+        OpenDataSeed.Row metz = row("metz", OpenDataset.CENTROID);
+        assertThat(metz.headline()).isNull();
+        assertThat(metz.figures()).containsExactly(entry("lat_e6", 49_119_722L), entry("lon_e6", 6_176_944L));
+        assertThat(metz.sourceUrl()).isEqualTo("https://www.wikidata.org/w/index.php?title=Q22690&oldid=2548407679");
+        assertThat(row("luxembourg", OpenDataset.CENTROID).figures())
+                .containsExactly(entry("lat_e6", 49_611_389L), entry("lon_e6", 6_130_000L));
+        assertThat(row("saarbrücken", OpenDataset.CENTROID).figures())
+                .containsExactly(entry("lat_e6", 49_233_333L), entry("lon_e6", 7_000_000L));
+        for (OpenDataSeed.Row r : rows) {
+            if (r.dataset() == OpenDataset.CENTROID) assertThat(r.sourceUrl()).startsWith("https://www.wikidata.org/");
+        }
+    }
+
+    @Test
+    void townsAbroadAreRegisteredWithoutFrenchCodes() {
+        assertThat(cities.find("luxembourg")).hasValueSatisfying(c -> {
+            assertThat(c.country()).isEqualTo("LU");
+            assertThat(c.inseeCode()).isNull();
+            assertThat(c.department()).isNull();
+        });
+        assertThat(cities.find("saarbrücken")).hasValueSatisfying(c -> assertThat(c.country()).isEqualTo("DE"));
     }
 
     @Test

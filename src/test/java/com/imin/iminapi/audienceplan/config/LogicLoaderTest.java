@@ -111,6 +111,22 @@ class LogicLoaderTest {
     }
 
     @Test
+    void shippedCatchmentRadius_isSeventyKm() {
+        assertThat(shipped().logic().catchment()).isEqualTo(new AudiencePlanLogic.CatchmentRule(70));
+    }
+
+    @Test
+    void zeroCatchmentRadius_fails() {
+        assertLogicFail(l -> l.replace("radius_km: 70", "radius_km: 0"),
+                "logic.catchment.radius_km: must be a positive integer");
+    }
+
+    @Test
+    void missingCatchment_fails() {
+        assertLogicFail(l -> l.replace("catchment: { radius_km: 70 }\n", ""), "logic.catchment: is missing");
+    }
+
+    @Test
     void organizerNamedTextVersions_holdExactlyTheCheckoutLabelVersion() {
         assertThat(shipped().logic().legal().organizerNamedTextVersions())
                 .containsExactly("checkout-org-named-2026-09");

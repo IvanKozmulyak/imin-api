@@ -1,6 +1,7 @@
 # Open-data seed for `city_open_data`
 
-Small extracts of public, aggregate statistics for Metz, Nancy and Thionville. `CityOpenDataSeeder`
+Small extracts of public, aggregate statistics for Metz, Nancy and Thionville, plus town-centre
+coordinates for those three and for Luxembourg and Saarbrücken (the catchment towns abroad). `CityOpenDataSeeder`
 inserts a row per `(city_key, dataset)` at startup only when none exists; `PublicDataService` and the
 weekly `CityOpenDataRefreshJob` replace them from the live sources when they expire. No personal data.
 
@@ -16,6 +17,7 @@ a figure a source did not give is left empty, never 0.
 | `students.csv` | `students` | MESR, "Atlas régional des effectifs d'étudiants inscrits" (Opendatasoft API `fr-esr-atlas_regional-effectifs-d-etudiants-inscrits`), `niveau_geographique = Commune`, `regroupement = TOTAL`, latest `annee_universitaire`, `sum(effectif)` grouped by year server-side (a year where any row lacks `effectif` is rejected). | Licence Ouverte 2.0 (Etalab) | "Source : MESR, Atlas régional des effectifs d'étudiants" |
 | `frontaliers.csv` | `frontaliers` | IGSS Luxembourg, "Personnes en emploi par commune de résidence en France, genre et statut" (xlsx, sheet "Données source"), linked from data.public.lu dataset `emploi-total-par-commune-de-residence-au-luxembourg-et-dans-les-pays-frontaliers`. Latest reference date, sum over genre and status. Semi-annual. | CC0 1.0 | "Source : IGSS Luxembourg" |
 | `osm_venues.csv` | `osm_venues` | OpenStreetMap via one Overpass API query per commune (below), OSM base 2026-09-27T07:51Z. Counts only. | ODbL 1.0 | "© OpenStreetMap contributors" |
+| `centroid.csv` | `centroid` | Wikidata "coordinate location" (P625) of each town item (Metz Q22690, Nancy Q40898, Thionville Q22640, Luxembourg Q1842, Saarbrücken Q1724), in microdegrees (`lat_e6`, `lon_e6`). `source_url` is the permalink of the item revision read. Town centres, not area centroids; used only for straight-line catchment km. No fetcher. | CC0 1.0 | "Source : Wikidata" (not required by CC0) |
 
 OSM query (POST to `https://overpass-api.de/api/interpreter`), one per commune with `<code>` = its
 INSEE code (57463, 54395, 57672); the four `out count` totals are nightclub, bar, pub, music_venue.
@@ -35,6 +37,13 @@ students 20,588, frontaliers 6,330; Nancy students 30,903, frontaliers 370; Thio
 10,110; Metz OSM nightclub 3, bar 69. The other seed figures (Metz `pop_total`, Thionville students,
 OSM `pub` and `music_venue`, and every Nancy and Thionville OSM count) have no figure in the spec to
 check against; they come only from the queries above.
+
+## Towns abroad
+
+`cities.csv` also lists Luxembourg (`LU`) and Saarbrücken (`DE`) with no INSEE code or département.
+Each dataset declares the countries it covers (`OpenDataset.covers`): the census, students, IGSS and OSM
+counts are French only, so `PublicDataService` never builds a request for a town abroad and the refresh
+job skips those pairs; only `centroid` is stored for them.
 
 ## Licence notes
 
@@ -64,6 +73,8 @@ or origin figures below the aggregate level INSEE publishes (GDPR art. 9). See
 
 ## Adding a city
 
+The seeder only inserts missing rows and `centroid` has no fetcher, so correcting a line in `centroid.csv` needs a manual update or delete of the stored row.
+
 Add a line to `cities.csv` (`city_key` = `EventNormalization.cityKey` of the name, INSEE commune code,
 département as IGSS spells it). The refresh job fetches its datasets on the next run; seed rows are
-optional.
+optional, except `centroid` (no fetcher): a town is in no catchment until `centroid.csv` has its row.

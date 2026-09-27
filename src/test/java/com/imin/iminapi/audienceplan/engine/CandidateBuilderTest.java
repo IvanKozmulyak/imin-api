@@ -421,7 +421,7 @@ class CandidateBuilderTest {
         AudiencePlanLogic.Logic o = LOGIC.logic();
         return new AudiencePlanLogic(new AudiencePlanLogic.Logic(o.version(), o.modes(), o.targetDefaultPct(),
                 o.minSegmentToShow(), o.tasteHalfLifeDays(), o.classes(), o.inviteOtherGenreOnlyIfCoverageBelow(),
-                exclusions, o.coverageVerdict(), o.experiments(), o.legal()), LOGIC.priors(), LOGIC.genres());
+                exclusions, o.coverageVerdict(), o.experiments(), o.legal(), o.catchment()), LOGIC.priors(), LOGIC.genres());
     }
 
     private static AudiencePlanLogic withGenreFit(AudiencePlanLogic.GenreFit fit) {

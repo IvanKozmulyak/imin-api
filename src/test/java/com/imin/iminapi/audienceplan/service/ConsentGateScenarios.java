@@ -773,7 +773,7 @@ abstract class ConsentGateScenarios {
                 g.doorQrTextVersions());
         return new AudiencePlanLogic(new AudiencePlanLogic.Logic(o.version(), o.modes(), o.targetDefaultPct(),
                 o.minSegmentToShow(), o.tasteHalfLifeDays(), o.classes(), o.inviteOtherGenreOnlyIfCoverageBelow(),
-                o.exclusions(), o.coverageVerdict(), o.experiments(), legal), l.priors(), l.genres());
+                o.exclusions(), o.coverageVerdict(), o.experiments(), legal, o.catchment()), l.priors(), l.genres());
     }
 
     static void assertMailable(ConsentGate gate, UUID orgId, UUID mid) {

@@ -1,0 +1,6 @@
+city_key,ref_period,fetched_on,source_url,lat_e6,lon_e6
+metz,2026-09-27,2026-09-27,https://www.wikidata.org/w/index.php?title=Q22690&oldid=2548407679,49119722,6176944
+nancy,2026-09-27,2026-09-27,https://www.wikidata.org/w/index.php?title=Q40898&oldid=2548658800,48692778,6183611
+thionville,2026-09-27,2026-09-27,https://www.wikidata.org/w/index.php?title=Q22640&oldid=2527081476,49358056,6168333
+luxembourg,2026-09-27,2026-09-27,https://www.wikidata.org/w/index.php?title=Q1842&oldid=2537131426,49611389,6130000
+saarbrücken,2026-09-27,2026-09-27,https://www.wikidata.org/w/index.php?title=Q1724&oldid=2541281454,49233333,7000000

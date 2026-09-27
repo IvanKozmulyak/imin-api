@@ -31,6 +31,7 @@ public class CityOpenDataRefreshJob {
         int missing = 0;
         for (OpenDataCity city : publicData.knownCities()) {
             for (OpenDataset dataset : OpenDataset.values()) {
+                if (!dataset.covers(city.country())) continue;
                 try {
                     if (publicData.refresh(city.cityKey(), dataset).isPresent()) served++;
                     else missing++;

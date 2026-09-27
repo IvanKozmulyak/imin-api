@@ -25,6 +25,7 @@ class PublicDataServiceTest {
 
     private static final Instant NOW = Instant.parse("2026-09-27T08:00:00Z");
     private static final OpenDataCity METZ = new OpenDataCity("metz", "Metz", "FR", "57463", "Moselle");
+    private static final OpenDataCity LUXEMBOURG = new OpenDataCity("luxembourg", "Luxembourg", "LU", null, null);
     private static final String URL = "https://api.insee.fr/melodi/data/DS_RP_TD_POPULATION_AGESEX_PRINC?GEO=COM-57463&SEX=_T&maxResult=10000";
 
     private final InMemoryCityOpenDataRepository repo = new InMemoryCityOpenDataRepository();
@@ -248,6 +249,41 @@ class PublicDataServiceTest {
     @Test
     void theBackoffIsOneHour() {
         assertThat(PublicDataService.FAILURE_BACKOFF).isEqualTo(Duration.ofHours(1));
+    }
+
+    // --- datasets that do not cover a town's country
+
+    @Test
+    void readingADatasetThatDoesNotCoverTheCountryIsEmptyEvenWithAStoredRow() {
+        PublicDataService withLux = new PublicDataService(repo, new OpenDataCities(List.of(METZ, LUXEMBOURG)),
+                List.of(insee), clock);
+        CityOpenData r = row(OpenDataset.INSEE_AGE, 1L, NOW.plus(Duration.ofDays(10)));
+        r.setCityKey("luxembourg");
+        repo.rows.add(r);
+
+        assertThat(withLux.get("luxembourg", OpenDataset.INSEE_AGE)).isEmpty();
+    }
+
+    @Test
+    void refreshingADatasetThatDoesNotCoverTheCountryNeverCallsItsSource() {
+        PublicDataService withLux = new PublicDataService(repo, new OpenDataCities(List.of(METZ, LUXEMBOURG)),
+                List.of(insee), clock);
+        insee.answer = figure(38_065L);
+
+        assertThat(withLux.refresh("luxembourg", OpenDataset.INSEE_AGE)).isEmpty();
+        assertThat(insee.calls).isZero();
+        assertThat(repo.saves).isZero();
+    }
+
+    @Test
+    void aDatasetCoveringTheCountryIsReadForATownAbroad() {
+        PublicDataService withLux = new PublicDataService(repo, new OpenDataCities(List.of(METZ, LUXEMBOURG)),
+                List.of(insee), clock);
+        CityOpenData r = row(OpenDataset.CENTROID, null, NOW.plus(Duration.ofDays(10)));
+        r.setCityKey("luxembourg");
+        repo.rows.add(r);
+
+        assertThat(withLux.get("luxembourg", OpenDataset.CENTROID)).isPresent();
     }
 
     @Test

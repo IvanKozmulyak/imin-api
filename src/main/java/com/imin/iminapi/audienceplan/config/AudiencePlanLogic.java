@@ -28,7 +28,8 @@ public record AudiencePlanLogic(Logic logic, Priors priors, Genres genres) {
             List<Exclusion> exclusions,
             CoverageVerdict coverageVerdict,
             Experiments experiments,
-            Legal legal) {}
+            Legal legal,
+            CatchmentRule catchment) {}
 
     public record Modes(int warmMinMailable, int hotMinMailable) {}
 
@@ -50,6 +51,9 @@ public record AudiencePlanLogic(Logic logic, Priors priors, Genres genres) {
     public enum Exclusion {
         CONSENT_GATE_FALSE, BOUGHT_THIS_EVENT, EMAILED_LAST_48H, SENDS_THIS_EVENT_GTE_2, SENDS_30D_GTE_4
     }
+
+    /** Towns count as the catchment up to this straight-line distance (rounded km, inclusive). */
+    public record CatchmentRule(int radiusKm) {}
 
     public record Experiments(int holdoutPct, int holdoutMinMailable, List<TimingArm> defaultTimingArms) {}
 
