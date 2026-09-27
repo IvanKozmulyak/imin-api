@@ -147,7 +147,9 @@ public final class LogicLoader {
                         legal.bool("es_robinson_check"),
                         Map.copyOf(sources),
                         Set.copyOf(legal.strings("organizer_named_text_versions")),
-                        Set.copyOf(legal.strings("door_qr_text_versions"))),
+                        Set.copyOf(legal.strings("door_qr_text_versions")),
+                        Set.copyOf(legal.strings("survey_text_versions")),
+                        Set.copyOf(legal.strings("survey_notice_versions"))),
                 catchment(root.map("catchment")));
     }
 

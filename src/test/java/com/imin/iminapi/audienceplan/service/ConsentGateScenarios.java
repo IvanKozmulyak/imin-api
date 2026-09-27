@@ -770,7 +770,7 @@ abstract class ConsentGateScenarios {
         AudiencePlanLogic.Legal g = o.legal();
         AudiencePlanLogic.Legal legal = new AudiencePlanLogic.Legal(g.retentionDays(),
                 g.softOptInRequiresPaidOrderAndOrgSeller(), g.esRobinsonCheck(), g.explicitSources(), versions,
-                g.doorQrTextVersions());
+                g.doorQrTextVersions(), g.surveyTextVersions(), g.surveyNoticeVersions());
         return new AudiencePlanLogic(new AudiencePlanLogic.Logic(o.version(), o.modes(), o.targetDefaultPct(),
                 o.minSegmentToShow(), o.tasteHalfLifeDays(), o.classes(), o.inviteOtherGenreOnlyIfCoverageBelow(),
                 o.exclusions(), o.coverageVerdict(), o.experiments(), legal, o.catchment()), l.priors(), l.genres());

@@ -181,6 +181,14 @@ public class Event {
     @Column(name = "door_optin_token", length = 32)
     private String doorOptinToken;
 
+    /** Post-event survey page is open for this event (V143). */
+    @Column(name = "survey_enabled", nullable = false)
+    private boolean surveyEnabled = false;
+
+    /** URL token of the survey page; set on first enable and kept, so a printed QR stays valid. */
+    @Column(name = "survey_token", length = 32)
+    private String surveyToken;
+
     @PrePersist
     void onPersist() {
         venueCityKey = com.imin.iminapi.util.EventNormalization.cityKey(venueCity);

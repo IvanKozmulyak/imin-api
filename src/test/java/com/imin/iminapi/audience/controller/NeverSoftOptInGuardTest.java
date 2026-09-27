@@ -3,6 +3,8 @@ package com.imin.iminapi.audience.controller;
 import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
 import com.imin.iminapi.audienceplan.dto.DoorOptInRequest;
 import com.imin.iminapi.audienceplan.service.DoorOptInService;
+import com.imin.iminapi.audienceplan.dto.SurveyResponseRequest;
+import com.imin.iminapi.audienceplan.service.SurveyService;
 import com.imin.iminapi.audience.repository.ConsentRecordRepository;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
@@ -64,6 +66,7 @@ class NeverSoftOptInGuardTest {
     @Autowired AudienceImportService importService;
     @Autowired SmsConsentService smsConsentService;
     @Autowired DoorOptInService doorOptIn;
+    @Autowired SurveyService survey;
     @Autowired AudienceController audienceController;
     @Autowired Validator validator;
     @Autowired OrderRepository orders;
@@ -132,6 +135,7 @@ class NeverSoftOptInGuardTest {
         drainAsync();
         List<UUID> mids = jdbc.queryForList("select membership_id from memberships where org_id = ?", UUID.class, orgId);
         List<UUID> cids = jdbc.queryForList("select consumer_id from memberships where org_id = ?", UUID.class, orgId);
+        jdbc.update("delete from survey_responses where org_id = ?", orgId);
         for (UUID mid : mids) {
             jdbc.update("delete from consent_records where membership_id = ?", mid);
             jdbc.update("delete from import_row_provenance where membership_id = ?", mid);
@@ -228,6 +232,19 @@ class NeverSoftOptInGuardTest {
                 "door-org-named-2026-09", "en"));
 
         assertThat(basesOf("door-guard@example.com")).containsExactly("explicit");
+        assertNoSoftOptInAnywhere();
+    }
+
+    @Test
+    void surveyWithTickedBox_recordsExplicit() {
+        String url = survey.setEnabled(organizer, event.getId(), true).surveyUrl();
+        String token = url.substring(url.indexOf("?t=") + 3);
+        survey.submit(token, new SurveyResponseRequest(null, null, "friend", null, null, "survey-notice-2026-10",
+                "en", true, "survey-guard@example.com",
+                "Email me about events by Guard Org. I agree to receive email marketing.",
+                "survey-org-named-2026-09", null));
+
+        assertThat(basesOf("survey-guard@example.com")).containsExactly("explicit");
         assertNoSoftOptInAnywhere();
     }
 

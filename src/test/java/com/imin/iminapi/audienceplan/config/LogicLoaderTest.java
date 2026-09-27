@@ -140,6 +140,18 @@ class LogicLoaderTest {
     }
 
     @Test
+    void surveyTextVersions_holdExactlyTheSurveyPageVersion() {
+        assertThat(shipped().logic().legal().surveyTextVersions())
+                .containsExactly("survey-org-named-2026-09");
+    }
+
+    @Test
+    void surveyNoticeVersions_holdExactlyTheSurveyNoticeVersion() {
+        assertThat(shipped().logic().legal().surveyNoticeVersions())
+                .containsExactly("survey-notice-2026-10");
+    }
+
+    @Test
     void instagramOrganicUnknown_loadsEmptyNotZero() {
         assertThat(shipped().priors().instagramOrganic()).isEqualTo(Optional.empty());
     }

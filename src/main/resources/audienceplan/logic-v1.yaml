@@ -38,3 +38,9 @@ legal:
   # Door QR sentence versions the public door endpoint accepts; add one only with a reviewed change.
   # door-org-named-2026-09: "Email me about events by {organizer}. …" (imin-public door page, en/es/fr/uk).
   door_qr_text_versions: [door-org-named-2026-09]
+  # Survey consent sentence versions the public survey endpoint accepts; add one only with a reviewed change.
+  # survey-org-named-2026-09: "Email me about events by {organizer}. …" (imin-public survey page, en/es/fr/uk).
+  survey_text_versions: [survey-org-named-2026-09]
+  # Art. 13 notice versions shown above the survey; the version is stored on every answer.
+  # survey-notice-2026-10: pseudonymous art. 13 notice naming {organizer}, 3-year retention (imin-public survey page, en/es/fr/uk).
+  survey_notice_versions: [survey-notice-2026-10]

@@ -61,6 +61,10 @@ public class RateLimitConfig {
     private int doorOptinCapacity;
     @Value("${imin.ratelimit.door-optin.window-minutes}")
     private int doorOptinWindow;
+    @Value("${imin.ratelimit.survey.capacity}")
+    private int surveyCapacity;
+    @Value("${imin.ratelimit.survey.window-minutes}")
+    private int surveyWindow;
     @Value("${imin.ratelimit.wallet-pass.capacity}")
     private int walletPassCapacity;
     @Value("${imin.ratelimit.wallet-pass.window-minutes}")
@@ -186,6 +190,10 @@ public class RateLimitConfig {
         // Public door QR sign-up, keyed per client IP; each stored row is a marketing consent.
         configs.put("door-optin", BucketConfiguration.builder()
                 .addLimit(Bandwidth.simple(doorOptinCapacity, Duration.ofMinutes(doorOptinWindow)))
+                .build());
+        // Public post-event survey, keyed per client IP; a venue queue shares one IP, as at the door.
+        configs.put("survey", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(surveyCapacity, Duration.ofMinutes(surveyWindow)))
                 .build());
         // Signed .pkpass minting on the public per-ticket asset endpoint, keyed per
         // client IP. Unauthenticated, and each call is three DB reads plus an RSA

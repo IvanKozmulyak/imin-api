@@ -307,6 +307,23 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
                         @Param("enabled") boolean enabled,
                         @Param("token") String token);
 
+    /** Survey switch and token; leaves {@code updated_at} (the PATCH ETag) alone, as the door switch. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("""
+        UPDATE Event e
+           SET e.surveyEnabled = :enabled,
+               e.surveyToken = :token
+         WHERE e.id = :id
+    """)
+    int updateSurvey(@Param("id") UUID id,
+                     @Param("enabled") boolean enabled,
+                     @Param("token") String token);
+
+    /** A live (not soft-deleted) event by its survey token. */
+    @Query("SELECT e FROM Event e WHERE e.surveyToken = :token AND e.deletedAt IS NULL")
+    Optional<Event> findActiveBySurveyToken(@Param("token") String token);
+
     /**
      * Bulk transition: LIVE events whose {@code endsAt} is in the past become PAST.
      * Events with {@code null endsAt} are excluded — no end date means the event has

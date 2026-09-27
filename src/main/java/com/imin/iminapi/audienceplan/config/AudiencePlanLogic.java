@@ -65,7 +65,9 @@ public record AudiencePlanLogic(Logic logic, Priors priors, Genres genres) {
             boolean esRobinsonCheck,
             Map<String, ProofRequirement> explicitSources,
             Set<String> organizerNamedTextVersions,
-            Set<String> doorQrTextVersions) {}
+            Set<String> doorQrTextVersions,
+            Set<String> surveyTextVersions,
+            Set<String> surveyNoticeVersions) {}
 
     /** What a consent source needs before it counts as explicit. */
     public enum ProofRequirement { ORGANIZER_NAMED_TEXT_VERSION, PROVENANCE_ROW, TEXT_VERSION }
