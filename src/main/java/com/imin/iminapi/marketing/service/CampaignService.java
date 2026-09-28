@@ -661,11 +661,14 @@ public class CampaignService {
                 "Draft campaign deleted");
     }
 
-    /** Campaign detail + aggregate stats block (spec §2.4/§3). Org-scoped. */
+    /** Campaign detail + aggregate stats block (spec §2.4/§3), with its segment's name and event's zone. Org-scoped. */
     @Transactional(readOnly = true)
     public com.imin.iminapi.marketing.dto.CampaignDetailDto detailWithStats(AuthPrincipal p, UUID id) {
         Campaign c = require(p.orgId(), id);
-        return com.imin.iminapi.marketing.dto.CampaignDetailDto.from(c, stats(id));
+        String segmentName = c.getSegmentId() == null ? null : segments.nameOrNull(p.orgId(), c.getSegmentId());
+        Event event = linkedEvent(c);
+        return com.imin.iminapi.marketing.dto.CampaignDetailDto.from(c, stats(id), segmentName,
+                event == null ? null : event.getTimezone());
     }
 
     /**

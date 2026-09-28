@@ -27,23 +27,25 @@ public class PlanRefreshJob {
 
     private static final Logger log = LoggerFactory.getLogger(PlanRefreshJob.class);
 
-    /** Counts of one daily pass. */
-    public record Result(int events, int created, int unchanged, int skipped, int failed) {}
+    /** Counts of one daily pass; {@code pruned} = old superseded plans deleted, -1 when pruning failed. */
+    public record Result(int events, int created, int unchanged, int skipped, int failed, int pruned) {}
 
     private final PlanService plans;
     private final EventRepository events;
     private final Clock clock;
     private final InviteOnPublishService invites;
+    private final PlanPruner pruner;
     /** Calls {@link #run()} through the proxy so its scheduler lock applies. */
     private final ObjectProvider<PlanRefreshJob> self;
 
     public PlanRefreshJob(PlanService plans, EventRepository events, Clock clock, ObjectProvider<PlanRefreshJob> self,
-                          InviteOnPublishService invites) {
+                          InviteOnPublishService invites, PlanPruner pruner) {
         this.plans = plans;
         this.events = events;
         this.clock = clock;
         this.self = self;
         this.invites = invites;
+        this.pruner = pruner;
     }
 
     /**
@@ -80,7 +82,8 @@ public class PlanRefreshJob {
 
     /**
      * Each event in its own transaction; one failure never stops the pass. Today's date is a hashed input, so an
-     * on-sale event gets at most one new plan a day. ponytail: superseded rows are kept (no pruning yet).
+     * on-sale event gets at most one new plan a day. Then old superseded plans are pruned ({@link PlanPruner}); a
+     * pruning failure is logged and never undoes the refreshes.
      */
     @SchedulerLock(name = "audience_plan_refresh", lockAtMostFor = "PT1H", lockAtLeastFor = "PT1M")
     public Result run() {
@@ -104,9 +107,17 @@ public class PlanRefreshJob {
                         LogSafe.redact(ex.getMessage()));
             }
         }
-        Result result = new Result(seen, created, unchanged, skipped, failed);
-        log.info("PlanRefreshJob: done, {} on-sale events, {} new plans, {} unchanged, {} skipped, {} failed",
-                seen, created, unchanged, skipped, failed);
+        int pruned;
+        try {
+            pruned = pruner.prune();
+        } catch (Exception ex) {
+            pruned = -1;
+            log.warn("PlanRefreshJob: pruning superseded plans failed (tomorrow retries): {} {}",
+                    ex.getClass().getSimpleName(), LogSafe.redact(ex.getMessage()));
+        }
+        Result result = new Result(seen, created, unchanged, skipped, failed, pruned);
+        log.info("PlanRefreshJob: done, {} on-sale events, {} new plans, {} unchanged, {} skipped, {} failed,"
+                + " {} old plans pruned", seen, created, unchanged, skipped, failed, pruned);
         return result;
     }
 }

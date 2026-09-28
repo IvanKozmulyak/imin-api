@@ -8,7 +8,7 @@
       "index": 0,
       "message": {
         "role": "assistant",
-        "content": "{\"headline\": \"Your list should bring about 52 of the 255 tickets you are aiming for.\", \"segmentLines\": [\"Loyal guests who share this genre: 40 can be emailed, 8–26 tickets expected.\", \"Repeat guests: 70 can be emailed, 7–22 tickets expected.\", \"First-timers: 235 can be emailed, 11–45 tickets expected.\"], \"gapLine\": \"You still need 162–229 tickets from people who are not on your list.\", \"actions\": [\"Invite loyal guests on 26 September and 21 October 2026.\", \"Invite repeat guests on 26 September and 21 October 2026.\", \"Invite first-timers on 26 September and 21 October 2026; 15% are held back to measure the effect.\"], \"assumptions\": [\"The target is 85% of 300 tickets.\", \"Each order is counted as 1.6 tickets.\"]}"
+        "content": "{\"headline\": \"Your list should bring about 52 of the 255 tickets you are aiming for.\", \"segmentLines\": [\"Loyal guests who share this genre: 40 can be emailed, 5–30 tickets expected.\", \"Repeat guests: 70 can be emailed, 5–25 tickets expected.\", \"First-timers: 235 can be emailed, 10–45 tickets expected.\"], \"gapLine\": \"You still need 160–230 tickets from people who are not on your list.\", \"actions\": [\"Invite loyal guests on 26 September and 21 October 2026.\", \"Invite repeat guests on 26 September and 21 October 2026.\", \"Invite first-timers on 26 September and 21 October 2026; 15% are held back to measure the effect.\"], \"assumptions\": [\"The target is 85% of 300 tickets.\", \"Each order is counted as 1.6 tickets.\"]}"
       },
       "finish_reason": "stop"
     }

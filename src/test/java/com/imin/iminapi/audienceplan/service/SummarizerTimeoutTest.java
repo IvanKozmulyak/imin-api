@@ -74,7 +74,7 @@ class SummarizerTimeoutTest {
 
     /** Whether generate() produced model text (false = the template). */
     private boolean aiGenerated(ChatClient client) {
-        Summarizer s = new Summarizer(client, new LlmPayloadGuard(), props, "platform/default-model",
+        Summarizer s = new Summarizer(client, new LlmPayloadGuard(), props,
                 mock(JdbcTemplate.class), null, Runnable::run,
                 Clock.fixed(Instant.parse("2026-09-26T09:00:00Z"), ZoneOffset.UTC));
         return s.generate(UUID.randomUUID(), SummaryFixtures.warm(), "en").summary().aiGenerated();

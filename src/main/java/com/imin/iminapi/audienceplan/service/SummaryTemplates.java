@@ -15,7 +15,7 @@ import java.util.Map;
 
 /**
  * The code-written summary per locale, used whenever the model's text cannot be used. Every number comes from a
- * plan field; counts are shown as low–high ranges, never a lone middle value.
+ * plan field; counts are shown as low–high ranges, never a lone middle value, rounded as the card shows them.
  */
 final class SummaryTemplates {
 
@@ -105,19 +105,22 @@ final class SummaryTemplates {
         Words w = WORDS.get(locale);
         if (w == null) throw new IllegalArgumentException("no summary template for locale " + locale);
         Locale loc = Locale.forLanguageTag(locale);
+        String planConfidence = DisplayBounds.planConfidence(p.segments());
 
         String headline = p.expected() == null
                 ? w.headlineCold().formatted(p.targetTickets())
-                : w.headlineWarm().formatted(range(p.expected().low(), p.expected().high()), p.targetTickets());
+                : w.headlineWarm().formatted(
+                        range(DisplayBounds.count(p.expected().low(), p.expected().high(), planConfidence)),
+                        p.targetTickets());
 
         List<String> segmentLines = new ArrayList<>();
         for (AudiencePlanResponse.Segment s : p.segments()) {
             segmentLines.add(w.segment().formatted(label(w.classLabel(), s.classKey()), label(w.fit(), s.genreFit()),
-                    s.mailable(), range(s.expected().low(), s.expected().high())));
+                    s.mailable(), range(DisplayBounds.count(s.expected().low(), s.expected().high(), s.confidence()))));
         }
 
         String gapLine = p.gap().high() == 0 ? w.gapNone()
-                : w.gap().formatted(range(p.gap().low(), p.gap().high()));
+                : w.gap().formatted(range(DisplayBounds.gap(p, planConfidence)));
 
         List<String> actions = new ArrayList<>();
         for (AudiencePlanResponse.Action a : p.actions()) {
@@ -160,8 +163,8 @@ final class SummaryTemplates {
         return key == null ? "" : labels.getOrDefault(key, key);
     }
 
-    static String range(int low, int high) {
-        return low == high ? Integer.toString(low) : low + "–" + high;
+    static String range(DisplayBounds.Range r) {
+        return r.low().equals(r.high()) ? Integer.toString(r.low()) : r.low() + "–" + r.high();
     }
 
     private static String decimal(double v, Locale loc) {

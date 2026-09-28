@@ -1,5 +1,6 @@
 package com.imin.iminapi.audienceplan.repository;
 
+import com.imin.iminapi.marketing.model.RecipientStatuses;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -29,9 +30,6 @@ public class OutcomeStore {
     /** {@code org_id} of the IMIN-wide calibration rows. */
     public static final UUID IMIN_ORG = new UUID(0L, 0L);
 
-    /** The email left the provider for this person; bounced, failed, skipped and pending did not. */
-    static final String SENT_STATUSES = "('sent', 'delivered', 'opened', 'clicked', 'complained', 'unsubscribed')";
-
     /** A real order of this member for the experiment's event, placed after assignment and before door close. */
     private static final String ORDER_MATCH = " o.org_id = e.org_id AND o.event_id = e.event_id"
             + " AND o.email_normalized = c.normalized_email AND o.test_mode = FALSE"
@@ -47,7 +45,7 @@ public class OutcomeStore {
             + " SUM(x.attended) AS attended, SUM(x.unsubscribed) AS unsubscribed, SUM(x.complained) AS complained"
             + " FROM (SELECT a.experiment_id,"
             + " CASE WHEN EXISTS (SELECT 1 FROM campaign_recipients r WHERE r.campaign_id = e.campaign_id"
-            + "   AND r.membership_id = a.membership_id AND r.status IN " + SENT_STATUSES + ") THEN 1 ELSE 0 END AS sent,"
+            + "   AND r.membership_id = a.membership_id AND r.status IN " + RecipientStatuses.SENT_SQL + ") THEN 1 ELSE 0 END AS sent,"
             + " CASE WHEN EXISTS (SELECT 1 FROM orders o JOIN tickets t ON t.order_id = o.id WHERE" + ORDER_MATCH
             + "   AND" + LIVE_TICKET + ") THEN 1 ELSE 0 END AS bought,"
             + " (SELECT COUNT(*) FROM orders o JOIN tickets t ON t.order_id = o.id WHERE" + ORDER_MATCH

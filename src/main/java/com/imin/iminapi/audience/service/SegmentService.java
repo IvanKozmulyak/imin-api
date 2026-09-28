@@ -383,6 +383,11 @@ public class SegmentService {
         return requireSegment(orgId, segmentId);
     }
 
+    /** The org's segment name, hidden origins included; null when it does not exist in that org. */
+    public String nameOrNull(UUID orgId, UUID segmentId) {
+        return segmentRepo.findByIdAndOrgId(segmentId, orgId).map(Segment::getName).orElse(null);
+    }
+
     private Segment requireSegment(UUID orgId, UUID segmentId) {
         return segmentRepo.findByIdAndOrgId(segmentId, orgId)
                 .orElseThrow(() -> ApiException.notFound("Segment"));

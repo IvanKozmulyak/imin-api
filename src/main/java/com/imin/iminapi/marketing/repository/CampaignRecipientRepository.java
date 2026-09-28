@@ -1,6 +1,7 @@
 package com.imin.iminapi.marketing.repository;
 
 import com.imin.iminapi.marketing.model.CampaignRecipient;
+import com.imin.iminapi.marketing.model.RecipientStatuses;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 import org.springframework.data.jpa.repository.Query;
@@ -21,7 +22,7 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
 
     /**
      * Distinct sent recipients of the org's campaigns with a provider complaint event — the event
-     * survives a later status overwrite; the campaign_id join uses the (campaign_id, type) index. Status set mirrors OutcomeStore.SENT_STATUSES.
+     * survives a later status overwrite; the campaign_id join uses the (campaign_id, type) index.
      */
     @Query("""
             select count(distinct r.id)
@@ -32,17 +33,15 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
                and r.campaignId = c.id
                and c.orgId = :orgId
                and pe.type = 'email.complained'
-               and r.status in ('sent', 'delivered', 'opened', 'clicked', 'complained', 'unsubscribed')
-            """)
+               and r.status in\s""" + RecipientStatuses.SENT_SQL)
     long countComplainedRecipientsByOrgId(@Param("orgId") UUID orgId);
 
-    /** Recipient rows of the org's campaigns that left the building (OutcomeStore.SENT_STATUSES). */
+    /** Recipient rows of the org's campaigns that left the building ({@link RecipientStatuses#SENT_SQL}). */
     @Query("""
             select count(r) from CampaignRecipient r, com.imin.iminapi.marketing.model.Campaign c
              where r.campaignId = c.id
                and c.orgId = :orgId
-               and r.status in ('sent', 'delivered', 'opened', 'clicked', 'complained', 'unsubscribed')
-            """)
+               and r.status in\s""" + RecipientStatuses.SENT_SQL)
     long countSentRecipientsByOrgId(@Param("orgId") UUID orgId);
 
     /**

@@ -158,7 +158,7 @@ class SummarizerFlowTest {
 
         getPlan(e, "en").andExpect(jsonPath("$.id").value(id))
                 .andExpect(jsonPath("$.summary.headline")
-                        .value("Your list could bring 26–93 of the 255 tickets you are aiming for."))
+                        .value("Your list could bring 25–95 of the 255 tickets you are aiming for."))
                 .andExpect(jsonPath("$.summary.segmentLines.length()").value(3))
                 .andExpect(jsonPath("$.summary.locale").value("en"))
                 .andExpect(jsonPath("$.summary.aiGenerated").value(true))
@@ -168,7 +168,8 @@ class SummarizerFlowTest {
         Map<String, Object> row = row(id);
         assertThat(row.get("tokens_in")).isEqualTo(1210);
         assertThat(row.get("tokens_out")).isEqualTo(190);
-        assertThat(row.get("cost_usd")).isNull();
+        // Default model and prices (Haiku 4.5, $1 / $5 per Mtok): 1210 × 1 + 190 × 5 = 2160 → 0.00216 → 0.0022.
+        assertThat((BigDecimal) row.get("cost_usd")).isEqualByComparingTo("0.0022");
         drain();
         verify(chat, times(1)).prompt();
     }
@@ -184,7 +185,7 @@ class SummarizerFlowTest {
         drain();
 
         getPlan(e, "fr").andExpect(jsonPath("$.id").value(id)).andExpect(jsonPath("$.summary.locale").value("fr"))
-                .andExpect(jsonPath("$.summary.headline").value("Votre liste pourrait apporter 26–93 des 255 billets visés."));
+                .andExpect(jsonPath("$.summary.headline").value("Votre liste pourrait apporter 25–95 des 255 billets visés."));
         getPlan(e, "en").andExpect(jsonPath("$.summary.locale").value("en"));
         assertThat(jdbc.queryForObject("select count(*) from audience_plans where event_id = ?", Integer.class, e.getId()))
                 .isEqualTo(1);

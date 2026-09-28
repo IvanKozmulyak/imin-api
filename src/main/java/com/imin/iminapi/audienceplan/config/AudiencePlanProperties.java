@@ -37,13 +37,21 @@ public class AudiencePlanProperties {
     /** Requires ConsentGate for every campaign's recipients, not only audience-plan ones. Blank binds false. */
     private Boolean consentGateAllCampaigns = Boolean.FALSE;
 
-    /** OpenRouter model for plan summaries; blank uses {@code openrouter.model}. */
-    private String summaryModel = "";
+    /** OpenRouter model for plan summaries. Blank binds {@link #DEFAULT_SUMMARY_MODEL}. */
+    private String summaryModel = DEFAULT_SUMMARY_MODEL;
+
+    static final String DEFAULT_SUMMARY_MODEL = "anthropic/claude-haiku-4.5";
+    // OpenRouter list prices of the default model, checked 2026-09-28; env vars override when they move.
+    static final BigDecimal DEFAULT_SUMMARY_PRICE_INPUT = new BigDecimal("1");
+    static final BigDecimal DEFAULT_SUMMARY_PRICE_OUTPUT = new BigDecimal("5");
 
     /** Lazy LLM summaries on the plan GET; false keeps {@code summary} null. Blank binds true. */
     private Boolean summaryEnabled = Boolean.TRUE;
 
-    /** USD per million prompt / completion tokens of the summary model; either blank leaves cost_usd null. */
+    /**
+     * USD per million prompt / completion tokens of the summary model. Blank takes the default model's price only
+     * while the model is the default one; with another model a blank price stays null (cost_usd not recorded).
+     */
     private BigDecimal summaryPriceInputUsdPerMtok;
     private BigDecimal summaryPriceOutputUsdPerMtok;
 
@@ -80,13 +88,19 @@ public class AudiencePlanProperties {
     public void setLegalIdentityAllCampaigns(Boolean legalIdentityAllCampaigns) { this.legalIdentityAllCampaigns = Boolean.TRUE.equals(legalIdentityAllCampaigns); }
 
     public String getSummaryModel() { return summaryModel; }
-    public void setSummaryModel(String summaryModel) { this.summaryModel = summaryModel == null ? "" : summaryModel.trim(); }
+    public void setSummaryModel(String summaryModel) {
+        this.summaryModel = summaryModel == null || summaryModel.isBlank() ? DEFAULT_SUMMARY_MODEL : summaryModel.trim();
+    }
     public Boolean getSummaryEnabled() { return summaryEnabled; }
     public void setSummaryEnabled(Boolean summaryEnabled) { this.summaryEnabled = !Boolean.FALSE.equals(summaryEnabled); }
-    public BigDecimal getSummaryPriceInputUsdPerMtok() { return summaryPriceInputUsdPerMtok; }
+    public BigDecimal getSummaryPriceInputUsdPerMtok() { return price(summaryPriceInputUsdPerMtok, DEFAULT_SUMMARY_PRICE_INPUT); }
     public void setSummaryPriceInputUsdPerMtok(BigDecimal v) { this.summaryPriceInputUsdPerMtok = v; }
-    public BigDecimal getSummaryPriceOutputUsdPerMtok() { return summaryPriceOutputUsdPerMtok; }
+    public BigDecimal getSummaryPriceOutputUsdPerMtok() { return price(summaryPriceOutputUsdPerMtok, DEFAULT_SUMMARY_PRICE_OUTPUT); }
     public void setSummaryPriceOutputUsdPerMtok(BigDecimal v) { this.summaryPriceOutputUsdPerMtok = v; }
+    private BigDecimal price(BigDecimal configured, BigDecimal defaultModelPrice) {
+        if (configured != null) return configured;
+        return DEFAULT_SUMMARY_MODEL.equals(summaryModel) ? defaultModelPrice : null;
+    }
     public Integer getSummaryDailyCapPerOrg() { return summaryDailyCapPerOrg; }
     public void setSummaryDailyCapPerOrg(Integer v) { this.summaryDailyCapPerOrg = v == null || v < 0 ? DEFAULT_SUMMARY_DAILY_CAP : v; }
     public Duration getSummaryTimeout() { return summaryTimeout; }

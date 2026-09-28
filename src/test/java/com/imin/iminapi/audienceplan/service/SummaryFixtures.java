@@ -1,6 +1,7 @@
 package com.imin.iminapi.audienceplan.service;
 
 import com.imin.iminapi.audienceplan.dto.AudiencePlanResponse;
+import com.imin.iminapi.audienceplan.dto.AudiencePortraitResponse;
 import com.imin.iminapi.audienceplan.dto.AudiencePlanResponse.Action;
 import com.imin.iminapi.audienceplan.dto.AudiencePlanResponse.ArmDate;
 import com.imin.iminapi.audienceplan.dto.AudiencePlanResponse.Segment;
@@ -60,6 +61,33 @@ final class SummaryFixtures {
                 p.expected(), p.coverage(), p.gap(), p.reachNeeded(), p.gapExceedsTribe(), p.segments(),
                 p.smallGroupsNotShown(), p.otherGenreInvited(), p.otherGenreHeldBack(), p.exclusions(), p.timing(),
                 p.newPeople(), actions, p.assumptions(), p.summary(), p.versions(), p.createdAt());
+    }
+
+    /** The same plan with each segment's confidence replaced, in order. */
+    static AudiencePlanResponse withConfidence(AudiencePlanResponse p, String... levels) {
+        List<Segment> segs = new java.util.ArrayList<>();
+        for (int i = 0; i < p.segments().size(); i++) {
+            Segment s = p.segments().get(i);
+            segs.add(new Segment(s.classKey(), s.genreFit(), s.mailable(), s.rate(), s.ticketsPerOrder(), s.expected(),
+                    levels[i], s.reason()));
+        }
+        return new AudiencePlanResponse(p.id(), p.eventId(), p.mode(), p.capacity(), p.targetTickets(), p.mailable(),
+                p.expected(), p.coverage(), p.gap(), p.reachNeeded(), p.gapExceedsTribe(), List.copyOf(segs),
+                p.smallGroupsNotShown(), p.otherGenreInvited(), p.otherGenreHeldBack(), p.exclusions(), p.timing(),
+                p.newPeople(), p.actions(), p.assumptions(), p.summary(), p.versions(), p.createdAt());
+    }
+
+    static AudiencePlanResponse withNewPeople(AudiencePlanResponse p, List<AudiencePortraitResponse.NewPeopleGroup> groups) {
+        return new AudiencePlanResponse(p.id(), p.eventId(), p.mode(), p.capacity(), p.targetTickets(), p.mailable(),
+                p.expected(), p.coverage(), p.gap(), p.reachNeeded(), p.gapExceedsTribe(), p.segments(),
+                p.smallGroupsNotShown(), p.otherGenreInvited(), p.otherGenreHeldBack(), p.exclusions(), p.timing(),
+                groups, p.actions(), p.assumptions(), p.summary(), p.versions(), p.createdAt());
+    }
+
+    /** A new-people group; null bounds = unknown size. */
+    static AudiencePortraitResponse.NewPeopleGroup group(String key, String kind, Integer low, Integer high) {
+        return new AudiencePortraitResponse.NewPeopleGroup(key, "open_data", kind, "fr_catchment", List.of("metz"),
+                low == null ? null : new AudiencePortraitResponse.SizeRange(low, high), "electronic_first", List.of());
     }
 
     static AudiencePlanResponse withGap(AudiencePlanResponse p, int low, int high, List<String> excluded) {

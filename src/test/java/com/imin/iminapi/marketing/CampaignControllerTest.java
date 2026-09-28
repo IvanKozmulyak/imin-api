@@ -81,7 +81,7 @@ class CampaignControllerTest {
         var stats = new com.imin.iminapi.marketing.dto.CampaignStatsDto(10, 9, 3, 1, 0, 0, 0, 2);
         return new com.imin.iminapi.marketing.dto.CampaignDetailDto(CAMP, ORG, "email", "Launch night", "draft",
                 null, null, "manual", null, null, null, null, null,
-                "Subj", "Pre", "body", "classic", false, false, now, now, stats);
+                "Subj", "Pre", "body", "classic", false, false, now, now, stats, "Loyal · launch", "Europe/Paris");
     }
 
     @Test
@@ -103,7 +103,9 @@ class CampaignControllerTest {
         mvc.perform(get("/api/v1/marketing/campaigns/{id}", CAMP))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.name").value("Launch night"))
-                .andExpect(jsonPath("$.stats.opened").value(3));
+                .andExpect(jsonPath("$.stats.opened").value(3))
+                .andExpect(jsonPath("$.segmentName").value("Loyal · launch"))
+                .andExpect(jsonPath("$.eventTimezone").value("Europe/Paris"));
     }
 
     @Test

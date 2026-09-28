@@ -16,12 +16,12 @@ class AudiencePlanSummaryPropertiesTest {
             .withUserConfiguration(AudiencePlanConfig.class);
 
     @Test
-    void defaults_onWithPlatformModelAndNoPrices() {
+    void defaults_onWithHaiku45AndItsPrices() {
         AudiencePlanProperties props = new AudiencePlanProperties();
         assertThat(props.getSummaryEnabled()).isTrue();
-        assertThat(props.getSummaryModel()).isEmpty();
-        assertThat(props.getSummaryPriceInputUsdPerMtok()).isNull();
-        assertThat(props.getSummaryPriceOutputUsdPerMtok()).isNull();
+        assertThat(props.getSummaryModel()).isEqualTo("anthropic/claude-haiku-4.5");
+        assertThat(props.getSummaryPriceInputUsdPerMtok()).isEqualByComparingTo("1");
+        assertThat(props.getSummaryPriceOutputUsdPerMtok()).isEqualByComparingTo("5");
         assertThat(props.getSummaryDailyCapPerOrg()).isEqualTo(50);
         assertThat(props.getSummaryTimeout()).isEqualTo(Duration.ofSeconds(30));
     }
@@ -41,9 +41,9 @@ class AudiencePlanSummaryPropertiesTest {
                 .run(ctx -> {
                     AudiencePlanProperties p = ctx.getBean(AudiencePlanProperties.class);
                     assertThat(p.getSummaryEnabled()).isTrue();
-                    assertThat(p.getSummaryModel()).isEmpty();
-                    assertThat(p.getSummaryPriceInputUsdPerMtok()).isNull();
-                    assertThat(p.getSummaryPriceOutputUsdPerMtok()).isNull();
+                    assertThat(p.getSummaryModel()).isEqualTo("anthropic/claude-haiku-4.5");
+                    assertThat(p.getSummaryPriceInputUsdPerMtok()).isEqualByComparingTo("1");
+                    assertThat(p.getSummaryPriceOutputUsdPerMtok()).isEqualByComparingTo("5");
                     assertThat(p.getSummaryDailyCapPerOrg()).isEqualTo(50);
                     assertThat(p.getSummaryTimeout()).isEqualTo(Duration.ofSeconds(30));
                 });
@@ -65,6 +65,30 @@ class AudiencePlanSummaryPropertiesTest {
                     assertThat(p.getSummaryPriceOutputUsdPerMtok()).isEqualByComparingTo(new BigDecimal("0.60"));
                     assertThat(p.getSummaryDailyCapPerOrg()).isEqualTo(7);
                     assertThat(p.getSummaryTimeout()).isEqualTo(Duration.ofSeconds(12));
+                });
+    }
+
+    @Test
+    void anotherModel_withoutPrices_recordsNoCost() {
+        runner.withPropertyValues("imin.audience-plan.summary-model=openai/gpt-4o-mini",
+                        "imin.audience-plan.summary-price-input-usd-per-mtok=",
+                        "imin.audience-plan.summary-price-output-usd-per-mtok=")
+                .run(ctx -> {
+                    AudiencePlanProperties p = ctx.getBean(AudiencePlanProperties.class);
+                    assertThat(p.getSummaryModel()).isEqualTo("openai/gpt-4o-mini");
+                    assertThat(p.getSummaryPriceInputUsdPerMtok()).isNull();
+                    assertThat(p.getSummaryPriceOutputUsdPerMtok()).isNull();
+                });
+    }
+
+    @Test
+    void defaultModel_withAConfiguredPrice_usesThatPrice() {
+        runner.withPropertyValues("imin.audience-plan.summary-price-input-usd-per-mtok=0.8")
+                .run(ctx -> {
+                    AudiencePlanProperties p = ctx.getBean(AudiencePlanProperties.class);
+                    assertThat(p.getSummaryModel()).isEqualTo("anthropic/claude-haiku-4.5");
+                    assertThat(p.getSummaryPriceInputUsdPerMtok()).isEqualByComparingTo("0.8");
+                    assertThat(p.getSummaryPriceOutputUsdPerMtok()).isEqualByComparingTo("5");
                 });
     }
 

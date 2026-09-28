@@ -27,6 +27,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.test.context.bean.override.convention.TestBean;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.time.Instant;
@@ -54,6 +55,9 @@ import static org.mockito.Mockito.when;
  * is what makes the loser correct, and reporting success would suppress the
  * caller's exactly-once side effects (promo-usage increment) for a delivery that
  * wrote nothing.
+ *
+ * <p>{@code OrderRepository} is built and stubbed in a {@code @TestBean} factory: stubbing it in the test raced the
+ * async fan-feature recompute calling the same mock at context boot.
  */
 @SpringBootTest
 @Import(TestRateLimitConfig.class)
@@ -65,8 +69,17 @@ class PaidCheckoutDuplicateKeyTest {
     @Autowired OrganizationRepository orgs;
     @Autowired UserRepository users;
 
-    @MockitoBean OrderRepository orders;
+    @TestBean OrderRepository orders;
     @MockitoBean StripeClient stripeClient;
+
+    static OrderRepository orders() {
+        OrderRepository repo = mock(OrderRepository.class);
+        when(repo.save(any(Order.class)))
+                .thenThrow(new DataIntegrityViolationException(
+                        "duplicate key value violates unique constraint "
+                                + "\"orders_stripe_payment_intent_id_unique\""));
+        return repo;
+    }
 
     private Event event;
     private TicketTier tier;
@@ -138,11 +151,6 @@ class PaidCheckoutDuplicateKeyTest {
                 "event_id", event.getId().toString(),
                 "buyer_email", "racer@example.test",
                 "client", "native"));
-
-        when(orders.save(any(Order.class)))
-                .thenThrow(new DataIntegrityViolationException(
-                        "duplicate key value violates unique constraint "
-                                + "\"orders_stripe_payment_intent_id_unique\""));
 
         assertThatThrownBy(() -> service.issuePaidOrder(pi))
                 .as("the loser must roll back so Stripe retries onto the idempotent "

@@ -21,7 +21,6 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -78,7 +77,6 @@ public class Summarizer {
     private final ChatClient chat;
     private final LlmPayloadGuard guard;
     private final AudiencePlanProperties props;
-    private final String platformModel;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
     private final Executor executor;
@@ -89,12 +87,11 @@ public class Summarizer {
     private LocalDate capDay;
 
     public Summarizer(@Qualifier(SummaryChatClient.NAME) ChatClient chat, LlmPayloadGuard guard, AudiencePlanProperties props,
-                      @Value("${openrouter.model}") String platformModel, JdbcTemplate jdbc, TransactionTemplate tx,
+                      JdbcTemplate jdbc, TransactionTemplate tx,
                       @Qualifier(SummaryExecutor.NAME) Executor executor, Clock clock) {
         this.chat = chat;
         this.guard = guard;
         this.props = props;
-        this.platformModel = platformModel;
         this.jdbc = jdbc;
         this.tx = tx;
         this.executor = executor;
@@ -146,10 +143,9 @@ public class Summarizer {
         }
     }
 
-    /** The model id summaries use: the configured one, else the platform default. */
+    /** The model id summaries use; a blank setting already bound the code default. */
     String modelId() {
-        String m = props.getSummaryModel();
-        return m == null || m.isBlank() ? platformModel : m;
+        return props.getSummaryModel();
     }
 
     /** A recent model summary of the same event and locale when there is one, else a new one. */
@@ -293,8 +289,12 @@ public class Summarizer {
         return note + "DATA:\n" + data;
     }
 
-    /** Aggregates only: no ids, event title or person. Middle values are left out so none can be shown alone. */
+    /**
+     * Aggregates only: no ids, event title or person. Middle values are left out so none can be shown alone, and
+     * every range is rounded as the card shows it ({@link DisplayBounds}), so the text quotes the card's numbers.
+     */
     static String data(AudiencePlanResponse p) {
+        String planConfidence = DisplayBounds.planConfidence(p.segments());
         Map<String, Object> d = new LinkedHashMap<>();
         d.put("mode", p.mode());
         d.put("capacity", p.capacity());
@@ -303,15 +303,15 @@ public class Summarizer {
         d.put("ticketsPerOrder", p.assumptions().ticketsPerOrder());
         d.put("excludedClasses", p.assumptions().excludeSegments());
         d.put("mailable", p.mailable());
-        d.put("expectedTickets", p.expected() == null ? null : lowHigh(p.expected().low(), p.expected().high()));
+        d.put("expectedTickets", p.expected() == null ? null
+                : lowHigh(DisplayBounds.count(p.expected().low(), p.expected().high(), planConfidence)));
+        DisplayBounds.Range cov = DisplayBounds.percent(p.coverage().low(), p.coverage().high(), planConfidence);
         Map<String, Object> coverage = new LinkedHashMap<>();
-        coverage.put("low", p.coverage().low());
-        coverage.put("high", p.coverage().high());
-        coverage.put("lowPct", pct(p.coverage().low()));
-        coverage.put("highPct", pct(p.coverage().high()));
+        coverage.put("lowPct", cov.low());
+        coverage.put("highPct", cov.high());
         coverage.put("verdict", p.coverage().verdict());
         d.put("coverageOfTarget", coverage);
-        d.put("gapTickets", lowHigh(p.gap().low(), p.gap().high()));
+        d.put("gapTickets", lowHigh(DisplayBounds.gap(p, planConfidence)));
         d.put("gapExceedsLocalAudience", p.gapExceedsTribe());
         List<Map<String, Object>> segs = new ArrayList<>();
         for (AudiencePlanResponse.Segment s : p.segments()) {
@@ -320,8 +320,9 @@ public class Summarizer {
             m.put("genreFit", s.genreFit());
             m.put("eventGenre", s.reason() == null ? null : s.reason().eventGenre());
             m.put("mailable", s.mailable());
-            m.put("responseRatePct", lowHigh(pct(s.rate().low()), pct(s.rate().high())));
-            m.put("expectedTickets", lowHigh(s.expected().low(), s.expected().high()));
+            m.put("responseRatePct", lowHigh(DisplayBounds.percent(s.rate().low(), s.rate().high(), s.confidence())));
+            m.put("expectedTickets", lowHigh(DisplayBounds.count(s.expected().low(), s.expected().high(),
+                    s.confidence())));
             m.put("confidence", s.confidence());
             if (s.reason() != null) m.put("classRule", classRule(s.reason()));
             segs.add(m);
@@ -344,7 +345,7 @@ public class Summarizer {
             m.put("kind", g.kind());
             m.put("method", g.method());
             m.put("towns", g.cityKeys());
-            m.put("people", g.size() == null ? null : lowHigh(g.size().low(), g.size().high()));
+            m.put("people", people(g));
             groups.add(m);
         }
         d.put("newPeopleGroups", groups);
@@ -372,18 +373,22 @@ public class Summarizer {
         return m;
     }
 
+    /** As the portrait panel shows it: a context group is its low alone, an audience group a research-prior range. */
+    private static Object people(AudiencePortraitResponse.NewPeopleGroup g) {
+        if (g.size() == null) return null;
+        if ("context".equals(g.kind())) return g.size().low();
+        return lowHigh(DisplayBounds.count(g.size().low(), g.size().high(), DisplayBounds.PRIOR));
+    }
+
+    private static Map<String, Object> lowHigh(DisplayBounds.Range r) {
+        return lowHigh(r.low(), r.high());
+    }
+
     private static Map<String, Object> lowHigh(Object low, Object high) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("low", low);
         m.put("high", high);
         return m;
-    }
-
-    /** A 0..1 ratio as a percent, exact (0.36 → 36), so "36%" traces to a field. */
-    private static BigDecimal pct(Double ratio) {
-        if (ratio == null) return null;
-        BigDecimal v = BigDecimal.valueOf(ratio).movePointRight(2).stripTrailingZeros();
-        return v.scale() < 0 ? v.setScale(0) : v;
     }
 
     private List<String> knownNames(UUID orgId) {

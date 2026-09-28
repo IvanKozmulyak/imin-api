@@ -8,7 +8,7 @@
       "index": 0,
       "message": {
         "role": "assistant",
-        "content": "{\"headline\": \"Votre liste pourrait apporter 26–93 des 255 billets visés.\", \"segmentLines\": [\"Fidèles du même genre : 40 joignables, 8–26 billets attendus.\", \"Réguliers : 70 joignables, 7–22 billets attendus.\", \"Nouveaux : 235 joignables, 11–45 billets attendus.\"], \"gapLine\": \"Il reste 162–229 billets à trouver hors de votre liste.\", \"actions\": [\"Invitez les fidèles le 26 septembre et le 21 octobre 2026.\", \"Invitez les réguliers le 26 septembre et le 21 octobre 2026.\", \"Invitez les nouveaux le 26.09.2026 ; 15 % sont mis de côté pour mesurer l’effet.\"], \"assumptions\": [\"Objectif : 85 % de 300 billets.\", \"1,6 billet par commande.\"]}"
+        "content": "{\"headline\": \"Votre liste pourrait apporter 25–95 des 255 billets visés.\", \"segmentLines\": [\"Fidèles du même genre : 40 joignables, 5–30 billets attendus.\", \"Réguliers : 70 joignables, 5–25 billets attendus.\", \"Nouveaux : 235 joignables, 10–45 billets attendus.\"], \"gapLine\": \"Il reste 160–230 billets à trouver hors de votre liste.\", \"actions\": [\"Invitez les fidèles le 26 septembre et le 21 octobre 2026.\", \"Invitez les réguliers le 26 septembre et le 21 octobre 2026.\", \"Invitez les nouveaux le 26.09.2026 ; 15 % sont mis de côté pour mesurer l’effet.\"], \"assumptions\": [\"Objectif : 85 % de 300 billets.\", \"1,6 billet par commande.\"]}"
       },
       "finish_reason": "stop"
     }

@@ -762,7 +762,7 @@ abstract class AudiencePlanInviteOnPublishScenarios {
     private void publish(Event e) {
         jdbc.update("update events set status = 'LIVE', published_at = ? where id = ?",
                 Timestamp.from(Instant.now()), e.getId());
-        new PlanRefreshJob(planService, eventRepo, Clock.systemUTC(), null, inviteOnPublish)
+        new PlanRefreshJob(planService, eventRepo, Clock.systemUTC(), null, inviteOnPublish, null)
                 .onEventPublished(new PredictorReactivityEvents.EventPublished(e.getId()));
     }
 

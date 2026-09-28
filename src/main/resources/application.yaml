@@ -889,9 +889,10 @@ imin:
     consent-gate-all-campaigns: ${IMIN_CONSENT_GATE_ALL_CAMPAIGNS:false}
     # Plan summaries: generated lazily on the plan GET, per requested locale. False keeps summary null.
     summary-enabled: ${IMIN_AUDIENCE_PLAN_SUMMARY_ENABLED:true}
-    # OpenRouter model for summaries; blank = openrouter.model.
+    # OpenRouter model for summaries; blank = anthropic/claude-haiku-4.5 (code default).
     summary-model: ${IMIN_AUDIENCE_PLAN_SUMMARY_MODEL:}
-    # USD per million prompt / completion tokens of that model; either blank leaves audience_plans.cost_usd null.
+    # USD per million prompt / completion tokens; blank = Haiku 4.5's 1 / 5 while the model is the default,
+    # else blank leaves audience_plans.cost_usd null.
     summary-price-input-usd-per-mtok: ${IMIN_AUDIENCE_PLAN_SUMMARY_PRICE_IN:}
     summary-price-output-usd-per-mtok: ${IMIN_AUDIENCE_PLAN_SUMMARY_PRICE_OUT:}
     # Model summary calls per org per UTC day (retries count); past it the template is used.

@@ -8,10 +8,13 @@ import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.OrganizationRepository;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.time.Instant;
@@ -33,6 +36,9 @@ import static org.mockito.Mockito.when;
  * batch's recipient statuses have to be committed before the next batch is claimed —
  * otherwise the dispatcher's automatic re-claim re-materialises and re-sends the whole
  * audience.
+ *
+ * <p>The claim is global (LIMIT 10), so campaigns other classes leave due are cleared before and after the test;
+ * otherwise their batches take the provider mock's calls and the crash lands on the wrong campaign.
  */
 @SpringBootTest
 @Import(TestRateLimitConfig.class)
@@ -44,7 +50,23 @@ class CampaignSendCrashResumeTest {
     @Autowired CampaignRepository campaigns;
     @Autowired CampaignRecipientRepository recipients;
     @Autowired OrganizationRepository orgs;
+    @Autowired JdbcTemplate jdbc;
     @MockitoBean CampaignEmailProvider provider;
+
+    @BeforeEach
+    void clearBefore() {
+        clearCampaigns();
+    }
+
+    @AfterEach
+    void clearAfter() {
+        clearCampaigns();
+    }
+
+    private void clearCampaigns() {
+        jdbc.update("delete from campaign_recipients");
+        jdbc.update("delete from campaigns");
+    }
 
     /** Org whose local time is ~noon right now, so quiet hours never gate the dispatcher. */
     private Organization awakeOrg() {

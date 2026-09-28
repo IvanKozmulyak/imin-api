@@ -405,7 +405,8 @@ abstract class AudiencePlanListScenarios {
         eventRepo.save(notYet);
         stub(onSale, fixture());
         // Direct instance: the proxied bean's scheduler lock would skip a second run inside its minimum hold.
-        PlanRefreshJob job = new PlanRefreshJob(planService, eventRepo, clock, null, null);
+        PlanRefreshJob job = new PlanRefreshJob(planService, eventRepo, clock, null, null,
+                org.mockito.Mockito.mock(com.imin.iminapi.audienceplan.service.PlanPruner.class));
 
         PlanRefreshJob.Result first = job.run();
         assertThat(planRows(onSale)).isEqualTo(1);

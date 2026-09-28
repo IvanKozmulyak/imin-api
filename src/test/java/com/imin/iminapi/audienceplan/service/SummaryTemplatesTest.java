@@ -17,15 +17,15 @@ class SummaryTemplatesTest {
     private static final Instant NOW = Instant.parse("2026-09-26T09:00:00Z");
 
     @Test
-    void warm_en_readsEveryRangeFromThePlan() {
+    void warm_en_readsEveryRangeFromThePlan_roundedOutwardAtPrior() {
         AudiencePlanResponse.Summary s = SummaryTemplates.summary(SummaryFixtures.warm(), "en", NOW);
 
-        assertThat(s.headline()).isEqualTo("Your list could bring 26–93 of the 255 tickets you are aiming for.");
+        assertThat(s.headline()).isEqualTo("Your list could bring 25–95 of the 255 tickets you are aiming for.");
         assertThat(s.segmentLines()).containsExactly(
-                "Loyal (same genre as this event): 40 can be emailed, 8–26 tickets expected.",
-                "Repeat (same genre as this event): 70 can be emailed, 7–22 tickets expected.",
-                "First-timers (same genre as this event): 235 can be emailed, 11–45 tickets expected.");
-        assertThat(s.gapLine()).isEqualTo("Still to find beyond your list: 162–229 tickets.");
+                "Loyal (same genre as this event): 40 can be emailed, 5–30 tickets expected.",
+                "Repeat (same genre as this event): 70 can be emailed, 5–25 tickets expected.",
+                "First-timers (same genre as this event): 235 can be emailed, 10–45 tickets expected.");
+        assertThat(s.gapLine()).isEqualTo("Still to find beyond your list: 160–230 tickets.");
         assertThat(s.actions()).containsExactly(
                 "Invite the Loyal group (same genre as this event) on September 26, 2026 and October 21, 2026.",
                 "Invite the Repeat group (same genre as this event) on September 26, 2026 and October 21, 2026.",
@@ -40,11 +40,26 @@ class SummaryTemplatesTest {
         assertThat(s.generatedAt()).isEqualTo(NOW);
     }
 
+    @Test
+    void ownAndIminConfidence_keepTheWholeBounds() {
+        AudiencePlanResponse plan = SummaryFixtures.withConfidence(SummaryFixtures.warm(), "own", "imin", "own");
+
+        AudiencePlanResponse.Summary s = SummaryTemplates.summary(plan, "en", NOW);
+
+        assertThat(s.headline()).isEqualTo("Your list could bring 26–93 of the 255 tickets you are aiming for.");
+        assertThat(s.segmentLines()).containsExactly(
+                "Loyal (same genre as this event): 40 can be emailed, 8–26 tickets expected.",
+                "Repeat (same genre as this event): 70 can be emailed, 7–22 tickets expected.",
+                "First-timers (same genre as this event): 235 can be emailed, 11–45 tickets expected.");
+        assertThat(s.gapLine()).isEqualTo("Still to find beyond your list: 162–229 tickets.");
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"en", "es", "fr", "uk"})
     void everyLocale_writesOnlyNumbersThePlanHolds(String locale) {
         for (AudiencePlanResponse plan : List.of(SummaryFixtures.warm(), SummaryFixtures.cold(),
-                SummaryFixtures.withGap(SummaryFixtures.warm(), 0, 0, List.of("dormant")))) {
+                SummaryFixtures.withGap(SummaryFixtures.warm(), 0, 0, List.of("dormant")),
+                SummaryFixtures.withConfidence(SummaryFixtures.warm(), "own", "imin", "own"))) {
             AudiencePlanResponse.Summary s = SummaryTemplates.summary(plan, locale, NOW);
             assertThat(SummaryNumbers.invented(String.join("\n", texts(s)), SummaryNumbers.allowed(Summarizer.data(plan))))
                     .as(locale + " " + plan.mode()).isEmpty();
