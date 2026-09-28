@@ -17,6 +17,7 @@ import com.imin.iminapi.audienceplan.model.ImportRowProvenance;
 import com.imin.iminapi.audienceplan.repository.ImportRowProvenanceRepository;
 import com.imin.iminapi.audienceplan.service.ConsentGate;
 import com.imin.iminapi.model.Order;
+import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.NotifySubscriptionRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.model.UserRole;
@@ -71,6 +72,7 @@ public class DsarService {
     private final ConsentGate consentGate;
     private final OrderRepository orderRepo;
     private final AudienceAssignmentRepository assignmentRepo;
+    private final EventRepository eventRepo;
 
     public DsarService(MembershipRepository membershipRepo,
                        ConsumerRepository consumerRepo,
@@ -87,7 +89,8 @@ public class DsarService {
                        ImportRowProvenanceRepository provenanceRepo,
                        ConsentGate consentGate,
                        OrderRepository orderRepo,
-                       AudienceAssignmentRepository assignmentRepo) {
+                       AudienceAssignmentRepository assignmentRepo,
+                       EventRepository eventRepo) {
         this.membershipRepo = membershipRepo;
         this.consumerRepo = consumerRepo;
         this.consentRepo = consentRepo;
@@ -104,6 +107,7 @@ public class DsarService {
         this.consentGate = consentGate;
         this.orderRepo = orderRepo;
         this.assignmentRepo = assignmentRepo;
+        this.eventRepo = eventRepo;
     }
 
     /** Art.15 access — returns the membership (caller maps to DTO). Audited. */
@@ -210,10 +214,20 @@ public class DsarService {
                 if (orgId.equals(o.getOrgId()) && o.getBuyerLocale() != null) localeByOrder.put(o.getId(), o.getBuyerLocale());
             }
         }
+        Set<UUID> eventIds = records.stream().map(ConsentRecord::getEventId)
+                .filter(java.util.Objects::nonNull).collect(java.util.stream.Collectors.toSet());
+        Map<UUID, String> nameByEvent = new HashMap<>();
+        if (!eventIds.isEmpty()) {
+            for (com.imin.iminapi.model.Event e : eventRepo.findAllById(eventIds)) {
+                // Only this org's events; a foreign event id must not leak its name.
+                if (orgId.equals(e.getOrgId())) nameByEvent.put(e.getId(), e.getName());
+            }
+        }
         return records.stream()
                 .map(r -> ConsentHistoryEntry.from(r,
                         r.getOrderId() == null ? null : localeByOrder.get(r.getOrderId()),
-                        unproven.contains(r.getId())))
+                        unproven.contains(r.getId()),
+                        r.getEventId() == null ? null : nameByEvent.get(r.getEventId())))
                 .toList();
     }
 

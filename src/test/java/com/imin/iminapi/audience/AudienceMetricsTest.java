@@ -31,6 +31,7 @@ import static org.assertj.core.api.Assertions.*;
  * - listGrowth8w has exactly 8 entries
  * - repeatAttendeePct
  * - unsubRatePct
+ * - complaintRatePct (complaints / delivered, null with nothing delivered)
  * - empty org returns zeros (no NPE)
  * - tenant isolation: metrics scoped to org
  */
@@ -46,6 +47,9 @@ class AudienceMetricsTest {
     @Autowired AudienceMetricsService metricsService;
     @Autowired ConsentService consentService;
     @Autowired DataSource dataSource;
+    @Autowired com.imin.iminapi.marketing.repository.CampaignRepository campaignRepo;
+    @Autowired com.imin.iminapi.marketing.repository.CampaignRecipientRepository recipientRepo;
+    @Autowired com.imin.iminapi.marketing.repository.ProviderEventRepository providerEvents;
 
     @MockitoBean AuditLogger auditLogger;
 
@@ -79,7 +83,7 @@ class AudienceMetricsTest {
         assertThat(dto.softOptIn()).isZero();
         assertThat(dto.repeatAttendeePct()).isZero();
         assertThat(dto.unsubRatePct()).isZero();
-        assertThat(dto.complaintRatePct()).isZero();
+        assertThat(dto.complaintRatePct()).isNull();
         assertThat(dto.listGrowth8w()).hasSize(8);
     }
 
@@ -321,14 +325,60 @@ class AudienceMetricsTest {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // complaintRatePct is 0.0 (not tracked at Tier C)
+    // complaintRatePct: complained recipients / sent-or-delivered recipients
     // ─────────────────────────────────────────────────────────────────────────
 
     @Test
-    void complaint_rate_pct_is_zero_at_tier_c() {
-        seedMembership(orgA, "complaint@m.com");
+    void complaint_rate_pct_is_one_complaint_over_delivered_recipients() {
+        UUID campaign = seedCampaign(orgA);
+        UUID complainer = seedRecipient(campaign, seedMembership(orgA, "c0@m.com"), "complained");
+        complaintEvent(campaign, complainer);
+        for (int i = 1; i < 4; i++) seedRecipient(campaign, seedMembership(orgA, "c" + i + "@m.com"), "delivered");
+        seedRecipient(campaign, seedMembership(orgA, "pending@m.com"), "pending");
+
+        assertThat(metricsService.compute(orgA).complaintRatePct()).isEqualTo(25.0);
+    }
+
+    @Test
+    void complaint_rate_pct_stays_within_100_when_the_complainer_then_unsubscribed() {
+        UUID campaign = seedCampaign(orgA);
+        // No subscribed members left, and the recipient row was overwritten after the complaint.
+        UUID complainer = seedRecipient(campaign, seedMembership(orgA, "gone@m.com"), "unsubscribed");
+        complaintEvent(campaign, complainer);
+        complaintEvent(campaign, complainer);
+        seedRecipient(campaign, seedMembership(orgA, "stay@m.com"), "delivered");
+
         AudienceMetricsDto dto = metricsService.compute(orgA);
-        assertThat(dto.complaintRatePct()).isZero();
+
+        assertThat(dto.subscribedMailable()).isZero();
+        assertThat(dto.complaintRatePct()).isEqualTo(50.0).isLessThanOrEqualTo(100.0);
+    }
+
+    @Test
+    void complaint_rate_pct_is_zero_when_delivered_and_nobody_complained() {
+        seedRecipient(seedCampaign(orgA), seedMembership(orgA, "nocomplaint@m.com"), "delivered");
+
+        assertThat(metricsService.compute(orgA).complaintRatePct()).isEqualTo(0.0);
+    }
+
+    @Test
+    void complaint_rate_pct_is_null_with_zero_delivered() {
+        seedSubscribed(orgA, "sub@m.com");
+        seedRecipient(seedCampaign(orgA), seedMembership(orgA, "p@m.com"), "pending");
+
+        assertThat(metricsService.compute(orgA).complaintRatePct()).isNull();
+    }
+
+    @Test
+    void complaint_rate_pct_ignores_other_orgs_campaigns() {
+        UUID campA = seedCampaign(orgA);
+        seedRecipient(campA, seedMembership(orgA, "a1@m.com"), "delivered");
+        seedRecipient(campA, seedMembership(orgA, "a2@m.com"), "delivered");
+        UUID campB = seedCampaign(orgB);
+        complaintEvent(campB, seedRecipient(campB, seedMembership(orgB, "b@m.com"), "complained"));
+
+        assertThat(metricsService.compute(orgA).complaintRatePct()).isEqualTo(0.0);
+        assertThat(metricsService.compute(orgB).complaintRatePct()).isEqualTo(100.0);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -337,6 +387,47 @@ class AudienceMetricsTest {
 
     private UUID seedMembership(UUID orgId, String email) {
         return seedAndGet(orgId, email).getMembershipId();
+    }
+
+    private UUID seedSubscribed(UUID orgId, String email) {
+        Membership m = seedAndGet(orgId, email);
+        m.setConsentStatus("subscribed");
+        m.setConsentBasis("explicit");
+        return membershipRepo.save(m).getMembershipId();
+    }
+
+    private UUID seedCampaign(UUID orgId) {
+        com.imin.iminapi.marketing.model.Campaign c = new com.imin.iminapi.marketing.model.Campaign();
+        c.setId(UUID.randomUUID());
+        c.setOrgId(orgId);
+        c.setChannel("email");
+        c.setName("metrics-test");
+        c.setStatus("sent");
+        c.setCreatedAt(Instant.now());
+        c.setUpdatedAt(Instant.now());
+        return campaignRepo.save(c).getId();
+    }
+
+    private UUID seedRecipient(UUID campaignId, UUID membershipId, String status) {
+        com.imin.iminapi.marketing.model.CampaignRecipient r = new com.imin.iminapi.marketing.model.CampaignRecipient();
+        r.setId(UUID.randomUUID());
+        r.setCampaignId(campaignId);
+        r.setMembershipId(membershipId);
+        r.setEmail("r-" + UUID.randomUUID() + "@m.com");
+        r.setStatus(status);
+        return recipientRepo.save(r).getId();
+    }
+
+    private void complaintEvent(UUID campaignId, UUID recipientId) {
+        com.imin.iminapi.marketing.model.ProviderEvent e = new com.imin.iminapi.marketing.model.ProviderEvent();
+        e.setId(UUID.randomUUID());
+        e.setProvider("resend");
+        e.setProviderEventId("svix_" + UUID.randomUUID());
+        e.setCampaignId(campaignId);
+        e.setRecipientId(recipientId);
+        e.setType(com.imin.iminapi.marketing.model.ProviderEvent.TYPE_COMPLAINED);
+        e.setCreatedAt(Instant.now());
+        providerEvents.save(e);
     }
 
     /** Seed a membership whose created_at is {@code ageDays} in the past. */
@@ -383,6 +474,9 @@ class AudienceMetricsTest {
     private void wipe() {
         try (java.sql.Connection c = dataSource.getConnection();
              java.sql.Statement s = c.createStatement()) {
+            s.execute("delete from provider_events");
+            s.execute("delete from campaign_recipients");
+            s.execute("delete from campaigns");
             s.execute("delete from suppression_entries");
             s.execute("delete from consent_records");
             s.execute("delete from segments");

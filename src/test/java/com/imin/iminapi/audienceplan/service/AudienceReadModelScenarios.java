@@ -650,11 +650,13 @@ abstract class AudienceReadModelScenarios {
     }
 
     AudienceMetricsService metrics(boolean enabled) {
-        return new AudienceMetricsService(membershipRepo, consentRepo, new AudiencePlanAccess(props(enabled)), readModel());
+        return new AudienceMetricsService(membershipRepo, consentRepo, new AudiencePlanAccess(props(enabled)), readModel(),
+                recipientRepo);
     }
 
     AudienceMetricsService metrics(AudienceReadModel readModel) {
-        return new AudienceMetricsService(membershipRepo, consentRepo, new AudiencePlanAccess(props(true)), readModel);
+        return new AudienceMetricsService(membershipRepo, consentRepo, new AudiencePlanAccess(props(true)), readModel,
+                recipientRepo);
     }
 
     AudienceService service(boolean enabled) {

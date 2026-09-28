@@ -397,6 +397,18 @@ class AudienceControllerWebTest {
 
     @Test
     @WithOrgA
+    void get_metrics_serializes_a_null_complaint_rate_as_null() throws Exception {
+        when(metricsService.compute(ORG_A)).thenReturn(AudienceMetricsDto.base(
+                1L, 0L, 1L, 0L, 0.0, List.of(0, 0, 0, 0, 0, 0, 0, 1), 0.0, 0L, 0L, 7.03125, null));
+
+        mvc.perform(get("/api/v1/audience/metrics"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.unsubRatePct").value(7.03125))
+                .andExpect(jsonPath("$.complaintRatePct").value(org.hamcrest.Matchers.nullValue()));
+    }
+
+    @Test
+    @WithOrgA
     void get_metrics_serializes_the_read_model_fields() throws Exception {
         when(metricsService.compute(ORG_A)).thenReturn(new AudienceMetricsDto(
                 10L, 6L, 4L, 5L, 50.0, List.of(0, 0, 0, 0, 0, 0, 0, 1), 20.0, 5L, 0L, 0.0, 0.0,
@@ -483,7 +495,8 @@ class AudienceControllerWebTest {
         when(audienceService.getMember(eq(ORG_A), eq(MEMBER_A))).thenReturn(stubMember(MEMBER_A));
         when(dsarService.consentHistory(eq(ORG_A), eq(MEMBER_A))).thenReturn(List.of(
                 new ConsentHistoryEntry(Instant.parse("2025-02-01T10:00:00Z"), "email", true,
-                        "soft_opt_in", "checkout", "Left the pre-ticked box ticked at checkout", null, null, null, true)));
+                        "soft_opt_in", "checkout", "Left the pre-ticked box ticked at checkout", null, null, null, true,
+                        false, null, null, null)));
 
         mvc.perform(post("/api/v1/audience/members/" + MEMBER_A + "/export"))
                 .andExpect(status().isOk())
@@ -515,9 +528,11 @@ class AudienceControllerWebTest {
         when(dsarService.consentHistory(eq(ORG_A), eq(MEMBER_A))).thenReturn(List.of(
                 new ConsentHistoryEntry(Instant.parse("2025-02-01T10:00:00Z"), "email", true,
                         "explicit", "checkout", "Ticked the box at checkout", "2026-10-01",
-                        UUID.fromString("0f0f0f0f-0000-4000-8000-000000000001"), "fr", false),
+                        UUID.fromString("0f0f0f0f-0000-4000-8000-000000000001"), "fr", false,
+                        true, Instant.parse("2025-02-01T10:05:00Z"),
+                        UUID.fromString("0e0e0e0e-0000-4000-8000-000000000002"), "Night One"),
                 new ConsentHistoryEntry(Instant.parse("2025-03-01T10:00:00Z"), "email", false,
-                        null, "one_click", null, null, null, null, false)));
+                        null, "one_click", null, null, null, null, false, false, null, null, null)));
 
         mvc.perform(get("/api/v1/audience/members/" + MEMBER_A + "/consent-history"))
                 .andExpect(status().isOk())
@@ -531,7 +546,14 @@ class AudienceControllerWebTest {
                 .andExpect(jsonPath("$[1].orderId").value(org.hamcrest.Matchers.nullValue()))
                 .andExpect(jsonPath("$[0].locale").value("fr"))
                 .andExpect(jsonPath("$[0].legacy").value(false))
-                .andExpect(jsonPath("$[1].locale").value(org.hamcrest.Matchers.nullValue()));
+                .andExpect(jsonPath("$[1].locale").value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("$[0].confirmationRequired").value(true))
+                .andExpect(jsonPath("$[0].confirmedAt").value("2025-02-01T10:05:00Z"))
+                .andExpect(jsonPath("$[0].eventId").value("0e0e0e0e-0000-4000-8000-000000000002"))
+                .andExpect(jsonPath("$[0].eventName").value("Night One"))
+                .andExpect(jsonPath("$[1].confirmationRequired").value(false))
+                .andExpect(jsonPath("$[1].confirmedAt").value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("$[1].eventName").value(org.hamcrest.Matchers.nullValue()));
     }
 
     @Test

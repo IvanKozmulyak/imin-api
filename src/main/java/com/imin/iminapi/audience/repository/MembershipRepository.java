@@ -91,12 +91,15 @@ public interface MembershipRepository extends Repository<Membership, UUID> {
                and m.status <> 'erase_pending'
                and (:lifecycle is null or m.lifecycle = :lifecycle)
                and (lower(m.displayName) like lower(concat('%', :search, '%'))
-                    or lower(cast(m.membershipId as string)) like lower(concat('%', :search, '%')))
+                    or lower(cast(m.membershipId as string)) like lower(concat('%', :search, '%'))
+                    or m.consumerId in (select c.consumerId from Consumer c
+                                         where c.normalizedEmail = :searchEmail))
              order by m.createdAt desc, m.membershipId desc
             """)
     List<Membership> searchByOrg(@Param("orgId") UUID orgId,
                                   @Param("lifecycle") String lifecycle,
                                   @Param("search") String search,
+                                  @Param("searchEmail") String searchEmail,
                                   Pageable pageable);
 
     // ---- segment resolution ----

@@ -6,6 +6,7 @@ import com.imin.iminapi.audience.repository.ConsentRecordRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
 import com.imin.iminapi.audienceplan.service.AudienceReadModel;
+import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -22,15 +23,18 @@ public class AudienceMetricsService {
     private final ConsentRecordRepository consentRepo;
     private final AudiencePlanAccess planAccess;
     private final AudienceReadModel readModel;
+    private final CampaignRecipientRepository recipientRepo;
 
     public AudienceMetricsService(MembershipRepository membershipRepo,
                                    ConsentRecordRepository consentRepo,
                                    AudiencePlanAccess planAccess,
-                                   AudienceReadModel readModel) {
+                                   AudienceReadModel readModel,
+                                   CampaignRecipientRepository recipientRepo) {
         this.membershipRepo = membershipRepo;
         this.consentRepo = consentRepo;
         this.planAccess = planAccess;
         this.readModel = readModel;
+        this.recipientRepo = recipientRepo;
     }
 
     @Transactional(readOnly = true)
@@ -59,7 +63,10 @@ public class AudienceMetricsService {
         // Unsub rate: unsub records / total subscribers
         long unsubCount = consentRepo.countUnsubsByOrgId(orgId);
         double unsubPct = subscribed == 0 ? 0.0 : (unsubCount * 100.0 / Math.max(subscribed, 1));
-        double complaintPct = 0.0; // not tracked at Tier C
+        // Complaints ÷ delivered, as ComplaintRateBreaker; null rather than 0 when nothing was sent.
+        long sentRecipients = recipientRepo.countSentRecipientsByOrgId(orgId);
+        Double complaintPct = sentRecipients == 0 ? null
+                : recipientRepo.countComplainedRecipientsByOrgId(orgId) * 100.0 / sentRecipients;
 
         if (!planAccess.isEnabled(orgId)) {
             return AudienceMetricsDto.base(total, buyers, prospects, subscribed,

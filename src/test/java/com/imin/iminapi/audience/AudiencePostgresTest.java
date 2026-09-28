@@ -176,6 +176,20 @@ class AudiencePostgresTest {
     }
 
     @Test
+    void caseB_listMembers_withExactEmail_matchesOnPostgres() {
+        MemberPage page = audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(null, 50, null, " Bob@A.com ", null, null, null, null));
+        assertThat(page.items()).extracting(MemberDto::name).containsExactly("Bob Marley");
+        assertThat(audienceService.exportMembersCsv(ORG_A, null, "BOB@a.com"))
+                .extracting(MemberDto::name).containsExactly("Bob Marley");
+    }
+
+    @Test
+    void caseB_listMembers_withAnotherOrgsEmail_returnsEmpty() {
+        MemberPage page = audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(null, 50, null, "dana@b.com", null, null, null, null));
+        assertThat(page.items()).isEmpty();
+    }
+
+    @Test
     void caseB_listMembers_withSearch_noMatch_returnsEmpty() {
         MemberPage page = audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(null, 50, null, "zzznomatch", null, null, null, null));
         assertThat(page.items()).isEmpty();

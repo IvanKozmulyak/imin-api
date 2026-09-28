@@ -191,6 +191,65 @@ class AudienceDsarTest {
     }
 
     @Test
+    void consent_history_marks_door_consent_awaiting_confirmation_and_names_the_event() {
+        UUID mid = seedMembership(orgA, "trail-door@d.com");
+        Event event = seedEvent(orgA);
+        String proof = "Ticked the door QR sign-up at event " + event.getId() + " (locale en) next to: \"x\"";
+        consentService.capture(orgA, mid, "explicit", "door_qr", proof, "email", "door-v1", null,
+                event.getId(), ConsentOrigin.DATA_SUBJECT, null);
+
+        var entry = dsarService.consentHistory(orgA, mid).get(0);
+
+        assertThat(entry.confirmationRequired()).isTrue();
+        assertThat(entry.confirmedAt()).isNull();
+        assertThat(entry.eventId()).isEqualTo(event.getId());
+        assertThat(entry.eventName()).isEqualTo("DSAR Event");
+        assertThat(entry.proofText()).isEqualTo(proof);
+    }
+
+    @Test
+    void consent_history_carries_confirmed_at_once_confirmed() {
+        UUID mid = seedMembership(orgA, "trail-confirmed@d.com");
+        consentService.capture(orgA, mid, "explicit", "survey", "Ticked the survey", "email", "s-v1", null,
+                null, ConsentOrigin.DATA_SUBJECT, null);
+        Instant confirmed = Instant.parse("2026-09-01T10:00:00Z");
+        ConsentRecord r = consentRepo.findByMembershipId(mid).get(0);
+        r.setConfirmedAt(confirmed);
+        consentRepo.save(r);
+
+        var entry = dsarService.consentHistory(orgA, mid).get(0);
+
+        assertThat(entry.confirmationRequired()).isTrue();
+        assertThat(entry.confirmedAt()).isEqualTo(confirmed);
+        assertThat(entry.eventId()).isNull();
+        assertThat(entry.eventName()).isNull();
+    }
+
+    @Test
+    void consent_history_checkout_record_needs_no_confirmation() {
+        UUID mid = seedMembership(orgA, "trail-checkout@d.com");
+        consentService.capture(orgA, mid, "explicit", "checkout", "Ticked the box", principalA);
+
+        var entry = dsarService.consentHistory(orgA, mid).get(0);
+
+        assertThat(entry.confirmationRequired()).isFalse();
+        assertThat(entry.confirmedAt()).isNull();
+    }
+
+    @Test
+    void consent_history_does_not_name_another_orgs_event() {
+        UUID mid = seedMembership(orgA, "trail-foreign@d.com");
+        Event foreign = seedEvent(orgB);
+        consentService.capture(orgA, mid, "explicit", "door_qr", "proof", "email", "door-v1", null,
+                foreign.getId(), ConsentOrigin.DATA_SUBJECT, null);
+
+        var entry = dsarService.consentHistory(orgA, mid).get(0);
+
+        assertThat(entry.eventId()).isEqualTo(foreign.getId());
+        assertThat(entry.eventName()).isNull();
+    }
+
+    @Test
     void consent_history_is_empty_for_a_member_who_never_consented() {
         UUID mid = seedMembership(orgA, "notrail@d.com");
         assertThat(dsarService.consentHistory(orgA, mid)).isEmpty();

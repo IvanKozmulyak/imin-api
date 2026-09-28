@@ -20,6 +20,32 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
     java.util.Optional<CampaignRecipient> findByProviderMessageId(String providerMessageId);
 
     /**
+     * Distinct sent recipients of the org's campaigns with a provider complaint event — the event
+     * survives a later status overwrite; the campaign_id join uses the (campaign_id, type) index. Status set mirrors OutcomeStore.SENT_STATUSES.
+     */
+    @Query("""
+            select count(distinct r.id)
+              from com.imin.iminapi.marketing.model.ProviderEvent pe, CampaignRecipient r,
+                   com.imin.iminapi.marketing.model.Campaign c
+             where pe.recipientId = r.id
+               and pe.campaignId = c.id
+               and r.campaignId = c.id
+               and c.orgId = :orgId
+               and pe.type = 'email.complained'
+               and r.status in ('sent', 'delivered', 'opened', 'clicked', 'complained', 'unsubscribed')
+            """)
+    long countComplainedRecipientsByOrgId(@Param("orgId") UUID orgId);
+
+    /** Recipient rows of the org's campaigns that left the building (OutcomeStore.SENT_STATUSES). */
+    @Query("""
+            select count(r) from CampaignRecipient r, com.imin.iminapi.marketing.model.Campaign c
+             where r.campaignId = c.id
+               and c.orgId = :orgId
+               and r.status in ('sent', 'delivered', 'opened', 'clicked', 'complained', 'unsubscribed')
+            """)
+    long countSentRecipientsByOrgId(@Param("orgId") UUID orgId);
+
+    /**
      * Number of recipients actually dispatched for an event's campaigns whose send fell
      * inside a sales window — feeds the event outcome record's {@code campaign_sends}
      * (predictor spec §6.1). Joins recipients to their campaign by id (CampaignRecipient

@@ -116,7 +116,7 @@ public class AudienceService {
         PageRequest page = PageRequest.of(0, cap);
         boolean hasSearch = search != null && !search.isBlank();
         List<Membership> rows = hasSearch
-                ? membershipRepo.searchByOrg(orgId, lifecycle, search, page)
+                ? membershipRepo.searchByOrg(orgId, lifecycle, search, EmailNormalizer.normalize(search), page)
                 : membershipRepo.listByOrg(orgId, lifecycle, page);
 
         List<UUID> consumerIds = rows.stream().map(Membership::getConsumerId).distinct().toList();

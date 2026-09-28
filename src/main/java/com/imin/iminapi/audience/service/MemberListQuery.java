@@ -131,9 +131,12 @@ public class MemberListQuery {
             params.put("lifecycle", f.lifecycle());
         }
         if (f.search() != null && !f.search().isBlank()) {
+            // Email matches only exactly: the organizer already sees each member's address.
             sql.append(" AND (LOWER(m.display_name) LIKE :search"
-                    + " OR LOWER(CAST(m.membership_id AS VARCHAR)) LIKE :search)");
+                    + " OR LOWER(CAST(m.membership_id AS VARCHAR)) LIKE :search"
+                    + " OR m.consumer_id IN (SELECT c.consumer_id FROM consumers c WHERE c.normalized_email = :searchEmail))");
             params.put("search", "%" + f.search().toLowerCase(Locale.ROOT) + "%");
+            params.put("searchEmail", EmailNormalizer.normalize(f.search()));
         }
         if (f.guestClass() != null) {
             // No feature row counts as none, as in the metrics class counts.
