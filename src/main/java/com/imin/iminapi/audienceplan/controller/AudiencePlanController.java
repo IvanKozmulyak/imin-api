@@ -3,6 +3,7 @@ package com.imin.iminapi.audienceplan.controller;
 import com.imin.iminapi.audienceplan.dto.AudiencePlanRecomputeRequest;
 import com.imin.iminapi.audienceplan.dto.AudiencePlanResponse;
 import com.imin.iminapi.audienceplan.service.PlanService;
+import com.imin.iminapi.audienceplan.service.PortraitResearchService;
 import com.imin.iminapi.audienceplan.service.Summarizer;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.CurrentUser;
@@ -19,7 +20,8 @@ import java.util.UUID;
 
 /**
  * An event's audience plan for the caller's org; {@code locale} only selects the summary text. Only the GET asks for
- * a missing summary, after the plan is committed, so LLM cost follows organizers opening the card.
+ * a missing summary and missing portrait research, after the plan is committed, so LLM cost follows organizers
+ * opening the card.
  */
 @RestController
 @RequestMapping("/api/v1/events")
@@ -27,10 +29,12 @@ public class AudiencePlanController {
 
     private final PlanService plans;
     private final Summarizer summarizer;
+    private final PortraitResearchService research;
 
-    public AudiencePlanController(PlanService plans, Summarizer summarizer) {
+    public AudiencePlanController(PlanService plans, Summarizer summarizer, PortraitResearchService research) {
         this.plans = plans;
         this.summarizer = summarizer;
+        this.research = research;
     }
 
     @GetMapping("/{eventId}/audience-plan")
@@ -38,6 +42,8 @@ public class AudiencePlanController {
                                         @RequestParam(required = false) String locale) {
         AudiencePlanResponse plan = plans.current(p.orgId(), eventId, locale);
         summarizer.requestIfMissing(p.orgId(), plan, locale);
+        plans.portraitKey(p.orgId(), eventId)
+                .ifPresent(k -> research.requestIfMissing(p.orgId(), k.genreKey(), k.cityKey()));
         return plan;
     }
 

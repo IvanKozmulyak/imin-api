@@ -312,18 +312,33 @@ public class PlanService {
             h.append("|newPeople:").append(g.key()).append(':').append(String.join(",", g.cityKeys()))
                     .append(':').append(g.size() == null ? "null" : g.size().low() + "-" + g.size().high())
                     .append(':').append(g.method());
+            // Research text is shown with the plan, so a new wording is a new plan.
+            if (g.research() != null) {
+                h.append(':').append(g.research().label()).append(':').append(g.research().description())
+                        .append(':').append(g.research().confidence());
+            }
         }
         return sha256(h.toString());
     }
 
-    /** The open-data portrait of the event's genre and city; none when the genre is not a bucket or no city is set. */
+    /** The portrait groups of the event's genre and city; none when the genre is not a bucket or no city is set. */
     List<AudiencePortraitResponse.NewPeopleGroup> newPeople(Event event) {
+        return portraitKey(event).map(k -> portraits.forCity(k.genreKey(), k.cityKey()).groups()).orElse(List.of());
+    }
+
+    /** The (genre, city) pair of the org's event; empty when it is not the org's, or has no bucket genre or city. */
+    @Transactional(readOnly = true)
+    public Optional<PortraitService.PortraitKey> portraitKey(UUID orgId, UUID eventId) {
+        return events.findActive(eventId).filter(e -> orgId.equals(e.getOrgId())).flatMap(this::portraitKey);
+    }
+
+    private Optional<PortraitService.PortraitKey> portraitKey(Event event) {
         String genre = event.getGenreKey();
         String city = event.getVenueCityKey();
         if (genre == null || !logic.genres().whitelist().contains(genre) || city == null || city.isBlank()) {
-            return List.of();
+            return Optional.empty();
         }
-        return portraits.forCity(genre, city).groups();
+        return Optional.of(new PortraitService.PortraitKey(genre, city));
     }
 
     // ── persistence ────────────────────────────────────────────────────────

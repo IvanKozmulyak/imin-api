@@ -87,7 +87,7 @@ final class SummaryFixtures {
     /** A new-people group; null bounds = unknown size. */
     static AudiencePortraitResponse.NewPeopleGroup group(String key, String kind, Integer low, Integer high) {
         return new AudiencePortraitResponse.NewPeopleGroup(key, "open_data", kind, "fr_catchment", List.of("metz"),
-                low == null ? null : new AudiencePortraitResponse.SizeRange(low, high), "electronic_first", List.of());
+                low == null ? null : new AudiencePortraitResponse.SizeRange(low, high), "electronic_first", List.of(), null);
     }
 
     static AudiencePlanResponse withGap(AudiencePlanResponse p, int low, int high, List<String> excluded) {

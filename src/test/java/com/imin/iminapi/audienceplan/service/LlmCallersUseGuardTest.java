@@ -49,7 +49,7 @@ class LlmCallersUseGuardTest {
     void rule_flagsEveryLlmHandleWithoutGuard() {
         assertThat(List.of(CallerWithoutGuard.class, ModelCallerWithoutGuard.class, BuilderHolder.class,
                 StreamingHolder.class, ProviderHolder.class, SupplierHolder.class, OptionalHolder.class,
-                ListOfProvidersHolder.class, ConstructorOnlyCaller.class))
+                ListOfProvidersHolder.class, ConstructorOnlyCaller.class, PortraitClientWithoutGuard.class))
                 .allSatisfy(c -> assertThat(followsRule(c)).as(c.getSimpleName()).isFalse());
     }
 
@@ -73,7 +73,8 @@ class LlmCallersUseGuardTest {
 
     private static boolean isLlmHandle(Class<?> t) {
         return ChatClient.class.isAssignableFrom(t) || ChatClient.Builder.class.isAssignableFrom(t)
-                || ChatModel.class.isAssignableFrom(t) || StreamingChatModel.class.isAssignableFrom(t);
+                || ChatModel.class.isAssignableFrom(t) || StreamingChatModel.class.isAssignableFrom(t)
+                || PortraitLlmClient.class.isAssignableFrom(t);
     }
 
     /** True when the type or any of its generic arguments, bounds or array components matches. */
@@ -119,6 +120,10 @@ class LlmCallersUseGuardTest {
 
     static class ModelCallerWithoutGuard {
         ChatModel model;
+    }
+
+    static class PortraitClientWithoutGuard {
+        PortraitLlmClient portraits;
     }
 
     static class BuilderHolder {

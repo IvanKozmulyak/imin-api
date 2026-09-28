@@ -129,3 +129,11 @@ imin:
     summary-daily-cap-per-org: ""
     summary-timeout: ""
     legal-identity-all-campaigns: false
+    portrait-model: ""
+    portrait-price-input-usd-per-mtok: ""
+    portrait-price-output-usd-per-mtok: ""
+    portrait-timeout: ""
+    portrait-daily-cap-per-org: ""
+    # 0 so no Spring test reaches OpenRouter; portrait research tests use stubs or a local server.
+    portrait-daily-cap-global: 0
+    portrait-refresh-batch: ""

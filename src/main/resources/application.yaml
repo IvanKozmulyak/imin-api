@@ -901,6 +901,18 @@ imin:
     summary-timeout: ${IMIN_AUDIENCE_PLAN_SUMMARY_TIMEOUT:30s}
     # Legal name + contact required for every campaign, not only audience-plan ones. Flip only after counting orgs without them.
     legal-identity-all-campaigns: ${IMIN_LEGAL_IDENTITY_ALL_CAMPAIGNS:false}
+    # Portrait research: OpenRouter web plugin, then a no-tools extraction. Lazy on the portrait/plan GET + weekly refresh.
+    portrait-model: ${IMIN_AUDIENCE_PORTRAIT_MODEL:anthropic/claude-haiku-4.5}
+    # USD per million prompt / completion tokens, used for cost_usd when OpenRouter reports no cost.
+    portrait-price-input-usd-per-mtok: ${IMIN_AUDIENCE_PORTRAIT_PRICE_IN:1}
+    portrait-price-output-usd-per-mtok: ${IMIN_AUDIENCE_PORTRAIT_PRICE_OUT:5}
+    # Longest wait for one portrait answer; a timeout is never retried.
+    portrait-timeout: ${IMIN_AUDIENCE_PORTRAIT_TIMEOUT:30s}
+    # Portrait LLM calls (2 per portrait) per org per UTC day, and across everything incl. the refresh job.
+    portrait-daily-cap-per-org: ${IMIN_AUDIENCE_PORTRAIT_DAILY_CAP_PER_ORG:10}
+    portrait-daily-cap-global: ${IMIN_AUDIENCE_PORTRAIT_DAILY_CAP_GLOBAL:100}
+    # Portraits the weekly refresh renews per run.
+    portrait-refresh-batch: ${IMIN_AUDIENCE_PORTRAIT_REFRESH_BATCH:20}
 
 # resendTracking reports TRACKING_ON (ranked below UP, 200) so a Resend setting never fails the healthcheck.
 # A custom http-mapping replaces Boot's defaults, so down/out-of-service must be restated as 503.

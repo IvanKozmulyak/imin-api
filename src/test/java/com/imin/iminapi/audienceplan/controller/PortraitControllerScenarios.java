@@ -10,6 +10,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.test.web.servlet.MockMvc;
@@ -17,6 +18,10 @@ import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
+import java.sql.Timestamp;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.UUID;
 
@@ -37,6 +42,7 @@ abstract class PortraitControllerScenarios {
 
     @Autowired MockMvc mvc;
     @Autowired AudiencePlanProperties props;
+    @Autowired JdbcTemplate jdbc;
 
     private final AuthPrincipal memberA = principal();
     private final AuthPrincipal memberB = principal();
@@ -44,6 +50,69 @@ abstract class PortraitControllerScenarios {
     @AfterEach
     void tearDown() {
         props.setEnabled(true);
+        jdbc.update("DELETE FROM audience_portraits WHERE city_key IN ('nancy', 'thionville')");
+    }
+
+    @Test
+    void get_recordsTheRequest_andReportsResearchPending() throws Exception {
+        jdbc.update("DELETE FROM audience_portraits WHERE city_key = 'nancy'");
+
+        portrait(memberA, "pop", "Nancy").andExpect(status().isOk())
+                .andExpect(jsonPath("$.research.status").value("pending"))
+                .andExpect(jsonPath("$.research.generatedAt").value(nullValue()))
+                .andExpect(jsonPath("$.groups.length()").value(3));
+
+        assertThat(jdbc.queryForObject("SELECT status FROM audience_portraits WHERE genre_key = 'pop' AND city_key = 'nancy'",
+                String.class)).isEqualTo("pending");
+    }
+
+    @Test
+    void readyResearch_isServedAfterTheOpenDataGroups() throws Exception {
+        Instant generated = Instant.now().minus(Duration.ofDays(2)).truncatedTo(ChronoUnit.SECONDS);
+        jdbc.update("""
+                INSERT INTO audience_portraits (id, genre_key, city_key, status, research_groups, version, generated_at,
+                  expires_at, requested_at, reviewed_by, created_at) VALUES (?, 'pop', 'thionville', 'ready', ?, 1, ?, ?, ?,
+                  'ivan', ?)""", UUID.randomUUID(), """
+                [{"label":"Thionville students","description":"They meet at the campus bar nights.",
+                  "basis":"students","towns":["thionville"],
+                  "sources":[{"url":"https://example.org/thionville","title":"Campus nights"}],"confidence":"assumed"}]""",
+                Timestamp.from(generated), Timestamp.from(generated.plus(Duration.ofDays(90))), Timestamp.from(generated),
+                Timestamp.from(generated));
+
+        portrait(memberA, "pop", "Thionville").andExpect(status().isOk())
+                .andExpect(jsonPath("$.research.status").value("ready"))
+                .andExpect(jsonPath("$.research.stale").value(false))
+                .andExpect(jsonPath("$.research.reviewedBy").value("ivan"))
+                .andExpect(jsonPath("$.groups.length()").value(4))
+                .andExpect(jsonPath("$.groups[3].key").value("research_1"))
+                .andExpect(jsonPath("$.groups[3].origin").value("research"))
+                .andExpect(jsonPath("$.groups[3].size.low").value(605))
+                .andExpect(jsonPath("$.groups[3].research.label").value("Thionville students"))
+                .andExpect(jsonPath("$.groups[3].research.description").value("They meet at the campus bar nights."))
+                .andExpect(jsonPath("$.groups[3].research.basis").value("students"))
+                .andExpect(jsonPath("$.groups[3].research.confidence").value("assumed"))
+                .andExpect(jsonPath("$.groups[3].research.aiDisclosure").value("mode=ai-originated"));
+    }
+
+    @Test
+    void unknownCity_isNotRecorded() throws Exception {
+        portrait(memberA, "pop", "Atlantis").andExpect(status().isOk())
+                .andExpect(jsonPath("$.research.status").value("none"));
+
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audience_portraits WHERE city_key = 'atlantis'",
+                Integer.class)).isZero();
+    }
+
+    @Test
+    void killSwitchOffOrBadGenre_recordsNothing() throws Exception {
+        jdbc.update("DELETE FROM audience_portraits WHERE city_key = 'nancy'");
+        props.setEnabled(false);
+        portrait(memberA, "pop", "nancy").andExpect(status().isNotFound());
+        props.setEnabled(true);
+        portrait(memberA, "techno", "nancy").andExpect(status().isBadRequest());
+
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audience_portraits WHERE city_key = 'nancy'",
+                Integer.class)).isZero();
     }
 
     @Test

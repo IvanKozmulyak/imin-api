@@ -6,10 +6,14 @@ import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
 import com.imin.iminapi.audienceplan.config.LogicLoader;
 import com.imin.iminapi.audienceplan.dto.AudiencePortraitResponse;
 import com.imin.iminapi.audienceplan.dto.AudiencePortraitResponse.NewPeopleGroup;
+import com.imin.iminapi.audienceplan.dto.AudiencePortraitResponse.PortraitResearchGroup;
+import com.imin.iminapi.audienceplan.dto.AudiencePortraitResponse.PortraitResearchStatus;
 import com.imin.iminapi.audienceplan.dto.AudiencePortraitResponse.PortraitSource;
 import com.imin.iminapi.audienceplan.dto.AudiencePortraitResponse.PortraitTown;
 import com.imin.iminapi.audienceplan.dto.AudiencePortraitResponse.SizeRange;
 import com.imin.iminapi.audienceplan.opendata.OpenDataCities;
+import com.imin.iminapi.audienceplan.service.PortraitResearchStore.StoredGroup;
+import com.imin.iminapi.audienceplan.service.PortraitResearchStore.WebSource;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
 import org.junit.jupiter.api.Test;
@@ -21,13 +25,17 @@ import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /** Runs over the committed seed rows (INSEE, MESR, Wikidata), so every size traces to a shipped figure. */
 class PortraitServiceTest {
@@ -40,9 +48,12 @@ class PortraitServiceTest {
     private static final String INSEE = "Source : Insee, recensement de la population";
     private static final String MESR = "Source : MESR, Atlas régional des effectifs d'étudiants";
     private static final String LO = "Licence Ouverte 2.0";
+    private static final String WEB_URL = "https://example.org/metz-scene";
+    private static final Instant GENERATED = Instant.parse("2026-09-20T10:00:00Z");
 
     private final InMemoryCityOpenDataRepository repo = seeded();
     private final AudiencePlanProperties props = new AudiencePlanProperties();
+    private final PortraitResearchStore store = mock(PortraitResearchStore.class);
 
     // ── Metz, the checked catchment ─────────────────────────────────────────
 
@@ -272,6 +283,113 @@ class PortraitServiceTest {
         assertThat(PortraitService.regulars(List.of())).isNull();
     }
 
+    // ── research groups ─────────────────────────────────────────────────────
+
+    @Test
+    void noResearchRow_statusNone_onlyTheOpenDataGroups() {
+        AudiencePortraitResponse p = service(70, NOW).forCity(HOUSE, "metz");
+
+        assertThat(p.research()).isEqualTo(new PortraitResearchStatus("none", null, null, false, null));
+        assertThat(p.groups()).extracting(NewPeopleGroup::origin).containsOnly("open_data");
+        assertThat(p.groups()).allSatisfy(g -> assertThat(g.research()).isNull());
+    }
+
+    @Test
+    void pendingOrEmptyRow_showsItsStatus_andNoResearchGroup() {
+        stored("pending", null, null, null);
+        AudiencePortraitResponse pending = service(70, NOW).forCity(HOUSE, "metz");
+        assertThat(pending.research()).isEqualTo(new PortraitResearchStatus("pending", null, null, false, null));
+        assertThat(pending.groups()).hasSize(3);
+
+        stored("empty", GENERATED, GENERATED.plus(Duration.ofDays(1)), "ivan", group("Techno regulars", "regulars",
+                List.of(), "cited"));
+        AudiencePortraitResponse empty = service(70, NOW).forCity(HOUSE, "metz");
+        assertThat(empty.research()).isEqualTo(new PortraitResearchStatus("empty", GENERATED, null, false, null));
+        assertThat(empty.groups()).hasSize(3);
+    }
+
+    @Test
+    void readyRow_appendsResearchGroups_sizedByCodeFromTheirBasisAndTowns() {
+        stored("ready", GENERATED, GENERATED.plus(Duration.ofDays(90)), "ivan",
+                group("Nancy techno regulars", "regulars", List.of("nancy"), "cited"),
+                group("Students of the area", "students", List.of(), "assumed"),
+                group("Afterparty crowd", "none", List.of("metz"), "cited"));
+
+        AudiencePortraitResponse p = service(70, NOW).forCity(HOUSE, "metz");
+
+        assertThat(p.research()).isEqualTo(new PortraitResearchStatus("ready", GENERATED,
+                GENERATED.plus(Duration.ofDays(90)), false, "ivan"));
+        assertThat(p.groups()).extracting(NewPeopleGroup::key)
+                .containsExactly("genre_first", "regulars", "students", "research_1", "research_2", "research_3");
+
+        NewPeopleGroup nancy = p.groups().get(3);
+        TribeSize.Estimate expected = tribes().estimate(HOUSE, List.of("nancy")).regulars();
+        assertThat(nancy.origin()).isEqualTo("research");
+        assertThat(nancy.kind()).isEqualTo("context");
+        assertThat(nancy.scope()).isEqualTo("fr_catchment");
+        assertThat(nancy.cityKeys()).containsExactly("nancy");
+        assertThat(nancy.size()).isEqualTo(new SizeRange(Math.toIntExact(expected.low()),
+                Math.toIntExact(expected.high())));
+        assertThat(nancy.method()).isEqualTo("electronic_first");
+        assertThat(nancy.sources().get(0)).isEqualTo(new PortraitSource("web", null, null, "Metz club scene", null,
+                null, WEB_URL, null, GENERATED, false));
+        assertThat(nancy.sources()).extracting(PortraitSource::cityKey).contains("nancy");
+        assertThat(nancy.research()).isEqualTo(new PortraitResearchGroup("Nancy techno regulars",
+                "Reach them through the local collectives.", "regulars", "cited", "mode=ai-originated", GENERATED));
+
+        NewPeopleGroup students = p.groups().get(4);
+        assertThat(students.cityKeys()).containsExactlyElementsOf(FR_METZ);
+        assertThat(students.size()).isEqualTo(new SizeRange(52_096, 52_096));
+        assertThat(students.method()).isEqualTo("mesr_students");
+        assertThat(students.research().confidence()).isEqualTo("assumed");
+
+        NewPeopleGroup none = p.groups().get(5);
+        assertThat(none.cityKeys()).containsExactly("metz");
+        assertThat(none.size()).isNull();
+        assertThat(none.method()).isEqualTo("none");
+        assertThat(none.sources()).hasSize(1);
+    }
+
+    @Test
+    void researchGroup_namingOnlyTownsOutsideTheFrenchCatchment_isSizedOverTheWholeFrenchCatchment() {
+        stored("ready", GENERATED, GENERATED.plus(Duration.ofDays(90)), null,
+                group("Cross-border workers", "genre_first", List.of("luxembourg"), "cited"));
+
+        NewPeopleGroup g = service(70, NOW).forCity(HOUSE, "metz").groups().get(3);
+
+        assertThat(g.cityKeys()).containsExactlyElementsOf(FR_METZ);
+        assertThat(g.size()).isEqualTo(new SizeRange(3_180, 4_172));
+    }
+
+    @Test
+    void expiredResearch_isStillShown_andFlaggedStale() {
+        stored("ready", GENERATED, NOW.minus(Duration.ofDays(1)), null,
+                group("Techno regulars", "regulars", List.of(), "cited"));
+
+        AudiencePortraitResponse p = service(70, NOW).forCity(HOUSE, "metz");
+
+        assertThat(p.research().stale()).isTrue();
+        assertThat(p.groups().get(3).sources().get(0).stale()).isTrue();
+    }
+
+    @Test
+    void modelNumber_isReplacedByTheCodeNumber() {
+        String answer = """
+                {"groups":[{"label":"Students of Metz and Nancy","description":"About 60000 students live here.",
+                  "basis":"students","towns":[],"size":{"low":60000,"high":90000},"people":75000,
+                  "sourceUrls":["https://example.org/metz-scene"]}]}""";
+        List<StoredGroup> parsed = new PortraitResearchParser(new IdentityLabelGuard(List.of()))
+                .parse(answer, List.of(new PortraitLlmClient.Citation(WEB_URL, "Metz club scene")),
+                        java.util.Map.of("Metz", "metz", "Nancy", "nancy", "Thionville", "thionville"));
+        stored("ready", GENERATED, GENERATED.plus(Duration.ofDays(90)), null, parsed.toArray(StoredGroup[]::new));
+
+        NewPeopleGroup g = service(70, NOW).forCity(HOUSE, "metz").groups().get(3);
+
+        assertThat(g.size()).isEqualTo(new SizeRange(52_096, 52_096));
+        assertThat(g.research().description()).isNull();
+        assertThat(g.toString()).doesNotContain("60000").doesNotContain("90000").doesNotContain("75000");
+    }
+
     // ── helpers ────────────────────────────────────────────────────────────
 
     private static void assertInvalid(org.assertj.core.api.ThrowableAssert.ThrowingCallable call, String field) {
@@ -295,7 +413,24 @@ class PortraitServiceTest {
         PublicDataService publicData = new PublicDataService(repo, OpenDataCities.load(), List.of(),
                 Clock.fixed(now, ZoneOffset.UTC));
         return new PortraitService(new AudiencePlanAccess(props), logic, publicData,
-                new CatchmentService(publicData, logic), new TribeSizeCalculator(logic, publicData));
+                new CatchmentService(publicData, logic), new TribeSizeCalculator(logic, publicData), store,
+                Clock.fixed(now, ZoneOffset.UTC));
+    }
+
+    private TribeSizeCalculator tribes() {
+        AudiencePlanLogic logic = logic(70);
+        return new TribeSizeCalculator(logic, new PublicDataService(repo, OpenDataCities.load(), List.of(),
+                Clock.fixed(NOW, ZoneOffset.UTC)));
+    }
+
+    private void stored(String status, Instant generatedAt, Instant expiresAt, String reviewedBy, StoredGroup... groups) {
+        when(store.find(HOUSE, "metz")).thenReturn(Optional.of(new PortraitResearchStore.Row(HOUSE, "metz", status,
+                List.of(groups), 1, generatedAt, expiresAt, NOW.minus(Duration.ofDays(1)), reviewedBy)));
+    }
+
+    private static StoredGroup group(String label, String basis, List<String> towns, String confidence) {
+        return new StoredGroup(label, "Reach them through the local collectives.", basis, towns,
+                List.of(new WebSource(WEB_URL, "Metz club scene")), confidence);
     }
 
     private static InMemoryCityOpenDataRepository seeded() {

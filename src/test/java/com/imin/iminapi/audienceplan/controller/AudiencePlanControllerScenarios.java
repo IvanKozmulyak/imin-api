@@ -312,6 +312,111 @@ abstract class AudiencePlanControllerScenarios {
     }
 
     @Test
+    void get_recordsThePortraitRequest_postDoesNot_andAnUnknownCityIsNeverRecorded() throws Exception {
+        jdbc.update("delete from audience_portraits where genre_key = 'pop' and city_key in ('nancy', 'strasbourg')");
+        Event e = event(orgA, "Nancy", "Pop", 300);
+        Event unknown = event(orgA, "Strasbourg", "Pop", 300);
+        stub(e, List.of());
+        try {
+            postPlan(e, null).andExpect(status().isOk());
+            assertThat(portraitStatus("pop", "nancy")).isNull();
+
+            getPlan(e, null).andExpect(status().isOk());
+            assertThat(portraitStatus("pop", "nancy")).isEqualTo("pending");
+
+            stub(unknown, List.of());
+            getPlan(unknown, null).andExpect(status().isOk());
+            assertThat(portraitStatus("pop", "strasbourg")).isNull();
+        } finally {
+            jdbc.update("delete from audience_portraits where genre_key = 'pop' and city_key in ('nancy', 'strasbourg')");
+        }
+    }
+
+    @Test
+    void readyResearch_joinsNewPeople_sizedFromOpenData_withTheAiMarker() throws Exception {
+        String key = "rock & alternative";
+        jdbc.update("delete from audience_portraits where genre_key = ? and city_key = 'thionville'", key);
+        jdbc.update("""
+                insert into audience_portraits (id, genre_key, city_key, status, research_groups, version, generated_at,
+                  expires_at, requested_at, created_at) values (?, ?, 'thionville', 'ready', ?, 1, ?, ?, ?, ?)""",
+                UUID.randomUUID(), key, """
+                [{"label":"Thionville students","description":"They meet at the campus bar nights.",
+                  "basis":"students","towns":["thionville"],
+                  "sources":[{"url":"https://example.org/thionville","title":"Campus nights"}],"confidence":"cited"}]""",
+                Timestamp.from(Instant.now().minus(1, ChronoUnit.DAYS)),
+                Timestamp.from(Instant.now().plus(89, ChronoUnit.DAYS)), Timestamp.from(Instant.now()),
+                Timestamp.from(Instant.now()));
+        Event e = event(orgA, "Thionville", "Rock & Alternative", 300);
+        stub(e, List.of());
+        try {
+            getPlan(e, null).andExpect(status().isOk())
+                    .andExpect(jsonPath("$.newPeople.length()").value(4))
+                    .andExpect(jsonPath("$.newPeople[3].key").value("research_1"))
+                    .andExpect(jsonPath("$.newPeople[3].origin").value("research"))
+                    .andExpect(jsonPath("$.newPeople[3].kind").value("context"))
+                    .andExpect(jsonPath("$.newPeople[3].cityKeys[0]").value("thionville"))
+                    .andExpect(jsonPath("$.newPeople[3].size.low").value(605))
+                    .andExpect(jsonPath("$.newPeople[3].size.high").value(605))
+                    .andExpect(jsonPath("$.newPeople[3].method").value("mesr_students"))
+                    .andExpect(jsonPath("$.newPeople[3].sources[0].input").value("web"))
+                    .andExpect(jsonPath("$.newPeople[3].sources[0].url").value("https://example.org/thionville"))
+                    .andExpect(jsonPath("$.newPeople[3].research.label").value("Thionville students"))
+                    .andExpect(jsonPath("$.newPeople[3].research.confidence").value("cited"))
+                    .andExpect(jsonPath("$.newPeople[3].research.aiDisclosure").value("mode=ai-originated"))
+                    .andExpect(jsonPath("$.newPeople[0].research").value(nullValue()));
+        } finally {
+            jdbc.update("delete from audience_portraits where genre_key = ? and city_key = 'thionville'", key);
+        }
+    }
+
+    @Test
+    void newResearchDescriptionLabelOrConfidence_recomputesThePlan_sameTextReusesIt() throws Exception {
+        String key = "jazz & acoustic";
+        jdbc.update("delete from audience_portraits where genre_key = ? and city_key = 'thionville'", key);
+        jdbc.update("""
+                insert into audience_portraits (id, genre_key, city_key, status, research_groups, version, generated_at,
+                  expires_at, requested_at, created_at) values (?, ?, 'thionville', 'ready', ?, 1, ?, ?, ?, ?)""",
+                UUID.randomUUID(), key, """
+                [{"label":"Jazz club regulars","description":"They follow the Thursday sessions.","basis":"none",
+                  "towns":[],"sources":[],"confidence":"assumed"}]""",
+                Timestamp.from(Instant.now().minus(1, ChronoUnit.DAYS)),
+                Timestamp.from(Instant.now().plus(89, ChronoUnit.DAYS)), Timestamp.from(Instant.now()),
+                Timestamp.from(Instant.now()));
+        Event e = event(orgA, "Thionville", "Jazz & Acoustic", 300);
+        stub(e, List.of());
+        try {
+            String first = id(getPlan(e, null));
+            assertThat(id(getPlan(e, null))).isEqualTo(first);
+
+            jdbc.update("update audience_portraits set research_groups = replace(research_groups, 'Thursday', 'Friday')"
+                    + " where genre_key = ? and city_key = 'thionville'", key);
+            String second = id(getPlan(e, null).andExpect(
+                    jsonPath("$.newPeople[3].research.description").value("They follow the Friday sessions.")));
+            assertThat(second).isNotEqualTo(first);
+
+            jdbc.update("update audience_portraits set research_groups = replace(research_groups, 'Jazz club', 'Jazz bar')"
+                    + " where genre_key = ? and city_key = 'thionville'", key);
+            String third = id(getPlan(e, null).andExpect(
+                    jsonPath("$.newPeople[3].research.label").value("Jazz bar regulars")));
+            assertThat(third).isNotIn(first, second);
+
+            jdbc.update("update audience_portraits set research_groups = replace(research_groups, '\"assumed\"',"
+                    + " '\"cited\"') where genre_key = ? and city_key = 'thionville'", key);
+            String fourth = id(getPlan(e, null).andExpect(
+                    jsonPath("$.newPeople[3].research.confidence").value("cited")));
+            assertThat(fourth).isNotIn(first, second, third);
+            assertThat(id(getPlan(e, null))).isEqualTo(fourth);
+        } finally {
+            jdbc.update("delete from audience_portraits where genre_key = ? and city_key = 'thionville'", key);
+        }
+    }
+
+    private String portraitStatus(String genreKey, String cityKey) {
+        return jdbc.query("select status from audience_portraits where genre_key = ? and city_key = ?",
+                (rs, i) -> rs.getString(1), genreKey, cityKey).stream().findFirst().orElse(null);
+    }
+
+    @Test
     void cold_targetAboveTheRegulars_isFlagged_withTheRethinkOptions() throws Exception {
         // Target 85% of 2,000 = 1,700 > 1,460 regulars at most in the French part of the Metz area.
         Event e = event(orgA, "Metz", "House & Techno", 2000);

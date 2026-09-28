@@ -67,6 +67,30 @@ public class AudiencePlanProperties {
     /** Requires the org's legal name and contact for every campaign, not only audience-plan ones. Blank binds false. */
     private Boolean legalIdentityAllCampaigns = Boolean.FALSE;
 
+    /** OpenRouter model for portrait research (web plugin) and extraction; a trailing ":online" is stripped. */
+    private String portraitModel = DEFAULT_PORTRAIT_MODEL;
+
+    /** USD per million prompt / completion tokens of the portrait model, used when OpenRouter reports no cost. */
+    private BigDecimal portraitPriceInputUsdPerMtok = DEFAULT_PORTRAIT_PRICE_IN;
+    private BigDecimal portraitPriceOutputUsdPerMtok = DEFAULT_PORTRAIT_PRICE_OUT;
+
+    /** Longest wait for one portrait answer; no retry after a timeout. Blank binds 30s. */
+    private Duration portraitTimeout = DEFAULT_SUMMARY_TIMEOUT;
+
+    /** Portrait LLM calls per org per UTC day, and across all callers (refresh job included). */
+    private Integer portraitDailyCapPerOrg = DEFAULT_PORTRAIT_CAP_PER_ORG;
+    private Integer portraitDailyCapGlobal = DEFAULT_PORTRAIT_CAP_GLOBAL;
+
+    /** Portraits the weekly refresh renews per run. */
+    private Integer portraitRefreshBatch = DEFAULT_PORTRAIT_REFRESH_BATCH;
+
+    static final String DEFAULT_PORTRAIT_MODEL = "anthropic/claude-haiku-4.5";
+    static final BigDecimal DEFAULT_PORTRAIT_PRICE_IN = BigDecimal.ONE;
+    static final BigDecimal DEFAULT_PORTRAIT_PRICE_OUT = BigDecimal.valueOf(5);
+    static final int DEFAULT_PORTRAIT_CAP_PER_ORG = 10;
+    static final int DEFAULT_PORTRAIT_CAP_GLOBAL = 100;
+    static final int DEFAULT_PORTRAIT_REFRESH_BATCH = 20;
+
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
     public Set<UUID> getBetaOrgIds() { return betaOrgIds; }
@@ -105,6 +129,21 @@ public class AudiencePlanProperties {
     public void setSummaryDailyCapPerOrg(Integer v) { this.summaryDailyCapPerOrg = v == null || v < 0 ? DEFAULT_SUMMARY_DAILY_CAP : v; }
     public Duration getSummaryTimeout() { return summaryTimeout; }
     public void setSummaryTimeout(Duration v) { this.summaryTimeout = v == null || v.isNegative() || v.isZero() ? DEFAULT_SUMMARY_TIMEOUT : v; }
+
+    public String getPortraitModel() { return portraitModel; }
+    public void setPortraitModel(String v) { this.portraitModel = v == null || v.isBlank() ? DEFAULT_PORTRAIT_MODEL : v.trim(); }
+    public BigDecimal getPortraitPriceInputUsdPerMtok() { return portraitPriceInputUsdPerMtok; }
+    public void setPortraitPriceInputUsdPerMtok(BigDecimal v) { this.portraitPriceInputUsdPerMtok = v == null ? DEFAULT_PORTRAIT_PRICE_IN : v; }
+    public BigDecimal getPortraitPriceOutputUsdPerMtok() { return portraitPriceOutputUsdPerMtok; }
+    public void setPortraitPriceOutputUsdPerMtok(BigDecimal v) { this.portraitPriceOutputUsdPerMtok = v == null ? DEFAULT_PORTRAIT_PRICE_OUT : v; }
+    public Duration getPortraitTimeout() { return portraitTimeout; }
+    public void setPortraitTimeout(Duration v) { this.portraitTimeout = v == null || v.isNegative() || v.isZero() ? DEFAULT_SUMMARY_TIMEOUT : v; }
+    public Integer getPortraitDailyCapPerOrg() { return portraitDailyCapPerOrg; }
+    public void setPortraitDailyCapPerOrg(Integer v) { this.portraitDailyCapPerOrg = v == null || v < 0 ? DEFAULT_PORTRAIT_CAP_PER_ORG : v; }
+    public Integer getPortraitDailyCapGlobal() { return portraitDailyCapGlobal; }
+    public void setPortraitDailyCapGlobal(Integer v) { this.portraitDailyCapGlobal = v == null || v < 0 ? DEFAULT_PORTRAIT_CAP_GLOBAL : v; }
+    public Integer getPortraitRefreshBatch() { return portraitRefreshBatch; }
+    public void setPortraitRefreshBatch(Integer v) { this.portraitRefreshBatch = v == null || v < 1 ? DEFAULT_PORTRAIT_REFRESH_BATCH : v; }
 
     /** Blank elements (e.g. a trailing comma) convert to null; drop them rather than fail. */
     public void setBetaOrgIds(Set<UUID> betaOrgIds) {
