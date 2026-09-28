@@ -133,15 +133,44 @@ class ResponseModelTest {
     }
 
     @Test
-    void springBeans_bindEmptyCalibrationAndModel() {
+    void springBeans_modelReadsTheContextsCalibrationSource() {
         new ApplicationContextRunner()
                 .withUserConfiguration(AudiencePlanConfig.class)
+                .withBean(CalibrationSource.class, () -> CalibrationSource.NONE)
                 .run(ctx -> {
-                    assertThat(ctx.getBean(CalibrationSource.class)).isSameAs(CalibrationSource.NONE);
                     Rate rate = ctx.getBean(ResponseModel.class).rate(ORG, "loyal", Fit.SAME, 0);
                     assertThat(rate.band()).isEqualTo(new Band(0.12, 0.25, 0.40));
                     assertThat(rate.confidence()).isEqualTo(Confidence.PRIOR);
+                    assertThat(ctx.getBean(ResponseModel.class).calibrationVersion()).isZero();
                 });
+    }
+
+    @Test
+    void springBeans_withoutACalibrationSource_keepThePrior() {
+        new ApplicationContextRunner()
+                .withUserConfiguration(AudiencePlanConfig.class)
+                .run(ctx -> {
+                    ResponseModel model = ctx.getBean(ResponseModel.class);
+                    assertThat(model.rate(ORG, "loyal", Fit.SAME, 0).band()).isEqualTo(new Band(0.12, 0.25, 0.40));
+                    assertThat(model.calibrationVersion()).isZero();
+                });
+    }
+
+    @Test
+    void calibrationVersion_isTheSourcesVersion() {
+        CalibrationSource versioned = new CalibrationSource() {
+            @Override
+            public Observations observations(java.util.UUID orgId, String classKey, Fit fit) {
+                return Observations.NONE;
+            }
+
+            @Override
+            public int version() {
+                return 42;
+            }
+        };
+        assertThat(model(versioned).calibrationVersion()).isEqualTo(42);
+        assertThat(CalibrationSource.NONE.version()).isZero();
     }
 
     // ---- helpers ----

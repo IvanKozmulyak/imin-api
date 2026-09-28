@@ -75,8 +75,6 @@ public class PlanService {
     static final int MAX_SEGMENTS = 3;
     static final int MAX_STEPS = 3;
     static final Duration FRESH_FOR = Duration.ofHours(24);
-    /** ponytail: 0 while no calibration is stored (CalibrationSource.NONE); stored outcomes must bump it. */
-    static final int CALIBRATION_VERSION = 0;
     static final List<String> LOCALES = List.of("en", "es", "fr", "uk");
     static final String DEFAULT_LOCALE = "en";
     /** Supersede-and-retry rounds before reading the current plan unlocked. */
@@ -97,6 +95,7 @@ public class PlanService {
     private final CandidateLoader candidates;
     private final AudiencePlanLogic logic;
     private final PlanCalculator calculator;
+    private final ResponseModel model;
     private final AudiencePlanRepository plans;
     private final AudiencePlanSegmentRepository segments;
     private final PortraitService portraits;
@@ -114,6 +113,7 @@ public class PlanService {
         this.candidates = candidates;
         this.logic = logic;
         this.calculator = new PlanCalculator(logic, model);
+        this.model = model;
         this.plans = plans;
         this.segments = segments;
         this.portraits = portraits;
@@ -125,7 +125,7 @@ public class PlanService {
     record Assumptions(int targetPct, double ticketsPerOrder, List<String> excludeSegments) {}
 
     private record Prepared(PlanCalculator.Input input, String inputsHash, Assumptions assumptions, Instant now,
-                            List<AudiencePortraitResponse.NewPeopleGroup> newPeople) {}
+                            List<AudiencePortraitResponse.NewPeopleGroup> newPeople, int calibrationVersion) {}
 
     @Transactional
     public AudiencePlanResponse current(UUID orgId, UUID eventId, String locale) {
@@ -177,7 +177,7 @@ public class PlanService {
                            List<AudiencePortraitResponse.NewPeopleGroup> newPeople) {
         Instant now = clock.instant();
         String hash = inputsHash(event, tierRows, zone(event.getTimezone()), now, mailableCount, assumptionsOf(plan),
-                newPeople);
+                newPeople, model.calibrationVersion());
         return reusable(plan, hash, now);
     }
 
@@ -271,6 +271,7 @@ public class PlanService {
 
         ZoneId zone = zone(event.getTimezone());
         Instant now = clock.instant();
+        int calibration = model.calibrationVersion();
         CandidateBuilder.Input loaded = candidates.input(orgId, event, target, a.ticketsPerOrder());
         List<AudiencePortraitResponse.NewPeopleGroup> newPeople = newPeople(event);
         AudiencePortraitResponse.SizeRange regulars = PortraitService.regulars(newPeople);
@@ -282,12 +283,13 @@ public class PlanService {
 
         Set<UUID> mailable = new HashSet<>();
         for (Person p : loaded.mailable()) mailable.add(p.membershipId());
-        return new Prepared(input, inputsHash(event, tierRows, zone, now, mailable.size(), a, newPeople), a, now,
-                newPeople);
+        return new Prepared(input, inputsHash(event, tierRows, zone, now, mailable.size(), a, newPeople, calibration),
+                a, now, newPeople, calibration);
     }
 
     private String inputsHash(Event event, List<TicketTier> tierRows, ZoneId zone, Instant now, int mailableCount,
-                              Assumptions a, List<AudiencePortraitResponse.NewPeopleGroup> newPeople) {
+                              Assumptions a, List<AudiencePortraitResponse.NewPeopleGroup> newPeople,
+                              int calibrationVersion) {
         StringBuilder h = new StringBuilder("audience-plan-inputs/1");
         tierRows.stream().sorted(Comparator.comparing(TicketTier::getId))
                 .forEach(t -> h.append("|tier:").append(t.getId()).append(':').append(t.getQuantity())
@@ -299,7 +301,7 @@ public class PlanService {
                 .append("|onSale:").append(event.getOnSaleAt())
                 .append("|today:").append(LocalDate.ofInstant(now, zone))
                 .append("|mailable:").append(mailableCount)
-                .append("|calibration:").append(CALIBRATION_VERSION)
+                .append("|calibration:").append(calibrationVersion)
                 .append("|logic:").append(logic.logicVersion())
                 .append("|priors:").append(logic.priorsVersion())
                 .append("|targetPct:").append(a.targetPct())
@@ -372,7 +374,7 @@ public class PlanService {
         row.setNewPeople(write(prepared.newPeople()));
         row.setLogicVersion(plan.versions().logic());
         row.setPriorsVersion(plan.versions().priors());
-        row.setCalibrationVersion(CALIBRATION_VERSION);
+        row.setCalibrationVersion(prepared.calibrationVersion());
         row.setInputsHash(prepared.inputsHash());
         // Microseconds, as the database keeps them, so a reused row reads back the same instant.
         row.setCreatedAt(prepared.now().truncatedTo(ChronoUnit.MICROS));

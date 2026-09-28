@@ -32,6 +32,11 @@ public final class ResponseModel {
         this.calibration = Objects.requireNonNull(calibration);
     }
 
+    /** The calibration the bands are built from; part of a plan's inputs. */
+    public int calibrationVersion() {
+        return calibration.version();
+    }
+
     public Rate rate(UUID orgId, String classKey, Fit fit, int noShowN) {
         ClassPrior classPrior = logic.priors().classes().get(classKey);
         if (classPrior == null) throw new IllegalArgumentException("no purchase-rate prior for class: " + classKey);

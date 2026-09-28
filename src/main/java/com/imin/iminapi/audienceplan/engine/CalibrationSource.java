@@ -13,6 +13,11 @@ public interface CalibrationSource {
 
     Observations observations(UUID orgId, String classKey, ResponseModel.Fit fit);
 
+    /** Changes whenever the observations do; 0 means none are stored. Plans hash it. */
+    default int version() {
+        return 0;
+    }
+
     record Counts(int invited, int bought) {
 
         public static final Counts ZERO = new Counts(0, 0);
