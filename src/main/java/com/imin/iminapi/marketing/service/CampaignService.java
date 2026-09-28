@@ -41,6 +41,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * Marketing campaign CRUD + duplicate + (Task 5) preview-audience + test-send.
@@ -154,9 +156,29 @@ public class CampaignService {
         // Only sent campaigns can have any; drafts are left null (see CampaignSummary.revMinor).
         List<UUID> sentIds = rows.stream().filter(CampaignService::hasSent).map(Campaign::getId).toList();
         var revByCampaign = attribution.attributedRevenueMinorByCampaign(p.orgId(), sentIds);
+        // Segment names and linked events for the page in one query each, org-scoped like detail.
+        var segmentNames = segments.namesByIds(p.orgId(), idsOf(rows, Campaign::getSegmentId));
+        var linkedEvents = activeEventsByIds(p.orgId(), idsOf(rows, Campaign::getEventId));
         return rows.stream()
-                .map(c -> CampaignSummary.from(c, hasSent(c) ? revByCampaign.getOrDefault(c.getId(), 0L) : null))
+                .map(c -> {
+                    Event e = c.getEventId() == null ? null : linkedEvents.get(c.getEventId());
+                    return CampaignSummary.from(c,
+                            hasSent(c) ? revByCampaign.getOrDefault(c.getId(), 0L) : null,
+                            c.getSegmentId() == null ? null : segmentNames.get(c.getSegmentId()),
+                            e == null ? null : e.getName(),
+                            e == null ? null : e.getTimezone());
+                })
                 .toList();
+    }
+
+    private static Set<UUID> idsOf(List<Campaign> rows, Function<Campaign, UUID> id) {
+        return rows.stream().map(id).filter(Objects::nonNull).collect(Collectors.toSet());
+    }
+
+    private Map<UUID, Event> activeEventsByIds(UUID orgId, Set<UUID> eventIds) {
+        if (eventIds.isEmpty()) return Map.of();
+        return events.findActiveByOrgAndIds(orgId, eventIds).stream()
+                .collect(Collectors.toMap(Event::getId, Function.identity()));
     }
 
     /**

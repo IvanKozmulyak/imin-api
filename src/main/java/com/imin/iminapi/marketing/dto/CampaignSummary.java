@@ -26,19 +26,32 @@ public record CampaignSummary(
          * nothing could be attributed (FE renders an em-dash); {@code 0} = sent and drove no
          * paid orders. Batched by the caller — one query for the whole page, not per row.
          */
-        Long revMinor
+        Long revMinor,
+        /** Name of the org's segment {@code segmentId}, hidden origins included; null when none or gone. */
+        String segmentName,
+        /** Name of the linked, non-deleted event of this org; null without one. */
+        String eventName,
+        /** IANA zone of that same event, for showing its send times; null without one. */
+        String eventTimezone
 ) {
     /** Projection with no attributed revenue. See {@link #revMinor}. */
     public static CampaignSummary from(Campaign c) {
         return from(c, null);
     }
 
-    /** Projection carrying the campaign's attributed revenue (list read path). */
+    /** Projection carrying the campaign's attributed revenue, without segment or event names. */
     public static CampaignSummary from(Campaign c, Long revMinor) {
+        return from(c, revMinor, null, null, null);
+    }
+
+    /** Projection for the list read path: revenue plus the batch-resolved segment and event context. */
+    public static CampaignSummary from(Campaign c, Long revMinor, String segmentName,
+                                       String eventName, String eventTimezone) {
         return new CampaignSummary(
                 c.getId(), c.getChannel(), c.getName(), c.getStatus(),
                 c.getSegmentId(), c.getEventId(), c.getOrigin(),
                 c.getRecipientCount(), c.getExcludedCount(), c.getLastError(),
-                c.getScheduledAt(), c.getSentAt(), c.getCreatedAt(), revMinor);
+                c.getScheduledAt(), c.getSentAt(), c.getCreatedAt(), revMinor,
+                segmentName, eventName, eventTimezone);
     }
 }

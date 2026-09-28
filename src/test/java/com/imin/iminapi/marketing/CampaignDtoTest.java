@@ -45,4 +45,21 @@ class CampaignDtoTest {
         assertThat(s.origin()).isEqualTo("manual");
         assertThat(s.recipientCount()).isNull();   // no send yet in Phase 1
     }
+
+    @Test
+    void summary_withoutContext_hasNoSegmentOrEventNames() {
+        CampaignSummary s = CampaignSummary.from(sample(), 5L);
+        assertThat(s.revMinor()).isEqualTo(5L);
+        assertThat(s.segmentName()).isNull();
+        assertThat(s.eventName()).isNull();
+        assertThat(s.eventTimezone()).isNull();
+    }
+
+    @Test
+    void summary_withContext_carriesSegmentAndEventNames() {
+        CampaignSummary s = CampaignSummary.from(sample(), null, "Seg", "Night", "Europe/Kyiv");
+        assertThat(s.segmentName()).isEqualTo("Seg");
+        assertThat(s.eventName()).isEqualTo("Night");
+        assertThat(s.eventTimezone()).isEqualTo("Europe/Kyiv");
+    }
 }

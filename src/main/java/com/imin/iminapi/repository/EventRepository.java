@@ -27,6 +27,10 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
     @Query("SELECT e FROM Event e WHERE e.id = :id AND e.deletedAt IS NULL")
     Optional<Event> findActive(@Param("id") UUID id);
 
+    /** The org's non-deleted events among {@code ids} (same rule as {@link #findActive} plus the org check). */
+    @Query("SELECT e FROM Event e WHERE e.orgId = :orgId AND e.id IN :ids AND e.deletedAt IS NULL")
+    List<Event> findActiveByOrgAndIds(@Param("orgId") UUID orgId, @Param("ids") Collection<UUID> ids);
+
     /**
      * Every published (publishedAt set), non-deleted event, oldest publish first. Drives the
      * predictor's one-shot outcome retro-backfill (spec §6.1) — it pages through these and

@@ -8,6 +8,7 @@ import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 import org.springframework.data.repository.query.Param;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -23,6 +24,9 @@ public interface SegmentRepository extends Repository<Segment, UUID> {
 
     @Query("select s from Segment s where s.id = :id and s.orgId = :orgId")
     Optional<Segment> findByIdAndOrgId(@Param("id") UUID id, @Param("orgId") UUID orgId);
+
+    @Query("select s from Segment s where s.orgId = :orgId and s.id in :ids")
+    List<Segment> findByOrgIdAndIdIn(@Param("orgId") UUID orgId, @Param("ids") Collection<UUID> ids);
 
     @Query("select s from Segment s where s.orgId = :orgId order by s.createdAt desc")
     List<Segment> findByOrgId(@Param("orgId") UUID orgId);

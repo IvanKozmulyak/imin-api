@@ -388,6 +388,13 @@ public class SegmentService {
         return segmentRepo.findByIdAndOrgId(segmentId, orgId).map(Segment::getName).orElse(null);
     }
 
+    /** Names of the org's segments among {@code segmentIds}, hidden origins included; other orgs' ids are absent. */
+    public Map<UUID, String> namesByIds(UUID orgId, Collection<UUID> segmentIds) {
+        if (segmentIds.isEmpty()) return Map.of();
+        return segmentRepo.findByOrgIdAndIdIn(orgId, segmentIds).stream()
+                .collect(Collectors.toMap(Segment::getId, Segment::getName));
+    }
+
     private Segment requireSegment(UUID orgId, UUID segmentId) {
         return segmentRepo.findByIdAndOrgId(segmentId, orgId)
                 .orElseThrow(() -> ApiException.notFound("Segment"));
