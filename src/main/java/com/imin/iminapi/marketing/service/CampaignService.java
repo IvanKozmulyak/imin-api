@@ -5,6 +5,7 @@ import com.imin.iminapi.audience.model.Segment;
 import com.imin.iminapi.audience.service.SegmentService;
 import com.imin.iminapi.audience.service.SendGateService;
 import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
+import com.imin.iminapi.audienceplan.service.SendPathGuard;
 import com.imin.iminapi.marketing.dto.CampaignDto;
 import com.imin.iminapi.marketing.dto.CampaignRequests.CreateCampaignRequest;
 import com.imin.iminapi.marketing.dto.CampaignRequests.PatchCampaignRequest;
@@ -35,6 +36,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 
@@ -68,6 +71,7 @@ public class CampaignService {
     private final MarketingEmailProperties emailProps;
     private final AudiencePlanAccess audiencePlanAccess;
     private final CampaignAiSuggestions aiSuggestions;
+    private final SendPathGuard sendPathGuard;
 
     public CampaignService(CampaignRepository campaigns,
                            com.imin.iminapi.marketing.repository.CampaignRecipientRepository campaignRecipientRepository,
@@ -81,7 +85,8 @@ public class CampaignService {
                            OrganizationRepository organizations, EventRepository events,
                            MarketingEmailProperties emailProps,
                            AudiencePlanAccess audiencePlanAccess,
-                           CampaignAiSuggestions aiSuggestions) {
+                           CampaignAiSuggestions aiSuggestions,
+                           SendPathGuard sendPathGuard) {
         this.campaigns = campaigns;
         this.campaignRecipientRepository = campaignRecipientRepository;
         this.audit = audit;
@@ -99,6 +104,7 @@ public class CampaignService {
         this.emailProps = emailProps;
         this.audiencePlanAccess = audiencePlanAccess;
         this.aiSuggestions = aiSuggestions;
+        this.sendPathGuard = sendPathGuard;
     }
 
     @Transactional
@@ -181,6 +187,7 @@ public class CampaignService {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
                     "Only draft campaigns can be edited");
         }
+        requirePlanTargetKept(c, req);
         if (req.name() != null) c.setName(requireName(req.name()));
         // mkt-edge-8: PatchableUuid distinguishes "absent" (the component is null — leave the
         // link alone) from "present and null" (PatchableUuid.NULL — unlink). The composer
@@ -205,6 +212,17 @@ public class CampaignService {
         }
         c.setUpdatedAt(Instant.now());
         return CampaignDto.from(campaigns.save(c));
+    }
+
+    /** An invitation arm keeps its segment and event, so its experiment link and holdout skip stay intact. */
+    private static void requirePlanTargetKept(Campaign c, PatchCampaignRequest req) {
+        if (!AudiencePlanAccess.CAMPAIGN_ORIGIN.equals(c.getOrigin())) return;
+        boolean segmentChanged = req.segmentId() != null && !Objects.equals(req.segmentId().value(), c.getSegmentId());
+        boolean eventChanged = req.eventId() != null && !Objects.equals(req.eventId().value(), c.getEventId());
+        if (segmentChanged || eventChanged) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                    "The segment and event of an audience plan campaign cannot be changed");
+        }
     }
 
     @Transactional
@@ -239,7 +257,10 @@ public class CampaignService {
         return CampaignDto.from(saved);
     }
 
-    /** SendGate dry-run for the composer Audience step. No materialization, no send. */
+    /**
+     * Dry run of the send for the composer Audience step: SendGate, then the send-path skips over its
+     * sendable members, as RecipientMaterializer applies them. No materialization, no send.
+     */
     @Transactional(readOnly = true)
     public PreviewAudienceResponse previewAudience(AuthPrincipal p, UUID id) {
         Campaign c = require(p.orgId(), id);
@@ -251,7 +272,18 @@ public class CampaignService {
         Segment segment = segments.requireSegmentForOrg(p.orgId(), c.getSegmentId());
         List<UUID> membershipIds = segments.resolveMembers(p.orgId(), segment).stream()
                 .map(Membership::getMembershipId).toList();
-        return sendGate.previewCounts(p.orgId(), membershipIds, c.getChannel());
+        SendGateService.GateResult gate = sendGate.evaluate(p.orgId(), membershipIds);
+        PreviewAudienceResponse.Excluded base = SendGateService.bucket(gate).excluded();
+        Map<UUID, String> skipped = sendPathGuard.skipReasons(c, gate.sendable(), Instant.now());
+        return new PreviewAudienceResponse(gate.sendable().size() - skipped.size(),
+                new PreviewAudienceResponse.Excluded(base.noBasis(), base.unsubscribed(),
+                        base.marketingSuppressed(), base.deliverabilitySuppressed(), base.noPhone(), base.noEmail(),
+                        count(skipped, SendPathGuard.EXPERIMENT_HOLDOUT), count(skipped, SendPathGuard.EVENT_CAP),
+                        count(skipped, SendPathGuard.MONTHLY_CAP), count(skipped, SendPathGuard.CONSENT_GATE)));
+    }
+
+    private static int count(Map<UUID, String> skipped, String reason) {
+        return (int) skipped.values().stream().filter(reason::equals).count();
     }
 
     /**
@@ -318,9 +350,9 @@ public class CampaignService {
                 template, brandName, posterUrl, ticketsUrl, c.aiDisclosure(), OrganizerIdentity.of(org));
     }
 
-    /** Only audience-plan campaigns are refused without a legal identity; the org is read only for them. */
+    /** Refuses a campaign that needs a legal identity the org lacks; the org is read only when one is needed. */
     private void requireLegalIdentity(Campaign c) {
-        if (!AudiencePlanAccess.CAMPAIGN_ORIGIN.equals(c.getOrigin())) return;
+        if (!audiencePlanAccess.legalIdentityRequired(c.getOrigin())) return;
         audiencePlanAccess.requireLegalIdentity(c.getOrigin(), organizations.findById(c.getOrgId()).orElse(null));
     }
 

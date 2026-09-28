@@ -128,3 +128,4 @@ imin:
     summary-price-output-usd-per-mtok: ""
     summary-daily-cap-per-org: ""
     summary-timeout: ""
+    legal-identity-all-campaigns: false

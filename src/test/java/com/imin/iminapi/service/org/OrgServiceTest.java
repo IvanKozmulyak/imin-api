@@ -1,5 +1,7 @@
 package com.imin.iminapi.service.org;
 
+import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
+import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
 import com.imin.iminapi.dto.OrganizationDto;
 import com.imin.iminapi.dto.org.OrgPatchRequest;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
@@ -39,7 +41,9 @@ class OrgServiceTest {
     AuditLogger audit = mock(AuditLogger.class);
     IfMatchSupport ifMatch = new IfMatchSupport();
     CampaignRepository campaigns = mock(CampaignRepository.class);
-    OrgService sut = new OrgService(orgs, ifMatch, orders, tickets, settlements, payouts, audit, campaigns);
+    AudiencePlanProperties planProps = new AudiencePlanProperties();
+    OrgService sut = new OrgService(orgs, ifMatch, orders, tickets, settlements, payouts, audit, campaigns,
+            new AudiencePlanAccess(planProps));
 
     private AuthPrincipal owner(UUID orgId) {
         return new AuthPrincipal(UUID.randomUUID(), orgId, UserRole.OWNER, UUID.randomUUID());
@@ -307,6 +311,52 @@ class OrgServiceTest {
         UUID orgId = UUID.randomUUID();
         Organization o = legalOrg(orgId, "Night SAS", "legal@night.test");
         queuedAudiencePlanCampaign(orgId, false);
+
+        sut.patch(owner(orgId), null, new OrgPatchRequest(null, null, null, null, "", null));
+
+        assertThat(o.getLegalName()).isNull();
+    }
+
+    @Test
+    void patch_clearingLegalNameWhileManualCampaignQueued_allCampaignsFlagOff_clears() {
+        UUID orgId = UUID.randomUUID();
+        Organization o = legalOrg(orgId, "Night SAS", "legal@night.test");
+        queuedAudiencePlanCampaign(orgId, false);
+        when(campaigns.existsByOrgIdAndStatusIn(eq(orgId), any())).thenReturn(true);
+
+        sut.patch(owner(orgId), null, new OrgPatchRequest(null, null, null, null, "", null));
+
+        assertThat(o.getLegalName()).isNull();
+        verify(campaigns, never()).existsByOrgIdAndStatusIn(any(), any());
+    }
+
+    @Test
+    void patch_clearingLegalNameWhileAnyCampaignQueued_allCampaignsFlagOn_is409() {
+        planProps.setLegalIdentityAllCampaigns(true);
+        UUID orgId = UUID.randomUUID();
+        Organization o = legalOrg(orgId, "Night SAS", "legal@night.test");
+        queuedAudiencePlanCampaign(orgId, false);
+        when(campaigns.existsByOrgIdAndStatusIn(eq(orgId), eq(java.util.List.of("scheduled", "sending"))))
+                .thenReturn(true);
+
+        assertThatThrownBy(() -> sut.patch(owner(orgId), null,
+                new OrgPatchRequest(null, null, null, null, "", null)))
+                .isInstanceOfSatisfying(ApiException.class, e -> {
+                    assertThat(e.status()).isEqualTo(org.springframework.http.HttpStatus.CONFLICT);
+                    assertThat(e.code()).isEqualTo(ErrorCode.ORG_LEGAL_IDENTITY_IN_USE);
+                    assertThat(e.getMessage())
+                            .isEqualTo("Legal name and legal contact are needed while a campaign is scheduled or sending");
+                });
+        assertThat(o.getLegalName()).isEqualTo("Night SAS");
+        verify(orgs, never()).save(any());
+    }
+
+    @Test
+    void patch_clearingLegalNameWithNothingQueued_allCampaignsFlagOn_clears() {
+        planProps.setLegalIdentityAllCampaigns(true);
+        UUID orgId = UUID.randomUUID();
+        Organization o = legalOrg(orgId, "Night SAS", "legal@night.test");
+        when(campaigns.existsByOrgIdAndStatusIn(eq(orgId), any())).thenReturn(false);
 
         sut.patch(owner(orgId), null, new OrgPatchRequest(null, null, null, null, "", null));
 

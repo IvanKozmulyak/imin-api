@@ -28,7 +28,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
 
-/** Audience-plan campaigns need the org's legal name and contact; manual and Momentum sends do not. */
+/** Audience-plan campaigns need the org's legal name and contact; manual and Momentum ones only with the all-campaigns flag. */
 @SpringBootTest
 @Import(TestRateLimitConfig.class)
 class AudiencePlanLegalIdentityGuardTest {
@@ -48,6 +48,7 @@ class AudiencePlanLegalIdentityGuardTest {
     @AfterEach
     void restore() {
         props.setSendsEnabled(false);
+        props.setLegalIdentityAllCampaigns(false);
     }
 
     private Organization org(String legalName, String legalContact) {
@@ -171,5 +172,39 @@ class AudiencePlanLegalIdentityGuardTest {
         assertThat(status(manual)).isEqualTo("scheduled");
         assertThat(status(momentum)).isEqualTo("scheduled");
         assertThat(status(failedManual)).isEqualTo("scheduled");
+    }
+
+    @Test
+    void allCampaignsFlag_manualAndMomentumWithoutIdentity_sendScheduleRetry_409_stateKept() {
+        props.setLegalIdentityAllCampaigns(true);
+        Organization o = org(null, "legal@guard.test");
+        Campaign manual = campaign(o, "manual", "draft");
+        Campaign momentum = campaign(o, "momentum", "draft");
+        Campaign failedManual = campaign(o, "manual", "failed");
+
+        assertLegalIdentityMissing(catchThrowable(
+                () -> service.send(manual.getId(), owner(o), "idem-" + UUID.randomUUID(), null)));
+        assertLegalIdentityMissing(catchThrowable(() -> service.send(momentum.getId(), owner(o),
+                "idem-" + UUID.randomUUID(), Instant.now().plus(2, ChronoUnit.DAYS))));
+        assertLegalIdentityMissing(catchThrowable(() -> service.retry(owner(o), failedManual.getId())));
+
+        assertThat(status(manual)).isEqualTo("draft");
+        assertThat(campaigns.findById(momentum.getId()).orElseThrow().getScheduledAt()).isNull();
+        assertThat(status(momentum)).isEqualTo("draft");
+        assertThat(status(failedManual)).isEqualTo("failed");
+    }
+
+    @Test
+    void allCampaignsFlag_manualWithIdentity_schedulesAndRetries() {
+        props.setLegalIdentityAllCampaigns(true);
+        Organization o = org("Guard SAS", "legal@guard.test");
+        Campaign manual = campaign(o, "manual", "draft");
+        Campaign failedMomentum = campaign(o, "momentum", "failed");
+
+        service.send(manual.getId(), owner(o), "idem-" + UUID.randomUUID(), null);
+        service.retry(owner(o), failedMomentum.getId());
+
+        assertThat(status(manual)).isEqualTo("scheduled");
+        assertThat(status(failedMomentum)).isEqualTo("scheduled");
     }
 }

@@ -2,6 +2,9 @@ package com.imin.iminapi.marketing;
 
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.SendGateService;
+import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
+import com.imin.iminapi.audienceplan.service.AllCampaignsConsent;
+import com.imin.iminapi.audienceplan.service.ConsentGate;
 import com.imin.iminapi.marketing.dto.MarketingHubMetricsDto;
 import com.imin.iminapi.marketing.email.MarketingEmailProperties;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
@@ -50,7 +53,40 @@ class MarketingHubServiceTest {
         when(events.findMomentumCandidates(any())).thenReturn(List.of());
         when(campaigns.findByOrgCreatedSince(eq(orgId), any())).thenReturn(List.of());
         return new MarketingHubService(memberships, sendGate, suggestions, events,
-                campaigns, attribution, props);
+                campaigns, attribution, props, new AllCampaignsConsent(planProps, consentGate));
+    }
+
+    private final AudiencePlanProperties planProps = new AudiencePlanProperties();
+    private final ConsentGate consentGate = mock(ConsentGate.class);
+
+    /** Three SendGate-sendable members, of whom ConsentGate mails only the first. */
+    private MarketingHubService serviceWithThreeSendable() {
+        List<UUID> members = List.of(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+        MarketingHubService svc = serviceWith(new MarketingEmailProperties());
+        when(memberships.findAllMembershipIdsByOrgId(eq(orgId))).thenReturn(members);
+        when(sendGate.evaluate(eq(orgId), eq(members))).thenReturn(new SendGateService.GateResult(members, List.of()));
+        when(consentGate.reasons(eq(orgId), eq(members))).thenReturn(java.util.Map.of(
+                members.get(0), java.util.Optional.empty(),
+                members.get(1), java.util.Optional.of("legacy_unproven")));
+        return svc;
+    }
+
+    @Test
+    void sendableEmail_consentGateAllCampaignsOff_isTheSendGateCount() {
+        MarketingHubMetricsDto dto = serviceWithThreeSendable().metrics(principal);
+
+        assertThat(dto.sendableEmail()).isEqualTo(3);
+        org.mockito.Mockito.verify(consentGate, org.mockito.Mockito.never()).reasons(any(), any());
+    }
+
+    @Test
+    void sendableEmail_consentGateAllCampaignsOn_countsOnlyConsentGateMailable() {
+        planProps.setConsentGateAllCampaigns(true);
+
+        MarketingHubMetricsDto dto = serviceWithThreeSendable().metrics(principal);
+
+        // One mailable, one legacy_unproven, one ConsentGate did not return.
+        assertThat(dto.sendableEmail()).isEqualTo(1);
     }
 
     @Test

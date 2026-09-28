@@ -26,6 +26,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.UUID;
 
 @Service
 public class OrgService {
@@ -38,11 +39,13 @@ public class OrgService {
     private final PayoutRunRepository payouts;
     private final AuditLogger audit;
     private final CampaignRepository campaigns;
+    private final AudiencePlanAccess audiencePlanAccess;
 
     public OrgService(OrganizationRepository orgs, IfMatchSupport ifMatch,
                       OrderRepository orders, TicketRepository tickets,
                       SettlementRepository settlements, PayoutRunRepository payouts,
-                      AuditLogger audit, CampaignRepository campaigns) {
+                      AuditLogger audit, CampaignRepository campaigns,
+                      AudiencePlanAccess audiencePlanAccess) {
         this.orgs = orgs;
         this.ifMatch = ifMatch;
         this.orders = orders;
@@ -51,6 +54,7 @@ public class OrgService {
         this.payouts = payouts;
         this.audit = audit;
         this.campaigns = campaigns;
+        this.audiencePlanAccess = audiencePlanAccess;
     }
 
     @Transactional(readOnly = true)
@@ -89,15 +93,21 @@ public class OrgService {
         return OrganizationDto.from(orgs.save(o));
     }
 
-    /** A scheduled or sending audience-plan campaign needs the legal footer, so its identity cannot be cleared. */
+    /** A scheduled or sending campaign that needs the legal footer keeps the org's identity from being cleared. */
     private void requireLegalIdentityKeptWhileQueued(Organization o, String legalName, String legalContact) {
         boolean clearing = o.hasLegalIdentity()
                 && (legalName == null || legalName.isBlank() || legalContact == null || legalContact.isBlank());
-        if (clearing && campaigns.existsByOrgIdAndOriginAndStatusIn(
-                o.getId(), AudiencePlanAccess.CAMPAIGN_ORIGIN, List.of("scheduled", "sending"))) {
+        if (clearing && hasQueuedCampaignNeedingIdentity(o.getId())) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.ORG_LEGAL_IDENTITY_IN_USE,
-                    "Legal name and legal contact are needed while an audience plan campaign is scheduled or sending");
+                    "Legal name and legal contact are needed while a campaign is scheduled or sending");
         }
+    }
+
+    private boolean hasQueuedCampaignNeedingIdentity(UUID orgId) {
+        List<String> queued = List.of("scheduled", "sending");
+        return audiencePlanAccess.legalIdentityAllCampaigns()
+                ? campaigns.existsByOrgIdAndStatusIn(orgId, queued)
+                : campaigns.existsByOrgIdAndOriginAndStatusIn(orgId, AudiencePlanAccess.CAMPAIGN_ORIGIN, queued);
     }
 
     private static String blankToNull(String s) {

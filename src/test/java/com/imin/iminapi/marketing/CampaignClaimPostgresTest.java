@@ -97,7 +97,12 @@ class CampaignClaimPostgresTest {
     }
 
     private List<UUID> claim(boolean sendsEnabled) {
-        return tx.execute(st -> campaigns.claimDue(NOW, NOW.minus(5, ChronoUnit.MINUTES), sendsEnabled)
+        return claim(sendsEnabled, false);
+    }
+
+    private List<UUID> claim(boolean sendsEnabled, boolean legalIdentityAllCampaigns) {
+        return tx.execute(st -> campaigns.claimDue(NOW, NOW.minus(5, ChronoUnit.MINUTES), sendsEnabled,
+                        legalIdentityAllCampaigns)
                 .stream().map(Campaign::getId).toList());
     }
 
@@ -130,5 +135,20 @@ class CampaignClaimPostgresTest {
         Campaign otherManual = campaign(noContact, "manual");
 
         assertThat(claim(true)).doesNotContain(held.getId()).contains(otherManual.getId());
+    }
+
+    @Test
+    void legalIdentityAllCampaigns_manualAndMomentumOfOrgWithoutIdentity_areNotClaimed() {
+        UUID noIdentity = org(null, null);
+        Campaign heldManual = campaign(noIdentity, "manual");
+        Campaign heldMomentum = campaign(noIdentity, "momentum");
+
+        assertThat(claim(false, true)).containsExactly(manual.getId());
+        assertThat(claim(false, false)).contains(heldManual.getId(), heldMomentum.getId());
+    }
+
+    @Test
+    void legalIdentityAllCampaigns_sendsOn_claimsBothOfOrgWithIdentity() {
+        assertThat(claim(true, true)).containsExactlyInAnyOrder(plan.getId(), manual.getId());
     }
 }

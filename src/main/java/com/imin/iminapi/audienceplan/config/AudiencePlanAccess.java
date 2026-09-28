@@ -50,9 +50,19 @@ public class AudiencePlanAccess {
         }
     }
 
-    /** Audience-plan campaigns need the org's legal name and contact for the email footer; other origins ignore it. */
+    /** True while every campaign, whatever its origin, needs the org's legal name and contact. */
+    public boolean legalIdentityAllCampaigns() {
+        return Boolean.TRUE.equals(props.getLegalIdentityAllCampaigns());
+    }
+
+    /** Audience-plan campaigns always need the legal identity; other origins only while the all-campaigns flag is on. */
+    public boolean legalIdentityRequired(String campaignOrigin) {
+        return CAMPAIGN_ORIGIN.equals(campaignOrigin) || legalIdentityAllCampaigns();
+    }
+
+    /** Refuses a campaign that needs the org's legal name and contact for the email footer when either is missing. */
     public void requireLegalIdentity(String campaignOrigin, Organization org) {
-        if (CAMPAIGN_ORIGIN.equals(campaignOrigin) && (org == null || !org.hasLegalIdentity())) {
+        if (legalIdentityRequired(campaignOrigin) && (org == null || !org.hasLegalIdentity())) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.ORG_LEGAL_IDENTITY_MISSING,
                     "Add the organization's legal name and legal contact before scheduling this campaign");
         }

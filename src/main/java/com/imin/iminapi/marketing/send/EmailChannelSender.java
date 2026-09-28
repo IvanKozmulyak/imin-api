@@ -72,6 +72,7 @@ public class EmailChannelSender {
     private final MarketingGuardProperties guardProps;
     private final SendPathGuard sendPathGuard;
     private final AddressSourceLines addressSources;
+    private final AudiencePlanAccess audiencePlanAccess;
 
     public EmailChannelSender(CampaignRecipientRepository recipients, CampaignRepository campaigns,
                               CampaignEmailRenderer renderer, CampaignEmailProvider provider,
@@ -80,7 +81,8 @@ public class EmailChannelSender {
                               OrganizationRepository organizations, EventRepository events,
                               MembershipRepository memberships, ConsumerRepository consumers,
                               SendGateService sendGate, MarketingGuardProperties guardProps,
-                              SendPathGuard sendPathGuard, AddressSourceLines addressSources) {
+                              SendPathGuard sendPathGuard, AddressSourceLines addressSources,
+                              AudiencePlanAccess audiencePlanAccess) {
         this.recipients = recipients;
         this.campaigns = campaigns;
         this.renderer = renderer;
@@ -96,6 +98,7 @@ public class EmailChannelSender {
         this.guardProps = guardProps;
         this.sendPathGuard = sendPathGuard;
         this.addressSources = addressSources;
+        this.audiencePlanAccess = audiencePlanAccess;
     }
 
     /**
@@ -121,8 +124,8 @@ public class EmailChannelSender {
             return false;
         }
         Organization org = organization(c.getOrgId());
-        // Audience-plan mail must carry the legal footer: fail the campaign (rows stay pending) rather than loop.
-        if (AudiencePlanAccess.CAMPAIGN_ORIGIN.equals(c.getOrigin()) && (org == null || !org.hasLegalIdentity())) {
+        // Mail that needs the legal footer fails the campaign (rows stay pending) rather than loop.
+        if (audiencePlanAccess.legalIdentityRequired(c.getOrigin()) && (org == null || !org.hasLegalIdentity())) {
             failForMissingLegalIdentity(c);
             return false;
         }

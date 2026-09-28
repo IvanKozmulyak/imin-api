@@ -898,6 +898,8 @@ imin:
     summary-daily-cap-per-org: ${IMIN_AUDIENCE_PLAN_SUMMARY_DAILY_CAP:50}
     # Longest wait for one summary answer before the template is used.
     summary-timeout: ${IMIN_AUDIENCE_PLAN_SUMMARY_TIMEOUT:30s}
+    # Legal name + contact required for every campaign, not only audience-plan ones. Flip only after counting orgs without them.
+    legal-identity-all-campaigns: ${IMIN_LEGAL_IDENTITY_ALL_CAMPAIGNS:false}
 
 # resendTracking reports TRACKING_ON (ranked below UP, 200) so a Resend setting never fails the healthcheck.
 # A custom http-mapping replaces Boot's defaults, so down/out-of-service must be restated as 503.

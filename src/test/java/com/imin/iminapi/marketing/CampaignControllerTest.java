@@ -227,6 +227,21 @@ class CampaignControllerTest {
 
     @Test
     @WithStubOrganizer
+    void preview_audience_carries_the_send_path_skip_counts() throws Exception {
+        when(service.previewAudience(any(), eq(CAMP)))
+                .thenReturn(new PreviewAudienceResponse(5,
+                        new PreviewAudienceResponse.Excluded(0, 0, 0, 0, 0, 0, 6, 7, 8, 9)));
+        mvc.perform(post("/api/v1/marketing/campaigns/{id}/preview-audience", CAMP))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.sendable").value(5))
+                .andExpect(jsonPath("$.excluded.experimentHoldout").value(6))
+                .andExpect(jsonPath("$.excluded.eventCap").value(7))
+                .andExpect(jsonPath("$.excluded.monthlyCap").value(8))
+                .andExpect(jsonPath("$.excluded.consentGate").value(9));
+    }
+
+    @Test
+    @WithStubOrganizer
     void test_send_returns_204_and_delegates() throws Exception {
         mvc.perform(post("/api/v1/marketing/campaigns/{id}/test-send", CAMP)
                         .contentType(MediaType.APPLICATION_JSON)

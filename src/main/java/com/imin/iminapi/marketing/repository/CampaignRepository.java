@@ -93,12 +93,16 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
     /** True when the org has a campaign of this origin in one of the given statuses. */
     boolean existsByOrgIdAndOriginAndStatusIn(UUID orgId, String origin, java.util.Collection<String> statuses);
 
+    /** True when the org has a campaign of any origin in one of the given statuses. */
+    boolean existsByOrgIdAndStatusIn(UUID orgId, java.util.Collection<String> statuses);
+
     /**
      * Spec §2.5: claim due campaigns — scheduled+due, retryable failed (attempts<3),
      * or stale sending (heartbeat > 5 min old, orphaned by a mid-send crash). SKIP LOCKED
      * so multiple dispatcher instances don't double-claim. Audience-plan campaigns are left
      * out while their sends switch is off, even if already scheduled, and while their org
-     * lacks a legal name or legal contact, so a held campaign never loops or eats the LIMIT.
+     * lacks a legal name or legal contact (every origin while legalIdentityAllCampaigns is on),
+     * so a held campaign never loops or eats the LIMIT.
      */
     @Query(value = """
         SELECT * FROM campaigns
@@ -109,7 +113,7 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
             OR (status = 'sending' AND updated_at < :staleBefore)
           )
           AND (:audiencePlanSendsEnabled = TRUE OR origin <> 'audience_plan')
-          AND (origin <> 'audience_plan' OR EXISTS (
+          AND ((origin <> 'audience_plan' AND :legalIdentityAllCampaigns = FALSE) OR EXISTS (
                 SELECT 1 FROM organizations o
                 WHERE o.id = campaigns.org_id
                   AND TRIM(COALESCE(o.legal_name, '')) <> ''
@@ -121,5 +125,6 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
     java.util.List<com.imin.iminapi.marketing.model.Campaign> claimDue(
             @org.springframework.data.repository.query.Param("now") java.time.Instant now,
             @org.springframework.data.repository.query.Param("staleBefore") java.time.Instant staleBefore,
-            @org.springframework.data.repository.query.Param("audiencePlanSendsEnabled") boolean audiencePlanSendsEnabled);
+            @org.springframework.data.repository.query.Param("audiencePlanSendsEnabled") boolean audiencePlanSendsEnabled,
+            @org.springframework.data.repository.query.Param("legalIdentityAllCampaigns") boolean legalIdentityAllCampaigns);
 }

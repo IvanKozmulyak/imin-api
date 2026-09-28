@@ -2,6 +2,7 @@ package com.imin.iminapi.marketing.service;
 
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.SendGateService;
+import com.imin.iminapi.audienceplan.service.AllCampaignsConsent;
 import com.imin.iminapi.marketing.dto.MarketingHubMetricsDto;
 import com.imin.iminapi.marketing.email.MarketingEmailProperties;
 import com.imin.iminapi.marketing.model.Campaign;
@@ -39,6 +40,7 @@ public class MarketingHubService {
     private final CampaignRepository campaigns;
     private final CampaignAttributionService attribution;
     private final MarketingEmailProperties emailProps;
+    private final AllCampaignsConsent allCampaignsConsent;
 
     public MarketingHubService(MembershipRepository memberships,
                                SendGateService sendGate,
@@ -46,7 +48,8 @@ public class MarketingHubService {
                                EventRepository events,
                                CampaignRepository campaigns,
                                CampaignAttributionService attribution,
-                               MarketingEmailProperties emailProps) {
+                               MarketingEmailProperties emailProps,
+                               AllCampaignsConsent allCampaignsConsent) {
         this.memberships = memberships;
         this.sendGate = sendGate;
         this.suggestions = suggestions;
@@ -54,6 +57,7 @@ public class MarketingHubService {
         this.campaigns = campaigns;
         this.attribution = attribution;
         this.emailProps = emailProps;
+        this.allCampaignsConsent = allCampaignsConsent;
     }
 
     @Transactional(readOnly = true)
@@ -66,8 +70,10 @@ public class MarketingHubService {
 
         // sendableEmail: run the Send Gate over ALL the org's memberships — the same
         // machinery CampaignService.previewAudience uses, but for the full audience.
+        // ConsentGate narrows it too while it applies to every campaign.
         List<UUID> allMemberIds = memberships.findAllMembershipIdsByOrgId(orgId);
-        int sendableEmail = sendGate.evaluate(orgId, allMemberIds).sendable().size();
+        int sendableEmail = allCampaignsConsent.mailable(orgId,
+                sendGate.evaluate(orgId, allMemberIds).sendable()).size();
 
         // momentumWaiting: live 'suggested' suggestions for the org.
         int momentumWaiting = suggestions

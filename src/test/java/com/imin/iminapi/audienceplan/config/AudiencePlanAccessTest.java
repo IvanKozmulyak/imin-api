@@ -225,6 +225,80 @@ class AudiencePlanAccessTest {
     }
 
     @Test
+    void legalIdentityAllCampaigns_defaultsFalse() {
+        assertThat(new AudiencePlanProperties().getLegalIdentityAllCampaigns()).isFalse();
+        assertThat(new AudiencePlanAccess(new AudiencePlanProperties()).legalIdentityAllCampaigns()).isFalse();
+    }
+
+    @Test
+    void legalIdentityAllCampaigns_blankEnvVar_bindsFalse() {
+        runner.withPropertyValues("IMIN_LEGAL_IDENTITY_ALL_CAMPAIGNS=",
+                        "imin.audience-plan.legal-identity-all-campaigns=${IMIN_LEGAL_IDENTITY_ALL_CAMPAIGNS:false}")
+                .run(ctx -> assertThat(ctx.getBean(AudiencePlanAccess.class).legalIdentityAllCampaigns()).isFalse());
+    }
+
+    @Test
+    void legalIdentityAllCampaigns_true_binds() {
+        runner.withPropertyValues("imin.audience-plan.legal-identity-all-campaigns=true")
+                .run(ctx -> assertThat(ctx.getBean(AudiencePlanAccess.class).legalIdentityAllCampaigns()).isTrue());
+    }
+
+    @Test
+    void legalIdentityAllCampaigns_shippedYamlDefaultsToFalse() throws Exception {
+        String main = java.nio.file.Files.readString(java.nio.file.Path.of("src/main/resources/application.yaml"));
+        String test = java.nio.file.Files.readString(java.nio.file.Path.of("src/test/resources/application.yaml"));
+        assertThat(main).contains("legal-identity-all-campaigns: ${IMIN_LEGAL_IDENTITY_ALL_CAMPAIGNS:false}");
+        assertThat(test).contains("legal-identity-all-campaigns: false");
+    }
+
+    @Test
+    void legalIdentityAllCampaigns_nullSetter_staysFalse() {
+        AudiencePlanProperties props = new AudiencePlanProperties();
+        props.setLegalIdentityAllCampaigns(null);
+        assertThat(props.getLegalIdentityAllCampaigns()).isFalse();
+    }
+
+    @Test
+    void legalIdentityRequired_flagOff_onlyAudiencePlan() {
+        AudiencePlanAccess access = new AudiencePlanAccess(new AudiencePlanProperties());
+        assertThat(access.legalIdentityRequired("audience_plan")).isTrue();
+        assertThat(access.legalIdentityRequired("manual")).isFalse();
+        assertThat(access.legalIdentityRequired("momentum")).isFalse();
+        assertThat(access.legalIdentityRequired(null)).isFalse();
+    }
+
+    @Test
+    void legalIdentityRequired_flagOn_everyOrigin() {
+        AudiencePlanProperties props = new AudiencePlanProperties();
+        props.setLegalIdentityAllCampaigns(true);
+        AudiencePlanAccess access = new AudiencePlanAccess(props);
+        assertThat(access.legalIdentityRequired("audience_plan")).isTrue();
+        assertThat(access.legalIdentityRequired("manual")).isTrue();
+        assertThat(access.legalIdentityRequired("momentum")).isTrue();
+        assertThat(access.legalIdentityRequired(null)).isTrue();
+    }
+
+    @Test
+    void requireLegalIdentity_manualWithoutIdentity_flagOff_passes_flagOn_throws409() {
+        AudiencePlanProperties props = new AudiencePlanProperties();
+        AudiencePlanAccess access = new AudiencePlanAccess(props);
+        com.imin.iminapi.model.Organization org = new com.imin.iminapi.model.Organization();
+        assertThatCode(() -> access.requireLegalIdentity("manual", org)).doesNotThrowAnyException();
+        assertThatCode(() -> access.requireLegalIdentity("manual", null)).doesNotThrowAnyException();
+
+        props.setLegalIdentityAllCampaigns(true);
+        assertThatThrownBy(() -> access.requireLegalIdentity("manual", org))
+                .isInstanceOfSatisfying(ApiException.class, e -> {
+                    assertThat(e.status()).isEqualTo(HttpStatus.CONFLICT);
+                    assertThat(e.code()).isEqualTo(ErrorCode.ORG_LEGAL_IDENTITY_MISSING);
+                });
+        assertThatThrownBy(() -> access.requireLegalIdentity("momentum", null)).isInstanceOf(ApiException.class);
+        org.setLegalName("Night SAS");
+        org.setLegalContact("legal@night.test");
+        assertThatCode(() -> access.requireLegalIdentity("manual", org)).doesNotThrowAnyException();
+    }
+
+    @Test
     void sendsOff_audiencePlanOrigin_throws409() {
         AudiencePlanAccess access = new AudiencePlanAccess(new AudiencePlanProperties());
         assertThatThrownBy(() -> access.requireSendsAllowed("audience_plan"))

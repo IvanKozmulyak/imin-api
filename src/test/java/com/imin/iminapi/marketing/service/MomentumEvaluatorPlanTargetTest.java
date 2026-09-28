@@ -2,6 +2,9 @@ package com.imin.iminapi.marketing.service;
 
 import com.imin.iminapi.audience.service.SegmentService;
 import com.imin.iminapi.audience.service.SendGateService;
+import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
+import com.imin.iminapi.audienceplan.service.AllCampaignsConsent;
+import com.imin.iminapi.audienceplan.service.ConsentGate;
 import com.imin.iminapi.audienceplan.service.MomentumPlanTarget;
 import com.imin.iminapi.marketing.dto.MomentumDraftPayload;
 import com.imin.iminapi.marketing.model.MomentumSuggestion;
@@ -49,8 +52,11 @@ class MomentumEvaluatorPlanTargetTest {
     final MomentumNotifier notifier = mock(MomentumNotifier.class);
     final MomentumPlanTarget planTarget = mock(MomentumPlanTarget.class);
     final ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
+    final AudiencePlanProperties planProps = new AudiencePlanProperties();
+    final ConsentGate consentGate = mock(ConsentGate.class);
     final MomentumEvaluator evaluator = new MomentumEvaluator(events, orders, tiers, tickets, suggestions,
-            new MomentumThresholds(), copy, sendGate, segments, notifier, planTarget, publisher);
+            new MomentumThresholds(), copy, sendGate, segments, notifier, planTarget, publisher,
+            new AllCampaignsConsent(planProps, consentGate));
 
     UUID orgId;
     UUID repeatId;
@@ -233,6 +239,59 @@ class MomentumEvaluatorPlanTargetTest {
 
         verify(publisher, never()).publishEvent(any(Object.class));
         verify(planTarget, never()).best(any());
+    }
+
+    /** ConsentGate finds only the first {@code mailable} of these members mailable; the rest legacy_unproven. */
+    private void consentGateMails(List<UUID> members, int mailable) {
+        java.util.Map<UUID, Optional<String>> verdicts = new java.util.HashMap<>();
+        for (int i = 0; i < members.size(); i++) {
+            verdicts.put(members.get(i), i < mailable ? Optional.empty() : Optional.of("legacy_unproven"));
+        }
+        when(consentGate.reasons(eq(orgId), eq(members))).thenReturn(verdicts);
+    }
+
+    @Test
+    void consentGateAllCampaignsOff_floorIgnoresConsentGate() {
+        consentGateMails(repeatMembers, 0);
+
+        evaluator.evaluateOne(event, NOW);
+
+        verify(consentGate, never()).reasons(any(), any());
+        assertThat(saved().getDraftPayload()).contains("\"segmentId\":\"" + repeatId + "\"");
+    }
+
+    @Test
+    void consentGateAllCampaignsOn_repeatWithTooFewConsentMailable_skips() {
+        planProps.setConsentGateAllCampaigns(true);
+        consentGateMails(repeatMembers, 9);
+
+        evaluator.evaluateOne(event, NOW);
+
+        verify(suggestions, never()).save(any());
+        verify(copy, never()).generate(any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void consentGateAllCampaignsOn_repeatWithEnoughConsentMailable_suggests() {
+        planProps.setConsentGateAllCampaigns(true);
+        consentGateMails(repeatMembers, 10);
+
+        evaluator.evaluateOne(event, NOW);
+
+        assertThat(saved().getDraftPayload()).contains("\"segmentId\":\"" + repeatId + "\"");
+    }
+
+    @Test
+    void consentGateAllCampaignsOn_planTargetWithTooFewConsentMailable_fallsBackToRepeat() {
+        planProps.setConsentGateAllCampaigns(true);
+        when(planTarget.best(event)).thenReturn(Optional.of(new MomentumPlanTarget.Target("loyal", "same", planMembers)));
+        consentGateMails(planMembers, 9);
+        consentGateMails(repeatMembers, 15);
+
+        evaluator.evaluateOne(event, NOW);
+
+        verify(planTarget, never()).snapshot(any(), any(), any());
+        assertThat(saved().getDraftPayload()).contains("\"segmentId\":\"" + repeatId + "\"");
     }
 
     private MomentumSuggestion saved() {

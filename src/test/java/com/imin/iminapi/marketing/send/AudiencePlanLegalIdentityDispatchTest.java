@@ -61,6 +61,10 @@ class AudiencePlanLegalIdentityDispatchTest {
     @AfterEach
     void restore() {
         props.setSendsEnabled(false);
+        props.setLegalIdentityAllCampaigns(false);
+        // Leave nothing claimable: the claim is global, so a leftover would be sent by another class's dispatcher test.
+        jdbc.update("delete from campaign_recipients");
+        jdbc.update("delete from campaigns");
     }
 
     /** Local time near noon right now, so quiet hours never drop these campaigns. */
@@ -166,5 +170,26 @@ class AudiencePlanLegalIdentityDispatchTest {
         orgs.save(o);
 
         assertThat(dispatcher.claimDueCampaignIds(Instant.now())).containsExactly(held.getId());
+    }
+
+    @Test
+    void allCampaignsFlag_manualOfOrgWithoutIdentity_isNotClaimed_andAnotherOrgsManualStillSends() {
+        props.setLegalIdentityAllCampaigns(true);
+        Campaign held = campaignWithPending(awakeOrg(null, null), "manual", "scheduled", Instant.now());
+        Campaign ok = campaignWithPending(awakeOrg("Ok SAS", "legal@ok.test"), "momentum", "scheduled", Instant.now());
+
+        dispatcher.runOnce();
+
+        assertThat(reload(held).getStatus()).isEqualTo("scheduled");
+        assertThat(reload(ok).getStatus()).isEqualTo("sent");
+        assertThat(sentTo()).hasSize(1).allSatisfy(to -> assertThat(to).startsWith("momentum-"));
+        assertThat(dispatcher.claimDueCampaignIds(Instant.now())).isEmpty();
+    }
+
+    @Test
+    void allCampaignsFlagOff_manualOfOrgWithoutIdentity_isClaimed() {
+        Campaign manual = campaignWithPending(awakeOrg(null, null), "manual", "scheduled", Instant.now());
+
+        assertThat(dispatcher.claimDueCampaignIds(Instant.now())).containsExactly(manual.getId());
     }
 }

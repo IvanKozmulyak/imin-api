@@ -56,6 +56,9 @@ public class AudiencePlanProperties {
     static final int DEFAULT_SUMMARY_DAILY_CAP = 50;
     static final Duration DEFAULT_SUMMARY_TIMEOUT = Duration.ofSeconds(30);
 
+    /** Requires the org's legal name and contact for every campaign, not only audience-plan ones. Blank binds false. */
+    private Boolean legalIdentityAllCampaigns = Boolean.FALSE;
+
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
     public Set<UUID> getBetaOrgIds() { return betaOrgIds; }
@@ -73,6 +76,8 @@ public class AudiencePlanProperties {
     public void setRetentionJobEnabled(Boolean retentionJobEnabled) { this.retentionJobEnabled = Boolean.TRUE.equals(retentionJobEnabled); }
     public Boolean getConsentGateAllCampaigns() { return consentGateAllCampaigns; }
     public void setConsentGateAllCampaigns(Boolean consentGateAllCampaigns) { this.consentGateAllCampaigns = Boolean.TRUE.equals(consentGateAllCampaigns); }
+    public Boolean getLegalIdentityAllCampaigns() { return legalIdentityAllCampaigns; }
+    public void setLegalIdentityAllCampaigns(Boolean legalIdentityAllCampaigns) { this.legalIdentityAllCampaigns = Boolean.TRUE.equals(legalIdentityAllCampaigns); }
 
     public String getSummaryModel() { return summaryModel; }
     public void setSummaryModel(String summaryModel) { this.summaryModel = summaryModel == null ? "" : summaryModel.trim(); }

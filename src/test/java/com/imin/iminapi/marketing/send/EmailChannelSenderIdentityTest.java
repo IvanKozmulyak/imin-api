@@ -40,6 +40,7 @@ class EmailChannelSenderIdentityTest {
     @Autowired CampaignRecipientRepository recipients;
     @MockitoSpyBean OrganizationRepository orgs;
     @Autowired MarketingEmailProperties marketingProps;
+    @Autowired com.imin.iminapi.audienceplan.config.AudiencePlanProperties planProps;
     @MockitoBean CampaignEmailProvider provider;
 
     private String savedFromAddress;
@@ -57,6 +58,7 @@ class EmailChannelSenderIdentityTest {
     void restoreSender() {
         marketingProps.setFromAddress(savedFromAddress);
         marketingProps.setFromName(savedFromName);
+        planProps.setLegalIdentityAllCampaigns(false);
     }
 
     private Organization org(String brand, String legalName, String legalContact) {
@@ -197,6 +199,25 @@ class EmailChannelSenderIdentityTest {
     @Test
     void audiencePlanCampaign_withLegalIdentity_sends() {
         Campaign c = campaignWithPending(org("Night", "Night SAS", "legal@night.test"), "audience_plan");
+        when(provider.sendBatch(anyList())).thenReturn(List.of("id-a"));
+
+        sender.sendNextBatch(c);
+
+        assertThat(recipients.countByCampaignIdAndStatus(c.getId(), "sent")).isEqualTo(1L);
+    }
+
+    @Test
+    void allCampaignsFlag_manualCampaignWithoutLegalContact_failsWithRowsPending() {
+        planProps.setLegalIdentityAllCampaigns(true);
+        Campaign c = campaignWithPending(org("Night", "Night SAS", null), "manual");
+
+        assertStoppedForMissingIdentity(c, sender.sendNextBatch(c));
+    }
+
+    @Test
+    void allCampaignsFlag_momentumCampaignWithLegalIdentity_sends() {
+        planProps.setLegalIdentityAllCampaigns(true);
+        Campaign c = campaignWithPending(org("Night", "Night SAS", "legal@night.test"), "momentum");
         when(provider.sendBatch(anyList())).thenReturn(List.of("id-a"));
 
         sender.sendNextBatch(c);

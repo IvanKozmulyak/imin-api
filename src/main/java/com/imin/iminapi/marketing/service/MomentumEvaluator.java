@@ -2,6 +2,7 @@ package com.imin.iminapi.marketing.service;
 
 import com.imin.iminapi.audience.service.SegmentService;
 import com.imin.iminapi.audience.service.SendGateService;
+import com.imin.iminapi.audienceplan.service.AllCampaignsConsent;
 import com.imin.iminapi.audienceplan.service.MomentumPlanTarget;
 import com.imin.iminapi.marketing.model.MomentumSuggestion;
 import com.imin.iminapi.marketing.model.MomentumTriggerType;
@@ -48,6 +49,7 @@ public class MomentumEvaluator {
     private final MomentumNotifier notifier;
     private final MomentumPlanTarget planTarget;
     private final ApplicationEventPublisher publisher;
+    private final AllCampaignsConsent allCampaignsConsent;
 
     public MomentumEvaluator(EventRepository events, OrderRepository orders,
                              TicketTierRepository tiers, TicketRepository tickets,
@@ -55,7 +57,8 @@ public class MomentumEvaluator {
                              MomentumThresholds thresholds, MomentumCopyGenerator copy,
                              SendGateService sendGate, SegmentService segments,
                              MomentumNotifier notifier, MomentumPlanTarget planTarget,
-                             ApplicationEventPublisher publisher) {
+                             ApplicationEventPublisher publisher,
+                             AllCampaignsConsent allCampaignsConsent) {
         this.events = events;
         this.orders = orders;
         this.tiers = tiers;
@@ -68,6 +71,7 @@ public class MomentumEvaluator {
         this.notifier = notifier;
         this.planTarget = planTarget;
         this.publisher = publisher;
+        this.allCampaignsConsent = allCampaignsConsent;
     }
 
     @Scheduled(cron = "0 0 * * * *") // top of every hour
@@ -99,6 +103,10 @@ public class MomentumEvaluator {
                 log.error("Momentum evaluation failed for event {}: {}", e.getId(), ex.getMessage());
             }
         }
+    }
+
+    private int sendableCount(UUID orgId, List<UUID> memberIds) {
+        return allCampaignsConsent.mailable(orgId, sendGate.evaluate(orgId, memberIds).sendable()).size();
     }
 
     void evaluateOne(Event e, Instant now) {
@@ -149,7 +157,7 @@ public class MomentumEvaluator {
         // Target: the plan's best segment (holdouts removed) when it clears the floor, else the prebuilt Repeat.
         MomentumPlanTarget.Target planned = planTarget(e);
         if (planned != null) {
-            int plannedSendable = sendGate.evaluate(e.getOrgId(), planned.membershipIds()).sendable().size();
+            int plannedSendable = sendableCount(e.getOrgId(), planned.membershipIds());
             if (plannedSendable < thresholds.getMinAudienceFloor()) {
                 log.info("Momentum: event {} plan target {}/{} below floor ({} < {}), using Repeat",
                         e.getId(), planned.classKey(), planned.genreFit(), plannedSendable,
@@ -171,8 +179,8 @@ public class MomentumEvaluator {
             segmentId = segments.defaultTargetSegmentId(e.getOrgId());
             List<UUID> memberIds = segments.resolveMembershipIds(e.getOrgId(), segmentId);
 
-            // Guardrail: min-audience floor via SendGate (spec §6.1).
-            int sendable = sendGate.evaluate(e.getOrgId(), memberIds).sendable().size();
+            // Guardrail: min-audience floor via SendGate (spec §6.1), and ConsentGate while it applies to every campaign.
+            int sendable = sendableCount(e.getOrgId(), memberIds);
             if (sendable < thresholds.getMinAudienceFloor()) {
                 log.info("Momentum: event {} trigger {} skipped — audience {} < floor {}",
                         e.getId(), fired.wireValue(), sendable, thresholds.getMinAudienceFloor());

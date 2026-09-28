@@ -99,7 +99,8 @@ public class CampaignDispatcher {
     private List<Campaign> claimDue(Instant now) {
         Instant staleBefore = now.minus(STALE_MINUTES, ChronoUnit.MINUTES);
         // Audience-plan campaigns are held in SQL while their sends switch is off, so they never use up the LIMIT.
-        List<Campaign> due = campaigns.claimDue(now, staleBefore, audiencePlanAccess.sendsEnabled());
+        List<Campaign> due = campaigns.claimDue(now, staleBefore, audiencePlanAccess.sendsEnabled(),
+                audiencePlanAccess.legalIdentityAllCampaigns());
         List<Campaign> eligible = new ArrayList<>(due.size());
         Map<UUID, Organization> orgCache = new HashMap<>();
         Instant capWindowStart = now.minus(DAILY_CAP_WINDOW_HOURS, ChronoUnit.HOURS);
