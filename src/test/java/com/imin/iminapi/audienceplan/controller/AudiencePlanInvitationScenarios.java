@@ -381,6 +381,74 @@ abstract class AudiencePlanInvitationScenarios {
     }
 
     @Test
+    void aStoredInvitation_isReturned_afterARefreshDropsItsSegment() throws Exception {
+        Event e = plannedEvent(28);
+        String loyalBoth = seg("loyal", "same", "[\"launch\",\"d3\"]", null);
+        String first = invite(e, loyalBoth).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        UUID oldPlan = currentPlan(e);
+        // The loyal guests dropped out; the recomputed plan no longer shows loyal/same.
+        List<Person> now = new ArrayList<>(people("repeat", repeat));
+        now.addAll(people("first_timer", firstTimers));
+        stub(e, now);
+        mvc.perform(post(planUrl(e)).with(auth(owner)).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"targetPct\":90}")).andExpect(status().isOk());
+        assertThat(currentPlan(e)).isNotEqualTo(oldPlan);
+        assertThat(jdbc.queryForList("select class from audience_plan_segments where plan_id = ?", String.class,
+                currentPlan(e))).doesNotContain("loyal");
+
+        String second = invite(e, loyalBoth).andExpect(status().isOk())
+                .andExpect(jsonPath("$.invitations[0].created").value(false))
+                .andExpect(jsonPath("$.invitations[0].classKey").value("loyal"))
+                .andExpect(jsonPath("$.invitations[0].genreFit").value("same"))
+                .andExpect(jsonPath("$.invitations[0].planId").value(oldPlan.toString()))
+                .andExpect(jsonPath("$.invitations[0].members").value(40))
+                .andReturn().getResponse().getContentAsString();
+        for (int a = 0; a < 2; a++) {
+            for (String f : List.of(".arm", ".experimentId", ".members", ".segmentId", ".campaignId")) {
+                String path = "$.invitations[0].arms[" + a + "]" + f;
+                assertThat((Object) JsonPath.read(second, path)).isEqualTo(JsonPath.read(first, path));
+            }
+        }
+
+        // A deleted draft is still rebuilt from the stored assignments, labelled with the stored keys.
+        String d3Campaign = JsonPath.read(first, "$.invitations[0].arms[1].campaignId");
+        mvc.perform(delete("/api/v1/marketing/campaigns/" + d3Campaign).with(auth(owner)))
+                .andExpect(status().isNoContent());
+        String rebuilt = invite(e, loyalBoth.replaceFirst("\\{", "{\"recreateMissingDrafts\":true,"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.invitations[0].arms[1].draftMissing").value(false))
+                .andReturn().getResponse().getContentAsString();
+        String newCampaign = JsonPath.read(rebuilt, "$.invitations[0].arms[1].campaignId");
+        assertThat(newCampaign).isNotEqualTo(d3Campaign);
+        assertThat(jdbc.queryForObject("select name from campaigns where id = ?", String.class, UUID.fromString(newCampaign)))
+                .startsWith("Audience plan · loyal/same · d3");
+        assertThat(count("select count(*) from audience_experiments where event_id = ?", e.getId())).isEqualTo(2);
+
+        // A class × fit never invited and not on the current plan is still refused.
+        invite(e, seg("loyal", "adjacent", "[\"launch\"]", null)).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.fields['segments[0]']").exists());
+    }
+
+    @Test
+    void aNullClassKey_is400() throws Exception {
+        Event e = plannedEvent(28);
+        invite(e, "{\"segments\":[{\"genreFit\":\"same\",\"arms\":[\"launch\"]}]}").andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.fields['segments[0]']").exists());
+        invite(e, "{\"segments\":[{\"classKey\":\"loyal\",\"arms\":[\"launch\"]}]}").andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.fields['segments[0]']").exists());
+        assertNothingWritten(e);
+    }
+
+    @Test
+    void aBlankClassKey_is400() throws Exception {
+        Event e = plannedEvent(28);
+        invite(e, "{\"segments\":[{\"classKey\":\"  \",\"genreFit\":\"same\",\"arms\":[\"launch\"]}]}")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.fields['segments[0]']").value("classKey and genreFit are required"));
+        assertNothingWritten(e);
+    }
+
+    @Test
     void aNewSegment_isInvited_nextToAnAlreadyInvitedOne() throws Exception {
         Event e = plannedEvent(28);
         invite(e, "{\"segments\":[{\"classKey\":\"loyal\",\"genreFit\":\"same\",\"arms\":[\"launch\"]}]}")

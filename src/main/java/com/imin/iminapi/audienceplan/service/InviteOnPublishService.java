@@ -4,7 +4,6 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
-import com.imin.iminapi.audienceplan.config.AudiencePlanLogic.TimingArm;
 import com.imin.iminapi.audienceplan.dto.AudiencePlanInvitationsRequest;
 import com.imin.iminapi.audienceplan.dto.AudiencePlanInvitationsRequest.SegmentInvitation;
 import com.imin.iminapi.audienceplan.dto.AudiencePlanInviteOnPublishRequest;
@@ -26,6 +25,7 @@ import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.util.LogSafe;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -33,10 +33,12 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -44,7 +46,8 @@ import java.util.UUID;
 
 /**
  * "Schedule invitations when I publish": stores the plan segments to invite on a draft event and, once the event is
- * published, runs {@link InvitationService} with them one time. Drafts only; the sends kill switch still applies.
+ * published, runs {@link InvitationService} with them at least once (re-runs return the stored invitations). Drafts
+ * only; the sends kill switch still applies.
  */
 @Service
 public class InviteOnPublishService {
@@ -52,7 +55,16 @@ public class InviteOnPublishService {
     private static final Logger log = LoggerFactory.getLogger(InviteOnPublishService.class);
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final TypeReference<List<SegmentInvitation>> SEGMENTS = new TypeReference<>() {};
-    private static final String D3 = TimingArm.D3.name().toLowerCase(Locale.ROOT);
+    /** A claim older than this without completion is taken as a crashed run. */
+    static final Duration STALE_AFTER = Duration.ofMinutes(30);
+    // ponytail: 3 attempts, then dropped with a WARN (the Audience tab still invites); 50 intents per sweep pass.
+    static final int MAX_ATTEMPTS = 3;
+    static final int SWEEP_BATCH = 50;
+    /** A never-claimed intent is swept only this long after its publish, so an old leftover invites nobody late. */
+    static final Duration UNCLAIMED_EXPIRY = Duration.ofHours(48);
+    /** A claim left on an event that is no longer live is purged after this long. */
+    static final Duration CLAIMED_EXPIRY = Duration.ofDays(7);
+    private static final List<EventStatus> NOT_LIVE = List.of(EventStatus.DRAFT, EventStatus.PAST, EventStatus.CANCELLED);
 
     private final AudiencePlanAccess access;
     private final EventRepository events;
@@ -60,19 +72,21 @@ public class InviteOnPublishService {
     private final AudiencePlanSegmentRepository planSegments;
     private final PublishInviteRepository invites;
     private final InvitationService invitations;
+    private final PlanService planService;
     private final TransactionTemplate tx;
     private final Clock clock;
 
     public InviteOnPublishService(AudiencePlanAccess access, EventRepository events, AudiencePlanRepository plans,
                                   AudiencePlanSegmentRepository planSegments, PublishInviteRepository invites,
-                                  InvitationService invitations, PlatformTransactionManager transactionManager,
-                                  Clock clock) {
+                                  InvitationService invitations, PlanService planService,
+                                  PlatformTransactionManager transactionManager, Clock clock) {
         this.access = access;
         this.events = events;
         this.plans = plans;
         this.planSegments = planSegments;
         this.invites = invites;
         this.invitations = invitations;
+        this.planService = planService;
         this.tx = new TransactionTemplate(transactionManager);
         this.clock = clock;
     }
@@ -100,6 +114,9 @@ public class InviteOnPublishService {
         row.setSegments(json(segments));
         row.setCreatedBy(principal.userId());
         row.setUpdatedAt(clock.instant());
+        // A new intent waits for its own publish; a claim left from an earlier publish no longer applies.
+        row.setClaimedAt(null);
+        row.setAttempts(0);
         return response(event.getId(), Optional.of(invites.save(row)));
     }
 
@@ -110,49 +127,156 @@ public class InviteOnPublishService {
         invites.deleteByEventId(eventId);
     }
 
-    /** Claims (deletes) the intent so it runs once; one invitation call per segment, so one refusal blocks no other. */
-    // ponytail: a failed run is not retried; the organizer can still invite from the Audience tab.
+    /** Runs the intent stored for this publish, unless a run already holds it (the sweeper takes a stale one). */
     public void runOnPublish(UUID eventId) {
-        PublishInvite claimed = tx.execute(s -> {
-            Optional<PublishInvite> row = invites.findById(eventId);
-            if (row.isEmpty() || invites.deleteByEventId(eventId) == 0) return null;
-            return row.get();
-        });
-        if (claimed == null) return;
+        Instant now = now();
+        Integer claimed = tx.execute(s -> invites.claim(eventId, now));
+        if (claimed == null || claimed == 0) return;
+        run(eventId, now);
+    }
+
+    /**
+     * Purges expired intents, then re-runs published events' intents claimed over {@link #STALE_AFTER} ago, or never
+     * claimed within {@link #UNCLAIMED_EXPIRY} of the publish (refreshed first);
+     * safe because a stored invitation is returned, never created twice. Drops one at {@link #MAX_ATTEMPTS}.
+     */
+    public int sweepStale() {
+        Instant now = now();
+        Instant cutoff = now.minus(STALE_AFTER);
+        Instant expiry = now.minus(UNCLAIMED_EXPIRY);
+        purge(now, expiry);
+        List<PublishInvite> stale = tx.execute(s -> invites.findStale(EventStatus.LIVE, cutoff, expiry,
+                PageRequest.of(0, SWEEP_BATCH)));
+        int rerun = 0;
+        for (PublishInvite row : stale == null ? List.<PublishInvite>of() : stale) {
+            UUID eventId = row.getEventId();
+            Instant was = row.getClaimedAt();
+            try {
+                if (row.getAttempts() >= MAX_ATTEMPTS) {
+                    Integer dropped = tx.execute(s -> invites.complete(eventId, was));
+                    if (dropped != null && dropped == 1) {
+                        log.warn("InviteOnPublish: event {} intent dropped after {} attempts", eventId, row.getAttempts());
+                    }
+                    continue;
+                }
+                Instant mine = now();
+                Integer taken = tx.execute(s -> was == null ? invites.claim(eventId, mine)
+                        : invites.reclaim(eventId, was, mine));
+                if (taken == null || taken == 0) continue;
+                if (was == null) refreshPlan(eventId);
+                log.info("InviteOnPublish: event {} intent re-run (attempt {})", eventId, row.getAttempts() + 1);
+                run(eventId, mine);
+                rerun++;
+            } catch (Exception e) {
+                log.warn("InviteOnPublish: event {} re-run failed: {} {}", eventId, e.getClass().getSimpleName(),
+                        LogSafe.redact(e.getMessage()));
+            }
+        }
+        return rerun;
+    }
+
+    /**
+     * One invitation call per segment, so one refusal blocks no other. Deleted once every segment was invited or
+     * refused; an unexpected failure leaves the claim for the sweeper.
+     */
+    private void run(UUID eventId, Instant claimedAt) {
+        PublishInvite claimed = tx.execute(s -> invites.findById(eventId).orElse(null));
+        if (claimed == null || !claimedAt.equals(claimed.getClaimedAt())) return;
         Event event = events.findActive(eventId).filter(e -> claimed.getOrgId().equals(e.getOrgId())).orElse(null);
         if (event == null || !access.isEnabled(claimed.getOrgId())) {
             log.info("InviteOnPublish: event {} gone or its org is off; stored invitations dropped", eventId);
+            complete(eventId, claimedAt);
             return;
         }
         Optional<AudiencePlan> plan = plans.findFirstByOrgIdAndEventIdAndSupersededByIsNullOrderByCreatedAtDesc(
                 claimed.getOrgId(), eventId);
         if (plan.isEmpty()) {
             log.warn("InviteOnPublish: event {} has no plan; nothing invited", eventId);
+            complete(eventId, claimedAt);
             return;
         }
         List<AudiencePlanSegment> shown = planSegments.findByPlanIdOrderByPositionAsc(plan.get().getId());
-        boolean hasD3 = plan.get().getD3Date() != null;
+        Instant now = now();
         // The role is a placeholder: invitations are open to any org member and the audit reads only the ids.
         AuthPrincipal actor = new AuthPrincipal(claimed.getCreatedBy(), claimed.getOrgId(), UserRole.MEMBER, null);
+        boolean retry = false;
         for (SegmentInvitation s : read(claimed.getSegments())) {
             String key = s.classKey() + "/" + s.genreFit();
             if (!isShown(shown, s)) {
                 log.info("InviteOnPublish: event {} segment {} no longer in the plan; skipped", eventId, key);
                 continue;
             }
-            List<String> arms = s.arms().stream().filter(a -> hasD3 || !D3.equals(a)).toList();
+            // Arms a new invitation can no longer get are dropped; the segment still goes out on the others.
+            List<String> arms = invitations.offeredArms(event, plan.get(), s.arms(), now);
             if (arms.isEmpty()) {
-                log.info("InviteOnPublish: event {} segment {} has no arm left without D-3; skipped", eventId, key);
+                log.info("InviteOnPublish: event {} segment {} has no arm left that is still offered; skipped",
+                        eventId, key);
                 continue;
+            }
+            if (arms.size() < s.arms().size()) {
+                log.info("InviteOnPublish: event {} segment {} arms {} no longer offered; invited on {}", eventId, key,
+                        s.arms().stream().filter(a -> !arms.contains(a)).toList(), arms);
             }
             SegmentInvitation one = new SegmentInvitation(s.classKey(), s.genreFit(), arms, s.holdoutPct());
             try {
                 invitations.invite(actor, eventId, new AudiencePlanInvitationsRequest(List.of(one), null));
+            } catch (ApiException e) {
+                if (e.code() == ErrorCode.AUDIENCE_PLAN_ALREADY_INVITED) {
+                    log.info("InviteOnPublish: event {} segment {} already invited with other settings; kept",
+                            eventId, key);
+                } else if (e.status().is5xxServerError()) {
+                    retry = true;
+                    log.warn("InviteOnPublish: event {} segment {} failed, left for a re-run: {} {}", eventId, key,
+                            e.code(), LogSafe.redact(e.getMessage()));
+                } else {
+                    log.warn("InviteOnPublish: event {} segment {} not invited: {} {}", eventId, key, e.code(),
+                            LogSafe.redact(e.getMessage()));
+                }
             } catch (Exception e) {
-                log.warn("InviteOnPublish: event {} segment {} not invited: {} {}", eventId, key,
+                retry = true;
+                log.warn("InviteOnPublish: event {} segment {} failed, left for a re-run: {} {}", eventId, key,
                         e.getClass().getSimpleName(), LogSafe.redact(e.getMessage()));
             }
         }
+        if (!retry) complete(eventId, claimedAt);
+    }
+
+    /**
+     * Deletes never-claimed intents of events published over {@link #UNCLAIMED_EXPIRY} ago, and claims left over
+     * {@link #CLAIMED_EXPIRY} on events that are no longer live.
+     */
+    private void purge(Instant now, Instant expiry) {
+        List<UUID> expired = tx.execute(s -> invites.findExpiredUnclaimed(EventStatus.LIVE, expiry,
+                PageRequest.of(0, SWEEP_BATCH)));
+        for (UUID eventId : expired == null ? List.<UUID>of() : expired) {
+            Integer deleted = tx.execute(s -> invites.deleteUnclaimed(eventId));
+            if (deleted != null && deleted == 1) {
+                log.info("InviteOnPublish: event {} intent never ran within {}h of its publish; dropped", eventId,
+                        UNCLAIMED_EXPIRY.toHours());
+            }
+        }
+        Integer leftover = tx.execute(s -> invites.deleteClaimedOf(NOT_LIVE, now.minus(CLAIMED_EXPIRY)));
+        if (leftover != null && leftover > 0) {
+            log.info("InviteOnPublish: dropped {} claimed intent(s) of events no longer live", leftover);
+        }
+    }
+
+    private void complete(UUID eventId, Instant claimedAt) {
+        tx.execute(s -> invites.complete(eventId, claimedAt));
+    }
+
+    private void refreshPlan(UUID eventId) {
+        try {
+            planService.refresh(eventId);
+        } catch (Exception e) {
+            log.warn("InviteOnPublish: plan refresh before the re-run of event {} failed: {} {}", eventId,
+                    e.getClass().getSimpleName(), LogSafe.redact(e.getMessage()));
+        }
+    }
+
+    /** Micros, as stored, so a claim read back compares equal. */
+    private Instant now() {
+        return clock.instant().truncatedTo(ChronoUnit.MICROS);
     }
 
     // ── helpers ────────────────────────────────────────────────────────────

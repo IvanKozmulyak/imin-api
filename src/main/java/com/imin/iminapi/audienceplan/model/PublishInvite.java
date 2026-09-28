@@ -10,7 +10,7 @@ import lombok.Setter;
 import java.time.Instant;
 import java.util.UUID;
 
-/** The plan segments to invite when a draft event is published; consumed by the first publish. */
+/** The plan segments to invite when a draft event is published; deleted once a publish run has processed them. */
 @Entity
 @Table(name = "audience_plan_publish_invites")
 @Getter
@@ -33,4 +33,11 @@ public class PublishInvite {
 
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
+
+    /** Set when a run takes the intent; null while it waits for the publish. */
+    @Column(name = "claimed_at")
+    private Instant claimedAt;
+
+    @Column(nullable = false)
+    private int attempts;
 }

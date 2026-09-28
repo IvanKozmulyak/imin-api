@@ -102,7 +102,7 @@ public class InvitationService {
     }
 
     /** {@code requestedPct} is null when the body left it out; {@code holdoutPct} is then the logic default. */
-    private record Wanted(String field, AudiencePlanSegment planSegment, List<String> arms, int holdoutPct,
+    private record Wanted(String field, String classKey, String genreFit, List<String> arms, int holdoutPct,
                           Integer requestedPct) {}
 
     @Transactional
@@ -121,32 +121,40 @@ public class InvitationService {
         planService.lockFirstPlan(eventId);
         AudiencePlan plan = plans.findFirstByOrgIdAndEventIdAndSupersededByIsNullOrderByCreatedAtDesc(orgId, eventId)
                 .orElseThrow(() -> ApiException.notFound("Audience plan"));
-        List<Wanted> wanted = validate(request, planSegments.findByPlanIdOrderByPositionAsc(plan.getId()));
+        List<Wanted> wanted = validate(request);
         boolean recreate = request != null && Boolean.TRUE.equals(request.recreateMissingDrafts());
+        List<AudiencePlanSegment> shown = planSegments.findByPlanIdOrderByPositionAsc(plan.getId());
 
-        // Keyed per event × class × fit, so a plan refresh cannot invite the same people twice. Read before the
-        // D-3 check: a stored d3 arm stays readable after a refreshed plan lost its D-3 date.
+        // Keyed per event × class × fit and read before the current plan, so a stored invitation stays readable
+        // after a refresh dropped its segment or its D-3 date, and a refresh cannot invite the same people twice.
         List<List<AudienceExperiment>> stored = new ArrayList<>();
+        List<AudiencePlanSegment> fresh = new ArrayList<>();
         for (Wanted w : wanted) {
-            AudiencePlanSegment ps = w.planSegment();
-            List<AudienceExperiment> existing = experiments.findInvited(orgId, eventId, ps.getClassKey(), ps.getGenreFit());
+            List<AudienceExperiment> existing = experiments.findInvited(orgId, eventId, w.classKey(), w.genreFit());
+            AudiencePlanSegment ps = null;
             if (existing.isEmpty()) {
+                ps = shown.stream()
+                        .filter(p -> p.getClassKey().equals(w.classKey()) && p.getGenreFit().equals(w.genreFit()))
+                        .findFirst()
+                        .orElseThrow(() -> invalid(w.field(), "not a segment of the current plan: "
+                                + w.classKey() + "/" + w.genreFit()));
                 requireArmsAvailable(w, plan);
                 requireEarlyBirdOffered(w, event, now);
             }
             stored.add(existing);
+            fresh.add(ps);
         }
 
         List<Invitation> out = new ArrayList<>();
         CandidateBuilder.Result current = null;
         for (int i = 0; i < wanted.size(); i++) {
             Wanted w = wanted.get(i);
-            AudiencePlanSegment ps = w.planSegment();
             List<AudienceExperiment> existing = stored.get(i);
             if (!existing.isEmpty()) {
-                out.add(stored(principal, event, ps, w, existing, recreate, now));
+                out.add(stored(principal, event, w, existing, recreate, now));
                 continue;
             }
+            AudiencePlanSegment ps = fresh.get(i);
             // ConsentGate and the send exclusions are re-read now, not taken from the stored plan.
             if (current == null) {
                 current = builder.build(candidates.input(orgId, event, plan.getTargetTickets(),
@@ -178,7 +186,7 @@ public class InvitationService {
         for (Map.Entry<String, AudienceExperiment> e : recorded.arms().entrySet()) {
             String arm = e.getKey();
             List<UUID> ids = split.arms().get(arm);
-            arms.add(attachDraft(principal, event, ps, e.getValue(), ids, now));
+            arms.add(attachDraft(principal, event, ps.getClassKey(), ps.getGenreFit(), e.getValue(), ids, now));
         }
         AudienceExperiment h = recorded.holdout();
         return new Invitation(ps.getClassKey(), ps.getGenreFit(), plan.getId(), ps.getId(), members.size(),
@@ -186,9 +194,9 @@ public class InvitationService {
     }
 
     /** One hidden static segment of exactly {@code ids} and a draft campaign on it, linked to the arm experiment. */
-    private Arm attachDraft(AuthPrincipal principal, Event event, AudiencePlanSegment ps, AudienceExperiment experiment,
-                            List<UUID> ids, Instant now) {
-        String label = label(ps, experiment.getArm(), event.getName());
+    private Arm attachDraft(AuthPrincipal principal, Event event, String classKey, String genreFit,
+                            AudienceExperiment experiment, List<UUID> ids, Instant now) {
+        String label = label(classKey, genreFit, experiment.getArm(), event.getName());
         Segment segment = armSegment(principal, label, ids);
         Campaign campaign = draft(principal, event, segment, label, now);
         experiment.setCampaignId(campaign.getId());
@@ -244,8 +252,8 @@ public class InvitationService {
      * The assignment is permanent: other arms or another explicit holdout percentage are a 409, and a deleted draft
      * is rebuilt only on request.
      */
-    private Invitation stored(AuthPrincipal principal, Event event, AudiencePlanSegment requested, Wanted w,
-                              List<AudienceExperiment> existing, boolean recreate, Instant now) {
+    private Invitation stored(AuthPrincipal principal, Event event, Wanted w, List<AudienceExperiment> existing,
+                              boolean recreate, Instant now) {
         UUID planSegmentId = existing.get(0).getPlanSegmentId();
         UUID planId = existing.get(0).getPlanId();
         AudienceExperiment holdout = null;
@@ -285,18 +293,20 @@ public class InvitationService {
             if (c != null) {
                 arms.add(new Arm(e.getArm(), e.getId(), e.getMembers(), c.getSegmentId(), c.getId(), false));
             } else if (recreate) {
-                arms.add(attachDraft(principal, event, requested, e, assignments.findMembershipIds(e.getId()), now));
+                arms.add(attachDraft(principal, event, w.classKey(), w.genreFit(), e,
+                        assignments.findMembershipIds(e.getId()), now));
             } else {
                 arms.add(new Arm(e.getArm(), e.getId(), e.getMembers(), null, null, true));
             }
         }
-        return new Invitation(requested.getClassKey(), requested.getGenreFit(), planId, planSegmentId, members,
+        return new Invitation(w.classKey(), w.genreFit(), planId, planSegmentId, members,
                 holdout == null ? null : new Holdout(holdout.getId(), holdout.getMembers()), List.copyOf(arms), false);
     }
 
     // ── validation ─────────────────────────────────────────────────────────
 
-    private List<Wanted> validate(AudiencePlanInvitationsRequest request, List<AudiencePlanSegment> shown) {
+    /** The request's shape only; whether a segment must be on the current plan depends on what is stored. */
+    private List<Wanted> validate(AudiencePlanInvitationsRequest request) {
         if (request == null || request.segments() == null || request.segments().isEmpty()) {
             throw invalid("segments", "at least one segment is required");
         }
@@ -307,17 +317,17 @@ public class InvitationService {
             String field = "segments[" + i + "]";
             SegmentInvitation s = request.segments().get(i);
             if (s == null) throw invalid(field, "must not be null");
-            AudiencePlanSegment ps = shown.stream()
-                    .filter(p -> p.getClassKey().equals(s.classKey()) && p.getGenreFit().equals(s.genreFit()))
-                    .findFirst()
-                    .orElseThrow(() -> invalid(field, "not a segment of the current plan: "
-                            + s.classKey() + "/" + s.genreFit()));
-            if (!seen.add(ps.getClassKey() + "/" + ps.getGenreFit())) throw invalid(field, "segment listed twice");
+            // Checked before any lookup: a null key must never reach the query.
+            if (s.classKey() == null || s.classKey().isBlank() || s.genreFit() == null || s.genreFit().isBlank()) {
+                throw invalid(field, "classKey and genreFit are required");
+            }
+            if (!seen.add(s.classKey() + "/" + s.genreFit())) throw invalid(field, "segment listed twice");
             Integer pct = s.holdoutPct();
             if (pct != null && (pct < HOLDOUT_PCT_MIN || pct > HOLDOUT_PCT_MAX)) {
                 throw invalid(field + ".holdoutPct", "must be between " + HOLDOUT_PCT_MIN + " and " + HOLDOUT_PCT_MAX);
             }
-            out.add(new Wanted(field, ps, arms(field + ".arms", s.arms()), pct == null ? defaultPct : pct, pct));
+            out.add(new Wanted(field, s.classKey(), s.genreFit(), arms(field + ".arms", s.arms()),
+                    pct == null ? defaultPct : pct, pct));
         }
         return out;
     }
@@ -336,7 +346,7 @@ public class InvitationService {
 
     /** A new invitation gets d3 only while the plan still has a D-3 date. */
     private static void requireArmsAvailable(Wanted w, AudiencePlan plan) {
-        if (w.arms().contains(key(TimingArm.D3)) && plan.getD3Date() == null) {
+        if (w.arms().contains(key(TimingArm.D3)) && !d3Offered(plan)) {
             throw invalid(w.field() + ".arms", "d3 is not available: the event is too close");
         }
     }
@@ -346,6 +356,21 @@ public class InvitationService {
         if (w.arms().contains(key(TimingArm.EARLY_BIRD_END)) && !timing.earlyBirdOffered(event, now)) {
             throw invalid(w.field() + ".arms", "early_bird_end is not available: no early-bird tier ends before D-3");
         }
+    }
+
+    /** The arms of {@code arms} a new invitation of this event could still get now, in their order; slump always. */
+    public List<String> offeredArms(Event event, AudiencePlan plan, List<String> arms, Instant now) {
+        String d3 = key(TimingArm.D3);
+        String earlyBird = key(TimingArm.EARLY_BIRD_END);
+        boolean earlyBirdOffered = arms.contains(earlyBird) && timing.earlyBirdOffered(event, now);
+        return arms.stream()
+                .filter(a -> !d3.equals(a) || d3Offered(plan))
+                .filter(a -> !earlyBird.equals(a) || earlyBirdOffered)
+                .toList();
+    }
+
+    private static boolean d3Offered(AudiencePlan plan) {
+        return plan.getD3Date() != null;
     }
 
     private static List<String> canonicalArms() {
@@ -361,8 +386,8 @@ public class InvitationService {
     // ── helpers ────────────────────────────────────────────────────────────
 
     /** Data, not UI copy: the class, fit and arm keys plus the event name. */
-    static String label(AudiencePlanSegment ps, String arm, String eventName) {
-        String base = "Audience plan · " + ps.getClassKey() + "/" + ps.getGenreFit() + " · " + arm;
+    static String label(String classKey, String genreFit, String arm, String eventName) {
+        String base = "Audience plan · " + classKey + "/" + genreFit + " · " + arm;
         return eventName == null || eventName.isBlank() ? base : base + " · " + eventName.trim();
     }
 
