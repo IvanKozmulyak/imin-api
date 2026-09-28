@@ -34,6 +34,8 @@ public final class AuditActions {
     public static final String SEGMENT_SNAPSHOT         = "SEGMENT_SNAPSHOT";
     public static final String CONSENT_CAPTURED         = "CONSENT_CAPTURED";
     public static final String CONSENT_UNSUBSCRIBED     = "CONSENT_UNSUBSCRIBED";
+    /** A door QR / survey sign-up's address was confirmed from the emailed link; confirmed_at was set. */
+    public static final String CONSENT_CONFIRMED        = "CONSENT_CONFIRMED";
     public static final String SUPPRESSION_ADDED        = "SUPPRESSION_ADDED";
     public static final String AUDIENCE_HANDOFF         = "AUDIENCE_HANDOFF";
     public static final String AUDIENCE_IMPORTED        = "AUDIENCE_IMPORTED";

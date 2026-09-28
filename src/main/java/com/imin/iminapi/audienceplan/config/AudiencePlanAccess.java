@@ -55,6 +55,11 @@ public class AudiencePlanAccess {
         return Boolean.TRUE.equals(props.getLegalIdentityAllCampaigns());
     }
 
+    /** True while door QR / survey sign-ups get a confirmation email; false until legal D9 clears. */
+    public boolean consentConfirmationEmailsEnabled() {
+        return Boolean.TRUE.equals(props.getConsentConfirmationEmailsEnabled());
+    }
+
     /** Audience-plan campaigns always need the legal identity; other origins only while the all-campaigns flag is on. */
     public boolean legalIdentityRequired(String campaignOrigin) {
         return CAMPAIGN_ORIGIN.equals(campaignOrigin) || legalIdentityAllCampaigns();

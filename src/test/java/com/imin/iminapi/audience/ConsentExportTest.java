@@ -75,7 +75,8 @@ class ConsentExportTest {
 
     private static final String URL = "/api/v1/audience/consent/export";
     private static final String HEADER = "record_id,captured_at,email,channel,status,basis,source,"
-            + "text_version,order_id,proof_text,import_id,import_row,source_platform,export_date,proof_ref";
+            + "text_version,order_id,proof_text,import_id,import_row,source_platform,export_date,proof_ref,"
+            + "confirmation_required,confirmed_at";
 
     @Autowired MockMvc mvc;
     @Autowired ConsentService consentService;
@@ -156,7 +157,7 @@ class ConsentExportTest {
 
         assertThat(rows).hasSize(1);
         String[] r = rows.get(0);
-        assertThat(r).hasSize(15);
+        assertThat(r).hasSize(17);
         assertThat(UUID.fromString(r[0])).isNotNull();
         assertThat(java.time.Instant.parse(r[1])).isNotNull();
         assertThat(Arrays.copyOfRange(r, 2, 10)).containsExactly(
@@ -164,6 +165,25 @@ class ConsentExportTest {
                 orderId.toString(), "I agree");
         // Not an import row: no provenance.
         assertThat(Arrays.copyOfRange(r, 10, 15)).containsOnly("");
+        // A checkout grant needs no confirmation.
+        assertThat(Arrays.copyOfRange(r, 15, 17)).containsExactly("false", "");
+    }
+
+    @Test
+    void doorSignUp_isMarkedPendingUntilConfirmed_thenCarriesItsConfirmationTime() throws Exception {
+        UUID orgId = UUID.randomUUID();
+        UUID mid = seedMembership(orgId, email("door"));
+        UUID recordId = consentService.capture(orgId, mid, "explicit", "door_qr", "Ticked at the door", "email",
+                "door-org-named-2026-09", null, null, ConsentOrigin.DATA_SUBJECT, null);
+
+        String[] pending = rows(export(principal(orgId, UserRole.OWNER))).get(0);
+        assertThat(Arrays.copyOfRange(pending, 15, 17)).containsExactly("true", "");
+
+        java.time.Instant at = java.time.Instant.parse("2026-09-28T10:15:30Z");
+        jdbc.update("update consent_records set confirmed_at = ? where id = ?", java.sql.Timestamp.from(at), recordId);
+
+        String[] confirmed = rows(export(principal(orgId, UserRole.OWNER))).get(0);
+        assertThat(Arrays.copyOfRange(confirmed, 15, 17)).containsExactly("true", at.toString());
     }
 
     @Test

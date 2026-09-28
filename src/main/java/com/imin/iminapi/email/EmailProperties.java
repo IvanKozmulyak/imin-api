@@ -59,6 +59,19 @@ public class EmailProperties {
         return fromName + " <" + fromAddress + ">";
     }
 
+    /**
+     * Per-organizer From on the transactional address: {@code "<organizer> via IMIN" <fromAddress>}.
+     * Blank organizer or address falls back to {@link #fromHeader()}.
+     */
+    public String fromHeader(String organizer) {
+        String clean = com.imin.iminapi.marketing.render.OrganizerIdentity.singleLine(organizer);
+        if (clean.isEmpty() || fromAddress == null || fromAddress.isBlank()) return fromHeader();
+        String display = clean + " via IMIN";
+        // RFC 5322 quoted-string: escape backslash and double quote.
+        String quoted = "\"" + display.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+        return quoted + " <" + fromAddress + ">";
+    }
+
     /** Pick refund-request inbox with fallback chain: explicit -> reply-to -> from. */
     public String resolveRefundRequestInbox() {
         if (refundRequestInbox != null && !refundRequestInbox.isBlank()) return refundRequestInbox;

@@ -28,24 +28,31 @@ public record DsarRecords(
         List<NotifySubscriptionRecord> notifySubscriptions,
         FanFeatureRecord fanFeatures,
         List<ImportProvenanceRecord> importProvenance,
-        EmailEngagementRecord emailEngagement
+        EmailEngagementRecord emailEngagement,
+        List<ConsentConfirmationRecord> consentConfirmations
 ) {
     /** The same records with the plan-tool features attached; null when none were computed. */
     public DsarRecords withFanFeatures(FanFeatureRecord features) {
         return new DsarRecords(orders, tickets, funnelEvents, metaCapiEvents, notifySubscriptions,
-                features, importProvenance, emailEngagement);
+                features, importProvenance, emailEngagement, consentConfirmations);
     }
 
     /** The same records with the CSV-import provenance rows attached. */
     public DsarRecords withImportProvenance(List<ImportProvenanceRecord> rows) {
         return new DsarRecords(orders, tickets, funnelEvents, metaCapiEvents, notifySubscriptions,
-                fanFeatures, rows, emailEngagement);
+                fanFeatures, rows, emailEngagement, consentConfirmations);
     }
 
     /** The same records with the historic open/click timestamps; null when none are held. */
     public DsarRecords withEmailEngagement(EmailEngagementRecord engagement) {
         return new DsarRecords(orders, tickets, funnelEvents, metaCapiEvents, notifySubscriptions,
-                fanFeatures, importProvenance, engagement);
+                fanFeatures, importProvenance, engagement, consentConfirmations);
+    }
+
+    /** The same records with the door QR / survey confirmation emails sent to this person. */
+    public DsarRecords withConsentConfirmations(List<ConsentConfirmationRecord> rows) {
+        return new DsarRecords(orders, tickets, funnelEvents, metaCapiEvents, notifySubscriptions,
+                fanFeatures, importProvenance, emailEngagement, rows);
     }
 
     public record OrderRecord(
@@ -122,6 +129,14 @@ public record DsarRecords(
 
     /** Last open and click recorded on the membership before tracking was switched off; no longer written. */
     public record EmailEngagementRecord(Instant lastOpenedAt, Instant lastClickedAt) {}
+
+    /** One confirmation email for a door QR / survey sign-up: when it went, until when it worked, when it was used. */
+    public record ConsentConfirmationRecord(
+            UUID consentRecordId,
+            String locale,
+            Instant sentAt,
+            Instant expiresAt,
+            Instant usedAt) {}
 
     /** A "tell me when tickets drop" registration. */
     public record NotifySubscriptionRecord(

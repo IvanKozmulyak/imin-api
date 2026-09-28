@@ -65,6 +65,10 @@ public class RateLimitConfig {
     private int surveyCapacity;
     @Value("${imin.ratelimit.survey.window-minutes}")
     private int surveyWindow;
+    @Value("${imin.ratelimit.consent-confirm.capacity}")
+    private int consentConfirmCapacity;
+    @Value("${imin.ratelimit.consent-confirm.window-minutes}")
+    private int consentConfirmWindow;
     @Value("${imin.ratelimit.wallet-pass.capacity}")
     private int walletPassCapacity;
     @Value("${imin.ratelimit.wallet-pass.window-minutes}")
@@ -194,6 +198,10 @@ public class RateLimitConfig {
         // Public post-event survey, keyed per client IP; a venue queue shares one IP, as at the door.
         configs.put("survey", BucketConfiguration.builder()
                 .addLimit(Bandwidth.simple(surveyCapacity, Duration.ofMinutes(surveyWindow)))
+                .build());
+        // Public consent confirmation POST (the confirm press), keyed per client IP; the GET preview is unmetered.
+        configs.put("consent-confirm", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(consentConfirmCapacity, Duration.ofMinutes(consentConfirmWindow)))
                 .build());
         // Signed .pkpass minting on the public per-ticket asset endpoint, keyed per
         // client IP. Unauthenticated, and each call is three DB reads plus an RSA

@@ -1,18 +1,20 @@
 package com.imin.iminapi.audience.repository;
 
 import com.imin.iminapi.audience.model.ConsentRecord;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.Repository;
 import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 import org.springframework.data.repository.query.Param;
 
+import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
 
 /**
  * Tenant-scoped via the membership_id → membership.org_id join (M4).
- * Append-only: no delete/update methods exposed.
+ * Append-only: no delete methods; the one update is {@link #markConfirmed}, which only sets confirmed_at.
  */
 @RepositoryRestResource(exported = false)
 public interface ConsentRecordRepository extends Repository<ConsentRecord, UUID> {
@@ -30,6 +32,19 @@ public interface ConsentRecordRepository extends Repository<ConsentRecord, UUID>
 
     @Query("select c from ConsentRecord c where c.membershipId in :membershipIds")
     List<ConsentRecord> findByMembershipIdIn(@Param("membershipIds") Collection<UUID> membershipIds);
+
+    /** Email grants of this member still waiting for their address to be confirmed, recorded up to {@code upTo}. */
+    @Query("select c from ConsentRecord c where c.membershipId = :membershipId and c.channel = 'email'"
+            + " and c.status = 'subscribed' and c.confirmationRequired = true and c.confirmedAt is null"
+            + " and c.occurredAt <= :upTo order by c.occurredAt asc")
+    List<ConsentRecord> findAwaitingConfirmation(@Param("membershipId") UUID membershipId,
+                                                 @Param("upTo") Instant upTo);
+
+    /** Sets confirmed_at on a pending record; the only in-place change a consent record ever takes. */
+    @Modifying(flushAutomatically = true)
+    @Query("update ConsentRecord c set c.confirmedAt = :at where c.id = :id"
+            + " and c.confirmationRequired = true and c.confirmedAt is null")
+    int markConfirmed(@Param("id") UUID id, @Param("at") Instant at);
 
     /**
      * Count unsubscribes across org (for unsubscribe rate metric).

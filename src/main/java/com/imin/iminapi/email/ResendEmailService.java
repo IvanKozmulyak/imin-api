@@ -30,6 +30,17 @@ public class ResendEmailService implements EmailService {
 
     @Override
     public void send(String to, String subject, String html, String text, java.util.Map<String, String> headers) {
+        deliver(null, to, subject, html, text, headers);
+    }
+
+    @Override
+    public void sendFrom(String fromHeader, String to, String subject, String html, String text) {
+        deliver(fromHeader, to, subject, html, text, java.util.Map.of());
+    }
+
+    /** A blank {@code fromHeader} uses the configured transactional identity. */
+    private void deliver(String fromHeader, String to, String subject, String html, String text,
+                         java.util.Map<String, String> headers) {
         if (props.getApiKey() == null || props.getApiKey().isBlank()) {
             log.error("RESEND_API_KEY not configured; cannot send email to {}", LogSafe.email(to));
             throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, ErrorCode.INTERNAL,
@@ -41,7 +52,7 @@ public class ResendEmailService implements EmailService {
                     "Email service not configured");
         }
         CreateEmailOptions.Builder b = CreateEmailOptions.builder()
-                .from(props.fromHeader())
+                .from(fromHeader == null || fromHeader.isBlank() ? props.fromHeader() : fromHeader)
                 .to(to)
                 .subject(subject)
                 .html(html)

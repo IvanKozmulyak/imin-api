@@ -78,9 +78,9 @@ class ConsentExportPostgresTest {
 
         assertThat(lines).hasSize(3);
         assertThat(lines[1]).startsWith(realRecord + ",")
-                .endsWith("," + importId + ",7,shotgun,2026-09-01,ref-7");
+                .endsWith("," + importId + ",7,shotgun,2026-09-01,ref-7,false,");
         assertThat(lines[2]).startsWith(forgedRecord + ",")
-                .endsWith(",typed by hand,,,,,");
+                .endsWith(",typed by hand,,,,,,false,");
     }
 
     private static Flyway flyway(DriverManagerDataSource ds, String target) {

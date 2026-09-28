@@ -12,6 +12,8 @@ public class RecordingEmailService implements EmailService {
     }
 
     private final List<SentEmail> sent = new ArrayList<>();
+    // From header per sent email; null when the configured identity was used.
+    private final List<String> froms = new ArrayList<>();
     private RuntimeException nextFailure;
 
     @Override
@@ -28,10 +30,20 @@ public class RecordingEmailService implements EmailService {
             throw toThrow;
         }
         sent.add(new SentEmail(to, subject, html, text, headers == null ? java.util.Map.of() : headers));
+        froms.add(null);
     }
+
+    @Override
+    public synchronized void sendFrom(String fromHeader, String to, String subject, String html, String text) {
+        send(to, subject, html, text, java.util.Map.of());
+        froms.set(froms.size() - 1, fromHeader);
+    }
+
+    /** From header of the last email, or null when it used the configured identity. */
+    public synchronized String lastFrom() { return froms.isEmpty() ? null : froms.get(froms.size() - 1); }
 
     public synchronized List<SentEmail> sent() { return Collections.unmodifiableList(new ArrayList<>(sent)); }
     public synchronized SentEmail lastSent() { return sent.isEmpty() ? null : sent.get(sent.size() - 1); }
-    public synchronized void clear() { sent.clear(); nextFailure = null; }
+    public synchronized void clear() { sent.clear(); froms.clear(); nextFailure = null; }
     public synchronized void failNextSendWith(RuntimeException ex) { this.nextFailure = ex; }
 }

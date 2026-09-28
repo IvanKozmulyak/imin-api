@@ -1,0 +1,13 @@
+Confirmez votre e-mail pour {{organizer}}
+─────────────────────────────────────
+
+Vous avez laissé cette adresse sur le formulaire d'inscription de {{organizer}} et demandé à être informé de ses prochains événements. Confirmez que c'est bien vous, et {{organizer}} pourra vous envoyer des nouvelles de ses événements. Chaque e-mail contient un lien de désinscription en un clic.
+
+Confirmer mon e-mail :
+
+    {{confirmUrl}}
+
+Ce n'était pas vous, ou vous avez changé d'avis ? Ignorez cet e-mail : rien n'est envoyé à cette adresse tant qu'elle n'est pas confirmée. Le lien ne sert qu'une fois et expire dans {{expiresInDays}} jours.
+
+—
+Envoyé par IMIN pour {{organizer}} · car cette adresse a été laissée sur son formulaire d'inscription

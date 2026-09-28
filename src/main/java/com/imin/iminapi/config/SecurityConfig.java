@@ -161,6 +161,8 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/v1/public/events/*/door-optin").permitAll()
                         // Post-event survey — unauthenticated POST; the per-event token is checked server-side.
                         .requestMatchers(HttpMethod.POST, "/api/v1/public/surveys/*").permitAll()
+                        // Door QR / survey confirmation link — unauthenticated POST; the signed token is checked server-side.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/public/consent/confirm").permitAll()
                         // Lost-email recovery — unauthenticated POST, always 204, rate-limited.
                         .requestMatchers(HttpMethod.POST, "/api/v1/public/orders/recover").permitAll()
                         // Post-purchase SMS marketing opt-in — unauthenticated POST (§4).

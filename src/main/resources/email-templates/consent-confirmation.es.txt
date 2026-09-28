@@ -1,0 +1,13 @@
+Confirma tu correo para {{organizer}}
+─────────────────────────────────
+
+Dejaste esta dirección en el formulario de {{organizer}} y pediste recibir noticias de sus próximos eventos. Confirma que eres tú y {{organizer}} podrá enviarte novedades de sus eventos. Cada correo incluye un enlace para darte de baja con un clic.
+
+Confirmar mi correo:
+
+    {{confirmUrl}}
+
+¿No fuiste tú o has cambiado de opinión? Ignora este correo: no se envía nada a esta dirección hasta que se confirme. El enlace solo funciona una vez y caduca en {{expiresInDays}} días.
+
+—
+Enviado por IMIN en nombre de {{organizer}} · porque esta dirección se dejó en su formulario

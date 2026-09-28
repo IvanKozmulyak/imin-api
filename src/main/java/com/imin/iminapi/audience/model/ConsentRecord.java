@@ -8,7 +8,8 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * Append-only consent audit trail. Never UPDATE or DELETE in application code.
+ * Append-only consent audit trail. Never UPDATE or DELETE in application code, except
+ * {@code ConsentRecordRepository.markConfirmed}, which only sets {@code confirmed_at}.
  * Current state is denormalized onto {@link Membership#consentStatus} and
  * {@link Membership#consentBasis} for efficient send-gate queries.
  */

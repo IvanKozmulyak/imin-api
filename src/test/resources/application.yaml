@@ -137,3 +137,4 @@ imin:
     # 0 so no Spring test reaches OpenRouter; portrait research tests use stubs or a local server.
     portrait-daily-cap-global: 0
     portrait-refresh-batch: ""
+    consent-confirmation-emails-enabled: false

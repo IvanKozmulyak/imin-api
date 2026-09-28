@@ -80,6 +80,7 @@ class DoorOptInServiceTest {
     @Autowired ConsentRecordRepository consentRecords;
     @Autowired AudienceOrderProjector projector;
     @Autowired ConsentService consentService;
+    @Autowired com.imin.iminapi.audience.service.ConsentConfirmationService confirmations;
     @Autowired AudiencePlanLogic logic;
     @Autowired EmailProperties emailProps;
     @Autowired ConsentGate gate;
@@ -541,7 +542,7 @@ class DoorOptInServiceTest {
 
     private DoorOptInService serviceWith(AudiencePlanProperties props) {
         return new DoorOptInService(events, orgs, consumers, memberships, erased, optOuts, suppressions, consentRecords,
-                projector, consentService, new AudiencePlanAccess(props), logic, emailProps);
+                projector, consentService, new AudiencePlanAccess(props), logic, emailProps, confirmations);
     }
 
     private DoorOptInRequest body(String email, Boolean ticked, String text, String version, String locale) {

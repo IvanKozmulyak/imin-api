@@ -12,6 +12,7 @@ import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.repository.SuppressionRepository;
 import com.imin.iminapi.audience.service.AudienceOrderProjector;
 import com.imin.iminapi.audience.service.ConsentOrigin;
+import com.imin.iminapi.audience.service.ConsentConfirmationService;
 import com.imin.iminapi.audience.service.ConsentService;
 import com.imin.iminapi.audience.service.EmailNormalizer;
 import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
@@ -84,13 +85,15 @@ public class SurveyService {
     private final AudiencePlanAccess access;
     private final AudiencePlanLogic logic;
     private final EmailProperties emailProps;
+    private final ConsentConfirmationService confirmations;
 
     public SurveyService(EventRepository events, OrganizationRepository orgs, ConsumerRepository consumers,
                          MembershipRepository memberships, ErasedAddressRepository erased,
                          MarketingOptOutRepository optOuts, SuppressionRepository suppressions,
                          SurveyResponseRepository responses, AudienceOrderProjector projector,
                          ConsentService consentService, AudiencePlanAccess access, AudiencePlanLogic logic,
-                         EmailProperties emailProps) {
+                         EmailProperties emailProps,
+                            ConsentConfirmationService confirmations) {
         this.events = events;
         this.orgs = orgs;
         this.consumers = consumers;
@@ -104,6 +107,7 @@ public class SurveyService {
         this.access = access;
         this.logic = logic;
         this.emailProps = emailProps;
+        this.confirmations = confirmations;
     }
 
     // ---- organizer ----
@@ -203,10 +207,11 @@ public class SurveyService {
         projector.upsertMembership(orgId, email, null);
         Membership m = findMembership(orgId, email);
         if (m == null) throw new IllegalStateException("Membership missing after survey upsert");
-        consentService.capture(orgId, m.getMembershipId(), "explicit", SOURCE,
+        UUID recordId = consentService.capture(orgId, m.getMembershipId(), "explicit", SOURCE,
                 "Ticked the survey sign-up at event " + e.getId() + " (locale " + locale + ") next to: \""
                         + text + "\"",
                 "email", version, null, e.getId(), ConsentOrigin.DATA_SUBJECT, null);
+        confirmations.requestFor(orgId, m.getMembershipId(), recordId, locale);
     }
 
     /** One 404 for unknown token, deleted, draft, cancelled, unpublished, switched off and the kill switch. */

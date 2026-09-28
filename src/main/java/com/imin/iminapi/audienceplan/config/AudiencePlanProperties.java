@@ -91,6 +91,9 @@ public class AudiencePlanProperties {
     static final int DEFAULT_PORTRAIT_CAP_GLOBAL = 100;
     static final int DEFAULT_PORTRAIT_REFRESH_BATCH = 20;
 
+    /** Emails the confirmation link for door QR / survey sign-ups; false leaves them pending. Blank binds false. */
+    private Boolean consentConfirmationEmailsEnabled = Boolean.FALSE;
+
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
     public Set<UUID> getBetaOrgIds() { return betaOrgIds; }
@@ -110,6 +113,9 @@ public class AudiencePlanProperties {
     public void setConsentGateAllCampaigns(Boolean consentGateAllCampaigns) { this.consentGateAllCampaigns = Boolean.TRUE.equals(consentGateAllCampaigns); }
     public Boolean getLegalIdentityAllCampaigns() { return legalIdentityAllCampaigns; }
     public void setLegalIdentityAllCampaigns(Boolean legalIdentityAllCampaigns) { this.legalIdentityAllCampaigns = Boolean.TRUE.equals(legalIdentityAllCampaigns); }
+
+    public Boolean getConsentConfirmationEmailsEnabled() { return consentConfirmationEmailsEnabled; }
+    public void setConsentConfirmationEmailsEnabled(Boolean v) { this.consentConfirmationEmailsEnabled = Boolean.TRUE.equals(v); }
 
     public String getSummaryModel() { return summaryModel; }
     public void setSummaryModel(String summaryModel) {

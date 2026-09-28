@@ -1,0 +1,13 @@
+Confirm your email for {{organizer}}
+────────────────────────────────
+
+You left this address on {{organizer}}'s sign-up form and asked to hear about their next events. Confirm it is really you, and {{organizer}} can start sending you news about their events. Every email has a one-click unsubscribe.
+
+Confirm my email:
+
+    {{confirmUrl}}
+
+Not you, or changed your mind? Ignore this email: nothing is sent to this address until it is confirmed. The link works once and expires in {{expiresInDays}} days.
+
+—
+Sent by IMIN for {{organizer}} · because this address was left on their sign-up form

@@ -259,6 +259,40 @@ class AudiencePlanAccessTest {
     }
 
     @Test
+    void consentConfirmationEmails_defaultsFalse() {
+        assertThat(new AudiencePlanProperties().getConsentConfirmationEmailsEnabled()).isFalse();
+        assertThat(new AudiencePlanAccess(new AudiencePlanProperties()).consentConfirmationEmailsEnabled()).isFalse();
+    }
+
+    @Test
+    void consentConfirmationEmails_blankEnvVar_bindsFalse() {
+        runner.withPropertyValues("IMIN_CONSENT_CONFIRMATION_EMAILS_ENABLED=",
+                        "imin.audience-plan.consent-confirmation-emails-enabled=${IMIN_CONSENT_CONFIRMATION_EMAILS_ENABLED:false}")
+                .run(ctx -> assertThat(ctx.getBean(AudiencePlanAccess.class).consentConfirmationEmailsEnabled()).isFalse());
+    }
+
+    @Test
+    void consentConfirmationEmails_true_binds() {
+        runner.withPropertyValues("imin.audience-plan.consent-confirmation-emails-enabled=true")
+                .run(ctx -> assertThat(ctx.getBean(AudiencePlanAccess.class).consentConfirmationEmailsEnabled()).isTrue());
+    }
+
+    @Test
+    void consentConfirmationEmails_shippedYamlDefaultsToFalse() throws Exception {
+        String main = java.nio.file.Files.readString(java.nio.file.Path.of("src/main/resources/application.yaml"));
+        String test = java.nio.file.Files.readString(java.nio.file.Path.of("src/test/resources/application.yaml"));
+        assertThat(main).contains("consent-confirmation-emails-enabled: ${IMIN_CONSENT_CONFIRMATION_EMAILS_ENABLED:false}");
+        assertThat(test).contains("consent-confirmation-emails-enabled: false");
+    }
+
+    @Test
+    void consentConfirmationEmails_nullSetter_staysFalse() {
+        AudiencePlanProperties props = new AudiencePlanProperties();
+        props.setConsentConfirmationEmailsEnabled(null);
+        assertThat(props.getConsentConfirmationEmailsEnabled()).isFalse();
+    }
+
+    @Test
     void legalIdentityRequired_flagOff_onlyAudiencePlan() {
         AudiencePlanAccess access = new AudiencePlanAccess(new AudiencePlanProperties());
         assertThat(access.legalIdentityRequired("audience_plan")).isTrue();

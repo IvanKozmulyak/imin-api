@@ -17,4 +17,12 @@ public interface EmailService {
         }
         send(to, subject, html, text);
     }
+
+    /**
+     * As {@link #send(String, String, String, String)} but From {@code fromHeader} instead of the configured
+     * transactional identity (e.g. {@code "<Organizer> via IMIN" <addr>}). Implementations must not drop it.
+     */
+    default void sendFrom(String fromHeader, String to, String subject, String html, String text) {
+        throw new UnsupportedOperationException(getClass().getSimpleName() + " cannot send with another From");
+    }
 }

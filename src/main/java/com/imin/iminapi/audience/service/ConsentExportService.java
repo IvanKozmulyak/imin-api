@@ -32,7 +32,8 @@ import java.util.concurrent.atomic.AtomicLong;
 public class ConsentExportService {
 
     public static final String HEADER = "record_id,captured_at,email,channel,status,basis,source,"
-            + "text_version,order_id,proof_text,import_id,import_row,source_platform,export_date,proof_ref";
+            + "text_version,order_id,proof_text,import_id,import_row,source_platform,export_date,proof_ref,"
+            + "confirmation_required,confirmed_at";
 
     private static final int FETCH_SIZE = 500;
 
@@ -45,7 +46,7 @@ public class ConsentExportService {
 
     private static final String SQL = """
             SELECT c.id, c.occurred_at, cs.normalized_email, c.channel, c.status, c.lawful_basis,
-                   c.source, c.text_version, c.order_id, c.proof_text,
+                   c.source, c.text_version, c.order_id, c.proof_text, c.confirmation_required, c.confirmed_at,
                    p.import_id, p.row_number AS import_row, p.source_platform, p.export_date, p.proof_ref
               FROM consent_records c
               JOIN memberships m ON m.membership_id = c.membership_id
@@ -119,6 +120,7 @@ public class ConsentExportService {
         Timestamp at = rs.getTimestamp("occurred_at");
         LocalDate exportDate = rs.getObject("export_date", LocalDate.class);
         Object importRow = rs.getObject("import_row");
+        Timestamp confirmedAt = rs.getTimestamp("confirmed_at");
         String[] cells = {
                 str(rs.getObject("id")),
                 at == null ? null : at.toInstant().toString(),
@@ -135,6 +137,9 @@ public class ConsentExportService {
                 rs.getString("source_platform"),
                 exportDate == null ? null : exportDate.toString(),
                 rs.getString("proof_ref"),
+                // A door QR / survey grant counts only once confirmed; an empty confirmed_at with true is pending.
+                String.valueOf(rs.getBoolean("confirmation_required")),
+                confirmedAt == null ? null : confirmedAt.toInstant().toString(),
         };
         for (int i = 0; i < cells.length; i++) {
             if (i > 0) out.write(',');

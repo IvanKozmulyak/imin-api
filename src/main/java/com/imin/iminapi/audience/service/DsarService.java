@@ -73,6 +73,7 @@ public class DsarService {
     private final OrderRepository orderRepo;
     private final AudienceAssignmentRepository assignmentRepo;
     private final EventRepository eventRepo;
+    private final com.imin.iminapi.audience.repository.ConsentConfirmationTokenRepository confirmationTokenRepo;
 
     public DsarService(MembershipRepository membershipRepo,
                        ConsumerRepository consumerRepo,
@@ -90,7 +91,8 @@ public class DsarService {
                        ConsentGate consentGate,
                        OrderRepository orderRepo,
                        AudienceAssignmentRepository assignmentRepo,
-                       EventRepository eventRepo) {
+                       EventRepository eventRepo,
+                       com.imin.iminapi.audience.repository.ConsentConfirmationTokenRepository confirmationTokenRepo) {
         this.membershipRepo = membershipRepo;
         this.consumerRepo = consumerRepo;
         this.consentRepo = consentRepo;
@@ -108,6 +110,7 @@ public class DsarService {
         this.orderRepo = orderRepo;
         this.assignmentRepo = assignmentRepo;
         this.eventRepo = eventRepo;
+        this.confirmationTokenRepo = confirmationTokenRepo;
     }
 
     /** Art.15 access — returns the membership (caller maps to DTO). Audited. */
@@ -161,7 +164,11 @@ public class DsarService {
                         .map(DsarService::toRecord)
                         .toList())
                 .withEmailEngagement(m.getLastEmailOpen() == null && m.getLastEmailClick() == null ? null
-                        : new DsarRecords.EmailEngagementRecord(m.getLastEmailOpen(), m.getLastEmailClick()));
+                        : new DsarRecords.EmailEngagementRecord(m.getLastEmailOpen(), m.getLastEmailClick()))
+                .withConsentConfirmations(confirmationTokenRepo.findByMembershipIdOrderBySentAtAsc(membershipId).stream()
+                        .map(t -> new DsarRecords.ConsentConfirmationRecord(t.getConsentRecordId(), t.getLocale(),
+                                t.getSentAt(), t.getExpiresAt(), t.getUsedAt()))
+                        .toList());
     }
 
     private static DsarRecords.ImportProvenanceRecord toRecord(ImportRowProvenance p) {

@@ -8,6 +8,7 @@ import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.audienceplan.repository.FanFeatureRepository;
 import com.imin.iminapi.audienceplan.service.ImportProvenanceWriter;
 import com.imin.iminapi.service.audit.AuditActions;
@@ -19,6 +20,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.util.UUID;
 
 /**
@@ -131,18 +133,7 @@ public class ConsentService {
 
         // An unconfirmed address grants nothing yet: membership state and any objection wait for the confirmation.
         if (!r.isAwaitingConfirmation()) {
-            // M3: denormalize current state onto membership, per channel.
-            if ("sms".equals(channel)) {
-                m.setSmsConsentStatus("subscribed");
-                m.setSmsConsentBasis(basis);
-            } else {
-                m.setConsentStatus("subscribed");
-                m.setConsentBasis(basis);
-            }
-            if (origin == ConsentOrigin.DATA_SUBJECT) {
-                m.setObjectedProfiling(false);
-            }
-            membershipRepo.save(m);
+            applyGrant(m, channel, basis, origin);
         }
         // An import captures row by row; the nightly recompute picks those up instead.
         events.publishEvent(new ConsentChanged(orgId, membershipId, ImportProvenanceWriter.SOURCE.equals(source)));
@@ -155,6 +146,46 @@ public class ConsentService {
                     membershipId, "Consent captured: channel=" + channel + " basis=" + basis + " source=" + source);
         }
         return r.getId();
+    }
+
+    /**
+     * Sets {@code confirmed_at} on this member's pending door/survey grants up to {@code at}, then grants as a
+     * capture that needed no confirmation. Callers rule out opt-outs first. Returns the count confirmed.
+     */
+    @Transactional
+    public int confirmPending(UUID orgId, UUID membershipId, Instant at) {
+        Membership m = requireMembership(orgId, membershipId);
+        ConsentRecord newest = null;
+        int confirmed = 0;
+        for (ConsentRecord r : consentRepo.findAwaitingConfirmation(membershipId, at)) {
+            if (consentRepo.markConfirmed(r.getId(), at) == 1) {
+                confirmed++;
+                newest = r;
+            }
+        }
+        if (newest == null) return 0;
+        // Confirming is the person's own act, as the sign-up was: the objection lifts here, not at sign-up.
+        applyGrant(m, newest.getChannel(), newest.getLawfulBasis(), ConsentOrigin.DATA_SUBJECT);
+        events.publishEvent(new ConsentChanged(orgId, membershipId, false));
+        auditLogger.record(new AuthPrincipal(null, orgId, UserRole.MEMBER, null), AuditActions.CONSENT_CONFIRMED,
+                "membership", membershipId, "Consent confirmed by email: records=" + confirmed
+                        + " source=" + newest.getSource());
+        return confirmed;
+    }
+
+    /** Denormalizes a grant onto the membership, per channel; the person's own consent lifts an objection. */
+    private void applyGrant(Membership m, String channel, String basis, ConsentOrigin origin) {
+        if ("sms".equals(channel)) {
+            m.setSmsConsentStatus("subscribed");
+            m.setSmsConsentBasis(basis);
+        } else {
+            m.setConsentStatus("subscribed");
+            m.setConsentBasis(basis);
+        }
+        if (origin == ConsentOrigin.DATA_SUBJECT) {
+            m.setObjectedProfiling(false);
+        }
+        membershipRepo.save(m);
     }
 
     /**

@@ -82,6 +82,7 @@ class SurveyServiceTest {
     @Autowired SurveyResponseRepository responses;
     @Autowired AudienceOrderProjector projector;
     @Autowired ConsentService consentService;
+    @Autowired com.imin.iminapi.audience.service.ConsentConfirmationService confirmations;
     @Autowired AudiencePlanLogic logic;
     @Autowired EmailProperties emailProps;
     @Autowired ConsentGate gate;
@@ -616,7 +617,7 @@ class SurveyServiceTest {
 
     private SurveyService serviceWith(AudiencePlanProperties props) {
         return new SurveyService(events, orgs, consumers, memberships, erased, optOuts, suppressions, responses,
-                projector, consentService, new AudiencePlanAccess(props), logic, emailProps);
+                projector, consentService, new AudiencePlanAccess(props), logic, emailProps, confirmations);
     }
 
     private static SurveyResponseRequest request(String commune, List<String> genres, String heard, String age,

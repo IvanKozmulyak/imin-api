@@ -133,7 +133,7 @@ public class DsarScopeService {
                         .toList();
 
         return new DsarRecords(orderRecords, ticketRecords, funnelRecords, metaRecords, notifyRecords, null,
-                new ArrayList<>(), null);
+                new ArrayList<>(), null, new ArrayList<>());
     }
 
     /**
@@ -213,6 +213,6 @@ public class DsarScopeService {
 
     private static DsarRecords empty() {
         return new DsarRecords(new ArrayList<>(), new ArrayList<>(), new ArrayList<>(),
-                new ArrayList<>(), new ArrayList<>(), null, new ArrayList<>(), null);
+                new ArrayList<>(), new ArrayList<>(), null, new ArrayList<>(), null, new ArrayList<>());
     }
 }
