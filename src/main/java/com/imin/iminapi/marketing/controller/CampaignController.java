@@ -111,16 +111,16 @@ public class CampaignController {
     /**
      * Draft→scheduled. <b>OWNER/ADMIN only</b> (mkt-edge-2) — a MEMBER gets
      * {@code 403 FORBIDDEN}; a won transition writes one {@code CAMPAIGN_SENT} audit row.
+     * The body carries the stored send time, or {@code armed} for an audience-plan slump arm.
      */
     @PostMapping("/{id}/send")
-    public ResponseEntity<Void> send(
+    public ResponseEntity<com.imin.iminapi.marketing.dto.CampaignSendResponse> send(
             @PathVariable UUID id,
             @com.imin.iminapi.security.CurrentUser AuthPrincipal principal,
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
             @RequestBody(required = false) SendRequest body) {
         java.time.Instant scheduledAt = body == null ? null : body.scheduledAt();
-        service.send(id, principal, idempotencyKey, scheduledAt);
-        return ResponseEntity.status(HttpStatus.ACCEPTED).build();
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(service.send(id, principal, idempotencyKey, scheduledAt));
     }
 
     /** Guarded scheduled→canceled (spec §2.4). 409 INVALID_STATE from any other status. */

@@ -9,6 +9,7 @@ import com.imin.iminapi.audienceplan.service.SendPathGuard;
 import com.imin.iminapi.marketing.dto.CampaignDto;
 import com.imin.iminapi.marketing.dto.CampaignRequests.CreateCampaignRequest;
 import com.imin.iminapi.marketing.dto.CampaignRequests.PatchCampaignRequest;
+import com.imin.iminapi.marketing.dto.CampaignSendResponse;
 import com.imin.iminapi.marketing.dto.CampaignSummary;
 import com.imin.iminapi.marketing.dto.PreviewAudienceResponse;
 import com.imin.iminapi.marketing.email.CampaignEmailProvider;
@@ -72,6 +73,7 @@ public class CampaignService {
     private final AudiencePlanAccess audiencePlanAccess;
     private final CampaignAiSuggestions aiSuggestions;
     private final SendPathGuard sendPathGuard;
+    private final com.imin.iminapi.audienceplan.service.TimingArmScheduler timingArms;
 
     public CampaignService(CampaignRepository campaigns,
                            com.imin.iminapi.marketing.repository.CampaignRecipientRepository campaignRecipientRepository,
@@ -86,7 +88,8 @@ public class CampaignService {
                            MarketingEmailProperties emailProps,
                            AudiencePlanAccess audiencePlanAccess,
                            CampaignAiSuggestions aiSuggestions,
-                           SendPathGuard sendPathGuard) {
+                           SendPathGuard sendPathGuard,
+                           com.imin.iminapi.audienceplan.service.TimingArmScheduler timingArms) {
         this.campaigns = campaigns;
         this.campaignRecipientRepository = campaignRecipientRepository;
         this.audit = audit;
@@ -105,6 +108,7 @@ public class CampaignService {
         this.audiencePlanAccess = audiencePlanAccess;
         this.aiSuggestions = aiSuggestions;
         this.sendPathGuard = sendPathGuard;
+        this.timingArms = timingArms;
     }
 
     @Transactional
@@ -188,6 +192,7 @@ public class CampaignService {
                     "Only draft campaigns can be edited");
         }
         requirePlanTargetKept(c, req);
+        if (AudiencePlanAccess.CAMPAIGN_ORIGIN.equals(c.getOrigin())) timingArms.disarm(c);
         if (req.name() != null) c.setName(requireName(req.name()));
         // mkt-edge-8: PatchableUuid distinguishes "absent" (the component is null — leave the
         // link alone) from "present and null" (PatchableUuid.NULL — unlink). The composer
@@ -393,8 +398,8 @@ public class CampaignService {
      * `sending` path; this method only flips draft→scheduled.
      */
     @Transactional
-    public void send(UUID campaignId, AuthPrincipal principal,
-                     String idempotencyKey, Instant scheduledAt) {
+    public CampaignSendResponse send(UUID campaignId, AuthPrincipal principal,
+                                     String idempotencyKey, Instant scheduledAt) {
         if (idempotencyKey == null || idempotencyKey.isBlank()) {
             throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.MISSING_IDEMPOTENCY_KEY,
                     "Idempotency-Key header is required");
@@ -419,6 +424,16 @@ public class CampaignService {
                     "SMS campaigns cannot be sent yet — no SMS dispatcher exists");
         }
         Instant when = scheduledAt != null ? scheduledAt : Instant.now();
+        // An invitation arm owns its send time; a slump arm is only armed here and waits for Momentum.
+        if (AudiencePlanAccess.CAMPAIGN_ORIGIN.equals(c.getOrigin())) {
+            var arm = timingArms.onApproval(c, scheduledAt).orElse(null);
+            if (arm != null && arm.armed()) {
+                audit.record(principal, AuditActions.CAMPAIGN_SENT, "campaign", campaignId,
+                        "Campaign armed to send when Momentum detects a sales slump");
+                return new CampaignSendResponse(null, true);
+            }
+            if (arm != null) when = arm.at();
+        }
         int updated = campaigns.markScheduledIfDraft(campaignId, principal.orgId(), when);
         if (updated == 0) {
             // Not in draft — duplicate/concurrent send. 409; dispatcher is the sole `sending` path.
@@ -435,6 +450,7 @@ public class CampaignService {
             eventPublisher.publishEvent(
                     new com.imin.iminapi.predictor.service.PredictorMarketingEvents.CampaignScheduled(c.getEventId()));
         }
+        return new CampaignSendResponse(when, false);
     }
 
     /** Engagement axis of the recipient log — derived from timestamps, NOT from the status enum. */

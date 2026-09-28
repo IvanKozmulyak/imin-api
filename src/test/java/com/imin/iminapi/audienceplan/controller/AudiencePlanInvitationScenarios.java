@@ -603,7 +603,7 @@ abstract class AudiencePlanInvitationScenarios {
                 {seg("vip", "same", "[\"launch\"]", null), "segments[0]"},
                 {seg("loyal", "adjacent", "[\"launch\"]", null), "segments[0]"},
                 {seg("loyal", "same", "[]", null), "segments[0].arms"},
-                {seg("loyal", "same", "[\"slump\"]", null), "segments[0].arms"},
+                {seg("loyal", "same", "[\"two_emails\"]", null), "segments[0].arms"},
                 {seg("loyal", "same", "[\"launch\",\"launch\"]", null), "segments[0].arms"},
                 {"{\"segments\":[{\"classKey\":\"loyal\",\"genreFit\":\"same\",\"arms\":[\"launch\"]},"
                         + "{\"classKey\":\"loyal\",\"genreFit\":\"same\",\"arms\":[\"d3\"]}]}", "segments[1]"},

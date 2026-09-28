@@ -114,6 +114,8 @@ public final class ActionPlanner {
             LocalDate date = switch (arm) {
                 case LAUNCH -> timing.launchDate().isAfter(timing.eventDate()) ? null : timing.launchDate();
                 case D3 -> timing.d3Date();
+                // Timed from tiers or Momentum when the draft is approved, never suggested by the plan.
+                case EARLY_BIRD_END, SLUMP -> null;
             };
             if (date != null) arms.add(new ArmDate(arm, date));
         }

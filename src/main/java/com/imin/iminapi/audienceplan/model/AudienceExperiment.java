@@ -32,7 +32,7 @@ public class AudienceExperiment {
     @Column(name = "plan_segment_id")
     private UUID planSegmentId;
 
-    /** holdout | launch | d3 | slump | two_emails */
+    /** holdout | launch | d3 | early_bird_end | slump */
     @Column(nullable = false, length = 16)
     private String arm;
 
@@ -48,6 +48,10 @@ public class AudienceExperiment {
     /** The holdout percentage the invitation asked for; null on rows written before it was recorded. */
     @Column(name = "holdout_pct")
     private Integer holdoutPct;
+
+    /** Set when the organizer approved a slump arm; its draft is scheduled when Momentum fires SLUMP. */
+    @Column(name = "armed_at")
+    private Instant armedAt;
 
     @Column(name = "created_at", nullable = false, insertable = false, updatable = false)
     private Instant createdAt;

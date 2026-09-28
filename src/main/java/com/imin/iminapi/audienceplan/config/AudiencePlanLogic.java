@@ -57,7 +57,8 @@ public record AudiencePlanLogic(Logic logic, Priors priors, Genres genres) {
 
     public record Experiments(int holdoutPct, int holdoutMinMailable, List<TimingArm> defaultTimingArms) {}
 
-    public enum TimingArm { LAUNCH, D3 }
+    /** Keys are the lower-cased names; only LAUNCH and D3 get a plan date, the others are timed at approval. */
+    public enum TimingArm { LAUNCH, D3, EARLY_BIRD_END, SLUMP }
 
     public record Legal(
             int retentionDays,

@@ -11,7 +11,10 @@ import java.util.List;
  */
 public record AudiencePlanInvitationsRequest(List<SegmentInvitation> segments, Boolean recreateMissingDrafts) {
 
-    /** {@code arms} ⊂ launch | d3; {@code holdoutPct} 10..20, omitted = the logic file's default. */
+    /**
+     * {@code arms} ⊂ launch | d3 | early_bird_end | slump; {@code holdoutPct} 10..20, omitted = the logic file's
+     * default.
+     */
     public record SegmentInvitation(@JsonAlias("class") String classKey, String genreFit, List<String> arms,
                                     Integer holdoutPct) {}
 }

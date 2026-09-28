@@ -253,7 +253,7 @@ class AudiencePlanInviteOnPublishWebTest {
                 {seg("first_timer", "[\"launch\"]", "21"), "segments[0].holdoutPct"},
                 {seg("vip", "[\"launch\"]", null), "segments[0]"},
                 {seg("loyal", "[]", null), "segments[0].arms"},
-                {seg("loyal", "[\"slump\"]", null), "segments[0].arms"},
+                {seg("loyal", "[\"two_emails\"]", null), "segments[0].arms"},
                 {seg("loyal", "[\"launch\",\"launch\"]", null), "segments[0].arms"},
                 {"{\"segments\":[{\"classKey\":\"loyal\",\"genreFit\":\"same\",\"arms\":[\"launch\"]},"
                         + "{\"classKey\":\"loyal\",\"genreFit\":\"same\",\"arms\":[\"d3\"]}]}", "segments[1]"},

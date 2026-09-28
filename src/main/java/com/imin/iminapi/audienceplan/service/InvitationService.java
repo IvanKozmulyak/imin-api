@@ -75,13 +75,14 @@ public class InvitationService {
     private final AudiencePlanLogic logic;
     private final AuditLogger audit;
     private final Clock clock;
+    private final TimingArmScheduler timing;
 
     public InvitationService(AudiencePlanAccess access, EventRepository events, AudiencePlanRepository plans,
                              AudiencePlanSegmentRepository planSegments, AudienceExperimentRepository experiments,
                              AudienceAssignmentRepository assignments, PlanService planService,
                              CandidateLoader candidates, ExperimentService experimentService,
                              SegmentRepository segments, CampaignRepository campaigns, AudiencePlanLogic logic,
-                             ResponseModel model, AuditLogger audit, Clock clock) {
+                             ResponseModel model, AuditLogger audit, Clock clock, TimingArmScheduler timing) {
         this.access = access;
         this.events = events;
         this.plans = plans;
@@ -97,6 +98,7 @@ public class InvitationService {
         this.logic = logic;
         this.audit = audit;
         this.clock = clock;
+        this.timing = timing;
     }
 
     /** {@code requestedPct} is null when the body left it out; {@code holdoutPct} is then the logic default. */
@@ -128,7 +130,10 @@ public class InvitationService {
         for (Wanted w : wanted) {
             AudiencePlanSegment ps = w.planSegment();
             List<AudienceExperiment> existing = experiments.findInvited(orgId, eventId, ps.getClassKey(), ps.getGenreFit());
-            if (existing.isEmpty()) requireArmsAvailable(w, plan);
+            if (existing.isEmpty()) {
+                requireArmsAvailable(w, plan);
+                requireEarlyBirdOffered(w, event, now);
+            }
             stored.add(existing);
         }
 
@@ -333,6 +338,13 @@ public class InvitationService {
     private static void requireArmsAvailable(Wanted w, AudiencePlan plan) {
         if (w.arms().contains(key(TimingArm.D3)) && plan.getD3Date() == null) {
             throw invalid(w.field() + ".arms", "d3 is not available: the event is too close");
+        }
+    }
+
+    /** A new invitation gets early_bird_end only while the cheapest tier's close is ahead and before D-3. */
+    private void requireEarlyBirdOffered(Wanted w, Event event, Instant now) {
+        if (w.arms().contains(key(TimingArm.EARLY_BIRD_END)) && !timing.earlyBirdOffered(event, now)) {
+            throw invalid(w.field() + ".arms", "early_bird_end is not available: no early-bird tier ends before D-3");
         }
     }
 

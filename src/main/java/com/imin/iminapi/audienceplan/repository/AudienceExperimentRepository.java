@@ -19,6 +19,12 @@ public interface AudienceExperimentRepository extends Repository<AudienceExperim
 
     List<AudienceExperiment> findByOrgIdAndEventId(UUID orgId, UUID eventId);
 
+    /** The arm a draft campaign was created for, if it is an invitation arm. */
+    Optional<AudienceExperiment> findFirstByCampaignIdAndOrgId(UUID campaignId, UUID orgId);
+
+    /** Approved arms of one kind waiting for a trigger (slump). */
+    List<AudienceExperiment> findByOrgIdAndEventIdAndArmAndArmedAtIsNotNull(UUID orgId, UUID eventId, String arm);
+
     /** This event's experiments for one class × genre fit, across every plan generation, oldest first. */
     @Query("""
             select e from AudienceExperiment e, AudiencePlanSegment s
