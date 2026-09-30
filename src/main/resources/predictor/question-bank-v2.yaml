@@ -1,0 +1,232 @@
+# Date-check question bank. Ids follow the product question bank v1; one entry per (id, source).
+# Every weight is an estimate (the v1 bank gives none); windows follow its night/week/month tags.
+# M2 adds the web-sourced questions and bumps version to 3.
+version: 2
+thresholds: { adjust_min_risk: 3, move_min_risk: 7, min_coverage: 0.6, max_points_per_finding: 4 }
+questions:
+  # --- calendar (structured) ---
+  - id: "4.1"
+    family: holidays
+    star: true
+    source: structured
+    kinds: [risk]
+    weight: 2
+    window: week
+    applies_when: { countries: [FR, NL, DE, ES, UA] }
+    template: predictor.q.4_1
+    actions:
+      - { key: predictor.a.holiday_early_promo, when: risk, due: "D-28" }
+
+  - id: "4.2"
+    family: holidays
+    star: true
+    source: structured
+    kinds: [risk, opportunity]
+    weight: 2
+    window: night
+    applies_when: { countries: [FR, NL, DE, ES, UA] }
+    template: predictor.q.4_2
+    actions:
+      - { key: predictor.a.eve_of_day_off_theme, when: opportunity, due: "D-21" }
+
+  - id: "4.3"
+    family: holidays
+    star: true
+    source: structured
+    kinds: [risk]
+    weight: 3
+    window: night
+    applies_when: { countries: [FR, ES, DE] }
+    template: predictor.q.4_3
+    actions:
+      - { key: predictor.a.holiday_early_promo, when: risk, due: "D-28" }
+
+  - id: "4.4"
+    family: holidays
+    source: structured
+    kinds: [risk]
+    weight: 2
+    window: night
+    applies_when: { countries: [FR, DE, ES] }
+    template: predictor.q.4_4
+    actions:
+      - { key: predictor.a.holiday_early_promo, when: risk, due: "D-28" }
+
+  # Border cities are an estimate pending product review.
+  - id: "4.5"
+    family: holidays
+    source: structured
+    kinds: [opportunity]
+    weight: 1
+    window: night
+    applies_when: { countries: [FR], cities: [metz, thionville, strasbourg, mulhouse, lille] }
+    template: predictor.q.4_5
+    actions:
+      - { key: predictor.a.border_guests_promo, when: opportunity, due: "D-14" }
+
+  - id: "4.7"
+    family: holidays
+    source: structured
+    kinds: [risk, opportunity]
+    weight: 1
+    window: night
+    applies_when: { countries: [FR, NL, DE, ES, UA] }
+    template: predictor.q.4_7
+    actions:
+      - { key: predictor.a.long_night_theme, when: opportunity, due: "D-14" }
+
+  - id: "5.1"
+    family: communities
+    star: true
+    source: structured
+    kinds: [risk, opportunity]
+    weight: 1
+    window: week
+    applies_when: { countries: [FR, NL, DE, ES, UA] }
+    template: predictor.q.5_1
+    actions:
+      - { key: predictor.a.community_day_theme, when: opportunity, due: "D-21" }
+
+  - id: "5.2"
+    family: communities
+    star: true
+    source: structured
+    kinds: [risk]
+    weight: 2
+    window: week
+    applies_when: { countries: [FR, NL, DE, ES, UA] }
+    template: predictor.q.5_2
+    actions:
+      - { key: predictor.a.religious_period_timing, when: risk, due: "D-28" }
+
+  # UA has no school-holiday source; the evaluator reports it as not checked.
+  - id: "7.1"
+    family: school
+    star: true
+    source: structured
+    kinds: [risk]
+    weight: 2
+    window: week
+    applies_when: { countries: [FR, NL, DE, ES, UA] }
+    template: predictor.q.7_1
+    actions:
+      - { key: predictor.a.holiday_early_promo, when: risk, due: "D-28" }
+
+  - id: "3.2"
+    family: sport
+    star: true
+    source: structured
+    kinds: [risk, opportunity]
+    weight: 2
+    window: night
+    applies_when: { countries: [FR, NL, DE, ES] }
+    template: predictor.q.3_2
+    actions:
+      - { key: predictor.a.match_start_time, when: risk, due: "D-7" }
+      - { key: predictor.a.match_screening, when: opportunity, due: "D-7" }
+
+  - id: "10.3"
+    family: marketing
+    source: structured
+    kinds: [risk]
+    weight: 1
+    window: month
+    applies_when: { countries: [FR, NL, DE, ES, UA] }
+    template: predictor.q.10_3
+    actions:
+      - { key: predictor.a.ads_budget_early, when: risk, due: "D-35" }
+
+  # --- imin events (internal) and the organizer's own list (organizer, capped at strength 2) ---
+  - id: "2.1"
+    family: competition
+    star: true
+    source: internal
+    kinds: [risk]
+    weight: 3
+    window: night
+    applies_when: { countries: [FR, NL, DE, ES, UA] }
+    template: predictor.q.2_1
+    actions:
+      - { key: predictor.a.competitor_differentiate, when: risk, due: "D-21" }
+
+  - id: "2.1"
+    family: competition
+    star: true
+    source: organizer
+    kinds: [risk]
+    weight: 3
+    max_strength: 2
+    window: night
+    applies_when: { countries: [FR, NL, DE, ES, UA] }
+    template: predictor.q.2_1
+    actions:
+      - { key: predictor.a.competitor_differentiate, when: risk, due: "D-21" }
+
+  - id: "2.2"
+    family: competition
+    star: true
+    source: internal
+    kinds: [risk]
+    weight: 2
+    window: week
+    applies_when: { countries: [FR, NL, DE, ES, UA] }
+    template: predictor.q.2_2
+    actions:
+      - { key: predictor.a.competitor_differentiate, when: risk, due: "D-21" }
+
+  - id: "2.2"
+    family: competition
+    star: true
+    source: organizer
+    kinds: [risk]
+    weight: 2
+    max_strength: 2
+    window: week
+    applies_when: { countries: [FR, NL, DE, ES, UA] }
+    template: predictor.q.2_2
+    actions:
+      - { key: predictor.a.competitor_differentiate, when: risk, due: "D-21" }
+
+  # The evaluator narrows the month window to +/-14 days.
+  - id: "2.7"
+    family: competition
+    source: internal
+    kinds: [risk]
+    weight: 2
+    window: month
+    applies_when: { countries: [FR, NL, DE, ES, UA] }
+    template: predictor.q.2_7
+    actions:
+      - { key: predictor.a.own_event_spacing, when: risk, due: "D-30" }
+
+  - id: "2.9"
+    family: competition
+    source: internal
+    kinds: [risk, opportunity]
+    weight: 2
+    window: month
+    applies_when: { countries: [FR, NL, DE, ES, UA] }
+    template: predictor.q.2_9
+
+  # Same question as v1 bank item 1.9.
+  - id: "10.2"
+    family: marketing
+    source: internal
+    kinds: [risk]
+    weight: 1
+    window: month
+    applies_when: { countries: [FR, NL, DE, ES, UA] }
+    template: predictor.q.10_2
+
+  # --- form input ---
+  # Thresholds from tech spec section 7.1.
+  - id: "10.1"
+    family: marketing
+    star: true
+    source: input
+    kinds: [risk]
+    weight: 2
+    window: night
+    applies_when: { countries: [FR, NL, DE, ES, UA] }
+    params: { small_min_days: 21, big_min_days: 60, big_capacity_min: 800 }
+    template: predictor.q.10_1

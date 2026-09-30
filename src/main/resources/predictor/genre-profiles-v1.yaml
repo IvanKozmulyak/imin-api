@@ -1,0 +1,64 @@
+# Genre profiles for the date check, one per event genre bucket (audienceplan/genres-v1.yaml whitelist).
+# Every field carries exactly one marker: `sourced: <url>` or `estimate: true`.
+# All values below are conservative estimates pending product review; the UI must never show them as facts.
+# sub_genres is a draft taxonomy, pending review.
+# communities: ISO-3166 alpha-2 codes of countries whose national days matter to this scene's audience
+# (question 5.1); never used to target or label people.
+version: 1
+buckets:
+  "house & techno":
+    sub_genres: [techno, house, hard techno, minimal, melodic techno]
+    audience_age:       { value: [21, 35], estimate: true }
+    communities:        { value: [], estimate: true }
+    typical_price_eur:  { value: [12, 25], estimate: true }
+    typical_start_hour: { value: 23, estimate: true }
+    buying_lead_days:   { value: 7, estimate: true }
+  "bass & hard dance":
+    sub_genres: [drum & bass, dubstep, hardstyle, hardcore, jungle]
+    audience_age:       { value: [21, 35], estimate: true }
+    communities:        { value: [], estimate: true }
+    typical_price_eur:  { value: [12, 25], estimate: true }
+    typical_start_hour: { value: 23, estimate: true }
+    buying_lead_days:   { value: 7, estimate: true }
+  "club / open format":
+    sub_genres: [open format, commercial club, edm, disco]
+    audience_age:       { value: [20, 35], estimate: true }
+    communities:        { value: [], estimate: true }
+    typical_price_eur:  { value: [10, 20], estimate: true }
+    typical_start_hour: { value: 23, estimate: true }
+    buying_lead_days:   { value: 7, estimate: true }
+  "hip-hop & r&b":
+    sub_genres: [hip-hop, rap, r&b, trap, drill]
+    audience_age:       { value: [20, 35], estimate: true }
+    communities:        { value: [], estimate: true }
+    typical_price_eur:  { value: [12, 25], estimate: true }
+    typical_start_hour: { value: 23, estimate: true }
+    buying_lead_days:   { value: 7, estimate: true }
+  "latin & afrobeats":
+    sub_genres: [reggaeton, salsa, bachata, afrobeats, amapiano, dancehall]
+    audience_age:       { value: [20, 38], estimate: true }
+    communities:        { value: [NG, GH, CI, SN, CM, CD, CO, VE], estimate: true }
+    typical_price_eur:  { value: [10, 20], estimate: true }
+    typical_start_hour: { value: 23, estimate: true }
+    buying_lead_days:   { value: 7, estimate: true }
+  "rock & alternative":
+    sub_genres: [rock, indie, punk, metal, alternative]
+    audience_age:       { value: [22, 45], estimate: true }
+    communities:        { value: [], estimate: true }
+    typical_price_eur:  { value: [12, 25], estimate: true }
+    typical_start_hour: { value: 20, estimate: true }
+    buying_lead_days:   { value: 7, estimate: true }
+  "pop":
+    sub_genres: [pop, k-pop, synth-pop, chanson]
+    audience_age:       { value: [18, 35], estimate: true }
+    communities:        { value: [], estimate: true }
+    typical_price_eur:  { value: [12, 25], estimate: true }
+    typical_start_hour: { value: 20, estimate: true }
+    buying_lead_days:   { value: 7, estimate: true }
+  "jazz & acoustic":
+    sub_genres: [jazz, acoustic, soul, folk, blues, singer-songwriter]
+    audience_age:       { value: [25, 55], estimate: true }
+    communities:        { value: [], estimate: true }
+    typical_price_eur:  { value: [10, 30], estimate: true }
+    typical_start_hour: { value: 19, estimate: true }
+    buying_lead_days:   { value: 7, estimate: true }
