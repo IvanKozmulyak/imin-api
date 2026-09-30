@@ -390,6 +390,48 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
     List<Object[]> findCompetingNights(@Param("selfId") UUID selfId, @Param("cityKey") String cityKey,
                                        @Param("from") Instant from, @Param("to") Instant to);
 
+    /** Published public LIVE/PAST events in the city starting in [from, to). The caller passes a normalised, non-null key. */
+    @Query("""
+        SELECT e FROM Event e
+         WHERE e.deletedAt IS NULL
+           AND e.publishedAt IS NOT NULL
+           AND e.visibility = com.imin.iminapi.model.EventVisibility.PUBLIC
+           AND e.status IN (com.imin.iminapi.model.EventStatus.LIVE, com.imin.iminapi.model.EventStatus.PAST)
+           AND e.startsAt IS NOT NULL
+           AND e.startsAt >= :from AND e.startsAt < :to
+           AND e.venueCityKey = CAST(:cityKey AS string)
+         ORDER BY e.startsAt
+    """)
+    List<Event> findCityEventsBetween(@Param("cityKey") String cityKey, @Param("from") Instant from,
+                                      @Param("to") Instant to);
+
+    /** The org's own events in the city starting in [from, to), drafts included, cancelled excluded. */
+    @Query("""
+        SELECT e FROM Event e
+         WHERE e.deletedAt IS NULL
+           AND e.orgId = :orgId
+           AND e.status <> com.imin.iminapi.model.EventStatus.CANCELLED
+           AND e.startsAt IS NOT NULL
+           AND e.startsAt >= :from AND e.startsAt < :to
+           AND e.venueCityKey = CAST(:cityKey AS string)
+         ORDER BY e.startsAt
+    """)
+    List<Event> findOrgEventsInCityBetween(@Param("orgId") UUID orgId, @Param("cityKey") String cityKey,
+                                           @Param("from") Instant from, @Param("to") Instant to);
+
+    /** Whether imin has listed any published public LIVE/PAST event in the city starting on or after {@code since}. */
+    @Query("""
+        SELECT COUNT(e) > 0 FROM Event e
+         WHERE e.deletedAt IS NULL
+           AND e.publishedAt IS NOT NULL
+           AND e.visibility = com.imin.iminapi.model.EventVisibility.PUBLIC
+           AND e.status IN (com.imin.iminapi.model.EventStatus.LIVE, com.imin.iminapi.model.EventStatus.PAST)
+           AND e.startsAt IS NOT NULL
+           AND e.startsAt >= :since
+           AND e.venueCityKey = CAST(:cityKey AS string)
+    """)
+    boolean existsPublishedInCitySince(@Param("cityKey") String cityKey, @Param("since") Instant since);
+
     /**
      * Raw material for the genre facet: {@code (genreKey, genre, count)}, one row per distinct
      * spelling within a key.

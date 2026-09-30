@@ -206,6 +206,8 @@ questions:
     weight: 2
     window: month
     applies_when: { countries: [FR, NL, DE, ES, UA] }
+    # Estimates pending product review.
+    params: { sell_out_opp_min: 0.4, sell_out_risk_max: 0.05, min_events: 5 }
     template: predictor.q.2_9
 
   # Same question as v1 bank item 1.9.
@@ -216,6 +218,8 @@ questions:
     weight: 1
     window: month
     applies_when: { countries: [FR, NL, DE, ES, UA] }
+    # Estimate pending product review.
+    params: { missed_share_min: 0.25 }
     template: predictor.q.10_2
 
   # --- form input ---
@@ -226,6 +230,7 @@ questions:
     source: input
     kinds: [risk]
     weight: 2
+    max_strength: 2
     window: night
     applies_when: { countries: [FR, NL, DE, ES, UA] }
     params: { small_min_days: 21, big_min_days: 60, big_capacity_min: 800 }

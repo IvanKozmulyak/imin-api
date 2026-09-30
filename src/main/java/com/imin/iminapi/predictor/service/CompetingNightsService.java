@@ -9,6 +9,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -38,6 +39,20 @@ public class CompetingNightsService {
      *  whether any shares the subject's genre. */
     public record CompetingNights(int count, int totalCapacity, boolean genreOverlap) {
         public static final CompetingNights NONE = new CompetingNights(0, 0, false);
+    }
+
+    /** A published platform event in a city, as the date-check rules read it. */
+    public record CityEvent(UUID id, UUID orgId, String name, String description, String genreKey, String subGenre,
+                            Instant startsAt, String venueName) {}
+
+    /** Published public LIVE/PAST events in the city starting in [from, to), earliest first; blank key → none. */
+    @Transactional(readOnly = true)
+    public List<CityEvent> between(String cityKey, Instant from, Instant to) {
+        if (cityKey == null || cityKey.isBlank()) return List.of();
+        return events.findCityEventsBetween(cityKey, from, to).stream()
+                .map(e -> new CityEvent(e.getId(), e.getOrgId(), e.getName(), e.getDescription(), e.getGenreKey(),
+                        e.getSubGenre(), e.getStartsAt(), e.getVenueName()))
+                .toList();
     }
 
     /** Compute the signal for an event; {@link CompetingNights#NONE} when the event has no city/date. */

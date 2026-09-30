@@ -46,7 +46,7 @@ public final class QuestionBankLoader {
     private static final Pattern DUE = Pattern.compile("^D-(\\d+)$");
     private static final Pattern COUNTRY = Pattern.compile("^[A-Z]{2}$");
     private static final int DEFAULT_MAX_STRENGTH = 3;
-    private static final int SECONDHAND_MAX_STRENGTH = 2;
+    private static final int CAPPED_MAX_STRENGTH = 2;
     private static final Set<String> THRESHOLD_KEYS =
             Set.of("adjust_min_risk", "move_min_risk", "min_coverage", "max_points_per_finding");
     private static final Set<String> QUESTION_KEYS = Set.of("id", "family", "star", "source", "kinds", "weight",
@@ -152,9 +152,9 @@ public final class QuestionBankLoader {
             if (maxStrength < 1 || maxStrength > 3) {
                 throw q.invalid("max_strength", "must be between 1 and 3");
             }
-            boolean secondhand = source == SourceKind.WEB || source == SourceKind.ORGANIZER;
-            if (secondhand && maxStrength > SECONDHAND_MAX_STRENGTH) {
-                throw q.invalid("max_strength", "must be at most 2 for a web or organizer source");
+            boolean capped = source == SourceKind.WEB || source == SourceKind.ORGANIZER || source == SourceKind.INPUT;
+            if (capped && maxStrength > CAPPED_MAX_STRENGTH) {
+                throw q.invalid("max_strength", "must be at most 2 for a web, organizer or input source");
             }
             Window window = q.enumValue("window", Window.class);
             boolean stopFactor = q.optionalBoolean("stop_factor");

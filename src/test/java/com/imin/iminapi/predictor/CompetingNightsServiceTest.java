@@ -16,6 +16,7 @@ import org.springframework.context.annotation.Import;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -99,6 +100,38 @@ class CompetingNightsServiceTest {
         assertThat(cn.count()).isEqualTo(2);            // the 150 + 100 cap events
         assertThat(cn.totalCapacity()).isEqualTo(250);  // 150 + 100
         assertThat(cn.genreOverlap()).isTrue();         // the techno one overlaps
+    }
+
+    @Test
+    void betweenReturnsPublishedCityEventsOnly() {
+        Event live = ev("Amsterdam", "Techno", NIGHT, true, 100);
+        live.setSubGenre("minimal");
+        live.setVenueName("Shelter");
+        live.setDescription("All night long");
+        events.save(live);
+        Event past = ev("AMSTERDAM", "house", NIGHT.plus(1, ChronoUnit.DAYS), true, 100);
+        past.setStatus(EventStatus.PAST);
+        events.save(past);
+        Event cancelled = ev("Amsterdam", "techno", NIGHT, true, 100);
+        cancelled.setStatus(EventStatus.CANCELLED);
+        events.save(cancelled);
+        Event deleted = ev("Amsterdam", "techno", NIGHT, true, 100);
+        deleted.setDeletedAt(Instant.now());
+        events.save(deleted);
+        Event hidden = ev("Amsterdam", "techno", NIGHT, true, 100);
+        hidden.setVisibility(EventVisibility.PRIVATE);
+        events.save(hidden);
+        ev("Amsterdam", "techno", NIGHT, false, 100);                              // draft
+        ev("Rotterdam", "techno", NIGHT, true, 100);                               // other city
+        ev("Amsterdam", "techno", NIGHT.plus(2, ChronoUnit.DAYS), true, 100);      // at the exclusive end
+
+        List<CompetingNightsService.CityEvent> out =
+                service.between("amsterdam", NIGHT.minus(1, ChronoUnit.HOURS), NIGHT.plus(2, ChronoUnit.DAYS));
+
+        assertThat(out).extracting(CompetingNightsService.CityEvent::id).containsExactly(live.getId(), past.getId());
+        assertThat(out.get(0)).isEqualTo(new CompetingNightsService.CityEvent(live.getId(), orgId, "E", "All night long",
+                "techno", "minimal", NIGHT, "Shelter"));
+        assertThat(service.between("", NIGHT.minus(1, ChronoUnit.DAYS), NIGHT.plus(1, ChronoUnit.DAYS))).isEmpty();
     }
 
     @Test

@@ -197,6 +197,13 @@ class QuestionBankTest {
     }
 
     @Test
+    void rejectsInputStrengthThree() {
+        assertRejected(VALID_BANK + ORGANIZER_2_1.replace("source: organizer", "source: input")
+                        .replace("max_strength: 2", "max_strength: 3"),
+                "questions[2].max_strength: must be at most 2 for a web, organizer or input source");
+    }
+
+    @Test
     void rejectsMaxStrengthZero() {
         assertRejected(VALID_BANK.replace("source: internal", "source: internal\n    max_strength: 0"),
                 "questions[1].max_strength: must be between 1 and 3");
