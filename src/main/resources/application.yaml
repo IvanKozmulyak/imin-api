@@ -597,6 +597,15 @@ imin:
     action-debounce-seconds: ${PREDICTOR_ACTION_DEBOUNCE_SECONDS:120}
     # Daily cap on SYSTEM-initiated re-scores/re-forecasts per event (a WARN logs at the cap).
     system-rescores-per-event-per-day: ${PREDICTOR_SYSTEM_RESCORES_PER_EVENT_PER_DAY:10}
+    # "Check a date" (predictor v2). Dark: off, and an empty org list means no org (unlike audience-plan).
+    date-check:
+      enabled: ${PREDICTOR_DATE_CHECK_ENABLED:false}
+      # Comma-separated org UUIDs; a malformed entry fails startup.
+      beta-org-ids: ${PREDICTOR_DATE_CHECK_BETA_ORGS:}
+      # Cite-only web research; stays off until the provider spike and legal review pass.
+      research-enabled: ${PREDICTOR_DATE_CHECK_RESEARCH_ENABLED:false}
+      max-dates: ${PREDICTOR_DATE_CHECK_MAX_DATES:5}
+      max-horizon-months: ${PREDICTOR_DATE_CHECK_MAX_HORIZON_MONTHS:18}
   ratelimit:
     login:
       capacity: 5
