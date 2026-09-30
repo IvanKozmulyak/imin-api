@@ -103,6 +103,9 @@ imin:
     predictor-rescore:
       capacity: 1000
       window-minutes: 10
+  predictor:
+    # No test polls predictor_job on the scheduler; runner tests call tick() themselves.
+    jobs-poll-enabled: false
   media:
     enabled: false
     bucket: test

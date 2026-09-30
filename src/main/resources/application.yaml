@@ -597,6 +597,8 @@ imin:
     action-debounce-seconds: ${PREDICTOR_ACTION_DEBOUNCE_SECONDS:120}
     # Daily cap on SYSTEM-initiated re-scores/re-forecasts per event (a WARN logs at the cap).
     system-rescores-per-event-per-day: ${PREDICTOR_SYSTEM_RESCORES_PER_EVENT_PER_DAY:10}
+    # Whether this instance polls the predictor_job queue (every 5 s, 5 jobs a tick).
+    jobs-poll-enabled: ${PREDICTOR_JOBS_POLL_ENABLED:true}
     # "Check a date" (predictor v2). Dark: off, and an empty org list means no org (unlike audience-plan).
     date-check:
       enabled: ${PREDICTOR_DATE_CHECK_ENABLED:false}

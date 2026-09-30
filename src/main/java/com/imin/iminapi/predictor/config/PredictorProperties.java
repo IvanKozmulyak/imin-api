@@ -114,6 +114,11 @@ public class PredictorProperties {
      */
     private int systemRescoresPerEventPerDay = 10;
 
+    // ---- Durable job queue (predictor_job) ----
+
+    /** Whether this instance polls {@code predictor_job}. Bound to {@code ${PREDICTOR_JOBS_POLL_ENABLED:true}}. */
+    private boolean jobsPollEnabled = true;
+
     public int getFinalizeGraceDays() { return finalizeGraceDays; }
     public void setFinalizeGraceDays(int finalizeGraceDays) { this.finalizeGraceDays = finalizeGraceDays; }
 
@@ -171,4 +176,7 @@ public class PredictorProperties {
     public void setSystemRescoresPerEventPerDay(int systemRescoresPerEventPerDay) {
         this.systemRescoresPerEventPerDay = systemRescoresPerEventPerDay;
     }
+
+    public boolean isJobsPollEnabled() { return jobsPollEnabled; }
+    public void setJobsPollEnabled(boolean jobsPollEnabled) { this.jobsPollEnabled = jobsPollEnabled; }
 }
