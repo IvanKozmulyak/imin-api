@@ -2,6 +2,8 @@ package com.imin.iminapi.predictor.repository;
 
 import com.imin.iminapi.predictor.model.ReferenceCalendarEntry;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 
 import java.time.LocalDate;
@@ -16,4 +18,19 @@ public interface ReferenceCalendarEntryRepository extends JpaRepository<Referenc
     /** Callers pass {@code List.of("", region)} so country-wide rows come back with the region's. */
     List<ReferenceCalendarEntry> findByCountryAndRegionInAndCalendarDateBetween(
             String country, Collection<String> regions, LocalDate from, LocalDate to);
+
+    /** Rows whose [calendar_date, end_date] range touches [from, to], so a range starting earlier is included. */
+    @Query("select e from ReferenceCalendarEntry e where e.country = :country and e.region in :regions"
+            + " and e.calendarDate <= :to and coalesce(e.endDate, e.calendarDate) >= :from"
+            + " order by e.calendarDate, e.kind, e.name, e.region")
+    List<ReferenceCalendarEntry> findOverlapping(@Param("country") String country,
+                                                 @Param("regions") Collection<String> regions,
+                                                 @Param("from") LocalDate from,
+                                                 @Param("to") LocalDate to);
+
+    /** The rows one sync batch owns. */
+    List<ReferenceCalendarEntry> findBySourceUrlAndKindInAndCalendarDateBetween(
+            String sourceUrl, Collection<String> kinds, LocalDate from, LocalDate to);
+
+    boolean existsByCountryAndKindAndCalendarDateBetween(String country, String kind, LocalDate from, LocalDate to);
 }

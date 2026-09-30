@@ -606,6 +606,11 @@ imin:
       research-enabled: ${PREDICTOR_DATE_CHECK_RESEARCH_ENABLED:false}
       max-dates: ${PREDICTOR_DATE_CHECK_MAX_DATES:5}
       max-horizon-months: ${PREDICTOR_DATE_CHECK_MAX_HORIZON_MONTHS:18}
+    # Reference calendar sync (French holidays, school zones, ponts, DST, Hijri) into reference_calendar.
+    # Weekly and at boot while the table is empty, off-thread; only fills the table.
+    calendar:
+      sync-enabled: ${PREDICTOR_CALENDAR_SYNC_ENABLED:true}
+      years-ahead: 2
   ratelimit:
     login:
       capacity: 5

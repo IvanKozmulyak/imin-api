@@ -111,6 +111,10 @@ imin:
     access-key-id: test
     secret-access-key: test
     public-url-prefix: https://test-media.invalid/
+  predictor:
+    calendar:
+      # Off so no Spring test calls the calendar sources; sync tests use MockRestServiceServer.
+      sync-enabled: false
   audience-plan:
     enabled: true
     beta-org-ids: ""
