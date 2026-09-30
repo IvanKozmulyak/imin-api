@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.Collection;
 import java.util.List;
@@ -31,6 +32,10 @@ public interface ReferenceCalendarEntryRepository extends JpaRepository<Referenc
     /** The rows one sync batch owns. */
     List<ReferenceCalendarEntry> findBySourceUrlAndKindInAndCalendarDateBetween(
             String sourceUrl, Collection<String> kinds, LocalDate from, LocalDate to);
+
+    /** Newest {@code synced_at} among rows whose source URL matches the pattern ({@code !} escapes); null when none. */
+    @Query("select max(e.syncedAt) from ReferenceCalendarEntry e where e.sourceUrl like :pattern escape '!'")
+    Instant findLatestSyncedAtLike(@Param("pattern") String pattern);
 
     boolean existsByCountryAndKindAndCalendarDateBetween(String country, String kind, LocalDate from, LocalDate to);
 }

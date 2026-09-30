@@ -1,0 +1,47 @@
+# Outside datasets the predictor uses, served by GET /api/v1/public/predictor/sources.
+# List a source only in the change that makes it live, with the gate that turns it off.
+# syncPrefix (optional): reference_calendar.source_url prefix whose latest synced_at is the source's lastUpdated.
+reviewedOn: 2026-09-30
+sources:
+  - id: calendrier-api-gouv
+    name: calendrier.api.gouv.fr
+    usedFor: [public_holidays, bridge_days]
+    licence: Licence Ouverte 2.0
+    licenceUrl: https://www.etalab.gouv.fr/licence-ouverte-open-licence/
+    creditLine: "Jours fériés : DINUM (calendrier.api.gouv.fr), Licence Ouverte 2.0"
+    url: https://calendrier.api.gouv.fr/jours-feries/
+    syncPrefix: https://calendrier.api.gouv.fr/jours-feries/
+    gate: date-check
+  - id: fr-en-calendrier-scolaire
+    name: Calendrier scolaire (data.education.gouv.fr)
+    usedFor: [school_holidays]
+    licence: Licence Ouverte 2.0
+    licenceUrl: https://www.etalab.gouv.fr/licence-ouverte-open-licence/
+    creditLine: "Calendrier scolaire : Ministère de l'Éducation nationale (data.education.gouv.fr), Licence Ouverte 2.0"
+    url: https://data.education.gouv.fr/explore/dataset/fr-en-calendrier-scolaire/
+    syncPrefix: https://data.education.gouv.fr/explore/dataset/fr-en-calendrier-scolaire/
+    gate: date-check
+  - id: iana-tz
+    name: IANA Time Zone Database
+    usedFor: [dst]
+    licence: Public domain
+    licenceUrl: https://github.com/eggert/tz/blob/main/LICENSE
+    creditLine: "Time zones: IANA tz database (public domain)"
+    url: https://www.iana.org/time-zones
+    gate: date-check
+  - id: openjdk-hijrah
+    name: OpenJDK Umm al-Qura calendar tables
+    usedFor: [hijri]
+    licence: GPLv2 + Classpath Exception
+    licenceUrl: https://openjdk.org/legal/gplv2+ce.html
+    creditLine: "Hijri dates: OpenJDK Umm al-Qura tables (GPLv2 + Classpath Exception)"
+    url: https://github.com/openjdk/jdk/blob/master/src/java.base/share/classes/java/time/chrono/HijrahChronology.java
+    gate: date-check
+  - id: open-meteo
+    name: Open-Meteo
+    usedFor: [weather]
+    licence: CC BY 4.0
+    licenceUrl: https://creativecommons.org/licenses/by/4.0/
+    creditLine: "Weather data by Open-Meteo.com (CC BY 4.0)"
+    url: https://open-meteo.com/
+    gate: weather
