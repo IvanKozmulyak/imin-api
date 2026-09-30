@@ -106,6 +106,9 @@ imin:
   predictor:
     # No test polls predictor_job on the scheduler; runner tests call tick() themselves.
     jobs-poll-enabled: false
+    calendar:
+      # Off so no Spring test calls the calendar sources; sync tests use MockRestServiceServer.
+      sync-enabled: false
   media:
     enabled: false
     bucket: test
@@ -114,10 +117,6 @@ imin:
     access-key-id: test
     secret-access-key: test
     public-url-prefix: https://test-media.invalid/
-  predictor:
-    calendar:
-      # Off so no Spring test calls the calendar sources; sync tests use MockRestServiceServer.
-      sync-enabled: false
   audience-plan:
     enabled: true
     beta-org-ids: ""
