@@ -153,4 +153,33 @@ class PredictionInputSnapshotServiceTest {
         assertThat(snap.holidaysNearEvent())
                 .anyMatch(h -> h.name().contains("nationale") && h.dateIso().equals("2026-07-14"));
     }
+
+    private Event goodFriday2027(String city, String postcode) {
+        Event e = draft();
+        e.setVenueCountry("FR");
+        e.setVenueCity(city);
+        e.setVenuePostalCode(postcode);
+        e.setTimezone("Europe/Paris");
+        e.setStartsAt(Instant.parse("2027-03-26T19:00:00Z"));
+        return e;
+    }
+
+    @Test
+    void metzEventSnapshotIncludesGoodFriday() {
+        stub(1500);
+        PredictionInputSnapshot snap = sut.build(goodFriday2027("Metz", "57000"));
+        assertThat(snap.holidayTableCovers()).isTrue();
+        assertThat(snap.holidaysNearEvent())
+                .anyMatch(h -> h.dateIso().equals("2027-03-26") && h.name().equals("Vendredi saint"))
+                .anyMatch(h -> h.dateIso().equals("2027-03-29") && h.name().equals("Easter Monday"));
+    }
+
+    @Test
+    void parisEventSnapshotOmitsGoodFriday() {
+        stub(1500);
+        PredictionInputSnapshot snap = sut.build(goodFriday2027("Paris", "75011"));
+        assertThat(snap.holidaysNearEvent())
+                .noneMatch(h -> h.name().equals("Vendredi saint"))
+                .anyMatch(h -> h.dateIso().equals("2027-03-29") && h.name().equals("Easter Monday"));
+    }
 }

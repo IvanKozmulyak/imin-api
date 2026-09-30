@@ -97,7 +97,9 @@ public class PredictionInputSnapshotService {
         boolean covered = country != null && eventDay != null && PublicHolidayCalendar.covers(country, eventDay);
         List<HolidayLine> holidayLines = new ArrayList<>();
         if (covered) {
-            for (PublicHolidayCalendar.Holiday h : PublicHolidayCalendar.near(country, eventDay, HOLIDAY_WINDOW_DAYS)) {
+            // Region only adds rows; coverage stays national.
+            String region = PublicHolidayCalendar.regionOf(country, e.getVenuePostalCode(), city);
+            for (PublicHolidayCalendar.Holiday h : PublicHolidayCalendar.near(country, region, eventDay, HOLIDAY_WINDOW_DAYS)) {
                 holidayLines.add(new HolidayLine(h.date().toString(), h.name()));
             }
         }

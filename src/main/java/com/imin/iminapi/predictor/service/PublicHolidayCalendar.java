@@ -1,11 +1,16 @@
 package com.imin.iminapi.predictor.service;
 
+import com.imin.iminapi.util.EventNormalization;
+
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
+import java.util.regex.Pattern;
 
 /**
  * STATIC public-holiday table for the predictor's calendar signal (spec §6.3: "calendar data
@@ -14,8 +19,9 @@ import java.util.TreeMap;
  *
  * <p>Scope honesty:
  * <ul>
- *   <li>This is a <b>demand signal</b>, not a legal reference: national majors only, no regional
- *       holidays (e.g. German Länder days), no substitute-day rules.</li>
+ *   <li>This is a <b>demand signal</b>, not a legal reference: national majors plus only the
+ *       Alsace-Moselle rows (FR-57/67/68, via {@link #regionOf}); no other regional holidays
+ *       (e.g. German Länder days), no substitute-day rules.</li>
  *   <li>Coverage is explicit: {@link #covers} says whether the table can speak for a
  *       country/date at all. Callers must distinguish "no holidays near the date" (covered,
  *       empty result) from "table has no data" (not covered) — the prompt lists the latter as
@@ -47,6 +53,23 @@ public final class PublicHolidayCalendar {
         TABLE.computeIfAbsent(country, k -> new TreeMap<>()).put(LocalDate.of(year, month, day), name);
     }
 
+    /** region ("FR-57") → date → name. Merged over the national rows by the 4-arg {@link #near}. */
+    private static final Map<String, TreeMap<LocalDate, String>> REGION_TABLE = new HashMap<>();
+
+    private static final Pattern FR_POSTCODE = Pattern.compile("\\d{5}");
+    private static final Set<String> ALSACE_MOSELLE = Set.of("57", "67", "68");
+    // ponytail: main cities only, used when the postcode is blank; a real postcode/commune lookup should replace it.
+    private static final Map<String, String> FR_CITY_DEPT = Map.ofEntries(
+            Map.entry("metz", "57"), Map.entry("thionville", "57"), Map.entry("forbach", "57"),
+            Map.entry("sarreguemines", "57"), Map.entry("montigny-lès-metz", "57"),
+            Map.entry("strasbourg", "67"), Map.entry("haguenau", "67"),
+            Map.entry("schiltigheim", "67"), Map.entry("illkirch-graffenstaden", "67"),
+            Map.entry("colmar", "68"), Map.entry("mulhouse", "68"));
+
+    private static void putRegion(String region, LocalDate date, String name) {
+        REGION_TABLE.computeIfAbsent(region, k -> new TreeMap<>()).put(date, name);
+    }
+
     private static void putBoth(String country, int month, int day, String name) {
         put(country, 2026, month, day, name);
         put(country, 2027, month, day, name);
@@ -64,6 +87,13 @@ public final class PublicHolidayCalendar {
                 if (!c.equals("ES")) put(c, y, easter.plusDays(39).getMonthValue(), easter.plusDays(39).getDayOfMonth(), "Ascension Day");
                 if (!c.equals("ES")) put(c, y, easter.plusDays(50).getMonthValue(), easter.plusDays(50).getDayOfMonth(), "Whit Monday");
             }
+        }
+
+        // Alsace-Moselle local law: Good Friday and 26 Dec are public holidays in 57/67/68.
+        for (String r : List.of("FR-57", "FR-67", "FR-68")) {
+            for (LocalDate easter : List.of(easter26, easter27)) putRegion(r, easter.minusDays(2), "Vendredi saint");
+            putRegion(r, LocalDate.of(2026, 12, 26), "Saint-Étienne");
+            putRegion(r, LocalDate.of(2027, 12, 26), "Saint-Étienne");
         }
 
         // FR — fixed majors.
@@ -139,5 +169,37 @@ public final class PublicHolidayCalendar {
         days.subMap(date.minusDays(windowDays), true, date.plusDays(windowDays), true)
                 .forEach((d, name) -> out.add(new Holiday(d, name)));
         return out;
+    }
+
+    /**
+     * National rows plus the region's rows, date-ordered; a region outside {@code country} is ignored.
+     * Coverage stays national: an uncovered country/year returns empty whatever the region.
+     */
+    public static List<Holiday> near(String country, String region, LocalDate date, int windowDays) {
+        if (!covers(country, date)) return List.of();
+        String cc = country.toUpperCase(Locale.ROOT);
+        TreeMap<LocalDate, String> merged = new TreeMap<>(
+                TABLE.get(cc).subMap(date.minusDays(windowDays), true, date.plusDays(windowDays), true));
+        TreeMap<LocalDate, String> regional = region == null ? null : REGION_TABLE.get(region);
+        if (regional != null && region.startsWith(cc + "-")) {
+            regional.subMap(date.minusDays(windowDays), true, date.plusDays(windowDays), true)
+                    .forEach(merged::putIfAbsent);
+        }
+        List<Holiday> out = new ArrayList<>();
+        merged.forEach((d, name) -> out.add(new Holiday(d, name)));
+        return out;
+    }
+
+    /**
+     * Alsace-Moselle region ({@code "FR-57"|"FR-67"|"FR-68"}) or null. A 5-digit postcode wins;
+     * otherwise a fixed main-city lookup.
+     */
+    public static String regionOf(String country, String postalCode, String city) {
+        if (country == null || !country.trim().toUpperCase(Locale.ROOT).equals("FR")) return null;
+        String pc = postalCode == null ? "" : postalCode.replaceAll("\\s+", "");
+        String dept = FR_POSTCODE.matcher(pc).matches()
+                ? pc.substring(0, 2)
+                : FR_CITY_DEPT.get(EventNormalization.cityKey(city));
+        return dept != null && ALSACE_MOSELLE.contains(dept) ? "FR-" + dept : null;
     }
 }
