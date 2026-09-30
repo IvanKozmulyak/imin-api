@@ -16,7 +16,8 @@ public class DateCheckAccess {
 
     /** Call first, before any org or event lookup, so a closed gate and a missing resource return the same 404. */
     public void requireEnabled(UUID orgId) {
-        if (!Boolean.TRUE.equals(props.getEnabled()) || orgId == null || !props.getBetaOrgIds().contains(orgId)) {
+        if (!Boolean.TRUE.equals(props.getEnabled()) || orgId == null
+                || !(Boolean.TRUE.equals(props.getAllOrgs()) || props.getBetaOrgIds().contains(orgId))) {
             throw ApiException.notFound("Date check");
         }
     }

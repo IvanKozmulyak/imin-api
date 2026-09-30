@@ -20,6 +20,9 @@ public class DateCheckProperties {
 
     private Set<UUID> betaOrgIds = Set.of();
 
+    /** Opens the gate to every org while enabled; the beta list is then ignored. */
+    private Boolean allOrgs = Boolean.FALSE;
+
     /** Cite-only web research; off until the provider spike and legal review pass. */
     private Boolean researchEnabled = Boolean.FALSE;
 
@@ -30,6 +33,8 @@ public class DateCheckProperties {
     public Boolean getEnabled() { return enabled; }
     public void setEnabled(Boolean v) { this.enabled = Boolean.TRUE.equals(v); }
     public Set<UUID> getBetaOrgIds() { return betaOrgIds; }
+    public Boolean getAllOrgs() { return allOrgs; }
+    public void setAllOrgs(Boolean v) { this.allOrgs = Boolean.TRUE.equals(v); }
     public Boolean getResearchEnabled() { return researchEnabled; }
     public void setResearchEnabled(Boolean v) { this.researchEnabled = Boolean.TRUE.equals(v); }
     public Integer getMaxDates() { return maxDates; }

@@ -38,10 +38,12 @@ public interface PredictionLedgerRepository extends JpaRepository<PredictionLedg
      * REFORECAST row per day and rows for events that never finalize never leave the set — so a
      * Java-side filter lets them fill the page permanently and scoring silently stops. Ordered
      * (created, then id) so paging is total and repeatable rather than a heap-order slice.
+     * DATE_CHECK renders score dates, not an event's sales, so they never join an outcome.
      */
     @Query("""
             select l from PredictionLedger l
              where l.outcomeJoinedAt is null
+               and l.surface <> com.imin.iminapi.predictor.model.PredictionSurface.DATE_CHECK
                and exists (select 1 from EventOutcome o
                             where o.eventId = l.eventId and o.finalizedAt is not null)
              order by l.createdAt asc, l.id asc

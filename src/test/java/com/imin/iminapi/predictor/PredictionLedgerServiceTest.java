@@ -90,6 +90,37 @@ class PredictionLedgerServiceTest {
     }
 
     @Test
+    void recordDateCheckStampsSurfaceVersionAndNullEvent() {
+        UUID orgId = UUID.randomUUID();
+        UUID dateCheckId = UUID.randomUUID();
+
+        UUID id = service.recordDateCheck(orgId, dateCheckId, "qb-2026.09.1", "hash-dc",
+                "{\"dates\":[]}");
+
+        assertThat(id).isNotNull();
+        PredictionLedger row = ledger.findById(id).orElseThrow();
+        assertThat(row.getEventId()).isNull();
+        assertThat(row.getOrgId()).isEqualTo(orgId);
+        assertThat(row.getDateCheckId()).isEqualTo(dateCheckId);
+        assertThat(row.getSurface()).isEqualTo(PredictionSurface.DATE_CHECK);
+        assertThat(row.getStage()).isEqualTo((short) 0);
+        assertThat(row.getModelId()).isEqualTo("rules/date-check");
+        assertThat(row.getPromptVersion()).isEqualTo("qb-2026.09.1");
+        assertThat(row.getQuestionBankVersion()).isEqualTo("qb-2026.09.1");
+        assertThat(row.getInputSnapshotHash()).isEqualTo("hash-dc");
+        assertThat(row.getComparablesJson()).isEqualTo("{}");
+        assertThat(row.getOutputJson()).isEqualTo("{\"dates\":[]}");
+        assertThat(row.getCreatedAt()).isNotNull();
+        assertThat(row.getOutcomeJoinedAt()).isNull();
+    }
+
+    @Test
+    void recordDateCheckStoresEmptyObjectForNullOutput() {
+        UUID id = service.recordDateCheck(UUID.randomUUID(), UUID.randomUUID(), "qb", "h", null);
+        assertThat(ledger.findById(id).orElseThrow().getOutputJson()).isEqualTo("{}");
+    }
+
+    @Test
     void joinOutcome_fillsOutcomeColumns() {
         UUID id = service.record(cmd(UUID.randomUUID(), UUID.randomUUID()));
         Instant when = Instant.parse("2026-04-01T05:00:00Z");

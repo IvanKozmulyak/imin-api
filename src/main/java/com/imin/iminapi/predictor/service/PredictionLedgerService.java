@@ -77,6 +77,31 @@ public class PredictionLedgerService {
         return ledger.save(row).getId();
     }
 
+    /** Deterministic rules model id for "Check a date" renders; no LLM is involved. */
+    public static final String DATE_CHECK_MODEL_ID = "rules/date-check";
+
+    /**
+     * The write-before-render call for a "Check a date" run: no event, stage 0, and the
+     * question-bank version stamped as both prompt version and {@code question_bank_version}.
+     */
+    @Transactional
+    public UUID recordDateCheck(UUID orgId, UUID dateCheckId, String qbVersion, String inputHash, String outputJson) {
+        PredictionLedger row = new PredictionLedger();
+        row.setEventId(null);
+        row.setOrgId(orgId);
+        row.setDateCheckId(dateCheckId);
+        row.setSurface(PredictionSurface.DATE_CHECK);
+        row.setStage((short) 0);
+        row.setModelId(DATE_CHECK_MODEL_ID);
+        row.setPromptVersion(qbVersion);
+        row.setQuestionBankVersion(qbVersion);
+        row.setInputSnapshotHash(inputHash);
+        row.setComparablesJson("{}");
+        row.setOutputJson(outputJson == null ? "{}" : outputJson);
+        row.setCreatedAt(Instant.now());
+        return ledger.save(row).getId();
+    }
+
     /**
      * Fill a ledger row's outcome-join columns once its event has completed. Called by the
      * monthly {@link PredictionScoringJob}. Scoring math (brier/ape) may be null here — the

@@ -70,6 +70,56 @@ class DateCheckAccessTest {
     }
 
     @Test
+    void allOrgsLetsNonBetaOrgThrough() {
+        runner.withPropertyValues("imin.predictor.date-check.enabled=true",
+                        "imin.predictor.date-check.all-orgs=true",
+                        "imin.predictor.date-check.beta-org-ids=" + A)
+                .run(ctx -> assertThatCode(() -> ctx.getBean(DateCheckAccess.class).requireEnabled(B))
+                        .doesNotThrowAnyException());
+    }
+
+    @Test
+    void allOrgsStill404WhenDisabled() {
+        runner.withPropertyValues("imin.predictor.date-check.enabled=false",
+                        "imin.predictor.date-check.all-orgs=true",
+                        "imin.predictor.date-check.beta-org-ids=" + A)
+                .run(ctx -> {
+                    DateCheckAccess access = ctx.getBean(DateCheckAccess.class);
+                    assertNotFound(access, A);
+                    assertNotFound(access, B);
+                });
+    }
+
+    @Test
+    void allOrgsStill404ForNullOrg() {
+        runner.withPropertyValues("imin.predictor.date-check.enabled=true",
+                        "imin.predictor.date-check.all-orgs=true")
+                .run(ctx -> assertNotFound(ctx.getBean(DateCheckAccess.class), null));
+    }
+
+    @Test
+    void allOrgsFalseKeepsBetaListSemantics() {
+        runner.withPropertyValues("imin.predictor.date-check.enabled=true",
+                        "imin.predictor.date-check.all-orgs=false",
+                        "imin.predictor.date-check.beta-org-ids=" + A)
+                .run(ctx -> {
+                    DateCheckAccess access = ctx.getBean(DateCheckAccess.class);
+                    assertThatCode(() -> access.requireEnabled(A)).doesNotThrowAnyException();
+                    assertNotFound(access, B);
+                });
+    }
+
+    @Test
+    void allOrgsDefaultsFalse() {
+        runner.withPropertyValues("imin.predictor.date-check.enabled=true",
+                        "imin.predictor.date-check.beta-org-ids=" + A)
+                .run(ctx -> {
+                    assertThat(ctx.getBean(DateCheckProperties.class).getAllOrgs()).isFalse();
+                    assertNotFound(ctx.getBean(DateCheckAccess.class), B);
+                });
+    }
+
+    @Test
     void trailingCommaDropsBlankElement() {
         runner.withPropertyValues("imin.predictor.date-check.enabled=true",
                         "imin.predictor.date-check.beta-org-ids=" + A + ",")
@@ -98,6 +148,7 @@ class DateCheckAccessTest {
         DateCheckProperties props = new DateCheckProperties();
         assertThat(props.getEnabled()).isFalse();
         assertThat(props.getResearchEnabled()).isFalse();
+        assertThat(props.getAllOrgs()).isFalse();
         assertThat(props.getBetaOrgIds()).isEmpty();
         assertThat(props.getMaxDates()).isEqualTo(5);
         assertThat(props.getMaxHorizonMonths()).isEqualTo(18);
@@ -109,10 +160,12 @@ class DateCheckAccessTest {
         // The shipped placeholders, with each env var stubbed to empty so a local value cannot leak in.
         runner.withPropertyValues(
                         "PREDICTOR_DATE_CHECK_ENABLED=",
+                        "PREDICTOR_DATE_CHECK_ALL_ORGS=",
                         "PREDICTOR_DATE_CHECK_RESEARCH_ENABLED=",
                         "PREDICTOR_DATE_CHECK_MAX_DATES=",
                         "PREDICTOR_DATE_CHECK_MAX_HORIZON_MONTHS=",
                         "imin.predictor.date-check.enabled=${PREDICTOR_DATE_CHECK_ENABLED:false}",
+                        "imin.predictor.date-check.all-orgs=${PREDICTOR_DATE_CHECK_ALL_ORGS:false}",
                         "imin.predictor.date-check.research-enabled=${PREDICTOR_DATE_CHECK_RESEARCH_ENABLED:false}",
                         "imin.predictor.date-check.max-dates=${PREDICTOR_DATE_CHECK_MAX_DATES:5}",
                         "imin.predictor.date-check.max-horizon-months=${PREDICTOR_DATE_CHECK_MAX_HORIZON_MONTHS:18}")
@@ -120,6 +173,7 @@ class DateCheckAccessTest {
                     assertThat(ctx).hasNotFailed();
                     DateCheckProperties props = ctx.getBean(DateCheckProperties.class);
                     assertThat(props.getEnabled()).isFalse();
+                    assertThat(props.getAllOrgs()).isFalse();
                     assertThat(props.getResearchEnabled()).isFalse();
                     assertThat(props.getMaxDates()).isEqualTo(5);
                     assertThat(props.getMaxHorizonMonths()).isEqualTo(18);
@@ -149,6 +203,7 @@ class DateCheckAccessTest {
         String yaml = Files.readString(Path.of("src/main/resources/application.yaml"), StandardCharsets.UTF_8);
         assertThat(yaml).contains(
                 "      enabled: ${PREDICTOR_DATE_CHECK_ENABLED:false}\n",
+                "      all-orgs: ${PREDICTOR_DATE_CHECK_ALL_ORGS:false}\n",
                 "      beta-org-ids: ${PREDICTOR_DATE_CHECK_BETA_ORGS:}\n",
                 "      research-enabled: ${PREDICTOR_DATE_CHECK_RESEARCH_ENABLED:false}\n",
                 "      max-dates: ${PREDICTOR_DATE_CHECK_MAX_DATES:5}\n",

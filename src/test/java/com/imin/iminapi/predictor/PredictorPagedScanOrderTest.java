@@ -98,6 +98,26 @@ class PredictorPagedScanOrderTest {
         assertThat(page).extracting(PredictionLedger::getId).containsExactly(eventRender.getId());
     }
 
+    @Test
+    void findJoinableSkipsDateCheckRowEvenWithFinalizedEvent() {
+        EventOutcome finalized = outcome(Instant.parse("2026-01-01T00:00:00Z"));
+        finalized.setFinalizedAt(Instant.parse("2026-02-01T00:00:00Z"));
+        outcomes.save(finalized);
+        PredictionLedger eventRender = render(Instant.parse("2026-01-02T00:00:00Z"));
+        eventRender.setEventId(finalized.getEventId());
+        eventRender = ledger.save(eventRender);
+        // Only an event-linked DATE_CHECK row gets past the exists clause, so only it reaches the surface filter.
+        PredictionLedger dateCheckRender = render(Instant.parse("2026-01-01T00:00:00Z"));
+        dateCheckRender.setEventId(finalized.getEventId());
+        dateCheckRender.setSurface(PredictionSurface.DATE_CHECK);
+        dateCheckRender.setDateCheckId(UUID.randomUUID());
+        ledger.save(dateCheckRender);
+
+        List<PredictionLedger> page = ledger.findJoinable(PageRequest.of(0, 10));
+
+        assertThat(page).extracting(PredictionLedger::getId).containsExactly(eventRender.getId());
+    }
+
     private static EventOutcome outcome(Instant frozenAt) {
         EventOutcome o = new EventOutcome();
         o.setEventId(UUID.randomUUID());

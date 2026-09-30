@@ -49,6 +49,10 @@ public class RateLimitConfig {
     private int predictorRescoreCapacity;
     @Value("${imin.ratelimit.predictor-rescore.window-minutes}")
     private int predictorRescoreWindow;
+    @Value("${imin.ratelimit.predictor-date-check.capacity}")
+    private int predictorDateCheckCapacity;
+    @Value("${imin.ratelimit.predictor-date-check.window-minutes}")
+    private int predictorDateCheckWindow;
     @Value("${imin.ratelimit.audience-import.capacity}")
     private int audienceImportCapacity;
     @Value("${imin.ratelimit.audience-import.window-minutes}")
@@ -180,6 +184,10 @@ public class RateLimitConfig {
         // Predictor manual re-score throttle (spec §4.1), keyed per user id.
         configs.put("predictor-rescore", BucketConfiguration.builder()
                 .addLimit(Bandwidth.simple(predictorRescoreCapacity, Duration.ofMinutes(predictorRescoreWindow)))
+                .build());
+        // "Check a date" runs and assumption re-scores, keyed per user id; sync rules only, no AI quota.
+        configs.put("predictor-date-check", BucketConfiguration.builder()
+                .addLimit(Bandwidth.simple(predictorDateCheckCapacity, Duration.ofMinutes(predictorDateCheckWindow)))
                 .build());
         // Audience CSV import throttle, keyed per org — imports are heavy + consent-sensitive.
         configs.put("audience-import", BucketConfiguration.builder()
