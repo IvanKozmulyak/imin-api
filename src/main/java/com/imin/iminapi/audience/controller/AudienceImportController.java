@@ -3,10 +3,12 @@ package com.imin.iminapi.audience.controller;
 import com.imin.iminapi.audience.dto.ImportResultResponse;
 import com.imin.iminapi.audience.service.AudienceImportService;
 import com.imin.iminapi.audience.service.CsvContactParser;
+import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.security.RateLimiter;
+import com.imin.iminapi.security.RoleGuard;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -20,6 +22,8 @@ import java.util.List;
 /**
  * Audience contact CSV import.
  * Base path: {@code /api/v1/audience/import}. orgId comes ONLY from the auth context.
+ *
+ * <p>OWNER/ADMIN only (403 otherwise), checked before the attestation, parsing and rate limit.
  *
  * <p>Compliance posture: only a row carrying its own proof of explicit consent is subscribed
  * (see {@link AudienceImportService}); the required {@code attestation=true} flag records that the
@@ -60,6 +64,9 @@ public class AudienceImportController {
             // dashboard rewrites it; stored only when it is 64 hex characters.
             @RequestParam(value = "originalFileSha256", required = false) String originalFileSha256,
             @RequestParam(value = "dryRun", defaultValue = "false") boolean dryRun) {
+
+        // Signing the attestation binds the org, so only an owner/admin may import (dry runs too).
+        RoleGuard.requireAtLeast(principal, UserRole.ADMIN, "import contacts");
 
         // Attestation is the load-bearing consent gate — reject before any parsing or writes.
         if (!"true".equals(attestation)) {

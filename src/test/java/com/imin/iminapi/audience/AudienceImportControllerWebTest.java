@@ -25,6 +25,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -229,6 +230,85 @@ class AudienceImportControllerWebTest {
                         .param("attestation", "true"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("IMPORT_FILE_TOO_LARGE"));
+    }
+
+    // ── role ─────────────────────────────────────────────────────────────────────
+
+    @Test
+    void owner_can_import() throws Exception {
+        importAs(principal(UserRole.OWNER), false)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.imported").value(1));
+        assertThat(count("audience_imports")).isEqualTo(1);
+    }
+
+    @Test
+    void admin_can_import() throws Exception {
+        importAs(principal(UserRole.ADMIN), false)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.imported").value(1));
+        assertThat(count("audience_imports")).isEqualTo(1);
+    }
+
+    @Test
+    void member_gets403_and_nothing_is_written() throws Exception {
+        importAs(principal(UserRole.MEMBER), false)
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("FORBIDDEN"));
+        assertThat(count("audience_imports")).isZero();
+        assertThat(count("memberships")).isZero();
+    }
+
+    @Test
+    void member_dryRun_gets403() throws Exception {
+        importAs(principal(UserRole.MEMBER), true)
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("FORBIDDEN"));
+    }
+
+    @Test
+    void gate_device_gets403() throws Exception {
+        importAs(AuthPrincipal.forGate(UUID.randomUUID(), ORG_A), false)
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("FORBIDDEN"));
+    }
+
+    @Test
+    void member_is_refused_before_the_attestation_check() throws Exception {
+        mvc.perform(multipart("/api/v1/audience/import")
+                        .file(csv("email\nalice@example.com\n"))
+                        .with(auth(principal(UserRole.MEMBER))))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("FORBIDDEN"));
+    }
+
+    private org.springframework.test.web.servlet.ResultActions importAs(AuthPrincipal p, boolean dryRun) throws Exception {
+        return mvc.perform(multipart("/api/v1/audience/import")
+                .file(csv("email\nalice@example.com\n"))
+                .param("attestation", "true")
+                .param("dryRun", String.valueOf(dryRun))
+                .with(auth(p)));
+    }
+
+    private static AuthPrincipal principal(UserRole role) {
+        return new AuthPrincipal(UUID.randomUUID(), ORG_A, role, UUID.randomUUID());
+    }
+
+    private static org.springframework.test.web.servlet.request.RequestPostProcessor auth(AuthPrincipal p) {
+        return org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication(
+                new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(p, null,
+                        List.of(new SimpleGrantedAuthority("ROLE_" + p.role().name()))));
+    }
+
+    private int count(String table) {
+        try (java.sql.Connection c = dataSource.getConnection();
+             java.sql.Statement s = c.createStatement();
+             java.sql.ResultSet rs = s.executeQuery("select count(*) from " + table)) {
+            rs.next();
+            return rs.getInt(1);
+        } catch (java.sql.SQLException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     // ── auth ─────────────────────────────────────────────────────────────────────
