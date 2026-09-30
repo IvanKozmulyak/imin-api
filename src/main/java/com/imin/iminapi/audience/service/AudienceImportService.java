@@ -46,7 +46,7 @@ import java.util.regex.Pattern;
  * <p><b>Guardrails (non-negotiable):</b>
  * <ol>
  *   <li><b>Suppression is absolute.</b> A contact on the org's marketing suppression list OR
- *       the global deliverability suppression (hard bounce / complaint) is imported as a
+ *       the global deliverability suppression (hard bounce) is imported as a
  *       member but never subscribed — an organizer CSV cannot resurrect a suppressed
  *       contact.</li>
  *   <li><b>Explicit unsubscribes are never flipped.</b> A member who unsubscribed stays

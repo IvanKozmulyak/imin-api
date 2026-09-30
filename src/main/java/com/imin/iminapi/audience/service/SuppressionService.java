@@ -123,12 +123,12 @@ public class SuppressionService {
     // ── Deliverability suppression (platform-shared, system-owned) ──────────
 
     /**
-     * Record a deliverability suppression (bounce/complaint).
-     * Called by internal system processes, NOT by org users.
+     * Record a deliverability suppression (hard bounce). Spam complaints are org-scoped
+     * marketing suppressions instead. Called by internal system processes, NOT by org users.
      * Idempotent — if already suppressed for this email, returns the existing entry.
      *
      * @param normalizedEmail pre-normalized via {@link EmailNormalizer}
-     * @param reason          hard-bounce | spam | manual
+     * @param reason          hard-bounce (the only caller today)
      */
     @Transactional
     public SuppressionEntry addDeliverability(String normalizedEmail, String reason) {
