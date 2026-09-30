@@ -37,5 +37,8 @@ public interface ReferenceCalendarEntryRepository extends JpaRepository<Referenc
     @Query("select max(e.syncedAt) from ReferenceCalendarEntry e where e.sourceUrl like :pattern escape '!'")
     Instant findLatestSyncedAtLike(@Param("pattern") String pattern);
 
+    /** Any row stored by a source whose URLs share this prefix. */
+    boolean existsBySourceUrlStartingWith(String prefix);
+
     boolean existsByCountryAndKindAndCalendarDateBetween(String country, String kind, LocalDate from, LocalDate to);
 }

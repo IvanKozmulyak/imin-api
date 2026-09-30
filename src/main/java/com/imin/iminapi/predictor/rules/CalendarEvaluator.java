@@ -15,23 +15,28 @@ import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.function.Function;
 import java.util.function.Predicate;
 
 /**
- * Calendar questions from {@code reference_calendar}: holidays, ponts, DST nights, Ramadan, school holidays.
+ * Calendar questions from {@code reference_calendar}: holidays, ponts, DST nights, Ramadan, school holidays,
+ * and neighbour-country holidays for border cities.
  * A kind with no synced data for the country and year answers not_checked, never clear.
  */
 @Component
 public class CalendarEvaluator implements QuestionEvaluator {
 
-    /** Answered once football, diaspora, ad-period and border-holiday sources exist. */
-    static final Set<String> NO_SOURCE_YET = Set.of("3.2", "4.5", "5.1", "10.3");
-    private static final Set<String> RULES = Set.of("4.1", "4.2", "4.3", "4.4", "4.7", "5.2", "7.1");
+    /** Answered once football, diaspora and ad-period sources exist. */
+    static final Set<String> NO_SOURCE_YET = Set.of("3.2", "5.1", "10.3");
+    private static final Set<String> RULES = Set.of("4.1", "4.2", "4.3", "4.4", "4.5", "4.7", "5.2", "7.1");
+    private static final String BORDER = "4.5";
     private static final int WEEK = 7;
 
     private final ReferenceCalendarService calendar;
@@ -65,6 +70,10 @@ public class CalendarEvaluator implements QuestionEvaluator {
         for (Question q : questions) {
             if (NO_SOURCE_YET.contains(q.id())) {
                 out.add(Finding.notChecked(q, "no_source"));
+                continue;
+            }
+            if (BORDER.equals(q.id())) {
+                out.add(neighbourHoliday(q, in, date));
                 continue;
             }
             if (ctx == null) ctx = load(in, date);
@@ -105,6 +114,37 @@ public class CalendarEvaluator implements QuestionEvaluator {
             }
             default -> throw new IllegalStateException("CalendarEvaluator has no rule for " + q.id());
         };
+    }
+
+    /**
+     * A holiday across the border brings guests: strength 3 when the neighbour's next day is off
+     * (the eve of it), 2 when only the night's own day is.
+     */
+    private Finding neighbourHoliday(Question q, DateCheckInput in, LocalDate d) {
+        Map<String, List<String>> neighbours = CalendarRegions.neighbours(in.city());
+        if (neighbours.isEmpty()) return Finding.notChecked(q, "no_source");
+        LocalDate next = d.plusDays(1);
+        for (String nc : neighbours.keySet()) {
+            if (!covered(nc, "holiday", d, next)) return noData(q);
+        }
+        List<CalendarHit> hits = new ArrayList<>();
+        Map<CalendarHit, String> countryOf = new HashMap<>();
+        for (Map.Entry<String, List<String>> e : new TreeMap<>(neighbours).entrySet()) {
+            for (String region : e.getValue()) {
+                CalendarPlace place = new CalendarPlace(e.getKey(), region.isEmpty() ? null : region, null);
+                for (CalendarHit h : calendar.between(d, next, place)) {
+                    if (!isKind(h, "holiday")) continue;
+                    hits.add(h);
+                    countryOf.putIfAbsent(h, e.getKey());
+                }
+            }
+        }
+        List<CalendarHit> offNext = hits.stream().filter(h -> covers(h, next)).toList();
+        List<CalendarHit> offToday = hits.stream().filter(h -> covers(h, d)).toList();
+        Function<CalendarHit, Map<String, Object>> country = h -> Map.of("country", countryOf.get(h));
+        if (!offNext.isEmpty()) return found(q, Kind.OPPORTUNITY, 3, offNext, next, country);
+        if (!offToday.isEmpty()) return found(q, Kind.OPPORTUNITY, 2, offToday, d, country);
+        return Finding.clear(q);
     }
 
     /** Coverage is per year, so a window crossing New Year needs both years synced. */
@@ -192,14 +232,22 @@ public class CalendarEvaluator implements QuestionEvaluator {
 
     /** Facts of the hit nearest to {@code target}; an approximate (computed Hijri) hit caps strength at 2. */
     private static Finding found(Question q, Kind kind, int strength, List<CalendarHit> matched, LocalDate target) {
+        return found(q, kind, strength, matched, target, h -> Map.of());
+    }
+
+    /** As above, plus facts {@code extra} derives from the chosen hit. */
+    private static Finding found(Question q, Kind kind, int strength, List<CalendarHit> matched, LocalDate target,
+                                 Function<CalendarHit, Map<String, Object>> extra) {
         List<CalendarHit> hits = distinct(matched);
         CalendarHit nearest = hits.stream()
                 .min(Comparator.comparingLong((CalendarHit h) -> distance(h, target)).thenComparing(CalendarHit::date))
                 .orElseThrow();
         Map<String, Object> facts = new LinkedHashMap<>();
         facts.put("date", nearest.date().toString());
+        facts.put("endDate", nearest.endDate() == null ? null : nearest.endDate().toString());
         facts.put("name", nearest.name());
         facts.put("count", hits.size());
+        facts.putAll(extra.apply(nearest));
         int s = strength;
         if (hits.stream().anyMatch(CalendarHit::approximate)) {
             s = Math.min(s, 2);

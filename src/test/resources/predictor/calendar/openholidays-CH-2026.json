@@ -1,0 +1,161 @@
+[
+ {
+  "id": "adbbd6a7-365b-441f-bd45-1750624026bd",
+  "startDate": "2026-01-01",
+  "endDate": "2026-01-01",
+  "type": "Public",
+  "name": [
+   {
+    "language": "EN",
+    "text": "New Year's Day"
+   }
+  ],
+  "regionalScope": "Regional",
+  "temporalScope": "FullDay",
+  "nationwide": true
+ },
+ {
+  "id": "52beb188-975d-4d79-a7f5-628e3ffd72fe",
+  "startDate": "2026-05-01",
+  "endDate": "2026-05-01",
+  "type": "Public",
+  "name": [
+   {
+    "language": "EN",
+    "text": "Labour Day"
+   }
+  ],
+  "regionalScope": "Local",
+  "temporalScope": "HalfDay",
+  "nationwide": false,
+  "subdivisions": [
+   {
+    "code": "CH-SO-DE",
+    "shortName": "SO-DE"
+   },
+   {
+    "code": "CH-SO-LB",
+    "shortName": "SO-LB"
+   },
+   {
+    "code": "CH-SO-GA",
+    "shortName": "SO-GA"
+   },
+   {
+    "code": "CH-SO-TH-WG",
+    "shortName": "SO-TH-WG"
+   },
+   {
+    "code": "CH-SO-TH-MD",
+    "shortName": "SO-TH-MD"
+   },
+   {
+    "code": "CH-SO-SO",
+    "shortName": "SO-SO"
+   },
+   {
+    "code": "CH-SO-OL",
+    "shortName": "SO-OL"
+   },
+   {
+    "code": "CH-SO-TH-MR",
+    "shortName": "SO-TH-MR"
+   },
+   {
+    "code": "CH-SO-TH-BT",
+    "shortName": "SO-TH-BT"
+   },
+   {
+    "code": "CH-SO-BB",
+    "shortName": "SO-BB"
+   },
+   {
+    "code": "CH-SO-TH-LD",
+    "shortName": "SO-TH-LD"
+   },
+   {
+    "code": "CH-SO-TH-HW",
+    "shortName": "SO-TH-HW"
+   },
+   {
+    "code": "CH-SO-WA",
+    "shortName": "SO-WA"
+   },
+   {
+    "code": "CH-SO-TS",
+    "shortName": "SO-TS"
+   },
+   {
+    "code": "CH-SO-TH-HB",
+    "shortName": "SO-TH-HB"
+   },
+   {
+    "code": "CH-SO-GG",
+    "shortName": "SO-GG"
+   }
+  ],
+  "comment": [
+   {
+    "language": "EN",
+    "text": "from 12:00"
+   }
+  ]
+ },
+ {
+  "id": "e22745c1-a0c5-4675-a3c6-8c5f1a2e5565",
+  "startDate": "2026-05-01",
+  "endDate": "2026-05-01",
+  "type": "Public",
+  "name": [
+   {
+    "language": "EN",
+    "text": "Labour Day"
+   }
+  ],
+  "regionalScope": "Regional",
+  "temporalScope": "FullDay",
+  "nationwide": false,
+  "subdivisions": [
+   {
+    "code": "CH-BL",
+    "shortName": "BL"
+   },
+   {
+    "code": "CH-SH",
+    "shortName": "SH"
+   },
+   {
+    "code": "CH-ZH",
+    "shortName": "ZH"
+   },
+   {
+    "code": "CH-NE",
+    "shortName": "NE"
+   },
+   {
+    "code": "CH-SO-TH-AD",
+    "shortName": "SO-TH-AD"
+   },
+   {
+    "code": "CH-TG",
+    "shortName": "TG"
+   },
+   {
+    "code": "CH-JU",
+    "shortName": "JU"
+   },
+   {
+    "code": "CH-AG",
+    "shortName": "AG"
+   },
+   {
+    "code": "CH-BS",
+    "shortName": "BS"
+   },
+   {
+    "code": "CH-TI",
+    "shortName": "TI"
+   }
+  ]
+ }
+]

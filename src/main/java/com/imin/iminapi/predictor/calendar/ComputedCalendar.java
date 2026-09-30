@@ -27,7 +27,8 @@ public class ComputedCalendar implements CalendarSource {
             "https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/time/chrono/HijrahChronology.html";
 
     /** Countries that get computed rows, with the zone their DST follows. Other countries join this map when their holiday source is added. */
-    static final Map<String, ZoneId> ZONES = Map.of("FR", ZoneId.of("Europe/Paris"));
+    static final Map<String, ZoneId> ZONES = Map.of("FR", ZoneId.of("Europe/Paris"), "NL", ZoneId.of("Europe/Amsterdam"),
+            "DE", ZoneId.of("Europe/Berlin"), "ES", ZoneId.of("Europe/Madrid"));
 
     /** A night whose next day is 23 h (clocks forward) or 25 h (clocks back). */
     public record DstNight(LocalDate night, long hours) {

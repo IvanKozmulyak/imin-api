@@ -1,0 +1,95 @@
+[
+ {
+  "id": "9ac6fd8b-aec4-41f0-916b-f03af58ecdab",
+  "startDate": "2026-01-01",
+  "endDate": "2026-01-01",
+  "type": "Public",
+  "name": [
+   {
+    "language": "EN",
+    "text": "New Year's Day"
+   }
+  ],
+  "regionalScope": "Regional",
+  "temporalScope": "FullDay",
+  "nationwide": true
+ },
+ {
+  "id": "4030dfd3-7e29-4334-b637-42a9097be309",
+  "startDate": "2026-06-04",
+  "endDate": "2026-06-04",
+  "type": "Public",
+  "name": [
+   {
+    "language": "EN",
+    "text": "Corpus Christi"
+   }
+  ],
+  "regionalScope": "Regional",
+  "temporalScope": "FullDay",
+  "nationwide": false,
+  "subdivisions": [
+   {
+    "code": "DE-HE",
+    "shortName": "HE"
+   },
+   {
+    "code": "DE-SL",
+    "shortName": "SL"
+   },
+   {
+    "code": "DE-NW",
+    "shortName": "NW"
+   },
+   {
+    "code": "DE-BW",
+    "shortName": "BW"
+   },
+   {
+    "code": "DE-RP",
+    "shortName": "RP"
+   },
+   {
+    "code": "DE-BY",
+    "shortName": "BY"
+   }
+  ]
+ },
+ {
+  "id": "c359d742-f458-4962-8bf1-44e5d504f6d0",
+  "startDate": "2026-11-01",
+  "endDate": "2026-11-01",
+  "type": "Public",
+  "name": [
+   {
+    "language": "EN",
+    "text": "All Saints' Day"
+   }
+  ],
+  "regionalScope": "Regional",
+  "temporalScope": "FullDay",
+  "nationwide": false,
+  "subdivisions": [
+   {
+    "code": "DE-SL",
+    "shortName": "SL"
+   },
+   {
+    "code": "DE-NW",
+    "shortName": "NW"
+   },
+   {
+    "code": "DE-BW",
+    "shortName": "BW"
+   },
+   {
+    "code": "DE-RP",
+    "shortName": "RP"
+   },
+   {
+    "code": "DE-BY",
+    "shortName": "BY"
+   }
+  ]
+ }
+]

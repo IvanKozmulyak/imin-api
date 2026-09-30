@@ -7,6 +7,7 @@ import com.imin.iminapi.util.EventNormalization;
 import org.springframework.stereotype.Component;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Pattern;
@@ -44,6 +45,24 @@ public class CalendarRegions {
                 "46", "65", "81", "82", "78", "91", "92", "95");
     }
 
+    /**
+     * Border city key → neighbour country → holiday regions whose day off sends guests over ("" = the whole country).
+     * ponytail: hand-picked cities; a new border city needs a code change and a bank edit.
+     */
+    static final Map<String, Map<String, List<String>>> BORDER_NEIGHBOURS = Map.of(
+            "metz", Map.of("LU", List.of(""), "DE", List.of("DE-SL", "DE-RP")),
+            "thionville", Map.of("LU", List.of(""), "DE", List.of("DE-SL")),
+            "strasbourg", Map.of("DE", List.of("DE-BW")),
+            "mulhouse", Map.of("DE", List.of("DE-BW"), "CH", List.of("CH-BS", "CH-BL")),
+            "lille", Map.of("BE", List.of("")));
+
+    static {
+        // reference_calendar.region is VARCHAR(16): a longer code could never match a stored row
+        BORDER_NEIGHBOURS.forEach((city, byCountry) -> byCountry.values().forEach(codes -> codes.forEach(c -> {
+            if (c.length() > OpenHolidaysSync.MAX_REGION) throw new IllegalStateException("region code too long: " + c);
+        })));
+    }
+
     private final OpenDataCities cities;
 
     public CalendarRegions(OpenDataCities cities) {
@@ -56,6 +75,11 @@ public class CalendarRegions {
         String dept = departement(postalCode, city);
         return new CalendarPlace(cc, PublicHolidayCalendar.regionOf(cc, postalCode, city),
                 dept == null ? null : SCHOOL_ZONE_BY_DEPT.get(dept));
+    }
+
+    /** Neighbour country → holiday regions for a border city; empty for any other city. */
+    public static Map<String, List<String>> neighbours(String city) {
+        return BORDER_NEIGHBOURS.getOrDefault(EventNormalization.cityKey(city), Map.of());
     }
 
     /** Two-digit département from a 5-digit postcode, else from the known city's INSEE code; null when unknown. */

@@ -8,6 +8,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 
 class ComputedCalendarTest {
 
@@ -95,12 +96,27 @@ class ComputedCalendarTest {
         assertThat(dst.sourceUrl()).isEqualTo(ComputedCalendar.IANA_URL);
         assertThat(dst.from()).isEqualTo(LocalDate.of(2026, 1, 1));
         assertThat(dst.to()).isEqualTo(LocalDate.of(2027, 12, 31));
-        assertThat(dst.rows()).hasSize(4).allSatisfy(r -> {
-            assertThat(r.country()).isEqualTo("FR");
-            assertThat(r.region()).isEmpty();
-        });
+        assertThat(dst.rows()).filteredOn(r -> r.country().equals("FR")).hasSize(4)
+                .allSatisfy(r -> assertThat(r.region()).isEmpty());
         assertThat(batches.get(1).kinds()).containsExactly("hijri");
-        assertThat(batches.get(1).rows()).isNotEmpty().allSatisfy(r -> assertThat(r.country()).isEqualTo("FR"));
+        assertThat(batches.get(1).rows()).filteredOn(r -> r.country().equals("FR")).isNotEmpty();
+    }
+
+    @Test
+    void dstRowsForNlDeEs() {
+        List<CalendarSource.Batch> batches =
+                new ComputedCalendar(CalendarFixtures.props(0)).fetch(LocalDate.of(2026, 9, 30));
+
+        // EU clocks change on the last Sundays of March and October 2026, the same night in all four
+        for (String country : List.of("FR", "NL", "DE", "ES")) {
+            assertThat(batches.get(0).rows()).as(country).filteredOn(r -> r.country().equals(country))
+                    .extracting(CalendarRow::date, CalendarRow::name)
+                    .containsExactly(tuple(LocalDate.of(2026, 3, 28), "dst_forward"),
+                            tuple(LocalDate.of(2026, 10, 24), "dst_back"));
+            assertThat(batches.get(1).rows()).as(country).filteredOn(r -> r.country().equals(country))
+                    .extracting(CalendarRow::name).contains("ramadan", "eid_al_fitr", "eid_al_adha");
+        }
+        assertThat(batches.get(0).rows()).extracting(CalendarRow::country).containsOnly("FR", "NL", "DE", "ES");
     }
 
     private static CalendarRow byName(List<CalendarRow> rows, String name) {

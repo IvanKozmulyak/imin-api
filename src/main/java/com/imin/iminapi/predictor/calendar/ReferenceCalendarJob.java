@@ -18,7 +18,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Executor;
 
-/** Weekly sync of every calendar source into reference_calendar; also at boot while the table is empty. */
+/** Weekly sync of every calendar source into reference_calendar; also at boot while the table or a new source is empty. */
 @Component
 public class ReferenceCalendarJob {
 
@@ -51,7 +51,7 @@ public class ReferenceCalendarJob {
     @EventListener(ApplicationReadyEvent.class)
     public void onStartup() {
         try {
-            if (!props.getSyncEnabled() || repository.count() > 0) return;
+            if (!props.getSyncEnabled() || !needsSeed()) return;
             executor.execute(() -> {
                 try {
                     self.getObject().run();
@@ -62,6 +62,16 @@ public class ReferenceCalendarJob {
         } catch (Exception e) {
             log.warn("ReferenceCalendarJob startup check failed (weekly cron will retry): {}", e.toString());
         }
+    }
+
+    /** Empty table, or a source with a scope prefix that has stored nothing yet (a source added since the last run). */
+    private boolean needsSeed() {
+        if (repository.count() == 0) return true;
+        for (CalendarSource source : sources) {
+            String prefix = source.scopePrefix();
+            if (prefix != null && !repository.existsBySourceUrlStartingWith(prefix)) return true;
+        }
+        return false;
     }
 
     @Scheduled(cron = "0 30 4 * * SUN", zone = "Europe/Paris")

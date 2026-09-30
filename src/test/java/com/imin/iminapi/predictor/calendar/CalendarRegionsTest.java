@@ -1,9 +1,14 @@
 package com.imin.iminapi.predictor.calendar;
 
 import com.imin.iminapi.audienceplan.opendata.OpenDataCities;
+import com.imin.iminapi.predictor.rules.QuestionBank;
+import com.imin.iminapi.predictor.rules.QuestionBankLoader;
+import com.imin.iminapi.util.EventNormalization;
 import org.junit.jupiter.api.Test;
+import org.springframework.core.io.DefaultResourceLoader;
 
 import java.util.List;
+import java.util.Map;
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -64,5 +69,33 @@ class CalendarRegionsTest {
                 .mapToObj(i -> String.format("%02d", i)).toList();
 
         assertThat(CalendarRegions.SCHOOL_ZONE_BY_DEPT).containsOnlyKeys(depts);
+    }
+
+    @Test
+    void everyBank45CityHasNeighbours() {
+        QuestionBank.Question q45 = QuestionBankLoader.load(new DefaultResourceLoader()).questionsFor("FR").stream()
+                .filter(q -> q.id().equals("4.5")).findFirst().orElseThrow();
+
+        assertThat(q45.cities()).isNotEmpty();
+        for (String city : q45.cities()) {
+            assertThat(CalendarRegions.neighbours(city)).as(city).isNotEmpty();
+        }
+        assertThat(CalendarRegions.BORDER_NEIGHBOURS).containsOnlyKeys(
+                q45.cities().stream().map(EventNormalization::cityKey).toList());
+        assertThat(CalendarRegions.neighbours("Metz")).isEqualTo(Map.of("LU", List.of(""), "DE", List.of("DE-SL", "DE-RP")));
+        assertThat(CalendarRegions.neighbours(" MULHOUSE ")).containsOnlyKeys("DE", "CH");
+        assertThat(CalendarRegions.neighbours("Paris")).isEmpty();
+        assertThat(CalendarRegions.neighbours(null)).isEmpty();
+    }
+
+    @Test
+    void neighbourRegionCodesFitColumn() {
+        CalendarRegions.BORDER_NEIGHBOURS.values().forEach(byCountry -> byCountry.forEach((country, codes) -> {
+            assertThat(country).matches("[A-Z]{2}");
+            assertThat(codes).allSatisfy(c -> {
+                assertThat(c.length()).isLessThanOrEqualTo(OpenHolidaysSync.MAX_REGION);
+                assertThat(c.isEmpty() || c.startsWith(country + "-")).as(c).isTrue();
+            });
+        }));
     }
 }

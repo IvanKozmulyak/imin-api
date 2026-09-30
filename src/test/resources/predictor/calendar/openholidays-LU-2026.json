@@ -1,0 +1,182 @@
+[
+ {
+  "id": "bf1e442b-0190-41fc-92dd-3171e1c9b218",
+  "startDate": "2026-01-01",
+  "endDate": "2026-01-01",
+  "type": "Public",
+  "name": [
+   {
+    "language": "EN",
+    "text": "New Year"
+   }
+  ],
+  "regionalScope": "National",
+  "temporalScope": "FullDay",
+  "nationwide": true
+ },
+ {
+  "id": "573c2b77-1c05-4582-a204-176465b2c56b",
+  "startDate": "2026-04-03",
+  "endDate": "2026-04-03",
+  "type": "Bank",
+  "name": [
+   {
+    "language": "EN",
+    "text": "Good Friday"
+   }
+  ],
+  "regionalScope": "National",
+  "temporalScope": "FullDay",
+  "nationwide": true
+ },
+ {
+  "id": "4396fb20-2c59-405d-9aef-360c7d2b53be",
+  "startDate": "2026-04-06",
+  "endDate": "2026-04-06",
+  "type": "Public",
+  "name": [
+   {
+    "language": "EN",
+    "text": "Easter Monday"
+   }
+  ],
+  "regionalScope": "National",
+  "temporalScope": "FullDay",
+  "nationwide": true
+ },
+ {
+  "id": "24aa82ab-d7b7-4efc-b561-d2e90cfad4a8",
+  "startDate": "2026-05-01",
+  "endDate": "2026-05-01",
+  "type": "Public",
+  "name": [
+   {
+    "language": "EN",
+    "text": "Mayday"
+   }
+  ],
+  "regionalScope": "National",
+  "temporalScope": "FullDay",
+  "nationwide": true
+ },
+ {
+  "id": "f9f0df08-f515-40ad-8fd3-fe8dcc2c6765",
+  "startDate": "2026-05-09",
+  "endDate": "2026-05-09",
+  "type": "Public",
+  "name": [
+   {
+    "language": "EN",
+    "text": "Europe Day"
+   }
+  ],
+  "regionalScope": "National",
+  "temporalScope": "FullDay",
+  "nationwide": true
+ },
+ {
+  "id": "e2831117-848e-4dc6-b1d0-c8d08e6260a8",
+  "startDate": "2026-05-14",
+  "endDate": "2026-05-14",
+  "type": "Public",
+  "name": [
+   {
+    "language": "EN",
+    "text": "Ascension Day"
+   }
+  ],
+  "regionalScope": "National",
+  "temporalScope": "FullDay",
+  "nationwide": true
+ },
+ {
+  "id": "176469e3-c8b8-4a1b-8edc-921eca15d404",
+  "startDate": "2026-05-25",
+  "endDate": "2026-05-25",
+  "type": "Public",
+  "name": [
+   {
+    "language": "EN",
+    "text": "Whit Monday"
+   }
+  ],
+  "regionalScope": "National",
+  "temporalScope": "FullDay",
+  "nationwide": true
+ },
+ {
+  "id": "475b86af-fd3a-43ad-9ed7-8bf887b2fc4b",
+  "startDate": "2026-06-23",
+  "endDate": "2026-06-23",
+  "type": "Public",
+  "name": [
+   {
+    "language": "EN",
+    "text": "Grand Duke's Birthday"
+   }
+  ],
+  "regionalScope": "National",
+  "temporalScope": "FullDay",
+  "nationwide": true
+ },
+ {
+  "id": "0255913f-7635-4bb3-b751-4519d5c259da",
+  "startDate": "2026-08-15",
+  "endDate": "2026-08-15",
+  "type": "Public",
+  "name": [
+   {
+    "language": "EN",
+    "text": "Assumption"
+   }
+  ],
+  "regionalScope": "National",
+  "temporalScope": "FullDay",
+  "nationwide": true
+ },
+ {
+  "id": "d4a773f9-fe64-4df4-a07a-af59860ee1b4",
+  "startDate": "2026-11-01",
+  "endDate": "2026-11-01",
+  "type": "Public",
+  "name": [
+   {
+    "language": "EN",
+    "text": "All Saints"
+   }
+  ],
+  "regionalScope": "National",
+  "temporalScope": "FullDay",
+  "nationwide": true
+ },
+ {
+  "id": "a3ed09af-36d2-4466-9049-413d49b7e0ea",
+  "startDate": "2026-12-25",
+  "endDate": "2026-12-25",
+  "type": "Public",
+  "name": [
+   {
+    "language": "EN",
+    "text": "Christmas Day"
+   }
+  ],
+  "regionalScope": "National",
+  "temporalScope": "FullDay",
+  "nationwide": true
+ },
+ {
+  "id": "18e26a66-01d2-41f2-b156-e2440f962265",
+  "startDate": "2026-12-26",
+  "endDate": "2026-12-26",
+  "type": "Public",
+  "name": [
+   {
+    "language": "EN",
+    "text": "Boxing Day"
+   }
+  ],
+  "regionalScope": "National",
+  "temporalScope": "FullDay",
+  "nationwide": true
+ }
+]

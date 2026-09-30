@@ -16,7 +16,8 @@ import java.util.Objects;
  * the constructor enforces the same rules as the V162 {@code date_check_finding} CHECKs.
  *
  * <p>Facts keys (template params later): {@code date, name, venue, count, leadDays, minDays,
- * capacityKnown, sharedArtists, sellOutRate, n, relaxation, soldShareBefore, approximate, reason}.
+ * capacityKnown, sharedArtists, sellOutRate, n, relaxation, soldShareBefore, approximate, reason, endDate, country,
+ * community, competition, kickoff, estimate}.
  */
 public record Finding(String questionId, Kind kind, Status status, int strength, int weight, SourceKind sourceKind,
                       Window window, boolean stopFactor, Map<String, Object> facts, String url, String quote,

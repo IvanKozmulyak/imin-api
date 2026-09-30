@@ -89,6 +89,36 @@ class ReferenceCalendarJobTest {
     }
 
     @Test
+    void startupSyncsWhenASourcePrefixHasNoRows() {
+        when(a.fetch(any())).thenReturn(List.of());
+        when(b.fetch(any())).thenReturn(List.of());
+        when(repository.count()).thenReturn(5L);
+        when(b.scopePrefix()).thenReturn("https://new.example/");
+        when(repository.existsBySourceUrlStartingWith("https://new.example/")).thenReturn(false);
+
+        job().onStartup();
+
+        verify(self).getObject();
+        verify(a).fetch(PARIS_TODAY);
+        verify(b).fetch(PARIS_TODAY);
+    }
+
+    @Test
+    void startupSkipsWhenEveryPrefixHasRows() {
+        when(repository.count()).thenReturn(5L);
+        when(a.scopePrefix()).thenReturn("https://a.example/");
+        when(b.scopePrefix()).thenReturn("https://b.example/");
+        when(repository.existsBySourceUrlStartingWith(any())).thenReturn(true);
+
+        job().onStartup();
+
+        verify(repository).existsBySourceUrlStartingWith("https://a.example/");
+        verify(repository).existsBySourceUrlStartingWith("https://b.example/");
+        verify(self, never()).getObject();
+        verify(a, never()).fetch(any());
+    }
+
+    @Test
     void startupExecutorRejectionIsSwallowed() {
         when(repository.count()).thenReturn(0L);
 

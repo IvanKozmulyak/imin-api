@@ -11,6 +11,9 @@ public interface CalendarSource {
 
     List<Batch> fetch(LocalDate today);
 
+    /** Prefix every source URL of this source starts with; the boot sync runs while none is stored. Null opts out. */
+    default String scopePrefix() { return null; }
+
     /**
      * Rows that replace everything stored under one scope: {@code sourceUrl}, {@code kinds} and
      * {@code calendar_date} within [from, to].

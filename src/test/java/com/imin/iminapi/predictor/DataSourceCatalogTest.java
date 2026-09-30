@@ -1,6 +1,7 @@
 package com.imin.iminapi.predictor;
 
 import com.imin.iminapi.predictor.calendar.CalendarSyncProperties;
+import com.imin.iminapi.predictor.calendar.OpenHolidaysSync;
 import com.imin.iminapi.predictor.config.DateCheckProperties;
 import com.imin.iminapi.predictor.config.PredictorProperties;
 import com.imin.iminapi.predictor.dto.PublicDataSourcesResponse.PublicDataSource;
@@ -70,7 +71,8 @@ class DataSourceCatalogTest {
         assertThat(catalog.reviewedOn()).isEqualTo("2026-09-30");
         assertThat(active).extracting(PublicDataSource::id).containsExactlyElementsOf(yamlIds());
         assertThat(active).extracting(PublicDataSource::id).containsExactly(
-                "calendrier-api-gouv", "fr-en-calendrier-scolaire", "iana-tz", "openjdk-hijrah", "open-meteo");
+                "calendrier-api-gouv", "fr-en-calendrier-scolaire", "openholidays", "iana-tz", "openjdk-hijrah",
+                "open-meteo");
         for (PublicDataSource s : active) {
             assertThat(s.status()).isEqualTo("active");
             assertThat(List.of(s.id(), s.name(), s.licence(), s.licenceUrl(), s.creditLine(), s.url()))
@@ -95,6 +97,25 @@ class DataSourceCatalogTest {
     }
 
     @Test
+    void openHolidaysListedUnderDateCheckWithOdblCredit() {
+        gates(true, true, false);
+
+        PublicDataSource oh = real().active(NO_DATES).stream()
+                .filter(s -> s.id().equals("openholidays")).findFirst().orElseThrow();
+
+        assertThat(oh.name()).isEqualTo("OpenHolidays API");
+        assertThat(oh.usedFor()).containsExactly("public_holidays");
+        assertThat(oh.licence()).isEqualTo("ODbL 1.0");
+        assertThat(oh.licenceUrl()).isEqualTo("https://opendatacommons.org/licenses/odbl/1-0/");
+        assertThat(oh.creditLine()).contains("OpenHolidays API (openholidaysapi.org)").contains("ODbL");
+        assertThat(oh.url()).isEqualTo("https://www.openholidaysapi.org/");
+        // the prefix must cover the URLs OpenHolidaysSync stores, or lastUpdated stays null
+        assertThat(OpenHolidaysSync.url("LU", 2026)).startsWith("https://openholidaysapi.org/");
+        gates(false, true, false);
+        assertThat(activeIds()).doesNotContain("openholidays");
+    }
+
+    @Test
     void dateCheckOffHidesCalendarSources() {
         gates(false, true, true);
 
@@ -113,7 +134,7 @@ class DataSourceCatalogTest {
         gates(true, true, false);
 
         assertThat(activeIds()).containsExactly(
-                "calendrier-api-gouv", "fr-en-calendrier-scolaire", "iana-tz", "openjdk-hijrah");
+                "calendrier-api-gouv", "fr-en-calendrier-scolaire", "openholidays", "iana-tz", "openjdk-hijrah");
     }
 
     @Test
@@ -140,16 +161,19 @@ class DataSourceCatalogTest {
         List<String> asked = new ArrayList<>();
         Function<String, Optional<LocalDate>> lookup = prefix -> {
             asked.add(prefix);
-            return prefix.startsWith("https://calendrier.api.gouv.fr/")
-                    ? Optional.of(LocalDate.of(2026, 9, 27)) : Optional.empty();
+            if (prefix.startsWith("https://calendrier.api.gouv.fr/")) return Optional.of(LocalDate.of(2026, 9, 27));
+            if (prefix.equals("https://openholidaysapi.org/")) return Optional.of(LocalDate.of(2026, 9, 28));
+            return Optional.empty();
         };
 
         Map<String, String> updated = new HashMap<>();
         real().active(lookup).forEach(s -> updated.put(s.id(), s.lastUpdated()));
 
         assertThat(asked).containsExactly("https://calendrier.api.gouv.fr/jours-feries/",
-                "https://data.education.gouv.fr/explore/dataset/fr-en-calendrier-scolaire/");
+                "https://data.education.gouv.fr/explore/dataset/fr-en-calendrier-scolaire/",
+                "https://openholidaysapi.org/");
         assertThat(updated.get("calendrier-api-gouv")).isEqualTo("2026-09-27");
+        assertThat(updated.get("openholidays")).isEqualTo("2026-09-28");
         assertThat(updated).containsEntry("fr-en-calendrier-scolaire", null)
                 .containsEntry("iana-tz", null).containsEntry("openjdk-hijrah", null)
                 .containsEntry("open-meteo", null);

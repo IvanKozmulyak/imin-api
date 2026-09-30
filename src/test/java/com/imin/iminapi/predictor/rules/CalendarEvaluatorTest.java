@@ -2,6 +2,7 @@ package com.imin.iminapi.predictor.rules;
 
 import com.imin.iminapi.audienceplan.opendata.OpenDataCities;
 import com.imin.iminapi.predictor.calendar.CalendarHit;
+import com.imin.iminapi.predictor.calendar.CalendarPlace;
 import com.imin.iminapi.predictor.calendar.CalendarRegions;
 import com.imin.iminapi.predictor.calendar.ReferenceCalendarService;
 import com.imin.iminapi.predictor.rules.Finding.Status;
@@ -21,6 +22,7 @@ import static com.imin.iminapi.predictor.rules.RuleFixtures.q;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -392,12 +394,186 @@ class CalendarEvaluatorTest {
 
     @Test
     void m14bQuestionsNotCheckedWithReason() {
-        for (String id : List.of("3.2", "4.5", "5.1", "10.3")) {
+        for (String id : List.of("3.2", "5.1", "10.3")) {
             Finding f = eval(id, in().city("Metz", "FR", "57000").build(), "2026-10-24");
             assertThat(f.status()).as(id).isEqualTo(Status.NOT_CHECKED);
             assertThat(f.facts()).as(id).containsEntry("reason", "no_source");
         }
         verifyNoInteractions(cal);
+    }
+
+    // --- 4.5 ---
+
+    private static final String LU_URL = "https://openholidaysapi.org/PublicHolidays?countryIsoCode=LU&languageIsoCode=EN"
+            + "&validFrom=2026-01-01&validTo=2026-12-31";
+    private static final String DE_URL = "https://openholidaysapi.org/PublicHolidays?countryIsoCode=DE&languageIsoCode=EN"
+            + "&validFrom=2026-01-01&validTo=2026-12-31";
+
+    private void neighbourHits(String country, CalendarHit... hits) {
+        when(cal.between(any(), any(), argThat(p -> p != null && country.equals(p.country())))).thenReturn(List.of(hits));
+    }
+
+    private static CalendarHit neighbourHoliday(String date, String name, String region, String url) {
+        return new CalendarHit(LocalDate.parse(date), null, "holiday", name, region, url, false, CalendarHit.SYNCED);
+    }
+
+    private Finding metz(String date) {
+        return eval("4.5", in().city("Metz", "FR", "57000").build(), date);
+    }
+
+    @Test
+    void metzLuxHolidayNextDayIsOpportunity3() {
+        coversAll("LU");
+        coversAll("DE");
+        neighbourHits("LU", neighbourHoliday("2026-11-01", "All Saints", "", LU_URL));
+
+        Finding f = metz("2026-10-31");
+
+        assertThat(f.status()).isEqualTo(Status.FOUND);
+        assertThat(f.kind()).isEqualTo(Kind.OPPORTUNITY);
+        assertThat(f.strength()).isEqualTo(3);
+        assertThat(f.url()).isEqualTo(LU_URL);
+        assertThat(f.facts()).containsEntry("date", "2026-11-01").containsEntry("name", "All Saints")
+                .containsEntry("country", "LU").containsEntry("count", 1).doesNotContainKey("endDate");
+        LocalDate d = LocalDate.of(2026, 10, 31);
+        verify(cal).between(d, d.plusDays(1), new CalendarPlace("LU", null, null));
+        verify(cal).between(d, d.plusDays(1), new CalendarPlace("DE", "DE-SL", null));
+        verify(cal).between(d, d.plusDays(1), new CalendarPlace("DE", "DE-RP", null));
+    }
+
+    @Test
+    void neighbourHolidayOnDayIsStrength2() {
+        coversAll("LU");
+        coversAll("DE");
+        neighbourHits("DE", neighbourHoliday("2026-11-01", "All Saints' Day", "DE-SL", DE_URL),
+                neighbourHoliday("2026-11-01", "All Saints' Day", "DE-SL", DE_URL));
+
+        Finding f = metz("2026-11-01");
+
+        assertThat(f.status()).isEqualTo(Status.FOUND);
+        assertThat(f.kind()).isEqualTo(Kind.OPPORTUNITY);
+        assertThat(f.strength()).isEqualTo(2);
+        assertThat(f.facts()).containsEntry("date", "2026-11-01").containsEntry("country", "DE")
+                .containsEntry("count", 1);
+    }
+
+    @Test
+    void newYearsEveBeforeNeighbourNewYearIsStrength3() {
+        coversAll("LU");
+        coversAll("DE");
+        String lu2027 = LU_URL.replace("2026", "2027");
+        neighbourHits("LU", neighbourHoliday("2027-01-01", "New Year", "", lu2027));
+
+        Finding f = metz("2026-12-31");
+
+        assertThat(f.status()).isEqualTo(Status.FOUND);
+        assertThat(f.strength()).isEqualTo(3);
+        assertThat(f.url()).isEqualTo(lu2027);
+        assertThat(f.facts()).containsEntry("date", "2027-01-01").containsEntry("country", "LU");
+        verify(cal).covers("LU", "holiday", LocalDate.of(2026, 12, 31));
+        verify(cal).covers("LU", "holiday", LocalDate.of(2027, 1, 1));
+        verify(cal).between(LocalDate.of(2026, 12, 31), LocalDate.of(2027, 1, 1), new CalendarPlace("LU", null, null));
+    }
+
+    @Test
+    void holidayOnBothDaysTakesTheNextDayAtStrength3() {
+        coversAll("LU");
+        coversAll("DE");
+        neighbourHits("LU", neighbourHoliday("2026-12-25", "Christmas Day", "", LU_URL),
+                neighbourHoliday("2026-12-26", "Boxing Day", "", LU_URL));
+
+        Finding f = metz("2026-12-25");
+
+        assertThat(f.strength()).isEqualTo(3);
+        assertThat(f.facts()).containsEntry("date", "2026-12-26").containsEntry("name", "Boxing Day")
+                .containsEntry("count", 1);
+    }
+
+    @Test
+    void mulhouseReadsGermanAndSwissRegionsAndNamesTheCountry() {
+        coversAll("DE");
+        coversAll("CH");
+        String chUrl = "https://openholidaysapi.org/PublicHolidays?countryIsoCode=CH&languageIsoCode=EN"
+                + "&validFrom=2026-01-01&validTo=2026-12-31";
+        neighbourHits("DE", neighbourHoliday("2026-04-30", "German day", "DE-BW", DE_URL));
+        neighbourHits("CH", neighbourHoliday("2026-05-01", "Labour Day", "CH-BS", chUrl));
+        DateCheckInput mulhouse = in().city("Mulhouse", "FR", "68100").build();
+        LocalDate d = LocalDate.of(2026, 4, 30);
+
+        Finding f = eval("4.5", mulhouse, "2026-04-30");
+
+        assertThat(f.strength()).isEqualTo(3);
+        assertThat(f.url()).isEqualTo(chUrl);
+        assertThat(f.facts()).containsEntry("date", "2026-05-01").containsEntry("country", "CH");
+        verify(cal).between(d, d.plusDays(1), new CalendarPlace("DE", "DE-BW", null));
+        verify(cal).between(d, d.plusDays(1), new CalendarPlace("CH", "CH-BS", null));
+        verify(cal).between(d, d.plusDays(1), new CalendarPlace("CH", "CH-BL", null));
+
+        // only the German day left: strength 2, country DE
+        neighbourHits("CH");
+        Finding de = eval("4.5", mulhouse, "2026-04-30");
+        assertThat(de.strength()).isEqualTo(2);
+        assertThat(de.facts()).containsEntry("date", "2026-04-30").containsEntry("country", "DE");
+    }
+
+    @Test
+    void neighbourWithoutHolidayIsClear() {
+        coversAll("LU");
+        coversAll("DE");
+        // other kinds the neighbour's place returns (DST, Hijri) are not days off
+        neighbourHits("DE", new CalendarHit(LocalDate.parse("2026-10-24"), null, "dst", "dst_back", "", "u", false,
+                CalendarHit.SYNCED));
+
+        assertThat(metz("2026-10-24").status()).isEqualTo(Status.CLEAR);
+    }
+
+    @Test
+    void neighbourUncoveredIsNoData() {
+        coversAll("LU");
+        when(cal.covers(eq("DE"), anyString(), any())).thenReturn(false);
+
+        assertNoData(metz("2026-10-31"));
+
+        // d+1 in a year the neighbour has no rows for
+        when(cal.covers(eq("DE"), anyString(), any())).thenAnswer(a -> a.<LocalDate>getArgument(2).getYear() == 2026);
+        assertNoData(metz("2026-12-31"));
+        assertThat(metz("2026-12-30").status()).isEqualTo(Status.CLEAR);
+    }
+
+    @Test
+    void cityWithoutNeighboursIsNoSource() {
+        Finding f = eval("4.5", in().build(), "2026-10-31");
+
+        assertThat(f.status()).isEqualTo(Status.NOT_CHECKED);
+        assertThat(f.facts()).containsEntry("reason", "no_source");
+        verifyNoInteractions(cal);
+    }
+
+    // --- endDate ---
+
+    @Test
+    void schoolFindingCarriesEndDate() {
+        coversAll("FR");
+        hits(hit("school", "2026-10-17", "2026-11-01", "Vacances de la Toussaint", "FR-ZC"));
+
+        assertThat(paris("7.1", "2026-10-24").facts()).containsEntry("date", "2026-10-17")
+                .containsEntry("endDate", "2026-11-01");
+    }
+
+    @Test
+    void ramadanFindingCarriesEndDate() {
+        coversAll("FR");
+        hits(hit("hijri", "2027-02-08", "2027-03-09", "ramadan", ""));
+
+        assertThat(paris("5.2", "2027-02-20").facts()).containsEntry("endDate", "2027-03-09");
+    }
+
+    @Test
+    void singleDayHolidayHasNoEndDate() {
+        coversAll("FR");
+        hits(holiday("2026-11-11", "Armistice", ""));
+
+        assertThat(paris("4.1", "2026-11-11").facts()).containsEntry("date", "2026-11-11").doesNotContainKey("endDate");
     }
 
     @Test

@@ -40,6 +40,11 @@ public class CalendarConfig {
     }
 
     @Bean
+    public OpenHolidaysSync openHolidaysSync(CalendarSyncProperties props) {
+        return new OpenHolidaysSync(http, props);
+    }
+
+    @Bean
     public ComputedCalendar computedCalendar(CalendarSyncProperties props) {
         return new ComputedCalendar(props);
     }
