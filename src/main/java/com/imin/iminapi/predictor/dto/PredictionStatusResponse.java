@@ -12,6 +12,9 @@ import java.time.Instant;
  * <p>{@code dismissedCount} (task 86cav47a5): how many of the render's recommendations are
  * currently suppressed by dismissal memory — feeds the FE's "N dismissed — remembered" row.
  * {@code result.recommendations} already has those removed. Absent unless a result is present.
+ *
+ * <p>{@code dateCheck}: present when the date-check gate is open for the org and a check is linked to the event,
+ * on every status. {@code stale} means the event's night is not a date that check scored.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record PredictionStatusResponse(
@@ -19,11 +22,18 @@ public record PredictionStatusResponse(
         PredictionResult result,
         String inputHash,
         Instant generatedAt,
-        Integer dismissedCount) {
+        Integer dismissedCount,
+        EventDateCheckDto dateCheck) {
 
     /** Backward-compatible 4-arg factory for states with no served result (none/pending/failed-read). */
     public PredictionStatusResponse(String status, PredictionResult result, String inputHash, Instant generatedAt) {
-        this(status, result, inputHash, generatedAt, null);
+        this(status, result, inputHash, generatedAt, null, null);
+    }
+
+    /** Backward-compatible 5-arg factory without a date check. */
+    public PredictionStatusResponse(String status, PredictionResult result, String inputHash, Instant generatedAt,
+                                    Integer dismissedCount) {
+        this(status, result, inputHash, generatedAt, dismissedCount, null);
     }
 
     public static final String STATUS_NONE = "none";

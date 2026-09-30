@@ -14,10 +14,15 @@ public class DateCheckAccess {
         this.props = props;
     }
 
+    /** True when the feature is on and the org is let through (all orgs, or listed in the beta). */
+    public boolean isEnabled(UUID orgId) {
+        return Boolean.TRUE.equals(props.getEnabled()) && orgId != null
+                && (Boolean.TRUE.equals(props.getAllOrgs()) || props.getBetaOrgIds().contains(orgId));
+    }
+
     /** Call first, before any org or event lookup, so a closed gate and a missing resource return the same 404. */
     public void requireEnabled(UUID orgId) {
-        if (!Boolean.TRUE.equals(props.getEnabled()) || orgId == null
-                || !(Boolean.TRUE.equals(props.getAllOrgs()) || props.getBetaOrgIds().contains(orgId))) {
+        if (!isEnabled(orgId)) {
             throw ApiException.notFound("Date check");
         }
     }

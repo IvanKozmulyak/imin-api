@@ -7,6 +7,8 @@ import com.imin.iminapi.repository.*;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.predictor.model.DateCheck;
+import com.imin.iminapi.predictor.service.DateCheckService;
 import com.imin.iminapi.predictor.service.EventOutcomeService;
 import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.service.poster.PosterImageStorage;
@@ -69,6 +71,12 @@ public class EventService {
     /** Live sold/capacity/revenue for the DTO; null only in legacy test constructors, which read zeros. */
     private final EventSalesTotals salesTotals;
 
+    /**
+     * Date-check link and sub-genre vocabulary. Nullable in legacy test constructors; when absent, a
+     * {@code dateCheckId} is a 404 and any non-blank {@code subGenre} is rejected as unknown.
+     */
+    private final DateCheckService dateChecks;
+
     /** Legacy 8-arg constructor used by existing unit tests that don't wire audit. */
     public EventService(EventRepository events, TicketTierRepository tiers,
                         PromoCodeRepository promos, PredictionRepository predictions,
@@ -127,6 +135,21 @@ public class EventService {
                 auditLogger, outcomeService, concepts, eventPublisher, null);
     }
 
+    /** 13-arg constructor used by tests that don't wire the date-check service. */
+    public EventService(EventRepository events, TicketTierRepository tiers,
+                        PromoCodeRepository promos, PredictionRepository predictions,
+                        EventValidator validator, IfMatchSupport ifMatch,
+                        TicketTierService tierService,
+                        StripeConnectService stripeConnect,
+                        AuditLogger auditLogger,
+                        EventOutcomeService outcomeService,
+                        ConceptRepository concepts,
+                        org.springframework.context.ApplicationEventPublisher eventPublisher,
+                        EventSalesTotals salesTotals) {
+        this(events, tiers, promos, predictions, validator, ifMatch, tierService, stripeConnect,
+                auditLogger, outcomeService, concepts, eventPublisher, salesTotals, null);
+    }
+
     /** Primary constructor — Spring picks this one in the running app. */
     @org.springframework.beans.factory.annotation.Autowired
     public EventService(EventRepository events, TicketTierRepository tiers,
@@ -138,7 +161,8 @@ public class EventService {
                         EventOutcomeService outcomeService,
                         ConceptRepository concepts,
                         org.springframework.context.ApplicationEventPublisher eventPublisher,
-                        EventSalesTotals salesTotals) {
+                        EventSalesTotals salesTotals,
+                        DateCheckService dateChecks) {
         this.events = events;
         this.tiers = tiers;
         this.promos = promos;
@@ -152,6 +176,7 @@ public class EventService {
         this.concepts = concepts;
         this.eventPublisher = eventPublisher;
         this.salesTotals = salesTotals;
+        this.dateChecks = dateChecks;
     }
 
     private void audit(AuthPrincipal p, String action, String targetType, UUID targetId, String summary) {
@@ -163,6 +188,10 @@ public class EventService {
         return (n == null || n.isBlank()) ? "Untitled" : n;
     }
 
+    /**
+     * Creates a draft. A {@code dateCheckId} links both ways: the event stores the check, and the check stores
+     * the event unless an earlier event already claimed it. PATCH never reads {@code dateCheckId}.
+     */
     @Transactional
     @CacheEvict(value = "dashboard", allEntries = true)
     public EventDto createDraft(AuthPrincipal p, EventPatchRequest body) {
@@ -172,6 +201,8 @@ public class EventService {
         e.setSlug(generateSlug());
         applyPatch(e, body);
         stampConceptProvenance(p, e, body);
+        DateCheck origin = linkedDateCheck(p, body);
+        if (origin != null) e.setDateCheckId(origin.getId());
         try {
             Event saved = events.save(e);
             // Flush inside the try. Event ids come from an in-VM generator
@@ -180,6 +211,7 @@ public class EventService {
             // reached GlobalExceptionHandler as a generic DUPLICATE with no `fields` map and
             // the wizard could not attach the error to the slug input (events-9).
             events.flush();
+            if (origin != null) dateChecks.stampEvent(origin, saved.getId());
             audit(p, AuditActions.EVENT_CREATED, "event", saved.getId(),
                     "Created event \"" + eventLabel(saved) + "\"");
             // A draft created WITH an address geocodes straight away (V80). Empty
@@ -414,6 +446,7 @@ public class EventService {
         // frontends print this verbatim and the organizer wizard matches it against a closed
         // Title-Case option list.
         if (b.genre() != null) { e.setGenre(EventNormalization.genre(b.genre())); changed = true; }
+        if (b.subGenre() != null) { e.setSubGenre(subGenreOr400(b.subGenre())); changed = true; }
         if (b.type() != null) { e.setType(b.type()); changed = true; }
         if (b.startsAt() != null) { e.setStartsAt(b.startsAt()); changed = true; }
         if (b.endsAt() != null) { e.setEndsAt(b.endsAt()); changed = true; }
@@ -544,6 +577,24 @@ public class EventService {
             throw ApiException.notFound("Concept");
         }
         e.setConceptAiGenerated(true);
+    }
+
+    /** The date check a new draft is made from, or null when none was sent; 404 when not linkable. */
+    private DateCheck linkedDateCheck(AuthPrincipal p, EventPatchRequest b) {
+        if (b == null || b.dateCheckId() == null) return null;
+        if (dateChecks == null) throw ApiException.notFound("Date check");
+        return dateChecks.requireLinkable(p, b.dateCheckId());
+    }
+
+    /** Null for blank; otherwise the date-check bank's spelling of the trimmed value, or 400 when unknown. */
+    private String subGenreOr400(String raw) {
+        String v = raw.trim();
+        if (v.isEmpty()) return null;
+        if (dateChecks == null) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID, "Unknown sub-genre",
+                    Map.of("subGenre", "unknown"));
+        }
+        return dateChecks.requireKnownSubGenre(v);
     }
 
     /**

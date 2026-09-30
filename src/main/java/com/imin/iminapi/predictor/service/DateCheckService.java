@@ -2,6 +2,7 @@ package com.imin.iminapi.predictor.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.predictor.config.DateCheckAccess;
 import com.imin.iminapi.predictor.config.DateCheckProperties;
@@ -15,6 +16,7 @@ import com.imin.iminapi.predictor.dto.DateCheckDateDto.NotChecked;
 import com.imin.iminapi.predictor.dto.DateCheckRequest;
 import com.imin.iminapi.predictor.dto.DateCheckResponse;
 import com.imin.iminapi.predictor.dto.DateCheckSummaryDto;
+import com.imin.iminapi.predictor.dto.EventDateCheckDto;
 import com.imin.iminapi.predictor.dto.FindingDto;
 import com.imin.iminapi.predictor.model.DateCheck;
 import com.imin.iminapi.predictor.model.DateCheckDate;
@@ -42,9 +44,12 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.security.RateLimiter;
+import com.imin.iminapi.util.CountryTimeZones;
 import com.imin.iminapi.util.Times;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -52,6 +57,8 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -63,14 +70,19 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * "Check a date": runs the rule engine on each candidate date, scores, ranks and stores the result, and
  * writes the DATE_CHECK ledger row in the same transaction before answering. Synchronous; no LLM, no quota.
+ *
+ * <p>Event link: an event created from a check stores it in {@code events.date_check_id}, and a check made with
+ * {@code eventId} stores the event. The newer of the two is the event's current check on its prediction.
  */
 @Service
 public class DateCheckService {
@@ -220,6 +232,62 @@ public class DateCheckService {
         checks.saveAndFlush(c);
         run(c, in, candidates);
         return toResponse(c);
+    }
+
+    // --- event link ---
+
+    /** A check the caller's org may link a new event to; a closed gate, unknown or foreign id is the same 404. */
+    @Transactional
+    public DateCheck requireLinkable(AuthPrincipal p, UUID id) {
+        access.requireEnabled(p.orgId());
+        return owned(checks.findLockedById(id), p);
+    }
+
+    /** Records the event on the check unless it already names one; the first event made from a check keeps it. */
+    public void stampEvent(DateCheck c, UUID eventId) {
+        if (c.getEventId() != null) return;
+        c.setEventId(eventId);
+        checks.save(c);
+    }
+
+    /** The bank's spelling of a sub-genre, matched case-insensitively; 400 when no genre profile lists it. */
+    public String requireKnownSubGenre(String subGenre) {
+        return bank.profiles().values().stream()
+                .filter(gp -> gp != null && gp.subGenres() != null)
+                .flatMap(gp -> gp.subGenres().stream())
+                .filter(sg -> sg.equalsIgnoreCase(subGenre))
+                .findFirst()
+                .orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID,
+                        "Unknown sub-genre", Map.of("subGenre", "unknown")));
+    }
+
+    /**
+     * The event's current check, the newer of the one it was created from and the newest made for it, scored in
+     * the check's own zone. Empty while the gate is closed for the org, with no linked check, or no dates.
+     */
+    @Transactional(readOnly = true)
+    public Optional<EventDateCheckDto> currentForEvent(Event e) {
+        if (!access.isEnabled(e.getOrgId()) || e.getId() == null) return Optional.empty();
+        Optional<DateCheck> forEvent = checks.findFirstByOrgIdAndEventIdOrderByCreatedAtDescIdDesc(e.getOrgId(), e.getId());
+        Optional<DateCheck> origin = e.getDateCheckId() == null ? Optional.empty()
+                : checks.findById(e.getDateCheckId()).filter(c -> e.getOrgId().equals(c.getOrgId()));
+        Optional<DateCheck> current = Stream.of(forEvent, origin).flatMap(Optional::stream)
+                .max(Comparator.comparing(DateCheck::getCreatedAt));
+        if (current.isEmpty()) return Optional.empty();
+        DateCheck c = current.get();
+
+        List<DateCheckDate> rows = dates.findByDateCheckIdOrderByCandidateDateAsc(c.getId());
+        DateCheckStaleness.Match m = DateCheckStaleness.match(rows, e.getStartsAt(), zoneOf(c));
+        if (m == null) return Optional.empty();
+        List<DateCheckFinding> rowFindings = findings.findByDateCheckDateIdIn(List.of(m.row().getId()));
+        DateCheckDateDto result = dateDto(m.row(), rowFindings, new BankView(bank));
+        return Optional.of(new EventDateCheckDto(c.getId(), result, c.getUpdatedAt(), m.row().getCandidateDate(),
+                m.stale()));
+    }
+
+    /** The zone the check was scored in, as {@link DateCheckInput#zone()} resolves it. */
+    private static ZoneId zoneOf(DateCheck c) {
+        return CountryTimeZones.zoneFor(c.getCountry()).<ZoneId>map(ZoneId::of).orElse(ZoneOffset.UTC);
     }
 
     public DateCheckConfigResponse config(AuthPrincipal p) {

@@ -37,7 +37,11 @@ public record EventPatchRequest(
         // Concept this draft was promoted from. When present and owned by the caller's
         // org, the server stamps events.concept_ai_generated = true. Absent ≠ manual —
         // absence leaves provenance NULL (unknown); see V71__event_ai_provenance.sql.
-        UUID sourceConceptId
+        UUID sourceConceptId,
+        // Finer genre inside `genre`: blank clears it; otherwise matched case-insensitively and stored as the bank spells it.
+        @Size(max = 64, message = "must be at most 64 characters") String subGenre,
+        // Honoured on CREATE only: the date check this draft is made from. Unknown, foreign or gated ids are 404.
+        UUID dateCheckId
 ) {
     /** Back-compat 17-arg constructor (pre-V71 shape) — provenance signal absent (NULL, unknown). */
     public EventPatchRequest(String name, String slug, String visibility, String genre, String type,
@@ -47,5 +51,16 @@ public record EventPatchRequest(
                              List<TicketTierEmbeddedPatch> tiers, List<PromoCodeEmbeddedPatch> promoCodes) {
         this(name, slug, visibility, genre, type, startsAt, endsAt, timezone, venue, description,
                 posterUrl, videoUrl, currency, onSaleAt, saleClosesAt, tiers, promoCodes, null);
+    }
+
+    /** Back-compat 18-arg constructor (pre-date-check shape): no sub-genre, no date check. */
+    public EventPatchRequest(String name, String slug, String visibility, String genre, String type,
+                             Instant startsAt, Instant endsAt, String timezone, VenueDto venue,
+                             String description, String posterUrl, String videoUrl, String currency,
+                             Instant onSaleAt, Instant saleClosesAt,
+                             List<TicketTierEmbeddedPatch> tiers, List<PromoCodeEmbeddedPatch> promoCodes,
+                             UUID sourceConceptId) {
+        this(name, slug, visibility, genre, type, startsAt, endsAt, timezone, venue, description,
+                posterUrl, videoUrl, currency, onSaleAt, saleClosesAt, tiers, promoCodes, sourceConceptId, null, null);
     }
 }

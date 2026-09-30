@@ -25,7 +25,8 @@ import java.util.UUID;
  *   <li>POST /api/v1/events/{eventId}/prediction → 202 {predictionId,status:"pending"} or
  *       200 {status:"ready",cached:true,result} on an input-hash hit. Org-scoped; manual
  *       refresh throttled (predictor-rescore) and quota-capped (kind=score, real runs only).</li>
- *   <li>GET  /api/v1/events/{eventId}/prediction → {status,result?,inputHash,generatedAt}.</li>
+ *   <li>GET  /api/v1/events/{eventId}/prediction → {status,result?,inputHash,generatedAt,dateCheck?};
+ *       {@code dateCheck} is the event's current date check, present only while that gate is open.</li>
  *   <li>POST /api/v1/events/{eventId}/prediction/feedback {recommendationId,type} → 204.</li>
  * </ul>
  * Advisory is a hard property (spec §1): nothing here blocks publish or executes a change.

@@ -11,6 +11,9 @@ import com.imin.iminapi.predictor.model.PredictionLedger;
 import com.imin.iminapi.predictor.model.PredictionSurface;
 import com.imin.iminapi.predictor.model.ReforecastTrigger;
 import com.imin.iminapi.predictor.repository.PredictionLedgerRepository;
+import com.imin.iminapi.predictor.dto.EventDateCheckDto;
+import com.imin.iminapi.predictor.dto.PredictionStatusResponse;
+import com.imin.iminapi.predictor.service.DateCheckService;
 import com.imin.iminapi.predictor.service.PredictionInputSnapshot;
 import com.imin.iminapi.predictor.service.PredictionLedgerService;
 import com.imin.iminapi.predictor.service.PredictionRequestService;
@@ -26,6 +29,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -67,9 +71,11 @@ class PredictionRequestServiceTest {
     private final AiQuotaService quota = mock(AiQuotaService.class);
     private final RateLimiter limiter = mock(RateLimiter.class);
 
+    private final DateCheckService dateChecks = mock(DateCheckService.class);
+
     private final PredictionRequestService sut = new PredictionRequestService(
             events, ledgerRepo, ledgerService, pipeline, recommendations, reforecastTrigger,
-            quota, limiter, Runnable::run);
+            quota, limiter, Runnable::run, dateChecks);
 
     private final UUID eventId = UUID.randomUUID();
     private final UUID orgId = UUID.randomUUID();
@@ -171,6 +177,84 @@ class PredictionRequestServiceTest {
         verify(limiter).consume(eq("predictor-rescore"), anyString());
         verify(quota, never()).checkAndRecordScore(any()); // benchmark-only is free
         verify(pipeline).score(eq(event), any(), any());
+    }
+
+    // ---- status: the event's current date check rides on every return site ----
+
+    private EventDateCheckDto stubDateCheck() {
+        EventDateCheckDto dto = new EventDateCheckDto(UUID.randomUUID(), null,
+                Instant.parse("2026-10-01T10:00:00Z"), LocalDate.parse("2026-10-24"), true);
+        when(dateChecks.currentForEvent(event)).thenReturn(Optional.of(dto));
+        return dto;
+    }
+
+    private void stubLatestRow(String outputJson) {
+        PredictionLedger row = new PredictionLedger();
+        row.setId(UUID.randomUUID());
+        row.setEventId(eventId);
+        row.setSurface(PredictionSurface.PRE_PUBLISH);
+        row.setInputSnapshotHash("h");
+        row.setOutputJson(outputJson);
+        when(ledgerRepo.findByEventIdOrderByCreatedAtDesc(eventId)).thenReturn(List.of(row));
+    }
+
+    @Test
+    void pendingCarriesDateCheck() {
+        EventDateCheckDto dto = stubDateCheck();
+        PredictionRequestService held = new PredictionRequestService(
+                events, ledgerRepo, ledgerService, pipeline, recommendations, reforecastTrigger,
+                quota, limiter, r -> { }, dateChecks);
+        held.trigger(principal, eventId);
+
+        PredictionStatusResponse r = held.status(principal, eventId);
+
+        assertThat(r.status()).isEqualTo(PredictionStatusResponse.STATUS_PENDING);
+        assertThat(r.dateCheck()).isSameAs(dto);
+    }
+
+    @Test
+    void readyCarriesDateCheck() throws Exception {
+        EventDateCheckDto dto = stubDateCheck();
+        stubLatestRow(PredictorJson.MAPPER.writeValueAsString(new PredictionResult("pre_publish", 0, "C", null,
+                null, null, List.of(), List.of(), null, false, "m", "1.1.0", Instant.now())));
+
+        PredictionStatusResponse r = sut.status(principal, eventId);
+
+        assertThat(r.status()).isEqualTo(PredictionStatusResponse.STATUS_READY);
+        assertThat(r.dateCheck()).isSameAs(dto);
+    }
+
+    @Test
+    void benchmarkOnlyCarriesDateCheck() throws Exception {
+        EventDateCheckDto dto = stubDateCheck();
+        stubLatestRow(PredictorJson.MAPPER.writeValueAsString(benchmark()));
+
+        PredictionStatusResponse r = sut.status(principal, eventId);
+
+        assertThat(r.status()).isEqualTo(PredictionStatusResponse.STATUS_FAILED_BENCHMARK_ONLY);
+        assertThat(r.dateCheck()).isSameAs(dto);
+    }
+
+    @Test
+    void unparseableCarriesDateCheck() {
+        EventDateCheckDto dto = stubDateCheck();
+        stubLatestRow("not json");
+
+        PredictionStatusResponse r = sut.status(principal, eventId);
+
+        assertThat(r.status()).isEqualTo(PredictionStatusResponse.STATUS_NONE);
+        assertThat(r.inputHash()).isEqualTo("h");
+        assertThat(r.dateCheck()).isSameAs(dto);
+    }
+
+    @Test
+    void noneCarriesDateCheck() {
+        EventDateCheckDto dto = stubDateCheck();
+
+        PredictionStatusResponse r = sut.status(principal, eventId);
+
+        assertThat(r.status()).isEqualTo(PredictionStatusResponse.STATUS_NONE);
+        assertThat(r.dateCheck()).isSameAs(dto);
     }
 
     // ---- feedback: dismissal fingerprint + executed→reforecast loop (86cav47a5/86cav479w) ----

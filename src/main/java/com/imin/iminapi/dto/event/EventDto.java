@@ -10,7 +10,7 @@ import java.util.UUID;
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record EventDto(
         UUID id, UUID orgId, String name, String slug,
-        String visibility, String status, String genre, String type,
+        String visibility, String status, String genre, String subGenre, String type,
         Instant startsAt, Instant endsAt, String timezone, VenueDto venue,
         String description, String posterUrl, String videoUrl, String djPhotoUrl,
         int sold, Integer capacity, long revenueMinor, String currency,
@@ -25,7 +25,7 @@ public record EventDto(
      */
     public static EventDto summary(Event e, EventSalesFigures f) {
         return new EventDto(e.getId(), e.getOrgId(), e.getName(), e.getSlug(),
-                e.getVisibility().wireValue(), e.getStatus().wireValue(), e.getGenre(), e.getType(),
+                e.getVisibility().wireValue(), e.getStatus().wireValue(), e.getGenre(), e.getSubGenre(), e.getType(),
                 e.getStartsAt(), e.getEndsAt(), e.getTimezone(), venue(e),
                 e.getDescription(), e.getPosterUrl(), e.getVideoUrl(), e.getDjPhotoUrl(),
                 f.sold(), f.capacity(), f.revenueMinor(), e.getCurrency(),
@@ -40,7 +40,7 @@ public record EventDto(
                                   List<PromoCodeDto> promos, PredictionDto prediction) {
         EventDto base = summary(e, f);
         return new EventDto(base.id, base.orgId, base.name, base.slug,
-                base.visibility, base.status, base.genre, base.type,
+                base.visibility, base.status, base.genre, base.subGenre, base.type,
                 base.startsAt, base.endsAt, base.timezone, base.venue,
                 base.description, base.posterUrl, base.videoUrl, base.djPhotoUrl,
                 base.sold, base.capacity, base.revenueMinor, base.currency,

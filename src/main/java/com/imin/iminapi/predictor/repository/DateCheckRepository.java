@@ -17,6 +17,9 @@ public interface DateCheckRepository extends JpaRepository<DateCheck, UUID> {
 
     List<DateCheck> findByOrgIdOrderByCreatedAtDesc(UUID orgId, Pageable pageable);
 
+    /** The newest check made for an event ({@code date_check.event_id}). */
+    Optional<DateCheck> findFirstByOrgIdAndEventIdOrderByCreatedAtDescIdDesc(UUID orgId, UUID eventId);
+
     /**
      * Serialises re-scores of one check: its dates are replaced under a unique (check, date) key. Native
      * {@code FOR UPDATE}: PESSIMISTIC_WRITE renders {@code FOR NO KEY UPDATE}, which H2 cannot parse.

@@ -131,6 +131,27 @@ class DateCheckAccessTest {
     }
 
     @Test
+    void isEnabledFalseWhenClosed() {
+        DateCheckProperties props = new DateCheckProperties();
+        props.setBetaOrgIds(Set.of(A));
+        DateCheckAccess access = new DateCheckAccess(props);
+
+        assertThat(access.isEnabled(A)).isFalse();
+    }
+
+    @Test
+    void isEnabledTrueForBetaOrg() {
+        DateCheckProperties props = new DateCheckProperties();
+        props.setEnabled(true);
+        props.setBetaOrgIds(Set.of(A));
+        DateCheckAccess access = new DateCheckAccess(props);
+
+        assertThat(access.isEnabled(A)).isTrue();
+        assertThat(access.isEnabled(B)).isFalse();
+        assertThat(access.isEnabled(null)).isFalse();
+    }
+
+    @Test
     void malformedUuidFailsStartup() {
         runner.withPropertyValues("imin.predictor.date-check.enabled=true",
                         "imin.predictor.date-check.beta-org-ids=not-a-uuid")

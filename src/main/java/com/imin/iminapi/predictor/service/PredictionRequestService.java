@@ -1,6 +1,7 @@
 package com.imin.iminapi.predictor.service;
 
 import com.imin.iminapi.model.Event;
+import com.imin.iminapi.predictor.dto.EventDateCheckDto;
 import com.imin.iminapi.predictor.dto.PredictionFeedbackRequest;
 import com.imin.iminapi.predictor.dto.PredictionResult;
 import com.imin.iminapi.predictor.dto.PredictionStatusResponse;
@@ -67,12 +68,14 @@ public class PredictionRequestService {
     private final AiQuotaService quota;
     private final RateLimiter rateLimiter;
     private final Executor executor;
+    private final DateCheckService dateChecks;
 
     public PredictionRequestService(EventRepository events, PredictionLedgerRepository ledgerRepo,
                                     PredictionLedgerService ledgerService, PredictionScoringPipeline pipeline,
                                     RecommendationEngine recommendations, ReforecastTriggerService reforecastTrigger,
                                     AiQuotaService quota, RateLimiter rateLimiter,
-                                    @Qualifier("predictorScoreExecutor") Executor executor) {
+                                    @Qualifier("predictorScoreExecutor") Executor executor,
+                                    DateCheckService dateChecks) {
         this.events = events;
         this.ledgerRepo = ledgerRepo;
         this.ledgerService = ledgerService;
@@ -82,6 +85,7 @@ public class PredictionRequestService {
         this.quota = quota;
         this.rateLimiter = rateLimiter;
         this.executor = executor;
+        this.dateChecks = dateChecks;
     }
 
     // ---- POST /events/{id}/prediction ------------------------------------------
@@ -154,17 +158,20 @@ public class PredictionRequestService {
     // ---- GET /events/{id}/prediction -------------------------------------------
 
     public PredictionStatusResponse status(AuthPrincipal p, UUID eventId) {
-        loadOwned(p, eventId);
+        Event e = loadOwned(p, eventId);
+        // The event's current date check rides on every state; absent while the gate is closed.
+        EventDateCheckDto dateCheck = dateChecks.currentForEvent(e).orElse(null);
 
         Pending inFlight = pending.get(eventId);
         if (inFlight != null) {
             return new PredictionStatusResponse(
-                    PredictionStatusResponse.STATUS_PENDING, null, inFlight.inputHash(), null);
+                    PredictionStatusResponse.STATUS_PENDING, null, inFlight.inputHash(), null, null, dateCheck);
         }
 
         PredictionLedger latest = latestRow(eventId);
         if (latest == null) {
-            return new PredictionStatusResponse(PredictionStatusResponse.STATUS_NONE, null, null, null);
+            return new PredictionStatusResponse(PredictionStatusResponse.STATUS_NONE, null, null, null, null,
+                    dateCheck);
         }
         PredictionResult result = parseResult(latest);
         if (result == null) {
@@ -172,7 +179,7 @@ public class PredictionRequestService {
             // never render something we can't verify against the audit record.
             log.error("Unparseable ledger output_json for row {}", latest.getId());
             return new PredictionStatusResponse(PredictionStatusResponse.STATUS_NONE, null,
-                    latest.getInputSnapshotHash(), latest.getCreatedAt());
+                    latest.getInputSnapshotHash(), latest.getCreatedAt(), null, dateCheck);
         }
         String status = result.benchmarkOnly()
                 ? PredictionStatusResponse.STATUS_FAILED_BENCHMARK_ONLY
@@ -182,7 +189,7 @@ public class PredictionRequestService {
         RecommendationEngine.Filtered f = recommendations.applyDismissals(eventId, result.recommendations());
         PredictionResult served = result.withRecommendations(f.recommendations());
         return new PredictionStatusResponse(status, served, latest.getInputSnapshotHash(),
-                latest.getCreatedAt(), f.dismissedCount());
+                latest.getCreatedAt(), f.dismissedCount(), dateCheck);
     }
 
     // ---- POST /events/{id}/prediction/feedback -----------------------------------
