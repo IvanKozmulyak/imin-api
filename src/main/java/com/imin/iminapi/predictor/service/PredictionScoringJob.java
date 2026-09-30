@@ -197,6 +197,7 @@ public class PredictionScoringJob {
         Map<String, List<PredictionLedger>> bySegment = new HashMap<>();
         Map<UUID, Boolean> sellOutByEvent = new HashMap<>();
         for (PredictionLedger row : scored) {
+            if (row.getEventId() == null) continue; // date-check renders have no event outcome
             EventOutcome o = outcomes.findById(row.getEventId()).orElse(null);
             if (o == null) continue;
             String key = PredictorSegmentStatus.key(o.getGenreFamily(), o.getCapacityBand());

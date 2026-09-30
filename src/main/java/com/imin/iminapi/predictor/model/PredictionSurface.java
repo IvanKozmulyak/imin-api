@@ -10,7 +10,8 @@ public enum PredictionSurface {
     // §4.3 prescriptive actions. NOTHING WRITES THIS ROW TODAY: prescriptive actions ship inside
     // the PRE_PUBLISH result's `recommendations` list, so filtering the ledger's surface column
     // for ACTIONS returns an empty set — the constant is a reserved name, not a promise.
-    ACTIONS;
+    ACTIONS,
+    DATE_CHECK;    // check-a-date render; event_id may be null
 
     public String wire() { return name().toLowerCase(); }
 }

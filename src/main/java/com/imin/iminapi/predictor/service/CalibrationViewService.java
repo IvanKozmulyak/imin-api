@@ -51,7 +51,8 @@ public class CalibrationViewService {
     @Transactional(readOnly = true)
     public String render() {
         List<PredictionLedger> all = ledgerRepo.findAll();
-        List<PredictionLedger> joinedRows = all.stream().filter(r -> r.getOutcomeJoinedAt() != null).toList();
+        List<PredictionLedger> joinedRows = all.stream()
+                .filter(r -> r.getOutcomeJoinedAt() != null && r.getEventId() != null).toList();
 
         Map<UUID, EventOutcome> outcomes = new HashMap<>();
         for (PredictionLedger r : joinedRows) {

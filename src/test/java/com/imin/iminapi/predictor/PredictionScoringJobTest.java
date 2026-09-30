@@ -1,13 +1,17 @@
 package com.imin.iminapi.predictor;
 
+import com.imin.iminapi.predictor.model.CapacityBand;
 import com.imin.iminapi.predictor.model.EventOutcome;
 import com.imin.iminapi.predictor.model.PredictionLedger;
+import com.imin.iminapi.predictor.model.PredictionSurface;
+import com.imin.iminapi.predictor.model.PredictorSegmentStatus;
 import com.imin.iminapi.predictor.repository.EventOutcomeRepository;
 import com.imin.iminapi.predictor.repository.PredictionLedgerRepository;
 import com.imin.iminapi.predictor.repository.PredictorSegmentStatusRepository;
 import com.imin.iminapi.predictor.service.PredictionLedgerService;
 import com.imin.iminapi.predictor.service.PredictionScoringJob;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -17,6 +21,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
@@ -141,5 +146,34 @@ class PredictionScoringJobTest {
         verify(service, times(1)).joinOutcome(eq(rDone), eq(240), eq(198), eq(now), isNull(), isNull());
         verify(service, never()).joinOutcome(eq(rPending), any(), any(), any(), any(), any());
         verify(service, never()).joinOutcome(eq(rNoOutcome), any(), any(), any(), any(), any());
+    }
+    @Test
+    void aggregateSkipsJoinedRowWithoutEvent() {
+        PredictionLedgerRepository ledger = mock(PredictionLedgerRepository.class);
+        EventOutcomeRepository outcomes = mock(EventOutcomeRepository.class);
+        PredictorSegmentStatusRepository segments = mock(PredictorSegmentStatusRepository.class);
+
+        UUID eventId = UUID.randomUUID();
+        PredictionLedger dateCheckRender = render(UUID.randomUUID(), null);
+        dateCheckRender.setSurface(PredictionSurface.DATE_CHECK);
+        dateCheckRender.setOutcomeJoinedAt(now);
+        PredictionLedger eventRender = render(UUID.randomUUID(), eventId);
+        eventRender.setOutcomeJoinedAt(now);
+        when(ledger.findByOutcomeJoinedAtIsNotNull()).thenReturn(List.of(dateCheckRender, eventRender));
+        // Spring Data rejects a null id; the mock must too, or the guard is untested.
+        when(outcomes.findById(isNull())).thenThrow(new IllegalArgumentException("The given id must not be null"));
+        EventOutcome o = finalized(eventId, 240, 198);
+        o.setGenreFamily("electronic");
+        o.setCapacityBand(CapacityBand.values()[0]);
+        when(outcomes.findById(eventId)).thenReturn(Optional.of(o));
+        when(segments.findById(any())).thenReturn(Optional.empty());
+
+        new PredictionScoringJob(ledger, outcomes, mock(PredictionLedgerService.class), segments, clock).run();
+
+        verify(outcomes, never()).findById(isNull());
+        ArgumentCaptor<PredictorSegmentStatus> saved = ArgumentCaptor.forClass(PredictorSegmentStatus.class);
+        verify(segments, times(1)).save(saved.capture());
+        assertThat(saved.getValue().getSegmentKey())
+                .isEqualTo(PredictorSegmentStatus.key("electronic", CapacityBand.values()[0]));
     }
 }

@@ -189,6 +189,14 @@ public class Event {
     @Column(name = "survey_token", length = 32)
     private String surveyToken;
 
+    /** Optional finer genre inside {@code genre}, set by "Check a date" (V162). */
+    @Column(name = "sub_genre", length = 64)
+    private String subGenre;
+
+    /** The date check this event was created from, if any (V162). */
+    @Column(name = "date_check_id")
+    private UUID dateCheckId;
+
     @PrePersist
     void onPersist() {
         venueCityKey = com.imin.iminapi.util.EventNormalization.cityKey(venueCity);

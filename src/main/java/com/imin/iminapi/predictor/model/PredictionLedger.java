@@ -26,7 +26,8 @@ public class PredictionLedger {
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
 
-    @Column(name = "event_id", nullable = false)
+    /** Null only for a DATE_CHECK render made before any event exists. */
+    @Column(name = "event_id")
     private UUID eventId;
 
     @Column(name = "org_id", nullable = false)
@@ -76,6 +77,26 @@ public class PredictionLedger {
 
     @Column(name = "ape")
     private BigDecimal ape;
+
+    // ---- date-check columns (V162) ----
+    @Column(name = "date_check_id")
+    private UUID dateCheckId;
+
+    @Column(name = "question_bank_version", length = 32)
+    private String questionBankVersion;
+
+    @Column(name = "tokens_in")
+    private Integer tokensIn;
+
+    @Column(name = "tokens_out")
+    private Integer tokensOut;
+
+    /** LLM spend in USD as OpenRouter reports it. */
+    @Column(name = "cost_usd", precision = 12, scale = 6)
+    private BigDecimal costUsd;
+
+    @Column(name = "searches")
+    private Integer searches;
 
     @PrePersist
     @PreUpdate
