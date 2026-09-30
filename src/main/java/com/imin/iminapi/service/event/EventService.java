@@ -66,6 +66,9 @@ public class EventService {
      */
     private final org.springframework.context.ApplicationEventPublisher eventPublisher;
 
+    /** Live sold/capacity/revenue for the DTO; null only in legacy test constructors, which read zeros. */
+    private final EventSalesTotals salesTotals;
+
     /** Legacy 8-arg constructor used by existing unit tests that don't wire audit. */
     public EventService(EventRepository events, TicketTierRepository tiers,
                         PromoCodeRepository promos, PredictionRepository predictions,
@@ -110,6 +113,20 @@ public class EventService {
                 auditLogger, outcomeService, concepts, null);
     }
 
+    /** 12-arg constructor used by tests that don't wire live sales totals. */
+    public EventService(EventRepository events, TicketTierRepository tiers,
+                        PromoCodeRepository promos, PredictionRepository predictions,
+                        EventValidator validator, IfMatchSupport ifMatch,
+                        TicketTierService tierService,
+                        StripeConnectService stripeConnect,
+                        AuditLogger auditLogger,
+                        EventOutcomeService outcomeService,
+                        ConceptRepository concepts,
+                        org.springframework.context.ApplicationEventPublisher eventPublisher) {
+        this(events, tiers, promos, predictions, validator, ifMatch, tierService, stripeConnect,
+                auditLogger, outcomeService, concepts, eventPublisher, null);
+    }
+
     /** Primary constructor — Spring picks this one in the running app. */
     @org.springframework.beans.factory.annotation.Autowired
     public EventService(EventRepository events, TicketTierRepository tiers,
@@ -120,7 +137,8 @@ public class EventService {
                         AuditLogger auditLogger,
                         EventOutcomeService outcomeService,
                         ConceptRepository concepts,
-                        org.springframework.context.ApplicationEventPublisher eventPublisher) {
+                        org.springframework.context.ApplicationEventPublisher eventPublisher,
+                        EventSalesTotals salesTotals) {
         this.events = events;
         this.tiers = tiers;
         this.promos = promos;
@@ -133,6 +151,7 @@ public class EventService {
         this.outcomeService = outcomeService;
         this.concepts = concepts;
         this.eventPublisher = eventPublisher;
+        this.salesTotals = salesTotals;
     }
 
     private void audit(AuthPrincipal p, String action, String targetType, UUID targetId, String summary) {
@@ -168,7 +187,7 @@ public class EventService {
             if (!EMPTY_VENUE_ADDRESS_KEY.equals(venueAddressKey(saved))) {
                 publishVenueAddressChanged(saved.getId());
             }
-            return EventDto.summary(saved);
+            return EventDto.summary(saved, EventSalesFigures.EMPTY);
         } catch (DataIntegrityViolationException ex) {
             throw ApiException.duplicate("slug", "Event slug already taken in this organization");
         }
@@ -178,7 +197,10 @@ public class EventService {
     public PageResponse<EventDto> list(AuthPrincipal p, EventStatus status, int page, int pageSize) {
         var pg = PageRequest.of(Math.max(0, page - 1), Math.min(100, Math.max(1, pageSize)));
         var result = events.findVisibleByOrg(p.orgId(), status, pg);
-        return PageResponse.from(result, EventDto::summary);
+        Map<UUID, EventSalesFigures> figures = salesTotals == null ? Map.of()
+                : salesTotals.forEvents(result.getContent().stream().map(Event::getId).toList());
+        return PageResponse.from(result,
+                e -> EventDto.summary(e, figures.getOrDefault(e.getId(), EventSalesFigures.EMPTY)));
     }
 
     @Transactional(readOnly = true)
@@ -187,7 +209,8 @@ public class EventService {
         var tiersList = tiers.findByEventIdOrderBySortOrderAsc(id).stream().map(TicketTierDto::from).toList();
         var promosList = promos.findByEventId(id).stream().map(PromoCodeDto::from).toList();
         var prediction = predictions.findById(id).map(PredictionDto::from).orElse(null);
-        return EventDto.detail(e, tiersList, promosList, prediction);
+        var figures = salesTotals == null ? EventSalesFigures.EMPTY : salesTotals.forEvent(id);
+        return EventDto.detail(e, figures, tiersList, promosList, prediction);
     }
 
     @Transactional

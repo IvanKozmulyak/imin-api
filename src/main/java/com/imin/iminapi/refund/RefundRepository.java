@@ -7,6 +7,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -45,6 +46,16 @@ public interface RefundRepository extends JpaRepository<Refund, UUID> {
                and r.status = com.imin.iminapi.refund.RefundStatus.SUCCEEDED
             """)
     long sumSucceededRefundMinorByEventId(@Param("eventId") UUID eventId);
+
+    /** {@link #sumSucceededRefundMinorByEventId} for a page of events: [eventId, sum]. */
+    @Query("""
+            select o.eventId, coalesce(sum(r.amountMinor), 0) from Refund r
+              join com.imin.iminapi.model.Order o on o.id = r.orderId
+             where o.eventId in :eventIds
+               and r.status = com.imin.iminapi.refund.RefundStatus.SUCCEEDED
+             group by o.eventId
+            """)
+    List<Object[]> sumSucceededRefundMinorByEventIds(@Param("eventIds") Collection<UUID> eventIds);
 
     /**
      * Sum of platform application-fee refunds (the platform-cut portion that

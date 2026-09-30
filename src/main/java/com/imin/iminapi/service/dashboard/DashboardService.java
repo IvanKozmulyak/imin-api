@@ -4,6 +4,7 @@ import com.imin.iminapi.dispute.DisputeWithholding;
 import com.imin.iminapi.dto.dashboard.DashboardResponse;
 import com.imin.iminapi.dto.dashboard.DashboardResponse.*;
 import com.imin.iminapi.dto.event.EventDto;
+import com.imin.iminapi.dto.event.EventSalesFigures;
 import com.imin.iminapi.model.AuditLog;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.User;
@@ -82,7 +83,7 @@ public class DashboardService {
             long revenue = revenueNetOfRefundsAndDisputes(e.getId());
             int pct = totalQty == 0 ? 0 : (int) Math.round(100.0 * sold / totalQty);
             int daysOut = (int) Duration.between(now, e.getStartsAt()).toDays();
-            return new Now(summaryWithLiveMetrics(e, sold, revenue), pct, Math.max(0, daysOut), totalQty);
+            return new Now(summaryWithLiveMetrics(e, sold, totalQty, revenue), pct, Math.max(0, daysOut), totalQty);
         }).orElse(new Now(null, 0, 0, 0));
 
         long activeCount = events.countLive(p.orgId());
@@ -93,7 +94,7 @@ public class DashboardService {
             int sold = soldNetOfDisputes(e.getId());
             long revenue = revenueNetOfRefundsAndDisputes(e.getId());
             int avgTicket = sold == 0 ? 0 : (int) (revenue / sold);
-            return new LastEvent(summaryWithLiveMetrics(e, sold, revenue),
+            return new LastEvent(summaryWithLiveMetrics(e, sold, capacity, revenue),
                     new LastEventMetrics(sold, capacity, avgTicket, /* nps */ null));
         }).orElse(new LastEvent(null, new LastEventMetrics(0, 0, 0, null)));
 
@@ -166,21 +167,12 @@ public class DashboardService {
     }
 
     /**
-     * Event.sold/revenueMinor columns are never written to — sales live in
-     * TicketTier.sold and the orders table. Rebuild the summary with the
-     * live values so the dashboard's Now and LastEvent cards aren't stuck at 0.
+     * The Now and LastEvent summaries carry the live figures computed above;
+     * a tier-quantity sum of 0 is unknown capacity, so it goes out as null.
      */
-    private static EventDto summaryWithLiveMetrics(Event e, int sold, long revenueMinor) {
-        EventDto b = EventDto.summary(e);
-        return new EventDto(b.id(), b.orgId(), b.name(), b.slug(),
-                b.visibility(), b.status(), b.genre(), b.type(),
-                b.startsAt(), b.endsAt(), b.timezone(), b.venue(),
-                b.description(), b.posterUrl(), b.videoUrl(), b.djPhotoUrl(),
-                sold, revenueMinor, b.currency(),
-                b.onSaleAt(), b.saleClosesAt(),
-                b.createdBy(), b.createdAt(), b.updatedAt(),
-                b.publishedAt(), b.deletedAt(),
-                null, null, null);
+    private static EventDto summaryWithLiveMetrics(Event e, int sold, int capacity, long revenueMinor) {
+        return EventDto.summary(e,
+                new EventSalesFigures(sold, capacity > 0 ? capacity : null, revenueMinor));
     }
 
     /** Top-5 audit-log rows for the right-rail "Activity" tile. */

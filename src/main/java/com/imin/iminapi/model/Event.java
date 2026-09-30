@@ -119,9 +119,11 @@ public class Event {
     @Column(name = "dj_photo_url", columnDefinition = "TEXT")
     private String djPhotoUrl;
 
+    /** Legacy column, never written; read live totals via EventSalesTotals. */
     @Column(nullable = false)
     private int sold = 0;
 
+    /** Legacy column, never written; read live totals via EventSalesTotals. */
     @Column(name = "revenue_minor", nullable = false)
     private long revenueMinor = 0;
 

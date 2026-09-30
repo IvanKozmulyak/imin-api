@@ -121,6 +121,35 @@ class DashboardServiceTest {
         assertThat(r.lastEvent().metrics().capacity()).isEqualTo(200);
         assertThat(r.lastEvent().metrics().avgTicketMinor()).isEqualTo(2400);
         assertThat(r.business().eventsPublished()).isEqualTo(6);
+        assertThat(r.now().nextEvent().capacity()).isEqualTo(100);
+        assertThat(r.lastEvent().event().capacity()).isEqualTo(200);
+    }
+
+    /** A tier-quantity sum of 0 is unknown capacity: the embedded EventDto carries null, not 0. */
+    @Test
+    void event_capacity_is_null_when_the_events_have_no_tier_quantity() {
+        UUID orgId = UUID.randomUUID();
+        AuthPrincipal p = owner(orgId);
+        User u = new User(); u.setId(p.userId()); u.setFirstName("Jaune"); u.setEmail("j@x.com");
+        when(users.findById(p.userId())).thenReturn(Optional.of(u));
+
+        Event next = new Event();
+        next.setId(UUID.randomUUID()); next.setOrgId(orgId);
+        next.setName("No Tiers Yet"); next.setSlug("no-tiers-yet");
+        next.setStartsAt(Instant.now().plusSeconds(10L * 24 * 3600));
+        when(events.findUpcomingLive(eq(orgId), any(), any())).thenReturn(List.of(next));
+
+        Event past = new Event();
+        past.setId(UUID.randomUUID()); past.setOrgId(orgId);
+        past.setName("Tierless Past"); past.setSlug("tierless-past");
+        past.setStatus(EventStatus.PAST);
+        when(events.findRecentPast(eq(orgId), any())).thenReturn(List.of(past));
+        stubEmptyAuxiliary(orgId);
+
+        DashboardResponse r = sut.build(p, DashboardPeriod.D30, DashboardPeriod.D90);
+        assertThat(r.now().nextEvent().capacity()).isNull();
+        assertThat(r.lastEvent().event().capacity()).isNull();
+        assertThat(r.lastEvent().metrics().capacity()).isZero();
     }
 
     /**

@@ -102,6 +102,16 @@ public interface DisputeRepository extends JpaRepository<Dispute, UUID> {
     long sumMinorByEventIdAndStatusIn(@Param("eventId") UUID eventId,
                                       @Param("statuses") Collection<DisputeStatus> statuses);
 
+    /** {@link #sumMinorByEventIdAndStatusIn} for a page of events: [eventId, sum]. */
+    @Query("""
+            select d.eventId, coalesce(sum(d.amountMinor), 0) from Dispute d
+             where d.eventId in :eventIds
+               and d.status in :statuses
+             group by d.eventId
+            """)
+    List<Object[]> sumMinorByEventIdsAndStatusIn(@Param("eventIds") Collection<UUID> eventIds,
+                                                 @Param("statuses") Collection<DisputeStatus> statuses);
+
     /** Same sum, LIVE-mode rows only (V130) — the payout path's variant. */
     @Query("""
             select coalesce(sum(d.amountMinor), 0) from Dispute d
@@ -141,6 +151,11 @@ public interface DisputeRepository extends JpaRepository<Dispute, UUID> {
      */
     default long sumOpenOrLostMinorByEventId(UUID eventId) {
         return sumMinorByEventIdAndStatusIn(eventId, DisputeWithholding.STATUSES);
+    }
+
+    /** {@link #sumOpenOrLostMinorByEventId} for a page of events: [eventId, sum]. */
+    default List<Object[]> sumOpenOrLostMinorByEventIds(Collection<UUID> eventIds) {
+        return sumMinorByEventIdsAndStatusIn(eventIds, DisputeWithholding.STATUSES);
     }
 
     /**

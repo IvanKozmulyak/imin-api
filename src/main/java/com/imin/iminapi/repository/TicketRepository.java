@@ -84,6 +84,21 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
             @Param("eventId") UUID eventId,
             @Param("statuses") Collection<com.imin.iminapi.dispute.DisputeStatus> statuses);
 
+    /** {@link #countRevokedInDisputedOrders} for a page of events: [eventId, count]. */
+    @Query("""
+            select t.eventId, count(t) from Ticket t
+             where t.eventId in :eventIds
+               and t.state = 'revoked'
+               and t.orderId in (select d.orderId from com.imin.iminapi.dispute.Dispute d
+                                  where d.eventId = t.eventId
+                                    and d.orderId is not null
+                                    and d.status in :statuses)
+             group by t.eventId
+            """)
+    List<Object[]> countRevokedInDisputedOrdersByEventIds(
+            @Param("eventIds") Collection<UUID> eventIds,
+            @Param("statuses") Collection<com.imin.iminapi.dispute.DisputeStatus> statuses);
+
     /**
      * Every SOLD ticket for an event joined to its order, for the attendee CSV
      * export. Tuple shape: {@code [Ticket ticket, String buyerEmail, String orderToken, Instant purchasedAt]}.

@@ -3,7 +3,10 @@ package com.imin.iminapi.dispute;
 import com.imin.iminapi.repository.TicketRepository;
 import org.springframework.stereotype.Component;
 
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -51,5 +54,23 @@ public class DisputeWithholding {
      */
     public int disputedTicketCount(UUID eventId) {
         return (int) tickets.countRevokedInDisputedOrders(eventId, STATUSES);
+    }
+
+    /** {@link #disputedTicketCount} for a page of events; an event with none has no entry. */
+    public Map<UUID, Integer> disputedTicketCounts(Collection<UUID> eventIds) {
+        Map<UUID, Integer> out = new HashMap<>();
+        for (Object[] row : tickets.countRevokedInDisputedOrdersByEventIds(eventIds, STATUSES)) {
+            out.put((UUID) row[0], ((Number) row[1]).intValue());
+        }
+        return out;
+    }
+
+    /** {@link #withheldMinor} for a page of events; an event with none has no entry. */
+    public Map<UUID, Long> withheldMinorByEvent(Collection<UUID> eventIds) {
+        Map<UUID, Long> out = new HashMap<>();
+        for (Object[] row : disputes.sumOpenOrLostMinorByEventIds(eventIds)) {
+            out.put((UUID) row[0], ((Number) row[1]).longValue());
+        }
+        return out;
     }
 }

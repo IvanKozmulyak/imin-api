@@ -13,19 +13,22 @@ public record EventDto(
         String visibility, String status, String genre, String type,
         Instant startsAt, Instant endsAt, String timezone, VenueDto venue,
         String description, String posterUrl, String videoUrl, String djPhotoUrl,
-        int sold, long revenueMinor, String currency,
+        int sold, Integer capacity, long revenueMinor, String currency,
         Instant onSaleAt, Instant saleClosesAt,
         UUID createdBy, Instant createdAt, Instant updatedAt,
         Instant publishedAt, Instant deletedAt,
         List<TicketTierDto> tiers, List<PromoCodeDto> promoCodes, PredictionDto prediction) {
 
-    /** Summary form used by GET /events (no tiers/promos/prediction). */
-    public static EventDto summary(Event e) {
+    /**
+     * Summary form used by GET /events (no tiers/promos/prediction). Sales figures come from
+     * live totals; the event's own sold/revenue columns are never written.
+     */
+    public static EventDto summary(Event e, EventSalesFigures f) {
         return new EventDto(e.getId(), e.getOrgId(), e.getName(), e.getSlug(),
                 e.getVisibility().wireValue(), e.getStatus().wireValue(), e.getGenre(), e.getType(),
                 e.getStartsAt(), e.getEndsAt(), e.getTimezone(), venue(e),
                 e.getDescription(), e.getPosterUrl(), e.getVideoUrl(), e.getDjPhotoUrl(),
-                e.getSold(), e.getRevenueMinor(), e.getCurrency(),
+                f.sold(), f.capacity(), f.revenueMinor(), e.getCurrency(),
                 e.getOnSaleAt(), e.getSaleClosesAt(),
                 e.getCreatedBy(), e.getCreatedAt(), e.getUpdatedAt(),
                 e.getPublishedAt(), e.getDeletedAt(),
@@ -33,14 +36,14 @@ public record EventDto(
     }
 
     /** Detail form including tiers/promos/prediction (prediction may be null). */
-    public static EventDto detail(Event e, List<TicketTierDto> tiers,
+    public static EventDto detail(Event e, EventSalesFigures f, List<TicketTierDto> tiers,
                                   List<PromoCodeDto> promos, PredictionDto prediction) {
-        EventDto base = summary(e);
+        EventDto base = summary(e, f);
         return new EventDto(base.id, base.orgId, base.name, base.slug,
                 base.visibility, base.status, base.genre, base.type,
                 base.startsAt, base.endsAt, base.timezone, base.venue,
                 base.description, base.posterUrl, base.videoUrl, base.djPhotoUrl,
-                base.sold, base.revenueMinor, base.currency,
+                base.sold, base.capacity, base.revenueMinor, base.currency,
                 base.onSaleAt, base.saleClosesAt,
                 base.createdBy, base.createdAt, base.updatedAt,
                 base.publishedAt, base.deletedAt,

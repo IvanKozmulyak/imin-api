@@ -65,7 +65,7 @@ class EventControllerTest {
     }
 
     private EventDto sample() {
-        return EventDto.summary(eventEntity());
+        return EventDto.summary(eventEntity(), com.imin.iminapi.dto.event.EventSalesFigures.EMPTY);
     }
 
     private com.imin.iminapi.model.Event eventEntity() {
@@ -95,6 +95,40 @@ class EventControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.items[0].id").exists())
                 .andExpect(jsonPath("$.total").value(1));
+    }
+
+    @Test
+    @WithStubUser
+    void get_events_serialises_sold_capacity_and_revenue() throws Exception {
+        EventDto withCapacity = EventDto.summary(eventEntity(),
+                new com.imin.iminapi.dto.event.EventSalesFigures(12, 200, 4500L));
+        when(eventService.list(any(), eq(null), eq(1), eq(20)))
+                .thenReturn(new PageResponse<>(List.of(withCapacity), 1L, 1, 20));
+        mvc.perform(get("/api/v1/events"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items[0].sold").value(12))
+                .andExpect(jsonPath("$.items[0].capacity").value(200))
+                .andExpect(jsonPath("$.items[0].revenueMinor").value(4500));
+    }
+
+    @Test
+    @WithStubUser
+    void get_events_omits_capacity_when_unknown() throws Exception {
+        when(eventService.list(any(), eq(null), eq(1), eq(20)))
+                .thenReturn(new PageResponse<>(List.of(sample()), 1L, 1, 20));
+        mvc.perform(get("/api/v1/events"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items[0].sold").value(0))
+                .andExpect(jsonPath("$.items[0].capacity").doesNotExist());
+    }
+
+    @Test
+    void openapi_publishes_capacity_on_EventDto() throws Exception {
+        mvc.perform(get("/v3/api-docs"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.components.schemas.EventDto.properties.capacity.type").value("integer"))
+                .andExpect(jsonPath("$.components.schemas.EventDto.properties.sold").exists())
+                .andExpect(jsonPath("$.components.schemas.EventDto.properties.revenueMinor").exists());
     }
 
     @Test

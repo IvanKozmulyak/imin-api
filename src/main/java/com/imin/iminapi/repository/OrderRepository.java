@@ -61,6 +61,11 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
     @Query("select coalesce(sum(o.totalMinor), 0) from Order o where o.eventId = :eventId")
     long sumTotalMinorByEventId(@Param("eventId") UUID eventId);
 
+    /** {@link #sumTotalMinorByEventId} for a page of events: [eventId, sum]. */
+    @Query("select o.eventId, coalesce(sum(o.totalMinor), 0) from Order o "
+            + "where o.eventId in :eventIds group by o.eventId")
+    List<Object[]> sumTotalMinorByEventIds(@Param("eventIds") Collection<UUID> eventIds);
+
     /**
      * Sum of platform application fees ({@code application_fee_minor}) Stripe
      * deducted across all orders for an event. Snapshot — does not account for
