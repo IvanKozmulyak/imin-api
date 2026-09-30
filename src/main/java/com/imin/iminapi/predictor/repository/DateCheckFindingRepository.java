@@ -13,4 +13,6 @@ import java.util.UUID;
 public interface DateCheckFindingRepository extends JpaRepository<DateCheckFinding, UUID> {
 
     List<DateCheckFinding> findByDateCheckDateIdIn(Collection<UUID> dateCheckDateIds);
+
+    void deleteByDateCheckDateIdIn(Collection<UUID> dateCheckDateIds);
 }

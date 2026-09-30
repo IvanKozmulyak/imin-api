@@ -56,7 +56,7 @@ public final class Ranker {
                 .toList();
     }
 
-    static Bucket bucket(BigDecimal coverage) {
+    public static Bucket bucket(BigDecimal coverage) {
         if (coverage.compareTo(HIGH_MIN) >= 0) return Bucket.HIGH;
         if (coverage.compareTo(MID_MIN) >= 0) return Bucket.MID;
         return Bucket.NONE;

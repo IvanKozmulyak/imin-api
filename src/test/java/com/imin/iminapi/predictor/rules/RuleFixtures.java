@@ -39,6 +39,7 @@ final class RuleFixtures {
         List<KnownEvent> known;
         UUID orgId = UUID.fromString("00000000-0000-0000-0000-00000000000a");
         LocalDate today = TODAY;
+        UUID excludeEventId;
 
         In city(String city, String country, String postalCode) {
             this.city = city;
@@ -73,9 +74,14 @@ final class RuleFixtures {
             return this;
         }
 
+        In excludeEvent(UUID eventId) {
+            this.excludeEventId = eventId;
+            return this;
+        }
+
         DateCheckInput build() {
             return new DateCheckInput(city, country, postalCode, null, null, genre, subGenre, capacity, 2000L, "club",
-                    23, 5, lineup, known, orgId, today, null, null, null);
+                    23, 5, lineup, known, orgId, today, null, null, null, excludeEventId);
         }
     }
 }

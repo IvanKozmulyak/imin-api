@@ -17,7 +17,7 @@ class DateCheckInputTest {
     private static DateCheckInput input(String country, List<String> lineup, List<KnownEvent> known,
                                         List<String> communities) {
         return new DateCheckInput(" Metz ", country, null, null, null, null, null, null, null, null, null, null,
-                lineup, known, UUID.randomUUID(), LocalDate.of(2026, 9, 30), null, communities, null);
+                lineup, known, UUID.randomUUID(), LocalDate.of(2026, 9, 30), null, communities, null, null);
     }
 
     @Test

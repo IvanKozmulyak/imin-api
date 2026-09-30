@@ -32,6 +32,9 @@ public class DateCheck {
     @Column(nullable = false, length = 2)
     private String country;
 
+    @Column(name = "postal_code", length = 16)
+    private String postalCode;
+
     @Column(name = "genre_family", nullable = false, length = 64)
     private String genreFamily;
 

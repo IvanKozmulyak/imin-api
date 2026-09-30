@@ -117,7 +117,9 @@ public class InternalEvaluator implements QuestionEvaluator {
         if (cityKey.isEmpty()) return Finding.notChecked(q, "not_provided");
         List<Event> own = events.findOrgEventsInCityBetween(in.orgId(), cityKey,
                 NightDates.nightStart(d.minusDays(OWN_EVENT_WINDOW_DAYS), zone),
-                NightDates.nightStart(d.plusDays(OWN_EVENT_WINDOW_DAYS + 1), zone));
+                NightDates.nightStart(d.plusDays(OWN_EVENT_WINDOW_DAYS + 1), zone)).stream()
+                .filter(e -> !e.getId().equals(in.excludeEventId()))
+                .toList();
         if (own.isEmpty()) return Finding.clear(q);
         List<String> artists = in.lineup().stream().map(String::trim).filter(a -> a.length() >= MIN_ARTIST_CHARS).toList();
         Event pick = null;

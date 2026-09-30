@@ -14,12 +14,13 @@ import java.util.UUID;
 /**
  * What the organizer told us about a planned night, as the rule engine reads it.
  * {@code knownEvents} and {@code communities}: null = not provided, empty = the organizer said none.
+ * {@code excludeEventId}: the organizer's event this check is for, never matched as one of their own events.
  */
 public record DateCheckInput(String city, String country, String postalCode, Double venueLat, Double venueLng,
                              String genreFamily, String subGenre, Integer capacity, Long priceMinor, String format,
                              Integer startHour, Integer endHour, List<String> lineup, List<KnownEvent> knownEvents,
                              UUID orgId, LocalDate today, List<Integer> audienceAge, List<String> communities,
-                             Integer buyingLeadDays) {
+                             Integer buyingLeadDays, UUID excludeEventId) {
 
     /** An event the organizer knows about on or near the date; {@code strength} is 1 (maybe) or 2 (sure). */
     public record KnownEvent(String name, LocalDate date, String venue, int strength) {

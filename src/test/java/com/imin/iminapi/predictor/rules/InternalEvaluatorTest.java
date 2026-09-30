@@ -303,6 +303,19 @@ class InternalEvaluatorTest {
     }
 
     @Test
+    void checkedEventItselfIsNotAnOwnEventMatch() {
+        Event self = own("2026-11-14T22:00:00Z", EventStatus.DRAFT);
+
+        assertThat(eval("2.7", paris()).status()).isEqualTo(Status.FOUND);
+        assertThat(eval("2.7", in().org(ownOrg).excludeEvent(self.getId()).build()).status())
+                .isEqualTo(Status.CLEAR);
+        Event other = own("2026-11-20T22:00:00Z", EventStatus.LIVE);
+        Finding f = eval("2.7", in().org(ownOrg).excludeEvent(self.getId()).build());
+        assertThat(f.status()).isEqualTo(Status.FOUND);
+        assertThat(f.facts()).containsEntry("name", other.getName());
+    }
+
+    @Test
     void ownCancelledIgnored() {
         own("2026-11-14T22:00:00Z", EventStatus.CANCELLED);
 

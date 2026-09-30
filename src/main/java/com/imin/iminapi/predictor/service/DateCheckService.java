@@ -1,0 +1,489 @@
+package com.imin.iminapi.predictor.service;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.predictor.config.DateCheckAccess;
+import com.imin.iminapi.predictor.config.DateCheckProperties;
+import com.imin.iminapi.predictor.dto.ActionDto;
+import com.imin.iminapi.predictor.dto.AssumptionDto;
+import com.imin.iminapi.predictor.dto.AssumptionsPatch;
+import com.imin.iminapi.predictor.dto.DateCheckConfigResponse;
+import com.imin.iminapi.predictor.dto.DateCheckDateDto;
+import com.imin.iminapi.predictor.dto.DateCheckDateDto.BreakdownLine;
+import com.imin.iminapi.predictor.dto.DateCheckDateDto.NotChecked;
+import com.imin.iminapi.predictor.dto.DateCheckRequest;
+import com.imin.iminapi.predictor.dto.DateCheckResponse;
+import com.imin.iminapi.predictor.dto.DateCheckSummaryDto;
+import com.imin.iminapi.predictor.dto.FindingDto;
+import com.imin.iminapi.predictor.model.DateCheck;
+import com.imin.iminapi.predictor.model.DateCheckDate;
+import com.imin.iminapi.predictor.model.DateCheckFinding;
+import com.imin.iminapi.predictor.repository.DateCheckDateRepository;
+import com.imin.iminapi.predictor.repository.DateCheckFindingRepository;
+import com.imin.iminapi.predictor.repository.DateCheckRepository;
+import com.imin.iminapi.predictor.rules.ActionItem;
+import com.imin.iminapi.predictor.rules.ActionPicker;
+import com.imin.iminapi.predictor.rules.Assumption;
+import com.imin.iminapi.predictor.rules.AssumptionResolver;
+import com.imin.iminapi.predictor.rules.DateCheckInput;
+import com.imin.iminapi.predictor.rules.DateCheckInput.KnownEvent;
+import com.imin.iminapi.predictor.rules.DateResult;
+import com.imin.iminapi.predictor.rules.Finding;
+import com.imin.iminapi.predictor.rules.QuestionBank;
+import com.imin.iminapi.predictor.rules.QuestionBank.GenreProfile;
+import com.imin.iminapi.predictor.rules.QuestionBank.Kind;
+import com.imin.iminapi.predictor.rules.QuestionBank.Question;
+import com.imin.iminapi.predictor.rules.QuestionBank.SourceKind;
+import com.imin.iminapi.predictor.rules.Ranker;
+import com.imin.iminapi.predictor.rules.RuleEngine;
+import com.imin.iminapi.predictor.rules.Scorer;
+import com.imin.iminapi.repository.EventRepository;
+import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.security.ApiException;
+import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.security.RateLimiter;
+import com.imin.iminapi.util.Times;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.HexFormat;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.UUID;
+import java.util.stream.Collectors;
+
+/**
+ * "Check a date": runs the rule engine on each candidate date, scores, ranks and stores the result, and
+ * writes the DATE_CHECK ledger row in the same transaction before answering. Synchronous; no LLM, no quota.
+ */
+@Service
+public class DateCheckService {
+
+    static final String STATUS_DONE = "done";
+    /** ponytail: research is not built yet, so every check answers "off" and nothing is queued. */
+    static final String RESEARCH_OFF = "off";
+    static final int DEFAULT_LIMIT = 20;
+    static final int MAX_LIMIT = 50;
+
+    private static final TypeReference<List<Assumption>> ASSUMPTIONS = new TypeReference<>() {};
+    private static final TypeReference<List<ActionDto>> ACTIONS = new TypeReference<>() {};
+    private static final TypeReference<LinkedHashMap<String, Object>> FACTS = new TypeReference<>() {};
+    private static final TypeReference<List<String>> STRINGS = new TypeReference<>() {};
+    private static final TypeReference<List<Integer>> INTS = new TypeReference<>() {};
+    private static final TypeReference<List<KnownEvent>> KNOWN = new TypeReference<>() {};
+
+    /** The organizer's own answers kept in {@code assumptions_json}; null = not given. */
+    private record Answers(List<Integer> audienceAge, List<String> communities, Integer buyingLeadDays) {}
+
+    private final DateCheckAccess access;
+    private final RateLimiter rateLimiter;
+    private final DateCheckValidator validator;
+    private final DateCheckProperties props;
+    private final QuestionBank bank;
+    private final RuleEngine engine;
+    private final DateCheckRepository checks;
+    private final DateCheckDateRepository dates;
+    private final DateCheckFindingRepository findings;
+    private final PredictionLedgerService ledger;
+    private final OrganizationRepository orgs;
+    private final EventRepository events;
+
+    public DateCheckService(DateCheckAccess access, RateLimiter rateLimiter, DateCheckValidator validator,
+                            DateCheckProperties props, QuestionBank bank, RuleEngine engine, DateCheckRepository checks,
+                            DateCheckDateRepository dates, DateCheckFindingRepository findings,
+                            PredictionLedgerService ledger, OrganizationRepository orgs, EventRepository events) {
+        this.access = access;
+        this.rateLimiter = rateLimiter;
+        this.validator = validator;
+        this.props = props;
+        this.bank = bank;
+        this.engine = engine;
+        this.checks = checks;
+        this.dates = dates;
+        this.findings = findings;
+        this.ledger = ledger;
+        this.orgs = orgs;
+        this.events = events;
+    }
+
+    @Transactional
+    public DateCheckResponse create(AuthPrincipal p, DateCheckRequest req) {
+        access.requireEnabled(p.orgId());
+        rateLimiter.consume("predictor-date-check", p.actorLabel());
+        String orgCountry = orgs.findById(p.orgId()).map(Organization::getCountry).orElse(null);
+        DateCheckValidator.Resolved r = validator.validate(req, orgCountry);
+        if (req.eventId() != null) {
+            events.findById(req.eventId())
+                    .filter(e -> p.orgId().equals(e.getOrgId()) && e.getDeletedAt() == null)
+                    .orElseThrow(() -> ApiException.notFound("Event"));
+        }
+
+        DateCheck c = new DateCheck();
+        c.setOrgId(p.orgId());
+        c.setCreatedBy(p.userId());
+        c.setCity(req.city().trim());
+        c.setCountry(r.country());
+        c.setPostalCode(trimToNull(req.postalCode()));
+        c.setEventId(req.eventId());
+        c.setGenreFamily(req.genreFamily());
+        c.setSubGenre(trimToNull(req.subGenre()));
+        c.setCapacity(req.capacity());
+        c.setPriceMinor(req.priceMinor());
+        c.setFormat(trimToNull(req.format()));
+        c.setStartHour(req.startHour() == null ? null : req.startHour().shortValue());
+        c.setEndHour(req.endHour() == null ? null : req.endHour().shortValue());
+        List<String> lineup = req.lineup() == null ? null
+                : req.lineup().stream().filter(Objects::nonNull).map(String::trim).filter(s -> !s.isEmpty()).toList();
+        c.setLineupJson(lineup == null ? null : write(lineup));
+        c.setKnownEventsJson(req.knownEvents() == null ? null : write(req.knownEvents().stream()
+                .map(k -> new KnownEvent(k.name().trim(), k.date(), trimToNull(k.venue()), k.strength()))
+                .toList()));
+        c.setResearch(false);
+        c.setStatus(STATUS_DONE);
+
+        List<LocalDate> candidates = req.dates().stream().sorted().toList();
+        Answers answers = new Answers(req.audienceAge(), upper(req.communities()), req.buyingLeadDays());
+        DateCheckInput in = input(c, r.today(), answers);
+        // Assumptions are set before the first save so the stored row is never updated in this transaction.
+        c.setAssumptionsJson(write(AssumptionResolver.resolve(in, profile(c))));
+        c.setQuestionBankVersion(bank.version());
+        checks.save(c);
+        run(c, in, candidates);
+        return toResponse(c);
+    }
+
+    @Transactional(readOnly = true)
+    public DateCheckResponse get(AuthPrincipal p, UUID id) {
+        access.requireEnabled(p.orgId());
+        return toResponse(owned(checks.findById(id), p));
+    }
+
+    @Transactional(readOnly = true)
+    public List<DateCheckSummaryDto> list(AuthPrincipal p, Integer limit) {
+        access.requireEnabled(p.orgId());
+        int n = limit == null ? DEFAULT_LIMIT : Math.max(1, Math.min(MAX_LIMIT, limit));
+        List<DateCheck> page = checks.findByOrgIdOrderByCreatedAtDesc(p.orgId(), PageRequest.of(0, n));
+        if (page.isEmpty()) return List.of();
+        Map<UUID, List<DateCheckDate>> byCheck = dates
+                .findByDateCheckIdInOrderByCandidateDateAsc(page.stream().map(DateCheck::getId).toList()).stream()
+                .collect(Collectors.groupingBy(DateCheckDate::getDateCheckId));
+        return page.stream().map(c -> new DateCheckSummaryDto(c.getId(), c.getStatus(), c.getCity(), c.getGenreFamily(),
+                c.getCreatedAt(), byCheck.getOrDefault(c.getId(), List.of()).stream()
+                .map(d -> new DateCheckSummaryDto.DateSummary(d.getCandidateDate(), d.getVerdict(), d.getRiskScore(),
+                        d.getRankOrder() == null ? null : d.getRankOrder().intValue()))
+                .toList())).toList();
+    }
+
+    /** A fresh rule-engine run on the current bank with the merged answers; the old rows are replaced. */
+    @Transactional
+    public DateCheckResponse patchAssumptions(AuthPrincipal p, UUID id, AssumptionsPatch patch) {
+        access.requireEnabled(p.orgId());
+        rateLimiter.consume("predictor-date-check", p.actorLabel());
+        DateCheck c = owned(checks.findLockedById(id), p);
+        List<DateCheckDate> old = dates.findByDateCheckIdOrderByCandidateDateAsc(c.getId());
+        List<LocalDate> candidates = old.stream().map(DateCheckDate::getCandidateDate).toList();
+        LocalDate today = validator.validatePatch(patch, c.getCountry(), candidates);
+
+        Answers stored = storedAnswers(c);
+        Answers merged = new Answers(
+                patch.audienceAge() != null ? patch.audienceAge() : stored.audienceAge(),
+                patch.communities() != null ? upper(patch.communities()) : stored.communities(),
+                patch.buyingLeadDays() != null ? patch.buyingLeadDays() : stored.buyingLeadDays());
+        if (patch.priceMinor() != null) c.setPriceMinor(patch.priceMinor());
+        if (patch.startHour() != null) c.setStartHour(patch.startHour().shortValue());
+
+        findings.deleteByDateCheckDateIdIn(old.stream().map(DateCheckDate::getId).toList());
+        dates.deleteByDateCheckId(c.getId());
+        // The unique (check, date) key needs the deletes flushed before the re-insert.
+        dates.flush();
+
+        DateCheckInput in = input(c, today, merged);
+        c.setAssumptionsJson(write(AssumptionResolver.resolve(in, profile(c))));
+        c.setQuestionBankVersion(bank.version());
+        c.setUpdatedAt(Times.nowMicros());
+        checks.saveAndFlush(c);
+        run(c, in, candidates);
+        return toResponse(c);
+    }
+
+    public DateCheckConfigResponse config(AuthPrincipal p) {
+        access.requireEnabled(p.orgId());
+        List<DateCheckConfigResponse.Genre> genres = QuestionBank.GENRE_BUCKETS.stream()
+                .map(b -> {
+                    GenreProfile gp = bank.profiles().get(b);
+                    return new DateCheckConfigResponse.Genre(b, gp == null ? List.of() : gp.subGenres());
+                })
+                .toList();
+        return new DateCheckConfigResponse(Boolean.TRUE.equals(props.getResearchEnabled()), genres,
+                props.getMaxDates(), props.getMaxHorizonMonths());
+    }
+
+    // --- run ---
+
+    private void run(DateCheck c, DateCheckInput in, List<LocalDate> candidates) {
+        LocalDate today = in.today();
+        List<Ranker.Candidate> scored = new ArrayList<>();
+        Map<LocalDate, List<Finding>> findingsByDate = new LinkedHashMap<>();
+        Map<LocalDate, List<ActionItem>> actionsByDate = new HashMap<>();
+        for (LocalDate d : candidates) {
+            List<Finding> fs = engine.evaluate(in, d);
+            DateResult result = Scorer.score(fs, bank);
+            findingsByDate.put(d, fs);
+            actionsByDate.put(d, ActionPicker.pick(fs, bank, d, today));
+            scored.add(new Ranker.Candidate(d, result, (int) ChronoUnit.DAYS.between(today, d)));
+        }
+        List<Ranker.Ranked> ranked = Ranker.rank(scored);
+
+        List<Map<String, Object>> output = new ArrayList<>();
+        for (int i = 0; i < scored.size(); i++) {
+            Ranker.Candidate cand = scored.get(i);
+            DateResult result = cand.result();
+            Integer rank = ranked.get(i).rank();
+            DateCheckDate row = new DateCheckDate();
+            row.setDateCheckId(c.getId());
+            row.setCandidateDate(cand.date());
+            row.setVerdict(result.verdict().dbValue());
+            row.setRiskScore((short) result.riskScore());
+            row.setOppScore((short) result.oppScore());
+            row.setCoverage(result.coverage());
+            row.setRankOrder(rank == null ? null : rank.shortValue());
+            row.setActionsJson(write(actionsByDate.get(cand.date()).stream()
+                    .map(a -> new ActionDto(a.key(), a.dueDate(), a.questionId(), a.params()))
+                    .toList()));
+            UUID dateId = dates.save(row).getId();
+            findings.saveAll(findingsByDate.get(cand.date()).stream().map(f -> findingRow(dateId, f)).toList());
+
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("date", cand.date().toString());
+            out.put("verdict", row.getVerdict());
+            out.put("riskScore", result.riskScore());
+            out.put("oppScore", result.oppScore());
+            out.put("coverage", result.coverage());
+            out.put("rank", rank);
+            output.add(out);
+        }
+
+        Map<String, Object> canonical = new LinkedHashMap<>();
+        canonical.put("input", in);
+        canonical.put("dates", candidates.stream().map(LocalDate::toString).toList());
+        ledger.recordDateCheck(c.getOrgId(), c.getId(), bank.version(), sha256(write(canonical)),
+                write(Map.of("dates", output)));
+    }
+
+    private static DateCheckFinding findingRow(UUID dateId, Finding f) {
+        DateCheckFinding row = new DateCheckFinding();
+        row.setDateCheckDateId(dateId);
+        row.setQuestionId(f.questionId());
+        row.setKind(wire(f.kind()));
+        row.setStatus(wire(f.status()));
+        row.setStrength((short) f.strength());
+        row.setWeight((short) f.weight());
+        row.setSourceKind(wire(f.sourceKind()));
+        row.setTimeWindow(wire(f.window()));
+        row.setStopFactor(f.stopFactor());
+        row.setFactsJson(write(f.facts()));
+        row.setUrl(f.url());
+        row.setQuote(f.quote());
+        row.setFetchedAt(f.fetchedAt());
+        return row;
+    }
+
+    private DateCheckInput input(DateCheck c, LocalDate today, Answers a) {
+        return new DateCheckInput(c.getCity(), c.getCountry(), c.getPostalCode(), null, null, c.getGenreFamily(),
+                c.getSubGenre(), c.getCapacity(), c.getPriceMinor(), c.getFormat(),
+                c.getStartHour() == null ? null : c.getStartHour().intValue(),
+                c.getEndHour() == null ? null : c.getEndHour().intValue(),
+                c.getLineupJson() == null ? null : read(c.getLineupJson(), STRINGS),
+                c.getKnownEventsJson() == null ? null : read(c.getKnownEventsJson(), KNOWN),
+                c.getOrgId(), today, a.audienceAge(), a.communities(), a.buyingLeadDays(), c.getEventId());
+    }
+
+    private GenreProfile profile(DateCheck c) {
+        return bank.profiles().get(c.getGenreFamily());
+    }
+
+    private static Answers storedAnswers(DateCheck c) {
+        List<Integer> age = null;
+        List<String> communities = null;
+        Integer lead = null;
+        for (Assumption a : read(c.getAssumptionsJson(), ASSUMPTIONS)) {
+            if (a.source() != Assumption.Source.ORGANIZER) continue;
+            switch (a.field()) {
+                case AUDIENCE_AGE -> age = PredictorJson.MAPPER.convertValue(a.value(), INTS);
+                case COMMUNITIES -> communities = PredictorJson.MAPPER.convertValue(a.value(), STRINGS);
+                case BUYING_LEAD_DAYS -> lead = PredictorJson.MAPPER.convertValue(a.value(), Integer.class);
+                default -> { }
+            }
+        }
+        return new Answers(age, communities, lead);
+    }
+
+    // --- read ---
+
+    private static DateCheck owned(java.util.Optional<DateCheck> c, AuthPrincipal p) {
+        return c.filter(x -> p.orgId().equals(x.getOrgId())).orElseThrow(() -> ApiException.notFound("Date check"));
+    }
+
+    private DateCheckResponse toResponse(DateCheck c) {
+        List<DateCheckDate> rows = dates.findByDateCheckIdOrderByCandidateDateAsc(c.getId());
+        Map<UUID, List<DateCheckFinding>> byDate = rows.isEmpty() ? Map.of()
+                : findings.findByDateCheckDateIdIn(rows.stream().map(DateCheckDate::getId).toList()).stream()
+                .collect(Collectors.groupingBy(DateCheckFinding::getDateCheckDateId));
+        BankView view = new BankView(bank);
+        List<DateCheckDateDto> dateDtos = rows.stream()
+                .map(d -> dateDto(d, byDate.getOrDefault(d.getId(), List.of()), view))
+                .toList();
+        List<AssumptionDto> assumptions = read(c.getAssumptionsJson(), ASSUMPTIONS).stream()
+                .map(a -> new AssumptionDto(fieldName(a.field()), a.value(), wire(a.source()), a.estimate(),
+                        a.sourcedUrl()))
+                .toList();
+        return new DateCheckResponse(c.getId(), c.getStatus(), c.getCity(), c.getCountry(), c.getPostalCode(),
+                c.getEventId(), c.getGenreFamily(), c.getSubGenre(), c.getCapacity(), c.getPriceMinor(),
+                c.isResearch(), RESEARCH_OFF, c.getQuestionBankVersion(), c.getCreatedAt(), c.getUpdatedAt(),
+                assumptions, dateDtos);
+    }
+
+    private DateCheckDateDto dateDto(DateCheckDate d, List<DateCheckFinding> rows, BankView view) {
+        List<DateCheckFinding> ordered = rows.stream().sorted(view.order()).toList();
+        int maxPoints = bank.thresholds().maxPointsPerFinding();
+
+        List<BreakdownLine> breakdown = ordered.stream()
+                .filter(f -> "found".equals(f.getStatus()))
+                .map(f -> new BreakdownLine(f.getQuestionId(), f.getKind(), f.getSourceKind(),
+                        Math.min(maxPoints, f.getStrength() * f.getWeight())))
+                .sorted(Comparator.comparingInt(BreakdownLine::points).reversed()
+                        .thenComparing(BreakdownLine::questionId)
+                        .thenComparing(l -> SourceKind.valueOf(l.sourceKind().toUpperCase(Locale.ROOT))))
+                .toList();
+
+        List<FindingDto> findingDtos = new ArrayList<>();
+        List<NotChecked> notChecked = new ArrayList<>();
+        Set<String> applicable = new TreeSet<>();
+        Set<String> checked = new HashSet<>();
+        for (DateCheckFinding f : ordered) {
+            Map<String, Object> facts = read(f.getFactsJson(), FACTS);
+            findingDtos.add(new FindingDto(f.getQuestionId(), f.getKind(), f.getStatus(), f.getStrength(),
+                    f.getWeight(), f.getSourceKind(), f.getTimeWindow(), f.isStopFactor(), view.templateKey(f),
+                    facts, f.getUrl(), f.getQuote(), f.getFetchedAt()));
+            if ("not_checked".equals(f.getStatus())) {
+                Object reason = facts.get("reason");
+                notChecked.add(new NotChecked(f.getQuestionId(), f.getSourceKind(),
+                        reason == null ? null : reason.toString()));
+            }
+            if (view.starIds().contains(f.getQuestionId())) {
+                applicable.add(f.getQuestionId());
+                if (!"not_checked".equals(f.getStatus())) checked.add(f.getQuestionId());
+            }
+        }
+        return new DateCheckDateDto(d.getCandidateDate(), d.getVerdict(), d.getRiskScore(), d.getOppScore(),
+                d.getCoverage(), wire(Ranker.bucket(d.getCoverage())),
+                d.getRankOrder() == null ? null : d.getRankOrder().intValue(), checked.size(), applicable.size(),
+                breakdown, findingDtos, notChecked, read(d.getActionsJson(), ACTIONS));
+    }
+
+    /** Bank lookups for mapping stored findings: bank order, star ids and each question's template key. */
+    private static final class BankView {
+        private final Map<String, Integer> index = new HashMap<>();
+        private final Map<String, Question> byKey = new HashMap<>();
+        private final Map<String, Set<Kind>> kindsByTemplate = new HashMap<>();
+        private final Set<String> starIds = new HashSet<>();
+
+        BankView(QuestionBank bank) {
+            List<Question> qs = bank.questions();
+            for (int i = 0; i < qs.size(); i++) {
+                Question q = qs.get(i);
+                String key = key(q.id(), wire(q.source()));
+                index.putIfAbsent(key, i);
+                byKey.putIfAbsent(key, q);
+                kindsByTemplate.computeIfAbsent(q.template(), t -> new HashSet<>()).addAll(q.kinds());
+                if (q.star()) starIds.add(q.id());
+            }
+        }
+
+        Set<String> starIds() {
+            return starIds;
+        }
+
+        Comparator<DateCheckFinding> order() {
+            return Comparator.comparingInt((DateCheckFinding f) ->
+                            index.getOrDefault(key(f.getQuestionId(), f.getSourceKind()), Integer.MAX_VALUE))
+                    .thenComparing(DateCheckFinding::getQuestionId)
+                    .thenComparing(DateCheckFinding::getSourceKind);
+        }
+
+        /** Same rule as {@link QuestionBank#templateKeys()}; null for a question the current bank dropped. */
+        String templateKey(DateCheckFinding f) {
+            Question q = byKey.get(key(f.getQuestionId(), f.getSourceKind()));
+            if (q == null) return null;
+            return kindsByTemplate.get(q.template()).size() > 1 ? q.template() + "." + f.getKind() : q.template();
+        }
+
+        private static String key(String id, String source) {
+            return id + "|" + source;
+        }
+    }
+
+    // --- helpers ---
+
+    private static String fieldName(Assumption.Field f) {
+        return switch (f) {
+            case AUDIENCE_AGE -> "audienceAge";
+            case COMMUNITIES -> "communities";
+            case PRICE_MINOR -> "priceMinor";
+            case START_HOUR -> "startHour";
+            case BUYING_LEAD_DAYS -> "buyingLeadDays";
+        };
+    }
+
+    private static String wire(Enum<?> e) {
+        return e.name().toLowerCase(Locale.ROOT);
+    }
+
+    private static List<String> upper(List<String> codes) {
+        return codes == null ? null : codes.stream().map(s -> s.trim().toUpperCase(Locale.ROOT)).toList();
+    }
+
+    private static String trimToNull(String s) {
+        return s == null || s.isBlank() ? null : s.trim();
+    }
+
+    private static String write(Object o) {
+        try {
+            return PredictorJson.MAPPER.writeValueAsString(o);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("date check: could not serialise " + o.getClass().getSimpleName(), e);
+        }
+    }
+
+    private static <T> T read(String json, TypeReference<T> type) {
+        try {
+            return PredictorJson.MAPPER.readValue(json, type);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("date check: unreadable stored JSON", e);
+        }
+    }
+
+    private static String sha256(String s) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(s.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+}

@@ -27,7 +27,7 @@ class AssumptionResolverTest {
                                         List<String> communities, Integer lead) {
         return new DateCheckInput("Paris", country, null, null, null, "house & techno", null, 300, priceMinor, "club",
                 startHour, 5, List.of(), null, UUID.fromString("00000000-0000-0000-0000-00000000000a"),
-                LocalDate.of(2026, 9, 30), age, communities, lead);
+                LocalDate.of(2026, 9, 30), age, communities, lead, null);
     }
 
     @Test
