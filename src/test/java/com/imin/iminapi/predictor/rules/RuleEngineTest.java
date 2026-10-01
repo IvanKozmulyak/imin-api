@@ -2,9 +2,13 @@ package com.imin.iminapi.predictor.rules;
 
 import com.imin.iminapi.predictor.calendar.CalendarRegions;
 import com.imin.iminapi.predictor.calendar.ReferenceCalendarService;
+import com.imin.iminapi.predictor.repository.WikimediaPageviewMonthRepository;
 import com.imin.iminapi.predictor.rules.QuestionBank.Question;
 import com.imin.iminapi.predictor.rules.QuestionBank.SourceKind;
+import com.imin.iminapi.predictor.sources.SourceGates;
+import com.imin.iminapi.predictor.sources.wikimedia.WikimediaArticles;
 import org.junit.jupiter.api.Test;
+import org.springframework.core.io.DefaultResourceLoader;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
@@ -45,7 +49,7 @@ class RuleEngineTest {
 
     private static List<QuestionEvaluator> stubsForShippedBank() {
         return List.of(
-                new Stub(SourceKind.STRUCTURED, "4.1", "4.2", "4.3", "4.4", "4.5", "4.7", "5.1", "5.2", "7.1", "3.2", "10.3"),
+                new Stub(SourceKind.STRUCTURED, "4.1", "4.2", "4.3", "4.4", "4.5", "4.7", "5.1", "5.2", "7.1", "3.2", "10.3", "9.1"),
                 new Stub(SourceKind.INTERNAL, "2.1", "2.2", "2.7", "2.9", "10.2"),
                 new Stub(SourceKind.ORGANIZER, "2.1", "2.2"),
                 new Stub(SourceKind.INPUT, "10.1"));
@@ -120,7 +124,9 @@ class RuleEngineTest {
                 new CalendarEvaluator(mock(ReferenceCalendarService.class), mock(CalendarRegions.class)),
                 new InternalEvaluator(null, null, null, null),
                 new OrganizerEvaluator(),
-                new InputEvaluator());
+                new InputEvaluator(),
+                new TrendEvaluator(BANK, WikimediaArticles.load(new DefaultResourceLoader(), BANK),
+                        mock(WikimediaPageviewMonthRepository.class), mock(SourceGates.class)));
 
         new RuleEngine(BANK, real);
     }

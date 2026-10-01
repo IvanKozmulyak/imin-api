@@ -585,7 +585,8 @@ class CalendarEvaluatorTest {
         CalendarHit zcAgain = hit("school", "2026-12-19", "2027-01-03", "Vacances de Noël", "FR-ZC");
         hits(za, zb, zc, zcAgain);
         List<Question> structured = BANK.questionsFor("FR").stream()
-                .filter(q -> q.source() == SourceKind.STRUCTURED && q.cities().isEmpty()).toList();
+                .filter(q -> q.source() == SourceKind.STRUCTURED && q.cities().isEmpty())
+                .filter(q -> evaluator.questionIds().contains(q.id())).toList();
         List<String> candidates = List.of("2026-12-19", "2026-12-24", "2026-12-26", "2026-12-31", "2027-01-02");
 
         for (String d : candidates) {

@@ -74,9 +74,9 @@ class QuestionBankTest {
     void loadsShippedBank() {
         QuestionBank bank = QuestionBankLoader.load(new DefaultResourceLoader());
 
-        assertThat(bank.questions()).hasSize(19);
-        assertThat(bank.questions().stream().map(Question::id).distinct()).hasSize(17);
-        assertThat(bank.version()).isEqualTo("qb2-gp1");
+        assertThat(bank.questions()).hasSize(20);
+        assertThat(bank.questions().stream().map(Question::id).distinct()).hasSize(18);
+        assertThat(bank.version()).isEqualTo("qb3-gp1");
         assertThat(bank.profiles()).hasSize(8);
         for (GenreProfile p : bank.profiles().values()) {
             for (ProfileField<?> f : List.of(p.audienceAge(), p.communities(), p.typicalPriceEur(),

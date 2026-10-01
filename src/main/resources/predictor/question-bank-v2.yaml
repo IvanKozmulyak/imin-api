@@ -1,7 +1,7 @@
 # Date-check question bank. Ids follow the product question bank v1; one entry per (id, source).
 # Every weight is an estimate (the v1 bank gives none); windows follow its night/week/month tags.
-# M2 adds the web-sourced questions and bumps version to 3.
-version: 2
+# Adds 9.1 (v3); the web-sourced questions bump again.
+version: 3
 thresholds: { adjust_min_risk: 3, move_min_risk: 7, min_coverage: 0.6, max_points_per_finding: 4 }
 questions:
   # --- calendar (structured) ---
@@ -135,6 +135,18 @@ questions:
     template: predictor.q.10_3
     actions:
       - { key: predictor.a.ads_budget_early, when: risk, due: "D-35" }
+
+  # Wikimedia pageviews (CC0) of the genre article in the country's language; thresholds are estimates pending product review.
+  - id: "9.1"
+    family: music
+    source: structured
+    kinds: [risk, opportunity]
+    weight: 1
+    max_strength: 1
+    window: month
+    applies_when: { countries: [FR, NL, DE, ES, UA] }
+    params: { rising_min: 0.25, falling_min: 0.25, min_mean_views: 100, max_age_months: 2 }
+    template: predictor.q.9_1
 
   # --- imin events (internal) and the organizer's own list (organizer, capped at strength 2) ---
   - id: "2.1"

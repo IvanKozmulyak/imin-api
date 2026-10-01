@@ -615,6 +615,12 @@ imin:
     calendar:
       sync-enabled: ${PREDICTOR_CALENDAR_SYNC_ENABLED:true}
       years-ahead: 2
+    # Wikimedia Pageviews (CC0) for question 9.1: weekly sync of the genre articles into wikimedia_pageviews_month,
+    # and at boot while the table is empty. Off by default; imin-public must label genre_interest before it is on.
+    wikimedia:
+      enabled: ${PREDICTOR_WIKIMEDIA_ENABLED:false}
+      # Wikimedia's User-Agent policy requires a contact (email or URL); a blank value binds this default.
+      user-agent: "${PREDICTOR_WIKIMEDIA_USER_AGENT:imin-api/1.0 (+https://imin.wtf; ops@imin.wtf) predictor-trends}"
   ratelimit:
     login:
       capacity: 5

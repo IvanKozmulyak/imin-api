@@ -31,6 +31,8 @@ predictor.q.5_1.opportunity
 predictor.q.5_1.risk
 predictor.q.5_2
 predictor.q.7_1
+predictor.q.9_1.opportunity
+predictor.q.9_1.risk
 predictor.qShort.10_1
 predictor.qShort.10_2
 predictor.qShort.10_3
@@ -48,3 +50,4 @@ predictor.qShort.4_7
 predictor.qShort.5_1
 predictor.qShort.5_2
 predictor.qShort.7_1
+predictor.qShort.9_1

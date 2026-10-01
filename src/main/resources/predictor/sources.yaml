@@ -1,7 +1,7 @@
 # Outside datasets the predictor uses, served by GET /api/v1/public/predictor/sources.
 # List a source only in the change that makes it live, with the gate that turns it off.
 # syncPrefix (optional): reference_calendar.source_url prefix whose latest synced_at is the source's lastUpdated.
-reviewedOn: 2026-09-30
+reviewedOn: 2026-10-01
 sources:
   - id: calendrier-api-gouv
     name: calendrier.api.gouv.fr
@@ -54,3 +54,12 @@ sources:
     creditLine: "Weather data by Open-Meteo.com (CC BY 4.0)"
     url: https://open-meteo.com/
     gate: weather
+  # CC0 per the Analytics API access policy ("Data licensing"), checked 2026-10-01; CC0 asks for no update date.
+  - id: wikimedia-pageviews
+    name: Wikimedia Pageviews
+    usedFor: [genre_interest]
+    licence: CC0 1.0
+    licenceUrl: https://creativecommons.org/publicdomain/zero/1.0/
+    creditLine: "Genre interest: Wikimedia Pageviews (Wikimedia Foundation), CC0 1.0"
+    url: https://doc.wikimedia.org/generated-data-platform/aqs/analytics-api/
+    gate: wikimedia

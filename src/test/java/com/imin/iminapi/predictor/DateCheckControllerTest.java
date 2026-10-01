@@ -394,7 +394,7 @@ class DateCheckControllerTest {
 
         List<String> notChecked = new ArrayList<>();
         for (JsonNode n : inBreak.get("notChecked")) notChecked.add(n.get("questionId").asText() + ":" + n.get("reason").asText());
-        assertThat(notChecked).contains("5.1:no_source", "3.2:no_source");
+        assertThat(notChecked).contains("5.1:no_source", "3.2:no_source", "9.1:source_off");
         // The break's early-promo action would be due 26 Sep, already past on 1 Oct, so it is not offered.
         assertThat(inBreak.get("actions").isArray()).isTrue();
         assertThat(inBreak.get("actions")).isEmpty();

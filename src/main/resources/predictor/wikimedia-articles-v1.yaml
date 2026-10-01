@@ -1,0 +1,62 @@
+# Article per genre and language for question 9.1: interlanguage links of the English genre article, each checked
+# on its wiki on verified_on (exists, not a disambiguation, not a redirect); links naming another concept are left out.
+version: 1
+verified_on: 2026-10-01
+languages: { FR: fr, NL: nl, DE: de, ES: es, UA: uk }
+buckets:
+  "house & techno":
+    sub_genres:
+      "techno": { fr: "Techno", nl: "Techno", de: "Techno", es: "Techno", uk: "Техно" }
+      "house": { fr: "House_music", nl: "House_(muziekstijl)", de: "House", es: "House_(música)", uk: "Хаус" }
+      "minimal": { fr: "Techno_minimale", nl: "Minimal_techno", de: "Minimal_Techno", es: "Minimal_techno", uk: "Мінімал-техно" }
+  "bass & hard dance":
+    sub_genres:
+      "drum & bass": { fr: "Drum_and_bass", nl: "Drum-'n-bass", de: "Drum_and_Bass", es: "Drum_and_bass", uk: "Драм-енд-бейс" }
+      "dubstep": { fr: "Dubstep", nl: "Dubstep", de: "Dubstep", es: "Dubstep", uk: "Дабстеп" }
+      "hardstyle": { fr: "Hardstyle", nl: "Hardstyle", de: "Hardstyle", es: "Hardstyle", uk: "Гардстайл" }
+      "hardcore": { fr: "Techno_hardcore", nl: "Hardcore_house", de: "Hardcore_Techno", es: "Hardcore_techno", uk: "Хардкор-техно" }
+      "jungle": { fr: "Jungle_(musique)", nl: "Jungle_(muziek)", de: "Jungle", es: "Jungle", uk: "Джангл" }
+  "club / open format":
+    sub_genres:
+      "edm": { fr: "Electronic_dance_music", nl: "Dance", de: "Elektronische_Tanzmusik", es: "Electronic_dance_music", uk: "EDM" }
+      "disco": { fr: "Disco", nl: "Disco_(muziekgenre)", de: "Disco_(Musik)", es: "Música_disco", uk: "Диско" }
+  "hip-hop & r&b":
+    article: { fr: "Hip-hop", nl: "Hiphop", de: "Hip-Hop", es: "Música_hip_hop", uk: "Хіп-хоп_(музика)" }
+    sub_genres:
+      "hip-hop": { fr: "Hip-hop", nl: "Hiphop", de: "Hip-Hop", es: "Música_hip_hop", uk: "Хіп-хоп_(музика)" }
+      "rap": { fr: "Rap", nl: "Rap_(muziekstijl)", de: "Rap", es: "Rapear", uk: "Реп" }
+      "r&b": { fr: "RnB_contemporain", nl: "Moderne_r&b", de: "Contemporary_R&B", es: "Rhythm_and_blues_contemporáneo", uk: "Сучасний_ритм-енд-блюз" }
+      "trap": { fr: "Trap_(musique)", nl: "Trap_(muziekstijl)", de: "Trap_(Musikstil)", es: "Trap_(música)", uk: "Треп_(музика)" }
+      "drill": { fr: "Drill_(musique)", nl: "Drillrap", de: "Drill_Rap", es: "Drill_(música)", uk: "Дрил" }
+  "latin & afrobeats":
+    sub_genres:
+      "reggaeton": { fr: "Reggaeton", nl: "Reggaeton", de: "Reggaeton", es: "Reguetón", uk: "Реггетон" }
+      "salsa": { fr: "Salsa", nl: "Salsa_(muziekstijl)", de: "Salsa_(Musik)", es: "Salsa_(género_musical)", uk: "Сальса_(музика)" }
+      "bachata": { fr: "Bachata", nl: "Bachata", de: "Bachata", es: "Bachata", uk: "Бачата" }
+      "afrobeats": { fr: "Afrobeats", nl: "Afrobeats", de: "Afrobeats" }
+      "amapiano": { fr: "Amapiano", nl: "Amapiano", de: "Amapiano", es: "Amapiano" }
+      "dancehall": { fr: "Dancehall", nl: "Dancehall", de: "Dancehall", es: "Dancehall", uk: "Денсхолл" }
+  "rock & alternative":
+    article: { fr: "Rock", nl: "Rock", de: "Rockmusik", es: "Rock", uk: "Рок-музика" }
+    sub_genres:
+      "rock": { fr: "Rock", nl: "Rock", de: "Rockmusik", es: "Rock", uk: "Рок-музика" }
+      "indie": { fr: "Rock_indépendant", nl: "Indierock", de: "Indie-Rock", es: "Indie_rock", uk: "Інді-рок" }
+      "punk": { fr: "Punk_rock", nl: "Punk_(muziek)", de: "Punk_(Musik)", es: "Punk", uk: "Панк-рок" }
+      "metal": { fr: "Metal", nl: "Heavy_metal", de: "Metal", es: "Heavy_metal", uk: "Хеві-метал" }
+      "alternative": { fr: "Rock_alternatif", nl: "Alternatieve_rock", de: "Alternative_Rock", es: "Rock_alternativo", uk: "Альтернативний_рок" }
+  "pop":
+    article: { fr: "Pop_(musique)", nl: "Popmuziek", de: "Popmusik", es: "Pop", uk: "Попмузика" }
+    sub_genres:
+      "pop": { fr: "Pop_(musique)", nl: "Popmuziek", de: "Popmusik", es: "Pop", uk: "Попмузика" }
+      "k-pop": { fr: "K-pop", nl: "K-pop", de: "K-Pop", es: "K-pop", uk: "K-pop" }
+      "synth-pop": { fr: "Synthpop", nl: "Synthpop", de: "Synthiepop", es: "Synth_pop", uk: "Синті-поп" }
+      "chanson": { fr: "Chanson_française", nl: "Chanson", de: "Chanson", es: "Chanson", uk: "Шансон" }
+  "jazz & acoustic":
+    article: { fr: "Jazz", nl: "Jazz", de: "Jazz", es: "Jazz", uk: "Джаз" }
+    sub_genres:
+      "jazz": { fr: "Jazz", nl: "Jazz", de: "Jazz", es: "Jazz", uk: "Джаз" }
+      "acoustic": { fr: "Musique_acoustique", es: "Música_acústica", uk: "Акустична_музика" }
+      "soul": { fr: "Musique_soul", nl: "Soul", de: "Soul", es: "Soul", uk: "Соул" }
+      "folk": { fr: "Musique_folk", nl: "Folk", de: "Folk", es: "Música_folclórica" }
+      "blues": { fr: "Blues", nl: "Blues", de: "Blues", es: "Blues", uk: "Блюз" }
+      "singer-songwriter": { fr: "Auteur-compositeur-interprète", nl: "Singer-songwriter", de: "Singer-Songwriter", es: "Cantautor", uk: "Автор-виконавець" }

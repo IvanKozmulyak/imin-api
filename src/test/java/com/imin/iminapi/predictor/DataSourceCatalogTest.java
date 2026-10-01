@@ -7,6 +7,7 @@ import com.imin.iminapi.predictor.config.PredictorProperties;
 import com.imin.iminapi.predictor.dto.PublicDataSourcesResponse.PublicDataSource;
 import com.imin.iminapi.predictor.sources.DataSourceCatalog;
 import com.imin.iminapi.predictor.sources.SourceGates;
+import com.imin.iminapi.predictor.sources.wikimedia.WikimediaProperties;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.io.DefaultResourceLoader;
 
@@ -30,14 +31,20 @@ class DataSourceCatalogTest {
     private final CalendarSyncProperties calendar = new CalendarSyncProperties();
     private final PredictorProperties predictor = new PredictorProperties();
     private final DateCheckProperties dateCheck = new DateCheckProperties();
-    private final SourceGates gates = new SourceGates(calendar, predictor, dateCheck);
+    private final WikimediaProperties wikimedia = new WikimediaProperties();
+    private final SourceGates gates = new SourceGates(calendar, predictor, dateCheck, wikimedia);
 
     private static final Function<String, Optional<LocalDate>> NO_DATES = prefix -> Optional.empty();
 
     private void gates(boolean dateCheckOn, boolean syncOn, boolean weatherOn) {
+        gates(dateCheckOn, syncOn, weatherOn, true);
+    }
+
+    private void gates(boolean dateCheckOn, boolean syncOn, boolean weatherOn, boolean wikimediaOn) {
         dateCheck.setEnabled(dateCheckOn);
         calendar.setSyncEnabled(syncOn);
         predictor.setWeatherEnabled(weatherOn);
+        wikimedia.setEnabled(wikimediaOn);
     }
 
     private List<String> activeIds() {
@@ -68,11 +75,11 @@ class DataSourceCatalogTest {
         DataSourceCatalog catalog = real();
         List<PublicDataSource> active = catalog.active(NO_DATES);
 
-        assertThat(catalog.reviewedOn()).isEqualTo("2026-09-30");
+        assertThat(catalog.reviewedOn()).isEqualTo("2026-10-01");
         assertThat(active).extracting(PublicDataSource::id).containsExactlyElementsOf(yamlIds());
         assertThat(active).extracting(PublicDataSource::id).containsExactly(
                 "calendrier-api-gouv", "fr-en-calendrier-scolaire", "openholidays", "iana-tz", "openjdk-hijrah",
-                "open-meteo");
+                "open-meteo", "wikimedia-pageviews");
         for (PublicDataSource s : active) {
             assertThat(s.status()).isEqualTo("active");
             assertThat(List.of(s.id(), s.name(), s.licence(), s.licenceUrl(), s.creditLine(), s.url()))
@@ -116,6 +123,27 @@ class DataSourceCatalogTest {
     }
 
     @Test
+    void wikimediaListedOnlyWhileGateOnWithCc0Credit() {
+        gates(true, true, false, true);
+
+        PublicDataSource wm = real().active(NO_DATES).stream()
+                .filter(s -> s.id().equals("wikimedia-pageviews")).findFirst().orElseThrow();
+
+        assertThat(wm.name()).isEqualTo("Wikimedia Pageviews");
+        assertThat(wm.usedFor()).containsExactly("genre_interest");
+        assertThat(wm.licence()).isEqualTo("CC0 1.0");
+        assertThat(wm.licenceUrl()).isEqualTo("https://creativecommons.org/publicdomain/zero/1.0/");
+        assertThat(wm.creditLine()).contains("Wikimedia Pageviews").contains("Wikimedia Foundation").contains("CC0 1.0");
+        assertThat(wm.url()).isEqualTo("https://doc.wikimedia.org/generated-data-platform/aqs/analytics-api/");
+        assertThat(wm.lastUpdated()).isNull();
+
+        gates(false, true, false, true);
+        assertThat(activeIds()).doesNotContain("wikimedia-pageviews");
+        gates(true, true, false, false);
+        assertThat(activeIds()).doesNotContain("wikimedia-pageviews").contains("openholidays");
+    }
+
+    @Test
     void dateCheckOffHidesCalendarSources() {
         gates(false, true, true);
 
@@ -126,7 +154,8 @@ class DataSourceCatalogTest {
     void calendarSyncOffHidesCalendarSources() {
         gates(true, false, true);
 
-        assertThat(activeIds()).containsExactly("open-meteo");
+        // wikimedia does not read the calendar sync, so it stays listed
+        assertThat(activeIds()).containsExactly("open-meteo", "wikimedia-pageviews");
     }
 
     @Test
@@ -134,12 +163,13 @@ class DataSourceCatalogTest {
         gates(true, true, false);
 
         assertThat(activeIds()).containsExactly(
-                "calendrier-api-gouv", "fr-en-calendrier-scolaire", "openholidays", "iana-tz", "openjdk-hijrah");
+                "calendrier-api-gouv", "fr-en-calendrier-scolaire", "openholidays", "iana-tz", "openjdk-hijrah",
+                "wikimedia-pageviews");
     }
 
     @Test
     void allGatesOffReturnsEmpty() {
-        gates(false, false, false);
+        gates(false, false, false, false);
 
         assertThat(real().active(NO_DATES)).isEmpty();
     }
@@ -176,7 +206,7 @@ class DataSourceCatalogTest {
         assertThat(updated.get("openholidays")).isEqualTo("2026-09-28");
         assertThat(updated).containsEntry("fr-en-calendrier-scolaire", null)
                 .containsEntry("iana-tz", null).containsEntry("openjdk-hijrah", null)
-                .containsEntry("open-meteo", null);
+                .containsEntry("open-meteo", null).containsEntry("wikimedia-pageviews", null);
     }
 
     // --- load failures, each from an inline file ---

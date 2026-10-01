@@ -34,7 +34,7 @@ class PublicPredictorSourcesControllerTest {
     void bodyShape() throws Exception {
         mvc.perform(get("/api/v1/public/predictor/sources"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.reviewedOn").value("2026-09-30"))
+                .andExpect(jsonPath("$.reviewedOn").value("2026-10-01"))
                 .andExpect(jsonPath("$.sources.length()").value(1))
                 .andExpect(jsonPath("$.sources[0].id").value("open-meteo"))
                 .andExpect(jsonPath("$.sources[0].name").value("Open-Meteo"))
