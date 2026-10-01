@@ -17,7 +17,8 @@ import java.util.Objects;
  *
  * <p>Facts keys (template params later): {@code date, name, venue, count, leadDays, minDays,
  * capacityKnown, sharedArtists, sellOutRate, n, relaxation, soldShareBefore, approximate, reason, endDate, country,
- * community, competition, kickoff, estimate, article, project, fromMonth, toMonth, changePct, meanViews}.
+ * community, competition, kickoff, estimate, article, project, fromMonth, toMonth, changePct, meanViews, weekStart,
+ * norm, normWeeks, sources, source, licence, credit, pattern, weekday, ordinal, lastDate, announced, seriesCount}.
  */
 public record Finding(String questionId, Kind kind, Status status, int strength, int weight, SourceKind sourceKind,
                       Window window, boolean stopFactor, Map<String, Object> facts, String url, String quote,

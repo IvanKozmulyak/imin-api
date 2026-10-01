@@ -105,6 +105,14 @@ public record OpenEventCities(int version, LocalDate verifiedOn, Map<String, Cit
         return Optional.ofNullable(key == null ? null : byKey.get(key));
     }
 
+    /** The city of {@code country} whose key or alias equals the normalised {@code cityKey}; empty for null or blank. */
+    public Optional<City> resolve(String cityKey, String country) {
+        if (cityKey == null || cityKey.isBlank()) return Optional.empty();
+        String key = EventNormalization.cityKey(cityKey);
+        return byKey.values().stream().filter(c -> c.country().equals(country))
+                .filter(c -> c.key().equals(key) || c.aliases().contains(key)).findFirst();
+    }
+
     private static City city(String key, Map<?, ?> m, Set<Long> uids) {
         String where = "cities." + key;
         if (key.length() > MAX_CITY_KEY) {

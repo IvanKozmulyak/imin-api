@@ -74,3 +74,23 @@ sources:
     creditLine: "Genre interest: Wikimedia Pageviews (Wikimedia Foundation), CC0 1.0"
     url: https://doc.wikimedia.org/generated-data-platform/aqs/analytics-api/
     gate: wikimedia
+  # Agenda pages (openagenda.com/fr/ville-de-lille, /metropole-europeenne-de-lille) say their content "provient de l'agenda
+  # <name> sur OpenAgenda et est utilisable selon le principe de la licence ouverte"; checked 2026-10-01.
+  - id: openagenda
+    name: OpenAgenda (Ville de Lille, Métropole Européenne de Lille)
+    usedFor: [local_events]
+    licence: Licence Ouverte 2.0
+    licenceUrl: https://www.etalab.gouv.fr/licence-ouverte-open-licence/
+    creditLine: "Agendas : Ville de Lille, Métropole Européenne de Lille (openagenda.com), Licence Ouverte 2.0"
+    url: https://openagenda.com/
+    gate: openagenda
+  # Dataset metadata (license "Open Database License (ODbL)", publisher "Direction de la Communication - Ville de Paris"),
+  # checked 2026-10-01.
+  - id: quefaireaparis
+    name: Que Faire à Paris (opendata.paris.fr)
+    usedFor: [local_events]
+    licence: ODbL 1.0
+    licenceUrl: https://opendatacommons.org/licenses/odbl/1-0/
+    creditLine: "Que Faire à Paris : Ville de Paris, Direction de la Communication (opendata.paris.fr), ODbL"
+    url: https://opendata.paris.fr/explore/dataset/que-faire-a-paris-/
+    gate: quefaireaparis

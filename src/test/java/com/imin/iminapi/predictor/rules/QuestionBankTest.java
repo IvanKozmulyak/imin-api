@@ -74,15 +74,29 @@ class QuestionBankTest {
     void loadsShippedBank() {
         QuestionBank bank = QuestionBankLoader.load(new DefaultResourceLoader());
 
-        assertThat(bank.questions()).hasSize(20);
-        assertThat(bank.questions().stream().map(Question::id).distinct()).hasSize(18);
-        assertThat(bank.version()).isEqualTo("qb3-gp1");
+        assertThat(bank.questions()).hasSize(23);
+        assertThat(bank.questions().stream().map(Question::id).distinct()).hasSize(21);
+        assertThat(bank.version()).isEqualTo("qb4-gp1");
         assertThat(bank.profiles()).hasSize(8);
         for (GenreProfile p : bank.profiles().values()) {
             for (ProfileField<?> f : List.of(p.audienceAge(), p.communities(), p.typicalPriceEur(),
                     p.typicalStartHour(), p.buyingLeadDays())) {
                 assertThat(f.sourcedUrl() != null ^ f.estimate()).isTrue();
             }
+        }
+    }
+
+    @Test
+    void openDataQuestionsAreNotStar() {
+        QuestionBank bank = QuestionBankLoader.load(new DefaultResourceLoader());
+
+        for (String id : List.of("2.6", "5.3", "2.3")) {
+            assertThat(bank.questions()).filteredOn(q -> q.id().equals(id)).singleElement().satisfies(q -> {
+                assertThat(q.star()).as(id).isFalse();
+                assertThat(q.source()).isEqualTo(SourceKind.STRUCTURED);
+                assertThat(q.kinds()).containsExactly(Kind.RISK);
+                assertThat(q.countries()).containsExactlyInAnyOrder("FR", "NL", "DE", "ES", "UA");
+            });
         }
     }
 

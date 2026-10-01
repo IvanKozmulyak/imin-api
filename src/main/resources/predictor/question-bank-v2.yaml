@@ -1,7 +1,8 @@
 # Date-check question bank. Ids follow the product question bank v1; one entry per (id, source).
 # Every weight is an estimate (the v1 bank gives none); windows follow its night/week/month tags.
-# Adds 9.1 (v3); the web-sourced questions bump again.
-version: 3
+# Adds 9.1 (v3).
+# Adds 2.6, 5.3, 2.3 from open event listings (v4); the web-sourced questions bump again.
+version: 4
 thresholds: { adjust_min_risk: 3, move_min_risk: 7, min_coverage: 0.6, max_points_per_finding: 4 }
 questions:
   # --- calendar (structured) ---
@@ -147,6 +148,41 @@ questions:
     applies_when: { countries: [FR, NL, DE, ES, UA] }
     params: { rising_min: 0.25, falling_min: 0.25, min_mean_views: 100, max_age_months: 2 }
     template: predictor.q.9_1
+
+  # --- open event listings (structured) ---
+  # Every weight and param below is an estimate pending product review.
+  - id: "2.6"
+    family: competition
+    source: structured
+    kinds: [risk]
+    weight: 1
+    window: week
+    applies_when: { countries: [FR, NL, DE, ES, UA] }
+    params: { busy_ratio: 1.5, strong_ratio: 2.0, min_excess: 2, max_ahead_days: 28 }
+    template: predictor.q.2_6
+
+  - id: "5.3"
+    family: communities
+    source: structured
+    kinds: [risk]
+    weight: 2
+    window: night
+    applies_when: { countries: [FR, NL, DE, ES, UA] }
+    params: { max_ahead_days: 60 }
+    template: predictor.q.5_3
+
+  # Star once imin history answers it in every city; open data alone covers two cities.
+  - id: "2.3"
+    family: competition
+    source: structured
+    kinds: [risk]
+    weight: 2
+    window: night
+    applies_when: { countries: [FR, NL, DE, ES, UA] }
+    params: { min_occurrences: 3, weekly_max_gap_days: 28, monthly_max_gap_days: 70, max_ahead_days: 90 }
+    template: predictor.q.2_3
+    actions:
+      - { key: predictor.a.competitor_differentiate, when: risk, due: "D-21" }
 
   # --- imin events (internal) and the organizer's own list (organizer, capped at strength 2) ---
   - id: "2.1"

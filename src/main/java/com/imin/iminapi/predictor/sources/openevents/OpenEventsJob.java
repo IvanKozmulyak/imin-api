@@ -44,7 +44,7 @@ public class OpenEventsJob {
 
     private static final Logger log = LoggerFactory.getLogger(OpenEventsJob.class);
     private static final ZoneId PARIS = ZoneId.of("Europe/Paris");
-    static final int LOOKAHEAD_DAYS = 120;
+    public static final int LOOKAHEAD_DAYS = 120;
     static final int BACKFILL_DAYS = 182;
 
     private final OpenEventCities cities;

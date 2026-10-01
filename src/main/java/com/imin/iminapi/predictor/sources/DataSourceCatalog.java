@@ -34,7 +34,7 @@ public class DataSourceCatalog {
     public static final String LOCATION = "classpath:predictor/sources.yaml";
     static final Set<String> USED_FOR =
             Set.of("public_holidays", "school_holidays", "bridge_days", "dst", "hijri", "weather", "genre_interest",
-                    "football_fixtures");
+                    "football_fixtures", "local_events");
     private static final String ACTIVE = "active";
 
     private record Entry(PublicDataSource source, String gate, String syncPrefix) {}
@@ -123,6 +123,11 @@ public class DataSourceCatalog {
      */
     public List<PublicDataSource> active(Function<String, Optional<LocalDate>> lastUpdated) {
         return entries.stream().filter(e -> gates.isOn(e.gate())).map(e -> withDate(e, lastUpdated)).toList();
+    }
+
+    /** The entry with this id whatever its gate, without {@code lastUpdated}. */
+    public Optional<PublicDataSource> byId(String id) {
+        return entries.stream().filter(e -> e.source().id().equals(id)).map(Entry::source).findFirst();
     }
 
     private static PublicDataSource withDate(Entry e, Function<String, Optional<LocalDate>> lastUpdated) {

@@ -9,6 +9,7 @@ import com.imin.iminapi.predictor.config.PredictorProperties;
 import com.imin.iminapi.predictor.dto.PublicDataSourcesResponse.PublicDataSource;
 import com.imin.iminapi.predictor.sources.DataSourceCatalog;
 import com.imin.iminapi.predictor.sources.SourceGates;
+import com.imin.iminapi.predictor.sources.openevents.OpenEventCities;
 import com.imin.iminapi.predictor.sources.openevents.OpenEventsProperties;
 import com.imin.iminapi.predictor.sources.wikimedia.WikimediaProperties;
 import org.junit.jupiter.api.Test;
@@ -77,6 +78,7 @@ class DataSourceCatalogTest {
     void sourcesListIncludesEveryConfiguredSource() throws IOException {
         gates(true, true, true);
         football(true, "k");
+        openEvents(true, "oa_pk_k", true);
 
         DataSourceCatalog catalog = real();
         List<PublicDataSource> active = catalog.active(NO_DATES);
@@ -85,7 +87,7 @@ class DataSourceCatalogTest {
         assertThat(active).extracting(PublicDataSource::id).containsExactlyElementsOf(yamlIds());
         assertThat(active).extracting(PublicDataSource::id).containsExactly(
                 "calendrier-api-gouv", "fr-en-calendrier-scolaire", "openholidays", "football-data", "iana-tz",
-                "openjdk-hijrah", "open-meteo", "wikimedia-pageviews");
+                "openjdk-hijrah", "open-meteo", "wikimedia-pageviews", "openagenda", "quefaireaparis");
         for (PublicDataSource s : active) {
             assertThat(s.status()).isEqualTo("active");
             assertThat(List.of(s.id(), s.name(), s.licence(), s.licenceUrl(), s.creditLine(), s.url()))
@@ -183,6 +185,70 @@ class DataSourceCatalogTest {
         assertThat(activeIds()).doesNotContain("football-data");
         gates(true, false, false);
         assertThat(activeIds()).doesNotContain("football-data");
+    }
+
+    private void openEvents(boolean openagenda, String key, boolean quefaireaparis) {
+        openEvents.setOpenagendaEnabled(openagenda);
+        openEvents.setOpenagendaApiKey(key);
+        openEvents.setQuefaireaparisEnabled(quefaireaparis);
+    }
+
+    @Test
+    void openEventSourcesListedOnlyWhileGateOnWithCredit() {
+        gates(true, true, false);
+        openEvents(true, "oa_pk_k", true);
+
+        Map<String, PublicDataSource> byId = new HashMap<>();
+        real().active(NO_DATES).forEach(s -> byId.put(s.id(), s));
+
+        PublicDataSource oa = byId.get("openagenda");
+        assertThat(oa.name()).isEqualTo("OpenAgenda (Ville de Lille, Métropole Européenne de Lille)");
+        assertThat(oa.usedFor()).containsExactly("local_events");
+        assertThat(oa.licence()).isEqualTo("Licence Ouverte 2.0");
+        assertThat(oa.licenceUrl()).isEqualTo("https://www.etalab.gouv.fr/licence-ouverte-open-licence/");
+        assertThat(oa.url()).isEqualTo("https://openagenda.com/");
+        assertThat(oa.lastUpdated()).isNull();
+        PublicDataSource qf = byId.get("quefaireaparis");
+        assertThat(qf.name()).isEqualTo("Que Faire à Paris (opendata.paris.fr)");
+        assertThat(qf.usedFor()).containsExactly("local_events");
+        assertThat(qf.licence()).isEqualTo("ODbL 1.0");
+        assertThat(qf.licenceUrl()).isEqualTo("https://opendatacommons.org/licenses/odbl/1-0/");
+        assertThat(qf.creditLine())
+                .isEqualTo("Que Faire à Paris : Ville de Paris, Direction de la Communication (opendata.paris.fr), ODbL");
+        assertThat(qf.url()).isEqualTo("https://opendata.paris.fr/explore/dataset/que-faire-a-paris-/");
+        assertThat(qf.lastUpdated()).isNull();
+
+        openEvents(false, "oa_pk_k", true);
+        assertThat(activeIds()).doesNotContain("openagenda").contains("quefaireaparis");
+        openEvents(true, "", true);
+        assertThat(activeIds()).doesNotContain("openagenda");
+        openEvents(true, "oa_pk_k", false);
+        assertThat(activeIds()).contains("openagenda").doesNotContain("quefaireaparis");
+        openEvents(true, "oa_pk_k", true);
+        gates(false, true, false);
+        assertThat(activeIds()).doesNotContain("openagenda", "quefaireaparis");
+    }
+
+    @Test
+    void byIdIgnoresGate() {
+        gates(false, false, false, false);
+        DataSourceCatalog catalog = real();
+
+        assertThat(catalog.active(NO_DATES)).isEmpty();
+        assertThat(catalog.byId("openagenda")).hasValueSatisfying(s -> assertThat(s.licence()).isEqualTo("Licence Ouverte 2.0"));
+        assertThat(catalog.byId("quefaireaparis")).hasValueSatisfying(s -> assertThat(s.licence()).isEqualTo("ODbL 1.0"));
+        assertThat(catalog.byId("datatourisme")).isEmpty();
+    }
+
+    @Test
+    void openAgendaCreditNamesEveryAgenda() {
+        String credit = real().byId("openagenda").orElseThrow().creditLine();
+
+        assertThat(credit).isEqualTo(
+                "Agendas : Ville de Lille, Métropole Européenne de Lille (openagenda.com), Licence Ouverte 2.0");
+        for (OpenEventCities.City city : OpenEventCities.load(new DefaultResourceLoader()).cities()) {
+            city.openagenda().forEach(a -> assertThat(credit).as(a.slug()).contains(a.name()));
+        }
     }
 
     @Test

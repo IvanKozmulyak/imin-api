@@ -56,6 +56,21 @@ class OpenEventCitiesTest {
     }
 
     @Test
+    void resolveMatchesKeyOrAlias() {
+        OpenEventCities cities = parse(VALID);
+
+        assertThat(cities.resolve("lille", "FR")).map(City::key).hasValue("lille");
+        assertThat(cities.resolve("lomme", "FR")).map(City::key).hasValue("lille");
+        assertThat(cities.resolve("  LOMME ", "FR")).map(City::key).hasValue("lille");
+        assertThat(cities.resolve("paris", "FR")).map(City::key).hasValue("paris");
+        assertThat(cities.resolve("metz", "FR")).isEmpty();
+        assertThat(cities.resolve(null, "FR")).isEmpty();
+        assertThat(cities.resolve("  ", "FR")).isEmpty();
+        // a Paris outside France is another city
+        assertThat(cities.resolve("paris", "US")).isEmpty();
+    }
+
+    @Test
     void shippedFileLoads() {
         OpenEventCities cities = OpenEventCities.load(new DefaultResourceLoader());
 

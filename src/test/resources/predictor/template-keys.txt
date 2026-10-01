@@ -14,6 +14,8 @@ predictor.q.10_2
 predictor.q.10_3
 predictor.q.2_1
 predictor.q.2_2
+predictor.q.2_3
+predictor.q.2_6
 predictor.q.2_7
 predictor.q.2_9.opportunity
 predictor.q.2_9.risk
@@ -30,6 +32,7 @@ predictor.q.4_7.risk
 predictor.q.5_1.opportunity
 predictor.q.5_1.risk
 predictor.q.5_2
+predictor.q.5_3
 predictor.q.7_1
 predictor.q.9_1.opportunity
 predictor.q.9_1.risk
@@ -38,6 +41,8 @@ predictor.qShort.10_2
 predictor.qShort.10_3
 predictor.qShort.2_1
 predictor.qShort.2_2
+predictor.qShort.2_3
+predictor.qShort.2_6
 predictor.qShort.2_7
 predictor.qShort.2_9
 predictor.qShort.3_2
@@ -49,5 +54,6 @@ predictor.qShort.4_5
 predictor.qShort.4_7
 predictor.qShort.5_1
 predictor.qShort.5_2
+predictor.qShort.5_3
 predictor.qShort.7_1
 predictor.qShort.9_1

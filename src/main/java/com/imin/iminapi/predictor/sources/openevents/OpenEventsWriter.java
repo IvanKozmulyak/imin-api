@@ -33,7 +33,7 @@ public class OpenEventsWriter {
     static final int MAX_URL = 512;
     static final int MAX_SOURCE_EVENT_ID = 64;
     /** Rows older than this many days are pruned; covers the 182-day backfill. */
-    static final int RETENTION_DAYS = 200;
+    public static final int RETENTION_DAYS = 200;
     private static final ObjectMapper JSON = new ObjectMapper();
 
     /** One matched night of one listing; {@code genres} are bucket names. */
@@ -179,7 +179,8 @@ public class OpenEventsWriter {
         return s.length() <= MAX_TITLE ? s : s.substring(0, MAX_TITLE);
     }
 
-    private static Set<String> genreKeys(String json) {
+    /** The bucket names of an {@code open_event_occurrence.genre_keys} JSON array. */
+    public static Set<String> genreKeys(String json) {
         try {
             return new HashSet<>(List.of(JSON.readValue(json, String[].class)));
         } catch (JsonProcessingException e) {

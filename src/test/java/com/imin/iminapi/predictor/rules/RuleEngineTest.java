@@ -2,10 +2,14 @@ package com.imin.iminapi.predictor.rules;
 
 import com.imin.iminapi.predictor.calendar.CalendarRegions;
 import com.imin.iminapi.predictor.calendar.ReferenceCalendarService;
+import com.imin.iminapi.predictor.repository.GenreWeekCountRepository;
+import com.imin.iminapi.predictor.repository.OpenEventOccurrenceRepository;
 import com.imin.iminapi.predictor.repository.WikimediaPageviewMonthRepository;
 import com.imin.iminapi.predictor.rules.QuestionBank.Question;
 import com.imin.iminapi.predictor.rules.QuestionBank.SourceKind;
+import com.imin.iminapi.predictor.sources.DataSourceCatalog;
 import com.imin.iminapi.predictor.sources.SourceGates;
+import com.imin.iminapi.predictor.sources.openevents.OpenEventCities;
 import com.imin.iminapi.predictor.sources.wikimedia.WikimediaArticles;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.io.DefaultResourceLoader;
@@ -23,6 +27,7 @@ import static com.imin.iminapi.predictor.rules.RuleFixtures.in;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class RuleEngineTest {
 
@@ -52,7 +57,8 @@ class RuleEngineTest {
                 new Stub(SourceKind.STRUCTURED, "4.1", "4.2", "4.3", "4.4", "4.5", "4.7", "5.1", "5.2", "7.1", "3.2", "10.3", "9.1"),
                 new Stub(SourceKind.INTERNAL, "2.1", "2.2", "2.7", "2.9", "10.2"),
                 new Stub(SourceKind.ORGANIZER, "2.1", "2.2"),
-                new Stub(SourceKind.INPUT, "10.1"));
+                new Stub(SourceKind.INPUT, "10.1"),
+                new Stub(SourceKind.STRUCTURED, "2.6", "5.3", "2.3"));
     }
 
     private static QuestionBank bankWithWeb() {
@@ -126,9 +132,18 @@ class RuleEngineTest {
                 new OrganizerEvaluator(),
                 new InputEvaluator(),
                 new TrendEvaluator(BANK, WikimediaArticles.load(new DefaultResourceLoader(), BANK),
-                        mock(WikimediaPageviewMonthRepository.class), mock(SourceGates.class)));
+                        mock(WikimediaPageviewMonthRepository.class), mock(SourceGates.class)),
+                openEventsEvaluator());
 
         new RuleEngine(BANK, real);
+    }
+
+    private static OpenEventsEvaluator openEventsEvaluator() {
+        SourceGates gates = mock(SourceGates.class);
+        when(gates.keys()).thenReturn(Set.of("date-check", "weather", "wikimedia", "football", "openagenda", "quefaireaparis"));
+        return new OpenEventsEvaluator(BANK, OpenEventCities.load(new DefaultResourceLoader()), List.of(),
+                mock(GenreWeekCountRepository.class), mock(OpenEventOccurrenceRepository.class), gates,
+                DataSourceCatalog.load(new DefaultResourceLoader(), gates));
     }
 
     @Test
