@@ -22,6 +22,8 @@ import com.imin.iminapi.predictor.rules.RuleEngine;
 import com.imin.iminapi.predictor.service.PredictorAlertStore;
 import com.imin.iminapi.predictor.service.RadarAlertRule;
 import com.imin.iminapi.predictor.service.RadarJob;
+import com.imin.iminapi.predictor.service.RadarTimelineService;
+import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.predictor.service.ReforecastAlertNotifier;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.NotificationRepository;
@@ -55,6 +57,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -95,7 +99,8 @@ class RadarAlertFlowTest {
     @Autowired DateCheckDateRepository checkDates;
     @Autowired DateCheckFindingRepository findings;
     @Autowired PredictionLedgerRepository ledger;
-    @Autowired NotificationRepository notifications;
+    @MockitoSpyBean NotificationRepository notifications;
+    @Autowired RadarTimelineService timeline;
     @Autowired EmailService email;
     @Autowired JdbcTemplate jdbc;
     @Autowired PlatformTransactionManager txManager;
@@ -133,6 +138,7 @@ class RadarAlertFlowTest {
     private void clean() {
         jdbc.update("delete from predictor_alert");
         jdbc.update("delete from notifications");
+        jdbc.update("update events set radar_muted = false");
         findings.deleteAll();
         checkDates.deleteAll();
         ledger.deleteAll();
@@ -217,6 +223,57 @@ class RadarAlertFlowTest {
         assertThat(claim.get("kind")).isEqualTo("radar");
         assertThat(claim.get("alert_day").toString()).isEqualTo(TODAY.toString());
         assertThat(claim.get("date_check_id")).isEqualTo(radar);
+    }
+
+    @Test
+    void mutedEventRunsButSendsNoRadarAlert() {
+        Event e = liveEvent();
+        baseline(e.getId(), NIGHT);
+        assertThat(events.updateRadarMuted(e.getId(), true)).isOne();
+
+        runJob();
+
+        UUID radar = radarRow(e.getId());
+        Map<String, Object> row = jdbc.queryForMap(
+                "select radar_prev_verdict, radar_prev_risk, radar_verdict, radar_risk from date_check where id = ?", radar);
+        assertThat(row.get("radar_prev_verdict")).isEqualTo("good");
+        assertThat(((Number) row.get("radar_prev_risk")).intValue()).isZero();
+        assertThat(row.get("radar_verdict")).isEqualTo("move");
+        assertThat(((Number) row.get("radar_risk")).intValue()).isEqualTo(8);
+        verify(notifier).notifyRadarWorsened(any());
+        assertThat(jdbc.queryForObject("select count(*) from predictor_alert", Integer.class)).isZero();
+        assertThat(notificationsFor(owner.getId())).isEmpty();
+        assertThat(mail.sent()).isEmpty();
+
+        // The muted radar run claimed nothing, so a band crossing the same day still alerts.
+        bandCrossing(e);
+        assertThat(notificationsFor(owner.getId())).singleElement()
+                .satisfies(n -> assertThat(n.getKind()).isEqualTo("predictor.trajectory.tracking_60_85"));
+    }
+
+    @Test
+    void failedInAppWriteRollsTheClaimBack() {
+        Event e = liveEvent();
+        baseline(e.getId(), NIGHT);
+        doThrow(new IllegalStateException("db down")).when(notifications)
+                .save(argThat((Notification n) -> n != null && "predictor.radar.worsened".equals(n.getKind())));
+
+        runJob();
+
+        verify(notifier).notifyRadarWorsened(any());
+        assertThat(jdbc.queryForObject("select count(*) from predictor_alert", Integer.class)).isZero();
+        assertThat(notificationsFor(owner.getId())).isEmpty();
+        assertThat(mail.sent()).isEmpty();
+        AuthPrincipal p = new AuthPrincipal(owner.getId(), org.getId(), UserRole.OWNER, UUID.randomUUID());
+        assertThat(timeline.timeline(p, e.getId()).runs()).singleElement()
+                .satisfies(r -> assertThat(r.alert()).isEqualTo("none"));
+
+        // The day was not used up: a later alert that day still claims it.
+        bandCrossing(e);
+        assertThat(notificationsFor(owner.getId())).singleElement()
+                .satisfies(n -> assertThat(n.getKind()).isEqualTo("predictor.trajectory.tracking_60_85"));
+        assertThat(jdbc.queryForObject("select kind from predictor_alert where event_id = ?", String.class,
+                e.getId())).isEqualTo("band");
     }
 
     @Test

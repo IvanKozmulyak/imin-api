@@ -27,7 +27,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * V162 on a fresh database per test: the date-check tables, the ledger CHECKs and the events link; V165 open events;
- * V167 radar runs; V168 predictor alerts.
+ * V167 radar runs; V168 predictor alerts; V169 Radar mute and run-time snapshots.
  */
 abstract class DateCheckMigrationScenarios {
 
@@ -182,7 +182,24 @@ abstract class DateCheckMigrationScenarios {
                 new CheckCase("ck_predictor_alert_kind", DateCheckMigrationScenarios::predictorAlert,
                         Map.of("kind", "push")),
                 new CheckCase("ck_predictor_alert_band_shape", DateCheckMigrationScenarios::predictorAlert,
-                        Map.of("kind", "band", "date_check_id", EXISTING_CHECK)));
+                        Map.of("kind", "band", "date_check_id", EXISTING_CHECK)),
+                // Each bad row breaks one CHECK only: the pair stays complete so the shape CHECK cannot fire first.
+                new CheckCase("ck_date_check_radar_verdicts", DateCheckMigrationScenarios::radarCheck,
+                        Map.of("radar_verdict", "maybe", "radar_risk", 1)),
+                new CheckCase("ck_date_check_radar_verdicts", DateCheckMigrationScenarios::radarCheck,
+                        Map.of("radar_prev_verdict", "maybe", "radar_prev_risk", 1)),
+                new CheckCase("ck_date_check_radar_risks", DateCheckMigrationScenarios::radarCheck,
+                        Map.of("radar_verdict", "good", "radar_risk", 11)),
+                new CheckCase("ck_date_check_radar_risks", DateCheckMigrationScenarios::radarCheck,
+                        Map.of("radar_prev_verdict", "good", "radar_prev_risk", -1)),
+                new CheckCase("ck_date_check_radar_snapshot_shape", DateCheckMigrationScenarios::radarCheck,
+                        Map.of("radar_verdict", "good")),
+                new CheckCase("ck_date_check_radar_snapshot_shape", DateCheckMigrationScenarios::radarCheck,
+                        Map.of("radar_prev_risk", 3)),
+                new CheckCase("ck_date_check_radar_snapshot_shape", DateCheckMigrationScenarios::dateCheckFresh,
+                        Map.of("radar_verdict", "good", "radar_risk", 1)),
+                new CheckCase("ck_date_check_radar_snapshot_shape", DateCheckMigrationScenarios::dateCheckFresh,
+                        Map.of("radar_prev_verdict", "good", "radar_prev_risk", 1)));
     }
 
     private static Map<String, Object> radarWithout(String column) {
@@ -275,6 +292,72 @@ abstract class DateCheckMigrationScenarios {
                 .satisfies(ex -> assertThat(ex.getMessage()).containsIgnoringCase("uq_date_check_radar_run"));
         assertThatCode(() -> radarCheck(jdbc, Map.of("org_id", org, "event_id", event, "radar_night", night,
                 "radar_milestone", 14, "radar_prev_id", otherPrev))).doesNotThrowAnyException();
+    }
+
+    @Test
+    void radarRowsBackfillTheirVerdicts() {
+        DataSource ds = freshDatabase();
+        migrate(ds, "168");
+        JdbcTemplate jdbc = new JdbcTemplate(ds);
+        UUID org = org(jdbc);
+        UUID event = event(jdbc, org);
+        LocalDate night = LocalDate.of(2026, 10, 15);
+        UUID prev = dateCheck(jdbc, org, Map.of("event_id", event));
+        dateCheckDate(jdbc, Map.of("date_check_id", prev, "candidate_date", night, "verdict", "adjust", "risk_score", 4));
+        dateCheckDate(jdbc, Map.of("date_check_id", prev, "candidate_date", night.plusDays(1), "verdict", "good",
+                "risk_score", 1));
+        UUID radar = radarCheck(jdbc, Map.of("org_id", org, "event_id", event, "radar_prev_id", prev));
+        dateCheckDate(jdbc, Map.of("date_check_id", radar, "candidate_date", night, "verdict", "move", "risk_score", 7));
+
+        migrate(ds, "latest");
+
+        Map<String, Object> r = snapshot(jdbc, radar);
+        assertThat(r.get("radar_prev_verdict")).isEqualTo("adjust");
+        assertThat(((Number) r.get("radar_prev_risk")).intValue()).isEqualTo(4);
+        assertThat(r.get("radar_verdict")).isEqualTo("move");
+        assertThat(((Number) r.get("radar_risk")).intValue()).isEqualTo(7);
+        assertThat(snapshot(jdbc, prev).values()).containsOnlyNulls();
+    }
+
+    @Test
+    void radarRowWithStaleBaselineBackfillsNoBefore() {
+        DataSource ds = freshDatabase();
+        migrate(ds, "168");
+        JdbcTemplate jdbc = new JdbcTemplate(ds);
+        UUID org = org(jdbc);
+        UUID event = event(jdbc, org);
+        LocalDate night = LocalDate.of(2026, 10, 15);
+        UUID prev = dateCheck(jdbc, org, Map.of("event_id", event));
+        dateCheckDate(jdbc, Map.of("date_check_id", prev, "candidate_date", night.plusDays(9)));
+        UUID radar = radarCheck(jdbc, Map.of("org_id", org, "event_id", event, "radar_prev_id", prev));
+        dateCheckDate(jdbc, Map.of("date_check_id", radar, "candidate_date", night, "verdict", "move", "risk_score", 7));
+
+        migrate(ds, "latest");
+
+        Map<String, Object> r = snapshot(jdbc, radar);
+        assertThat(r.get("radar_prev_verdict")).isNull();
+        assertThat(r.get("radar_prev_risk")).isNull();
+        assertThat(r.get("radar_verdict")).isEqualTo("move");
+        assertThat(((Number) r.get("radar_risk")).intValue()).isEqualTo(7);
+    }
+
+    @Test
+    void eventsStartUnmuted() {
+        DataSource ds = freshDatabase();
+        migrate(ds, "168");
+        JdbcTemplate jdbc = new JdbcTemplate(ds);
+        UUID event = event(jdbc, org(jdbc));
+
+        migrate(ds, "latest");
+
+        assertThat(jdbc.queryForObject("select radar_muted from events where id = ?", Boolean.class, event)).isFalse();
+        UUID later = event(jdbc, org(jdbc));
+        assertThat(jdbc.queryForObject("select radar_muted from events where id = ?", Boolean.class, later)).isFalse();
+    }
+
+    private static Map<String, Object> snapshot(JdbcTemplate jdbc, UUID checkId) {
+        return jdbc.queryForMap("select radar_prev_verdict, radar_prev_risk, radar_verdict, radar_risk from date_check"
+                + " where id = ?", checkId);
     }
 
     // ---- predictor alerts --------------------------------------------------------------

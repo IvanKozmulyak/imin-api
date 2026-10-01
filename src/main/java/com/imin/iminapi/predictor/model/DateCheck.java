@@ -98,6 +98,20 @@ public class DateCheck {
     @Column(name = "radar_prev_id", updatable = false)
     private UUID radarPrevId;
 
+    /** The baseline's verdict and risk for the radar night when the run was made; null when it did not score it. */
+    @Column(name = "radar_prev_verdict", length = 16, updatable = false)
+    private String radarPrevVerdict;
+
+    @Column(name = "radar_prev_risk", updatable = false)
+    private Short radarPrevRisk;
+
+    /** This run's own verdict and risk for the night, written once right after it is scored (V169). */
+    @Column(name = "radar_verdict", length = 16, updatable = false)
+    private String radarVerdict;
+
+    @Column(name = "radar_risk", updatable = false)
+    private Short radarRisk;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 

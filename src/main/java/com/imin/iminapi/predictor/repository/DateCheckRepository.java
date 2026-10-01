@@ -36,6 +36,17 @@ public interface DateCheckRepository extends JpaRepository<DateCheck, UUID> {
     @Query("UPDATE DateCheck d SET d.eventId = :eventId WHERE d.id = :id AND d.eventId IS NULL")
     int linkEventIfUnset(@Param("id") UUID id, @Param("eventId") UUID eventId);
 
+    /** The event's radar runs, newest first. */
+    @Query("SELECT c FROM DateCheck c WHERE c.orgId = :orgId AND c.eventId = :eventId AND c.origin = 'radar' "
+            + "ORDER BY c.createdAt DESC, c.id DESC")
+    List<DateCheck> findRadarRuns(@Param("orgId") UUID orgId, @Param("eventId") UUID eventId, Pageable page);
+
+    /** The run's own verdict and risk, once, right after it is scored; bulk JPQL, since the columns are insert-only. */
+    @Modifying(flushAutomatically = true)
+    @Query("UPDATE DateCheck c SET c.radarVerdict = :verdict, c.radarRisk = :risk "
+            + "WHERE c.id = :id AND c.origin = 'radar' AND c.radarVerdict IS NULL")
+    int recordRadarResult(@Param("id") UUID id, @Param("verdict") String verdict, @Param("risk") Short risk);
+
     /**
      * Serialises re-scores of one check: its dates are replaced under a unique (check, date) key. Native
      * {@code FOR UPDATE}: PESSIMISTIC_WRITE renders {@code FOR NO KEY UPDATE}, which H2 cannot parse.

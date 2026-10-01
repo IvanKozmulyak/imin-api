@@ -45,6 +45,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -94,6 +95,11 @@ class ReforecastAlertNotifierTest {
         when(users.findById(creator.getId())).thenReturn(Optional.of(creator));
         when(prefs.findById(creator.getId())).thenReturn(Optional.empty());
         when(alerts.claim(any(), any(), anyString(), any())).thenReturn(true);
+        // The real store runs the in-app write inside the claim's transaction, only for the winner.
+        when(alerts.claimWith(any(), any(), anyString(), any(), any())).thenAnswer(inv -> {
+            inv.<Runnable>getArgument(4).run();
+            return true;
+        });
     }
 
     private RadarAlertRule.Alert alert() {
@@ -167,7 +173,8 @@ class ReforecastAlertNotifierTest {
         assertThat(n.getTitle()).isEqualTo(title);
         assertThat(n.getBody()).isEqualTo(body);
         assertThat(n.getLink()).isEqualTo("/events/" + event.getId() + "/predictor");
-        verify(alerts).claim(event.getId(), LocalDate.of(2026, 10, 1), PredictorAlertStore.KIND_RADAR, a.runCheckId());
+        verify(alerts).claimWith(eq(event.getId()), eq(LocalDate.of(2026, 10, 1)), eq(PredictorAlertStore.KIND_RADAR),
+                eq(a.runCheckId()), any());
 
         String url = "https://dashboard.imin.wtf/events/" + event.getId() + "/predictor";
         assertThat(mail.sent()).singleElement().satisfies(m -> {
@@ -201,7 +208,7 @@ class ReforecastAlertNotifierTest {
     @Test
     void missingPrefsRowMeansOn() {
         fire("radar");
-        verify(alerts).claim(eq(event.getId()), any(), eq(PredictorAlertStore.KIND_RADAR), any());
+        verify(alerts).claimWith(eq(event.getId()), any(), eq(PredictorAlertStore.KIND_RADAR), any(), any());
         verify(notifications).save(any());
         assertThat(mail.sent()).hasSize(1);
     }
@@ -210,6 +217,7 @@ class ReforecastAlertNotifierTest {
     @ValueSource(strings = {"band", "radar"})
     void lostClaimSendsNothing(String kind) {
         when(alerts.claim(any(), any(), anyString(), any())).thenReturn(false);
+        doReturn(false).when(alerts).claimWith(any(), any(), anyString(), any(), any());
         fire(kind);
         verify(notifications, never()).save(any());
         assertThat(mail.sent()).isEmpty();
@@ -278,6 +286,30 @@ class ReforecastAlertNotifierTest {
         assertThat(mail.sent()).isEmpty();
     }
 
+    @Test
+    void failedInAppWriteSendsNoEmail() {
+        when(notifications.save(any())).thenThrow(new IllegalStateException("db down"));
+        assertThatThrownBy(() -> fire("radar")).hasMessage("db down");
+        assertThat(mail.sent()).isEmpty();
+    }
+
+    @Test
+    void mutedEventGetsNoRadarAlert() {
+        event.setRadarMuted(true);
+        fire("radar");
+        verifyNoInteractions(prefs, alerts);
+        verify(notifications, never()).save(any());
+        assertThat(mail.sent()).isEmpty();
+    }
+
+    @Test
+    void muteLeavesBandAlerts() {
+        event.setRadarMuted(true);
+        fire("band");
+        verify(alerts).claim(eq(event.getId()), any(), eq(PredictorAlertStore.KIND_BAND), isNull());
+        assertThat(savedNotification().getKind()).isEqualTo("predictor.trajectory.tracking_60_85");
+    }
+
     // --- copy limits ---
 
     @Test
@@ -305,14 +337,14 @@ class ReforecastAlertNotifierTest {
     void alertDayIsTheEventsLocalDay() {
         event.setTimezone("Europe/Paris");
         notifier(Instant.parse("2026-10-01T22:30:00Z")).notifyRadarWorsened(alert());
-        verify(alerts).claim(eq(event.getId()), eq(LocalDate.of(2026, 10, 2)), anyString(), any());
+        verify(alerts).claimWith(eq(event.getId()), eq(LocalDate.of(2026, 10, 2)), anyString(), any(), any());
     }
 
     @Test
     void badZoneFallsBackToUtc() {
         event.setTimezone("Mars/Olympus");
         notifier(Instant.parse("2026-10-01T22:30:00Z")).notifyRadarWorsened(alert());
-        verify(alerts).claim(eq(event.getId()), eq(LocalDate.of(2026, 10, 1)), anyString(), any());
+        verify(alerts).claimWith(eq(event.getId()), eq(LocalDate.of(2026, 10, 1)), anyString(), any(), any());
     }
 
     // --- band ---

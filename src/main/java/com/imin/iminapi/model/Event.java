@@ -200,6 +200,10 @@ public class Event {
     @Column(name = "date_check_id")
     private UUID dateCheckId;
 
+    /** Radar alerts off for this event (V169). Only the bulk update writes it, so a full-entity save never reverts a mute. */
+    @Column(name = "radar_muted", nullable = false, updatable = false)
+    private boolean radarMuted = false;
+
     @PrePersist
     void onPersist() {
         venueCityKey = com.imin.iminapi.util.EventNormalization.cityKey(venueCity);

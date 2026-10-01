@@ -183,6 +183,11 @@ class RadarRerunTest {
     }
 
     private void rawCheck(UUID id, UUID eventId, Instant createdAt, Instant updatedAt, LocalDate date) {
+        rawCheck(id, eventId, createdAt, updatedAt, date, "good", 2);
+    }
+
+    private void rawCheck(UUID id, UUID eventId, Instant createdAt, Instant updatedAt, LocalDate date,
+                          String verdict, int risk) {
         jdbc.update("""
                 insert into date_check (id, org_id, created_by, city, country, genre_family, status,
                     question_bank_version, assumptions_json, research, event_id, created_at, updated_at)
@@ -191,7 +196,16 @@ class RadarRerunTest {
         jdbc.update("""
                 insert into date_check_date (id, date_check_id, candidate_date, verdict, risk_score, opp_score,
                     coverage, rank_order)
-                values (?, ?, ?, 'good', 2, 6, 0.800, 1)""", UUID.randomUUID(), id, date);
+                values (?, ?, ?, ?, ?, 6, 0.800, 1)""", UUID.randomUUID(), id, date, verdict, risk);
+    }
+
+    private Map<String, Object> snapshotColumns(UUID checkId) {
+        return jdbc.queryForMap("select radar_prev_verdict, radar_prev_risk, radar_verdict, radar_risk from date_check"
+                + " where id = ?", checkId);
+    }
+
+    private static Integer intOrNull(Object o) {
+        return o == null ? null : ((Number) o).intValue();
     }
 
     private void assertCurrent(Event e, UUID expected) throws Exception {
@@ -619,15 +633,24 @@ class RadarRerunTest {
         UUID prevId = check(e.getId(), BEFORE_WINDOW, NIGHT);
         assertThat(service.radarRerun(e.getId()).outcome()).isEqualTo(RadarOutcome.RAN);
         UUID radarId = radarRows(e.getId()).get(0).getId();
+        Map<String, Object> snapshot = snapshotColumns(radarId);
+        assertThat(snapshot.values()).doesNotContainNull();
 
         service.patchAssumptions(principal(), radarId, new AssumptionsPatch(null, null, null, null, 21));
+        service.patchAssumptions(principal(), prevId, new AssumptionsPatch(null, null, 2500L, null, 21));
         // A full-entity save of a loaded row with the radar fields changed in memory writes none of them.
         DateCheck loaded = checks.findById(radarId).orElseThrow();
         loaded.setOrigin(DateCheck.ORIGIN_ORGANIZER);
         loaded.setRadarMilestone((short) 7);
         loaded.setRadarNight(NIGHT.plusDays(1));
         loaded.setRadarPrevId(null);
+        loaded.setRadarPrevVerdict("good".equals(snapshot.get("radar_prev_verdict")) ? "move" : "good");
+        loaded.setRadarPrevRisk((short) (intOrNull(snapshot.get("radar_prev_risk")) == 0 ? 1 : 0));
+        loaded.setRadarVerdict("good".equals(snapshot.get("radar_verdict")) ? "move" : "good");
+        loaded.setRadarRisk((short) (intOrNull(snapshot.get("radar_risk")) == 0 ? 1 : 0));
         checks.saveAndFlush(loaded);
+
+        assertThat(snapshotColumns(radarId)).isEqualTo(snapshot);
 
         Map<String, Object> row = jdbc.queryForMap(
                 "select origin, radar_milestone, radar_night, radar_prev_id from date_check where id = ?", radarId);
@@ -635,6 +658,43 @@ class RadarRerunTest {
         assertThat(((Number) row.get("radar_milestone")).intValue()).isEqualTo(14);
         assertThat(row.get("radar_night").toString()).isEqualTo(NIGHT.toString());
         assertThat(row.get("radar_prev_id")).isEqualTo(prevId);
+    }
+
+    // --- run-time snapshot ---
+
+    @Test
+    void radarRunRecordsBothEnds() {
+        Event e = event(EventStatus.LIVE, START);
+        UUID base = UUID.randomUUID();
+        // A baseline value the engine does not produce for these inputs, so the two ends cannot be confused.
+        rawCheck(base, e.getId(), BEFORE_WINDOW, BEFORE_WINDOW, NIGHT, "move", 9);
+
+        assertThat(service.radarRerun(e.getId()).outcome()).isEqualTo(RadarOutcome.RAN);
+
+        UUID radarId = radarRows(e.getId()).get(0).getId();
+        DateCheckDate own = checkDates.findByDateCheckIdOrderByCandidateDateAsc(radarId).get(0);
+        assertThat(tuple(own.getVerdict(), (int) own.getRiskScore())).isNotEqualTo(tuple("move", 9));
+        Map<String, Object> row = snapshotColumns(radarId);
+        assertThat(row.get("radar_prev_verdict")).isEqualTo("move");
+        assertThat(intOrNull(row.get("radar_prev_risk"))).isEqualTo(9);
+        assertThat(row.get("radar_verdict")).isEqualTo(own.getVerdict());
+        assertThat(intOrNull(row.get("radar_risk"))).isEqualTo((int) own.getRiskScore());
+    }
+
+    @Test
+    void staleBaselineRecordsNoBefore() {
+        Event e = event(EventStatus.LIVE, START);
+        rawCheck(UUID.randomUUID(), e.getId(), BEFORE_WINDOW, BEFORE_WINDOW, LocalDate.of(2026, 10, 24));
+
+        assertThat(service.radarRerun(e.getId()).outcome()).isEqualTo(RadarOutcome.RAN);
+
+        UUID radarId = radarRows(e.getId()).get(0).getId();
+        DateCheckDate own = checkDates.findByDateCheckIdOrderByCandidateDateAsc(radarId).get(0);
+        Map<String, Object> row = snapshotColumns(radarId);
+        assertThat(row.get("radar_prev_verdict")).isNull();
+        assertThat(row.get("radar_prev_risk")).isNull();
+        assertThat(row.get("radar_verdict")).isEqualTo(own.getVerdict());
+        assertThat(intOrNull(row.get("radar_risk"))).isEqualTo((int) own.getRiskScore());
     }
 
     // --- scheduled bean ---

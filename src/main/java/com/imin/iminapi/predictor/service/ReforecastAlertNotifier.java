@@ -38,8 +38,13 @@ import java.util.Map;
  *
  * <p><b>One predictor alert per event per day.</b> Both kinds first check the creator's {@code predictorShift}
  * preference (no row = on), then claim the event's local day in {@code predictor_alert}; the first claim of the day
- * wins across both kinds, and a lost claim sends nothing. A band crossing is otherwise emitted only when
- * {@code ReforecastService} sees the band change, so repeated recomputes inside one band emit nothing.
+ * wins across both kinds, and a lost claim sends nothing. A radar claim commits in one transaction with its in-app
+ * row (the email follows after commit), so a failed in-app write leaves the day unclaimed. A band crossing is
+ * otherwise emitted only when {@code ReforecastService} sees the band change, so repeated recomputes inside one band
+ * emit nothing.
+ *
+ * <p><b>Per-event Radar mute</b> ({@code events.radar_muted}): a muted event gets no radar alert and claims no day,
+ * so a band alert can still go out that day. Band alerts and the radar runs themselves are never muted.
  *
  * <p>Copy is honest: the band alert states the old and new band and the projected range, never "will"; the radar
  * alert states the verdict change and both risk scores, never that the risk went up.
@@ -122,6 +127,10 @@ public class ReforecastAlertNotifier {
             log.info("[radar-alert] event {} gone; no alert", a.eventId());
             return;
         }
+        if (e.isRadarMuted()) {
+            log.info("[radar-alert] event {}: Radar muted for this event", e.getId());
+            return;
+        }
         if (!wants(e)) {
             log.info("[radar-alert] event {}: creator opted out of predictor alerts", e.getId());
             return;
@@ -132,18 +141,18 @@ public class ReforecastAlertNotifier {
         String from = verdictWord(a.fromVerdict(), locale);
         String to = verdictWord(a.toVerdict(), locale);
         String night = night(a.night(), locale);
-        if (!alerts.claim(e.getId(), alertDay(e), PredictorAlertStore.KIND_RADAR, a.runCheckId())) {
-            log.info("[radar-alert] event {}: already alerted today", e.getId());
-            return;
-        }
-
         Notification n = new Notification();
         n.setUserId(e.getCreatedBy());
         n.setKind(RADAR_KIND);
         n.setTitle(fitTitle(name, from, to, locale));
         n.setBody(radarBody(night, a.fromRisk(), a.toRisk(), locale));
         n.setLink("/events/" + e.getId() + "/predictor");
-        notifications.save(n);
+        // Claim and in-app row commit together; a failed save frees the day again.
+        if (!alerts.claimWith(e.getId(), alertDay(e), PredictorAlertStore.KIND_RADAR, a.runCheckId(),
+                () -> notifications.save(n))) {
+            log.info("[radar-alert] event {}: already alerted today", e.getId());
+            return;
+        }
 
         Organization org = orgs.findById(e.getOrgId()).orElse(null);
         String recipient = org == null ? null : org.getContactEmail();

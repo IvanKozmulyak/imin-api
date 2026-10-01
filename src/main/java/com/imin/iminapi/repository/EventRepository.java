@@ -338,6 +338,12 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
                      @Param("enabled") boolean enabled,
                      @Param("token") String token);
 
+    /** Per-event Radar mute, the column's only writer; leaves {@code updated_at} (the PATCH ETag) alone. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("UPDATE Event e SET e.radarMuted = :muted WHERE e.id = :id AND e.deletedAt IS NULL")
+    int updateRadarMuted(@Param("id") UUID id, @Param("muted") boolean muted);
+
     /**
      * Soft-deletes a never-published draft. The WHERE clause is the atomic guard: a publish
      * committed in between makes this match 0 rows instead of overwriting the live event.

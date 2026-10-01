@@ -92,6 +92,8 @@ import java.util.stream.Collectors;
  * <p>Radar: {@link #radarRerun} re-runs an event's current check for its night at a days-out milestone as a
  * new {@code origin='radar'} row, which then becomes the current check. The org's list shows organizer runs only.
  * When the baseline scored the same night and {@link RadarAlertRule} says so, the run also returns the alert to send.
+ * The row keeps the baseline's and its own verdict and risk for the night as they were at run time (V169), because
+ * a later {@link #patchAssumptions} replaces the date rows of either check.
  */
 @Service
 public class DateCheckService {
@@ -380,17 +382,18 @@ public class DateCheckService {
                 m.getAsInt())) {
             return RadarRun.of(RadarOutcome.NOT_DUE);
         }
-        DateCheck c = radarCopy(prev, e.getId(), m.getAsInt(), night);
+        DateCheck c = radarCopy(prev, e.getId(), m.getAsInt(), night, scoresNight ? match.row() : null);
         DateCheckInput in = input(c, today, storedAnswers(prev));
         c.setAssumptionsJson(write(AssumptionResolver.resolve(in, profile(c))));
         c.setQuestionBankVersion(bank.version());
         // uq_date_check_radar_run is the backstop against a second writer.
         checks.saveAndFlush(c);
         run(c, in, List.of(night));
+        DateCheckDate now = dates.findByDateCheckIdOrderByCandidateDateAsc(c.getId()).get(0);
+        checks.recordRadarResult(c.getId(), now.getVerdict(), now.getRiskScore());
         RadarAlertRule.Alert alert = null;
         if (scoresNight) {   // a baseline that did not score the night never alerts
             DateCheckDate base = match.row();
-            DateCheckDate now = dates.findByDateCheckIdOrderByCandidateDateAsc(c.getId()).get(0);
             RadarAlertRule.Snapshot b = snapshot(base);
             RadarAlertRule.Snapshot r = snapshot(now);
             if (RadarAlertRule.shouldAlert(b, r)) {
@@ -410,8 +413,11 @@ public class DateCheckService {
         return new RadarAlertRule.Snapshot(row.getVerdict(), row.getRiskScore(), signals);
     }
 
-    /** A new radar row with the previous check's inputs, timestamped by the injected clock. */
-    private DateCheck radarCopy(DateCheck prev, UUID eventId, int milestone, LocalDate night) {
+    /**
+     * A new radar row with the previous check's inputs, timestamped by the injected clock; {@code baseline} is the
+     * previous check's row for the night, null when it did not score it.
+     */
+    private DateCheck radarCopy(DateCheck prev, UUID eventId, int milestone, LocalDate night, DateCheckDate baseline) {
         DateCheck c = new DateCheck();
         c.setOrgId(prev.getOrgId());
         c.setCreatedBy(prev.getCreatedBy());
@@ -434,6 +440,10 @@ public class DateCheckService {
         c.setRadarMilestone((short) milestone);
         c.setRadarNight(night);
         c.setRadarPrevId(prev.getId());
+        if (baseline != null) {
+            c.setRadarPrevVerdict(baseline.getVerdict());
+            c.setRadarPrevRisk(baseline.getRiskScore());
+        }
         Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
         c.setCreatedAt(now);
         c.setUpdatedAt(now);
