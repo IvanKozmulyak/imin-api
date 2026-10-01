@@ -7,12 +7,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -65,6 +67,18 @@ public class ReferenceCalendarService {
         if (country == null || kind == null || day == null) return false;
         return repository.existsByCountryAndKindAndCalendarDateBetween(country, kind,
                 LocalDate.of(day.getYear(), 1, 1), LocalDate.of(day.getYear(), 12, 31));
+    }
+
+    /** Latest day synced rows of this kind cover for the country (end dates included); empty when none is stored. */
+    public Optional<LocalDate> latest(String country, String kind) {
+        if (country == null || kind == null) return Optional.empty();
+        return Optional.ofNullable(repository.findLatestCoveredDate(country, kind));
+    }
+
+    /** When rows of this kind were last written for the country; empty when none is stored. */
+    public Optional<Instant> lastSynced(String country, String kind) {
+        if (country == null || kind == null) return Optional.empty();
+        return Optional.ofNullable(repository.findLatestSyncedAt(country, kind));
     }
 
     private boolean hasSyncedHolidays(String country, int year) {

@@ -621,6 +621,11 @@ imin:
       enabled: ${PREDICTOR_WIKIMEDIA_ENABLED:false}
       # Wikimedia's User-Agent policy requires a contact (email or URL); a blank value binds this default.
       user-agent: "${PREDICTOR_WIKIMEDIA_USER_AGENT:imin-api/1.0 (+https://imin.wtf; ops@imin.wtf) predictor-trends}"
+    # football-data.org Ligue 1 + Champions League fixtures for question 3.2, synced with the reference calendar.
+    # Off by default (commercial use unconfirmed); enabled with a blank key fails startup.
+    football:
+      enabled: ${PREDICTOR_FOOTBALL_ENABLED:false}
+      api-key: ${FOOTBALL_DATA_API_KEY:}
   ratelimit:
     login:
       capacity: 5

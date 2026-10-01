@@ -4,16 +4,19 @@ import com.imin.iminapi.audienceplan.opendata.OpenDataCities;
 import com.imin.iminapi.predictor.calendar.CalendarHit;
 import com.imin.iminapi.predictor.calendar.CalendarPlace;
 import com.imin.iminapi.predictor.calendar.CalendarRegions;
+import com.imin.iminapi.predictor.calendar.FootballFixturesSync;
 import com.imin.iminapi.predictor.calendar.ReferenceCalendarService;
 import com.imin.iminapi.predictor.rules.Finding.Status;
 import com.imin.iminapi.predictor.rules.QuestionBank.Kind;
 import com.imin.iminapi.predictor.rules.QuestionBank.Question;
 import com.imin.iminapi.predictor.rules.QuestionBank.SourceKind;
+import com.imin.iminapi.predictor.sources.SourceGates;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 import static com.imin.iminapi.predictor.rules.RuleFixtures.BANK;
@@ -36,12 +39,15 @@ class CalendarEvaluatorTest {
     private static final CalendarRegions REGIONS = new CalendarRegions(OpenDataCities.load());
 
     private ReferenceCalendarService cal;
+    private SourceGates gates;
     private CalendarEvaluator evaluator;
 
     @BeforeEach
     void setUp() {
         cal = mock(ReferenceCalendarService.class);
-        evaluator = new CalendarEvaluator(cal, REGIONS);
+        gates = mock(SourceGates.class);
+        when(gates.isOn("football")).thenReturn(true);
+        evaluator = new CalendarEvaluator(cal, REGIONS, gates);
     }
 
     private void coversAll(String country) {
@@ -394,12 +400,273 @@ class CalendarEvaluatorTest {
 
     @Test
     void m14bQuestionsNotCheckedWithReason() {
-        for (String id : List.of("3.2", "5.1", "10.3")) {
+        assertThat(CalendarEvaluator.NO_SOURCE_YET).containsExactlyInAnyOrder("5.1", "10.3");
+        for (String id : List.of("5.1", "10.3")) {
             Finding f = eval(id, in().city("Metz", "FR", "57000").build(), "2026-10-24");
             assertThat(f.status()).as(id).isEqualTo(Status.NOT_CHECKED);
             assertThat(f.facts()).as(id).containsEntry("reason", "no_source");
         }
         verifyNoInteractions(cal);
+    }
+
+    // --- 3.2 ---
+
+    private static final String FL1_URL = "https://api.football-data.org/v4/competitions/FL1/matches";
+    private static final String CL_URL = "https://api.football-data.org/v4/competitions/CL/matches";
+    /** football-data team ids from the recorded answers: PSG 524, Marseille 516, Lille 521, Lens 546, Barça 81. */
+    private static final String PSG_AWAY_21 = "FL1|21:00|516|524|Marseille – PSG";
+
+    private static CalendarHit fixture(String date, String name) {
+        return new CalendarHit(LocalDate.parse(date), null, "fixture", name, "",
+                name.startsWith("CL|") ? CL_URL : FL1_URL, false, CalendarHit.SYNCED);
+    }
+
+    /** Synced two days before the fixture input's today (2026-09-30), so never stale. */
+    private void fixtures(String latest, CalendarHit... hits) {
+        when(cal.lastSynced("FR", "fixture")).thenReturn(Optional.of(java.time.Instant.parse("2026-09-28T02:30:00Z")));
+        when(cal.latest("FR", "fixture")).thenReturn(Optional.ofNullable(latest).map(LocalDate::parse));
+        when(cal.between(any(), any(), any())).thenReturn(List.of(hits));
+    }
+
+    private static CalendarHit matchday(String from, String to, String name) {
+        return new CalendarHit(LocalDate.parse(from), LocalDate.parse(to), "fixture", name, "", FL1_URL, false,
+                CalendarHit.SYNCED);
+    }
+
+    /** 3.2 for a city and the event's start/end hours (the fixture input has 23 → 5). */
+    private Finding football(String city, Integer startHour, Integer endHour, String date) {
+        DateCheckInput b = in().city(city, "FR", null).build();
+        DateCheckInput x = new DateCheckInput(b.city(), b.country(), b.postalCode(), b.venueLat(), b.venueLng(),
+                b.genreFamily(), b.subGenre(), b.capacity(), b.priceMinor(), b.format(), startHour, endHour,
+                b.lineup(), b.knownEvents(), b.orgId(), b.today(), b.audienceAge(), b.communities(),
+                b.buyingLeadDays(), b.excludeEventId());
+        return evaluator.evaluate(q("3.2", SourceKind.STRUCTURED), x, LocalDate.parse(date));
+    }
+
+    private static String actionKey(Finding f, String date) {
+        return ActionPicker.pick(List.of(f), BANK, LocalDate.parse(date), RuleFixtures.TODAY).get(0).key();
+    }
+
+    @Test
+    void nonFrFootballIsNoSource() {
+        Finding f = eval("3.2", in().city("Amsterdam", "NL", null).build(), "2026-10-24");
+
+        assertThat(f.status()).isEqualTo(Status.NOT_CHECKED);
+        assertThat(f.facts()).containsEntry("reason", "no_source");
+        verifyNoInteractions(cal);
+    }
+
+    @Test
+    void footballGateOffIsSourceOff() {
+        when(gates.isOn("football")).thenReturn(false);
+
+        Finding f = paris("3.2", "2026-10-24");
+
+        assertThat(f.status()).isEqualTo(Status.NOT_CHECKED);
+        assertThat(f.facts()).containsEntry("reason", "source_off");
+        verifyNoInteractions(cal);
+    }
+
+    @Test
+    void dateBeyondLatestFixtureIsNoData() {
+        fixtures("2027-05-29", fixture("2027-06-05", PSG_AWAY_21));
+        assertNoData(football("Paris", 20, null, "2027-06-05"));
+
+        fixtures(null);
+        assertNoData(football("Paris", 20, null, "2026-10-24"));
+
+        when(cal.lastSynced("FR", "fixture")).thenReturn(Optional.empty());
+        assertNoData(football("Paris", 20, null, "2026-10-24"));
+    }
+
+    @Test
+    void fixturesNotSyncedFor14DaysAreStale() {
+        fixtures("2027-05-29", fixture("2026-10-24", PSG_AWAY_21));
+        when(cal.lastSynced("FR", "fixture")).thenReturn(Optional.of(java.time.Instant.parse("2026-09-15T23:00:00Z")));
+
+        Finding stale = football("Paris", 20, null, "2026-10-24");
+        when(cal.lastSynced("FR", "fixture")).thenReturn(Optional.of(java.time.Instant.parse("2026-09-16T00:00:00Z")));
+        Finding fresh = football("Paris", 20, null, "2026-10-24");
+
+        assertThat(stale.status()).isEqualTo(Status.NOT_CHECKED);
+        assertThat(stale.facts()).containsEntry("reason", "stale");
+        assertThat(fresh.status()).isEqualTo(Status.FOUND);
+    }
+
+    @Test
+    void otherClubsLeagueMatchIsClear() {
+        fixtures("2027-05-29", fixture("2026-10-30", "FL1|21:05|521|546|Lille – RC Lens"));
+
+        assertThat(football("Paris", 20, null, "2026-10-30").status()).isEqualTo(Status.CLEAR);
+    }
+
+    @Test
+    void ownClubMatchOverlappingStartIsRisk2() {
+        fixtures("2027-05-29", fixture("2026-10-24", PSG_AWAY_21));
+
+        Finding f = football("Paris", 20, null, "2026-10-24");
+
+        assertThat(f.status()).isEqualTo(Status.FOUND);
+        assertThat(f.kind()).isEqualTo(Kind.RISK);
+        assertThat(f.strength()).isEqualTo(2);
+        assertThat(f.facts()).containsExactlyInAnyOrderEntriesOf(java.util.Map.of("date", "2026-10-24",
+                "name", "Marseille – PSG", "competition", "FL1", "kickoff", "21:00", "count", 1));
+        assertThat(f.url()).isEqualTo(FootballFixturesSync.PUBLIC_URL).isEqualTo("https://www.football-data.org/");
+        assertThat(actionKey(f, "2026-10-24")).isEqualTo("predictor.a.match_start_time");
+    }
+
+    @Test
+    void matchEndingBeforeDoorsIsOpportunity() {
+        fixtures("2027-05-29", fixture("2026-10-24", PSG_AWAY_21));
+
+        Finding f = football("Paris", 23, 5, "2026-10-24");
+
+        assertThat(f.status()).isEqualTo(Status.FOUND);
+        assertThat(f.kind()).isEqualTo(Kind.OPPORTUNITY);
+        assertThat(f.strength()).isEqualTo(2);
+        assertThat(f.facts()).containsEntry("kickoff", "21:00").containsEntry("count", 1);
+        assertThat(actionKey(f, "2026-10-24")).isEqualTo("predictor.a.match_screening");
+    }
+
+    @Test
+    void afternoonMatchIsClear() {
+        fixtures("2027-05-29", fixture("2026-10-24", "FL1|15:00|516|524|Marseille – PSG"));
+
+        assertThat(football("Paris", 23, 5, "2026-10-24").status()).isEqualTo(Status.CLEAR);
+    }
+
+    @Test
+    void matchAfterEventEndIsClear() {
+        fixtures("2027-05-29", fixture("2026-10-24", PSG_AWAY_21));
+
+        assertThat(football("Paris", 14, 20, "2026-10-24").status()).isEqualTo(Status.CLEAR);
+    }
+
+    @Test
+    void tbcMatchdayIsRiskOnFridaySaturdayAndSunday() {
+        fixtures("2027-05-29", matchday("2026-12-04", "2026-12-06", "FL1|TBC|511|524|Toulouse – PSG"));
+
+        for (String day : List.of("2026-12-04", "2026-12-05", "2026-12-06")) {
+            Finding f = football("Paris", 23, 5, day);
+            assertThat(f.kind()).as(day).isEqualTo(Kind.RISK);
+            assertThat(f.strength()).as(day).isEqualTo(2);
+            // the matchday range, never a single day the match is not known to be on
+            assertThat(f.facts()).as(day).containsEntry("date", "2026-12-04").containsEntry("endDate", "2026-12-06")
+                    .containsEntry("name", "Toulouse – PSG").doesNotContainKey("kickoff");
+        }
+    }
+
+    @Test
+    void tbcMatchdayIsClearOnThursdayAndMonday() {
+        fixtures("2027-05-29", matchday("2026-12-04", "2026-12-06", "FL1|TBC|511|524|Toulouse – PSG"));
+
+        assertThat(football("Paris", 23, 5, "2026-12-03").status()).isEqualTo(Status.CLEAR);
+        assertThat(football("Paris", 23, 5, "2026-12-07").status()).isEqualTo(Status.CLEAR);
+    }
+
+    @Test
+    void timedMatchCountsOnlyOnItsOwnNight() {
+        fixtures("2027-05-29", fixture("2026-12-05", PSG_AWAY_21));
+
+        assertThat(football("Paris", 20, null, "2026-12-04").status()).isEqualTo(Status.CLEAR);
+        Finding f = football("Paris", 20, null, "2026-12-05");
+        assertThat(f.kind()).isEqualTo(Kind.RISK);
+        assertThat(f.facts()).containsEntry("date", "2026-12-05").doesNotContainKey("endDate");
+    }
+
+    @Test
+    void endBeforeStartRunsToNightEnd() {
+        // 22 → 21 reads as the event ending before it starts; the event is taken to run to 06:00
+        fixtures("2027-05-29", fixture("2026-10-24", "FL1|23:00|516|524|Marseille – PSG"));
+
+        assertThat(football("Paris", 22, 21, "2026-10-24").kind()).isEqualTo(Kind.RISK);
+    }
+
+    @Test
+    void endAfterRolloverIsTruncatedToSixAm() {
+        // start 03, end 07: 07:00 is after the 06:00 rollover, so the event runs to 06:00 and a 05:00 match overlaps
+        fixtures("2027-05-29", fixture("2026-10-24", "FL1|05:00|516|524|Marseille – PSG"));
+
+        assertThat(football("Paris", 3, 7, "2026-10-24").kind()).isEqualTo(Kind.RISK);
+    }
+
+    @Test
+    void unparseableFixtureNameSkipped() {
+        fixtures("2027-05-29", fixture("2026-10-24", "garbage"), fixture("2026-10-24", "FL1|xx:yy|516|524|Marseille – PSG"));
+        assertThat(football("Paris", 20, null, "2026-10-24").status()).isEqualTo(Status.CLEAR);
+
+        fixtures("2027-05-29", fixture("2026-10-24", "garbage"), fixture("2026-10-24", PSG_AWAY_21));
+        assertThat(football("Paris", 20, null, "2026-10-24").facts()).containsEntry("count", 1);
+    }
+
+    @Test
+    void nullStartHourIsRisk() {
+        fixtures("2027-05-29", fixture("2026-10-24", "FL1|15:00|516|524|Marseille – PSG"));
+
+        Finding f = football("Paris", null, null, "2026-10-24");
+
+        assertThat(f.status()).isEqualTo(Status.FOUND);
+        assertThat(f.kind()).isEqualTo(Kind.RISK);
+    }
+
+    @Test
+    void startAfterMidnightCountsAsNextDay() {
+        fixtures("2027-05-29", fixture("2026-10-24", PSG_AWAY_21));
+
+        Finding f = football("Paris", 0, 5, "2026-10-24");
+
+        assertThat(f.kind()).isEqualTo(Kind.OPPORTUNITY);
+    }
+
+    @Test
+    void lateKickoffAfterMidnightOverlapsANightEvent() {
+        fixtures("2027-05-29", fixture("2026-10-24", "FL1|00:30|516|524|Marseille – PSG"));
+
+        assertThat(football("Paris", 23, 5, "2026-10-24").kind()).isEqualTo(Kind.RISK);
+    }
+
+    @Test
+    void clMatchIsStrength3InCityWithoutClub() {
+        fixtures("2027-05-29", fixture("2026-10-20", "CL|21:00|524|81|PSG – Barça"));
+
+        Finding f = football("Metz", 20, null, "2026-10-20");
+
+        assertThat(f.kind()).isEqualTo(Kind.RISK);
+        assertThat(f.strength()).isEqualTo(3);
+        assertThat(f.facts()).containsEntry("competition", "CL").containsEntry("name", "PSG – Barça");
+    }
+
+    @Test
+    void riskWinsWhenBothPresent() {
+        fixtures("2027-05-29",
+                fixture("2026-10-24", "CL|19:00|524|81|PSG – Barça"),
+                fixture("2026-10-24", "FL1|22:00|521|524|Lille – PSG"));
+
+        Finding f = football("Paris", 22, 5, "2026-10-24");
+
+        assertThat(f.kind()).isEqualTo(Kind.RISK);
+        assertThat(f.strength()).isEqualTo(2);
+        assertThat(f.facts()).containsEntry("competition", "FL1").containsEntry("count", 1);
+    }
+
+    @Test
+    void clChosenFirstAndCountsEveryFixtureOfTheKind() {
+        fixtures("2027-05-29",
+                fixture("2026-10-24", PSG_AWAY_21),
+                fixture("2026-10-24", "CL|21:00|546|81|RC Lens – Barça"));
+
+        Finding f = football("Paris", 20, null, "2026-10-24");
+
+        assertThat(f.strength()).isEqualTo(3);
+        assertThat(f.facts()).containsEntry("competition", "CL").containsEntry("name", "RC Lens – Barça")
+                .containsEntry("count", 2);
+    }
+
+    @Test
+    void noFixtureOnDateIsClear() {
+        fixtures("2027-05-29", fixture("2026-10-25", PSG_AWAY_21), hit("holiday", "2026-10-24", null, "x", ""));
+
+        assertThat(football("Paris", 20, null, "2026-10-24").status()).isEqualTo(Status.CLEAR);
     }
 
     // --- 4.5 ---

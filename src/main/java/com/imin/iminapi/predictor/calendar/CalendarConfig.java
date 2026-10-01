@@ -1,5 +1,6 @@
 package com.imin.iminapi.predictor.calendar;
 
+import com.imin.iminapi.predictor.sources.SourceGates;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.http.client.ClientHttpRequestFactoryBuilder;
 import org.springframework.boot.http.client.HttpClientSettings;
@@ -16,7 +17,7 @@ import java.util.concurrent.Executor;
  * timeouts: the static {@code RestClient.builder()} ignores Boot's client settings.
  */
 @Configuration
-@EnableConfigurationProperties(CalendarSyncProperties.class)
+@EnableConfigurationProperties({CalendarSyncProperties.class, FootballDataProperties.class})
 public class CalendarConfig {
 
     static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(5);
@@ -42,6 +43,16 @@ public class CalendarConfig {
     @Bean
     public OpenHolidaysSync openHolidaysSync(CalendarSyncProperties props) {
         return new OpenHolidaysSync(http, props);
+    }
+
+    /** The flag without a key fails startup; the message names the variables, never a value. */
+    @Bean
+    public FootballFixturesSync footballFixturesSync(FootballDataProperties football, SourceGates gates) {
+        if (football.isEnabled() && football.getApiKey().isEmpty()) {
+            throw new IllegalStateException("PREDICTOR_FOOTBALL_ENABLED is true but FOOTBALL_DATA_API_KEY is blank");
+        }
+        // the full gate (date check, calendar sync, flag, key): nothing fetches rows no question reads
+        return new FootballFixturesSync(http, football, () -> gates.isOn("football"));
     }
 
     @Bean

@@ -121,7 +121,7 @@ class RuleEngineTest {
     @Test
     void everyShippedQuestionHasAnEvaluator() {
         List<QuestionEvaluator> real = List.of(
-                new CalendarEvaluator(mock(ReferenceCalendarService.class), mock(CalendarRegions.class)),
+                new CalendarEvaluator(mock(ReferenceCalendarService.class), mock(CalendarRegions.class), mock(SourceGates.class)),
                 new InternalEvaluator(null, null, null, null),
                 new OrganizerEvaluator(),
                 new InputEvaluator(),

@@ -33,7 +33,8 @@ public class DataSourceCatalog {
 
     public static final String LOCATION = "classpath:predictor/sources.yaml";
     static final Set<String> USED_FOR =
-            Set.of("public_holidays", "school_holidays", "bridge_days", "dst", "hijri", "weather", "genre_interest");
+            Set.of("public_holidays", "school_holidays", "bridge_days", "dst", "hijri", "weather", "genre_interest",
+                    "football_fixtures");
     private static final String ACTIVE = "active";
 
     private record Entry(PublicDataSource source, String gate, String syncPrefix) {}

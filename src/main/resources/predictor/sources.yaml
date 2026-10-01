@@ -30,6 +30,17 @@ sources:
     url: https://www.openholidaysapi.org/
     syncPrefix: https://openholidaysapi.org/
     gate: date-check
+  # Terms (football-data.org/about, "Terms & Conditions", last updated 2018-06-01) §7.1 sets this credit line, checked 2026-10-01.
+  # Commercial use unconfirmed (pending with Ivan); gate stays off until confirmed.
+  - id: football-data
+    name: football-data.org
+    usedFor: [football_fixtures]
+    licence: football-data.org General Terms and Conditions
+    licenceUrl: https://www.football-data.org/about
+    creditLine: "Football data provided by the Football-Data.org API"
+    url: https://www.football-data.org/
+    syncPrefix: https://api.football-data.org/v4/competitions/
+    gate: football
   - id: iana-tz
     name: IANA Time Zone Database
     usedFor: [dst]

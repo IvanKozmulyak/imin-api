@@ -41,4 +41,13 @@ public interface ReferenceCalendarEntryRepository extends JpaRepository<Referenc
     boolean existsBySourceUrlStartingWith(String prefix);
 
     boolean existsByCountryAndKindAndCalendarDateBetween(String country, String kind, LocalDate from, LocalDate to);
+
+    /** Latest day any row of this kind covers for the country (its end date when it has one); null when none. */
+    @Query("select max(coalesce(e.endDate, e.calendarDate)) from ReferenceCalendarEntry e"
+            + " where e.country = :country and e.kind = :kind")
+    LocalDate findLatestCoveredDate(@Param("country") String country, @Param("kind") String kind);
+
+    /** Newest {@code synced_at} among the country's rows of this kind; null when none. */
+    @Query("select max(e.syncedAt) from ReferenceCalendarEntry e where e.country = :country and e.kind = :kind")
+    Instant findLatestSyncedAt(@Param("country") String country, @Param("kind") String kind);
 }

@@ -3,15 +3,22 @@ package com.imin.iminapi.predictor.rules;
 import com.imin.iminapi.predictor.calendar.CalendarHit;
 import com.imin.iminapi.predictor.calendar.CalendarPlace;
 import com.imin.iminapi.predictor.calendar.CalendarRegions;
+import com.imin.iminapi.predictor.calendar.FootballClubs;
+import com.imin.iminapi.predictor.calendar.FootballFixturesSync;
+import com.imin.iminapi.predictor.calendar.FootballFixturesSync.FixtureName;
 import com.imin.iminapi.predictor.calendar.ReferenceCalendarService;
 import com.imin.iminapi.predictor.rules.QuestionBank.Kind;
 import com.imin.iminapi.predictor.rules.QuestionBank.Question;
 import com.imin.iminapi.predictor.rules.QuestionBank.SourceKind;
 import com.imin.iminapi.predictor.service.PublicHolidayCalendar;
+import com.imin.iminapi.predictor.sources.SourceGates;
 import org.springframework.stereotype.Component;
 
 import java.time.DayOfWeek;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalTime;
+import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -20,6 +27,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.function.Function;
@@ -27,24 +35,36 @@ import java.util.function.Predicate;
 
 /**
  * Calendar questions from {@code reference_calendar}: holidays, ponts, DST nights, Ramadan, school holidays,
- * and neighbour-country holidays for border cities.
+ * neighbour-country holidays for border cities, and big football matches (3.2, football-data.org fixtures,
+ * behind the {@code football} source gate).
  * A kind with no synced data for the country and year answers not_checked, never clear.
  */
 @Component
 public class CalendarEvaluator implements QuestionEvaluator {
 
-    /** Answered once football, diaspora and ad-period sources exist. */
-    static final Set<String> NO_SOURCE_YET = Set.of("3.2", "5.1", "10.3");
-    private static final Set<String> RULES = Set.of("4.1", "4.2", "4.3", "4.4", "4.5", "4.7", "5.2", "7.1");
+    /** Answered once diaspora and ad-period sources exist. */
+    static final Set<String> NO_SOURCE_YET = Set.of("5.1", "10.3");
+    private static final Set<String> RULES = Set.of("3.2", "4.1", "4.2", "4.3", "4.4", "4.5", "4.7", "5.2", "7.1");
     private static final String BORDER = "4.5";
+    private static final String FOOTBALL = "3.2";
     private static final int WEEK = 7;
+    /** A match runs about two hours from kickoff, half-time included. */
+    static final int MATCH_MINUTES = 120;
+    /** A match ending this long before doors is a screening opportunity, not a clash; product default. */
+    static final int SCREENING_LEAD_MINUTES = 180;
+    /** Fixtures not re-synced for this long may carry moved kickoffs; the sync runs weekly. */
+    static final int FIXTURES_STALE_DAYS = 14;
+    private static final int DAY_MINUTES = 24 * 60;
+    private static final int NIGHT_END_MINUTES = DAY_MINUTES + NightDates.NIGHT_ROLLOVER_HOUR * 60;
 
     private final ReferenceCalendarService calendar;
     private final CalendarRegions regions;
+    private final SourceGates gates;
 
-    public CalendarEvaluator(ReferenceCalendarService calendar, CalendarRegions regions) {
+    public CalendarEvaluator(ReferenceCalendarService calendar, CalendarRegions regions, SourceGates gates) {
         this.calendar = calendar;
         this.regions = regions;
+        this.gates = gates;
     }
 
     @Override
@@ -74,6 +94,10 @@ public class CalendarEvaluator implements QuestionEvaluator {
             }
             if (BORDER.equals(q.id())) {
                 out.add(neighbourHoliday(q, in, date));
+                continue;
+            }
+            if (FOOTBALL.equals(q.id())) {
+                out.add(football(q, in, date));
                 continue;
             }
             if (ctx == null) ctx = load(in, date);
@@ -145,6 +169,78 @@ public class CalendarEvaluator implements QuestionEvaluator {
         if (!offNext.isEmpty()) return found(q, Kind.OPPORTUNITY, 3, offNext, next, country);
         if (!offToday.isEmpty()) return found(q, Kind.OPPORTUNITY, 2, offToday, d, country);
         return Finding.clear(q);
+    }
+
+    private record Fixture(CalendarHit hit, FixtureName name, Kind kind) {
+        boolean cl() { return "CL".equals(name.competition()); }
+    }
+
+    /**
+     * A big match on the night: the city's own Ligue 1 club, or a Champions League match of any French club.
+     * Risk when it overlaps the event or its kickoff or the start hour is unknown; opportunity when it ends
+     * within {@link #SCREENING_LEAD_MINUTES} before doors. Strength 3 for CL, 2 for Ligue 1. A TBC match is a
+     * matchday range and counts as risk on every day of it. Fixtures not synced for 14 days answer stale.
+     */
+    private Finding football(Question q, DateCheckInput in, LocalDate d) {
+        if (!"FR".equals(in.country())) return Finding.notChecked(q, "no_source");
+        if (!gates.isOn("football")) return Finding.notChecked(q, "source_off");
+        Optional<Instant> synced = calendar.lastSynced("FR", "fixture");
+        if (synced.isEmpty()) return noData(q);
+        if (synced.get().atZone(ZoneOffset.UTC).toLocalDate().isBefore(in.today().minusDays(FIXTURES_STALE_DAYS))) {
+            return Finding.notChecked(q, "stale");
+        }
+        Optional<LocalDate> latest = calendar.latest("FR", "fixture");
+        if (latest.isEmpty() || latest.get().isBefore(d)) return noData(q);
+        Set<Integer> clubs = FootballClubs.of(in.cityKey());
+        List<Fixture> counted = new ArrayList<>();
+        for (CalendarHit h : calendar.between(d, d, new CalendarPlace("FR", null, null))) {
+            if (!isKind(h, "fixture") || !covers(h, d)) continue;
+            FixtureName f;
+            try {
+                f = FixtureName.parse(h.name());
+            } catch (IllegalArgumentException e) {
+                continue;
+            }
+            boolean relevant = "CL".equals(f.competition()) || clubs.contains(f.homeId()) || clubs.contains(f.awayId());
+            if (!relevant) continue;
+            Kind kind = matchKind(f.kickoff(), in.startHour(), in.endHour());
+            if (kind != null) counted.add(new Fixture(h, f, kind));
+        }
+        if (counted.isEmpty()) return Finding.clear(q);
+        Kind kind = counted.stream().anyMatch(f -> f.kind() == Kind.RISK) ? Kind.RISK : Kind.OPPORTUNITY;
+        List<Fixture> ofKind = counted.stream().filter(f -> f.kind() == kind).toList();
+        Fixture chosen = ofKind.stream().min(Comparator.comparing((Fixture f) -> !f.cl())
+                .thenComparing(f -> f.name().kickoff(), Comparator.nullsLast(Comparator.naturalOrder()))
+                .thenComparing(f -> f.name().label())).orElseThrow();
+        Map<String, Object> facts = new LinkedHashMap<>();
+        // a TBC match carries its matchday range, never a single day it is not known to be on
+        facts.put("date", chosen.hit().date().toString());
+        facts.put("endDate", chosen.hit().endDate() == null ? null : chosen.hit().endDate().toString());
+        facts.put("name", chosen.name().label());
+        facts.put("competition", chosen.name().competition());
+        facts.put("kickoff", chosen.name().kickoff() == null ? null : chosen.name().kickoff().toString());
+        facts.put("count", ofKind.size());
+        int strength = ofKind.stream().anyMatch(Fixture::cl) ? 3 : 2;
+        return Finding.found(q, kind, strength, facts, FootballFixturesSync.PUBLIC_URL);
+    }
+
+    /** Minutes from the night's midnight-before; hours before the 06:00 rollover belong to the next calendar day. */
+    private static int nightMinutes(int hour, int minute) {
+        return (hour < NightDates.NIGHT_ROLLOVER_HOUR ? hour + 24 : hour) * 60 + minute;
+    }
+
+    /** RISK, OPPORTUNITY, or null when the match does not touch the event. */
+    static Kind matchKind(LocalTime kickoff, Integer startHour, Integer endHour) {
+        if (kickoff == null || startHour == null) return Kind.RISK;
+        int start = nightMinutes(startHour, 0);
+        int end = endHour == null ? NIGHT_END_MINUTES : nightMinutes(endHour, 0);
+        // an end that reads as before the start (e.g. 22 → 21) runs to the night's end
+        if (end <= start) end = NIGHT_END_MINUTES;
+        int k = nightMinutes(kickoff.getHour(), kickoff.getMinute());
+        int matchEnd = k + MATCH_MINUTES;
+        if (k < end && matchEnd > start) return Kind.RISK;
+        if (matchEnd <= start && matchEnd >= start - SCREENING_LEAD_MINUTES) return Kind.OPPORTUNITY;
+        return null;
     }
 
     /** Coverage is per year, so a window crossing New Year needs both years synced. */

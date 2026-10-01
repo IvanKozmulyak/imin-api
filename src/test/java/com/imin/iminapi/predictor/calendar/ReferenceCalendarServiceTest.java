@@ -106,4 +106,40 @@ class ReferenceCalendarServiceTest {
         assertThat(service.on(LocalDate.of(2027, 3, 9), PARIS)).singleElement()
                 .satisfies(h -> assertThat(h.approximate()).isTrue());
     }
+
+    @Test
+    void latestReturnsNewestFixtureDate() {
+        store("", "2026-10-10", null, "fixture", "FL1|20:45|525|1045|Lorient – Paris FC");
+        store("", "2027-05-09", null, "fixture", "FL1|20:45|523|524|Olympique Lyon – PSG");
+        store("", "2027-12-25", null, "holiday", "Noël");
+
+        assertThat(service.latest("FR", "fixture")).contains(LocalDate.of(2027, 5, 9));
+        assertThat(service.latest("FR", "holiday")).contains(LocalDate.of(2027, 12, 25));
+    }
+
+    @Test
+    void latestCountsARangesEndDate() {
+        store("", "2027-05-09", null, "fixture", "FL1|20:45|523|524|Olympique Lyon – PSG");
+        store("", "2027-05-21", "2027-05-23", "fixture", "FL1|TBC|511|524|Toulouse – PSG");
+
+        assertThat(service.latest("FR", "fixture")).contains(LocalDate.of(2027, 5, 23));
+    }
+
+    @Test
+    void lastSyncedIsTheNewestWriteOfTheKind() {
+        java.time.Instant before = java.time.Instant.now().minusSeconds(5);
+        store("", "2027-05-09", null, "fixture", "FL1|20:45|523|524|Olympique Lyon – PSG");
+
+        assertThat(service.lastSynced("FR", "fixture")).hasValueSatisfying(t -> assertThat(t).isAfter(before));
+        assertThat(service.lastSynced("FR", "dst")).isEmpty();
+        assertThat(service.lastSynced("NL", "fixture")).isEmpty();
+    }
+
+    @Test
+    void latestEmptyWhenNoRows() {
+        store("", "2027-12-25", null, "holiday", "Noël");
+
+        assertThat(service.latest("FR", "fixture")).isEmpty();
+        assertThat(service.latest("NL", "holiday")).isEmpty();
+    }
 }

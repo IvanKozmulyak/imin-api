@@ -1,6 +1,8 @@
 package com.imin.iminapi.predictor;
 
 import com.imin.iminapi.predictor.calendar.CalendarSyncProperties;
+import com.imin.iminapi.predictor.calendar.FootballDataProperties;
+import com.imin.iminapi.predictor.calendar.FootballFixturesSync;
 import com.imin.iminapi.predictor.calendar.OpenHolidaysSync;
 import com.imin.iminapi.predictor.config.DateCheckProperties;
 import com.imin.iminapi.predictor.config.PredictorProperties;
@@ -32,7 +34,8 @@ class DataSourceCatalogTest {
     private final PredictorProperties predictor = new PredictorProperties();
     private final DateCheckProperties dateCheck = new DateCheckProperties();
     private final WikimediaProperties wikimedia = new WikimediaProperties();
-    private final SourceGates gates = new SourceGates(calendar, predictor, dateCheck, wikimedia);
+    private final FootballDataProperties football = new FootballDataProperties();
+    private final SourceGates gates = new SourceGates(calendar, predictor, dateCheck, wikimedia, football);
 
     private static final Function<String, Optional<LocalDate>> NO_DATES = prefix -> Optional.empty();
 
@@ -71,6 +74,7 @@ class DataSourceCatalogTest {
     @Test
     void sourcesListIncludesEveryConfiguredSource() throws IOException {
         gates(true, true, true);
+        football(true, "k");
 
         DataSourceCatalog catalog = real();
         List<PublicDataSource> active = catalog.active(NO_DATES);
@@ -78,8 +82,8 @@ class DataSourceCatalogTest {
         assertThat(catalog.reviewedOn()).isEqualTo("2026-10-01");
         assertThat(active).extracting(PublicDataSource::id).containsExactlyElementsOf(yamlIds());
         assertThat(active).extracting(PublicDataSource::id).containsExactly(
-                "calendrier-api-gouv", "fr-en-calendrier-scolaire", "openholidays", "iana-tz", "openjdk-hijrah",
-                "open-meteo", "wikimedia-pageviews");
+                "calendrier-api-gouv", "fr-en-calendrier-scolaire", "openholidays", "football-data", "iana-tz",
+                "openjdk-hijrah", "open-meteo", "wikimedia-pageviews");
         for (PublicDataSource s : active) {
             assertThat(s.status()).isEqualTo("active");
             assertThat(List.of(s.id(), s.name(), s.licence(), s.licenceUrl(), s.creditLine(), s.url()))
@@ -141,6 +145,42 @@ class DataSourceCatalogTest {
         assertThat(activeIds()).doesNotContain("wikimedia-pageviews");
         gates(true, true, false, false);
         assertThat(activeIds()).doesNotContain("wikimedia-pageviews").contains("openholidays");
+    }
+
+    private void football(boolean enabled, String key) {
+        football.setEnabled(enabled);
+        football.setApiKey(key);
+    }
+
+    @Test
+    void footballListedOnlyWhileGateOnWithCredit() {
+        gates(true, true, false);
+        football(true, "k");
+
+        PublicDataSource fd = real().active(NO_DATES).stream()
+                .filter(s -> s.id().equals("football-data")).findFirst().orElseThrow();
+
+        assertThat(fd.name()).isEqualTo("football-data.org");
+        assertThat(fd.usedFor()).containsExactly("football_fixtures");
+        assertThat(fd.licence()).isEqualTo("football-data.org General Terms and Conditions");
+        assertThat(fd.licenceUrl()).isEqualTo("https://www.football-data.org/about");
+        assertThat(fd.creditLine()).isEqualTo("Football data provided by the Football-Data.org API");
+        assertThat(fd.url()).isEqualTo("https://www.football-data.org/");
+        // the prefix must cover the URLs FootballFixturesSync stores, or lastUpdated stays null
+        List<String> asked = new ArrayList<>();
+        real().active(p -> { asked.add(p); return Optional.empty(); });
+        assertThat(asked).contains("https://api.football-data.org/v4/competitions/");
+        assertThat(FootballFixturesSync.url("FL1")).startsWith("https://api.football-data.org/v4/competitions/");
+
+        football(false, "k");
+        assertThat(activeIds()).doesNotContain("football-data").contains("openholidays");
+        football(true, " ");
+        assertThat(activeIds()).doesNotContain("football-data");
+        football(true, "k");
+        gates(false, true, false);
+        assertThat(activeIds()).doesNotContain("football-data");
+        gates(true, false, false);
+        assertThat(activeIds()).doesNotContain("football-data");
     }
 
     @Test
