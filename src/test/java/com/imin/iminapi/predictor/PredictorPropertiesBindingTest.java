@@ -26,7 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>The weather kill switch was the live example: {@code PredictorProperties.weatherEnabled}
  * said "Bound to {@code ${PREDICTOR_WEATHER_ENABLED:true}}" while the {@code imin.predictor}
- * block stopped at the SCORE phase, so turning the outbound Open-Meteo call off in production
+ * block stopped at the SCORE phase, so turning the outbound weather call off in production
  * needed a deploy. This is the same trap CLAUDE.md records for
  * {@code GOOGLE_OAUTH_NATIVE_AUDIENCE} ("without the line Spring would bind only IMIN_… and this
  * name would be silently inert").

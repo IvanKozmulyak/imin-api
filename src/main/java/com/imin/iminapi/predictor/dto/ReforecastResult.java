@@ -40,6 +40,7 @@ public record ReforecastResult(
         SellOutEta sellOutEta,            // nullable {earliest, latest} ISO-8601 dates
         Pacing pacing,                    // nullable — present only at stage 1
         String narration,                 // nullable — generated only on band change
+        NarrationCredit narrationCredit,  // nullable — present only while a narration that used outside data is shown
         Alert alert,                      // nullable — most recent band-crossing alert for this event
         Ledger ledger,                    // assembled at serve time from the backing ledger row
         Instant generatedAt
@@ -77,6 +78,12 @@ public record ReforecastResult(
      */
     public record Ledger(String id, int stage, String modelId, String promptVersion, String inputHash) {}
 
+    /** Provider attribution for the data behind {@code narration}: the visible text and its link. */
+    @io.swagger.v3.oas.annotations.media.Schema(
+            description = "Attribution for outside data the narration was generated from; "
+                    + "render as a visible link next to the narration")
+    public record NarrationCredit(String text, String url) {}
+
     /** Sell-out ETA window as ISO-8601 instants; null-fielded when a bound is open. */
     public record SellOutEta(String earliest, String latest) {}
 
@@ -102,7 +109,7 @@ public record ReforecastResult(
 
     /** A terminal "never forecast" result — band null, but generatedAt always present. */
     public static ReforecastResult none(Instant at) {
-        return new ReforecastResult("none", 0, null, null, null, null, null, null, null, null, null, null, at);
+        return new ReforecastResult("none", 0, null, null, null, null, null, null, null, null, null, null, null, at);
     }
 
     /**
@@ -111,12 +118,12 @@ public record ReforecastResult(
      */
     public ReforecastResult withBandLabel(String label) {
         return new ReforecastResult(status, stage, band, label, projectedFinalRange, revenueRangeMinor,
-                velocity, sellOutEta, pacing, narration, alert, ledger, generatedAt);
+                velocity, sellOutEta, pacing, narration, narrationCredit, alert, ledger, generatedAt);
     }
 
     /** Return a copy with the ledger stamp attached (called by the serving layer). */
     public ReforecastResult withLedger(Ledger stamp) {
         return new ReforecastResult(status, stage, band, bandLabel, projectedFinalRange, revenueRangeMinor,
-                velocity, sellOutEta, pacing, narration, alert, stamp, generatedAt);
+                velocity, sellOutEta, pacing, narration, narrationCredit, alert, stamp, generatedAt);
     }
 }

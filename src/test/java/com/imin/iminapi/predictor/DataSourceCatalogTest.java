@@ -104,7 +104,7 @@ class DataSourceCatalogTest {
         assertThat(active).extracting(PublicDataSource::id).containsExactlyElementsOf(yamlIds());
         assertThat(active).extracting(PublicDataSource::id).containsExactly(
                 "calendrier-api-gouv", "fr-en-calendrier-scolaire", "openholidays", "football-data", "iana-tz",
-                "openjdk-hijrah", "open-meteo", "wikimedia-pageviews", "openagenda", "quefaireaparis");
+                "openjdk-hijrah", "openweather", "wikimedia-pageviews", "openagenda", "quefaireaparis");
         for (PublicDataSource s : active) {
             assertThat(s.status()).isEqualTo("active");
             assertThat(List.of(s.id(), s.name(), s.licence(), s.licenceUrl(), s.creditLine(), s.url()))
@@ -272,7 +272,7 @@ class DataSourceCatalogTest {
     void dateCheckOffHidesCalendarSources() {
         gates(false, true, true);
 
-        assertThat(activeIds()).containsExactly("open-meteo");
+        assertThat(activeIds()).containsExactly("openweather");
     }
 
     @Test
@@ -280,11 +280,11 @@ class DataSourceCatalogTest {
         gates(true, false, true);
 
         // wikimedia does not read the calendar sync, so it stays listed
-        assertThat(activeIds()).containsExactly("open-meteo", "wikimedia-pageviews");
+        assertThat(activeIds()).containsExactly("openweather", "wikimedia-pageviews");
     }
 
     @Test
-    void weatherOffHidesOpenMeteo() {
+    void weatherOffHidesOpenWeather() {
         gates(true, true, false);
 
         assertThat(activeIds()).containsExactly(
@@ -353,7 +353,7 @@ class DataSourceCatalogTest {
         assertThat(updated.get("openholidays")).isEqualTo("2026-09-28");
         assertThat(updated).containsEntry("fr-en-calendrier-scolaire", null)
                 .containsEntry("iana-tz", null).containsEntry("openjdk-hijrah", null)
-                .containsEntry("open-meteo", null).containsEntry("wikimedia-pageviews", null);
+                .containsEntry("openweather", null).containsEntry("wikimedia-pageviews", null);
     }
 
     @Test
@@ -372,7 +372,7 @@ class DataSourceCatalogTest {
         real().active(lookup).forEach(s -> updated.put(s.id(), s.lastUpdated()));
 
         assertThat(askedSources).containsExactly("wikimedia", "openagenda", "quefaireaparis");
-        // the prefix entries only: iana-tz, openjdk-hijrah and open-meteo are never looked up
+        // the prefix entries only: iana-tz, openjdk-hijrah and openweather are never looked up
         assertThat(askedPrefixes).containsExactly("https://calendrier.api.gouv.fr/jours-feries/",
                 "https://data.education.gouv.fr/explore/dataset/fr-en-calendrier-scolaire/",
                 "https://openholidaysapi.org/", "https://api.football-data.org/v4/competitions/");
@@ -380,7 +380,7 @@ class DataSourceCatalogTest {
                 .containsEntry("quefaireaparis", "2026-09-30")
                 .containsEntry("wikimedia-pageviews", "2026-09-28")
                 .containsEntry("iana-tz", null).containsEntry("openjdk-hijrah", null)
-                .containsEntry("open-meteo", null);
+                .containsEntry("openweather", null);
     }
 
     // --- load failures, each from an inline file ---

@@ -14,7 +14,7 @@ import java.util.function.BooleanSupplier;
 
 /**
  * Maps a {@code sources.yaml} gate key to the live flag that turns that source on or off:
- * {@code date-check} (calendar data), {@code weather} (Open-Meteo), {@code wikimedia} (pageviews for 9.1),
+ * {@code date-check} (calendar data), {@code weather} (OpenWeather), {@code wikimedia} (pageviews for 9.1),
  * {@code football} (football-data.org fixtures for 3.2), {@code openagenda} and {@code quefaireaparis} (open event
  * listings counted into genre_week_count). Each source's sync job and every evaluator reading its data check the gate.
  */

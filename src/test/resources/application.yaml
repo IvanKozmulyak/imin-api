@@ -106,6 +106,11 @@ imin:
   predictor:
     # No test polls predictor_job on the scheduler; runner tests call tick() themselves.
     jobs-poll-enabled: false
+    # This file shadows the main one, so the flag is set here; calls go to .invalid and come back null.
+    weather-enabled: true
+    openweather:
+      api-key: test-not-a-key
+      base-url: https://openweather.test.invalid
     calendar:
       # Off so no Spring test calls the calendar sources; sync tests use MockRestServiceServer.
       sync-enabled: false

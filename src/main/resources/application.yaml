@@ -587,11 +587,16 @@ imin:
     reforecast-debounce-seconds: ${PREDICTOR_REFORECAST_DEBOUNCE_SECONDS:60}
     # +/- window (days) around the event date for the "competing nights on imin" signal.
     competing-nights-window-days: ${PREDICTOR_COMPETING_NIGHTS_WINDOW_DAYS:1}
-    # Weather signal kill switch. false stops every outbound Open-Meteo call, checked per
-    # request, so it can be flipped without a deploy (WeatherService).
-    weather-enabled: ${PREDICTOR_WEATHER_ENABLED:true}
+    # Weather signal kill switch. false stops every outbound OpenWeather call, checked per
+    # request (WeatherService). true with a blank OPENWEATHER_API_KEY fails startup.
+    weather-enabled: ${PREDICTOR_WEATHER_ENABLED:false}
     # Horizon cap (days-to-event) past which weather is reported null, never fabricated.
-    weather-max-horizon-days: ${PREDICTOR_WEATHER_MAX_HORIZON_DAYS:14}
+    weather-max-horizon-days: ${PREDICTOR_WEATHER_MAX_HORIZON_DAYS:4}
+    # OpenWeather free plan (60 calls a minute, 1M a month): throttled to 1 call/s per JVM.
+    # The key rides in the appid query parameter, so request URLs are never logged.
+    openweather:
+      api-key: ${OPENWEATHER_API_KEY:}
+      base-url: ${PREDICTOR_OPENWEATHER_BASE_URL:https://api.openweathermap.org}
     # ---- Organizer-action reactivity (system-initiated recomputes) ----
     # +/- debounce coalescing autosave bursts of organizer edits into one recompute.
     action-debounce-seconds: ${PREDICTOR_ACTION_DEBOUNCE_SECONDS:120}

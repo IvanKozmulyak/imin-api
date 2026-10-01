@@ -59,13 +59,15 @@ sources:
     creditLine: "Hijri dates: OpenJDK Umm al-Qura tables (GPLv2 + Classpath Exception)"
     url: https://github.com/openjdk/jdk/blob/master/src/java.base/share/classes/java/time/chrono/HijrahChronology.java
     gate: date-check
-  - id: open-meteo
-    name: Open-Meteo
+  # Free plan: ODbL, commercial use allowed, visible attribution where the data appears
+  # (openweathermap.org/full-price "License"; FAQ attribution wording), checked 2026-10-01.
+  - id: openweather
+    name: OpenWeather
     usedFor: [weather]
-    licence: CC BY 4.0
-    licenceUrl: https://creativecommons.org/licenses/by/4.0/
-    creditLine: "Weather data by Open-Meteo.com (CC BY 4.0)"
-    url: https://open-meteo.com/
+    licence: ODbL 1.0
+    licenceUrl: https://opendatacommons.org/licenses/odbl/1-0/
+    creditLine: "Weather data provided by OpenWeather"
+    url: https://openweathermap.org/
     gate: weather
   # CC0 per the Analytics API access policy ("Data licensing"), checked 2026-10-01; CC0 asks for no update date.
   - id: wikimedia-pageviews

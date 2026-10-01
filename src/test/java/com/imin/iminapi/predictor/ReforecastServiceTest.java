@@ -21,6 +21,7 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -34,6 +35,8 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -106,7 +109,7 @@ class ReforecastServiceTest {
         when(narrator.modelId()).thenReturn("test/model");
         when(narrator.narrate(any())).thenReturn("Pacing behind comparable events.");
         when(competingNights.compute(any())).thenReturn(CompetingNightsService.CompetingNights.NONE);
-        when(weather.forecast(any(), any(), any(), org.mockito.ArgumentMatchers.anyInt())).thenReturn(null);
+        when(weather.forecast(any(), any(), any(), any(), any(), any(), anyInt())).thenReturn(null);
 
         // In-memory ledger: record() prepends a faithful row; the repo returns the live list.
         when(ledgerService.record(any())).thenAnswer(inv -> {
@@ -284,6 +287,97 @@ class ReforecastServiceTest {
         assertThat(r.stage()).isEqualTo(1);
         assertThat(r.narration()).isNull();               // narration does not
         verify(narrator, never()).narrate(any());
+    }
+
+    // ---- narration credit ------------------------------------------------------
+
+    private static final ReforecastResult.NarrationCredit CREDIT =
+            new ReforecastResult.NarrationCredit("Weather data provided by OpenWeather", "https://openweathermap.org/");
+
+    @Test
+    void weatherUsedSetsNarrationCreditAndPassesEventCoords() {
+        Event e = events.findActive(eventId).orElseThrow();
+        e.setVenueLatitude(48.85661);
+        e.setVenueLongitude(2.35222);
+        e.setTimezone("Europe/Paris");
+        when(weather.forecast(any(), any(), any(), any(), any(), any(), anyInt()))
+                .thenReturn(new WeatherService.Weather(40, 18.0));
+        when(weather.credit()).thenReturn(CREDIT);
+        stubBands(ProjectionBand.TRACKING_60_85);
+
+        ReforecastResult r = sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
+
+        assertThat(r.narrationCredit()).isEqualTo(CREDIT);
+        verify(weather).forecast(eq(48.85661), eq(2.35222), eq("Amsterdam"), eq("NL"),
+                eq(java.time.ZoneId.of("Europe/Paris")), eq(java.time.LocalDate.parse("2026-06-21")), eq(20));
+        ArgumentCaptor<ReforecastNarrator.Context> ctx = ArgumentCaptor.forClass(ReforecastNarrator.Context.class);
+        verify(narrator).narrate(ctx.capture());
+        assertThat(ctx.getValue().weatherPrecipPct()).isEqualTo(40);
+        assertThat(ctx.getValue().weatherTempC()).isEqualTo(18.0);
+    }
+
+    @Test
+    void noWeatherNoCredit() {
+        when(weather.credit()).thenReturn(CREDIT);
+        stubBands(ProjectionBand.TRACKING_60_85);
+
+        ReforecastResult r = sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
+
+        assertThat(r.narration()).isNotNull();
+        assertThat(r.narrationCredit()).isNull();
+    }
+
+    @Test
+    void narratorFailureNoCredit() {
+        when(weather.forecast(any(), any(), any(), any(), any(), any(), anyInt()))
+                .thenReturn(new WeatherService.Weather(40, 18.0));
+        when(weather.credit()).thenReturn(CREDIT);
+        when(narrator.narrate(any())).thenThrow(new IllegalStateException("upstream down"));
+        stubBands(ProjectionBand.TRACKING_60_85);
+
+        ReforecastResult r = sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
+
+        assertThat(r.narration()).isNull();
+        assertThat(r.narrationCredit()).isNull();
+    }
+
+    @Test
+    void unchangedBandReusesPriorCredit() {
+        when(weather.forecast(any(), any(), any(), any(), any(), any(), anyInt()))
+                .thenReturn(new WeatherService.Weather(40, 18.0));
+        when(weather.credit()).thenReturn(CREDIT);
+        stubBands(ProjectionBand.TRACKING_60_85, ProjectionBand.TRACKING_60_85);
+        sut.recompute(eventId, ReforecastTrigger.SCHEDULED); // writes the prior row with the credit
+        clearInvocations(weather);
+        when(weather.credit()).thenReturn(new ReforecastResult.NarrationCredit("other", "https://other.invalid/"));
+
+        ReforecastResult r = sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
+
+        assertThat(r.narrationCredit()).isEqualTo(CREDIT);  // read back from the ledger row
+        verify(weather, never()).forecast(any(), any(), any(), any(), any(), any(), anyInt());
+    }
+
+    /** A ledger row written before narrationCredit existed parses with the credit null, as served and as prior. */
+    @Test
+    void ledgerRowWithoutNarrationCreditParsesWithCreditNull() {
+        when(weather.forecast(any(), any(), any(), any(), any(), any(), anyInt()))
+                .thenReturn(new WeatherService.Weather(40, 18.0));
+        when(weather.credit()).thenReturn(CREDIT);
+        stubBands(ProjectionBand.TRACKING_60_85, ProjectionBand.TRACKING_60_85);
+        sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
+        PredictionLedger row = rows.get(0);
+        row.setOutputJson(row.getOutputJson().replaceAll("\"narrationCredit\":\\{[^}]*\\},", ""));
+        assertThat(row.getOutputJson()).doesNotContain("narrationCredit");
+
+        ReforecastResult served = sut.latestServable(eventId);
+        assertThat(served.band()).isEqualTo("TRACKING_60_85");
+        assertThat(served.narration()).isEqualTo("Pacing behind comparable events.");
+        assertThat(served.narrationCredit()).isNull();
+
+        // same band: the old row's narration is reused, still with no credit
+        ReforecastResult next = sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
+        assertThat(next.narration()).isEqualTo("Pacing behind comparable events.");
+        assertThat(next.narrationCredit()).isNull();
     }
 
     // ---- idempotency -----------------------------------------------------------

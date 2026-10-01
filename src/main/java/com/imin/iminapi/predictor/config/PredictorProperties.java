@@ -92,15 +92,16 @@ public class PredictorProperties {
 
     /**
      * Weather signal toggle (founder override of spec §6.3 "weather explicitly out" — lean, live
-     * re-forecast only). Bound to {@code ${PREDICTOR_WEATHER_ENABLED:true}}.
+     * re-forecast only). Bound to {@code ${PREDICTOR_WEATHER_ENABLED:false}}.
      */
-    private boolean weatherEnabled = true;
+    private boolean weatherEnabled = false;
 
     /**
      * Horizon cap (days-to-event) for the weather signal: beyond this the forecast is not
-     * reliable, so weather is null (never fabricated). Open-Meteo's free forecast spans ~16 days.
+     * reliable, so weather is null (never fabricated). OpenWeather's free forecast is 5 days in
+     * 3-hour steps, so days 1–4 are the last fully covered local days.
      */
-    private int weatherMaxHorizonDays = 14;
+    private int weatherMaxHorizonDays = 4;
 
     // ---- Organizer-action reactivity (system-initiated re-scores/re-forecasts, task scope B) ----
 

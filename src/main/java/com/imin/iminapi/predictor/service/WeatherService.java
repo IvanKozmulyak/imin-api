@@ -1,143 +1,134 @@
 package com.imin.iminapi.predictor.service;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.imin.iminapi.predictor.config.PredictorProperties;
+import com.imin.iminapi.predictor.dto.PublicDataSourcesResponse.PublicDataSource;
+import com.imin.iminapi.predictor.dto.ReforecastResult;
+import com.imin.iminapi.predictor.sources.DataSourceCatalog;
+import com.imin.iminapi.predictor.sources.openweather.OpenWeatherClient;
+import com.imin.iminapi.predictor.sources.openweather.OpenWeatherClient.GeocodeResult;
+import com.imin.iminapi.predictor.sources.openweather.OpenWeatherClient.GeocodeStatus;
+import com.imin.iminapi.predictor.sources.openweather.OpenWeatherClient.Point;
+import com.imin.iminapi.predictor.sources.openweather.OpenWeatherDay;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import java.net.URI;
-import java.net.URLEncoder;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneId;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Weather signal for the live re-forecast (predictor task scope A — founder override of spec §6.3
- * "weather explicitly out", implemented LEAN). Open-Meteo's free API (no key): geocode the venue
- * city, then read precipitation probability + max temperature for the event date.
+ * Weather signal for the live re-forecast, from OpenWeather's free 5-day / 3-hour forecast: the
+ * max precipitation probability and max sampled temperature over the event's local day.
  *
- * <p><b>Only for re-forecast, only within the horizon.</b> Returns null when disabled
- * ({@code imin.predictor.weather-enabled=false}), when the event is more than
- * {@code weather-max-horizon-days} out (a forecast that far is not reliable), or on ANY failure —
- * it is listed to the LLM as UNKNOWN, never fabricated, and never blocks. It seasons the narrator
- * only; the pacing arithmetic ignores it. <b>It NEVER touches pre-publish scores</b> — those are
- * made at horizons where weather is unforecastable, so this service is not wired into the
- * pre-publish snapshot at all.
+ * <p>Returns null when disabled ({@code PREDICTOR_WEATHER_ENABLED}), outside
+ * {@code [0, weather-max-horizon-days]}, without usable coordinates, when the day is not fully
+ * forecast, or on ANY failure: the narrator then lists weather as UNKNOWN, never a guess. It seasons
+ * the narration only; the pacing arithmetic ignores it, and pre-publish scoring never calls it.
  *
- * <p>Two in-memory caches: geocoded coordinates per city (stable), and the forecast per
- * (coords, date) for ~6h. Single-instance deploy — a restart just re-warms them.
+ * <p>Coordinates: the event's stored venue point first, else OpenWeather geocoding of city plus
+ * country. In-memory caches: geocode answers (found / not found) for the process lifetime, a failed
+ * lookup never; the forecast steps per rounded point for 1 h. Single-instance deploy.
  */
 @Service
 public class WeatherService {
 
     private static final Logger log = LoggerFactory.getLogger(WeatherService.class);
-    private static final Duration FORECAST_TTL = Duration.ofHours(6);
+    static final String SOURCE_ID = "openweather";
+    // ponytail: 1 h TTL because the free plan's update interval is unverified; raise once it is known.
+    private static final Duration FORECAST_TTL = Duration.ofHours(1);
 
     private final PredictorProperties props;
     private final Clock clock;
-    private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
+    private final OpenWeatherClient client;
+    private final ReforecastResult.NarrationCredit credit;
 
-    private final Map<String, Optional<double[]>> coordsCache = new ConcurrentHashMap<>();
-    private final Map<String, CachedForecast> forecastCache = new ConcurrentHashMap<>();
+    private final Map<String, GeocodeResult> geocodeCache = new ConcurrentHashMap<>();
+    private final Map<String, CachedSteps> forecastCache = new ConcurrentHashMap<>();
 
-    public WeatherService(PredictorProperties props, Clock clock) {
+    public WeatherService(PredictorProperties props, Clock clock, OpenWeatherClient client, DataSourceCatalog catalog) {
         this.props = props;
         this.clock = clock;
+        this.client = client;
+        PublicDataSource source = catalog.byId(SOURCE_ID).orElseThrow(() ->
+                new IllegalStateException("predictor sources: no '" + SOURCE_ID + "' entry for the weather credit"));
+        this.credit = new ReforecastResult.NarrationCredit(source.creditLine(), source.url());
     }
 
     /** Precipitation probability (%) and max temperature (°C) for the event date. */
     public record Weather(Integer precipProbabilityMaxPct, Double tempMaxC) {}
 
-    private record CachedForecast(Weather weather, Instant at) {}
+    private record CachedSteps(List<OpenWeatherDay.Step> steps, Instant fetchedAt) {}
+
+    /** Visible attribution for a narration generated from this data. */
+    public ReforecastResult.NarrationCredit credit() {
+        return credit;
+    }
 
     /**
-     * Forecast for {@code eventDate}, or null when disabled, beyond horizon, missing a city, or on
-     * any failure. {@code daysOut} is the event's horizon in days.
+     * Forecast for {@code eventDate} in {@code zone}, or null when disabled, out of horizon, without
+     * coordinates, not fully covered, or on any failure. {@code daysOut} is the event's horizon in days.
      */
-    public Weather forecast(String city, String country, LocalDate eventDate, int daysOut) {
+    public Weather forecast(Double lat, Double lon, String city, String country, ZoneId zone,
+                            LocalDate eventDate, int daysOut) {
         if (!props.isWeatherEnabled()) return null;
-        if (city == null || city.isBlank() || eventDate == null) return null;
-        if (daysOut < 0 || daysOut > props.getWeatherMaxHorizonDays()) return null; // unforecastable horizon
+        if (eventDate == null || zone == null) return null;
+        if (daysOut < 0 || daysOut > props.getWeatherMaxHorizonDays()) return null;
         try {
-            double[] coords = geocode(city, country);
-            if (coords == null) return null;
-            return cachedForecast(coords[0], coords[1], eventDate);
+            Point point = usable(lat, lon) ? new Point(lat, lon) : geocode(city, country);
+            if (point == null) return null;
+            double rLat = round2(point.lat());
+            double rLon = round2(point.lon());
+            List<OpenWeatherDay.Step> steps = cachedSteps(rLat, rLon);
+            return steps == null ? null : OpenWeatherDay.of(steps, zone, eventDate);
         } catch (Exception e) {
-            log.debug("[weather] lookup failed for {} on {}: {} — treated as unknown", city, eventDate, e.getMessage());
-            return null; // never fabricate, never block
+            log.debug("[weather] lookup failed: {}", e.getClass().getSimpleName());
+            return null;
         }
     }
 
-    private Weather cachedForecast(double lat, double lon, LocalDate date) throws Exception {
-        String key = lat + "," + lon + "," + date;
-        CachedForecast cached = forecastCache.get(key);
-        if (cached != null && Duration.between(cached.at(), clock.instant()).compareTo(FORECAST_TTL) < 0) {
-            return cached.weather();
-        }
-        String url = "https://api.open-meteo.com/v1/forecast?latitude=" + lat + "&longitude=" + lon
-                + "&daily=precipitation_probability_max,temperature_2m_max&timezone=auto"
-                + "&start_date=" + date + "&end_date=" + date;
-        JsonNode daily = getJson(url).path("daily");
-        Integer precip = intAt(daily.path("precipitation_probability_max"));
-        Double temp = doubleAt(daily.path("temperature_2m_max"));
-        Weather w = (precip == null && temp == null) ? null : new Weather(precip, temp);
-        forecastCache.put(key, new CachedForecast(w, clock.instant()));
-        return w;
+    private List<OpenWeatherDay.Step> cachedSteps(double lat, double lon) {
+        String key = lat + "," + lon;
+        Instant now = clock.instant();
+        CachedSteps cached = forecastCache.get(key);
+        if (cached != null && fresh(cached, now)) return cached.steps();
+        Optional<List<OpenWeatherDay.Step>> fetched = client.forecast(lat, lon);
+        forecastCache.values().removeIf(c -> !fresh(c, now));
+        if (fetched.isEmpty()) return null;
+        forecastCache.put(key, new CachedSteps(List.copyOf(fetched.get()), now));
+        return fetched.get();
     }
 
-    /**
-     * City → coordinates, cached forever (a city does not move). The lookup happens OUTSIDE the
-     * map: ConcurrentHashMap runs a computeIfAbsent mapping function while holding the bin lock,
-     * so doing the HTTP round trip in there blocks every other thread hashing into that bin for
-     * the length of a network call — on the synchronous POST /reforecast path. A duplicate
-     * concurrent lookup for a cold key is much cheaper than that (and the same pattern
-     * {@link #cachedForecast} already uses).
-     */
-    private double[] geocode(String city, String country) {
-        String key = city.toLowerCase() + "|" + (country == null ? "" : country.toLowerCase());
-        Optional<double[]> cached = coordsCache.get(key);
-        if (cached != null) return cached.orElse(null);
-        Optional<double[]> looked;
-        try {
-            String url = "https://geocoding-api.open-meteo.com/v1/search?count=1&language=en&format=json&name="
-                    + URLEncoder.encode(city, StandardCharsets.UTF_8)
-                    + (country == null || country.isBlank() ? "" : "&country=" + URLEncoder.encode(country, StandardCharsets.UTF_8));
-            JsonNode results = getJson(url).path("results");
-            if (!results.isArray() || results.isEmpty()) {
-                looked = Optional.empty();
-            } else {
-                JsonNode first = results.get(0);
-                looked = Optional.of(new double[]{first.path("latitude").asDouble(), first.path("longitude").asDouble()});
-            }
-        } catch (Exception e) {
-            log.debug("[weather] geocode failed for {}: {}", city, e.getMessage());
-            looked = Optional.empty();
-        }
-        Optional<double[]> won = coordsCache.putIfAbsent(key, looked);
-        return (won != null ? won : looked).orElse(null);
-    }
-    private JsonNode getJson(String url) throws Exception {
-        HttpRequest req = HttpRequest.newBuilder(URI.create(url))
-                .timeout(Duration.ofSeconds(3)).GET().build();
-        HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
-        if (res.statusCode() / 100 != 2) throw new IllegalStateException("HTTP " + res.statusCode());
-        return PredictorJson.MAPPER.readTree(res.body());
+    private static boolean fresh(CachedSteps c, Instant now) {
+        return Duration.between(c.fetchedAt(), now).compareTo(FORECAST_TTL) < 0;
     }
 
-    private static Integer intAt(JsonNode arr) {
-        return arr.isArray() && !arr.isEmpty() && !arr.get(0).isNull() ? arr.get(0).asInt() : null;
+    /** Found and not-found answers are kept; a failed lookup is retried next time. */
+    private Point geocode(String city, String country) {
+        if (city == null || city.isBlank()) return null;
+        String key = city.strip().toLowerCase(Locale.ROOT) + "|"
+                + (country == null ? "" : country.strip().toLowerCase(Locale.ROOT));
+        GeocodeResult cached = geocodeCache.get(key);
+        if (cached != null) return cached.point();
+        GeocodeResult looked = client.geocode(city, country);
+        if (looked.status() == GeocodeStatus.FAILED) return null;
+        geocodeCache.putIfAbsent(key, looked);
+        return looked.point();
     }
 
-    private static Double doubleAt(JsonNode arr) {
-        return arr.isArray() && !arr.isEmpty() && !arr.get(0).isNull() ? arr.get(0).asDouble() : null;
+    private static boolean usable(Double lat, Double lon) {
+        return lat != null && lon != null && Double.isFinite(lat) && Double.isFinite(lon)
+                && Math.abs(lat) <= 90 && Math.abs(lon) <= 180;
+    }
+
+    private static double round2(double v) {
+        return Math.round(v * 100) / 100.0;
     }
 }

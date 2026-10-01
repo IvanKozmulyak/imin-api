@@ -99,7 +99,8 @@ public class ReforecastService {
     }
 
     /** The previous re-forecast's carried state, read before a new row is written. */
-    private record Prior(ProjectionBand band, String narration, ReforecastResult.Alert alert, int soldNow) {}
+    private record Prior(ProjectionBand band, String narration, ReforecastResult.NarrationCredit narrationCredit,
+                         ReforecastResult.Alert alert, int soldNow) {}
 
     /**
      * Recompute the live re-forecast for an event and ledger it. Returns the fresh result (with
@@ -176,27 +177,34 @@ public class ReforecastService {
         // Narration regenerates ONLY on a band change; otherwise reuse the prior verbatim. The kill
         // switch suppresses narration entirely — the numbers above are arithmetic and survive it.
         String narration;
+        ReforecastResult.NarrationCredit credit;
         if (prior != null && newBand.equals(prior.band())) {
             narration = prior.narration();
+            credit = prior.narrationCredit();
         } else if (props.isBenchmarkOnly()) {
             narration = null;
+            credit = null;
         } else {
             // Signals season the narration only (band changed), never the arithmetic above. Weather
             // self-gates to <= horizon days out and fails safe to null (listed as unknown).
             CompetingNightsService.CompetingNights cn = competingNights.compute(e);
-            LocalDate eventDate = startsAt.atZone(resolveZone(e.getTimezone())).toLocalDate();
-            WeatherService.Weather w = weather.forecast(e.getVenueCity(), e.getVenueCountry(), eventDate, daysOut);
+            ZoneId zone = resolveZone(e.getTimezone());
+            LocalDate eventDate = startsAt.atZone(zone).toLocalDate();
+            WeatherService.Weather w = weather.forecast(e.getVenueLatitude(), e.getVenueLongitude(),
+                    e.getVenueCity(), e.getVenueCountry(), zone, eventDate, daysOut);
             narration = safeNarrate(new ReforecastNarrator.Context(
                     newBand, prior == null ? null : prior.band(), p.finalLow(), p.finalHigh(), capacity,
                     currentSold, match.curve().eventsCount(), match.relaxation().name(),
                     newBand == ProjectionBand.SELL_OUT_LIKELY,
                     cn.count(), cn.totalCapacity(), cn.genreOverlap(),
                     w == null ? null : w.precipProbabilityMaxPct(), w == null ? null : w.tempMaxC()));
+            // Credit only a narration actually generated from weather data.
+            credit = (w != null && narration != null) ? weather.credit() : null;
         }
 
         ReforecastResult.Alert alert = alertFor(prior, newBand);
         return new ReforecastResult("ready", 1, newBand.wire(), newBand.phrase(), range, revenue,
-                velocity, eta, pacing, narration, alert, null, clock.instant());
+                velocity, eta, pacing, narration, credit, alert, null, clock.instant());
     }
 
     // ---- stage 0 interim / insufficient ----------------------------------------
@@ -216,7 +224,7 @@ public class ReforecastService {
         if (capacity <= 0 || pre == null || pre.attendanceRange() == null) {
             // Nothing forward-looking to lean on — say so rather than widen silently (§5).
             return new ReforecastResult("insufficient_data", 0, null, null, null, null, velocity, null,
-                    null, null, prior == null ? null : prior.alert(), null, at);
+                    null, null, null, prior == null ? null : prior.alert(), null, at);
         }
         int rawLow = pre.attendanceRange().low();
         int rawHigh = pre.attendanceRange().high();
@@ -228,7 +236,7 @@ public class ReforecastService {
         ReforecastResult.RevenueRange revenue = revenueRange(eventId, currentSold, range);
         ReforecastResult.Alert alert = alertFor(prior, band);
         return new ReforecastResult("ready", 0, band.wire(), band.phrase(), range, revenue, velocity,
-                null, null, null, alert, null, at);
+                null, null, null, null, alert, null, at);
     }
 
     // ---- derived arithmetic fields ---------------------------------------------
@@ -338,7 +346,7 @@ public class ReforecastService {
             if (r == null) return null;
             ProjectionBand band = r.band() == null ? null : ProjectionBand.valueOf(r.band());
             int soldNow = readSoldNow(row.getComparablesJson());
-            return new Prior(band, r.narration(), r.alert(), soldNow);
+            return new Prior(band, r.narration(), r.narrationCredit(), r.alert(), soldNow);
         }
         return null;
     }
