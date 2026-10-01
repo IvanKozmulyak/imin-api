@@ -96,6 +96,7 @@ class DateCheckControllerTest {
     @Autowired OrganizationRepository orgs;
     @Autowired UserRepository users;
     @Autowired EventRepository events;
+    @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
     @Autowired DateCheckRepository checks;
     @Autowired DateCheckDateRepository checkDates;
     @Autowired DateCheckFindingRepository findings;
@@ -280,8 +281,8 @@ class DateCheckControllerTest {
     @Test
     void softDeletedEventIdIs404() throws Exception {
         Event gone = event(org, owner, PLAIN);
-        gone.setDeletedAt(Instant.parse("2026-09-30T00:00:00Z"));
-        events.save(gone);
+        // deleted_at is not updatable through the entity; only a bulk write sets it.
+        jdbc.update("UPDATE events SET deleted_at = ? WHERE id = ?", java.sql.Timestamp.from(Instant.parse("2026-09-30T00:00:00Z")), gone.getId());
         Map<String, Object> b = body(PLAIN);
         b.put("eventId", gone.getId().toString());
 

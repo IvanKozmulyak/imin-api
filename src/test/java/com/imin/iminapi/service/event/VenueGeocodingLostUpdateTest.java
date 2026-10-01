@@ -151,7 +151,8 @@ class VenueGeocodingLostUpdateTest {
         em.clear();
 
         Event after = events.findById(eventId).orElseThrow();
-        assertThat(after.getDeletedAt()).as("merge resurrects a deleted event").isNull();
+        // deleted_at is mapped updatable=false, so even this merge can no longer resurrect the event.
+        assertThat(after.getDeletedAt()).as("deleted_at is out of merge's reach").isNotNull();
         assertThat(after.getSold()).as("merge regresses sold").isZero();
     }
 }

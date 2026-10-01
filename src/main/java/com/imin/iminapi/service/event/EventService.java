@@ -248,7 +248,7 @@ public class EventService {
     @Transactional
     @CacheEvict(value = "dashboard", allEntries = true)
     public EventDto patch(AuthPrincipal p, UUID id, String ifMatchHeader, EventPatchRequest body) {
-        Event e = loadOwned(p, id);
+        Event e = loadOwnedForWrite(p, id);
         // Optimistic concurrency, same contract as OrgService.patch: a null/blank header is
         // the FE opting out, a stale one is 409 STALE_WRITE. Without this the ETag half of
         // the protocol was maintained (see the setUpdatedAt below) while the check half was
@@ -322,7 +322,7 @@ public class EventService {
     @Transactional
     @CacheEvict(value = "dashboard", allEntries = true)
     public EventDto publish(AuthPrincipal p, UUID id) {
-        Event e = loadOwned(p, id);
+        Event e = loadOwnedForWrite(p, id);
         if (e.getStatus() == EventStatus.LIVE) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE, "Already published");
         }
@@ -402,6 +402,12 @@ public class EventService {
                     ErrorCode.STRIPE_NOT_READY,
                     "Connect and finish Stripe onboarding before publishing a paid event.");
         }
+    }
+
+    /** Lock first, then read: a draft delete that committed while we waited makes the read 404. */
+    private Event loadOwnedForWrite(AuthPrincipal p, UUID id) {
+        events.lockActiveForWrite(id, p.orgId());
+        return loadOwned(p, id);
     }
 
     private Event loadOwned(AuthPrincipal p, UUID id) {

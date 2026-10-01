@@ -6,6 +6,7 @@ import com.imin.iminapi.dto.PageResponse;
 import com.imin.iminapi.dto.event.*;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.service.event.DraftEventDeletionService;
 import com.imin.iminapi.service.event.EventOverviewService;
 import com.imin.iminapi.service.event.EventService;
 import org.junit.jupiter.api.Test;
@@ -44,6 +45,7 @@ class EventControllerTest {
     final ObjectMapper om = new ObjectMapper();
     @MockitoBean EventService eventService;
     @MockitoBean EventOverviewService overviewService;
+    @MockitoBean DraftEventDeletionService draftDeletion;
 
     static final UUID ORG = UUID.fromString("00000000-0000-0000-0000-000000000001");
     static final UUID USER = UUID.fromString("00000000-0000-0000-0000-000000000002");
@@ -84,6 +86,16 @@ class EventControllerTest {
                         .content("{}"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.status").value("draft"));
+    }
+
+    @Test
+    @WithStubUser
+    void delete_event_returns_204_and_delegates() throws Exception {
+        UUID id = UUID.randomUUID();
+        mvc.perform(delete("/api/v1/events/" + id))
+                .andExpect(status().isNoContent())
+                .andExpect(content().string(""));
+        verify(draftDeletion).deleteDraft(argThat(p -> p.orgId().equals(ORG) && p.userId().equals(USER)), eq(id));
     }
 
     @Test

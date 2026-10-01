@@ -7,6 +7,7 @@ import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.CurrentUser;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.service.event.DraftEventDeletionService;
 import com.imin.iminapi.service.event.EventOverviewService;
 import com.imin.iminapi.service.event.EventService;
 import com.imin.iminapi.service.event.EventVelocityService;
@@ -22,13 +23,16 @@ public class EventController {
     private final EventService eventService;
     private final EventOverviewService overviewService;
     private final EventVelocityService velocityService;
+    private final DraftEventDeletionService draftDeletion;
 
     public EventController(EventService eventService,
                            EventOverviewService overviewService,
-                           EventVelocityService velocityService) {
+                           EventVelocityService velocityService,
+                           DraftEventDeletionService draftDeletion) {
         this.eventService = eventService;
         this.overviewService = overviewService;
         this.velocityService = velocityService;
+        this.draftDeletion = draftDeletion;
     }
 
     @GetMapping
@@ -75,6 +79,13 @@ public class EventController {
                           @RequestHeader(value = "If-Match", required = false) String ifMatch,
                           @RequestBody @jakarta.validation.Valid EventPatchRequest body) {
         return eventService.patch(p, id, ifMatch, body);
+    }
+
+    /** 204; 404 leak-safe; 409 INVALID_STATE unless a never-published draft with no orders. */
+    @DeleteMapping("/{id}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void deleteDraft(@CurrentUser AuthPrincipal p, @PathVariable UUID id) {
+        draftDeletion.deleteDraft(p, id);
     }
 
     @PostMapping("/{id}/publish")

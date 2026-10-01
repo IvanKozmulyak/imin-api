@@ -17,8 +17,8 @@ public record AudienceMetricsDto(
         double repeatAttendeePct,
         long explicitConsent,
         long softOptIn,
-        /** Unsubscribe records / subscribedMailable in percent (7.5 = 7.5%), unrounded; can exceed 100 as every past unsubscribe counts. */
-        double unsubRatePct,
+        /** Unsubscribed recipients / sent recipients of the org's campaigns in percent (0–100), unrounded; null when none were sent. */
+        Double unsubRatePct,
         /** Complained recipients / sent-or-delivered recipients of the org's campaigns in percent (0–100), unrounded; null when none were sent. */
         Double complaintRatePct,
         /** Memberships created in the last 30 days. */
@@ -46,7 +46,7 @@ public record AudienceMetricsDto(
     /** The pre-existing KPIs with every fan-feature field null. */
     public static AudienceMetricsDto base(long totalMembers, long buyers, long prospects, long subscribedMailable,
                                           double subscribedPct, List<Integer> listGrowth8w, double repeatAttendeePct,
-                                          long explicitConsent, long softOptIn, double unsubRatePct,
+                                          long explicitConsent, long softOptIn, Double unsubRatePct,
                                           Double complaintRatePct) {
         return new AudienceMetricsDto(totalMembers, buyers, prospects, subscribedMailable, subscribedPct,
                 listGrowth8w, repeatAttendeePct, explicitConsent, softOptIn, unsubRatePct, complaintRatePct,

@@ -44,6 +44,14 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
                and r.status in\s""" + RecipientStatuses.SENT_SQL)
     long countSentRecipientsByOrgId(@Param("orgId") UUID orgId);
 
+    /** Recipient rows of the org's campaigns whose status is unsubscribed; a subset of the sent rows. */
+    @Query("""
+            select count(r) from CampaignRecipient r, com.imin.iminapi.marketing.model.Campaign c
+             where r.campaignId = c.id
+               and c.orgId = :orgId
+               and r.status = 'unsubscribed'""")
+    long countUnsubscribedRecipientsByOrgId(@Param("orgId") UUID orgId);
+
     /**
      * Number of recipients actually dispatched for an event's campaigns whose send fell
      * inside a sales window — feeds the event outcome record's {@code campaign_sends}

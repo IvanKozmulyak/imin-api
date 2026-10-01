@@ -39,6 +39,7 @@ class EventOutcomeServiceTest {
     @Autowired EventOutcomeService service;
     @Autowired EventOutcomeRepository outcomes;
     @Autowired EventRepository events;
+    @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
     @Autowired OrganizationRepository orgs;
     @Autowired UserRepository users;
     @Autowired TicketTierRepository tiers;
@@ -392,8 +393,8 @@ class EventOutcomeServiceTest {
 
         Event deleted = liveEvent();
         service.freezeOnPublish(deleted);
-        deleted.setDeletedAt(Instant.parse("2026-02-20T00:00:00Z"));
-        events.save(deleted);
+        // deleted_at is not updatable through the entity; only a bulk write sets it.
+        jdbc.update("UPDATE events SET deleted_at = ? WHERE id = ?", java.sql.Timestamp.from(Instant.parse("2026-02-20T00:00:00Z")), deleted.getId());
 
         Event cancelled = liveEvent();
         service.freezeOnPublish(cancelled);

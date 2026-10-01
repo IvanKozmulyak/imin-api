@@ -155,8 +155,8 @@ abstract class AudiencePlanListScenarios {
         undated.setStartsAt(null);
         eventRepo.save(undated);
         Event deleted = event(orgA, EventStatus.LIVE, 8, 300);
-        deleted.setDeletedAt(Instant.now());
-        eventRepo.save(deleted);
+        // deleted_at is not updatable through the entity; only a bulk write sets it.
+        jdbc.update("UPDATE events SET deleted_at = ? WHERE id = ?", java.sql.Timestamp.from(Instant.now()), deleted.getId());
         event(orgB, EventStatus.LIVE, 9, 300);
 
         list(null).andExpect(status().isOk())
@@ -372,8 +372,8 @@ abstract class AudiencePlanListScenarios {
         Event noCapacity = event(orgA, EventStatus.LIVE, 28);
         tier(noCapacity, 100, false);
         Event deleted = event(orgA, EventStatus.LIVE, 28, 300);
-        deleted.setDeletedAt(Instant.now());
-        eventRepo.save(deleted);
+        // deleted_at is not updatable through the entity; only a bulk write sets it.
+        jdbc.update("UPDATE events SET deleted_at = ? WHERE id = ?", java.sql.Timestamp.from(Instant.now()), deleted.getId());
 
         assertThat(planService.refresh(started.getId())).isEqualTo(Refresh.SKIPPED);
         assertThat(planService.refresh(undated.getId())).isEqualTo(Refresh.SKIPPED);

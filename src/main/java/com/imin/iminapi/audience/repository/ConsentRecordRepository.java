@@ -45,15 +45,4 @@ public interface ConsentRecordRepository extends Repository<ConsentRecord, UUID>
     @Query("update ConsentRecord c set c.confirmedAt = :at where c.id = :id"
             + " and c.confirmationRequired = true and c.confirmedAt is null")
     int markConfirmed(@Param("id") UUID id, @Param("at") Instant at);
-
-    /**
-     * Count unsubscribes across org (for unsubscribe rate metric).
-     * Joins through membership.
-     */
-    @Query("""
-            select count(c) from ConsentRecord c
-             join Membership m on m.membershipId = c.membershipId
-             where m.orgId = :orgId and c.status = 'unsubscribed'
-            """)
-    long countUnsubsByOrgId(@Param("orgId") UUID orgId);
 }

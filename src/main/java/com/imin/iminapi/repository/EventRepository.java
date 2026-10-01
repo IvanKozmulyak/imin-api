@@ -330,6 +330,41 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
                      @Param("enabled") boolean enabled,
                      @Param("token") String token);
 
+    /**
+     * Soft-deletes a never-published draft. The WHERE clause is the atomic guard: a publish
+     * committed in between makes this match 0 rows instead of overwriting the live event.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("""
+        UPDATE Event e
+           SET e.deletedAt = :now,
+               e.updatedAt = :now
+         WHERE e.id = :id
+           AND e.orgId = :orgId
+           AND e.deletedAt IS NULL
+           AND e.status = com.imin.iminapi.model.EventStatus.DRAFT
+           AND e.publishedAt IS NULL
+    """)
+    int softDeleteNeverPublishedDraft(@Param("id") UUID id,
+                                      @Param("orgId") UUID orgId,
+                                      @Param("now") Instant now);
+
+    /**
+     * Row-locks the org's live event until commit with a no-op write: portable across Postgres and
+     * H2, and unlike FOR UPDATE it does not block FK inserts (orders) on the event.
+     */
+    @Modifying
+    @Transactional
+    @Query("""
+        UPDATE Event e
+           SET e.updatedAt = e.updatedAt
+         WHERE e.id = :id
+           AND e.orgId = :orgId
+           AND e.deletedAt IS NULL
+    """)
+    void lockActiveForWrite(@Param("id") UUID id, @Param("orgId") UUID orgId);
+
     /** A live (not soft-deleted) event by its survey token. */
     @Query("SELECT e FROM Event e WHERE e.surveyToken = :token AND e.deletedAt IS NULL")
     Optional<Event> findActiveBySurveyToken(@Param("token") String token);

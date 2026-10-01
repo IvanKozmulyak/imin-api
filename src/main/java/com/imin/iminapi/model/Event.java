@@ -148,7 +148,8 @@ public class Event {
     @Column(name = "published_at")
     private Instant publishedAt;
 
-    @Column(name = "deleted_at")
+    // Only bulk JPQL writes it: a full-entity save loaded before a soft delete must not clear it.
+    @Column(name = "deleted_at", updatable = false)
     private Instant deletedAt;
 
     /**

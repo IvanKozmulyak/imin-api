@@ -30,7 +30,7 @@ import static org.assertj.core.api.Assertions.*;
  * - explicit consent vs soft_opt_in counts
  * - listGrowth8w has exactly 8 entries
  * - repeatAttendeePct
- * - unsubRatePct
+ * - unsubRatePct (unsubscribed / sent recipients, null with nothing sent)
  * - complaintRatePct (complaints / delivered, null with nothing delivered)
  * - empty org returns zeros (no NPE)
  * - tenant isolation: metrics scoped to org
@@ -82,7 +82,7 @@ class AudienceMetricsTest {
         assertThat(dto.explicitConsent()).isZero();
         assertThat(dto.softOptIn()).isZero();
         assertThat(dto.repeatAttendeePct()).isZero();
-        assertThat(dto.unsubRatePct()).isZero();
+        assertThat(dto.unsubRatePct()).isNull();
         assertThat(dto.complaintRatePct()).isNull();
         assertThat(dto.listGrowth8w()).hasSize(8);
     }
@@ -294,17 +294,43 @@ class AudienceMetricsTest {
     // ─────────────────────────────────────────────────────────────────────────
 
     @Test
-    void unsub_rate_pct_reflects_consent_records() {
-        // Create a subscribed member then unsubscribe them
+    void unsub_rate_pct_is_null_when_an_operator_unsubscribe_happened_with_zero_sends() {
         UUID mid = seedMembership(orgA, "unsubrate@m.com");
         AuthPrincipal p = new com.imin.iminapi.security.AuthPrincipal(
                 UUID.randomUUID(), orgA, UserRole.OWNER, UUID.randomUUID());
         consentService.capture(orgA, mid, "explicit", "test", "proof", p);
         consentService.unsubscribe(orgA, mid, "own-request", ConsentOrigin.OPERATOR, p);
 
-        AudienceMetricsDto dto = metricsService.compute(orgA);
-        // There's 1 unsub record; unsub pct should be > 0
-        assertThat(dto.unsubRatePct()).isGreaterThanOrEqualTo(0.0);
+        assertThat(metricsService.compute(orgA).unsubRatePct()).isNull();
+    }
+
+    @Test
+    void unsub_rate_pct_is_unsubscribed_recipients_over_sent_recipients() {
+        UUID campaign = seedCampaign(orgA);
+        seedRecipient(campaign, seedMembership(orgA, "u0@m.com"), "unsubscribed");
+        for (int i = 1; i < 4; i++) seedRecipient(campaign, seedMembership(orgA, "u" + i + "@m.com"), "delivered");
+        seedRecipient(campaign, seedMembership(orgA, "upending@m.com"), "pending");
+
+        assertThat(metricsService.compute(orgA).unsubRatePct()).isEqualTo(25.0);
+    }
+
+    @Test
+    void unsub_rate_pct_is_zero_when_delivered_and_nobody_unsubscribed() {
+        seedRecipient(seedCampaign(orgA), seedMembership(orgA, "nounsub@m.com"), "delivered");
+
+        assertThat(metricsService.compute(orgA).unsubRatePct()).isEqualTo(0.0);
+    }
+
+    @Test
+    void unsub_rate_pct_ignores_other_orgs_unsubscribed_recipients() {
+        UUID campB = seedCampaign(orgB);
+        seedRecipient(campB, seedMembership(orgB, "bunsub@m.com"), "unsubscribed");
+        UUID campA = seedCampaign(orgA);
+        seedRecipient(campA, seedMembership(orgA, "a1u@m.com"), "delivered");
+        seedRecipient(campA, seedMembership(orgA, "a2u@m.com"), "delivered");
+
+        assertThat(metricsService.compute(orgA).unsubRatePct()).isEqualTo(0.0);
+        assertThat(metricsService.compute(orgB).unsubRatePct()).isEqualTo(100.0);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

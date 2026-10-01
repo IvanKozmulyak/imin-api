@@ -32,6 +32,7 @@ class CompetingNightsServiceTest {
 
     @Autowired CompetingNightsService service;
     @Autowired EventRepository events;
+    @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
     @Autowired TicketTierRepository tiers;
     @Autowired OrganizationRepository orgs;
     @Autowired UserRepository users;
@@ -116,8 +117,8 @@ class CompetingNightsServiceTest {
         cancelled.setStatus(EventStatus.CANCELLED);
         events.save(cancelled);
         Event deleted = ev("Amsterdam", "techno", NIGHT, true, 100);
-        deleted.setDeletedAt(Instant.now());
-        events.save(deleted);
+        // deleted_at is not updatable through the entity; only a bulk write sets it.
+        jdbc.update("UPDATE events SET deleted_at = ? WHERE id = ?", java.sql.Timestamp.from(Instant.now()), deleted.getId());
         Event hidden = ev("Amsterdam", "techno", NIGHT, true, 100);
         hidden.setVisibility(EventVisibility.PRIVATE);
         events.save(hidden);

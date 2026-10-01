@@ -12,6 +12,7 @@ public final class AuditActions {
     public static final String EVENT_UPDATED = "EVENT_UPDATED";
     public static final String EVENT_PUBLISHED = "EVENT_PUBLISHED";
     public static final String EVENT_UNPUBLISHED = "EVENT_UNPUBLISHED";
+    public static final String EVENT_DELETED = "EVENT_DELETED";
     public static final String TIER_CREATED = "TIER_CREATED";
     public static final String TIER_UPDATED = "TIER_UPDATED";
     public static final String TIER_DELETED = "TIER_DELETED";

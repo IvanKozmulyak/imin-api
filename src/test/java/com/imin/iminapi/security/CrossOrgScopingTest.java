@@ -241,6 +241,12 @@ class CrossOrgScopingTest {
     }
 
     @Test
+    void deleteEventInOtherOrg_returns404() throws Exception {
+        expectLeakSafeNotFound(delete("/api/v1/events/" + eventInB));
+        assertThat(events.findActive(eventInB)).as("org B's draft must survive").isPresent();
+    }
+
+    @Test
     void listEvents_doesNotIncludeOtherOrgs_events() throws Exception {
         // The list endpoint is repo-scoped to p.orgId() — org B's event must not appear in A's list.
         MvcResult result = mvc.perform(get("/api/v1/events").with(authentication(authA)))

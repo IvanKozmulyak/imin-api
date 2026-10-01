@@ -409,6 +409,18 @@ class AudienceControllerWebTest {
 
     @Test
     @WithOrgA
+    void get_metrics_serializes_a_null_unsub_rate_as_null() throws Exception {
+        when(metricsService.compute(ORG_A)).thenReturn(AudienceMetricsDto.base(
+                1L, 0L, 1L, 0L, 0.0, List.of(0, 0, 0, 0, 0, 0, 0, 1), 0.0, 0L, 0L, null, null));
+
+        mvc.perform(get("/api/v1/audience/metrics"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", org.hamcrest.Matchers.hasKey("unsubRatePct")))
+                .andExpect(jsonPath("$.unsubRatePct").value(org.hamcrest.Matchers.nullValue()));
+    }
+
+    @Test
+    @WithOrgA
     void get_metrics_serializes_the_read_model_fields() throws Exception {
         when(metricsService.compute(ORG_A)).thenReturn(new AudienceMetricsDto(
                 10L, 6L, 4L, 5L, 50.0, List.of(0, 0, 0, 0, 0, 0, 0, 1), 20.0, 5L, 0L, 0.0, 0.0,
