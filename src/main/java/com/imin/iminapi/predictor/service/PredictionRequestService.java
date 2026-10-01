@@ -1,6 +1,7 @@
 package com.imin.iminapi.predictor.service;
 
 import com.imin.iminapi.model.Event;
+import com.imin.iminapi.predictor.dto.DateVerdictFeedbackDto;
 import com.imin.iminapi.predictor.dto.EventDateCheckDto;
 import com.imin.iminapi.predictor.dto.PredictionFeedbackRequest;
 import com.imin.iminapi.predictor.dto.PredictionResult;
@@ -46,6 +47,10 @@ import java.util.concurrent.Executor;
  *   <li>async dispatch → 202 pending</li>
  * </ol>
  *
+ * <p>Feedback of type {@code date_verdict_match} is the after-event answer to the date-check verdict: it goes to
+ * {@link DateVerdictFeedbackService} (its own table, no ledger row needed), and GET carries the stored answer as
+ * {@code verdictFeedback} alongside {@code dateCheck}.
+ *
  * <p>The pending registry is in-memory by design: on a restart an in-flight run is lost and
  * the status honestly falls back to the latest ledgered result (or none) — a re-POST simply
  * re-scores. Single-instance deploy (Railway), no distributed state needed.
@@ -69,13 +74,14 @@ public class PredictionRequestService {
     private final RateLimiter rateLimiter;
     private final Executor executor;
     private final DateCheckService dateChecks;
+    private final DateVerdictFeedbackService verdictFeedback;
 
     public PredictionRequestService(EventRepository events, PredictionLedgerRepository ledgerRepo,
                                     PredictionLedgerService ledgerService, PredictionScoringPipeline pipeline,
                                     RecommendationEngine recommendations, ReforecastTriggerService reforecastTrigger,
                                     AiQuotaService quota, RateLimiter rateLimiter,
                                     @Qualifier("predictorScoreExecutor") Executor executor,
-                                    DateCheckService dateChecks) {
+                                    DateCheckService dateChecks, DateVerdictFeedbackService verdictFeedback) {
         this.events = events;
         this.ledgerRepo = ledgerRepo;
         this.ledgerService = ledgerService;
@@ -86,6 +92,7 @@ public class PredictionRequestService {
         this.rateLimiter = rateLimiter;
         this.executor = executor;
         this.dateChecks = dateChecks;
+        this.verdictFeedback = verdictFeedback;
     }
 
     // ---- POST /events/{id}/prediction ------------------------------------------
@@ -161,17 +168,19 @@ public class PredictionRequestService {
         Event e = loadOwned(p, eventId);
         // The event's current date check rides on every state; absent while the gate is closed.
         EventDateCheckDto dateCheck = dateChecks.currentForEvent(e).orElse(null);
+        // The verdict answer is shown only with its date check, so a closed gate hides it too.
+        DateVerdictFeedbackDto vf = dateCheck == null ? null : verdictFeedback.forEvent(e).orElse(null);
 
         Pending inFlight = pending.get(eventId);
         if (inFlight != null) {
             return new PredictionStatusResponse(
-                    PredictionStatusResponse.STATUS_PENDING, null, inFlight.inputHash(), null, null, dateCheck);
+                    PredictionStatusResponse.STATUS_PENDING, null, inFlight.inputHash(), null, null, dateCheck, vf);
         }
 
         PredictionLedger latest = latestRow(eventId);
         if (latest == null) {
             return new PredictionStatusResponse(PredictionStatusResponse.STATUS_NONE, null, null, null, null,
-                    dateCheck);
+                    dateCheck, vf);
         }
         PredictionResult result = parseResult(latest);
         if (result == null) {
@@ -179,7 +188,7 @@ public class PredictionRequestService {
             // never render something we can't verify against the audit record.
             log.error("Unparseable ledger output_json for row {}", latest.getId());
             return new PredictionStatusResponse(PredictionStatusResponse.STATUS_NONE, null,
-                    latest.getInputSnapshotHash(), latest.getCreatedAt(), null, dateCheck);
+                    latest.getInputSnapshotHash(), latest.getCreatedAt(), null, dateCheck, vf);
         }
         String status = result.benchmarkOnly()
                 ? PredictionStatusResponse.STATUS_FAILED_BENCHMARK_ONLY
@@ -189,19 +198,29 @@ public class PredictionRequestService {
         RecommendationEngine.Filtered f = recommendations.applyDismissals(eventId, result.recommendations());
         PredictionResult served = result.withRecommendations(f.recommendations());
         return new PredictionStatusResponse(status, served, latest.getInputSnapshotHash(),
-                latest.getCreatedAt(), f.dismissedCount(), dateCheck);
+                latest.getCreatedAt(), f.dismissedCount(), dateCheck, vf);
     }
 
     // ---- POST /events/{id}/prediction/feedback -----------------------------------
 
     public void feedback(AuthPrincipal p, UUID eventId, PredictionFeedbackRequest req) {
-        loadOwned(p, eventId);
+        Event e = loadOwned(p, eventId);
         FeedbackType type;
         try {
             type = FeedbackType.fromWire(req.type());
         } catch (IllegalArgumentException ex) {
             throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID,
-                    "type must be one of: dismissed, executed, restored", Map.of("type", "invalid"));
+                    "type must be one of: dismissed, executed, restored, date_verdict_match",
+                    Map.of("type", "invalid"));
+        }
+        if (type == FeedbackType.DATE_VERDICT_MATCH) {
+            // Its own table, so a past event that was never scored can still be answered.
+            verdictFeedback.record(e, req);
+            return;
+        }
+        if (req.recommendationId() == null || req.recommendationId().isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.FIELD_INVALID,
+                    "recommendationId is required for " + type.wire(), Map.of("recommendationId", "required"));
         }
         PredictionLedger latest = latestRow(eventId);
         if (latest == null) {

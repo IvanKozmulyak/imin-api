@@ -14,6 +14,8 @@ import com.imin.iminapi.predictor.repository.PredictionLedgerRepository;
 import com.imin.iminapi.predictor.dto.EventDateCheckDto;
 import com.imin.iminapi.predictor.dto.PredictionStatusResponse;
 import com.imin.iminapi.predictor.service.DateCheckService;
+import com.imin.iminapi.predictor.service.DateVerdictFeedbackService;
+import com.imin.iminapi.predictor.dto.DateVerdictFeedbackDto;
 import com.imin.iminapi.predictor.service.PredictionInputSnapshot;
 import com.imin.iminapi.predictor.service.PredictionLedgerService;
 import com.imin.iminapi.predictor.service.PredictionRequestService;
@@ -72,10 +74,11 @@ class PredictionRequestServiceTest {
     private final RateLimiter limiter = mock(RateLimiter.class);
 
     private final DateCheckService dateChecks = mock(DateCheckService.class);
+    private final DateVerdictFeedbackService verdictFeedback = mock(DateVerdictFeedbackService.class);
 
     private final PredictionRequestService sut = new PredictionRequestService(
             events, ledgerRepo, ledgerService, pipeline, recommendations, reforecastTrigger,
-            quota, limiter, Runnable::run, dateChecks);
+            quota, limiter, Runnable::run, dateChecks, verdictFeedback);
 
     private final UUID eventId = UUID.randomUUID();
     private final UUID orgId = UUID.randomUUID();
@@ -203,7 +206,7 @@ class PredictionRequestServiceTest {
         EventDateCheckDto dto = stubDateCheck();
         PredictionRequestService held = new PredictionRequestService(
                 events, ledgerRepo, ledgerService, pipeline, recommendations, reforecastTrigger,
-                quota, limiter, r -> { }, dateChecks);
+                quota, limiter, r -> { }, dateChecks, verdictFeedback);
         held.trigger(principal, eventId);
 
         PredictionStatusResponse r = held.status(principal, eventId);
@@ -255,6 +258,62 @@ class PredictionRequestServiceTest {
 
         assertThat(r.status()).isEqualTo(PredictionStatusResponse.STATUS_NONE);
         assertThat(r.dateCheck()).isSameAs(dto);
+    }
+
+    // ---- status: the verdict answer rides only alongside the date check ----
+
+    @Test
+    void readyCarriesVerdictFeedbackWithDateCheck() throws Exception {
+        stubDateCheck();
+        DateVerdictFeedbackDto vf = new DateVerdictFeedbackDto("partly", null, Instant.parse("2026-10-26T10:00:00Z"),
+                UUID.randomUUID(), LocalDate.parse("2026-10-24"), "good");
+        when(verdictFeedback.forEvent(event)).thenReturn(Optional.of(vf));
+        stubLatestRow(PredictorJson.MAPPER.writeValueAsString(benchmark()));
+
+        PredictionStatusResponse r = sut.status(principal, eventId);
+
+        assertThat(r.verdictFeedback()).isSameAs(vf);
+    }
+
+    @Test
+    void noneCarriesVerdictFeedbackWithDateCheck() {
+        stubDateCheck();
+        DateVerdictFeedbackDto vf = new DateVerdictFeedbackDto("no", "c", Instant.parse("2026-10-26T10:00:00Z"),
+                null, LocalDate.parse("2026-10-24"), "move");
+        when(verdictFeedback.forEvent(event)).thenReturn(Optional.of(vf));
+
+        PredictionStatusResponse r = sut.status(principal, eventId);
+
+        assertThat(r.status()).isEqualTo(PredictionStatusResponse.STATUS_NONE);
+        assertThat(r.verdictFeedback()).isSameAs(vf);
+    }
+
+    @Test
+    void statusOmitsVerdictFeedbackWithoutDateCheck() {
+        when(dateChecks.currentForEvent(event)).thenReturn(Optional.empty());
+        when(verdictFeedback.forEvent(event)).thenReturn(Optional.of(new DateVerdictFeedbackDto("yes", null,
+                Instant.parse("2026-10-26T10:00:00Z"), null, LocalDate.parse("2026-10-24"), "good")));
+
+        PredictionStatusResponse r = sut.status(principal, eventId);
+
+        assertThat(r.dateCheck()).isNull();
+        assertThat(r.verdictFeedback()).isNull();
+        verify(verdictFeedback, never()).forEvent(any());
+    }
+
+    // ---- feedback: the verdict answer bypasses the ledger ----
+
+    @Test
+    void verdictFeedbackSkipsLedger() {
+        when(ledgerRepo.findByEventIdOrderByCreatedAtDesc(eventId)).thenReturn(List.of());
+        PredictionFeedbackRequest req = new PredictionFeedbackRequest(null, "date_verdict_match", "yes", null);
+
+        sut.feedback(principal, eventId, req);
+
+        verify(verdictFeedback).record(event, req);
+        verify(ledgerRepo, never()).findByEventIdOrderByCreatedAtDesc(any());
+        verify(ledgerService, never()).recordFeedback(any(), any(), any(), any(), any());
+        verify(ledgerService, never()).recordFeedback(any(), any(), any(), any());
     }
 
     // ---- feedback: dismissal fingerprint + executed→reforecast loop (86cav47a5/86cav479w) ----

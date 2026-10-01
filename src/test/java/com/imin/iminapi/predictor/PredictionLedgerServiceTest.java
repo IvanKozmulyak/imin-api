@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Task 3 (prediction ledger) — the write-before-render record, the outcome join, and the
@@ -163,5 +164,18 @@ class PredictionLedgerServiceTest {
         assertThat(feedback.findByEventId(eventId).stream()
                 .filter(f -> "rec-add-tier-2".equals(f.getRecommendationId()))
                 .toList()).hasSize(1);
+    }
+
+    @Test
+    void recordFeedbackRejectsDateVerdictMatch() {
+        UUID eventId = UUID.randomUUID();
+        UUID ledgerId = service.record(cmd(eventId, UUID.randomUUID()));
+
+        assertThatThrownBy(() -> service.recordFeedback(ledgerId, eventId, "rec-1", FeedbackType.DATE_VERDICT_MATCH,
+                null)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> service.recordFeedback(ledgerId, eventId, "rec-1", FeedbackType.DATE_VERDICT_MATCH))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        assertThat(feedback.count()).isZero();
     }
 }

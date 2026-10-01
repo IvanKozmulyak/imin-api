@@ -136,11 +136,16 @@ public class PredictionLedgerService {
     /**
      * As above, stamping the dismissal {@code fingerprint} (V74, task 86cav47a5) so serve-time
      * filtering can suppress a re-surfaced recommendation without re-deriving history. Null for
-     * EXECUTED (fingerprint is meaningless — an execution never suppresses).
+     * EXECUTED (fingerprint is meaningless — an execution never suppresses). DATE_VERDICT_MATCH is refused with
+     * {@link IllegalArgumentException}: it is stored by {@link DateVerdictFeedbackService}, never here.
      */
     @Transactional
     public UUID recordFeedback(UUID ledgerId, UUID eventId, String recommendationId, FeedbackType type,
                                String fingerprint) {
+        // Verdict answers live in date_verdict_feedback; here they would overflow feedback_type and skew dismissals.
+        if (type == FeedbackType.DATE_VERDICT_MATCH) {
+            throw new IllegalArgumentException("date_verdict_match is not ledger feedback");
+        }
         PredictionFeedback fb = new PredictionFeedback();
         fb.setLedgerId(ledgerId);
         fb.setEventId(eventId);

@@ -15,6 +15,9 @@ import java.time.Instant;
  *
  * <p>{@code dateCheck}: present when the date-check gate is open for the org and a check is linked to the event,
  * on every status. {@code stale} means the event's night is not a date that check scored.
+ *
+ * <p>{@code verdictFeedback}: the organizer's answer to "did the date verdict match?", present only alongside
+ * {@code dateCheck}, for a past event that has an answer.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record PredictionStatusResponse(
@@ -23,17 +26,24 @@ public record PredictionStatusResponse(
         String inputHash,
         Instant generatedAt,
         Integer dismissedCount,
-        EventDateCheckDto dateCheck) {
+        EventDateCheckDto dateCheck,
+        DateVerdictFeedbackDto verdictFeedback) {
 
     /** Backward-compatible 4-arg factory for states with no served result (none/pending/failed-read). */
     public PredictionStatusResponse(String status, PredictionResult result, String inputHash, Instant generatedAt) {
-        this(status, result, inputHash, generatedAt, null, null);
+        this(status, result, inputHash, generatedAt, null, null, null);
     }
 
     /** Backward-compatible 5-arg factory without a date check. */
     public PredictionStatusResponse(String status, PredictionResult result, String inputHash, Instant generatedAt,
                                     Integer dismissedCount) {
-        this(status, result, inputHash, generatedAt, dismissedCount, null);
+        this(status, result, inputHash, generatedAt, dismissedCount, null, null);
+    }
+
+    /** Backward-compatible 6-arg factory without a verdict answer. */
+    public PredictionStatusResponse(String status, PredictionResult result, String inputHash, Instant generatedAt,
+                                    Integer dismissedCount, EventDateCheckDto dateCheck) {
+        this(status, result, inputHash, generatedAt, dismissedCount, dateCheck, null);
     }
 
     public static final String STATUS_NONE = "none";

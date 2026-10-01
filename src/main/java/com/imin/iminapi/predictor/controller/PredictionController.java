@@ -25,9 +25,14 @@ import java.util.UUID;
  *   <li>POST /api/v1/events/{eventId}/prediction → 202 {predictionId,status:"pending"} or
  *       200 {status:"ready",cached:true,result} on an input-hash hit. Org-scoped; manual
  *       refresh throttled (predictor-rescore) and quota-capped (kind=score, real runs only).</li>
- *   <li>GET  /api/v1/events/{eventId}/prediction → {status,result?,inputHash,generatedAt,dateCheck?};
- *       {@code dateCheck} is the event's current date check, present only while that gate is open.</li>
- *   <li>POST /api/v1/events/{eventId}/prediction/feedback {recommendationId,type} → 204.</li>
+ *   <li>GET  /api/v1/events/{eventId}/prediction → {status,result?,inputHash,generatedAt,dateCheck?,
+ *       verdictFeedback?}; {@code dateCheck} is the event's current date check, present only while that gate is
+ *       open; {@code verdictFeedback} is the stored after-event verdict answer, only alongside it for a past event.</li>
+ *   <li>POST /api/v1/events/{eventId}/prediction/feedback {recommendationId?,type,answer?,comment?} → 204.
+ *       dismissed/executed/restored need {@code recommendationId} (400) and a prediction (409);
+ *       date_verdict_match needs {@code answer} yes|partly|no (400), upserts one answer per event, and is 409
+ *       before the event ended or, for the first answer, without a current non-stale rated date check.
+ *       Another org's event is 404.</li>
  * </ul>
  * Advisory is a hard property (spec §1): nothing here blocks publish or executes a change.
  */

@@ -344,4 +344,16 @@ class PredictionControllerTest {
                         .content("{\"recommendationId\":\"x\",\"type\":\"executed\"}"))
                 .andExpect(status().isConflict());
     }
+
+    @Test
+    void feedbackWithoutRecommendationIdIsBadRequest() throws Exception {
+        mvc.perform(post("/api/v1/events/" + event.getId() + "/prediction/feedback")
+                        .with(authentication(auth(owner, org)))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"type\":\"dismissed\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
+                .andExpect(jsonPath("$.error.fields.recommendationId").value("required"));
+        assertThat(feedback.count()).isZero();
+    }
 }
