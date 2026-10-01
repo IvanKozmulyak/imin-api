@@ -1,0 +1,5 @@
+# Railway switches traffic to a new deploy only once this answers 200, so a deploy that
+# fails to start (e.g. a bad env value) keeps the previous instance serving.
+[deploy]
+healthcheckPath = "/actuator/health"
+healthcheckTimeout = 300
