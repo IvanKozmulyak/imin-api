@@ -357,7 +357,7 @@ public class EventService {
     @Transactional
     @CacheEvict(value = "dashboard", allEntries = true)
     public EventDto unpublish(AuthPrincipal p, UUID id) {
-        Event e = loadOwned(p, id);
+        Event e = loadOwnedForWrite(p, id);
         if (e.getStatus() != EventStatus.LIVE) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE, "Event is not published");
         }
@@ -404,7 +404,7 @@ public class EventService {
         }
     }
 
-    /** Lock first, then read: a draft delete that committed while we waited makes the read 404. */
+    /** Lock first, then read: a draft delete or a LIVE→PAST sweep that committed while we waited is what we read. */
     private Event loadOwnedForWrite(AuthPrincipal p, UUID id) {
         events.lockActiveForWrite(id, p.orgId());
         return loadOwned(p, id);

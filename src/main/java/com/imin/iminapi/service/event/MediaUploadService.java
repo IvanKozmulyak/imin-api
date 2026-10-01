@@ -188,6 +188,8 @@ public class MediaUploadService {
     }
 
     private Event loadOwned(AuthPrincipal p, UUID eventId) {
+        // Lock before reading so a full-entity save cannot write back a status the sweep changed meanwhile.
+        events.lockActiveForWrite(eventId, p.orgId());
         Event e = events.findActive(eventId).orElseThrow(() -> ApiException.notFound("Event"));
         if (!e.getOrgId().equals(p.orgId())) throw ApiException.notFound("Event");
         return e;

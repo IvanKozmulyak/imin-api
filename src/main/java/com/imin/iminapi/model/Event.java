@@ -31,6 +31,7 @@ public class Event {
     @Column(nullable = false, length = 16)
     private EventVisibility visibility = EventVisibility.PUBLIC;
 
+    // The sweep flips LIVE→PAST in bulk; load-then-save paths take EventRepository.lockActiveForWrite before loading.
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 16)
     private EventStatus status = EventStatus.DRAFT;
