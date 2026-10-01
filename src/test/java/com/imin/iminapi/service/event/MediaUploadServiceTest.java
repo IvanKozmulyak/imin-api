@@ -11,25 +11,87 @@ import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.service.ai.provenance.ImageAiMarker;
 import com.imin.iminapi.storage.InMemoryMediaStorage;
 import org.junit.jupiter.api.Test;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.TransactionSystemException;
+import org.springframework.transaction.support.AbstractPlatformTransactionManager;
+import org.springframework.transaction.support.DefaultTransactionStatus;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.*;
 
 class MediaUploadServiceTest {
 
+    final List<String> log = new ArrayList<>();
     EventRepository events = mock(EventRepository.class);
-    InMemoryMediaStorage storage = new InMemoryMediaStorage("https://media.test/");
+    InMemoryMediaStorage storage = recordingStorage();
     VideoMetadata video = mock(VideoMetadata.class);
-    MediaUploadService sut = new MediaUploadService(events, storage, video);
+    RecordingTxManager txm = new RecordingTxManager(log);
+    MediaUploadService sut = new MediaUploadService(events, storage, video, txm);
+
+    /** Commits and rolls back nothing, but records each outcome in the shared log. */
+    static class RecordingTxManager extends AbstractPlatformTransactionManager {
+        final List<String> log;
+        boolean failCommit;
+
+        RecordingTxManager(List<String> log) { this.log = log; }
+
+        @Override protected Object doGetTransaction() { return new Object(); }
+
+        @Override protected boolean isExistingTransaction(Object transaction) {
+            return TransactionSynchronizationManager.isActualTransactionActive();
+        }
+
+        @Override protected void doBegin(Object transaction, TransactionDefinition definition) { }
+
+        @Override protected void doCommit(DefaultTransactionStatus status) {
+            log.add("commit");
+            if (failCommit) throw new TransactionSystemException("commit outcome unknown");
+        }
+
+        @Override protected void doRollback(DefaultTransactionStatus status) { log.add("rollback"); }
+
+        @Override protected void doSetRollbackOnly(DefaultTransactionStatus status) { }
+    }
+
+    private InMemoryMediaStorage recordingStorage() {
+        InMemoryMediaStorage s = spy(new InMemoryMediaStorage("https://media.test/"));
+        doAnswer(inv -> { log.add("put:" + inv.getArgument(0)); return inv.callRealMethod(); })
+                .when(s).put(anyString(), any(), any());
+        doAnswer(inv -> { log.add("delete:" + inv.getArgument(0)); return inv.callRealMethod(); })
+                .when(s).delete(anyString());
+        return s;
+    }
+
+    /** The event exists in its org for the unlocked precheck and for the locked load. */
+    private void owned(Event e) {
+        when(events.existsActiveInOrg(e.getId(), e.getOrgId())).thenReturn(true);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+    }
+
+    /** An own-upload object already stored and referenced as the event's poster. */
+    private String ownPoster(Event e) {
+        String key = "events/" + e.getId() + "/poster-aaaaaaaaaaaaaaaa.png";
+        storage.put(key, new byte[1], "image/png");
+        e.setPosterUrl(storage.urlFor(key));
+        log.clear();
+        return key;
+    }
 
     private AuthPrincipal owner(UUID orgId) {
         return new AuthPrincipal(UUID.randomUUID(), orgId, UserRole.OWNER, UUID.randomUUID());
@@ -52,7 +114,7 @@ class MediaUploadServiceTest {
     void dj_photo_without_attestation_is_rejected() {
         UUID orgId = UUID.randomUUID();
         Event e = ev(orgId);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        owned(e);
 
         assertThatThrownBy(() -> sut.upload(owner(orgId), e.getId(), MediaKind.DJ_PHOTO,
                 realPngUnchecked(600, 800), "image/png", "dj.png", null, null))
@@ -61,13 +123,14 @@ class MediaUploadServiceTest {
                         .isEqualTo(ErrorCode.RIGHTS_ATTESTATION_REQUIRED));
 
         assertThat(e.getDjPhotoUrl()).as("nothing is stored on a refused upload").isNull();
+        verify(storage, never()).put(any(), any(), any());
     }
 
     @Test
     void dj_photo_with_attestation_false_is_rejected() {
         UUID orgId = UUID.randomUUID();
         Event e = ev(orgId);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        owned(e);
 
         assertThatThrownBy(() -> sut.upload(owner(orgId), e.getId(), MediaKind.DJ_PHOTO,
                 realPngUnchecked(600, 800), "image/png", "dj.png", null, false))
@@ -78,7 +141,7 @@ class MediaUploadServiceTest {
     void dj_photo_with_attestation_records_the_timestamp_and_wording_version() {
         UUID orgId = UUID.randomUUID();
         Event e = ev(orgId);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        owned(e);
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
 
         sut.upload(owner(orgId), e.getId(), MediaKind.DJ_PHOTO, realPngUnchecked(600, 800), "image/png",
@@ -94,7 +157,7 @@ class MediaUploadServiceTest {
     void poster_upload_needs_no_attestation() {
         UUID orgId = UUID.randomUUID();
         Event e = ev(orgId);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        owned(e);
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
 
         assertThat(sut.upload(owner(orgId), e.getId(), MediaKind.POSTER, pngBytes(1024),
@@ -105,7 +168,7 @@ class MediaUploadServiceTest {
     void deleting_the_dj_photo_clears_the_attestation() {
         UUID orgId = UUID.randomUUID();
         Event e = ev(orgId);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        owned(e);
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
 
         sut.upload(owner(orgId), e.getId(), MediaKind.DJ_PHOTO, realPngUnchecked(600, 800), "image/png",
@@ -122,7 +185,7 @@ class MediaUploadServiceTest {
     void plain_poster_upload_records_not_ai_generated() {
         UUID orgId = UUID.randomUUID();
         Event e = ev(orgId);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        owned(e);
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
 
         sut.upload(owner(orgId), e.getId(), MediaKind.POSTER, pngBytes(1024), "image/png", "p.png");
@@ -134,7 +197,7 @@ class MediaUploadServiceTest {
     void poster_upload_flagged_by_the_studio_records_ai_generated() {
         UUID orgId = UUID.randomUUID();
         Event e = ev(orgId);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        owned(e);
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
 
         sut.upload(owner(orgId), e.getId(), MediaKind.POSTER, realPngUnchecked(40, 50), "image/png",
@@ -147,7 +210,7 @@ class MediaUploadServiceTest {
     void ai_poster_upload_stores_bytes_carrying_the_machine_readable_marker() {
         UUID orgId = UUID.randomUUID();
         Event e = ev(orgId);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        owned(e);
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
 
         MediaUploadResponse res = sut.upload(owner(orgId), e.getId(), MediaKind.POSTER,
@@ -163,7 +226,7 @@ class MediaUploadServiceTest {
     void organizer_poster_upload_is_stored_without_a_marker() {
         UUID orgId = UUID.randomUUID();
         Event e = ev(orgId);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        owned(e);
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
         byte[] own = realPngUnchecked(40, 50);
 
@@ -179,7 +242,7 @@ class MediaUploadServiceTest {
     void ai_poster_the_marker_cannot_be_written_into_is_rejected_and_nothing_is_stored() {
         UUID orgId = UUID.randomUUID();
         Event e = ev(orgId);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        owned(e);
 
         assertThatThrownBy(() -> sut.upload(owner(orgId), e.getId(), MediaKind.POSTER,
                 pngBytes(1024), "image/png", "p.png", Boolean.TRUE))
@@ -195,7 +258,7 @@ class MediaUploadServiceTest {
         UUID orgId = UUID.randomUUID();
         Event e = ev(orgId);
         e.setPosterAiGenerated(true);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        owned(e);
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
 
         sut.upload(owner(orgId), e.getId(), MediaKind.POSTER, pngBytes(2048), "image/png", "p2.png");
@@ -207,7 +270,7 @@ class MediaUploadServiceTest {
     void poster_png_under_5mb_uploads_and_sets_url() {
         UUID orgId = UUID.randomUUID();
         Event e = ev(orgId);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        owned(e);
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
 
         byte[] png = pngBytes(1024);
@@ -226,7 +289,7 @@ class MediaUploadServiceTest {
     void reupload_with_different_bytes_produces_different_url_and_deletes_old_object() {
         UUID orgId = UUID.randomUUID();
         Event e = ev(orgId);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        owned(e);
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
 
         byte[] first = pngBytes(1024);
@@ -258,7 +321,7 @@ class MediaUploadServiceTest {
         String aiKey = "ai-posters/" + UUID.randomUUID() + ".png";
         storage.put(aiKey, new byte[1], "image/png");
         e.setPosterUrl("https://media.test/" + aiKey);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        owned(e);
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
 
         MediaUploadResponse r = sut.upload(owner(orgId), e.getId(), MediaKind.POSTER,
@@ -276,7 +339,7 @@ class MediaUploadServiceTest {
         String aiKey = "ai-posters/" + UUID.randomUUID() + ".png";
         storage.put(aiKey, new byte[1], "image/png");
         e.setPosterUrl("https://media.test/" + aiKey);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        owned(e);
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
 
         sut.delete(owner(orgId), e.getId(), MediaKind.POSTER);
@@ -293,7 +356,7 @@ class MediaUploadServiceTest {
         String otherKey = "events/" + UUID.randomUUID() + "/poster-deadbeefdeadbeef.png";
         storage.put(otherKey, new byte[1], "image/png");
         e.setPosterUrl("https://media.test/" + otherKey);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        owned(e);
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
 
         sut.delete(owner(orgId), e.getId(), MediaKind.POSTER);
@@ -303,20 +366,20 @@ class MediaUploadServiceTest {
     }
 
     @Test
-    void reupload_with_identical_bytes_is_idempotent() {
+    void reupload_with_identical_bytes_gets_a_new_key_and_drops_the_old() {
         UUID orgId = UUID.randomUUID();
         Event e = ev(orgId);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
-        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+        owned(e);
 
         byte[] bytes = pngBytes(1024);
         MediaUploadResponse r1 = sut.upload(owner(orgId), e.getId(), MediaKind.POSTER, bytes, "image/png", "x.png");
         MediaUploadResponse r2 = sut.upload(owner(orgId), e.getId(), MediaKind.POSTER, bytes, "image/png", "x.png");
 
-        // Identical content hashes to the same key, so the URL is stable
-        // (no orphans, no cache busting needed because nothing actually changed).
-        assertThat(r1.url()).isEqualTo(r2.url());
-        assertThat(storage.blobs()).hasSize(1);
+        assertThat(r1.url()).isNotEqualTo(r2.url());
+        String shape = "https://media\\.test/events/" + e.getId() + "/poster-[0-9a-f]{16}\\.png";
+        assertThat(r1.url()).matches(shape);
+        assertThat(r2.url()).matches(shape);
+        assertThat(storage.blobs().keySet()).containsExactly(storage.keyFor(r2.url()));
     }
 
     @Test
@@ -329,7 +392,7 @@ class MediaUploadServiceTest {
         String legacyKey = "events/" + e.getId() + "/poster.png";
         e.setPosterUrl("https://media.test/" + legacyKey);
         storage.put(legacyKey, new byte[1], "image/png");
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        owned(e);
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
 
         sut.delete(owner(orgId), e.getId(), MediaKind.POSTER);
@@ -342,7 +405,7 @@ class MediaUploadServiceTest {
     void poster_above_5mb_returns_FIELD_INVALID() {
         UUID orgId = UUID.randomUUID();
         Event e = ev(orgId);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        owned(e);
 
         byte[] big = new byte[6 * 1024 * 1024];
         assertThatThrownBy(() -> sut.upload(owner(orgId), e.getId(), MediaKind.POSTER, big, "image/png", "p.png"))
@@ -354,27 +417,30 @@ class MediaUploadServiceTest {
     void poster_with_bad_mime_returns_FIELD_INVALID() {
         UUID orgId = UUID.randomUUID();
         Event e = ev(orgId);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        owned(e);
 
         assertThatThrownBy(() -> sut.upload(owner(orgId), e.getId(), MediaKind.POSTER, new byte[10], "image/gif", "x.gif"))
                 .hasFieldOrPropertyWithValue("code", ErrorCode.FIELD_INVALID);
+        verify(storage, never()).put(any(), any(), any());
     }
 
+    /** Foreign, missing and soft-deleted all answer false from the precheck, before any storage I/O. */
     @Test
-    void other_org_event_returns_NOT_FOUND() {
+    void upload_to_another_orgs_event_is_404_and_stores_nothing() {
         UUID orgId = UUID.randomUUID();
         Event e = ev(UUID.randomUUID()); // different org
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
 
         assertThatThrownBy(() -> sut.upload(owner(orgId), e.getId(), MediaKind.POSTER, pngBytes(10), "image/png", "p.png"))
                 .hasFieldOrPropertyWithValue("code", ErrorCode.NOT_FOUND);
+        verify(storage, never()).put(any(), any(), any());
+        verify(events, never()).lockActiveForWrite(any(), any());
     }
 
     @Test
     void poster_with_mismatched_magic_bytes_rejected() {
         UUID orgId = UUID.randomUUID();
         Event e = ev(orgId);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        owned(e);
 
         // PNG magic bytes but declared as JPEG
         byte[] fakePngAsJpeg = pngBytes(100);
@@ -389,7 +455,7 @@ class MediaUploadServiceTest {
         // must not block the upload (duration is informational only).
         UUID orgId = UUID.randomUUID();
         Event e = ev(orgId);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        owned(e);
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
         when(video.probeMp4DurationSec(any())).thenReturn(null);
 
@@ -407,13 +473,211 @@ class MediaUploadServiceTest {
         Event e = ev(orgId);
         e.setPosterUrl("https://media.test/events/" + e.getId() + "/poster.png");
         storage.put("events/" + e.getId() + "/poster.png", new byte[1], "image/png");
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        owned(e);
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
 
         sut.delete(owner(orgId), e.getId(), MediaKind.POSTER);
 
         assertThat(e.getPosterUrl()).isNull();
         assertThat(storage.blobs()).isEmpty();
+    }
+
+    // ── Storage I/O outside the row lock ────────────────────────────────────
+
+    @Test
+    void failed_put_writes_nothing() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        owned(e);
+        RuntimeException r2Down = new RuntimeException("r2 down");
+        doThrow(r2Down).when(storage).put(anyString(), any(), any());
+
+        assertThatThrownBy(() -> sut.upload(owner(orgId), e.getId(), MediaKind.POSTER, pngBytes(1024),
+                "image/png", "p.png")).isSameAs(r2Down);
+
+        verify(events, never()).lockActiveForWrite(any(), any());
+        verify(events, never()).saveAndFlush(any());
+        verify(storage, never()).delete(anyString());
+        assertThat(log).doesNotContain("commit");
+    }
+
+    @Test
+    void event_gone_at_the_lock_deletes_the_new_object_and_keeps_the_old() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        String oldKey = ownPoster(e);
+        when(events.existsActiveInOrg(e.getId(), orgId)).thenReturn(true);
+        when(events.findActive(e.getId())).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> sut.upload(owner(orgId), e.getId(), MediaKind.POSTER, pngBytes(1024),
+                "image/png", "p.png")).hasFieldOrPropertyWithValue("code", ErrorCode.NOT_FOUND);
+
+        assertThat(storage.blobs().keySet()).containsExactly(oldKey);
+        assertThat(log).hasSize(3);
+        String newKey = log.get(0).substring("put:".length());
+        assertThat(newKey).isNotEqualTo(oldKey);
+        assertThat(log).containsExactly("put:" + newKey, "rollback", "delete:" + newKey);
+    }
+
+    @Test
+    void failed_orphan_cleanup_is_suppressed_on_the_original_error() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        ownPoster(e);
+        when(events.existsActiveInOrg(e.getId(), orgId)).thenReturn(true);
+        when(events.findActive(e.getId())).thenReturn(Optional.empty());
+        RuntimeException cleanupFailure = new RuntimeException("r2 delete failed");
+        doThrow(cleanupFailure).when(storage).delete(argThat(k -> !k.endsWith("aaaaaaaaaaaaaaaa.png")));
+
+        Throwable thrown = catchThrowable(() -> sut.upload(owner(orgId), e.getId(), MediaKind.POSTER,
+                pngBytes(1024), "image/png", "p.png"));
+
+        assertThat(thrown).isInstanceOf(ApiException.class)
+                .hasFieldOrPropertyWithValue("code", ErrorCode.NOT_FOUND);
+        assertThat(thrown.getSuppressed()).containsExactly(cleanupFailure);
+    }
+
+    @Test
+    void unknown_commit_outcome_keeps_the_new_object() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        owned(e);
+        txm.failCommit = true;
+
+        assertThatThrownBy(() -> sut.upload(owner(orgId), e.getId(), MediaKind.POSTER, pngBytes(1024),
+                "image/png", "p.png")).isInstanceOf(TransactionSystemException.class);
+
+        String newKey = log.get(0).substring("put:".length());
+        assertThat(storage.blobs()).containsKey(newKey);
+        verify(storage, never()).delete(newKey);
+    }
+
+    @Test
+    void replaced_own_object_is_deleted_only_after_commit() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        String oldKey = ownPoster(e);
+        owned(e);
+
+        MediaUploadResponse r = sut.upload(owner(orgId), e.getId(), MediaKind.POSTER, pngBytes(1024),
+                "image/png", "p.png");
+
+        assertThat(storage.blobs()).doesNotContainKey(oldKey).containsKey(storage.keyFor(r.url()));
+        assertThat(log).contains("commit", "delete:" + oldKey);
+        assertThat(log.indexOf("commit")).isLessThan(log.indexOf("delete:" + oldKey));
+    }
+
+    @Test
+    void failed_old_object_delete_still_returns_the_upload() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        String oldKey = ownPoster(e);
+        owned(e);
+        doThrow(new RuntimeException("r2 delete failed")).when(storage).delete(oldKey);
+
+        MediaUploadResponse r = sut.upload(owner(orgId), e.getId(), MediaKind.POSTER, pngBytes(1024),
+                "image/png", "p.png");
+
+        assertThat(r.url()).isEqualTo(e.getPosterUrl());
+    }
+
+    @Test
+    void inside_an_outer_transaction_the_old_object_waits_for_its_commit() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        String oldKey = ownPoster(e);
+        owned(e);
+        List<Boolean> presentInside = new ArrayList<>();
+
+        new TransactionTemplate(txm).executeWithoutResult(s -> {
+            sut.upload(owner(orgId), e.getId(), MediaKind.POSTER, pngBytes(1024), "image/png", "p.png");
+            presentInside.add(storage.blobs().containsKey(oldKey));
+        });
+
+        assertThat(presentInside).containsExactly(true);
+        assertThat(storage.blobs()).doesNotContainKey(oldKey);
+    }
+
+    @Test
+    void outer_rollback_keeps_the_old_object() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        String oldKey = ownPoster(e);
+        owned(e);
+
+        new TransactionTemplate(txm).executeWithoutResult(s -> {
+            sut.upload(owner(orgId), e.getId(), MediaKind.POSTER, pngBytes(1024), "image/png", "p.png");
+            s.setRollbackOnly();
+        });
+
+        assertThat(storage.blobs()).containsKey(oldKey);
+    }
+
+    @Test
+    void delete_of_another_orgs_event_is_404_and_touches_no_object() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(UUID.randomUUID()); // different org
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+
+        assertThatThrownBy(() -> sut.delete(owner(orgId), e.getId(), MediaKind.POSTER))
+                .hasFieldOrPropertyWithValue("code", ErrorCode.NOT_FOUND);
+        verify(storage, never()).delete(anyString());
+    }
+
+    @Test
+    void delete_with_no_url_saves_nothing() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        owned(e);
+
+        sut.delete(owner(orgId), e.getId(), MediaKind.POSTER);
+
+        verify(events, never()).save(any());
+        verify(storage, never()).delete(anyString());
+        assertThat(log).contains("commit").noneMatch(l -> l.startsWith("delete:"));
+    }
+
+    @Test
+    void delete_removes_own_object_only_after_commit() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        String key = ownPoster(e);
+        owned(e);
+
+        sut.delete(owner(orgId), e.getId(), MediaKind.POSTER);
+
+        assertThat(e.getPosterUrl()).isNull();
+        assertThat(storage.blobs()).doesNotContainKey(key);
+        assertThat(log).contains("commit", "delete:" + key);
+        assertThat(log.indexOf("commit")).isLessThan(log.indexOf("delete:" + key));
+    }
+
+    @Test
+    void failed_object_delete_still_clears_the_url() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        String key = ownPoster(e);
+        owned(e);
+        doThrow(new RuntimeException("r2 delete failed")).when(storage).delete(key);
+
+        sut.delete(owner(orgId), e.getId(), MediaKind.POSTER);
+
+        assertThat(e.getPosterUrl()).isNull();
+    }
+
+    @Test
+    void delete_inside_a_rolled_back_transaction_keeps_the_object() {
+        UUID orgId = UUID.randomUUID();
+        Event e = ev(orgId);
+        String key = ownPoster(e);
+        owned(e);
+
+        new TransactionTemplate(txm).executeWithoutResult(s -> {
+            sut.delete(owner(orgId), e.getId(), MediaKind.POSTER);
+            s.setRollbackOnly();
+        });
+
+        assertThat(storage.blobs()).containsKey(key);
     }
 
     private static byte[] pngBytes(int size) {
@@ -452,7 +716,7 @@ class MediaUploadServiceTest {
     void djPhotoUploadStoresUrlOnEvent() throws Exception {
         UUID orgId = UUID.randomUUID();
         Event e = ev(orgId);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        owned(e);
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
 
         byte[] png = realPng(600, 800);
@@ -465,7 +729,7 @@ class MediaUploadServiceTest {
     void djPhotoRejectsTooSmallImage() throws Exception {
         UUID orgId = UUID.randomUUID();
         Event e = ev(orgId);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        owned(e);
 
         byte[] png = realPng(200, 800); // short side 200 < 256
         assertThatThrownBy(() -> sut.upload(owner(orgId), e.getId(), MediaKind.DJ_PHOTO, png, "image/png", "dj.png", null, true))
@@ -477,7 +741,7 @@ class MediaUploadServiceTest {
     void djPhotoRejectsOversize() {
         UUID orgId = UUID.randomUUID();
         Event e = ev(orgId);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        owned(e);
 
         byte[] big = new byte[(int) (5 * 1024 * 1024) + 1];
         big[0] = (byte) 0x89; big[1] = 0x50; big[2] = 0x4E; big[3] = 0x47;
@@ -490,7 +754,7 @@ class MediaUploadServiceTest {
     void djPhotoRejectsNonImageContentType() throws Exception {
         UUID orgId = UUID.randomUUID();
         Event e = ev(orgId);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        owned(e);
 
         byte[] png = realPng(600, 800);
         assertThatThrownBy(() -> sut.upload(owner(orgId), e.getId(), MediaKind.DJ_PHOTO, png, "image/webp", "dj.webp", null, true))
@@ -502,7 +766,7 @@ class MediaUploadServiceTest {
     void djPhotoDeleteClearsUrl() throws Exception {
         UUID orgId = UUID.randomUUID();
         Event e = ev(orgId);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        owned(e);
         when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
 
         byte[] png = realPng(600, 800);

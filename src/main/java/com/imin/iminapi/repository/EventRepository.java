@@ -379,6 +379,15 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
     """)
     void lockActiveForWrite(@Param("id") UUID id, @Param("orgId") UUID orgId);
 
+    /** Ownership check that loads no entity; for checks made before the row lock. */
+    @Query("""
+        SELECT COUNT(e) > 0 FROM Event e
+         WHERE e.id = :id
+           AND e.orgId = :orgId
+           AND e.deletedAt IS NULL
+    """)
+    boolean existsActiveInOrg(@Param("id") UUID id, @Param("orgId") UUID orgId);
+
     /** A live (not soft-deleted) event by its survey token. */
     @Query("SELECT e FROM Event e WHERE e.surveyToken = :token AND e.deletedAt IS NULL")
     Optional<Event> findActiveBySurveyToken(@Param("token") String token);

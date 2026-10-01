@@ -9,16 +9,20 @@ import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.service.ai.provenance.ImageAiMarker;
 import com.imin.iminapi.storage.MediaStorage;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.Map;
@@ -31,26 +35,29 @@ public class MediaUploadService {
     private static final long MB = 1024L * 1024L;
     private static final Set<String> IMAGE_TYPES = Set.of("image/png", "image/jpeg", "image/jpg");
     private static final Set<String> VIDEO_TYPES = Set.of("video/mp4");
+    private static final SecureRandom RANDOM = new SecureRandom();
+    private static final Logger log = LoggerFactory.getLogger(MediaUploadService.class);
 
     private final EventRepository events;
     private final MediaStorage storage;
     private final VideoMetadata videoMetadata;
+    private final TransactionTemplate writeTx;
 
-    public MediaUploadService(EventRepository events, MediaStorage storage, VideoMetadata videoMetadata) {
+    public MediaUploadService(EventRepository events, MediaStorage storage, VideoMetadata videoMetadata,
+                              PlatformTransactionManager txManager) {
         this.events = events;
         this.storage = storage;
         this.videoMetadata = videoMetadata;
+        this.writeTx = new TransactionTemplate(txManager);
     }
 
     /** Back-compat overload: an upload that makes no AI-provenance claim. */
-    @Transactional
     public MediaUploadResponse upload(AuthPrincipal p, UUID eventId, MediaKind kind,
                                       byte[] bytes, String contentType, String originalFilename) {
         return upload(p, eventId, kind, bytes, contentType, originalFilename, null);
     }
 
     /** Back-compat overload: no rights attestation supplied. */
-    @Transactional
     public MediaUploadResponse upload(AuthPrincipal p, UUID eventId, MediaKind kind,
                                       byte[] bytes, String contentType, String originalFilename,
                                       Boolean aiGenerated) {
@@ -64,11 +71,10 @@ public class MediaUploadService {
      *        column to put it in, and inventing one from a query parameter would
      *        be worse than dropping it.
      */
-    @Transactional
     public MediaUploadResponse upload(AuthPrincipal p, UUID eventId, MediaKind kind,
                                       byte[] bytes, String contentType, String originalFilename,
                                       Boolean aiGenerated, Boolean rightsAttested) {
-        Event e = loadOwned(p, eventId);
+        if (!events.existsActiveInOrg(eventId, p.orgId())) throw ApiException.notFound("Event");
         // Rights gate BEFORE validation or any write: a DJ photo is a third
         // party's face on its way into an AI pipeline (Ideogram character
         // reference, OpenRouter vision gate). Droit à l'image (C. civ. 9) and
@@ -94,19 +100,68 @@ public class MediaUploadService {
             // AI Act Art.50(2): an AI poster carries the machine-readable marker in its bytes (ADR-0005).
             bytes = markAiPoster(bytes);
         }
-        // Hash the bytes into the key so each unique upload gets a unique URL.
-        // Two reasons this matters: (1) R2 serves objects with Cache-Control: immutable,
-        // so a re-upload at the same URL would be invisible to browsers indefinitely;
-        // (2) identical content collapses to the same key (idempotent retries, dedup).
-        String hash = contentHash(bytes);
-        String key = "events/" + e.getId() + "/" + kind.wireValue() + "-" + hash
+        // Unique per upload, so a failed write's object can be deleted without touching a live one.
+        String key = "events/" + eventId + "/" + kind.wireValue() + "-" + randomToken()
                 + "." + extensionFor(contentType, originalFilename);
+        // Stored before the row lock: a slow or hung storage call must not block the event's writers.
         String url = storage.urlFor(key);
-        String oldUrl = switch (kind) {
+        MediaStorage.Stored stored = storage.put(key, bytes, contentType);
+        boolean[] callbackDone = {false};
+        String oldUrl;
+        try {
+            oldUrl = writeTx.execute(s -> {
+                Event e = loadOwnedLocked(p, eventId);
+                String prev = urlOf(e, kind);
+                apply(e, kind, url, aiGenerated);
+                events.saveAndFlush(e);
+                callbackDone[0] = true;
+                return prev;
+            });
+        } catch (RuntimeException ex) {
+            // Delete only when the failure was inside the callback; after it, the commit may have landed.
+            if (!callbackDone[0]) {
+                try {
+                    storage.delete(key);
+                } catch (RuntimeException cleanup) {
+                    ex.addSuppressed(cleanup);
+                }
+            } else {
+                log.warn("Commit outcome unknown; keeping uploaded object {}", key);
+            }
+            throw ex;
+        }
+        if (oldUrl != null && !oldUrl.equals(url)) {
+            String oldKey = storage.keyFor(oldUrl);
+            if (oldKey != null && !oldKey.equals(key) && isOwnUploadKey(eventId, oldKey)) {
+                afterCommit(() -> deleteQuietly(oldKey));
+            }
+        }
+        return new MediaUploadResponse(stored.url(), stored.sizeBytes(), stored.contentType(), durationSec);
+    }
+
+    public void delete(AuthPrincipal p, UUID eventId, MediaKind kind) {
+        String key = writeTx.execute(s -> {
+            Event e = loadOwnedLocked(p, eventId);
+            String url = urlOf(e, kind);
+            if (url == null) return null;
+            clear(e, kind);
+            events.save(e);
+            String k = storage.keyFor(url);
+            return k != null && isOwnUploadKey(eventId, k) ? k : null;
+        });
+        // Object goes only after the cleared URL commits; a rollback keeps both.
+        if (key != null) afterCommit(() -> deleteQuietly(key));
+    }
+
+    private static String urlOf(Event e, MediaKind kind) {
+        return switch (kind) {
             case POSTER -> e.getPosterUrl();
             case VIDEO -> e.getVideoUrl();
             case DJ_PHOTO -> e.getDjPhotoUrl();
         };
+    }
+
+    private static void apply(Event e, MediaKind kind, String url, Boolean aiGenerated) {
         switch (kind) {
             case POSTER -> {
                 e.setPosterUrl(url);
@@ -125,35 +180,9 @@ public class MediaUploadService {
                 e.setDjPhotoRightsAttestationVersion(RightsAttestation.CURRENT_VERSION);
             }
         }
-        events.save(e);
-        // Upload to remote storage — if this throws, the DB row already has the correct URL
-        // (the object simply won't exist yet; a retry of the same file will re-upload to the
-        // same key because the hash is deterministic).
-        MediaStorage.Stored stored = storage.put(key, bytes, contentType);
-        // Best-effort cleanup of the previously stored object. Only after the new put
-        // succeeded — never delete the old object before the new one is durable.
-        if (oldUrl != null && !oldUrl.equals(url)) {
-            String oldKey = storage.keyFor(oldUrl);
-            if (oldKey != null && !oldKey.equals(key) && isOwnUploadKey(e.getId(), oldKey)) {
-                try { storage.delete(oldKey); } catch (Exception ignored) {}
-            }
-        }
-        return new MediaUploadResponse(stored.url(), stored.sizeBytes(), stored.contentType(), durationSec);
     }
 
-    @Transactional
-    public void delete(AuthPrincipal p, UUID eventId, MediaKind kind) {
-        Event e = loadOwned(p, eventId);
-        String url = switch (kind) {
-            case POSTER -> e.getPosterUrl();
-            case VIDEO -> e.getVideoUrl();
-            case DJ_PHOTO -> e.getDjPhotoUrl();
-        };
-        if (url == null) return;
-        String key = storage.keyFor(url);
-        if (key != null && isOwnUploadKey(e.getId(), key)) {
-            try { storage.delete(key); } catch (Exception ignored) {}
-        }
+    private static void clear(Event e, MediaKind kind) {
         switch (kind) {
             case POSTER -> {
                 e.setPosterUrl(null);
@@ -167,7 +196,28 @@ public class MediaUploadService {
                 e.setDjPhotoRightsAttestationVersion(null);
             }
         }
-        events.save(e);
+    }
+
+    // Joined to a caller's transaction, wait for its commit; otherwise ours already committed.
+    private static void afterCommit(Runnable r) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()
+                && TransactionSynchronizationManager.isActualTransactionActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() { r.run(); }
+            });
+        } else {
+            r.run();
+        }
+    }
+
+    // Never throws: an afterCommit exception would reach the caller after the write committed.
+    private void deleteQuietly(String key) {
+        try {
+            storage.delete(key);
+        } catch (RuntimeException ex) {
+            log.warn("Orphaned media object {}: {}", key, ex.getMessage());
+        }
     }
 
     /**
@@ -187,7 +237,7 @@ public class MediaUploadService {
         return key.startsWith("events/" + eventId + "/");
     }
 
-    private Event loadOwned(AuthPrincipal p, UUID eventId) {
+    private Event loadOwnedLocked(AuthPrincipal p, UUID eventId) {
         // Lock before reading so a full-entity save cannot write back a status the sweep changed meanwhile.
         events.lockActiveForWrite(eventId, p.orgId());
         Event e = events.findActive(eventId).orElseThrow(() -> ApiException.notFound("Event"));
@@ -286,18 +336,10 @@ public class MediaUploadService {
                 "Invalid file", Map.of(field, msg));
     }
 
-    private static String contentHash(byte[] bytes) {
-        try {
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
-            byte[] digest = md.digest(bytes);
-            // 8 bytes = 16 hex chars = 64 bits of entropy. Ample for collision-free per-event keys.
-            byte[] prefix = new byte[8];
-            System.arraycopy(digest, 0, prefix, 0, 8);
-            return HexFormat.of().formatHex(prefix);
-        } catch (NoSuchAlgorithmException ex) {
-            // SHA-256 is required to be present on every JRE.
-            throw new IllegalStateException(ex);
-        }
+    private static String randomToken() {
+        byte[] b = new byte[8];
+        RANDOM.nextBytes(b);
+        return HexFormat.of().formatHex(b);
     }
 
     private static String extensionFor(String contentType, String originalFilename) {

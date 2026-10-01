@@ -10,11 +10,7 @@ public interface MediaStorage {
 
     void delete(String key);
 
-    /**
-     * Return the deterministic public URL for a given key without uploading.
-     * Used to persist the URL in the DB before calling put, so a failed upload
-     * does not orphan objects in remote storage.
-     */
+    /** Public URL for a key, without I/O. */
     String urlFor(String key);
 
     /**

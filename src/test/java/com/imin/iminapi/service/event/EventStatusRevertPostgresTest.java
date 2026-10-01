@@ -23,6 +23,7 @@ import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.storage.MediaStorage;
 import com.imin.iminapi.stripe.StripeProductService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -38,6 +39,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -61,6 +63,10 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.verify;
 
 /** Event load-then-save paths racing the LIVE→PAST sweep, on Postgres 17 (READ COMMITTED lock-wait re-check). */
 @SpringBootTest
@@ -85,6 +91,7 @@ class EventStatusRevertPostgresTest {
     }
 
     @MockitoBean StripeProductService stripeProductService;
+    @MockitoSpyBean MediaStorage storage;
 
     @Autowired EventService eventService;
     @Autowired TicketTierService tierService;
@@ -287,6 +294,65 @@ class EventStatusRevertPostgresTest {
             assertThat(status()).isEqualTo("DRAFT");
         } finally {
             release.countDown();
+            pool.shutdownNow();
+            pool.awaitTermination(15, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void sweepCommitsWhileAnUploadIsStoringTheObject() throws Exception {
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        CountDownLatch putEntered = new CountDownLatch(1);
+        CountDownLatch releasePut = new CountDownLatch(1);
+        doAnswer(inv -> {
+            putEntered.countDown();
+            await(releasePut);
+            return inv.callRealMethod();
+        }).when(storage).put(anyString(), any(), any());
+        try {
+            Future<MediaUploadResponse> upload = pool.submit(() -> mediaUploadService.upload(
+                    principal, eventId, MediaKind.POSTER, realPng(40, 50), "image/png", "p.png"));
+            assertThat(putEntered.await(10, TimeUnit.SECONDS)).isTrue();
+
+            assertThat(pool.submit(() -> events.markLivePast(now(), now())).get(5, TimeUnit.SECONDS))
+                    .as("the sweep does not wait for the storage put").isEqualTo(1);
+
+            releasePut.countDown();
+            MediaUploadResponse result = upload.get(10, TimeUnit.SECONDS);
+            assertThat(posterUrl()).isEqualTo(result.url());
+            assertThat(status()).isEqualTo("PAST");
+        } finally {
+            releasePut.countDown();
+            pool.shutdownNow();
+            pool.awaitTermination(15, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void sweepCommitsWhileADeleteIsRemovingTheObject() throws Exception {
+        storage.put("events/" + eventId + "/poster-x.png", new byte[1], "image/png");
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        CountDownLatch deleteEntered = new CountDownLatch(1);
+        CountDownLatch releaseDelete = new CountDownLatch(1);
+        doAnswer(inv -> {
+            deleteEntered.countDown();
+            await(releaseDelete);
+            return inv.callRealMethod();
+        }).when(storage).delete(anyString());
+        try {
+            Future<?> delete = pool.submit(() -> mediaUploadService.delete(principal, eventId, MediaKind.POSTER));
+            assertThat(deleteEntered.await(10, TimeUnit.SECONDS)).isTrue();
+
+            assertThat(pool.submit(() -> events.markLivePast(now(), now())).get(5, TimeUnit.SECONDS))
+                    .as("the sweep does not wait for the storage delete").isEqualTo(1);
+
+            releaseDelete.countDown();
+            delete.get(10, TimeUnit.SECONDS);
+            assertThat(posterUrl()).isNull();
+            assertThat(status()).isEqualTo("PAST");
+            verify(storage).delete("events/" + eventId + "/poster-x.png");
+        } finally {
+            releaseDelete.countDown();
             pool.shutdownNow();
             pool.awaitTermination(15, TimeUnit.SECONDS);
         }
