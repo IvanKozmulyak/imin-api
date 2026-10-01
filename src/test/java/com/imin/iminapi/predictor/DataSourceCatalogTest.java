@@ -9,6 +9,7 @@ import com.imin.iminapi.predictor.config.PredictorProperties;
 import com.imin.iminapi.predictor.dto.PublicDataSourcesResponse.PublicDataSource;
 import com.imin.iminapi.predictor.sources.DataSourceCatalog;
 import com.imin.iminapi.predictor.sources.SourceGates;
+import com.imin.iminapi.predictor.sources.openevents.OpenEventsProperties;
 import com.imin.iminapi.predictor.sources.wikimedia.WikimediaProperties;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.io.DefaultResourceLoader;
@@ -35,7 +36,8 @@ class DataSourceCatalogTest {
     private final DateCheckProperties dateCheck = new DateCheckProperties();
     private final WikimediaProperties wikimedia = new WikimediaProperties();
     private final FootballDataProperties football = new FootballDataProperties();
-    private final SourceGates gates = new SourceGates(calendar, predictor, dateCheck, wikimedia, football);
+    private final OpenEventsProperties openEvents = new OpenEventsProperties();
+    private final SourceGates gates = new SourceGates(calendar, predictor, dateCheck, wikimedia, football, openEvents);
 
     private static final Function<String, Optional<LocalDate>> NO_DATES = prefix -> Optional.empty();
 
@@ -205,6 +207,31 @@ class DataSourceCatalogTest {
         assertThat(activeIds()).containsExactly(
                 "calendrier-api-gouv", "fr-en-calendrier-scolaire", "openholidays", "iana-tz", "openjdk-hijrah",
                 "wikimedia-pageviews");
+    }
+
+    @Test
+    void openAgendaGateNeedsDateCheckFlagAndKey() {
+        assertThat(gates.keys()).contains("openagenda", "quefaireaparis");
+        dateCheck.setEnabled(true);
+        openEvents.setOpenagendaEnabled(true);
+        assertThat(gates.isOn("openagenda")).as("no key").isFalse();
+        openEvents.setOpenagendaApiKey("oa_pk_k");
+        assertThat(gates.isOn("openagenda")).isTrue();
+        dateCheck.setEnabled(false);
+        assertThat(gates.isOn("openagenda")).as("date check off").isFalse();
+        dateCheck.setEnabled(true);
+        openEvents.setOpenagendaEnabled(false);
+        assertThat(gates.isOn("openagenda")).as("flag off").isFalse();
+    }
+
+    @Test
+    void queFaireGateNeedsDateCheckAndFlag() {
+        dateCheck.setEnabled(true);
+        assertThat(gates.isOn("quefaireaparis")).as("flag off").isFalse();
+        openEvents.setQuefaireaparisEnabled(true);
+        assertThat(gates.isOn("quefaireaparis")).isTrue();
+        dateCheck.setEnabled(false);
+        assertThat(gates.isOn("quefaireaparis")).as("date check off").isFalse();
     }
 
     @Test

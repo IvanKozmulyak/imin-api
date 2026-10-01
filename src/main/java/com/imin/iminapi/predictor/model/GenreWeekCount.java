@@ -10,7 +10,12 @@ import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.UUID;
 
-/** Weekly count of genre events in a city, ODbL-derived and kept in its own table (V162). */
+/**
+ * Weekly count of genre events in a city (V162), re-derived by OpenEventsWriter from open_event_occurrence:
+ * distinct (normalised title, night) pairs of the ISO week (Monday start) whose genre keys contain the family.
+ * {@code sourcesJson} lists every source counted, with 0 too, so the row records coverage as well as credit:
+ * {@code [{"source":"openagenda","licence":"Licence Ouverte 2.0","events":3},{"source":"quefaireaparis","licence":"ODbL 1.0","events":0}]}.
+ */
 @Entity
 @Table(name = "genre_week_count")
 @Getter

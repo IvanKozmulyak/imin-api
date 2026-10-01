@@ -626,6 +626,15 @@ imin:
     football:
       enabled: ${PREDICTOR_FOOTBALL_ENABLED:false}
       api-key: ${FOOTBALL_DATA_API_KEY:}
+    # Open event listings counted per city, genre bucket and ISO week into genre_week_count (OpenEventsJob, Mondays
+    # 05:45 Europe/Paris, and at boot while open_event_occurrence is empty). Both off by default; each also needs
+    # PREDICTOR_DATE_CHECK_ENABLED. OpenAgenda on with a blank or non-public (oa_pk_) key fails startup.
+    open-events:
+      openagenda-enabled: ${PREDICTOR_OPENAGENDA_ENABLED:false}
+      # Public oa_pk_ key, sent in the "key" header only; already set on Railway.
+      openagenda-api-key: ${OPENAGENDA_API_KEY:}
+      # Que Faire à Paris (Ville de Paris, ODbL), no key.
+      quefaireaparis-enabled: ${PREDICTOR_QUEFAIREAPARIS_ENABLED:false}
   ratelimit:
     login:
       capacity: 5

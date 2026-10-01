@@ -1,0 +1,22 @@
+# Cities with open event listings, read by OpenEventsJob. Loaded strictly at boot (OpenEventCities).
+# An OpenAgenda agenda ships only after a live GET of /v2/agendas?search=<city>&official=1 and its events
+# on verified_on: official, public (private 0), indexed, with upcoming events. OpenAgenda's terms put public
+# event listings under the licence ouverte, linked to Etalab's Licence Ouverte 2.0.
+# Checked 2026-10-01 and left out for lack of a live city-wide official agenda: metz, nancy, thionville,
+# strasbourg, mulhouse (their official agendas are single venues or institutions, 0-34 upcoming events each).
+# Paris is read from Que Faire à Paris (Ville de Paris, ODbL), not OpenAgenda.
+version: 1
+verified_on: 2026-10-01
+cities:
+  lille:
+    country: FR
+    # Hellemmes and Lomme are associated communes of Lille, listed under their own names upstream.
+    aliases: [lille, hellemmes, lomme]
+    openagenda:
+      - { uid: 57621068, slug: ville-de-lille, name: "Ville de Lille", licence: "Licence Ouverte 2.0" }
+      - { uid: 89904399, slug: metropole-europeenne-de-lille, name: "Métropole Européenne de Lille", licence: "Licence Ouverte 2.0" }
+  paris:
+    country: FR
+    aliases: [paris]
+    quefaireaparis: true
+    openagenda: []

@@ -1,0 +1,27 @@
+# Keyword lists for counting open-data listings (OpenAgenda, Que Faire à Paris) per genre bucket.
+# Whole-word, accent-insensitive matches on title + upstream keywords/tags; never the description.
+# These lists are product estimates, not a classifier: review them against stored titles before trusting counts.
+# Bucket names must equal QuestionBank.GENRE_BUCKETS exactly; a keyword may sit in more than one bucket.
+# Keywords are lowercase, ASCII after accent stripping, 2-64 chars; punctuation is read as a space ("r&b" = "r b").
+# Bare soul, swing, punk, rave, parade and defile were narrowed to phrases after misfiring on live titles (2026-10-01):
+# an exhibition ("under soul"), West Coast Swing classes, a documentary, a ballet called Rave, a theatre parade.
+version: 1
+buckets:
+  "house & techno": [techno, house music, deep house, tech house, acid house, minimal techno, progressive house,
+                     rave party, free party, electro, musique electronique, musiques electroniques, electronic music]
+  "bass & hard dance": [drum and bass, drum n bass, dnb, dubstep, bass music, hardstyle, hardcore techno,
+                        hard techno, gabber, frenchcore, trance, psytrance]
+  "club / open format": [dj set, soiree dj, clubbing, club night, open format, soiree dansante, disco, dance party]
+  "hip-hop & r&b": [hip hop, rap, rnb, r&b, musiques urbaines, open mic rap, freestyle rap]
+  "latin & afrobeats": [salsa, bachata, kizomba, reggaeton, latino, soiree latine, musique latine, afrobeat,
+                        afrobeats, afro house, amapiano, cumbia, zouk, dancehall, coupe decale]
+  "rock & alternative": [rock, punk rock, pop punk, concert punk, hardcore punk, heavy metal, death metal, black metal,
+                         metalcore, indie rock, grunge, rock alternatif, post punk, garage rock, stoner rock]
+  "pop": [pop, pop rock, electro pop, synth pop, k pop, pop music, variete francaise]
+  "jazz & acoustic": [jazz, blues, jazz swing, swing jazz, bal swing, soiree swing, bossa nova, folk, acoustique,
+                      unplugged, soul music, neo soul, concert soul, soiree soul, gospel, jam session, jazz manouche]
+# Any of these present → no genre for the listing (a local-event match still counts).
+exclude_phrases: [open house, portes ouvertes, house party privee, pop up, pop art, pop corn]
+# Local city-wide events (question 5.3). A listing here says nothing about size: never call it "big".
+local_events: [carnaval, braderie, fete de la musique, nuit blanche, marche de noel, fete foraine, parade de, defile des,
+               fete de la ville]

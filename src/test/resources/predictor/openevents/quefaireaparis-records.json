@@ -1,0 +1,168 @@
+{
+  "total_count": 7,
+  "results": [
+    {
+      "id": "23336",
+      "url": "https://www.paris.fr/evenements/concert-commemoratif-des-funerailles-de-chopin-a-la-madeleine-1849-23336",
+      "title": "Concert commémoratif des funérailles de Chopin à la Madeleine 1849",
+      "date_start": "2026-10-30T20:45:00+00:00",
+      "date_end": "2026-10-30T22:00:00+00:00",
+      "occurrences": "2026-10-30T20:45:00+02:00_2026-10-30T22:00:00+02:00",
+      "address_zipcode": "75008",
+      "address_city": "Paris",
+      "qfap_tags": "Concert",
+      "locations": [
+        {
+          "address_street": "place de la Madeleine",
+          "address_zipCode": "75008",
+          "address_name": "Église de La Madeleine",
+          "address_lat_lon": "48.869452,2.324544",
+          "location_type": "service",
+          "address_city": "PARIS"
+        }
+      ]
+    },
+    {
+      "id": "22830",
+      "url": "https://www.paris.fr/evenements/assise-mbsr-1h30-en-silence-samedi-17-septembre-a-11h-22830",
+      "title": "Méditation pleine conscience à l'Espace Beauregard",
+      "date_start": "2026-10-03T12:00:00+00:00",
+      "date_end": "2026-10-17T13:30:00+00:00",
+      "occurrences": "2026-10-03T11:00:00+02:00_2026-10-03T12:30:00+02:00;2026-10-17T11:00:00+02:00_2026-10-17T12:30:00+02:00",
+      "address_zipcode": "75003",
+      "address_city": "Paris",
+      "qfap_tags": "Loisirs;Santé;Sport",
+      "locations": [
+        {
+          "accessibility": {
+            "blind": null,
+            "pmr": null,
+            "deaf": null,
+            "sign_language": null,
+            "mental": null
+          },
+          "address_street": "Rue Notre Dame de Nazareth",
+          "address_zipCode": "75003",
+          "address_details": "",
+          "address_name": "Espace Beauregard",
+          "address_lat_lon": "48.8674993319898,2.35796048305313",
+          "location_type": "address",
+          "address_city": "Paris"
+        }
+      ]
+    },
+    {
+      "id": "38623",
+      "url": "https://www.paris.fr/evenements/jazz-sur-seine-les-clubs-de-jazz-de-paris-et-d-ile-de-france-font-leur-festival-38623",
+      "title": "Jazz sur Seine : les clubs de jazz de Paris et d'Île-de-France font leur Festival !",
+      "date_start": "2026-10-09T00:00:00+00:00",
+      "date_end": "2026-10-24T23:59:59+00:00",
+      "occurrences": null,
+      "address_zipcode": null,
+      "address_city": null,
+      "qfap_tags": "Concert;Festival",
+      "locations": [
+        {
+          "text": "Plusieurs lieux dans  Paris et Ile de France",
+          "address_lat_lon": "48.856578,2.351828",
+          "location_type": "text"
+        }
+      ]
+    },
+    {
+      "id": "41529",
+      "url": "https://www.paris.fr/evenements/un-parcours-sonore-et-urbain-a-la-decouverte-du-patrimoine-de-billancourt-a-partir-du-samedi-16-septembre-2023-41529",
+      "title": "Un parcours sonore et urbain",
+      "date_start": "2023-09-16T10:00:00+00:00",
+      "date_end": "2026-12-31T18:00:00+00:00",
+      "occurrences": "2023-09-16T09:00:00+02:00_2023-09-16T18:00:00+02:00;2023-09-17T09:00:00+02:00_2023-09-17T18:00:00+02:00;2023-09-18T09:00:00+02:00_2023-09-18T18:00:00+02:00",
+      "address_zipcode": null,
+      "address_city": null,
+      "qfap_tags": "Balade urbaine",
+      "locations": [
+        {
+          "url_text": "",
+          "location_type": "url",
+          "url": "http://ileseguin-rivesdeseine.fr/fr"
+        }
+      ]
+    },
+    {
+      "id": "37301",
+      "url": "https://www.paris.fr/evenements/la-cite-de-l-histoire-l-experience-immersive-a-travers-l-histoire-de-france-37301",
+      "title": "La Cité de l'Histoire, l'expérience immersive à travers l'Histoire de France",
+      "date_start": "2023-01-17T00:00:00+00:00",
+      "date_end": "2027-12-31T23:59:59+00:00",
+      "occurrences": null,
+      "address_zipcode": "92800",
+      "address_city": "Puteaux",
+      "qfap_tags": "Expo;Histoire",
+      "locations": [
+        {
+          "accessibility": {
+            "blind": null,
+            "pmr": null,
+            "deaf": null,
+            "sign_language": null,
+            "mental": null
+          },
+          "address_street": "1, parvis de la Défense - sous la Grande Arche",
+          "address_zipCode": "92800",
+          "address_details": "",
+          "address_name": "La Cité de l'Histoire",
+          "address_lat_lon": "48.89221,2.23695000000004",
+          "location_type": "address",
+          "address_city": "Puteaux"
+        }
+      ]
+    },
+    {
+      "id": "22177",
+      "url": "https://www.paris.fr/evenements/l-inde-a-paris-visite-contee-dans-les-temples-hindous-22177",
+      "title": "L’Inde à Paris : visite contée dans les temples hindous",
+      "date_start": "2026-09-13T15:00:00+00:00",
+      "date_end": "2026-10-25T17:30:00+00:00",
+      "occurrences": "2026-10-25T14:00:00+02:00_2026-10-25T17:30:00+02:00",
+      "address_zipcode": "75018",
+      "address_city": null,
+      "qfap_tags": "Balade urbaine;Loisirs",
+      "locations": [
+        {
+          "text": "L'adresse exacte du rdv vous sera envoyée par mail une fois la réservation effectuée sur le site de Sous Les Pavés.",
+          "address_lat_lon": "48.8891195515231,2.36442990096349",
+          "location_type": "text"
+        }
+      ]
+    },
+    {
+      "id": "11766",
+      "url": "https://www.paris.fr/evenements/concert-du-nouvel-an-les-valses-de-johann-strauss-11766",
+      "title": "Concert du Nouvel An - Les Valses de Johann Strauss",
+      "date_start": "2027-01-02T20:45:00+00:00",
+      "date_end": "2027-01-02T22:00:00+00:00",
+      "occurrences": "2027-01-02T20:45:00+02:00_2027-01-02T22:00:00+02:00",
+      "address_zipcode": "75006",
+      "address_city": "Paris",
+      "qfap_tags": "Concert",
+      "locations": [
+        {
+          "accessibility": {
+            "blind": null,
+            "pmr": null,
+            "deaf": null,
+            "sign_language": null,
+            "mental": null
+          },
+          "address_street": "Place Saint-Sulpice",
+          "address_zipCode": "75006",
+          "address_details": null,
+          "address_url": "",
+          "address_name": "Eglise Saint Sulpice",
+          "address_lat_lon": "48.8512377,2.3332143",
+          "location_type": "lieu",
+          "address_city": "Paris"
+        }
+      ]
+    }
+  ]
+}

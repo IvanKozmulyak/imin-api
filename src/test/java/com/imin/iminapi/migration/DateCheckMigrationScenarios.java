@@ -24,7 +24,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** V162 on a fresh database per test: the date-check tables, the ledger CHECKs and the events link. */
+/** V162 on a fresh database per test: the date-check tables, the ledger CHECKs and the events link; V165 open events. */
 abstract class DateCheckMigrationScenarios {
 
     private static final OffsetDateTime NOW = OffsetDateTime.of(2026, 9, 30, 12, 0, 0, 0, ZoneOffset.UTC);
@@ -157,7 +157,11 @@ abstract class DateCheckMigrationScenarios {
                         Map.of("end_date", LocalDate.of(2026, 12, 24))),
                 new CheckCase("ck_predictor_job_status", DateCheckMigrationScenarios::predictorJob, Map.of("status", "paused")),
                 new CheckCase("ck_genre_week_count_nonneg", DateCheckMigrationScenarios::genreWeekCount, Map.of("event_count", -1)),
-                new CheckCase("ck_org_connector_kind", DateCheckMigrationScenarios::orgConnector, Map.of("kind", "facebook")));
+                new CheckCase("ck_org_connector_kind", DateCheckMigrationScenarios::orgConnector, Map.of("kind", "facebook")),
+                new CheckCase("ck_open_event_occurrence_source", DateCheckMigrationScenarios::openEventOccurrence,
+                        Map.of("source", "other")),
+                new CheckCase("ck_open_event_occurrence_licence", DateCheckMigrationScenarios::openEventOccurrence,
+                        Map.of("licence", "CC-BY")));
     }
 
     @ParameterizedTest
@@ -220,6 +224,29 @@ abstract class DateCheckMigrationScenarios {
                 .satisfies(ex -> assertThat(ex.getMessage()).containsIgnoringCase("uq_genre_week_count"));
         assertThatCode(() -> genreWeekCount(jdbc, Map.of("city_key", "paris", "genre_family", "electronic",
                 "sub_genre", "techno", "week_start", LocalDate.of(2026, 10, 5)))).doesNotThrowAnyException();
+    }
+
+    @Test
+    void openEventOccurrenceUniquePerSourceEventAndNight() {
+        JdbcTemplate jdbc = latest(freshDatabase());
+        Map<String, Object> key = Map.of("source", "openagenda", "source_event_id", "13287689",
+                "night_date", LocalDate.of(2026, 10, 16));
+        openEventOccurrence(jdbc, key);
+        assertThatThrownBy(() -> openEventOccurrence(jdbc, key))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .satisfies(ex -> assertThat(ex.getMessage()).containsIgnoringCase("uq_open_event_occurrence"));
+        // Another night, or the same id from another source, is a different key; every allowed value inserts.
+        assertThatCode(() -> openEventOccurrence(jdbc, Map.of("source", "openagenda", "source_event_id", "13287689",
+                "night_date", LocalDate.of(2026, 10, 17)))).doesNotThrowAnyException();
+        for (String source : List.of("quefaireaparis", "datatourisme")) {
+            assertThatCode(() -> openEventOccurrence(jdbc, Map.of("source", source, "source_event_id", "13287689",
+                    "night_date", LocalDate.of(2026, 10, 16), "licence", "ODbL 1.0"))).as(source).doesNotThrowAnyException();
+        }
+        Map<String, Object> defaults = jdbc.queryForMap(
+                "select genre_keys, community, credit from open_event_occurrence where source = 'datatourisme'");
+        assertThat(defaults.get("genre_keys")).isEqualTo("[]");
+        assertThat(defaults.get("community")).isEqualTo(false);
+        assertThat(defaults.get("credit")).isNull();
     }
 
     @Test
@@ -400,6 +427,20 @@ abstract class DateCheckMigrationScenarios {
         d.put("event_count", 0);
         d.put("updated_at", NOW);
         return insert(jdbc, "genre_week_count", d, overrides);
+    }
+
+    private static UUID openEventOccurrence(JdbcTemplate jdbc, Map<String, Object> overrides) {
+        Map<String, Object> d = new LinkedHashMap<>();
+        d.put("source", "openagenda");
+        d.put("source_event_id", "e-" + UUID.randomUUID().toString().substring(0, 8));
+        d.put("city_key", "lille");
+        d.put("night_date", LocalDate.of(2026, 10, 16));
+        d.put("title", "Nono La Grinta");
+        d.put("title_key", "nono la grinta");
+        d.put("url", "https://openagenda.com/fr/ville-de-lille/events/nono-la-grinta");
+        d.put("licence", "Licence Ouverte 2.0");
+        d.put("synced_at", NOW);
+        return insert(jdbc, "open_event_occurrence", d, overrides);
     }
 
     private static UUID orgConnector(JdbcTemplate jdbc, Map<String, Object> overrides) {

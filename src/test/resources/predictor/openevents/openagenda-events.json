@@ -1,0 +1,193 @@
+{
+  "total": 784,
+  "events": [
+    {
+      "uid": 13287689,
+      "attendanceMode": 1,
+      "keywords": [
+        "concert",
+        "rap"
+      ],
+      "timings": [
+        {
+          "end": "2026-10-16T22:00:00.000+02:00",
+          "begin": "2026-10-16T20:00:00.000+02:00"
+        }
+      ],
+      "location": {
+        "city": "Lille",
+        "countryCode": "FR"
+      },
+      "state": 2,
+      "title": "Nono La Grinta",
+      "slug": "nono-la-grinta",
+      "status": 1
+    },
+    {
+      "uid": 26237876,
+      "attendanceMode": 1,
+      "timings": [
+        {
+          "end": "2026-10-02T23:59:00.000+02:00",
+          "id": "YQNT68",
+          "begin": "2026-10-02T19:30:00.000+02:00"
+        }
+      ],
+      "location": {
+        "city": "Lille",
+        "countryCode": "FR"
+      },
+      "state": 2,
+      "title": "Jonathan Plurien + Guilman • Live + DJ set",
+      "slug": "jonathan-plurien-concert",
+      "status": 1
+    },
+    {
+      "uid": 64958747,
+      "attendanceMode": 1,
+      "keywords": [
+        "Mentissa",
+        "concert",
+        "Théâtre Sébastopol",
+        "Lille",
+        "Chanson françaiase",
+        "pop"
+      ],
+      "timings": [
+        {
+          "end": "2026-10-14T22:00:00.000+02:00",
+          "begin": "2026-10-14T20:00:00.000+02:00"
+        }
+      ],
+      "location": {
+        "city": "Lille",
+        "countryCode": "FR"
+      },
+      "state": 2,
+      "title": "Mentissa",
+      "slug": "mentissa-7469773",
+      "status": 1
+    },
+    {
+      "uid": 52845070,
+      "attendanceMode": 1,
+      "timings": [
+        {
+          "end": "2026-10-08T21:30:00.000+02:00",
+          "id": "8WV8GQ",
+          "begin": "2026-10-08T18:00:00.000+02:00"
+        },
+        {
+          "end": "2026-10-09T21:30:00.000+02:00",
+          "id": "GDJGAK",
+          "begin": "2026-10-09T19:00:00.000+02:00"
+        },
+        {
+          "end": "2026-10-10T11:00:00.000+02:00",
+          "id": "H5ANS7",
+          "begin": "2026-10-10T10:00:00.000+02:00"
+        }
+      ],
+      "location": {
+        "city": "Saint-Ouen-sur-Seine",
+        "countryCode": "FR"
+      },
+      "state": 2,
+      "title": "Festival Egzeko",
+      "slug": "festival-egzeko",
+      "status": 1
+    },
+    {
+      "uid": 59373261,
+      "attendanceMode": 2,
+      "timings": [
+        {
+          "end": "2026-10-05T18:30:00.000+02:00",
+          "begin": "2026-10-05T17:30:00.000+02:00"
+        }
+      ],
+      "location": {
+        "city": "Lille",
+        "countryCode": "FR"
+      },
+      "state": 2,
+      "title": "Comprendre ma régularisation de charges et les annexes comptables",
+      "slug": "comprendre-ma-regularisation-de-charges-et-les-annexes-comptables",
+      "status": 1
+    },
+    {
+      "uid": 72323021,
+      "attendanceMode": 1,
+      "timings": [
+        {
+          "end": "2026-10-09T18:00:00.000+02:00",
+          "id": "Q21R8H",
+          "begin": "2026-10-09T12:00:00.000+02:00"
+        },
+        {
+          "end": "2026-10-10T18:00:00.000+02:00",
+          "id": "QD5YHJ",
+          "begin": "2026-10-10T12:00:00.000+02:00"
+        },
+        {
+          "end": "2026-10-11T18:00:00.000+02:00",
+          "id": "ZD78RT",
+          "begin": "2026-10-11T12:00:00.000+02:00"
+        }
+      ],
+      "location": {
+        "city": "Lille",
+        "countryCode": "FR"
+      },
+      "state": 2,
+      "title": "Braderie solidaire d'Octobre rose en Nord",
+      "slug": "braderie-solidaire-doctobre-rose-en-nord",
+      "status": 1
+    },
+    {
+      "uid": 7509670,
+      "attendanceMode": 1,
+      "keywords": [
+        "exposition",
+        "vernissage",
+        "art contemporain",
+        "galerie",
+        "lille",
+        "peinture",
+        "andré copin"
+      ],
+      "timings": [
+        {
+          "end": "2026-10-01T19:00:00.000+02:00",
+          "id": "86H7Z8",
+          "begin": "2026-10-01T14:30:00.000+02:00"
+        },
+        {
+          "end": "2026-10-02T22:30:00.000+02:00",
+          "id": "H29TX3",
+          "begin": "2026-10-02T10:30:00.000+02:00"
+        },
+        {
+          "end": "2026-10-03T19:00:00.000+02:00",
+          "id": "J307EH",
+          "begin": "2026-10-03T10:30:00.000+02:00"
+        }
+      ],
+      "location": {
+        "city": "Lille",
+        "countryCode": "FR"
+      },
+      "state": 2,
+      "title": "Exposition André Copin - Sans concession",
+      "slug": "exposition-andre-copin-sans-concession",
+      "status": 1
+    }
+  ],
+  "after": [
+    "0",
+    "000001792225800",
+    "1792231200000",
+    "98272664"
+  ],
+  "success": true
+}
