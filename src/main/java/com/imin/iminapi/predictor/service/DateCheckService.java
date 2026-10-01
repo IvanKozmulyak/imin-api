@@ -3,6 +3,7 @@ package com.imin.iminapi.predictor.service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.imin.iminapi.model.Event;
+import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.predictor.config.DateCheckAccess;
 import com.imin.iminapi.predictor.config.DateCheckProperties;
@@ -32,6 +33,7 @@ import com.imin.iminapi.predictor.rules.DateCheckInput;
 import com.imin.iminapi.predictor.rules.DateCheckInput.KnownEvent;
 import com.imin.iminapi.predictor.rules.DateResult;
 import com.imin.iminapi.predictor.rules.Finding;
+import com.imin.iminapi.predictor.rules.NightDates;
 import com.imin.iminapi.predictor.rules.QuestionBank;
 import com.imin.iminapi.predictor.rules.QuestionBank.GenreProfile;
 import com.imin.iminapi.predictor.rules.QuestionBank.Kind;
@@ -48,6 +50,7 @@ import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.security.RateLimiter;
 import com.imin.iminapi.util.CountryTimeZones;
 import com.imin.iminapi.util.Times;
+import jakarta.persistence.EntityManager;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -56,6 +59,8 @@ import org.springframework.transaction.annotation.Transactional;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
@@ -71,18 +76,21 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 /**
  * "Check a date": runs the rule engine on each candidate date, scores, ranks and stores the result, and
  * writes the DATE_CHECK ledger row in the same transaction before answering. Synchronous; no LLM, no quota.
  *
  * <p>Event link: an event created from a check stores it in {@code events.date_check_id}, and a check made with
- * {@code eventId} stores the event. The newer of the two is the event's current check on its prediction.
+ * {@code eventId} stores the event. The most recently scored of the two is the event's current check.
+ *
+ * <p>Radar: {@link #radarRerun} re-runs an event's current check for its night at a days-out milestone as a
+ * new {@code origin='radar'} row, which then becomes the current check. The org's list shows organizer runs only.
  */
 @Service
 public class DateCheckService {
@@ -115,11 +123,14 @@ public class DateCheckService {
     private final PredictionLedgerService ledger;
     private final OrganizationRepository orgs;
     private final EventRepository events;
+    private final Clock clock;
+    private final EntityManager entityManager;
 
     public DateCheckService(DateCheckAccess access, RateLimiter rateLimiter, DateCheckValidator validator,
                             DateCheckProperties props, QuestionBank bank, RuleEngine engine, DateCheckRepository checks,
                             DateCheckDateRepository dates, DateCheckFindingRepository findings,
-                            PredictionLedgerService ledger, OrganizationRepository orgs, EventRepository events) {
+                            PredictionLedgerService ledger, OrganizationRepository orgs, EventRepository events,
+                            Clock clock, EntityManager entityManager) {
         this.access = access;
         this.rateLimiter = rateLimiter;
         this.validator = validator;
@@ -132,6 +143,8 @@ public class DateCheckService {
         this.ledger = ledger;
         this.orgs = orgs;
         this.events = events;
+        this.clock = clock;
+        this.entityManager = entityManager;
     }
 
     @Transactional
@@ -190,7 +203,8 @@ public class DateCheckService {
     public List<DateCheckSummaryDto> list(AuthPrincipal p, Integer limit) {
         access.requireEnabled(p.orgId());
         int n = limit == null ? DEFAULT_LIMIT : Math.max(1, Math.min(MAX_LIMIT, limit));
-        List<DateCheck> page = checks.findByOrgIdOrderByCreatedAtDesc(p.orgId(), PageRequest.of(0, n));
+        List<DateCheck> page = checks.findByOrgIdAndOriginOrderByCreatedAtDesc(p.orgId(), DateCheck.ORIGIN_ORGANIZER,
+                PageRequest.of(0, n));
         if (page.isEmpty()) return List.of();
         Map<UUID, List<DateCheckDate>> byCheck = dates
                 .findByDateCheckIdInOrderByCandidateDateAsc(page.stream().map(DateCheck::getId).toList()).stream()
@@ -243,11 +257,16 @@ public class DateCheckService {
         return owned(checks.findLockedById(id), p);
     }
 
-    /** Records the event on the check unless it already names one; the first event made from a check keeps it. */
+    /**
+     * Records the event on the check unless it already names one; the first event made from a check keeps it.
+     * Linking is not a re-score, so updated_at stays; a managed instance is refreshed so no later save reverts it.
+     */
+    @Transactional
     public void stampEvent(DateCheck c, UUID eventId) {
         if (c.getEventId() != null) return;
-        c.setEventId(eventId);
-        checks.save(c);
+        int linked = checks.linkEventIfUnset(c.getId(), eventId);
+        if (entityManager.contains(c)) entityManager.refresh(c);
+        else if (linked == 1) c.setEventId(eventId);
     }
 
     /** The bank's spelling of a sub-genre, matched case-insensitively; 400 when no genre profile lists it. */
@@ -262,17 +281,13 @@ public class DateCheckService {
     }
 
     /**
-     * The event's current check, the newer of the one it was created from and the newest made for it, scored in
-     * the check's own zone. Empty while the gate is closed for the org, with no linked check, or no dates.
+     * The event's current check among the one it was created from and those made for it: one scoring its night
+     * first, then the most recently scored; matched in the check's own zone. Empty while the gate is closed for the org, with no linked check, or no dates.
      */
     @Transactional(readOnly = true)
     public Optional<EventDateCheckDto> currentForEvent(Event e) {
         if (!access.isEnabled(e.getOrgId()) || e.getId() == null) return Optional.empty();
-        Optional<DateCheck> forEvent = checks.findFirstByOrgIdAndEventIdOrderByCreatedAtDescIdDesc(e.getOrgId(), e.getId());
-        Optional<DateCheck> origin = e.getDateCheckId() == null ? Optional.empty()
-                : checks.findById(e.getDateCheckId()).filter(c -> e.getOrgId().equals(c.getOrgId()));
-        Optional<DateCheck> current = Stream.of(forEvent, origin).flatMap(Optional::stream)
-                .max(Comparator.comparing(DateCheck::getCreatedAt));
+        Optional<DateCheck> current = currentCheck(e);
         if (current.isEmpty()) return Optional.empty();
         DateCheck c = current.get();
 
@@ -283,6 +298,115 @@ public class DateCheckService {
         DateCheckDateDto result = dateDto(m.row(), rowFindings, new BankView(bank));
         return Optional.of(new EventDateCheckDto(c.getId(), result, c.getUpdatedAt(), m.row().getCandidateDate(),
                 m.stale()));
+    }
+
+    /** Checks that score a date this close to the event's UTC date are the only ones that can score its night. */
+    private static final int NIGHT_SEARCH_DAYS_BEFORE = 2;
+    private static final int NIGHT_SEARCH_DAYS_AFTER = 1;
+    /**
+     * ponytail: the 10 newest checks with a date in UTC day -2..+1; more than 10 newer ones that miss the night in
+     * their own zone would hide an older one that scores it. An event gets a handful, so the cap holds.
+     */
+    private static final int NIGHT_CANDIDATES = 10;
+
+    /**
+     * A check that scores the event's night beats one that does not; then newest updatedAt, createdAt and id
+     * (as a string, matching the database's ordering), so a re-scored organizer check beats an older radar run.
+     */
+    private Optional<DateCheck> currentCheck(Event e) {
+        Map<UUID, DateCheck> candidates = new LinkedHashMap<>();
+        checks.findFirstByOrgIdAndEventIdOrderByUpdatedAtDescCreatedAtDescIdDesc(e.getOrgId(), e.getId())
+                .ifPresent(c -> candidates.put(c.getId(), c));
+        if (e.getStartsAt() != null) {
+            LocalDate utcDay = e.getStartsAt().atZone(ZoneOffset.UTC).toLocalDate();
+            checks.findEventChecksWithDateBetween(e.getOrgId(), e.getId(), utcDay.minusDays(NIGHT_SEARCH_DAYS_BEFORE),
+                            utcDay.plusDays(NIGHT_SEARCH_DAYS_AFTER), PageRequest.of(0, NIGHT_CANDIDATES))
+                    .forEach(c -> candidates.putIfAbsent(c.getId(), c));
+        }
+        if (e.getDateCheckId() != null) {
+            checks.findById(e.getDateCheckId()).filter(c -> e.getOrgId().equals(c.getOrgId()))
+                    .ifPresent(c -> candidates.putIfAbsent(c.getId(), c));
+        }
+        if (candidates.isEmpty()) return Optional.empty();
+        Map<UUID, List<DateCheckDate>> rows = dates
+                .findByDateCheckIdInOrderByCandidateDateAsc(List.copyOf(candidates.keySet())).stream()
+                .collect(Collectors.groupingBy(DateCheckDate::getDateCheckId));
+        return candidates.values().stream().max(Comparator
+                .comparing((DateCheck c) -> scoresNight(rows.getOrDefault(c.getId(), List.of()), e, c))
+                .thenComparing(DateCheck::getUpdatedAt)
+                .thenComparing(DateCheck::getCreatedAt)
+                .thenComparing(c -> c.getId().toString()));
+    }
+
+    private static boolean scoresNight(List<DateCheckDate> rowsByDateAsc, Event e, DateCheck c) {
+        DateCheckStaleness.Match m = DateCheckStaleness.match(rowsByDateAsc, e.getStartsAt(), zoneOf(c));
+        return m != null && !m.stale();
+    }
+
+    // --- radar ---
+
+    public enum RadarOutcome { RAN, NOT_DUE, NO_CHECK, GATE_CLOSED }
+
+    /** Re-runs the event's current check for its night when a radar milestone is due; one transaction per event. */
+    @Transactional
+    public RadarOutcome radarRerun(UUID eventId) {
+        Event e = events.findById(eventId)
+                .filter(x -> x.getDeletedAt() == null && x.getStatus() == EventStatus.LIVE && x.getStartsAt() != null)
+                .orElse(null);
+        if (e == null) return RadarOutcome.NOT_DUE;
+        if (!access.isEnabled(e.getOrgId())) return RadarOutcome.GATE_CLOSED;
+        DateCheck prev = currentCheck(e).orElse(null);
+        if (prev == null) return RadarOutcome.NO_CHECK;
+        ZoneId zone = zoneOf(prev);
+        LocalDate night = NightDates.nightOf(e.getStartsAt(), zone);
+        LocalDate today = validator.today(prev.getCountry());
+        OptionalInt m = ReforecastMilestones.radarMilestoneDue(ChronoUnit.DAYS.between(today, night));
+        if (m.isEmpty()) return RadarOutcome.NOT_DUE;
+        DateCheckStaleness.Match match = DateCheckStaleness.match(
+                dates.findByDateCheckIdOrderByCandidateDateAsc(prev.getId()), e.getStartsAt(), zone);
+        boolean scoresNight = match != null && !match.stale();
+        if (scoresNight && ReforecastMilestones.radarDone(prev.getUpdatedAt().atZone(zone).toLocalDate(), night,
+                m.getAsInt())) {
+            return RadarOutcome.NOT_DUE;
+        }
+        DateCheck c = radarCopy(prev, e.getId(), m.getAsInt(), night);
+        DateCheckInput in = input(c, today, storedAnswers(prev));
+        c.setAssumptionsJson(write(AssumptionResolver.resolve(in, profile(c))));
+        c.setQuestionBankVersion(bank.version());
+        // uq_date_check_radar_run is the backstop against a second writer.
+        checks.saveAndFlush(c);
+        run(c, in, List.of(night));
+        return RadarOutcome.RAN;
+    }
+
+    /** A new radar row with the previous check's inputs, timestamped by the injected clock. */
+    private DateCheck radarCopy(DateCheck prev, UUID eventId, int milestone, LocalDate night) {
+        DateCheck c = new DateCheck();
+        c.setOrgId(prev.getOrgId());
+        c.setCreatedBy(prev.getCreatedBy());
+        c.setCity(prev.getCity());
+        c.setCountry(prev.getCountry());
+        c.setPostalCode(prev.getPostalCode());
+        c.setGenreFamily(prev.getGenreFamily());
+        c.setSubGenre(prev.getSubGenre());
+        c.setCapacity(prev.getCapacity());
+        c.setPriceMinor(prev.getPriceMinor());
+        c.setFormat(prev.getFormat());
+        c.setStartHour(prev.getStartHour());
+        c.setEndHour(prev.getEndHour());
+        c.setLineupJson(prev.getLineupJson());
+        c.setKnownEventsJson(prev.getKnownEventsJson());
+        c.setEventId(eventId);
+        c.setResearch(false);
+        c.setStatus(STATUS_DONE);
+        c.setOrigin(DateCheck.ORIGIN_RADAR);
+        c.setRadarMilestone((short) milestone);
+        c.setRadarNight(night);
+        c.setRadarPrevId(prev.getId());
+        Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
+        c.setCreatedAt(now);
+        c.setUpdatedAt(now);
+        return c;
     }
 
     /** The zone the check was scored in, as {@link DateCheckInput#zone()} resolves it. */

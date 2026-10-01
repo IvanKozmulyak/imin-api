@@ -169,6 +169,7 @@ class DateCheckAccessTest {
         DateCheckProperties props = new DateCheckProperties();
         assertThat(props.getEnabled()).isFalse();
         assertThat(props.getResearchEnabled()).isFalse();
+        assertThat(props.getRadarEnabled()).isFalse();
         assertThat(props.getAllOrgs()).isFalse();
         assertThat(props.getBetaOrgIds()).isEmpty();
         assertThat(props.getMaxDates()).isEqualTo(5);
@@ -183,11 +184,13 @@ class DateCheckAccessTest {
                         "PREDICTOR_DATE_CHECK_ENABLED=",
                         "PREDICTOR_DATE_CHECK_ALL_ORGS=",
                         "PREDICTOR_DATE_CHECK_RESEARCH_ENABLED=",
+                        "PREDICTOR_DATE_CHECK_RADAR_ENABLED=",
                         "PREDICTOR_DATE_CHECK_MAX_DATES=",
                         "PREDICTOR_DATE_CHECK_MAX_HORIZON_MONTHS=",
                         "imin.predictor.date-check.enabled=${PREDICTOR_DATE_CHECK_ENABLED:false}",
                         "imin.predictor.date-check.all-orgs=${PREDICTOR_DATE_CHECK_ALL_ORGS:false}",
                         "imin.predictor.date-check.research-enabled=${PREDICTOR_DATE_CHECK_RESEARCH_ENABLED:false}",
+                        "imin.predictor.date-check.radar-enabled=${PREDICTOR_DATE_CHECK_RADAR_ENABLED:false}",
                         "imin.predictor.date-check.max-dates=${PREDICTOR_DATE_CHECK_MAX_DATES:5}",
                         "imin.predictor.date-check.max-horizon-months=${PREDICTOR_DATE_CHECK_MAX_HORIZON_MONTHS:18}")
                 .run(ctx -> {
@@ -196,6 +199,7 @@ class DateCheckAccessTest {
                     assertThat(props.getEnabled()).isFalse();
                     assertThat(props.getAllOrgs()).isFalse();
                     assertThat(props.getResearchEnabled()).isFalse();
+                    assertThat(props.getRadarEnabled()).isFalse();
                     assertThat(props.getMaxDates()).isEqualTo(5);
                     assertThat(props.getMaxHorizonMonths()).isEqualTo(18);
                 });
@@ -227,6 +231,7 @@ class DateCheckAccessTest {
                 "      all-orgs: ${PREDICTOR_DATE_CHECK_ALL_ORGS:false}\n",
                 "      beta-org-ids: ${PREDICTOR_DATE_CHECK_BETA_ORGS:}\n",
                 "      research-enabled: ${PREDICTOR_DATE_CHECK_RESEARCH_ENABLED:false}\n",
+                "      radar-enabled: ${PREDICTOR_DATE_CHECK_RADAR_ENABLED:false}\n",
                 "      max-dates: ${PREDICTOR_DATE_CHECK_MAX_DATES:5}\n",
                 "      max-horizon-months: ${PREDICTOR_DATE_CHECK_MAX_HORIZON_MONTHS:18}\n");
 

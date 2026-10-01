@@ -613,6 +613,8 @@ imin:
       all-orgs: ${PREDICTOR_DATE_CHECK_ALL_ORGS:false}
       # Cite-only web research; stays off until the provider spike and legal review pass.
       research-enabled: ${PREDICTOR_DATE_CHECK_RESEARCH_ENABLED:false}
+      # Daily re-run of an event's date check at D-30/14/7/2 (RadarJob 05:50 Europe/Amsterdam); needs enabled.
+      radar-enabled: ${PREDICTOR_DATE_CHECK_RADAR_ENABLED:false}
       max-dates: ${PREDICTOR_DATE_CHECK_MAX_DATES:5}
       max-horizon-months: ${PREDICTOR_DATE_CHECK_MAX_HORIZON_MONTHS:18}
     # Reference calendar sync (French holidays, school zones, ponts, DST, Hijri) into reference_calendar.

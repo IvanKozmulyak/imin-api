@@ -73,6 +73,14 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
     List<Event> findMomentumCandidates(@Param("now") Instant now);
 
     /**
+     * Live, non-deleted events starting in (from, to), soonest first, for the date-check radar. Reads every
+     * org's events only so each owner's own event is re-checked; nothing is shown to another org.
+     */
+    @Query("SELECT e.id FROM Event e WHERE e.deletedAt IS NULL AND e.status = com.imin.iminapi.model.EventStatus.LIVE "
+            + "AND e.startsAt > :from AND e.startsAt < :to ORDER BY e.startsAt ASC, e.id ASC")
+    List<UUID> findRadarCandidateIds(@Param("from") Instant from, @Param("to") Instant to);
+
+    /**
      * Scannable events for the gate scanner: events for an org whose
      * {@code startsAt} is either in the future or within the last 24 hours
      * (so currently-running events remain visible until they clearly end).

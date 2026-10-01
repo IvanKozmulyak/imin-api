@@ -26,6 +26,9 @@ public class DateCheckProperties {
     /** Cite-only web research; off until the provider spike and legal review pass. */
     private Boolean researchEnabled = Boolean.FALSE;
 
+    /** Daily radar re-run of each live event's date check at D-30/14/7/2; also needs {@code enabled}. */
+    private Boolean radarEnabled = Boolean.FALSE;
+
     private Integer maxDates = DEFAULT_MAX_DATES;
 
     private Integer maxHorizonMonths = DEFAULT_MAX_HORIZON_MONTHS;
@@ -37,6 +40,8 @@ public class DateCheckProperties {
     public void setAllOrgs(Boolean v) { this.allOrgs = Boolean.TRUE.equals(v); }
     public Boolean getResearchEnabled() { return researchEnabled; }
     public void setResearchEnabled(Boolean v) { this.researchEnabled = Boolean.TRUE.equals(v); }
+    public Boolean getRadarEnabled() { return radarEnabled; }
+    public void setRadarEnabled(Boolean v) { this.radarEnabled = Boolean.TRUE.equals(v); }
     public Integer getMaxDates() { return maxDates; }
     public void setMaxDates(Integer v) { this.maxDates = v == null || v < 1 ? DEFAULT_MAX_DATES : v; }
     public Integer getMaxHorizonMonths() { return maxHorizonMonths; }

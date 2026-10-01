@@ -129,7 +129,8 @@ class DateCheckSchemaTest {
         UUID id = dateChecks.save(d).getId();
         flushAndClear();
 
-        List<DateCheck> page = dateChecks.findByOrgIdOrderByCreatedAtDesc(orgId, PageRequest.of(0, 10));
+        List<DateCheck> page = dateChecks.findByOrgIdAndOriginOrderByCreatedAtDesc(orgId, DateCheck.ORIGIN_ORGANIZER,
+                PageRequest.of(0, 10));
         assertThat(page).hasSize(1);
         DateCheck r = page.get(0);
         assertThat(r.getId()).isEqualTo(id);

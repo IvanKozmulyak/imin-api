@@ -153,6 +153,8 @@ class DateCheckEventLinkTest {
         c.setQuestionBankVersion("test");
         c.setEventId(eventId);
         c.setCreatedAt(createdAt);
+        // Never re-scored, so last scored when made: the current check is picked by updatedAt.
+        c.setUpdatedAt(createdAt);
         c = checks.save(c);
         for (int i = 0; i < dateRank.length; i += 2) {
             DateCheckDate d = new DateCheckDate();

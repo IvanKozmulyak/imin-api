@@ -24,7 +24,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** V162 on a fresh database per test: the date-check tables, the ledger CHECKs and the events link; V165 open events. */
+/** V162 on a fresh database per test: the date-check tables, the ledger CHECKs and the events link; V165 open events; V167 radar runs. */
 abstract class DateCheckMigrationScenarios {
 
     private static final OffsetDateTime NOW = OffsetDateTime.of(2026, 9, 30, 12, 0, 0, 0, ZoneOffset.UTC);
@@ -161,7 +161,26 @@ abstract class DateCheckMigrationScenarios {
                 new CheckCase("ck_open_event_occurrence_source", DateCheckMigrationScenarios::openEventOccurrence,
                         Map.of("source", "other")),
                 new CheckCase("ck_open_event_occurrence_licence", DateCheckMigrationScenarios::openEventOccurrence,
-                        Map.of("licence", "CC-BY")));
+                        Map.of("licence", "CC-BY")),
+                new CheckCase("ck_date_check_origin", DateCheckMigrationScenarios::dateCheckFresh, Map.of("origin", "bot")),
+                new CheckCase("ck_date_check_radar_milestone", DateCheckMigrationScenarios::radarCheck,
+                        Map.of("radar_milestone", 5)),
+                new CheckCase("ck_date_check_radar_shape", DateCheckMigrationScenarios::radarCheck,
+                        radarWithout("radar_night")),
+                new CheckCase("ck_date_check_radar_shape", DateCheckMigrationScenarios::dateCheckFresh,
+                        Map.of("radar_milestone", 14)),
+                new CheckCase("ck_date_check_radar_shape", DateCheckMigrationScenarios::radarCheck,
+                        radarWithout("radar_milestone")),
+                new CheckCase("ck_date_check_radar_shape", DateCheckMigrationScenarios::dateCheckFresh,
+                        Map.of("radar_night", LocalDate.of(2026, 10, 15))),
+                new CheckCase("ck_date_check_radar_shape", DateCheckMigrationScenarios::organizerCheckWithPrev,
+                        Map.of("radar_prev_id", EXISTING_CHECK)));
+    }
+
+    private static Map<String, Object> radarWithout(String column) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put(column, null);
+        return m;
     }
 
     @ParameterizedTest
@@ -193,6 +212,61 @@ abstract class DateCheckMigrationScenarios {
         assertThatThrownBy(() -> finding(jdbc, Map.of("source_kind", "input", "stop_factor", true)))
                 .isInstanceOf(DataIntegrityViolationException.class)
                 .satisfies(ex -> assertThat(ex.getMessage()).containsIgnoringCase("ck_date_check_finding_stop_source"));
+    }
+
+    // ---- radar runs --------------------------------------------------------------------
+
+    @Test
+    void existingDateChecksBecomeOrganizerRuns() {
+        DataSource ds = freshDatabase();
+        migrate(ds, "166");
+        JdbcTemplate jdbc = new JdbcTemplate(ds);
+        UUID dc = dateCheck(jdbc, org(jdbc), Map.of());
+
+        migrate(ds, "latest");
+
+        Map<String, Object> r = jdbc.queryForMap(
+                "select origin, radar_milestone, radar_night, radar_prev_id from date_check where id = ?", dc);
+        assertThat(r.get("origin")).isEqualTo("organizer");
+        assertThat(r.get("radar_milestone")).isNull();
+        assertThat(r.get("radar_night")).isNull();
+        assertThat(r.get("radar_prev_id")).isNull();
+    }
+
+    @Test
+    void radarRunUniquePerEventNightMilestone() {
+        JdbcTemplate jdbc = latest(freshDatabase());
+        UUID org = org(jdbc);
+        UUID event = event(jdbc, org);
+        UUID prev = dateCheck(jdbc, org, Map.of());
+        LocalDate night = LocalDate.of(2026, 10, 15);
+        Map<String, Object> key = Map.of("org_id", org, "event_id", event, "radar_night", night, "radar_milestone", 14,
+                "radar_prev_id", prev);
+        radarCheck(jdbc, key);
+        assertThatThrownBy(() -> radarCheck(jdbc, key))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .satisfies(ex -> assertThat(ex.getMessage()).containsIgnoringCase("uq_date_check_radar_run"));
+        assertThatCode(() -> radarCheck(jdbc, Map.of("org_id", org, "event_id", event, "radar_night", night,
+                "radar_milestone", 7, "radar_prev_id", prev))).doesNotThrowAnyException();
+    }
+
+    @Test
+    void radarRunKeyIncludesTheBaseline() {
+        JdbcTemplate jdbc = latest(freshDatabase());
+        UUID org = org(jdbc);
+        UUID event = event(jdbc, org);
+        UUID prev = dateCheck(jdbc, org, Map.of());
+        UUID otherPrev = dateCheck(jdbc, org, Map.of());
+        LocalDate night = LocalDate.of(2026, 10, 15);
+        radarCheck(jdbc, Map.of("org_id", org, "event_id", event, "radar_night", night, "radar_milestone", 14,
+                "radar_prev_id", prev));
+        // Two writers from the same baseline collide; a run from another baseline is a new key.
+        assertThatThrownBy(() -> radarCheck(jdbc, Map.of("org_id", org, "event_id", event, "radar_night", night,
+                "radar_milestone", 14, "radar_prev_id", prev)))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .satisfies(ex -> assertThat(ex.getMessage()).containsIgnoringCase("uq_date_check_radar_run"));
+        assertThatCode(() -> radarCheck(jdbc, Map.of("org_id", org, "event_id", event, "radar_night", night,
+                "radar_milestone", 14, "radar_prev_id", otherPrev))).doesNotThrowAnyException();
     }
 
     // ---- unique keys -----------------------------------------------------------------
@@ -372,6 +446,31 @@ abstract class DateCheckMigrationScenarios {
 
     private static UUID dateCheckFresh(JdbcTemplate jdbc, Map<String, Object> overrides) {
         return dateCheck(jdbc, org(jdbc), overrides);
+    }
+
+    /** Stands for the id of a check inserted just before the row, so a foreign key cannot fire first. */
+    private static final String EXISTING_CHECK = "existing-check";
+
+    /** A valid organizer row; an {@link #EXISTING_CHECK} value is replaced by a real check id. */
+    private static UUID organizerCheckWithPrev(JdbcTemplate jdbc, Map<String, Object> overrides) {
+        UUID org = org(jdbc);
+        Map<String, Object> o = new LinkedHashMap<>(overrides);
+        o.replaceAll((k, v) -> EXISTING_CHECK.equals(v) ? dateCheck(jdbc, org, Map.of()) : v);
+        return dateCheck(jdbc, org, o);
+    }
+
+    /** A valid radar row; nulls in the overrides remove a column. */
+    private static UUID radarCheck(JdbcTemplate jdbc, Map<String, Object> overrides) {
+        Map<String, Object> d = new LinkedHashMap<>();
+        if (!overrides.containsKey("org_id")) d.put("org_id", org(jdbc));
+        d.put("origin", "radar");
+        d.put("radar_milestone", 14);
+        d.put("radar_night", LocalDate.of(2026, 10, 15));
+        Map<String, Object> merged = new LinkedHashMap<>(d);
+        merged.putAll(overrides);
+        merged.values().removeIf(java.util.Objects::isNull);
+        UUID org = (UUID) merged.remove("org_id");
+        return dateCheck(jdbc, org, merged);
     }
 
     private static UUID dateCheckDate(JdbcTemplate jdbc, Map<String, Object> overrides) {

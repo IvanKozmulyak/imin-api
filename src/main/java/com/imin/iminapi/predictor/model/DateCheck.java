@@ -6,15 +6,22 @@ import lombok.Getter;
 import lombok.Setter;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.UUID;
 
-/** One "Check a date" request: the organizer's inputs and the run's state (V162). */
+/**
+ * One "Check a date" run: the organizer's inputs and the run's state (V162). A radar row (V167) re-runs an
+ * event's current check for its night at a days-out milestone, with the same inputs.
+ */
 @Entity
 @Table(name = "date_check")
 @Getter
 @Setter
 public class DateCheck {
+
+    public static final String ORIGIN_ORGANIZER = "organizer";
+    public static final String ORIGIN_RADAR = "radar";
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
@@ -76,6 +83,20 @@ public class DateCheck {
 
     @Column(name = "event_id")
     private UUID eventId;
+
+    /** organizer | radar. The radar columns are insert-only, so a full-entity save never rewrites them. */
+    @Column(nullable = false, length = 16, updatable = false)
+    private String origin = ORIGIN_ORGANIZER;
+
+    @Column(name = "radar_milestone", updatable = false)
+    private Short radarMilestone;
+
+    @Column(name = "radar_night", updatable = false)
+    private LocalDate radarNight;
+
+    /** The check that was the event's current one when this radar run was made. */
+    @Column(name = "radar_prev_id", updatable = false)
+    private UUID radarPrevId;
 
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
