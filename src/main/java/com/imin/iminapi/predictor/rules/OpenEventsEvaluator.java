@@ -115,6 +115,10 @@ public class OpenEventsEvaluator implements QuestionEvaluator {
                 throw new IllegalStateException("open event source " + s.id() + ": licence mismatch, sources.yaml says '"
                         + entry.licence() + "', the source says '" + s.licence() + "'");
             }
+            if (!catalog.syncSource(s.id()).equals(Optional.of(s.id()))) {
+                throw new IllegalStateException("open event source " + s.id() + ": sources.yaml entry needs syncSource: "
+                        + s.id());
+            }
         }
     }
 

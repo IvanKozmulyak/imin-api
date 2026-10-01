@@ -25,7 +25,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -40,7 +39,25 @@ class DataSourceCatalogTest {
     private final OpenEventsProperties openEvents = new OpenEventsProperties();
     private final SourceGates gates = new SourceGates(calendar, predictor, dateCheck, wikimedia, football, openEvents);
 
-    private static final Function<String, Optional<LocalDate>> NO_DATES = prefix -> Optional.empty();
+    private static final DataSourceCatalog.SyncDates NO_DATES = dates(Map.of(), Map.of(), null, null);
+
+    /** Answers from the two maps and records what was asked; a null list records nothing. */
+    private static DataSourceCatalog.SyncDates dates(Map<String, LocalDate> byPrefix, Map<String, LocalDate> bySource,
+                                                     List<String> askedPrefixes, List<String> askedSources) {
+        return new DataSourceCatalog.SyncDates() {
+            @Override
+            public Optional<LocalDate> lastUpdated(String prefix) {
+                if (askedPrefixes != null) askedPrefixes.add(prefix);
+                return Optional.ofNullable(byPrefix.get(prefix));
+            }
+
+            @Override
+            public Optional<LocalDate> lastUpdatedOfSource(String source) {
+                if (askedSources != null) askedSources.add(source);
+                return Optional.ofNullable(bySource.get(source));
+            }
+        };
+    }
 
     private void gates(boolean dateCheckOn, boolean syncOn, boolean weatherOn) {
         gates(dateCheckOn, syncOn, weatherOn, true);
@@ -172,7 +189,7 @@ class DataSourceCatalogTest {
         assertThat(fd.url()).isEqualTo("https://www.football-data.org/");
         // the prefix must cover the URLs FootballFixturesSync stores, or lastUpdated stays null
         List<String> asked = new ArrayList<>();
-        real().active(p -> { asked.add(p); return Optional.empty(); });
+        real().active(dates(Map.of(), Map.of(), asked, null));
         assertThat(asked).contains("https://api.football-data.org/v4/competitions/");
         assertThat(FootballFixturesSync.url("FL1")).startsWith("https://api.football-data.org/v4/competitions/");
 
@@ -322,12 +339,9 @@ class DataSourceCatalogTest {
     void lastUpdatedComesFromTheSyncPrefixLookup() {
         gates(true, true, true);
         List<String> asked = new ArrayList<>();
-        Function<String, Optional<LocalDate>> lookup = prefix -> {
-            asked.add(prefix);
-            if (prefix.startsWith("https://calendrier.api.gouv.fr/")) return Optional.of(LocalDate.of(2026, 9, 27));
-            if (prefix.equals("https://openholidaysapi.org/")) return Optional.of(LocalDate.of(2026, 9, 28));
-            return Optional.empty();
-        };
+        DataSourceCatalog.SyncDates lookup = dates(Map.of(
+                "https://calendrier.api.gouv.fr/jours-feries/", LocalDate.of(2026, 9, 27),
+                "https://openholidaysapi.org/", LocalDate.of(2026, 9, 28)), Map.of(), asked, null);
 
         Map<String, String> updated = new HashMap<>();
         real().active(lookup).forEach(s -> updated.put(s.id(), s.lastUpdated()));
@@ -340,6 +354,33 @@ class DataSourceCatalogTest {
         assertThat(updated).containsEntry("fr-en-calendrier-scolaire", null)
                 .containsEntry("iana-tz", null).containsEntry("openjdk-hijrah", null)
                 .containsEntry("open-meteo", null).containsEntry("wikimedia-pageviews", null);
+    }
+
+    @Test
+    void lastUpdatedComesFromTheSyncSourceLookup() {
+        gates(true, true, true, true);
+        football(true, "k");
+        openEvents(true, "oa_pk_k", true);
+        List<String> askedPrefixes = new ArrayList<>();
+        List<String> askedSources = new ArrayList<>();
+        DataSourceCatalog.SyncDates lookup = dates(Map.of(), Map.of(
+                "openagenda", LocalDate.of(2026, 9, 29),
+                "quefaireaparis", LocalDate.of(2026, 9, 30),
+                "wikimedia", LocalDate.of(2026, 9, 28)), askedPrefixes, askedSources);
+
+        Map<String, String> updated = new HashMap<>();
+        real().active(lookup).forEach(s -> updated.put(s.id(), s.lastUpdated()));
+
+        assertThat(askedSources).containsExactly("wikimedia", "openagenda", "quefaireaparis");
+        // the prefix entries only: iana-tz, openjdk-hijrah and open-meteo are never looked up
+        assertThat(askedPrefixes).containsExactly("https://calendrier.api.gouv.fr/jours-feries/",
+                "https://data.education.gouv.fr/explore/dataset/fr-en-calendrier-scolaire/",
+                "https://openholidaysapi.org/", "https://api.football-data.org/v4/competitions/");
+        assertThat(updated).containsEntry("openagenda", "2026-09-29")
+                .containsEntry("quefaireaparis", "2026-09-30")
+                .containsEntry("wikimedia-pageviews", "2026-09-28")
+                .containsEntry("iana-tz", null).containsEntry("openjdk-hijrah", null)
+                .containsEntry("open-meteo", null);
     }
 
     // --- load failures, each from an inline file ---
@@ -373,6 +414,28 @@ class DataSourceCatalogTest {
         assertThatThrownBy(() -> parse(VALID.replace("    gate: weather", "    syncPrefix: http://one.example/\n    gate: weather")))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("one").hasMessageContaining("syncPrefix");
+    }
+
+    @Test
+    void unknownSyncSourceFailsLoad() {
+        assertThatThrownBy(() -> parse(VALID.replace("    gate: weather", "    syncSource: tides\n    gate: weather")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("one").hasMessageContaining("syncSource");
+    }
+
+    @Test
+    void syncPrefixWithSyncSourceFailsLoad() {
+        assertThatThrownBy(() -> parse(VALID.replace("    gate: weather",
+                "    syncPrefix: https://one.example/\n    syncSource: openagenda\n    gate: weather")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("one").hasMessageContaining("mutually exclusive");
+    }
+
+    @Test
+    void blankSyncSourceFailsLoad() {
+        assertThatThrownBy(() -> parse(VALID.replace("    gate: weather", "    syncSource: \"  \"\n    gate: weather")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("one").hasMessageContaining("syncSource");
     }
 
     @Test

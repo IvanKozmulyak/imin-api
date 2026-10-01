@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
@@ -32,4 +33,8 @@ public interface OpenEventOccurrenceRepository extends JpaRepository<OpenEventOc
     Optional<OpenEventOccurrence> findFirstBySourceAndCityKeyOrderBySyncedAtAsc(String source, String cityKey);
 
     boolean existsBySourceAndCityKeyAndNightDateBefore(String source, String cityKey, LocalDate before);
+
+    /** Newest {@code synced_at} among the source's stored rows; null when none. */
+    @Query("select max(o.syncedAt) from OpenEventOccurrence o where o.source = :source")
+    Instant findLatestSyncedAt(@Param("source") String source);
 }

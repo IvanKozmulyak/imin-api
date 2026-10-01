@@ -22,7 +22,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.function.Function;
 
 /**
  * The credited outside datasets from {@code predictor/sources.yaml}, loaded once at startup.
@@ -37,7 +36,16 @@ public class DataSourceCatalog {
                     "football_fixtures", "local_events");
     private static final String ACTIVE = "active";
 
-    private record Entry(PublicDataSource source, String gate, String syncPrefix) {}
+    /** Where an entry's {@code lastUpdated} comes from. */
+    public interface SyncDates {
+        /** Latest sync date of the {@code reference_calendar} rows under a {@code syncPrefix}. */
+        Optional<LocalDate> lastUpdated(String prefix);
+
+        /** Latest sync date of the rows stored for a {@code syncSource}. */
+        Optional<LocalDate> lastUpdatedOfSource(String source);
+    }
+
+    private record Entry(PublicDataSource source, String gate, String syncPrefix, String syncSource) {}
 
     private final String reviewedOn;
     private final List<Entry> entries;
@@ -107,8 +115,17 @@ public class DataSourceCatalog {
                 throw new IllegalStateException("predictor sources " + id + ".gate: unknown gate '" + gate + "'");
             }
             String syncPrefix = m.get("syncPrefix") == null ? null : https(m, "syncPrefix", id);
+            String syncSource = m.get("syncSource") == null ? null : text(m, "syncSource", id);
+            if (syncSource != null && !SourceSyncDates.SOURCES.contains(syncSource)) {
+                throw new IllegalStateException("predictor sources " + id + ".syncSource: unknown source '"
+                        + syncSource + "'");
+            }
+            if (syncPrefix != null && syncSource != null) {
+                throw new IllegalStateException("predictor sources " + id
+                        + ": syncPrefix and syncSource are mutually exclusive");
+            }
             entries.add(new Entry(new PublicDataSource(id, text(m, "name", id), usedFor, text(m, "licence", id),
-                    licenceUrl, text(m, "creditLine", id), url, ACTIVE, null), gate, syncPrefix));
+                    licenceUrl, text(m, "creditLine", id), url, ACTIVE, null), gate, syncPrefix, syncSource));
         }
         return new DataSourceCatalog(reviewedOn, List.copyOf(entries), gates);
     }
@@ -118,11 +135,11 @@ public class DataSourceCatalog {
     }
 
     /**
-     * Entries whose gate is on right now, in file order. {@code lastUpdated} maps a {@code syncPrefix}
-     * to its latest sync date; a source without a prefix or a date gets null.
+     * Entries whose gate is on right now, in file order, dated from their {@code syncPrefix} or {@code syncSource};
+     * an entry with neither, or with no date, gets null.
      */
-    public List<PublicDataSource> active(Function<String, Optional<LocalDate>> lastUpdated) {
-        return entries.stream().filter(e -> gates.isOn(e.gate())).map(e -> withDate(e, lastUpdated)).toList();
+    public List<PublicDataSource> active(SyncDates dates) {
+        return entries.stream().filter(e -> gates.isOn(e.gate())).map(e -> withDate(e, dates)).toList();
     }
 
     /** The entry with this id whatever its gate, without {@code lastUpdated}. */
@@ -130,11 +147,21 @@ public class DataSourceCatalog {
         return entries.stream().filter(e -> e.source().id().equals(id)).map(Entry::source).findFirst();
     }
 
-    private static PublicDataSource withDate(Entry e, Function<String, Optional<LocalDate>> lastUpdated) {
-        if (e.syncPrefix() == null) {
+    /** The entry's {@code syncSource} whatever its gate. */
+    public Optional<String> syncSource(String id) {
+        return entries.stream().filter(e -> e.source().id().equals(id)).findFirst().map(Entry::syncSource);
+    }
+
+    private static PublicDataSource withDate(Entry e, SyncDates dates) {
+        Optional<LocalDate> lastUpdated;
+        if (e.syncPrefix() != null) {
+            lastUpdated = dates.lastUpdated(e.syncPrefix());
+        } else if (e.syncSource() != null) {
+            lastUpdated = dates.lastUpdatedOfSource(e.syncSource());
+        } else {
             return e.source();
         }
-        String date = lastUpdated.apply(e.syncPrefix()).map(LocalDate::toString).orElse(null);
+        String date = lastUpdated.map(LocalDate::toString).orElse(null);
         PublicDataSource s = e.source();
         return new PublicDataSource(s.id(), s.name(), s.usedFor(), s.licence(), s.licenceUrl(), s.creditLine(),
                 s.url(), s.status(), date);

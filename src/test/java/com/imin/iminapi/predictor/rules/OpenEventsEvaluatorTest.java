@@ -819,4 +819,27 @@ class OpenEventsEvaluatorTest {
         assertThatThrownBy(() -> new OpenEventsEvaluator(BANK, cities, List.of(odbl), counts, occurrences, gates, catalog))
                 .isInstanceOf(IllegalStateException.class).hasMessageContaining("licence mismatch");
     }
+
+    @Test
+    void sourceWithoutMatchingSyncSourceFailsBoot() {
+        String entry = """
+                reviewedOn: 2026-10-01
+                sources:
+                  - id: openagenda
+                    name: OpenAgenda
+                    usedFor: [local_events]
+                    licence: Licence Ouverte 2.0
+                    licenceUrl: https://www.etalab.gouv.fr/licence-ouverte-open-licence/
+                    creditLine: OpenAgenda, Licence Ouverte 2.0
+                    url: https://openagenda.com/
+                    gate: openagenda
+                """;
+        for (String yaml : List.of(entry, entry.replace("    gate: openagenda", "    syncSource: quefaireaparis\n    gate: openagenda"))) {
+            DataSourceCatalog inline = DataSourceCatalog.parse(
+                    new ByteArrayInputStream(yaml.getBytes(StandardCharsets.UTF_8)), gates);
+            assertThatThrownBy(() -> new OpenEventsEvaluator(BANK, cities, List.of(OPENAGENDA), counts, occurrences,
+                    gates, inline)).isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("needs syncSource: openagenda");
+        }
+    }
 }

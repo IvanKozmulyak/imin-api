@@ -31,6 +31,6 @@ public class PublicPredictorSourcesController {
     public ResponseEntity<PublicDataSourcesResponse> sources() {
         return ResponseEntity.ok()
                 .header(HttpHeaders.CACHE_CONTROL, CACHE_CONTROL)
-                .body(new PublicDataSourcesResponse(catalog.reviewedOn(), catalog.active(syncDates::lastUpdated)));
+                .body(new PublicDataSourcesResponse(catalog.reviewedOn(), catalog.active(syncDates)));
     }
 }
