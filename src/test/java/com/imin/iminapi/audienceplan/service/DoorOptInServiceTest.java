@@ -538,6 +538,61 @@ class DoorOptInServiceTest {
         assertThat(DoorOptInService.newToken()).isNotEqualTo(a);
     }
 
+    // ── out-of-date full-entity saves ─────────────────────────────────────
+
+    @Test
+    void fullEventSaveLoadedBeforeEnable_neverRevertsDoorSwitch() {
+        Event fresh = event(orgId, EventStatus.LIVE, true);
+        Event stale = events.findById(fresh.getId()).orElseThrow();
+        String url = service.setEnabled(organizer, fresh.getId(), true).doorUrl();
+
+        stale.setName("Renamed");
+        events.save(stale);
+
+        Map<String, Object> row = jdbc.queryForMap(
+                "select name, door_optin_enabled, door_optin_token from events where id = ?", fresh.getId());
+        assertThat(row.get("name")).isEqualTo("Renamed");
+        assertThat(row.get("door_optin_enabled")).isEqualTo(true);
+        assertThat(url).endsWith("?t=" + row.get("door_optin_token"));
+        assertThat((String) row.get("door_optin_token")).matches("[A-Za-z0-9_-]{22}");
+    }
+
+    @Test
+    void saveThenEnable_writesDoorSwitch() {
+        Event fresh = event(orgId, EventStatus.LIVE, true);
+        Event loaded = events.findById(fresh.getId()).orElseThrow();
+        loaded.setName("Saved First");
+        events.save(loaded);
+
+        service.setEnabled(organizer, fresh.getId(), true);
+
+        Map<String, Object> row = jdbc.queryForMap(
+                "select name, door_optin_enabled, door_optin_token from events where id = ?", fresh.getId());
+        assertThat(row.get("name")).isEqualTo("Saved First");
+        assertThat(row.get("door_optin_enabled")).isEqualTo(true);
+        assertThat((String) row.get("door_optin_token")).matches("[A-Za-z0-9_-]{22}");
+    }
+
+    @Test
+    void insertCarriesDoorValues() {
+        Event e = new Event();
+        e.setOrgId(orgId);
+        e.setName("Inserted");
+        e.setSlug("door-insert-" + UUID.randomUUID().toString().substring(0, 12));
+        e.setVisibility(EventVisibility.PUBLIC);
+        e.setStatus(EventStatus.LIVE);
+        e.setStartsAt(Instant.parse("2026-10-24T20:00:00Z"));
+        e.setCreatedBy(ownerId);
+        e.setDoorOptinEnabled(true);
+        e.setDoorOptinToken("abcdefghijklmnopqrstuv");
+        UUID id = events.save(e).getId();
+
+        Map<String, Object> row = jdbc.queryForMap(
+                "select door_optin_enabled, door_optin_token from events where id = ?", id);
+        assertThat(row.get("door_optin_enabled")).isEqualTo(true);
+        assertThat(row.get("door_optin_token")).isEqualTo("abcdefghijklmnopqrstuv");
+    }
+
     // ── plumbing ──────────────────────────────────────────────────────────
 
     private DoorOptInService serviceWith(AudiencePlanProperties props) {

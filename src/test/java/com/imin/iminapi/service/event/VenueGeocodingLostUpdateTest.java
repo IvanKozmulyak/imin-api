@@ -155,4 +155,67 @@ class VenueGeocodingLostUpdateTest {
         assertThat(after.getDeletedAt()).as("deleted_at is out of merge's reach").isNotNull();
         assertThat(after.getSold()).as("merge regresses sold").isZero();
     }
+
+    @Test
+    void staleSnapshotSavedAfterGeocode_keepsCoordinates() {
+        Event stale = events.findById(eventId).orElseThrow();
+        em.detach(stale);
+
+        new VenueGeocodingListener(events, fixedPoint()).geocodeAndStore(eventId);
+        stale.setName("Renamed");
+        events.save(stale);
+        em.flush();
+        em.clear();
+
+        Event after = events.findById(eventId).orElseThrow();
+        assertThat(after.getName()).isEqualTo("Renamed");
+        assertThat(after.getVenueLatitude()).isEqualTo(52.5111d);
+        assertThat(after.getVenueLongitude()).isEqualTo(13.4432d);
+    }
+
+    @Test
+    void saveThenGeocode_writesCoordinates() {
+        Event loaded = events.findById(eventId).orElseThrow();
+        loaded.setName("Saved First");
+        events.save(loaded);
+        em.flush();
+        em.clear();
+
+        new VenueGeocodingListener(events, fixedPoint()).geocodeAndStore(eventId);
+        em.flush();
+        em.clear();
+
+        Event after = events.findById(eventId).orElseThrow();
+        assertThat(after.getName()).isEqualTo("Saved First");
+        assertThat(after.getVenueLatitude()).isEqualTo(52.5111d);
+        assertThat(after.getVenueLongitude()).isEqualTo(13.4432d);
+    }
+
+    @Test
+    void insertCarriesCoordinates() {
+        Event template = events.findById(eventId).orElseThrow();
+        Event e = new Event();
+        e.setOrgId(template.getOrgId());
+        e.setName("Inserted");
+        e.setSlug("event-" + UUID.randomUUID().toString().substring(0, 8));
+        e.setVisibility(EventVisibility.PUBLIC);
+        e.setStatus(EventStatus.LIVE);
+        e.setStartsAt(NOW.plusSeconds(86_400));
+        e.setCreatedBy(template.getCreatedBy());
+        e.setVenueLatitude(48.1196d);
+        e.setVenueLongitude(6.1702d);
+        UUID id = events.save(e).getId();
+        em.flush();
+        em.clear();
+
+        Object[] row = (Object[]) em.createNativeQuery("select venue_latitude, venue_longitude from events where id = :id")
+                .setParameter("id", id)
+                .getSingleResult();
+        assertThat(((Number) row[0]).doubleValue()).isEqualTo(48.1196d);
+        assertThat(((Number) row[1]).doubleValue()).isEqualTo(6.1702d);
+    }
+
+    private static Geocoder fixedPoint() {
+        return (street, city, postal, country) -> Optional.of(new Geocoder.GeoPoint(52.5111d, 13.4432d));
+    }
 }

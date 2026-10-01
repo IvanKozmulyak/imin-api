@@ -101,10 +101,11 @@ public class Event {
      * address is too thin to resolve. Null is not an error state — the buyer page
      * falls back to the maps deep link built from the address strings.
      */
-    @Column(name = "venue_latitude")
+    // Only the bulk update writes it, so a full-entity save never reverts it.
+    @Column(name = "venue_latitude", updatable = false)
     private Double venueLatitude;
 
-    @Column(name = "venue_longitude")
+    @Column(name = "venue_longitude", updatable = false)
     private Double venueLongitude;
 
     @Column(nullable = false, columnDefinition = "TEXT")
@@ -177,19 +178,21 @@ public class Event {
     private String djPhotoRightsAttestationVersion;
 
     /** Door QR opt-in page is open for this event (V142). */
-    @Column(name = "door_optin_enabled", nullable = false)
+    // Only the bulk update writes it, so a full-entity save never reverts it.
+    @Column(name = "door_optin_enabled", nullable = false, updatable = false)
     private boolean doorOptinEnabled = false;
 
     /** URL token of the door page; set on first enable and kept, so a printed QR stays valid. */
-    @Column(name = "door_optin_token", length = 32)
+    @Column(name = "door_optin_token", length = 32, updatable = false)
     private String doorOptinToken;
 
     /** Post-event survey page is open for this event (V143). */
-    @Column(name = "survey_enabled", nullable = false)
+    // Only the bulk update writes it, so a full-entity save never reverts it.
+    @Column(name = "survey_enabled", nullable = false, updatable = false)
     private boolean surveyEnabled = false;
 
     /** URL token of the survey page; set on first enable and kept, so a printed QR stays valid. */
-    @Column(name = "survey_token", length = 32)
+    @Column(name = "survey_token", length = 32, updatable = false)
     private String surveyToken;
 
     /** Optional finer genre inside {@code genre}, set by "Check a date" (V162). */

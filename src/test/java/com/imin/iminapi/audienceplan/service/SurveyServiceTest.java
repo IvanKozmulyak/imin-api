@@ -613,6 +613,60 @@ class SurveyServiceTest {
         assertThat(service.settings(organizer, second.getId()).responses()).isEqualTo(1);
     }
 
+    // ── out-of-date full-entity saves ─────────────────────────────────────
+
+    @Test
+    void fullEventSaveLoadedBeforeEnable_neverRevertsSurveySwitch() {
+        Event fresh = event(orgId, EventStatus.LIVE);
+        Event stale = events.findById(fresh.getId()).orElseThrow();
+        String url = service.setEnabled(organizer, fresh.getId(), true).surveyUrl();
+
+        stale.setName("Renamed");
+        events.save(stale);
+
+        Map<String, Object> row = jdbc.queryForMap("select name, survey_enabled, survey_token from events where id = ?",
+                fresh.getId());
+        assertThat(row.get("name")).isEqualTo("Renamed");
+        assertThat(row.get("survey_enabled")).isEqualTo(true);
+        assertThat(url).endsWith("?t=" + row.get("survey_token"));
+        assertThat((String) row.get("survey_token")).matches("[A-Za-z0-9_-]{22}");
+    }
+
+    @Test
+    void saveThenEnable_writesSurveySwitch() {
+        Event fresh = event(orgId, EventStatus.LIVE);
+        Event loaded = events.findById(fresh.getId()).orElseThrow();
+        loaded.setName("Saved First");
+        events.save(loaded);
+
+        service.setEnabled(organizer, fresh.getId(), true);
+
+        Map<String, Object> row = jdbc.queryForMap("select name, survey_enabled, survey_token from events where id = ?",
+                fresh.getId());
+        assertThat(row.get("name")).isEqualTo("Saved First");
+        assertThat(row.get("survey_enabled")).isEqualTo(true);
+        assertThat((String) row.get("survey_token")).matches("[A-Za-z0-9_-]{22}");
+    }
+
+    @Test
+    void insertCarriesSurveyValues() {
+        Event e = new Event();
+        e.setOrgId(orgId);
+        e.setName("Inserted");
+        e.setSlug("survey-insert-" + UUID.randomUUID().toString().substring(0, 12));
+        e.setVisibility(EventVisibility.PUBLIC);
+        e.setStatus(EventStatus.LIVE);
+        e.setStartsAt(Instant.parse("2026-09-19T20:00:00Z"));
+        e.setCreatedBy(ownerId);
+        e.setSurveyEnabled(true);
+        e.setSurveyToken("abcdefghijklmnopqrstuv");
+        UUID id = events.save(e).getId();
+
+        Map<String, Object> row = jdbc.queryForMap("select survey_enabled, survey_token from events where id = ?", id);
+        assertThat(row.get("survey_enabled")).isEqualTo(true);
+        assertThat(row.get("survey_token")).isEqualTo("abcdefghijklmnopqrstuv");
+    }
+
     // ── plumbing ──────────────────────────────────────────────────────────
 
     private SurveyService serviceWith(AudiencePlanProperties props) {

@@ -290,7 +290,7 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
      * is nulled (the event reappears in the public feed), {@code EventStatusSweeper}'s LIVE→PAST
      * is reverted, and {@code sold}/{@code revenueMinor} regress. A targeted UPDATE cannot do
      * any of that: the two columns it names are the only two it can touch, and they are ones no
-     * other writer sets.
+     * other writer sets. Both columns are {@code updatable = false} on the entity, so no full-entity save can revert them.
      *
      * <p><b>{@code updated_at} is deliberately NOT bumped.</b> A geocode is a derived fill, not
      * an organizer edit. The organizer PATCH path uses {@code updated_at} as its If-Match ETag,
@@ -312,7 +312,7 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
                                @Param("latitude") Double latitude,
                                @Param("longitude") Double longitude);
 
-    /** Door QR switch and token; like the geocode fill it leaves {@code updated_at} (the PATCH ETag) alone. */
+    /** Door QR switch and token, the columns' only writer; like the geocode fill it leaves {@code updated_at} (the PATCH ETag) alone. */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
     @Query("""
@@ -325,7 +325,7 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
                         @Param("enabled") boolean enabled,
                         @Param("token") String token);
 
-    /** Survey switch and token; leaves {@code updated_at} (the PATCH ETag) alone, as the door switch. */
+    /** Survey switch and token, the columns' only writer; leaves {@code updated_at} (the PATCH ETag) alone, as the door switch. */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
     @Query("""
