@@ -55,6 +55,15 @@ class OrganizerEmailLocaleVariantsTest {
         TEMPLATES.put("sales-milestone-50", milestone);
         TEMPLATES.put("sales-milestone-80", milestone);
         TEMPLATES.put("sales-milestone-100", milestone);
+
+        TEMPLATES.put("predictor-radar-alert", Map.of(
+                "eventName", "Warehouse 7",
+                "night", "__NIGHT_PLACEHOLDER__",
+                "fromVerdict", "__FROM_PLACEHOLDER__",
+                "toVerdict", "__TO_PLACEHOLDER__",
+                "fromRisk", "0",
+                "toRisk", "8",
+                "dashboardUrl", "https://dashboard.imin.wtf/events/abc/predictor"));
     }
 
     static Stream<org.junit.jupiter.params.provider.Arguments> variants() {

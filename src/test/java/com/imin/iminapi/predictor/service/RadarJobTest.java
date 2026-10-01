@@ -6,6 +6,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.imin.iminapi.predictor.config.DateCheckProperties;
 import com.imin.iminapi.predictor.service.DateCheckService.RadarOutcome;
+import com.imin.iminapi.predictor.service.DateCheckService.RadarRun;
 import com.imin.iminapi.repository.EventRepository;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.junit.jupiter.api.Test;
@@ -16,12 +17,14 @@ import org.springframework.scheduling.annotation.Scheduled;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -34,12 +37,13 @@ class RadarJobTest {
 
     private final EventRepository events = mock(EventRepository.class);
     private final DateCheckService service = mock(DateCheckService.class);
+    private final ReforecastAlertNotifier notifier = mock(ReforecastAlertNotifier.class);
 
     private RadarJob job(boolean enabled, boolean radar) {
         DateCheckProperties props = new DateCheckProperties();
         props.setEnabled(enabled);
         props.setRadarEnabled(radar);
-        return new RadarJob(props, events, service, Clock.fixed(NOW, ZoneOffset.UTC));
+        return new RadarJob(props, events, service, notifier, Clock.fixed(NOW, ZoneOffset.UTC));
     }
 
     @Test
@@ -62,10 +66,51 @@ class RadarJobTest {
         UUID fine = UUID.randomUUID();
         when(events.findRadarCandidateIds(NOW, NOW.plus(Duration.ofDays(32)))).thenReturn(List.of(broken, fine));
         when(service.radarRerun(broken)).thenThrow(new IllegalStateException("boom"));
-        when(service.radarRerun(fine)).thenReturn(RadarOutcome.RAN);
+        when(service.radarRerun(fine)).thenReturn(RadarRun.of(RadarOutcome.RAN));
 
         assertThat(job(true, true).pass()).isEqualTo(new RadarJob.Result(2, 1, 0, 1));
         verify(service).radarRerun(fine);
+        verifyNoInteractions(notifier);
+    }
+
+    // --- alerts ---
+
+    private static RadarAlertRule.Alert alertFor(UUID eventId) {
+        return new RadarAlertRule.Alert(eventId, UUID.randomUUID(), LocalDate.of(2026, 10, 15), "good", "move", 0, 8);
+    }
+
+    @Test
+    void ranWithAlertNotifies() {
+        UUID id = UUID.randomUUID();
+        RadarAlertRule.Alert alert = alertFor(id);
+        when(events.findRadarCandidateIds(NOW, NOW.plus(Duration.ofDays(32)))).thenReturn(List.of(id));
+        when(service.radarRerun(id)).thenReturn(new RadarRun(RadarOutcome.RAN, alert));
+
+        assertThat(job(true, true).pass()).isEqualTo(new RadarJob.Result(1, 1, 0, 0));
+        verify(notifier).notifyRadarWorsened(alert);
+    }
+
+    @Test
+    void notifierFailureDoesNotStopThePass() {
+        UUID a = UUID.randomUUID();
+        UUID b = UUID.randomUUID();
+        RadarAlertRule.Alert first = alertFor(a);
+        RadarAlertRule.Alert second = alertFor(b);
+        when(events.findRadarCandidateIds(NOW, NOW.plus(Duration.ofDays(32)))).thenReturn(List.of(a, b));
+        when(service.radarRerun(a)).thenReturn(new RadarRun(RadarOutcome.RAN, first));
+        when(service.radarRerun(b)).thenReturn(new RadarRun(RadarOutcome.RAN, second));
+        doThrow(new IllegalStateException("mail down")).when(notifier).notifyRadarWorsened(first);
+
+        RadarJob job = job(true, true);
+        RadarJob.Result[] result = new RadarJob.Result[1];
+        List<ILoggingEvent> logged = capture(() -> result[0] = job.pass());
+
+        assertThat(result[0]).isEqualTo(new RadarJob.Result(2, 2, 0, 0));
+        verify(notifier).notifyRadarWorsened(second);
+        assertThat(logged).filteredOn(e -> e.getLevel() == Level.WARN).singleElement().satisfies(e -> {
+            assertThat(e.getFormattedMessage()).contains("alert failed for event " + a);
+            assertThat(e.getThrowableProxy().getMessage()).isEqualTo("mail down");
+        });
     }
 
     @Test
@@ -75,9 +120,10 @@ class RadarJobTest {
         when(events.findRadarCandidateIds(NOW, NOW.plus(Duration.ofDays(32)))).thenReturn(List.of(dup, notDue));
         when(service.radarRerun(dup)).thenThrow(new DataIntegrityViolationException("could not execute statement",
                 new RuntimeException("Unique index or primary key violation: \"PUBLIC.UQ_DATE_CHECK_RADAR_RUN_INDEX\"")));
-        when(service.radarRerun(notDue)).thenReturn(RadarOutcome.NOT_DUE);
+        when(service.radarRerun(notDue)).thenReturn(RadarRun.of(RadarOutcome.NOT_DUE));
 
         assertThat(job(true, true).pass()).isEqualTo(new RadarJob.Result(2, 0, 2, 0));
+        verifyNoInteractions(notifier);
     }
 
     @Test
@@ -118,7 +164,7 @@ class RadarJobTest {
         UUID fine = UUID.randomUUID();
         when(events.findRadarCandidateIds(NOW, NOW.plus(Duration.ofDays(32)))).thenReturn(List.of(broken, fine));
         when(service.radarRerun(broken)).thenThrow(new IllegalStateException("boom"));
-        when(service.radarRerun(fine)).thenReturn(RadarOutcome.RAN);
+        when(service.radarRerun(fine)).thenReturn(RadarRun.of(RadarOutcome.RAN));
 
         List<ILoggingEvent> logged = capture(() -> job(true, true).pass());
 
@@ -132,7 +178,7 @@ class RadarJobTest {
     void cleanPassLogsInfo() {
         UUID fine = UUID.randomUUID();
         when(events.findRadarCandidateIds(NOW, NOW.plus(Duration.ofDays(32)))).thenReturn(List.of(fine));
-        when(service.radarRerun(fine)).thenReturn(RadarOutcome.RAN);
+        when(service.radarRerun(fine)).thenReturn(RadarRun.of(RadarOutcome.RAN));
 
         List<ILoggingEvent> logged = capture(() -> job(true, true).pass());
 
@@ -140,6 +186,7 @@ class RadarJobTest {
         assertThat(logged).filteredOn(e -> e.getLevel() == Level.INFO)
                 .extracting(ILoggingEvent::getFormattedMessage)
                 .containsExactly("RadarJob: planned=1 ran=1 skipped=0 failed=0");
+        verifyNoInteractions(notifier);
     }
 
     private static List<ILoggingEvent> capture(Runnable r) {

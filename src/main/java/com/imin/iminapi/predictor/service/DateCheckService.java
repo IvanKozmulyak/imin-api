@@ -91,6 +91,7 @@ import java.util.stream.Collectors;
  *
  * <p>Radar: {@link #radarRerun} re-runs an event's current check for its night at a days-out milestone as a
  * new {@code origin='radar'} row, which then becomes the current check. The org's list shows organizer runs only.
+ * When the baseline scored the same night and {@link RadarAlertRule} says so, the run also returns the alert to send.
  */
 @Service
 public class DateCheckService {
@@ -347,27 +348,37 @@ public class DateCheckService {
 
     public enum RadarOutcome { RAN, NOT_DUE, NO_CHECK, GATE_CLOSED }
 
-    /** Re-runs the event's current check for its night when a radar milestone is due; one transaction per event. */
+    /** A radar run's outcome and, only for {@code RAN}, the alert to send (null when none). */
+    public record RadarRun(RadarOutcome outcome, RadarAlertRule.Alert alert) {
+        public static RadarRun of(RadarOutcome outcome) {
+            return new RadarRun(outcome, null);
+        }
+    }
+
+    /**
+     * Re-runs the event's current check for its night when a radar milestone is due; one transaction per event.
+     * The returned alert is built in this transaction and must be sent only after it commits.
+     */
     @Transactional
-    public RadarOutcome radarRerun(UUID eventId) {
+    public RadarRun radarRerun(UUID eventId) {
         Event e = events.findById(eventId)
                 .filter(x -> x.getDeletedAt() == null && x.getStatus() == EventStatus.LIVE && x.getStartsAt() != null)
                 .orElse(null);
-        if (e == null) return RadarOutcome.NOT_DUE;
-        if (!access.isEnabled(e.getOrgId())) return RadarOutcome.GATE_CLOSED;
+        if (e == null) return RadarRun.of(RadarOutcome.NOT_DUE);
+        if (!access.isEnabled(e.getOrgId())) return RadarRun.of(RadarOutcome.GATE_CLOSED);
         DateCheck prev = currentCheck(e).orElse(null);
-        if (prev == null) return RadarOutcome.NO_CHECK;
+        if (prev == null) return RadarRun.of(RadarOutcome.NO_CHECK);
         ZoneId zone = zoneOf(prev);
         LocalDate night = NightDates.nightOf(e.getStartsAt(), zone);
         LocalDate today = validator.today(prev.getCountry());
         OptionalInt m = ReforecastMilestones.radarMilestoneDue(ChronoUnit.DAYS.between(today, night));
-        if (m.isEmpty()) return RadarOutcome.NOT_DUE;
+        if (m.isEmpty()) return RadarRun.of(RadarOutcome.NOT_DUE);
         DateCheckStaleness.Match match = DateCheckStaleness.match(
                 dates.findByDateCheckIdOrderByCandidateDateAsc(prev.getId()), e.getStartsAt(), zone);
         boolean scoresNight = match != null && !match.stale();
         if (scoresNight && ReforecastMilestones.radarDone(prev.getUpdatedAt().atZone(zone).toLocalDate(), night,
                 m.getAsInt())) {
-            return RadarOutcome.NOT_DUE;
+            return RadarRun.of(RadarOutcome.NOT_DUE);
         }
         DateCheck c = radarCopy(prev, e.getId(), m.getAsInt(), night);
         DateCheckInput in = input(c, today, storedAnswers(prev));
@@ -376,7 +387,27 @@ public class DateCheckService {
         // uq_date_check_radar_run is the backstop against a second writer.
         checks.saveAndFlush(c);
         run(c, in, List.of(night));
-        return RadarOutcome.RAN;
+        RadarAlertRule.Alert alert = null;
+        if (scoresNight) {   // a baseline that did not score the night never alerts
+            DateCheckDate base = match.row();
+            DateCheckDate now = dates.findByDateCheckIdOrderByCandidateDateAsc(c.getId()).get(0);
+            RadarAlertRule.Snapshot b = snapshot(base);
+            RadarAlertRule.Snapshot r = snapshot(now);
+            if (RadarAlertRule.shouldAlert(b, r)) {
+                alert = new RadarAlertRule.Alert(e.getId(), c.getId(), night, b.verdict(), r.verdict(), b.riskScore(),
+                        r.riskScore());
+            }
+        }
+        return new RadarRun(RadarOutcome.RAN, alert);
+    }
+
+    /** One scored row and its stored findings, as the alert rule reads them. */
+    private RadarAlertRule.Snapshot snapshot(DateCheckDate row) {
+        List<RadarAlertRule.Signal> signals = findings.findByDateCheckDateIdIn(List.of(row.getId())).stream()
+                .map(f -> new RadarAlertRule.Signal(f.getQuestionId(), f.getKind(), f.getStatus(), f.getSourceKind(),
+                        f.getUrl()))
+                .toList();
+        return new RadarAlertRule.Snapshot(row.getVerdict(), row.getRiskScore(), signals);
     }
 
     /** A new radar row with the previous check's inputs, timestamped by the injected clock. */

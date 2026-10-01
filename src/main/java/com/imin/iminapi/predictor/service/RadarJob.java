@@ -20,6 +20,8 @@ import java.util.UUID;
  * Daily date-check radar: 05:50 Europe/Amsterdam, after {@code PacingCurveJob} (05:30) and before
  * {@code ReforecastJob} (06:00). Re-runs the current check of every live event whose night is 30/14/7/2 days
  * out; each event is its own transaction, so one failure never stops the pass. Dark unless both flags are on.
+ * A run that returns an alert is sent through {@link ReforecastAlertNotifier} after its transaction committed;
+ * a failed alert is logged and never counts as a failed run.
  */
 @Component
 public class RadarJob {
@@ -36,12 +38,15 @@ public class RadarJob {
     private final DateCheckProperties props;
     private final EventRepository events;
     private final DateCheckService service;
+    private final ReforecastAlertNotifier notifier;
     private final Clock clock;
 
-    public RadarJob(DateCheckProperties props, EventRepository events, DateCheckService service, Clock clock) {
+    public RadarJob(DateCheckProperties props, EventRepository events, DateCheckService service,
+                    ReforecastAlertNotifier notifier, Clock clock) {
         this.props = props;
         this.events = events;
         this.service = service;
+        this.notifier = notifier;
         this.clock = clock;
     }
 
@@ -62,9 +67,9 @@ public class RadarJob {
         int failed = 0;
         Exception last = null;
         for (UUID id : ids) {
+            DateCheckService.RadarRun run;
             try {
-                if (service.radarRerun(id) == DateCheckService.RadarOutcome.RAN) ran++;
-                else skipped++;
+                run = service.radarRerun(id);   // committed when it returns
             } catch (Exception ex) {
                 if (ex instanceof DataIntegrityViolationException && namesRadarRunKey(ex)) {
                     // Another writer already stored this run from the same baseline.
@@ -74,6 +79,13 @@ public class RadarJob {
                 failed++;
                 last = ex;
                 log.warn("RadarJob: re-run failed for event {}", id, ex);
+                continue;
+            }
+            if (run.outcome() == DateCheckService.RadarOutcome.RAN) {
+                ran++;
+                if (run.alert() != null) alert(run.alert());
+            } else {
+                skipped++;
             }
         }
         Result r = new Result(ids.size(), ran, skipped, failed);
@@ -85,6 +97,14 @@ public class RadarJob {
             log.info("RadarJob: planned={} ran={} skipped={} failed={}", r.planned(), ran, skipped, failed);
         }
         return r;
+    }
+
+    private void alert(RadarAlertRule.Alert a) {
+        try {
+            notifier.notifyRadarWorsened(a);
+        } catch (Exception ex) {
+            log.warn("RadarJob: alert failed for event {}", a.eventId(), ex);
+        }
     }
 
     /** True when the cause chain names the radar run's unique key; any other violation is a real failure. */

@@ -1,0 +1,17 @@
+VÉRIFICATION DE LA DATE · imin
+
+{{eventName}} : la vérification de la date a changé ({{fromVerdict}} → {{toVerdict}})
+
+Nous avons revérifié cette soirée avec les données dont nous disposons aujourd’hui, et le verdict a changé.
+
+{{eventName}} · {{night}}
+Verdict : {{fromVerdict}} → {{toVerdict}}
+Risque de date : {{fromRisk}}/10 → {{toRisk}}/10
+
+C’est une alerte, pas une décision : ouvrez l’onglet Prédicteur pour voir ce que nous avons trouvé avant d’agir.
+
+Ouvrir le Prédicteur : {{dashboardUrl}}
+
+Ces alertes suivent le réglage des notifications du Prédicteur de la personne qui a créé cet événement dans imin.
+
+imin.wtf · vérification de la date de {{eventName}}

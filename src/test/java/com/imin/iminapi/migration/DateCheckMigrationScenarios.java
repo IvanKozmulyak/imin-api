@@ -1,5 +1,6 @@
 package com.imin.iminapi.migration;
 
+import com.imin.iminapi.predictor.service.PredictorAlertStore;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -24,7 +25,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** V162 on a fresh database per test: the date-check tables, the ledger CHECKs and the events link; V165 open events; V167 radar runs. */
+/**
+ * V162 on a fresh database per test: the date-check tables, the ledger CHECKs and the events link; V165 open events;
+ * V167 radar runs; V168 predictor alerts.
+ */
 abstract class DateCheckMigrationScenarios {
 
     private static final OffsetDateTime NOW = OffsetDateTime.of(2026, 9, 30, 12, 0, 0, 0, ZoneOffset.UTC);
@@ -174,7 +178,11 @@ abstract class DateCheckMigrationScenarios {
                 new CheckCase("ck_date_check_radar_shape", DateCheckMigrationScenarios::dateCheckFresh,
                         Map.of("radar_night", LocalDate.of(2026, 10, 15))),
                 new CheckCase("ck_date_check_radar_shape", DateCheckMigrationScenarios::organizerCheckWithPrev,
-                        Map.of("radar_prev_id", EXISTING_CHECK)));
+                        Map.of("radar_prev_id", EXISTING_CHECK)),
+                new CheckCase("ck_predictor_alert_kind", DateCheckMigrationScenarios::predictorAlert,
+                        Map.of("kind", "push")),
+                new CheckCase("ck_predictor_alert_band_shape", DateCheckMigrationScenarios::predictorAlert,
+                        Map.of("kind", "band", "date_check_id", EXISTING_CHECK)));
     }
 
     private static Map<String, Object> radarWithout(String column) {
@@ -267,6 +275,53 @@ abstract class DateCheckMigrationScenarios {
                 .satisfies(ex -> assertThat(ex.getMessage()).containsIgnoringCase("uq_date_check_radar_run"));
         assertThatCode(() -> radarCheck(jdbc, Map.of("org_id", org, "event_id", event, "radar_night", night,
                 "radar_milestone", 14, "radar_prev_id", otherPrev))).doesNotThrowAnyException();
+    }
+
+    // ---- predictor alerts --------------------------------------------------------------
+
+    @Test
+    void predictorAlertUniquePerEventDay() {
+        JdbcTemplate jdbc = latest(freshDatabase());
+        UUID event = event(jdbc, org(jdbc));
+        LocalDate day = LocalDate.of(2026, 10, 1);
+        predictorAlert(jdbc, Map.of("event_id", event, "alert_day", day));
+        assertThatThrownBy(() -> predictorAlert(jdbc, Map.of("event_id", event, "alert_day", day, "kind", "band")))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .satisfies(ex -> assertThat(ex.getMessage()).containsIgnoringCase("uq_predictor_alert_event_day"));
+        assertThatCode(() -> predictorAlert(jdbc, Map.of("event_id", event, "alert_day", day.plusDays(1))))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void predictorAlertClaimSqlKeepsTheFirstRow() {
+        JdbcTemplate jdbc = latest(freshDatabase());
+        UUID event = event(jdbc, org(jdbc));
+        LocalDate day = LocalDate.of(2026, 10, 1);
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        jdbc.update(PredictorAlertStore.CLAIM_SQL, first, event, day, "band", null, NOW);
+        assertThatCode(() -> jdbc.update(PredictorAlertStore.CLAIM_SQL, second, event, day, "radar", null, NOW))
+                .doesNotThrowAnyException();
+        assertThat(jdbc.queryForObject(PredictorAlertStore.WINNER_SQL, UUID.class, event, day)).isEqualTo(first);
+        assertThat(jdbc.queryForObject("select count(*) from predictor_alert", Integer.class)).isOne();
+    }
+
+    @Test
+    void predictorAlertFollowsItsEventAndCheck() {
+        JdbcTemplate jdbc = latest(freshDatabase());
+        UUID org = org(jdbc);
+        UUID gone = event(jdbc, org);
+        UUID kept = event(jdbc, org);
+        UUID check = dateCheck(jdbc, org, Map.of());
+        predictorAlert(jdbc, Map.of("event_id", gone));
+        UUID radar = predictorAlert(jdbc, Map.of("event_id", kept, "date_check_id", check));
+
+        jdbc.update("delete from events where id = ?", gone);
+        jdbc.update("delete from date_check where id = ?", check);
+
+        assertThat(jdbc.queryForList("select id from predictor_alert", UUID.class)).containsExactly(radar);
+        assertThat(jdbc.queryForObject("select date_check_id from predictor_alert where id = ?", UUID.class, radar))
+                .isNull();
     }
 
     // ---- unique keys -----------------------------------------------------------------
@@ -471,6 +526,19 @@ abstract class DateCheckMigrationScenarios {
         merged.values().removeIf(java.util.Objects::isNull);
         UUID org = (UUID) merged.remove("org_id");
         return dateCheck(jdbc, org, merged);
+    }
+
+    /** A valid radar alert; an {@link #EXISTING_CHECK} value is replaced by a real check id of the same org. */
+    private static UUID predictorAlert(JdbcTemplate jdbc, Map<String, Object> overrides) {
+        Map<String, Object> o = new LinkedHashMap<>(overrides);
+        UUID event = (UUID) o.computeIfAbsent("event_id", k -> event(jdbc, org(jdbc)));
+        UUID org = jdbc.queryForObject("select org_id from events where id = ?", UUID.class, event);
+        o.replaceAll((k, v) -> EXISTING_CHECK.equals(v) ? dateCheck(jdbc, org, Map.of()) : v);
+        Map<String, Object> d = new LinkedHashMap<>();
+        d.put("alert_day", LocalDate.of(2026, 10, 1));
+        d.put("kind", "radar");
+        d.put("created_at", NOW);
+        return insert(jdbc, "predictor_alert", d, o);
     }
 
     private static UUID dateCheckDate(JdbcTemplate jdbc, Map<String, Object> overrides) {

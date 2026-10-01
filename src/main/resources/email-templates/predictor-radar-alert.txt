@@ -1,0 +1,17 @@
+DATE CHECK · imin
+
+{{eventName}}: date check changed ({{fromVerdict}} → {{toVerdict}})
+
+We re-checked this night with the data we have today, and the verdict changed.
+
+{{eventName}} · {{night}}
+Verdict: {{fromVerdict}} → {{toVerdict}}
+Date risk: {{fromRisk}}/10 → {{toRisk}}/10
+
+This is a heads-up, not a decision: open the Predictor tab to see what we found before you act.
+
+Open the Predictor: {{dashboardUrl}}
+
+These alerts follow the Predictor notification setting of the person who created this event in imin.
+
+imin.wtf · date check for {{eventName}}

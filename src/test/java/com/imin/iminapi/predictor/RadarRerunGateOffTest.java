@@ -122,7 +122,7 @@ class RadarRerunGateOffTest {
         d.setRankOrder((short) 1);
         checkDates.save(d);
 
-        assertThat(service.radarRerun(e.getId())).isEqualTo(RadarOutcome.GATE_CLOSED);
+        assertThat(service.radarRerun(e.getId()).outcome()).isEqualTo(RadarOutcome.GATE_CLOSED);
         assertThat(checks.findAll()).extracting(DateCheck::getId).containsExactly(c.getId());
     }
 }

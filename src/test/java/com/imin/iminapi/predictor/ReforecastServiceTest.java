@@ -453,6 +453,29 @@ class ReforecastServiceTest {
         verify(alertNotifier, times(2)).notifyBandChange(any(), any(), any(), any());
     }
 
+    @Test
+    void recomputeStillReturnsWhenTheAlertClaimThrows() {
+        PredictorAlertStore store = mock(PredictorAlertStore.class);
+        when(store.claim(any(), any(), any(), any())).thenThrow(new IllegalStateException("claim failed"));
+        ReforecastAlertNotifier realNotifier = new ReforecastAlertNotifier(
+                mock(com.imin.iminapi.repository.NotificationRepository.class),
+                mock(com.imin.iminapi.repository.NotificationPreferencesRepository.class), store, events,
+                mock(com.imin.iminapi.repository.OrganizationRepository.class),
+                mock(com.imin.iminapi.repository.UserRepository.class),
+                mock(com.imin.iminapi.email.EmailService.class), new com.imin.iminapi.email.EmailTemplateRenderer(),
+                new com.imin.iminapi.email.EmailProperties(), clock);
+        ReforecastService withRealNotifier = new ReforecastService(
+                events, tiers, pacingCurves, engine, trajectories, ledgerService, ledgerRepo,
+                narrator, realNotifier, competingNights, weather, props, clock);
+        stubBands(ProjectionBand.TRACKING_85_100, ProjectionBand.TRACKING_60_85);
+
+        withRealNotifier.recompute(eventId, ReforecastTrigger.SCHEDULED);
+        ReforecastResult crossed = withRealNotifier.recompute(eventId, ReforecastTrigger.MANUAL);
+
+        verify(store).claim(any(), any(), any(), any());
+        assertThat(crossed.band()).isEqualTo("TRACKING_60_85");
+    }
+
     /**
      * predictor-edge-1: the alert's tone is the platform's tone vocabulary (green/amber). It
      * shipped "up"/"down", which that vocabulary has no member for — so an up-crossing (the good

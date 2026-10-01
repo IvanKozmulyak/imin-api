@@ -246,10 +246,10 @@ class RadarRerunTest {
         Event noStart = event(EventStatus.LIVE, null);
         check(noStart.getId(), BEFORE_WINDOW, NIGHT);
 
-        assertThat(service.radarRerun(UUID.randomUUID())).isEqualTo(RadarOutcome.NOT_DUE);
-        assertThat(service.radarRerun(draft.getId())).isEqualTo(RadarOutcome.NOT_DUE);
-        assertThat(service.radarRerun(deleted.getId())).isEqualTo(RadarOutcome.NOT_DUE);
-        assertThat(service.radarRerun(noStart.getId())).isEqualTo(RadarOutcome.NOT_DUE);
+        assertThat(service.radarRerun(UUID.randomUUID()).outcome()).isEqualTo(RadarOutcome.NOT_DUE);
+        assertThat(service.radarRerun(draft.getId()).outcome()).isEqualTo(RadarOutcome.NOT_DUE);
+        assertThat(service.radarRerun(deleted.getId()).outcome()).isEqualTo(RadarOutcome.NOT_DUE);
+        assertThat(service.radarRerun(noStart.getId()).outcome()).isEqualTo(RadarOutcome.NOT_DUE);
         assertThat(checks.findAll()).noneMatch(c -> DateCheck.ORIGIN_RADAR.equals(c.getOrigin()));
     }
 
@@ -257,7 +257,7 @@ class RadarRerunTest {
     void noCheckIsSkipped() {
         Event e = event(EventStatus.LIVE, START);
 
-        assertThat(service.radarRerun(e.getId())).isEqualTo(RadarOutcome.NO_CHECK);
+        assertThat(service.radarRerun(e.getId()).outcome()).isEqualTo(RadarOutcome.NO_CHECK);
         assertThat(checks.count()).isZero();
     }
 
@@ -269,8 +269,8 @@ class RadarRerunTest {
         Event tonight = event(EventStatus.LIVE, Instant.parse("2026-10-01T20:00:00Z"));
         check(tonight.getId(), BEFORE_WINDOW, LocalDate.of(2026, 10, 1));
 
-        assertThat(service.radarRerun(far.getId())).isEqualTo(RadarOutcome.NOT_DUE);
-        assertThat(service.radarRerun(tonight.getId())).isEqualTo(RadarOutcome.NOT_DUE);
+        assertThat(service.radarRerun(far.getId()).outcome()).isEqualTo(RadarOutcome.NOT_DUE);
+        assertThat(service.radarRerun(tonight.getId()).outcome()).isEqualTo(RadarOutcome.NOT_DUE);
         assertThat(radarRows(far.getId())).isEmpty();
         assertThat(radarRows(tonight.getId())).isEmpty();
     }
@@ -281,7 +281,7 @@ class RadarRerunTest {
         // 1 Oct 08:00Z is 10:00 Paris on the window's opening day.
         check(e.getId(), Instant.parse("2026-10-01T08:00:00Z"), NIGHT);
 
-        assertThat(service.radarRerun(e.getId())).isEqualTo(RadarOutcome.NOT_DUE);
+        assertThat(service.radarRerun(e.getId()).outcome()).isEqualTo(RadarOutcome.NOT_DUE);
         assertThat(radarRows(e.getId())).isEmpty();
     }
 
@@ -292,7 +292,7 @@ class RadarRerunTest {
         Event e = event(EventStatus.LIVE, START);
         check(e.getId(), Instant.parse("2026-10-01T08:00:00Z"), LocalDate.of(2026, 10, 24));
 
-        assertThat(service.radarRerun(e.getId())).isEqualTo(RadarOutcome.RAN);
+        assertThat(service.radarRerun(e.getId()).outcome()).isEqualTo(RadarOutcome.RAN);
         assertThat(radarRows(e.getId())).singleElement()
                 .satisfies(r -> assertThat(r.getRadarNight()).isEqualTo(NIGHT));
     }
@@ -303,7 +303,7 @@ class RadarRerunTest {
         UUID prevId = check(e.getId(), BEFORE_WINDOW, NIGHT, LocalDate.of(2026, 10, 24));
         DateCheck prev = checks.findById(prevId).orElseThrow();
 
-        assertThat(service.radarRerun(e.getId())).isEqualTo(RadarOutcome.RAN);
+        assertThat(service.radarRerun(e.getId()).outcome()).isEqualTo(RadarOutcome.RAN);
 
         DateCheck r = radarRows(e.getId()).get(0);
         assertThat(radarRows(e.getId())).hasSize(1);
@@ -352,9 +352,9 @@ class RadarRerunTest {
     void secondPassWritesNothing() {
         Event e = event(EventStatus.LIVE, START);
         check(e.getId(), BEFORE_WINDOW, NIGHT);
-        assertThat(service.radarRerun(e.getId())).isEqualTo(RadarOutcome.RAN);
+        assertThat(service.radarRerun(e.getId()).outcome()).isEqualTo(RadarOutcome.RAN);
 
-        assertThat(service.radarRerun(e.getId())).isEqualTo(RadarOutcome.NOT_DUE);
+        assertThat(service.radarRerun(e.getId()).outcome()).isEqualTo(RadarOutcome.NOT_DUE);
         assertThat(radarRows(e.getId())).hasSize(1);
     }
 
@@ -362,12 +362,12 @@ class RadarRerunTest {
     void movedEventRerunsSameMilestone() {
         Event e = event(EventStatus.LIVE, START);
         check(e.getId(), BEFORE_WINDOW, NIGHT);
-        assertThat(service.radarRerun(e.getId())).isEqualTo(RadarOutcome.RAN);
+        assertThat(service.radarRerun(e.getId()).outcome()).isEqualTo(RadarOutcome.RAN);
         e = events.findById(e.getId()).orElseThrow();
         e.setStartsAt(Instant.parse("2026-10-14T20:00:00Z"));
         events.save(e);
 
-        assertThat(service.radarRerun(e.getId())).isEqualTo(RadarOutcome.RAN);
+        assertThat(service.radarRerun(e.getId()).outcome()).isEqualTo(RadarOutcome.RAN);
         assertThat(radarRows(e.getId())).extracting(DateCheck::getRadarNight, DateCheck::getRadarMilestone)
                 .containsExactlyInAnyOrder(tuple(NIGHT, (short) 14),
                         tuple(LocalDate.of(2026, 10, 14), (short) 14));
@@ -377,17 +377,17 @@ class RadarRerunTest {
     void movedAwayAndBackReturnsToTheRunThatScoresTheNight() throws Exception {
         Event e = event(EventStatus.LIVE, START);
         check(e.getId(), BEFORE_WINDOW, NIGHT);
-        assertThat(service.radarRerun(e.getId())).isEqualTo(RadarOutcome.RAN);
+        assertThat(service.radarRerun(e.getId()).outcome()).isEqualTo(RadarOutcome.RAN);
         UUID first = radarRows(e.getId()).get(0).getId();
         // Same Paris day, same milestone: only the run order moves on.
         CLOCK.set(NOW.plus(Duration.ofHours(1)));
         move(e, Instant.parse("2026-10-14T20:00:00Z"));
-        assertThat(service.radarRerun(e.getId())).isEqualTo(RadarOutcome.RAN);
+        assertThat(service.radarRerun(e.getId()).outcome()).isEqualTo(RadarOutcome.RAN);
         CLOCK.set(NOW.plus(Duration.ofHours(2)));
         move(e, START);
 
         // The first run still scores the night inside this milestone's window, so it is current and done.
-        assertThat(service.radarRerun(e.getId())).isEqualTo(RadarOutcome.NOT_DUE);
+        assertThat(service.radarRerun(e.getId()).outcome()).isEqualTo(RadarOutcome.NOT_DUE);
         assertThat(radarRows(e.getId())).hasSize(2);
         mvc.perform(get("/api/v1/events/" + e.getId() + "/prediction").with(authentication(mine())))
                 .andExpect(status().isOk())
@@ -405,7 +405,7 @@ class RadarRerunTest {
 
         assertThat(checks.findById(checkId).orElseThrow().getUpdatedAt()).isEqualTo(BEFORE_WINDOW);
         assertThat(checks.findById(checkId).orElseThrow().getEventId()).isEqualTo(eventId);
-        assertThat(service.radarRerun(eventId)).isEqualTo(RadarOutcome.RAN);
+        assertThat(service.radarRerun(eventId).outcome()).isEqualTo(RadarOutcome.RAN);
     }
 
     @Test
@@ -501,7 +501,7 @@ class RadarRerunTest {
     void organizerPatchAfterRadarRunWinsAgain() throws Exception {
         Event e = event(EventStatus.LIVE, START);
         UUID prevId = check(e.getId(), BEFORE_WINDOW, NIGHT);
-        assertThat(service.radarRerun(e.getId())).isEqualTo(RadarOutcome.RAN);
+        assertThat(service.radarRerun(e.getId()).outcome()).isEqualTo(RadarOutcome.RAN);
         DateCheck radar = radarRows(e.getId()).get(0);
 
         service.patchAssumptions(principal(), prevId, new AssumptionsPatch(null, null, 2500L, 22, 21));
@@ -512,7 +512,7 @@ class RadarRerunTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.dateCheck.id").value(prevId.toString()))
                 .andExpect(jsonPath("$.dateCheck.stale").value(false));
-        assertThat(service.radarRerun(e.getId())).isEqualTo(RadarOutcome.NOT_DUE);
+        assertThat(service.radarRerun(e.getId()).outcome()).isEqualTo(RadarOutcome.NOT_DUE);
         assertThat(radarRows(e.getId())).hasSize(1);
     }
 
@@ -520,7 +520,7 @@ class RadarRerunTest {
     void nextRadarRunCopiesThePatchedInputs() throws Exception {
         Event e = event(EventStatus.LIVE, START);
         UUID prevId = check(e.getId(), BEFORE_WINDOW, NIGHT);
-        assertThat(service.radarRerun(e.getId())).isEqualTo(RadarOutcome.RAN);
+        assertThat(service.radarRerun(e.getId()).outcome()).isEqualTo(RadarOutcome.RAN);
         UUID first = radarRows(e.getId()).get(0).getId();
         service.patchAssumptions(principal(), prevId, new AssumptionsPatch(null, null, 2500L, 22, 21));
         // The patch is stamped by the wall clock, which is past the fixed NOW the radar run used.
@@ -529,7 +529,7 @@ class RadarRerunTest {
         // 8 Oct is 7 days out: the next milestone, and a night the patched check did not score.
         move(e, Instant.parse("2026-10-08T20:00:00Z"));
 
-        assertThat(service.radarRerun(e.getId())).isEqualTo(RadarOutcome.RAN);
+        assertThat(service.radarRerun(e.getId()).outcome()).isEqualTo(RadarOutcome.RAN);
 
         DateCheck next = radarRows(e.getId()).stream().filter(r -> !r.getId().equals(first)).findFirst().orElseThrow();
         assertThat(next.getRadarPrevId()).isEqualTo(prevId);
@@ -551,13 +551,13 @@ class RadarRerunTest {
         UUID originId = check(other.getId(), BEFORE_WINDOW, NIGHT);
         Event e = event(EventStatus.LIVE, START);
         jdbc.update("update events set date_check_id = ? where id = ?", originId, e.getId());
-        assertThat(service.radarRerun(e.getId())).isEqualTo(RadarOutcome.RAN);
+        assertThat(service.radarRerun(e.getId()).outcome()).isEqualTo(RadarOutcome.RAN);
         assertThat(radarRows(e.getId())).singleElement().satisfies(r -> assertThat(r.getRadarPrevId()).isEqualTo(originId));
 
         service.patchAssumptions(principal(), originId, new AssumptionsPatch(null, null, 2500L, null, null));
         move(e, Instant.parse("2026-10-08T20:00:00Z"));
 
-        assertThat(service.radarRerun(e.getId())).isEqualTo(RadarOutcome.RAN);
+        assertThat(service.radarRerun(e.getId()).outcome()).isEqualTo(RadarOutcome.RAN);
         assertThat(radarRows(e.getId())).filteredOn(r -> r.getRadarMilestone() == 7).singleElement()
                 .satisfies(r -> assertThat(r.getRadarPrevId()).isEqualTo(originId));
     }
@@ -585,7 +585,7 @@ class RadarRerunTest {
     void listOmitsRadarRuns() throws Exception {
         Event e = event(EventStatus.LIVE, START);
         UUID prevId = check(e.getId(), BEFORE_WINDOW, NIGHT);
-        assertThat(service.radarRerun(e.getId())).isEqualTo(RadarOutcome.RAN);
+        assertThat(service.radarRerun(e.getId()).outcome()).isEqualTo(RadarOutcome.RAN);
         UUID radarId = radarRows(e.getId()).get(0).getId();
 
         mvc.perform(get("/api/v1/predictions/date-checks").with(authentication(mine())))
@@ -599,7 +599,7 @@ class RadarRerunTest {
     void predictionStatusShowsRadarRun() throws Exception {
         Event e = event(EventStatus.LIVE, START);
         check(e.getId(), BEFORE_WINDOW, NIGHT);
-        assertThat(service.radarRerun(e.getId())).isEqualTo(RadarOutcome.RAN);
+        assertThat(service.radarRerun(e.getId()).outcome()).isEqualTo(RadarOutcome.RAN);
         DateCheck r = radarRows(e.getId()).get(0);
 
         String json = mvc.perform(get("/api/v1/events/" + e.getId() + "/prediction").with(authentication(mine())))
@@ -617,7 +617,7 @@ class RadarRerunTest {
     void assumptionPatchKeepsRadarColumns() {
         Event e = event(EventStatus.LIVE, START);
         UUID prevId = check(e.getId(), BEFORE_WINDOW, NIGHT);
-        assertThat(service.radarRerun(e.getId())).isEqualTo(RadarOutcome.RAN);
+        assertThat(service.radarRerun(e.getId()).outcome()).isEqualTo(RadarOutcome.RAN);
         UUID radarId = radarRows(e.getId()).get(0).getId();
 
         service.patchAssumptions(principal(), radarId, new AssumptionsPatch(null, null, null, null, 21));

@@ -1,0 +1,17 @@
+REVISIÓN DE LA FECHA · imin
+
+{{eventName}}: cambió la revisión de la fecha ({{fromVerdict}} → {{toVerdict}})
+
+Volvimos a revisar la fecha de tu evento con los datos que tenemos hoy y el veredicto cambió.
+
+{{eventName}} · {{night}}
+Veredicto: {{fromVerdict}} → {{toVerdict}}
+Riesgo de la fecha: {{fromRisk}}/10 → {{toRisk}}/10
+
+Es un aviso, no una decisión: abre la pestaña Predictor para ver lo que encontramos antes de actuar.
+
+Abrir el Predictor: {{dashboardUrl}}
+
+Estos avisos siguen la configuración de notificaciones del Predictor de la persona que creó este evento en imin.
+
+imin.wtf · revisión de la fecha de {{eventName}}
