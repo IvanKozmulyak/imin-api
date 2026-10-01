@@ -28,6 +28,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -47,6 +48,8 @@ import static org.mockito.Mockito.when;
 /** One test per skip reason and per no-op branch of the send-time guard. */
 @SpringBootTest
 @Import(TestRateLimitConfig.class)
+// Rolled back per test: committed experiments at a fixed date leak into OutcomeCollector runs.
+@Transactional
 class SendPathGuardTest {
 
     static final Instant NOW = Instant.parse("2026-09-27T12:00:00Z");
