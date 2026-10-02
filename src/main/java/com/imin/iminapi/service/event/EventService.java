@@ -500,6 +500,8 @@ public class EventService {
             // change after any tier is synced breaks checkout outright. Refuse instead.
             // (A new draft has no id and therefore no tiers; re-sending the same value —
             // in any casing, as autosave does — is a no-op, not a conflict.)
+            // Ids now land after commit, so a change racing a first sync can store an old-currency
+            // price id; harmless, since checkout prices the ticket line inline from priceMinor.
             if (e.getId() != null && !b.currency().equalsIgnoreCase(e.getCurrency())
                     && tiers.existsSyncedStripePrice(e.getId())) {
                 throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,

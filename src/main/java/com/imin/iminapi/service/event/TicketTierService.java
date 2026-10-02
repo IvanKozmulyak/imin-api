@@ -14,7 +14,7 @@ import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.service.audit.AuditLogger;
 import com.imin.iminapi.predictor.service.PredictorReactivityEvents;
-import com.imin.iminapi.stripe.StripeProductService;
+import com.imin.iminapi.stripe.TierStripeSyncRequested;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.context.ApplicationEventPublisher;
@@ -37,11 +37,6 @@ public class TicketTierService {
     private final EventRepository events;
     private final TicketTierValidator validator;
     private final Clock clock;
-    /**
-     * Best-effort Stripe sync. Optional so existing tests that don't wire Stripe can still
-     * instantiate the service.
-     */
-    private final StripeProductService stripeProductService;
     /** Optional audit logger — null in older test constructors. */
     private final AuditLogger auditLogger;
     /**
@@ -52,31 +47,12 @@ public class TicketTierService {
      */
     private final ApplicationEventPublisher eventPublisher;
 
-    /** Legacy 4-arg constructor used by existing unit tests that don't need Stripe sync. */
+    /** Legacy 4-arg constructor used by existing unit tests that need no audit or events. */
     public TicketTierService(TicketTierRepository tiers,
                              EventRepository events,
                              TicketTierValidator validator,
                              Clock clock) {
-        this(tiers, events, validator, clock, null, null, null);
-    }
-
-    /** Legacy 5-arg constructor (Stripe but no audit). */
-    public TicketTierService(TicketTierRepository tiers,
-                             EventRepository events,
-                             TicketTierValidator validator,
-                             Clock clock,
-                             StripeProductService stripeProductService) {
-        this(tiers, events, validator, clock, stripeProductService, null, null);
-    }
-
-    /** Legacy 6-arg constructor (Stripe + audit, no predictor reactivity). */
-    public TicketTierService(TicketTierRepository tiers,
-                             EventRepository events,
-                             TicketTierValidator validator,
-                             Clock clock,
-                             StripeProductService stripeProductService,
-                             AuditLogger auditLogger) {
-        this(tiers, events, validator, clock, stripeProductService, auditLogger, null);
+        this(tiers, events, validator, clock, null, null);
     }
 
     /** Primary constructor — Spring uses this one in the running app. */
@@ -85,14 +61,12 @@ public class TicketTierService {
                              EventRepository events,
                              TicketTierValidator validator,
                              Clock clock,
-                             StripeProductService stripeProductService,
                              AuditLogger auditLogger,
                              ApplicationEventPublisher eventPublisher) {
         this.tiers = tiers;
         this.events = events;
         this.validator = validator;
         this.clock = clock;
-        this.stripeProductService = stripeProductService;
         this.auditLogger = auditLogger;
         this.eventPublisher = eventPublisher;
     }
@@ -151,8 +125,7 @@ public class TicketTierService {
 
         tier = tiers.save(tier);
         bumpEventUpdatedAt(event);
-        // Best-effort Stripe product sync — logs and continues on failure.
-        syncStripeProduct(tier, event);
+        publishSyncRequested(tier.getId());
         audit(p, AuditActions.TIER_CREATED, "tier", tier.getId(),
                 "Added ticket tier \"" + tier.getName() + "\" ("
                         + formatPrice(tier.getPriceMinor(), event.getCurrency())
@@ -174,8 +147,7 @@ public class TicketTierService {
         applyPatch(tier, req);
         tier = tiers.save(tier);
         bumpEventUpdatedAt(event);
-        // Best-effort sync — picks up name/price changes.
-        syncStripeProduct(tier, event);
+        publishSyncRequested(tier.getId());
         audit(p, AuditActions.TIER_UPDATED, "tier", tier.getId(),
                 "Updated tier \"" + tier.getName() + "\" on event \"" + eventLabel(event) + "\"");
         publishMutated(eventId);
@@ -241,7 +213,7 @@ public class TicketTierService {
                 tier.setEventId(event.getId());
                 applyEmbeddedAsCreate(tier, patch);
                 tier = tiers.save(tier);
-                syncStripeProduct(tier, event);
+                publishSyncRequested(tier.getId());
             } else {
                 // update — referencing an unrelated tier id is a client bug → 400, not 404
                 TicketTier tier = tiers.findByIdAndEventId(patch.id(), event.getId())
@@ -252,14 +224,14 @@ public class TicketTierService {
                 if (!errors.isEmpty()) throw badRequest(errors);
                 applyEmbeddedAsPatch(tier, patch);
                 tier = tiers.save(tier);
-                syncStripeProduct(tier, event);
+                publishSyncRequested(tier.getId());
             }
         }
     }
 
-    /** Null-safe Stripe product sync. No-op when Stripe is not wired (e.g. some unit tests). */
-    private void syncStripeProduct(TicketTier tier, Event event) {
-        if (stripeProductService != null) stripeProductService.syncTier(tier, event);
+    /** Stripe sync runs after commit (TierStripeSyncQueue), so no Stripe call holds the event or tier lock. */
+    private void publishSyncRequested(UUID tierId) {
+        if (eventPublisher != null) eventPublisher.publishEvent(new TierStripeSyncRequested(tierId));
     }
 
     // ── private helpers ────────────────────────────────────────────────────────

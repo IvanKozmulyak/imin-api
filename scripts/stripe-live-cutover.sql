@@ -28,8 +28,9 @@
 
 -- §1  ticket_tiers — drop the platform Product/Price ids.
 -- A live key cannot resolve a test prod_, and StripeCheckoutService puts the stored id
--- straight into the line item. Cleared, the tier answers a leak-safe 404 until the
--- organizer re-saves it (TicketTierService.syncTier is the only re-sync path).
+-- straight into the line item. Cleared, the tier answers a leak-safe 404 until re-synced.
+-- TierStripeSyncSweeper re-syncs under whatever key is running, i.e. still the test key
+-- here, so the runbook clears these ids again once the live key is up (§8).
 UPDATE ticket_tiers
    SET stripe_product_id = NULL,
        stripe_price_id   = NULL

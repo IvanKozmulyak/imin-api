@@ -115,6 +115,42 @@ class StripeProductServiceTest {
     }
 
     @Test
+    void blankProductId_createsInsteadOfUpdating() throws Exception {
+        tier.setStripeProductId("");
+        tier.setStripePriceId("price_old");
+        Price same = new Price();
+        same.setUnitAmount(1500L);
+        same.setCurrency("eur");
+        when(prices.retrieve("price_old")).thenReturn(same);
+        when(tiers.updateStripeIdsIfPriceUnchanged(tier.getId(), "prod_new", "price_new", 1500, "eur"))
+                .thenReturn(1);
+
+        assertThat(service.syncTier(tier, event)).isEqualTo(SyncOutcome.SYNCED);
+
+        verify(products).create(any(ProductCreateParams.class));
+        verify(products, never()).update(anyString(), any(ProductUpdateParams.class));
+        assertThat(tier.getStripeProductId()).isEqualTo("prod_new");
+    }
+
+    @Test
+    void blankPriceId_createsInsteadOfUpdating() throws Exception {
+        tier.setStripeProductId("prod_old");
+        tier.setStripePriceId("");
+        Price same = new Price();
+        same.setUnitAmount(1500L);
+        same.setCurrency("eur");
+        when(prices.retrieve("")).thenReturn(same);
+        when(tiers.updateStripeIdsIfPriceUnchanged(tier.getId(), "prod_new", "price_new", 1500, "eur"))
+                .thenReturn(1);
+
+        assertThat(service.syncTier(tier, event)).isEqualTo(SyncOutcome.SYNCED);
+
+        verify(products).create(any(ProductCreateParams.class));
+        verify(products, never()).update(anyString(), any(ProductUpdateParams.class));
+        assertThat(tier.getStripePriceId()).isEqualTo("price_new");
+    }
+
+    @Test
     void unchangedPrice_updatesProductOnly_noDbWrite() throws Exception {
         tier.setStripeProductId("prod_old");
         tier.setStripePriceId("price_old");

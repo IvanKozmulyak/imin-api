@@ -50,7 +50,8 @@ public class StripeProductService {
 
     /**
      * Best-effort sync. Logs and swallows failures so tier persistence is never blocked by a
-     * Stripe outage. Callers invoke this after the tier row exists; on SYNCED the ids are also
+     * Stripe outage. Callers run this after commit and never while holding a tier or event lock
+     * (TierStripeSyncQueue, or checkout, which has no transaction); on SYNCED the ids are also
      * set on the passed instance.
      */
     public SyncOutcome syncTier(TicketTier tier, Event event) {
@@ -73,9 +74,9 @@ public class StripeProductService {
         String description = "Ticket for " + event.getName();
 
         // Decide create-vs-update. We re-create when:
-        //   (a) the tier has no product yet, OR
+        //   (a) the tier has no product yet (a blank id counts as none), OR
         //   (b) the price has changed (Stripe Prices are immutable — see class doc).
-        boolean needsCreate = tier.getStripeProductId() == null || tier.getStripePriceId() == null
+        boolean needsCreate = isBlank(tier.getStripeProductId()) || isBlank(tier.getStripePriceId())
                 || priceHasChanged(tier, currency);
 
         if (needsCreate) {
@@ -145,4 +146,7 @@ public class StripeProductService {
         }
     }
 
+    private static boolean isBlank(String id) {
+        return id == null || id.isBlank();
+    }
 }

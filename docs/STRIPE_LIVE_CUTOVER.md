@@ -3,7 +3,7 @@
 **Read this paragraph before scheduling anything.** Production has run on `sk_test_` since
 day one, so every Stripe id in the database is a test-mode object. The reset below clears
 them, and from the moment it commits **every paid checkout in production answers `404`
-until its organizer re-onboards and its tiers are re-saved.** That is the intended state —
+until its organizer re-onboards and its tiers are re-synced under the live key (§8).** That is the intended state —
 the alternative is a `502` at the Stripe call — but it is a full paid-sales outage whose
 length is set by how fast organizers re-onboard, not by how fast the SQL runs. Free tiers
 keep selling throughout. Announce it, pick an hour, and do not start without §0 and §1 —
@@ -92,7 +92,8 @@ Save the output. Two sections can say stop:
   order) with no honest SQL equivalent. **Expected count: 0.** If it is not 0, restore each
   ticket by hand and record what you did before continuing.
 
-§2 is the post-cutover worklist (which tiers must be re-saved). §4 lists the tiers whose
+§2 is the post-cutover worklist (the tiers that cannot sell until they are re-synced under the
+live key, §8). §4 lists the tiers whose
 `reserved` the script re-derives; every one of them ends at 0, and a non-zero `drift`
 column is counter drift that predates the cutover, not stock being taken away.
 
@@ -155,7 +156,12 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/stripe-live-cutover-postcheck
 ```
 
 **Every row must be `0`.** Run it here, immediately after the reset commits — this run is
-the authoritative one. Re-run it after §8 as a regression check, with one caveat: a free
+the authoritative one. Run it before `TierStripeSyncSweeper`'s next tick (it runs every 60 s
+and the reset leaves `events.updated_at` alone, so the 2-min settle does not hold it back):
+the sweeper re-syncs cleared paid tiers of DRAFT/LIVE events under whatever key is running,
+which here is still the **test** key, so after that tick the `ticket_tiers` row reads non-zero
+with fresh test ids. That is expected and is undone in §8; a non-zero row on a run made
+straight after the commit is still a real failure. Re-run it after §8 as a regression check, with one caveat: a free
 order taken between the swap and the re-run is genuinely live, so
 `orders_not_marked_test_mode` (and, once real money moves, the `payout_runs` and `disputes`
 counterparts) may legitimately read `1` or `2` at that point. Confirm by `created_at`
@@ -239,7 +245,23 @@ itself (≈3 min), so applying §7 IS the redeploy; §0 already proved the migra
 Wait for the deploy to go healthy, confirm the boot log's `STRIPE MODE: live` line
 (`StripeConfig` logs it at WARN on every start, naming the mode it detected from the
 trimmed key prefix — `test` here means the key was not pasted as you think it was, and every order
-taken from now on would be stamped as test money), then re-run §5.
+taken from now on would be stamped as test money).
+
+Only once the log shows `STRIPE MODE: live`, clear the tier ids **again**. Between §4 and the
+swap the sweeper (and any organizer tier save) created **test** Products for the cleared
+tiers; a live checkout on such a tier fails with "No such product", and because the ids are
+non-null the sweeper never touches it again:
+
+```
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "UPDATE ticket_tiers
+   SET stripe_product_id = NULL, stripe_price_id = NULL,
+       stripe_sync_attempts = 0, stripe_sync_next_at = NULL
+ WHERE stripe_product_id IS NOT NULL OR stripe_price_id IS NOT NULL"
+```
+
+The sweeper then re-creates them with live ids within a few minutes. Then re-run §5; its
+`ticket_tiers` row now counts tiers healed with **live** ids and may legitimately be non-zero
+(check one id in the live Stripe dashboard).
 
 ## 9. Smoke test on a staff org
 
@@ -275,10 +297,9 @@ flag is `false`; a dispute only appears if a real buyer charges back.)
 ## 10. Organizers re-onboard
 
 `GET /api/v1/orgs/{orgId}/stripe/status` now answers `NOT_STARTED`, which the dashboard
-already renders as the "connect Stripe" CTA. Then, **per active event**, an organizer (or
-ops) must re-save each tier from §2 of the pre-flight: clearing `stripe_price_id` does NOT
-self-heal on the next checkout — `StripeProductService.syncTier` is called only on a tier
-write and on the promo-only checkout path. Until the tier is re-saved it cannot sell.
+already renders as the "connect Stripe" CTA. No tier needs re-saving: `TierStripeSyncSweeper`
+re-syncs cleared paid tiers of DRAFT/LIVE events under whatever key is running, so the ids it
+writes are live only after the §8 re-clear, which is why that step must not be skipped.
 
 ### The livemode guard, from here on
 

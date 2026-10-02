@@ -19,8 +19,8 @@
 --       restore the tickets DisputeIngestService revoked. Any non-zero revoked count here
 --       is manual work — see docs/STRIPE_LIVE_CUTOVER.md.
 --
--- §2 is the post-cutover worklist: clearing stripe_price_id does NOT self-heal on the next
--- checkout, so each tier listed there has to be re-saved before it can sell again.
+-- §2 is the post-cutover worklist: each tier listed there cannot sell until it is re-synced
+-- under the live key (TierStripeSyncSweeper, after the runbook's §8 re-clear).
 --
 -- REQUIRES THE V129/V130 COLUMNS (organizations.stripe_livemode, orders/payout_runs/disputes
 -- .test_mode). Deploy the build first — §0 of docs/STRIPE_LIVE_CUTOVER.md — or every section
@@ -65,7 +65,7 @@ SELECT count(*)                            AS tiers_with_stripe_ids,
      WHERE t.stripe_product_id IS NOT NULL OR t.stripe_price_id IS NOT NULL
   ) s;
 
-\echo '    tiers that must be re-saved before they can sell again:'
+\echo '    tiers that cannot sell until re-synced under the live key (runbook §8):'
 SELECT ev.id AS event_id, ev.name AS event_name, t.id AS tier_id, t.name AS tier_name,
        t.stripe_product_id, t.stripe_price_id
   FROM ticket_tiers t

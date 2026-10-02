@@ -12,6 +12,7 @@ import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.stripe.TierStripeSyncRequested;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -161,7 +162,7 @@ class TicketTierServiceTest {
     void standaloneTierPatch_publishesPredictorReactivityEvent() {
         org.springframework.context.ApplicationEventPublisher publisher =
                 mock(org.springframework.context.ApplicationEventPublisher.class);
-        TicketTierService wired = new TicketTierService(tiers, events, validator, clock, null, null, publisher);
+        TicketTierService wired = new TicketTierService(tiers, events, validator, clock, null, publisher);
 
         UUID tierId = UUID.randomUUID();
         when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(existingTier(tierId, 0, 0)));
@@ -170,11 +171,46 @@ class TicketTierServiceTest {
                 new TicketTierPatchRequest("VIP", 500, 50, null, null, null, null, 3, false));
 
         ArgumentCaptor<Object> cap = ArgumentCaptor.forClass(Object.class);
-        verify(publisher).publishEvent(cap.capture());
-        assertThat(cap.getValue())
-                .isInstanceOf(com.imin.iminapi.predictor.service.PredictorReactivityEvents.EventMutated.class);
-        assertThat(((com.imin.iminapi.predictor.service.PredictorReactivityEvents.EventMutated) cap.getValue())
-                .eventId()).isEqualTo(eventId);
+        verify(publisher, times(2)).publishEvent(cap.capture());
+        assertThat(cap.getAllValues()).containsExactlyInAnyOrder(
+                new com.imin.iminapi.predictor.service.PredictorReactivityEvents.EventMutated(eventId),
+                new TierStripeSyncRequested(tierId));
+    }
+
+    @Test
+    void create_publishesSyncRequestForNewTier() {
+        org.springframework.context.ApplicationEventPublisher publisher =
+                mock(org.springframework.context.ApplicationEventPublisher.class);
+        TicketTierService wired = new TicketTierService(tiers, events, validator, clock, null, publisher);
+
+        TicketTierDto dto = wired.create(principal, eventId, validCreate());
+
+        ArgumentCaptor<Object> cap = ArgumentCaptor.forClass(Object.class);
+        verify(publisher, times(2)).publishEvent(cap.capture());
+        assertThat(cap.getAllValues()).containsExactlyInAnyOrder(
+                new com.imin.iminapi.predictor.service.PredictorReactivityEvents.EventMutated(eventId),
+                new TierStripeSyncRequested(dto.id()));
+    }
+
+    @Test
+    void reconcileEmbedded_publishesOneRequestPerCreatedAndUpdatedTier() {
+        org.springframework.context.ApplicationEventPublisher publisher =
+                mock(org.springframework.context.ApplicationEventPublisher.class);
+        TicketTierService wired = new TicketTierService(tiers, events, validator, clock, null, publisher);
+        UUID existingId = UUID.randomUUID();
+        when(tiers.findByIdAndEventId(existingId, eventId)).thenReturn(Optional.of(existingTier(existingId, 0, 0)));
+        ArgumentCaptor<TicketTier> saved = ArgumentCaptor.forClass(TicketTier.class);
+
+        wired.reconcileEmbedded(event, List.of(
+                new TicketTierEmbeddedPatch(null, "VIP", 2000, 50, null, null, null, null, null, null),
+                new TicketTierEmbeddedPatch(existingId, "Updated", null, null, null, null, null, null, null, null)));
+
+        verify(tiers, times(2)).save(saved.capture());
+        UUID createdId = saved.getAllValues().get(0).getId();
+        ArgumentCaptor<Object> cap = ArgumentCaptor.forClass(Object.class);
+        verify(publisher, times(2)).publishEvent(cap.capture());
+        assertThat(cap.getAllValues()).containsExactly(
+                new TierStripeSyncRequested(createdId), new TierStripeSyncRequested(existingId));
     }
 
     @Test

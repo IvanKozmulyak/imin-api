@@ -2,6 +2,7 @@ package com.imin.iminapi.service.event;
 
 import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.dto.event.EventPatchRequest;
+import com.imin.iminapi.dto.event.TicketTierCreateRequest;
 import com.imin.iminapi.dto.event.TicketTierEmbeddedPatch;
 import com.imin.iminapi.dto.event.TicketTierPatchRequest;
 import com.imin.iminapi.model.Event;
@@ -197,6 +198,32 @@ class TierInventoryRacePostgresTest {
                 eventPatch(null, List.of(embedded(tierId, null, 8)))));
     }
 
+    // ── Stripe sync after commit ───────────────────────────────────────────────
+
+    @Test
+    @Timeout(60)
+    void tierPatch_stripeSyncBlocked_tierAndEventLocksFree() throws Exception {
+        stripeBlockedLocksFree(() -> tierService.patch(principal, eventId, tierId, rename()), tierId);
+        assertThat(nameOf(tierId)).isEqualTo("Renamed");
+    }
+
+    @Test
+    @Timeout(60)
+    void embeddedPatch_stripeSyncBlocked_tierAndEventLocksFree() throws Exception {
+        stripeBlockedLocksFree(() -> eventService.patch(principal, eventId, null,
+                eventPatch(null, List.of(embedded(tierId, "Renamed", null)))), tierId);
+        assertThat(nameOf(tierId)).isEqualTo("Renamed");
+    }
+
+    @Test
+    @Timeout(60)
+    void tierCreate_stripeSyncBlocked_eventLockFree() throws Exception {
+        stripeBlockedLocksFree(() -> tierService.create(principal, eventId,
+                new TicketTierCreateRequest("Door", 1500, 20, null, null, null, null)), null);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM ticket_tiers WHERE event_id = ? AND name = 'Door'",
+                Integer.class, eventId)).isEqualTo(1);
+    }
+
     // ── delete ─────────────────────────────────────────────────────────────────
 
     @Test
@@ -348,13 +375,21 @@ class TierInventoryRacePostgresTest {
 
     // ── shared scenarios ───────────────────────────────────────────────────────
 
-    /** The organizer pauses in syncTier holding the tier; a reserve must wait and its hold must survive. */
+    /** The organizer pauses after its write, still holding the tier; a reserve must wait and its hold must survive. */
     private void organizerHoldsTierThenReserve(Callable<?> organizerWrite) throws Exception {
+        TransactionTemplate tx = new TransactionTemplate(txManager);
         ExecutorService pool = Executors.newFixedThreadPool(2);
         CountDownLatch gate = new CountDownLatch(1);
-        syncGate = gate;
         try {
-            Future<?> organizer = pool.submit(organizerWrite);
+            Future<?> organizer = pool.submit(() -> tx.executeWithoutResult(s -> {
+                try {
+                    organizerWrite.call();
+                } catch (Exception ex) {
+                    throw new IllegalStateException(ex);
+                }
+                syncEntered.countDown();
+                await(gate);
+            }));
             assertThat(syncEntered.await(15, TimeUnit.SECONDS)).isTrue();
 
             Future<UUID> buyer = pool.submit(this::reserveTwo);
@@ -368,6 +403,33 @@ class TierInventoryRacePostgresTest {
             Map<String, Object> row = tierRow();
             assertThat(row.get("reserved")).isEqualTo(2);
             assertThat(row.get("name")).isEqualTo("Renamed");
+            assertThat(heldReservations()).isEqualTo(1);
+        } finally {
+            gate.countDown();
+            shutdown(pool);
+        }
+    }
+
+    /** Stripe blocks after the organizer's commit; the write returns and neither the tier nor the event stays locked. */
+    private void stripeBlockedLocksFree(Callable<?> organizerWrite, UUID lockedTier) throws Exception {
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        CountDownLatch gate = new CountDownLatch(1);
+        syncGate = gate;
+        try {
+            Future<?> organizer = pool.submit(organizerWrite);
+            organizer.get(5, TimeUnit.SECONDS);
+            assertThat(syncEntered.await(15, TimeUnit.SECONDS)).as("the queued sync reached Stripe").isTrue();
+
+            TransactionTemplate tx = new TransactionTemplate(txManager);
+            tx.executeWithoutResult(s -> {
+                if (lockedTier != null) {
+                    jdbc.queryForObject("SELECT id FROM ticket_tiers WHERE id = ? FOR UPDATE NOWAIT",
+                            UUID.class, lockedTier);
+                }
+                jdbc.queryForObject("SELECT id FROM events WHERE id = ? FOR UPDATE NOWAIT", UUID.class, eventId);
+            });
+            Future<UUID> buyer = pool.submit(this::reserveTwo);
+            assertThat(buyer.get(5, TimeUnit.SECONDS)).isNotNull();
             assertThat(heldReservations()).isEqualTo(1);
         } finally {
             gate.countDown();

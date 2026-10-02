@@ -14,6 +14,7 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.stripe.StripeClient;
 import com.stripe.model.Price;
@@ -27,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
@@ -35,8 +37,11 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.after;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /** The tier-id write runs inside the organizer's event patch; nothing else that patch changes may be lost. */
@@ -58,9 +63,11 @@ class EventPatchStripeSyncPersistenceTest {
     private UUID existingTierId;
     private AuthPrincipal principal;
 
+    private ProductService products;
+
     @BeforeEach
     void setUp() throws Exception {
-        ProductService products = mock(ProductService.class);
+        products = mock(ProductService.class);
         PriceService prices = mock(PriceService.class);
         when(stripeClient.products()).thenReturn(products);
         when(stripeClient.prices()).thenReturn(prices);
@@ -115,7 +122,7 @@ class EventPatchStripeSyncPersistenceTest {
     }
 
     @Test
-    void patchWithNewPaidTier_persistsEventFieldTierEditsAndStripeIds() {
+    void patchWithNewPaidTier_persistsEventFieldTierEditsAndStripeIds() throws Exception {
         TicketTierEmbeddedPatch rename = new TicketTierEmbeddedPatch(existingTierId, "Early bird",
                 null, null, null, null, null, null, null, null);
         TicketTierEmbeddedPatch create = new TicketTierEmbeddedPatch(null, "GA",
@@ -133,11 +140,41 @@ class EventPatchStripeSyncPersistenceTest {
         assertThat(renamed.get("name")).isEqualTo("Early bird");
         assertThat(renamed.get("stripe_product_id")).isEqualTo("prod_existing");
         assertThat(renamed.get("stripe_price_id")).isEqualTo("price_existing");
-        Map<String, Object> added = jdbc.queryForMap(
-                "SELECT price_minor, stripe_product_id, stripe_price_id FROM ticket_tiers "
-                        + "WHERE event_id = ? AND name = 'GA'", eventId);
+        // The sync runs after commit on the queue thread.
+        Map<String, Object> added = Map.of();
+        long deadline = System.nanoTime() + 5_000_000_000L;
+        while (System.nanoTime() < deadline) {
+            added = jdbc.queryForMap("SELECT price_minor, stripe_product_id, stripe_price_id FROM ticket_tiers "
+                    + "WHERE event_id = ? AND name = 'GA'", eventId);
+            if ("prod_embedded".equals(added.get("stripe_product_id"))) break;
+            Thread.sleep(50);
+        }
         assertThat(((Number) added.get("price_minor")).intValue()).isEqualTo(2500);
         assertThat(added.get("stripe_product_id")).isEqualTo("prod_embedded");
         assertThat(added.get("stripe_price_id")).isEqualTo("price_embedded");
+    }
+
+    @Test
+    void rolledBackPatch_neverCallsStripe() throws Exception {
+        TicketTier t = new TicketTier();
+        t.setEventId(eventId);
+        t.setName("Unsynced");
+        t.setPriceMinor(1500);
+        t.setQuantity(20);
+        UUID unsyncedId = tiers.save(t).getId();
+        TicketTierEmbeddedPatch rename = new TicketTierEmbeddedPatch(unsyncedId, "Renamed",
+                null, null, null, null, null, null, null, null);
+        TicketTierEmbeddedPatch invalid = new TicketTierEmbeddedPatch(null, null,
+                2500, 100, null, null, null, null, 1, true);
+        EventPatchRequest body = new EventPatchRequest(null, null, null, null, null, null, null, null,
+                null, null, null, null, null, null, null, List.of(rename, invalid), null);
+
+        assertThatThrownBy(() -> eventService.patch(principal, eventId, null, body))
+                .isInstanceOfSatisfying(ApiException.class,
+                        ex -> assertThat(ex.status()).isEqualTo(HttpStatus.BAD_REQUEST));
+
+        verify(products, after(500).never()).create(any(ProductCreateParams.class));
+        assertThat(jdbc.queryForObject("SELECT name FROM ticket_tiers WHERE id = ?", String.class, unsyncedId))
+                .isEqualTo("Unsynced");
     }
 }
