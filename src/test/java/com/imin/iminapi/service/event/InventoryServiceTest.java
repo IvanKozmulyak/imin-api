@@ -1,8 +1,10 @@
 package com.imin.iminapi.service.event;
 
+import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.ReservationStatus;
 import com.imin.iminapi.model.TicketReservation;
 import com.imin.iminapi.model.TicketTier;
+import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.TicketReservationRepository;
 import com.imin.iminapi.repository.TicketTierMilestoneRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
@@ -10,6 +12,8 @@ import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.springframework.context.ApplicationEventPublisher;
@@ -41,6 +45,7 @@ class InventoryServiceTest {
     private static final Instant EXPIRES = NOW.plusSeconds(1800);
 
     private TicketTierRepository tiers;
+    private EventRepository events;
     private TicketReservationRepository reservations;
     private TicketTierMilestoneRepository milestones;
     private InventoryService svc;
@@ -48,11 +53,13 @@ class InventoryServiceTest {
     @BeforeEach
     void setUp() {
         tiers = mock(TicketTierRepository.class);
+        events = mock(EventRepository.class);
         reservations = mock(TicketReservationRepository.class);
         milestones = mock(TicketTierMilestoneRepository.class);
         ApplicationEventPublisher publisher = mock(ApplicationEventPublisher.class);
         Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
-        svc = new InventoryService(tiers, reservations, milestones, publisher, clock);
+        svc = new InventoryService(tiers, events, reservations, milestones, publisher, clock);
+        when(events.findActiveStatus(any())).thenReturn(Optional.of(EventStatus.LIVE));
 
         // Default: persisting a reservation echoes it back with a generated id so
         // tests don't have to wire that up per test.
@@ -152,6 +159,54 @@ class InventoryServiceTest {
         assertThatThrownBy(() -> svc.reserve(id, 1, EXPIRES, null))
                 .isInstanceOf(ApiException.class)
                 .satisfies(ex -> assertThat(((ApiException) ex).status()).isEqualTo(HttpStatus.NOT_FOUND));
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = EventStatus.class, names = {"DRAFT", "PAST", "CANCELLED"})
+    void reserve_refusesWhenEventNotLive(EventStatus status) {
+        TicketTier t = tier(100, 0, 0);
+        when(tiers.findByIdForUpdate(t.getId())).thenReturn(Optional.of(t));
+        when(events.findActiveStatus(t.getEventId())).thenReturn(Optional.of(status));
+
+        assertEventNotFound(() -> svc.reserve(t.getId(), 1, EXPIRES, "cs_test_abc"));
+
+        verify(tiers, never()).save(any());
+        verify(reservations, never()).save(any());
+    }
+
+    @Test
+    void reserve_refusesWhenEventDeletedOrMissing() {
+        TicketTier t = tier(100, 0, 0);
+        when(tiers.findByIdForUpdate(t.getId())).thenReturn(Optional.of(t));
+        when(events.findActiveStatus(t.getEventId())).thenReturn(Optional.empty());
+
+        assertEventNotFound(() -> svc.reserve(t.getId(), 1, EXPIRES, null));
+
+        verify(tiers, never()).save(any());
+        verify(reservations, never()).save(any());
+    }
+
+    @Test
+    void reserve_readsEventStatusOnlyAfterTheTierLock() {
+        TicketTier t = tier(100, 0, 0);
+        when(tiers.findByIdForUpdate(t.getId())).thenReturn(Optional.of(t));
+
+        svc.reserve(t.getId(), 1, EXPIRES, null);
+
+        InOrder order = inOrder(tiers, events);
+        order.verify(tiers).findByIdForUpdate(t.getId());
+        order.verify(events).findActiveStatus(t.getEventId());
+    }
+
+    private static void assertEventNotFound(org.assertj.core.api.ThrowableAssert.ThrowingCallable call) {
+        assertThatThrownBy(call)
+                .isInstanceOf(ApiException.class)
+                .satisfies(ex -> {
+                    ApiException apiEx = (ApiException) ex;
+                    assertThat(apiEx.status()).isEqualTo(HttpStatus.NOT_FOUND);
+                    assertThat(apiEx.code()).isEqualTo(ErrorCode.NOT_FOUND);
+                    assertThat(apiEx.getMessage()).isEqualTo("Event not found");
+                });
     }
 
     // ── releaseReservation ─────────────────────────────────────────────────────

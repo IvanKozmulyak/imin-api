@@ -379,6 +379,10 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
     """)
     void lockActiveForWrite(@Param("id") UUID id, @Param("orgId") UUID orgId);
 
+    /** Committed status of a non-deleted event; a scalar, so a cached stale Event entity cannot answer it. */
+    @Query("SELECT e.status FROM Event e WHERE e.id = :id AND e.deletedAt IS NULL")
+    Optional<EventStatus> findActiveStatus(@Param("id") UUID id);
+
     /** Ownership check that loads no entity; for checks made before the row lock. */
     @Query("""
         SELECT COUNT(e) > 0 FROM Event e

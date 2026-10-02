@@ -1,9 +1,11 @@
 package com.imin.iminapi.service.event;
 
+import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.ReservationStatus;
 import com.imin.iminapi.model.TicketReservation;
 import com.imin.iminapi.model.TicketTier;
 import com.imin.iminapi.model.TicketTierMilestone;
+import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.TicketReservationRepository;
 import com.imin.iminapi.repository.TicketTierMilestoneRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
@@ -35,7 +37,9 @@ import java.util.UUID;
  * <p>Concurrency: every transition takes a pessimistic row lock on the tier
  * via {@link TicketTierRepository#findByIdForUpdate(UUID)} so concurrent
  * buyers serialize on the tier row. Organizer tier writes take the same lock
- * ({@code TicketTierService.lockForWrite}) before loading the tier. Status transitions on the reservation
+ * ({@code TicketTierService.lockForWrite}) before loading the tier. {@code reserve} re-reads the event
+ * status under the tier lock, which unpublish holds while it counts holds, so the two never both pass.
+ * Status transitions on the reservation
  * itself are atomic via {@link TicketReservationRepository#markReleased}
  * /{@link TicketReservationRepository#markConfirmed} conditional updates,
  * which lets us no-op cleanly on replays / sweeper-vs-webhook races.
@@ -46,17 +50,20 @@ public class InventoryService {
     private static final Logger log = LoggerFactory.getLogger(InventoryService.class);
 
     private final TicketTierRepository tiers;
+    private final EventRepository events;
     private final TicketReservationRepository reservations;
     private final TicketTierMilestoneRepository milestones;
     private final ApplicationEventPublisher publisher;
     private final Clock clock;
 
     public InventoryService(TicketTierRepository tiers,
+                            EventRepository events,
                             TicketReservationRepository reservations,
                             TicketTierMilestoneRepository milestones,
                             ApplicationEventPublisher publisher,
                             Clock clock) {
         this.tiers = tiers;
+        this.events = events;
         this.reservations = reservations;
         this.milestones = milestones;
         this.publisher = publisher;
@@ -75,12 +82,16 @@ public class InventoryService {
      * @param stripeSessionId  the Stripe Checkout Session id, or {@code null} for
      *                         free-checkout holds (no Stripe round-trip).
      * @throws ApiException 409 INVALID_STATE when fewer than {@code qty} seats are available.
-     * @throws ApiException 404 NOT_FOUND when the tier id does not exist.
+     * @throws ApiException 404 NOT_FOUND when the tier id does not exist, or its event is not live.
      */
     @Transactional
     public UUID reserve(UUID tierId, int qty, Instant expiresAt, String stripeSessionId) {
         TicketTier tier = tiers.findByIdForUpdate(tierId)
                 .orElseThrow(() -> ApiException.notFound("TicketTier"));
+        // Read after the tier lock, so an unpublish holding that lock has committed.
+        if (events.findActiveStatus(tier.getEventId()).orElse(null) != EventStatus.LIVE) {
+            throw ApiException.notFound("Event");
+        }
         int available = tier.getQuantity() - tier.getReserved() - tier.getSold();
         if (available < qty) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,

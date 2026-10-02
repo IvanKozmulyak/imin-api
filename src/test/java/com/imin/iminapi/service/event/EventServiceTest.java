@@ -263,11 +263,7 @@ class EventServiceTest {
         e.setStatus(EventStatus.LIVE);
         when(events.findActive(e.getId())).thenReturn(Optional.of(e));
 
-        TicketTier sold = new TicketTier();
-        sold.setEventId(e.getId());
-        sold.setName("GA");
-        sold.setPriceMinor(1000); sold.setQuantity(100); sold.setSold(3);
-        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of(sold));
+        when(tiers.existsSoldByEventId(e.getId())).thenReturn(true);
 
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> sut.unpublish(p, e.getId()))
                 .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.INVALID_STATE);
@@ -288,12 +284,7 @@ class EventServiceTest {
                 .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.INVALID_STATE);
     }
 
-    /**
-     * events-19: a buyer sitting on a hosted Stripe Checkout page holds a HELD
-     * reservation — reserved > 0 while sold is still 0 — and nothing in the webhook path
-     * re-checks status, so within the session TTL they pay and get tickets for an event
-     * the organizer has just hidden believing it had no sales.
-     */
+    /** A buyer on a hosted Checkout page holds reserved > 0 while sold is still 0; unpublish must refuse. */
     @Test
     void unpublish_blocked_when_a_checkout_is_in_flight() {
         AuthPrincipal p = principal();
@@ -302,18 +293,36 @@ class EventServiceTest {
         e.setStatus(EventStatus.LIVE);
         when(events.findActive(e.getId())).thenReturn(Optional.of(e));
 
-        TicketTier held = new TicketTier();
-        held.setEventId(e.getId());
-        held.setName("GA");
-        held.setQuantity(100);
-        held.setSold(0);
-        held.setReserved(2);
-        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of(held));
+        when(tiers.existsReservedByEventId(e.getId())).thenReturn(true);
 
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> sut.unpublish(p, e.getId()))
                 .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.INVALID_STATE)
                 .hasMessageContaining("checkout");
         verify(events, never()).save(any(Event.class));
+    }
+
+    @Test
+    void unpublish_locksEveryTierAfterTheEventAndBeforeCounting() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setStatus(EventStatus.LIVE);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
+        when(promos.findByEventId(e.getId())).thenReturn(List.of());
+        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
+        UUID idA = UUID.randomUUID();
+        UUID idB = UUID.randomUUID();
+        when(tiers.findIdsByEventId(e.getId())).thenReturn(List.of(idB, idA));
+
+        sut.unpublish(p, e.getId());
+
+        org.mockito.InOrder order = inOrder(events, tierService, tiers);
+        order.verify(events).lockActiveForWrite(e.getId(), p.orgId());
+        order.verify(tierService).lockForWrite(e.getId(), List.of(idB, idA));
+        order.verify(tiers).existsSoldByEventId(e.getId());
+        order.verify(tiers).existsReservedByEventId(e.getId());
     }
 
     @Test

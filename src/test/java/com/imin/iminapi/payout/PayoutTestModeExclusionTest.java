@@ -272,6 +272,9 @@ class PayoutTestModeExclusionTest {
     @Test
     void newFreeOrdersCarryTheRunningKeyMode() {
         Event e = endedEvent();
+        // reserve refuses a non-live event, so the free order needs a LIVE one.
+        e.setStatus(EventStatus.LIVE);
+        e = events.save(e);
         TicketTier tier = freeTier(e);
 
         props.setSecretKey("sk_test_dummy");
