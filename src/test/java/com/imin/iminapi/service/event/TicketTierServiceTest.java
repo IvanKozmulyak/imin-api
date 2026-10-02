@@ -15,10 +15,12 @@ import com.imin.iminapi.security.ErrorCode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -26,6 +28,8 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -414,5 +418,47 @@ class TicketTierServiceTest {
         Event savedEvent = captor.getValue();
         assertThat(savedEvent.getUpdatedAt()).isEqualTo(NOW);
         assertThat(savedEvent.getUpdatedAt()).isNotEqualTo(originalUpdated);
+    }
+
+    // ── tier row lock ──────────────────────────────────────────────────────────
+
+    @Test
+    void patch_locksTheTierBeforeLoadingIt() {
+        UUID tierId = UUID.randomUUID();
+        when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(existingTier(tierId, 0, 0)));
+
+        sut.patch(principal, eventId, tierId,
+                new TicketTierPatchRequest("VIP", null, null, null, null, null, null, null, null));
+
+        InOrder order = inOrder(events, tiers);
+        order.verify(events).lockActiveForWrite(eventId, orgId);
+        order.verify(tiers).lockForWrite(tierId, eventId);
+        order.verify(tiers).findByIdAndEventId(tierId, eventId);
+    }
+
+    @Test
+    void delete_locksTheTierBeforeLoadingIt() {
+        UUID tierId = UUID.randomUUID();
+        when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(existingTier(tierId, 0, 0)));
+
+        sut.delete(principal, eventId, tierId);
+
+        InOrder order = inOrder(events, tiers);
+        order.verify(events).lockActiveForWrite(eventId, orgId);
+        order.verify(tiers).lockForWrite(tierId, eventId);
+        order.verify(tiers).findByIdAndEventId(tierId, eventId);
+    }
+
+    @Test
+    void lockForWrite_locksNonNullIdsInUuidOrder() {
+        UUID a = UUID.fromString("10000000-0000-4000-8000-000000000001");
+        UUID b = UUID.fromString("f0000000-0000-4000-8000-000000000001");
+
+        sut.lockForWrite(eventId, Arrays.asList(a, null, b));
+
+        InOrder order = inOrder(tiers);
+        order.verify(tiers).lockForWrite(b, eventId);
+        order.verify(tiers).lockForWrite(a, eventId);
+        verify(tiers, times(2)).lockForWrite(any(), eq(eventId));
     }
 }

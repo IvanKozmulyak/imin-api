@@ -20,11 +20,14 @@ import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 @Service
@@ -162,6 +165,7 @@ public class TicketTierService {
     @CacheEvict(value = "dashboard", allEntries = true)
     public TicketTierDto patch(AuthPrincipal p, UUID eventId, UUID tierId, TicketTierPatchRequest req) {
         Event event = loadOwnedEvent(p, eventId);
+        lockForWrite(eventId, List.of(tierId));
         TicketTier tier = loadOwnedTier(eventId, tierId);
 
         Map<String, String> errors = validator.validatePatch(req, tier, event);
@@ -182,6 +186,7 @@ public class TicketTierService {
     @CacheEvict(value = "dashboard", allEntries = true)
     public void delete(AuthPrincipal p, UUID eventId, UUID tierId) {
         Event event = loadOwnedEvent(p, eventId);
+        lockForWrite(eventId, List.of(tierId));
         TicketTier tier = loadOwnedTier(eventId, tierId);
         if (tier.getSold() > 0) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
@@ -211,8 +216,18 @@ public class TicketTierService {
     }
 
     /**
+     * Row-locks these tiers in UUID order (RefundService's order) before anything loads them,
+     * so a full save cannot write back reserved/sold that changed meanwhile.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void lockForWrite(UUID eventId, Collection<UUID> tierIds) {
+        tierIds.stream().filter(Objects::nonNull).sorted().forEach(id -> tiers.lockForWrite(id, eventId));
+    }
+
+    /**
      * Used by EventService.patch in the embed path. The event is already loaded + ownership-checked
      * by the caller — this method does NOT re-check ownership. Participates in the caller's transaction.
+     * Caller must already hold the tier locks via lockForWrite (EventService.patch does).
      */
     @Transactional
     public void reconcileEmbedded(Event event, List<TicketTierEmbeddedPatch> patches) {

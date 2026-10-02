@@ -439,8 +439,8 @@ public class RefundService {
         Map<UUID, Long> qtyByTier = ticketsForRefund.stream()
             .collect(Collectors.groupingBy(Ticket::getTierId, Collectors.counting()));
 
-        // Lock tier rows in deterministic order to avoid two concurrent refunds
-        // deadlocking on cross-tier locks. Sort by tierId.
+        // Lock tier rows in UUID.compareTo order so concurrent refunds cannot deadlock;
+        // TicketTierService.lockForWrite locks in the same order.
         qtyByTier.entrySet().stream()
             .sorted(Map.Entry.comparingByKey())
             .forEach(entry -> {

@@ -254,6 +254,10 @@ public class EventService {
         // the protocol was maintained (see the setUpdatedAt below) while the check half was
         // absent, so two organizer tabs silently clobbered each other.
         ifMatch.requireMatch(ifMatchHeader, e.getUpdatedAt());
+        // Tier locks before the event flush: a slug change takes a lock that blocks a checkout already holding a tier.
+        if (body != null && body.tiers() != null) {
+            tierService.lockForWrite(e.getId(), body.tiers().stream().map(TicketTierEmbeddedPatch::id).toList());
+        }
         String addressBefore = venueAddressKey(e);
         boolean changed = applyPatch(e, body);
         String addressAfter = venueAddressKey(e);

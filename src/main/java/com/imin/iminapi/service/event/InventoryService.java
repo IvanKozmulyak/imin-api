@@ -34,7 +34,8 @@ import java.util.UUID;
  *
  * <p>Concurrency: every transition takes a pessimistic row lock on the tier
  * via {@link TicketTierRepository#findByIdForUpdate(UUID)} so concurrent
- * buyers serialize on the tier row. Status transitions on the reservation
+ * buyers serialize on the tier row. Organizer tier writes take the same lock
+ * ({@code TicketTierService.lockForWrite}) before loading the tier. Status transitions on the reservation
  * itself are atomic via {@link TicketReservationRepository#markReleased}
  * /{@link TicketReservationRepository#markConfirmed} conditional updates,
  * which lets us no-op cleanly on replays / sweeper-vs-webhook races.

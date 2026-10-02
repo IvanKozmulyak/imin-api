@@ -495,6 +495,37 @@ class EventServiceTest {
     }
 
     @Test
+    void patch_locksEmbeddedTiersBeforeTheEventFlush() {
+        AuthPrincipal p = principal();
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setName(""); e.setSlug("draft-x");
+        Instant updated = Instant.parse("2026-04-23T10:00:00Z");
+        e.setUpdatedAt(updated);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
+        when(promos.findByEventId(e.getId())).thenReturn(List.of());
+        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
+
+        UUID existingId = UUID.randomUUID();
+        TicketTierEmbeddedPatch update =
+                new TicketTierEmbeddedPatch(existingId, "Renamed", null, null, null, null, null, null, null, null);
+        TicketTierEmbeddedPatch create =
+                new TicketTierEmbeddedPatch(null, "GA", 1500, 100, null, null, null, null, null, null);
+
+        sut.patch(p, e.getId(), "\"" + updated + "\"",
+                new EventPatchRequest(null, null, null, null, null, null, null, null, null,
+                        null, null, null, null, null, null,
+                        List.of(update, create), null));
+
+        var order = inOrder(tierService, events);
+        order.verify(tierService).lockForWrite(e.getId(), java.util.Arrays.asList(existingId, null));
+        order.verify(events).flush();
+        order.verify(tierService).reconcileEmbedded(eq(e), eq(List.of(update, create)));
+    }
+
+    @Test
     void patch_skips_reconcileEmbedded_when_tiers_null() {
         AuthPrincipal p = principal();
         Event e = new Event();

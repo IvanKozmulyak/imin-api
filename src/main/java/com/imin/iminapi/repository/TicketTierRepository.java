@@ -74,6 +74,14 @@ public interface TicketTierRepository extends JpaRepository<TicketTier, UUID> {
     Optional<TicketTier> findByIdForUpdate(@Param("id") UUID id);
 
     /**
+     * Row-locks one tier of the event until commit. Returns only the id, so no cached entity
+     * is mistaken for a fresh one.
+     */
+    @Query(value = "SELECT id FROM ticket_tiers WHERE id = :id AND event_id = :eventId FOR UPDATE",
+            nativeQuery = true)
+    Optional<UUID> lockForWrite(@Param("id") UUID id, @Param("eventId") UUID eventId);
+
+    /**
      * Only writer of the tier's Stripe ids; lands only while the price and currency still match
      * what Stripe was sent. No clearAutomatically: callers may still be mid-transaction on the event.
      */
