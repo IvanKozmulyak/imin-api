@@ -25,7 +25,12 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import org.springframework.data.domain.PageRequest;
 
+import java.sql.Timestamp;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -60,6 +65,8 @@ class TicketTierStripeIdsPostgresTest {
     @Autowired JdbcTemplate jdbc;
 
     private UUID orgId;
+    private UUID userId;
+    private UUID eventId;
     private UUID tierId;
 
     @BeforeEach
@@ -74,7 +81,7 @@ class TicketTierStripeIdsPostgresTest {
         u.setEmail("tip-" + UUID.randomUUID() + "@example.test");
         u.setOrgId(orgId);
         u.setRole(UserRole.OWNER);
-        UUID userId = users.save(u).getId();
+        userId = users.save(u).getId();
 
         Event e = new Event();
         e.setOrgId(orgId);
@@ -84,7 +91,7 @@ class TicketTierStripeIdsPostgresTest {
         e.setVisibility(EventVisibility.PUBLIC);
         e.setStatus(EventStatus.DRAFT);
         e.setCurrency("EUR");
-        UUID eventId = events.save(e).getId();
+        eventId = events.save(e).getId();
         jdbc.update("UPDATE events SET currency = 'EUR' WHERE id = ?", eventId);
 
         TicketTier t = new TicketTier();
@@ -121,6 +128,42 @@ class TicketTierStripeIdsPostgresTest {
         assertThat(rows).isZero();
         assertThat(stored()).containsEntry("stripe_product_id", null)
                 .containsEntry("stripe_price_id", null);
+    }
+
+    @Test
+    void sweepCandidatesAndClaim_onPostgres() {
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        Timestamp settled = Timestamp.from(now.minus(10, ChronoUnit.MINUTES));
+        jdbc.update("UPDATE events SET updated_at = ? WHERE id = ?", settled, eventId);
+        Event past = new Event();
+        past.setOrgId(orgId);
+        past.setCreatedBy(userId);
+        past.setName("Over");
+        past.setSlug("tip-" + UUID.randomUUID().toString().substring(0, 8));
+        past.setVisibility(EventVisibility.PUBLIC);
+        past.setStatus(EventStatus.PAST);
+        past.setCurrency("EUR");
+        UUID pastId = events.save(past).getId();
+        jdbc.update("UPDATE events SET updated_at = ? WHERE id = ?", settled, pastId);
+        TicketTier t = new TicketTier();
+        t.setEventId(pastId);
+        t.setName("GA");
+        t.setPriceMinor(1500);
+        t.setQuantity(100);
+        tiers.save(t);
+
+        List<Object[]> due = tiers.findStripeSyncSweepCandidates(List.of(EventStatus.DRAFT, EventStatus.LIVE),
+                now.minus(2, ChronoUnit.MINUTES), now, PageRequest.of(0, 25));
+
+        assertThat(due).extracting(r -> (UUID) r[0]).containsExactly(tierId);
+        assertThat(((Number) due.get(0)[1]).intValue()).isZero();
+        Instant next = now.plus(5, ChronoUnit.MINUTES);
+        assertThat(tiers.claimStripeSyncSweep(tierId, 0, next, now)).isEqualTo(1);
+        assertThat(tiers.claimStripeSyncSweep(tierId, 0, next, now)).isZero();
+        Map<String, Object> row = jdbc.queryForMap(
+                "SELECT stripe_sync_attempts, stripe_sync_next_at FROM ticket_tiers WHERE id = ?", tierId);
+        assertThat(((Number) row.get("stripe_sync_attempts")).intValue()).isEqualTo(1);
+        assertThat(((Timestamp) row.get("stripe_sync_next_at")).toInstant()).isEqualTo(next);
     }
 
     private Map<String, Object> stored() {

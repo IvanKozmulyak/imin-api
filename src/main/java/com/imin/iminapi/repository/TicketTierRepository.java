@@ -1,6 +1,8 @@
 package com.imin.iminapi.repository;
 
+import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.TicketTier;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -8,6 +10,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.data.rest.core.annotation.RepositoryRestResource;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
@@ -94,12 +97,13 @@ public interface TicketTierRepository extends JpaRepository<TicketTier, UUID> {
     Optional<UUID> lockForWrite(@Param("id") UUID id, @Param("eventId") UUID eventId);
 
     /**
-     * Only writer of the tier's Stripe ids; lands only while the price and currency still match
-     * what Stripe was sent. No clearAutomatically: callers may still be mid-transaction on the event.
+     * Only writer of the tier's Stripe ids, and resets the sweep backoff; lands only while the price and
+     * currency still match what Stripe was sent. No clearAutomatically: callers may be mid-transaction.
      */
     @Modifying(flushAutomatically = true)
     @Transactional
-    @Query("UPDATE TicketTier t SET t.stripeProductId = :productId, t.stripePriceId = :priceId "
+    @Query("UPDATE TicketTier t SET t.stripeProductId = :productId, t.stripePriceId = :priceId, "
+            + "t.stripeSyncAttempts = 0, t.stripeSyncNextAt = NULL "
             + "WHERE t.id = :id AND t.priceMinor = :priceMinor "
             + "AND EXISTS (SELECT e.id FROM Event e WHERE e.id = t.eventId AND LOWER(e.currency) = :currency)")
     int updateStripeIdsIfPriceUnchanged(@Param("id") UUID id,
@@ -107,4 +111,36 @@ public interface TicketTierRepository extends JpaRepository<TicketTier, UUID> {
                                         @Param("priceId") String priceId,
                                         @Param("priceMinor") int priceMinor,
                                         @Param("currency") String currency);
+
+    /**
+     * [id, stripeSyncAttempts] of enabled paid tiers missing a Stripe id, on non-deleted events in
+     * {@code statuses} unchanged since {@code settledBefore} and due by {@code now}; fewest attempts first.
+     */
+    @Query("SELECT t.id, t.stripeSyncAttempts FROM TicketTier t, Event e WHERE e.id = t.eventId "
+            + "AND t.enabled = true AND t.priceMinor > 0 "
+            + "AND (t.stripePriceId IS NULL OR t.stripePriceId = '' "
+            + "OR t.stripeProductId IS NULL OR t.stripeProductId = '') "
+            + "AND e.deletedAt IS NULL AND e.status IN :statuses AND e.updatedAt < :settledBefore "
+            + "AND (t.stripeSyncNextAt IS NULL OR t.stripeSyncNextAt <= :now) "
+            + "ORDER BY t.stripeSyncAttempts ASC, t.id ASC")
+    List<Object[]> findStripeSyncSweepCandidates(@Param("statuses") Collection<EventStatus> statuses,
+                                                 @Param("settledBefore") Instant settledBefore,
+                                                 @Param("now") Instant now,
+                                                 Pageable page);
+
+    /**
+     * Compare-and-set claim for the sweep: lands only while attempts still equal {@code seenAttempts},
+     * the tier is due and an id is still missing. No clearAutomatically: the sweeper holds no context.
+     */
+    @Modifying
+    @Transactional
+    @Query("UPDATE TicketTier t SET t.stripeSyncAttempts = t.stripeSyncAttempts + 1, t.stripeSyncNextAt = :nextAt "
+            + "WHERE t.id = :id AND t.stripeSyncAttempts = :seenAttempts "
+            + "AND (t.stripeSyncNextAt IS NULL OR t.stripeSyncNextAt <= :now) "
+            + "AND (t.stripePriceId IS NULL OR t.stripePriceId = '' "
+            + "OR t.stripeProductId IS NULL OR t.stripeProductId = '')")
+    int claimStripeSyncSweep(@Param("id") UUID id,
+                             @Param("seenAttempts") int seenAttempts,
+                             @Param("nextAt") Instant nextAt,
+                             @Param("now") Instant now);
 }

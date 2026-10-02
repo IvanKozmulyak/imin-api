@@ -59,4 +59,12 @@ public class TicketTier {
      */
     @Column(name = "stripe_price_id", length = 64, updatable = false)
     private String stripePriceId;
+
+    /** Sweep backoff; written only by the sweep claim and the id write in TicketTierRepository. */
+    @Column(name = "stripe_sync_attempts", insertable = false, updatable = false)
+    private int stripeSyncAttempts;
+
+    /** Sweep backoff; written only by the sweep claim and the id write in TicketTierRepository. */
+    @Column(name = "stripe_sync_next_at", insertable = false, updatable = false)
+    private Instant stripeSyncNextAt;
 }

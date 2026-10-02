@@ -89,6 +89,23 @@ public class AsyncConfig {
     }
 
     /**
+     * One thread, so a tier's syncs run in commit order and a Stripe stall never holds a request thread or a lock.
+     * AbortPolicy: TierStripeSyncQueue catches the rejection and clears its pending id; the sweeper heals.
+     */
+    @Bean(name = "tierStripeSyncExecutor")
+    public Executor tierStripeSyncExecutor() {
+        ThreadPoolTaskExecutor exec = new ThreadPoolTaskExecutor();
+        exec.setCorePoolSize(1);
+        exec.setMaxPoolSize(1);
+        exec.setQueueCapacity(500);
+        exec.setThreadNamePrefix("tier-stripe-sync-");
+        exec.setWaitForTasksToCompleteOnShutdown(true);
+        exec.setAwaitTerminationSeconds(10);
+        exec.initialize();
+        return exec;
+    }
+
+    /**
      * Predictor Stage-0 scoring runs (spec §4.1: async, non-blocking; §7.3: existing job
      * pattern, no new infra). Small on purpose — one LLM call per run, per-user throttled
      * and quota-capped upstream, so depth beyond 2 threads would only mask an abuse pattern.
