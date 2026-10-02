@@ -11,6 +11,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.util.Locale;
 
 /**
  * Syncs a {@link TicketTier} to a Stripe Product + Price on the *platform* account.
@@ -25,6 +26,11 @@ import org.springframework.stereotype.Service;
  * {@code priceMinor} changes, we re-create the Product (with a fresh default Price). This wastes
  * one Product per price change but keeps the implementation simple and avoids dangling-archived-
  * price bugs. Acceptable for the sample; revisit if churn becomes a problem.
+ *
+ * <p><b>Write-back.</b> The ids are stored by a targeted conditional UPDATE
+ * ({@link TicketTierRepository#updateStripeIdsIfPriceUnchanged}), never a full-entity save, so a
+ * stale tier snapshot cannot revert {@code sold}/{@code reserved}, and a sync whose price or
+ * currency moved meanwhile writes nothing ({@link SyncOutcome#STALE}).
  */
 @Service
 public class StripeProductService {
@@ -39,24 +45,30 @@ public class StripeProductService {
         this.tiers = tiers;
     }
 
+    /** What a sync did: ids written, product updated in place, ids not written, or failed. */
+    public enum SyncOutcome { SYNCED, UPDATED, STALE, FAILED }
+
     /**
      * Best-effort sync. Logs and swallows failures so tier persistence is never blocked by a
-     * Stripe outage. Callers should invoke this AFTER the tier has been saved.
+     * Stripe outage. Callers invoke this after the tier row exists; on SYNCED the ids are also
+     * set on the passed instance.
      */
-    public void syncTier(TicketTier tier, Event event) {
+    public SyncOutcome syncTier(TicketTier tier, Event event) {
         try {
-            doSync(tier, event);
+            return doSync(tier, event);
         } catch (StripeException e) {
             log.warn("Stripe product sync failed for tier {} (event {}): {} — continuing without product",
                     tier.getId(), event.getId(), e.getMessage());
+            return SyncOutcome.FAILED;
         } catch (RuntimeException e) {
             log.warn("Unexpected error syncing Stripe product for tier {} (event {}): {}",
                     tier.getId(), event.getId(), e.getMessage(), e);
+            return SyncOutcome.FAILED;
         }
     }
 
-    private void doSync(TicketTier tier, Event event) throws StripeException {
-        String currency = event.getCurrency() == null ? "usd" : event.getCurrency().toLowerCase();
+    private SyncOutcome doSync(TicketTier tier, Event event) throws StripeException {
+        String currency = event.getCurrency() == null ? "usd" : event.getCurrency().toLowerCase(Locale.ROOT);
         long unitAmount = tier.getPriceMinor();
         String description = "Ticket for " + event.getName();
 
@@ -84,14 +96,21 @@ public class StripeProductService {
 
             // Platform-level products live under the V1 /products surface (stripeClient.products()).
             // V2 has no Products primitive — products+prices are still the V1 model.
+            // ponytail: no explicit idempotency key; Stripe caches a failed result per key for 24 h.
             Product product = stripeClient.products().create(params);
 
+            int rows = tiers.updateStripeIdsIfPriceUnchanged(tier.getId(), product.getId(),
+                    product.getDefaultPrice(), tier.getPriceMinor(), currency);
+            if (rows == 0) {
+                log.info("Stripe product {} for tier {} not stored: price or currency moved, or tier gone",
+                        product.getId(), tier.getId());
+                return SyncOutcome.STALE;
+            }
             tier.setStripeProductId(product.getId());
             tier.setStripePriceId(product.getDefaultPrice());
-            tiers.save(tier);
             log.debug("Created Stripe product {} (price {}) for tier {}",
                     product.getId(), product.getDefaultPrice(), tier.getId());
-            return;
+            return SyncOutcome.SYNCED;
         }
 
         // Name/description only — no price change. Mutate the existing product in place.
@@ -104,6 +123,7 @@ public class StripeProductService {
                 .build();
         stripeClient.products().update(tier.getStripeProductId(), updateParams);
         log.debug("Updated Stripe product {} for tier {}", tier.getStripeProductId(), tier.getId());
+        return SyncOutcome.UPDATED;
     }
 
     /**

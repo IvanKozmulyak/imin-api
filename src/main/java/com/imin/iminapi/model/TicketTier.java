@@ -47,18 +47,16 @@ public class TicketTier {
     private int sortOrder = 0;
 
     /**
-     * Stripe Product id (prod_...) on the platform account. Synced (best-effort) when
-     * the tier is created or its price/name changes. Used by Checkout to reference
-     * a stable line item.
+     * Stripe Product id (prod_...) on the platform account. Updated only by
+     * {@code TicketTierRepository.updateStripeIdsIfPriceUnchanged}; no full-entity update can write it.
      */
-    @Column(name = "stripe_product_id", length = 64)
+    @Column(name = "stripe_product_id", length = 64, updatable = false)
     private String stripeProductId;
 
     /**
-     * Stripe Price id (price_...) on the platform account. Tied to the current
-     * `priceMinor`. When `priceMinor` changes we re-create the product (and thus
-     * the price) — Stripe Prices are immutable.
+     * Stripe Price id (price_...) on the platform account. Updated only by
+     * {@code TicketTierRepository.updateStripeIdsIfPriceUnchanged}; no full-entity update can write it.
      */
-    @Column(name = "stripe_price_id", length = 64)
+    @Column(name = "stripe_price_id", length = 64, updatable = false)
     private String stripePriceId;
 }

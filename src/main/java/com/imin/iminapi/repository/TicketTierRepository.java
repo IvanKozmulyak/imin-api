@@ -2,9 +2,11 @@ package com.imin.iminapi.repository;
 
 import com.imin.iminapi.model.TicketTier;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.data.rest.core.annotation.RepositoryRestResource;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Collection;
 import java.util.List;
@@ -70,4 +72,19 @@ public interface TicketTierRepository extends JpaRepository<TicketTier, UUID> {
      */
     @Query(value = "SELECT * FROM ticket_tiers WHERE id = :id FOR UPDATE", nativeQuery = true)
     Optional<TicketTier> findByIdForUpdate(@Param("id") UUID id);
+
+    /**
+     * Only writer of the tier's Stripe ids; lands only while the price and currency still match
+     * what Stripe was sent. No clearAutomatically: callers may still be mid-transaction on the event.
+     */
+    @Modifying(flushAutomatically = true)
+    @Transactional
+    @Query("UPDATE TicketTier t SET t.stripeProductId = :productId, t.stripePriceId = :priceId "
+            + "WHERE t.id = :id AND t.priceMinor = :priceMinor "
+            + "AND EXISTS (SELECT e.id FROM Event e WHERE e.id = t.eventId AND LOWER(e.currency) = :currency)")
+    int updateStripeIdsIfPriceUnchanged(@Param("id") UUID id,
+                                        @Param("productId") String productId,
+                                        @Param("priceId") String priceId,
+                                        @Param("priceMinor") int priceMinor,
+                                        @Param("currency") String currency);
 }
