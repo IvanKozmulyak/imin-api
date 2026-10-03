@@ -413,6 +413,21 @@ public class StripeConnectService {
         return toStatusResult(org);
     }
 
+    /**
+     * Mirror only, no Stripe call: safe under a row lock. Same not-connected answers as getStatus.
+     */
+    public StatusResult getStatusCached(UUID orgId) {
+        Organization org = orgs.findById(orgId).orElseThrow(() -> ApiException.notFound("Organization"));
+        if (!hasAccount(org)) {
+            return notStarted();
+        }
+        if (isModeMismatch(org)) {
+            logModeMismatch(orgId, org);
+            return notStarted();
+        }
+        return toStatusResult(org);
+    }
+
     // ── helpers ────────────────────────────────────────────────────────────
 
     private static boolean hasAccount(Organization org) {

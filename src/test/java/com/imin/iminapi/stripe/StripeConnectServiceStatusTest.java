@@ -15,6 +15,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class StripeConnectServiceStatusTest {
@@ -212,5 +213,89 @@ class StripeConnectServiceStatusTest {
 
         // Stale ACTIVE could have been disabled since — re-check so we don't sell on a dead account.
         verify(mirror).syncFromStripe("acct_live3");
+    }
+    // ---- getStatusCached: mirror only, used under the event lock on publish -------------------
+
+    @Test
+    void cached_404_when_org_missing() {
+        OrganizationRepository orgs = mock(OrganizationRepository.class);
+        StripeConnectStatusMirror mirror = mock(StripeConnectStatusMirror.class);
+        UUID orgId = UUID.randomUUID();
+        when(orgs.findById(orgId)).thenReturn(Optional.empty());
+
+        StripeConnectService svc = new StripeConnectService(
+                mock(StripeClient.class), orgs, new StripeProperties(), null, mirror);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> svc.getStatusCached(orgId))
+                .isInstanceOf(com.imin.iminapi.security.ApiException.class)
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.NOT_FOUND);
+        verifyNoInteractions(mirror);
+    }
+
+    @Test
+    void cached_not_started_when_no_account() {
+        OrganizationRepository orgs = mock(OrganizationRepository.class);
+        StripeConnectStatusMirror mirror = mock(StripeConnectStatusMirror.class);
+        UUID orgId = UUID.randomUUID();
+        Organization org = new Organization();
+        org.setId(orgId);
+        when(orgs.findById(orgId)).thenReturn(Optional.of(org));
+
+        StripeConnectService svc = new StripeConnectService(
+                mock(StripeClient.class), orgs, new StripeProperties(), null, mirror);
+
+        StripeConnectService.StatusResult r = svc.getStatusCached(orgId);
+        assertThat(r.state()).isEqualTo(StripeConnectState.NOT_STARTED);
+        assertThat(r.readyToReceivePayments()).isFalse();
+        verifyNoInteractions(mirror);
+    }
+
+    @Test
+    void cached_not_started_on_mode_mismatch_without_touching_mirror() {
+        OrganizationRepository orgs = mock(OrganizationRepository.class);
+        StripeConnectStatusMirror mirror = mock(StripeConnectStatusMirror.class);
+        UUID orgId = UUID.randomUUID();
+        Organization org = new Organization();
+        org.setId(orgId);
+        org.setStripeAccountId("acct_live_only");
+        org.setStripeLivemode(true);
+        org.setStripeConnectState(StripeConnectState.ACTIVE);
+        org.setStripePayoutsEnabled(true);
+        org.setStripeConnectStatusUpdatedAt(java.time.Instant.now());
+        when(orgs.findById(orgId)).thenReturn(Optional.of(org));
+        StripeProperties testKey = new StripeProperties();
+        testKey.setSecretKey("sk_test_x");
+
+        StripeConnectService svc = new StripeConnectService(
+                mock(StripeClient.class), orgs, testKey, null, mirror);
+
+        StripeConnectService.StatusResult r = svc.getStatusCached(orgId);
+        assertThat(r.state()).isEqualTo(StripeConnectState.NOT_STARTED);
+        assertThat(r.readyToReceivePayments()).isFalse();
+        verifyNoInteractions(mirror);
+    }
+
+    @Test
+    void cached_returns_stale_mirror_without_refreshing() {
+        OrganizationRepository orgs = mock(OrganizationRepository.class);
+        StripeConnectStatusMirror mirror = mock(StripeConnectStatusMirror.class);
+        UUID orgId = UUID.randomUUID();
+        Organization org = new Organization();
+        org.setId(orgId);
+        org.setStripeAccountId("acct_stale");
+        org.setStripeConnectState(StripeConnectState.ONBOARDING);
+        org.setStripePayoutsEnabled(false);
+        // An hour old: getStatus would refresh this one.
+        org.setStripeConnectStatusUpdatedAt(java.time.Instant.now().minus(java.time.Duration.ofHours(1)));
+        when(orgs.findById(orgId)).thenReturn(Optional.of(org));
+
+        StripeConnectService svc = new StripeConnectService(
+                mock(StripeClient.class), orgs, new StripeProperties(), null, mirror);
+
+        StripeConnectService.StatusResult r = svc.getStatusCached(orgId);
+        assertThat(r.state()).isEqualTo(StripeConnectState.ONBOARDING);
+        assertThat(r.readyToReceivePayments()).isFalse();
+        assertThat(r.accountId()).isEqualTo("acct_stale");
+        verify(mirror, never()).syncFromStripe(any());
     }
 }

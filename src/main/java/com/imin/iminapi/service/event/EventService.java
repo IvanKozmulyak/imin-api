@@ -323,14 +323,22 @@ public class EventService {
         }
     }
 
+    /**
+     * Publish checks without the event lock, so a Stripe refresh can run before the locked publish.
+     * Returns whether the event has a paid tier; the locked publish re-runs every check.
+     */
+    @Transactional(readOnly = true)
+    public boolean precheckPublish(AuthPrincipal p, UUID id) {
+        Event e = loadOwned(p, id);
+        requirePublishable(e);
+        return hasPaidTier(e.getId());
+    }
+
     @Transactional
     @CacheEvict(value = "dashboard", allEntries = true)
     public EventDto publish(AuthPrincipal p, UUID id) {
         Event e = loadOwnedForWrite(p, id);
-        if (e.getStatus() == EventStatus.LIVE) {
-            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE, "Already published");
-        }
-        validator.validateForPublish(e);
+        requirePublishable(e);
         requireStripeIfPaid(p, e);
         e.setStatus(EventStatus.LIVE);
         e.setPublishedAt(Instant.now());
@@ -385,20 +393,27 @@ public class EventService {
         return detail(p, id);
     }
 
+    /** 409 before validation, so an already-live event never reports missing fields. */
+    private void requirePublishable(Event e) {
+        if (e.getStatus() == EventStatus.LIVE) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE, "Already published");
+        }
+        validator.validateForPublish(e);
+    }
+
+    private boolean hasPaidTier(UUID eventId) {
+        return tiers.findByEventIdOrderBySortOrderAsc(eventId).stream()
+                .anyMatch(t -> t.getPriceMinor() > 0);
+    }
+
     /**
-     * If the event has any paid tier (priceMinor &gt; 0), the org must have a Stripe
-     * connected account that's active (transfer capability = active). Otherwise the
-     * Checkout flow would fail at purchase time. Free events bypass this check.
-     *
-     * Hits Stripe live via {@link StripeConnectService#getStatus} — no cached column
-     * exists by design (see imin-api/CLAUDE.md Stripe Connect section).
+     * Reads only the local Connect mirror, so no Stripe call is made under the event lock;
+     * EventPublishService refreshes the mirror before the lock.
      */
     private void requireStripeIfPaid(AuthPrincipal p, Event e) {
-        boolean hasPaidTier = tiers.findByEventIdOrderBySortOrderAsc(e.getId()).stream()
-                .anyMatch(t -> t.getPriceMinor() > 0);
-        if (!hasPaidTier) return;
+        if (!hasPaidTier(e.getId())) return;
 
-        var status = stripeConnect.getStatus(p, p.orgId());
+        var status = stripeConnect.getStatusCached(p.orgId());
         if (!status.readyToReceivePayments()) {
             throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY,
                     ErrorCode.STRIPE_NOT_READY,

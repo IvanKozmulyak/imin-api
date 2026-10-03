@@ -9,6 +9,7 @@ import com.imin.iminapi.security.CurrentUser;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.service.event.DraftEventDeletionService;
 import com.imin.iminapi.service.event.EventOverviewService;
+import com.imin.iminapi.service.event.EventPublishService;
 import com.imin.iminapi.service.event.EventService;
 import com.imin.iminapi.service.event.EventVelocityService;
 import org.springframework.http.HttpStatus;
@@ -24,15 +25,18 @@ public class EventController {
     private final EventOverviewService overviewService;
     private final EventVelocityService velocityService;
     private final DraftEventDeletionService draftDeletion;
+    private final EventPublishService eventPublish;
 
     public EventController(EventService eventService,
                            EventOverviewService overviewService,
                            EventVelocityService velocityService,
-                           DraftEventDeletionService draftDeletion) {
+                           DraftEventDeletionService draftDeletion,
+                           EventPublishService eventPublish) {
         this.eventService = eventService;
         this.overviewService = overviewService;
         this.velocityService = velocityService;
         this.draftDeletion = draftDeletion;
+        this.eventPublish = eventPublish;
     }
 
     @GetMapping
@@ -90,7 +94,7 @@ public class EventController {
 
     @PostMapping("/{id}/publish")
     public EventDto publish(@CurrentUser AuthPrincipal p, @PathVariable UUID id) {
-        return eventService.publish(p, id);
+        return eventPublish.publish(p, id);
     }
 
     @PostMapping("/{id}/unpublish")

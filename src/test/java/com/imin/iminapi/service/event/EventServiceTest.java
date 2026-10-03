@@ -573,7 +573,7 @@ class EventServiceTest {
         paid.setPriceMinor(1500);
         when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of(paid));
 
-        when(stripeConnect.getStatus(eq(p), eq(p.orgId())))
+        when(stripeConnect.getStatusCached(eq(p.orgId())))
                 .thenReturn(new StripeConnectService.StatusResult(null,
                         com.imin.iminapi.stripe.StripeConnectState.NOT_STARTED,
                         false, false, java.util.List.of(), java.util.List.of(), null));
@@ -581,6 +581,7 @@ class EventServiceTest {
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> sut.publish(p, e.getId()))
                 .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.STRIPE_NOT_READY);
         verify(events, never()).save(any(Event.class));
+        verify(stripeConnect, never()).getStatus(any(), any());
     }
 
     @Test
@@ -604,13 +605,103 @@ class EventServiceTest {
         paid.setPriceMinor(1500);
         when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of(paid));
 
-        when(stripeConnect.getStatus(eq(p), eq(p.orgId())))
+        when(stripeConnect.getStatusCached(eq(p.orgId())))
                 .thenReturn(new StripeConnectService.StatusResult("acct_123",
                         com.imin.iminapi.stripe.StripeConnectState.ACTIVE,
                         true, true, java.util.List.of(), java.util.List.of(), null));
 
         EventDto dto = sut.publish(p, e.getId());
         assertThat(dto.status()).isEqualTo("live");
+        verify(stripeConnect, never()).getStatus(any(), any());
+    }
+
+    // ---- precheckPublish: lock-free checks before the Stripe refresh ----------------------------
+
+    private Event publishableDraft(AuthPrincipal p) {
+        Event e = new Event();
+        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
+        e.setName("Ready"); e.setSlug("ready");
+        Instant start = Instant.now().plus(java.time.Duration.ofDays(10));
+        e.setStartsAt(start);
+        e.setEndsAt(start.plus(java.time.Duration.ofHours(8)));
+        e.setVenueStreet("12 Main"); e.setVenueCity("Berlin"); e.setVenuePostalCode("10115");
+        e.setDescription("d");
+        return e;
+    }
+
+    private static TicketTier tierPriced(UUID eventId, int priceMinor) {
+        TicketTier t = new TicketTier();
+        t.setEventId(eventId);
+        t.setName("T" + priceMinor);
+        t.setPriceMinor(priceMinor);
+        return t;
+    }
+
+    @Test
+    void precheckPublish_404_for_other_org_without_taking_the_lock() {
+        AuthPrincipal p = principal();
+        Event other = publishableDraft(p);
+        other.setOrgId(UUID.randomUUID());
+        when(events.findActive(other.getId())).thenReturn(Optional.of(other));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> sut.precheckPublish(p, other.getId()))
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.NOT_FOUND);
+        verify(events, never()).lockActiveForWrite(any(), any());
+        verifyNoInteractions(stripeConnect);
+    }
+
+    @Test
+    void precheckPublish_live_event_is_409_before_validation() {
+        AuthPrincipal p = principal();
+        Event e = publishableDraft(p);
+        e.setName("");
+        e.setStatus(EventStatus.LIVE);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> sut.precheckPublish(p, e.getId()))
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.INVALID_STATE);
+        verify(events, never()).lockActiveForWrite(any(), any());
+        verifyNoInteractions(stripeConnect);
+    }
+
+    @Test
+    void precheckPublish_incomplete_draft_is_422_before_reading_tiers() {
+        AuthPrincipal p = principal();
+        Event e = publishableDraft(p);
+        e.setName("");
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> sut.precheckPublish(p, e.getId()))
+                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.PUBLISH_VALIDATION_FAILED);
+        verifyNoInteractions(tiers);
+        verify(events, never()).lockActiveForWrite(any(), any());
+        verifyNoInteractions(stripeConnect);
+    }
+
+    @Test
+    void precheckPublish_true_when_any_tier_is_paid() {
+        AuthPrincipal p = principal();
+        Event e = publishableDraft(p);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId()))
+                .thenReturn(List.of(tierPriced(e.getId(), 0), tierPriced(e.getId(), 1500)));
+
+        assertThat(sut.precheckPublish(p, e.getId())).isTrue();
+        verify(events, never()).lockActiveForWrite(any(), any());
+        verifyNoInteractions(stripeConnect);
+    }
+
+    @Test
+    void precheckPublish_false_when_every_tier_is_free() {
+        AuthPrincipal p = principal();
+        Event e = publishableDraft(p);
+        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
+        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId()))
+                .thenReturn(List.of(tierPriced(e.getId(), 0)));
+
+        assertThat(sut.precheckPublish(p, e.getId())).isFalse();
+        verify(events, never()).lockActiveForWrite(any(), any());
+        verifyNoInteractions(stripeConnect);
     }
 
     @Test
