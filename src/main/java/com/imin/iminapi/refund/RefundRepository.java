@@ -70,6 +70,23 @@ public interface RefundRepository extends JpaRepository<Refund, UUID> {
     long sumSucceededRefundApplicationFeeMinorByEventId(@Param("eventId") UUID eventId);
 
     /**
+     * One row {@code [amountMinor, applicationFeeRefundMinor]} over the SUCCEEDED refunds of
+     * the org's orders created in {@code [since, until)}, all modes: refunds follow their
+     * order's window, not the refund date.
+     */
+    @Query("""
+            select coalesce(sum(r.amountMinor), 0), coalesce(sum(r.applicationFeeRefundMinor), 0) from Refund r
+             where r.orderId in (select o.id from com.imin.iminapi.model.Order o
+                                  where o.orgId = :orgId
+                                    and o.createdAt >= :since
+                                    and o.createdAt < :until)
+               and r.status = com.imin.iminapi.refund.RefundStatus.SUCCEEDED
+            """)
+    List<Object[]> sumSucceededRefundAndFeeByOrgInWindow(@Param("orgId") UUID orgId,
+                                                         @Param("since") java.time.Instant since,
+                                                         @Param("until") java.time.Instant until);
+
+    /**
      * SUCCEEDED refund amounts for an event, counting only refunds of LIVE-mode orders
      * (V130). The payout net excludes test-mode gross, so it must exclude the matching
      * refunds too — netting a test refund off live gross would under-pay the organizer.

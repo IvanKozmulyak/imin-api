@@ -393,16 +393,15 @@ Response: {
     "period": "30d",
     "revenueMinor": 508800,
     "ticketsSold": 212,
-    "squadRatePct": 64,
     "activeEvents": 3,
-    "deltas": { "revenuePct": 34, "ticketsPct": 28 }
+    "deltas": { "revenuePct": 34 | null, "ticketsPct": 28 | null }
   },
   "lastEvent": {
     "event": Event | null,
     "metrics": {
       "attended": 198,
       "capacity": 200,
-      "avgTicketMinor": 2400,
+      "avgTicketMinor": 2400 | null,
       "nps": 68 | null
     }
   },
@@ -417,6 +416,13 @@ Response: {
   "activity": [ { "time": "2m ago", "label": "4-person squad bought ANTRUM tickets" } ]
 }
 ```
+Field notes:
+- `cycle.revenueMinor` / `business.totalRevenueMinor`: orders created in the window (test mode included), totals less their succeeded refunds, unrefunded booking fee and OPEN/LOST chargebacks, clamped at 0 (the payout per-event net formula, applied to the window as a whole, so it can be lower than the sum of per-event payouts).
+- `cycle.ticketsSold`: tickets (not orders) on those orders that are not refunded or revoked.
+- `cycle.deltas.*`: rounded % change against the equal prior window; null when the prior window is 0 or the period is `all`.
+- `lastEvent.metrics.avgTicketMinor`: the event's net (same formula) over its tickets not refunded or revoked, rounded half up; null when there are none. `attended` is tier sold net of chargebacks, not door scans.
+- `business.audienceCount`: the Audience page's People total (org-wide, all time, not windowed).
+
 Performance note: this endpoint is called on every dashboard visit. Cache
 aggressively server-side (e.g. 30 s), since the shape is expensive to
 assemble.

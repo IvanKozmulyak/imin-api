@@ -123,6 +123,24 @@ public interface DisputeRepository extends JpaRepository<Dispute, UUID> {
                                           @Param("statuses") Collection<DisputeStatus> statuses);
 
     /**
+     * Disputes in {@code statuses} on the org's orders created in {@code [since, until)},
+     * all modes. A dispute with no order cannot be placed in a window and is not counted.
+     */
+    @Query("""
+            select coalesce(sum(d.amountMinor), 0) from Dispute d
+             where d.orgId = :orgId
+               and d.status in :statuses
+               and d.orderId in (select o.id from com.imin.iminapi.model.Order o
+                                  where o.orgId = :orgId
+                                    and o.createdAt >= :since
+                                    and o.createdAt < :until)
+            """)
+    long sumMinorByOrgOrderWindowAndStatusIn(@Param("orgId") UUID orgId,
+                                             @Param("since") Instant since,
+                                             @Param("until") Instant until,
+                                             @Param("statuses") Collection<DisputeStatus> statuses);
+
+    /**
      * The org-level payout gate: any OPEN dispute freezes every payout for the org, because
      * the connected balance is one shared pool and the funds may still be clawed back. A
      * CLOSED dispute — won or lost — never blocks; a loss is settled by the net reduction
@@ -156,6 +174,11 @@ public interface DisputeRepository extends JpaRepository<Dispute, UUID> {
     /** {@link #sumOpenOrLostMinorByEventId} for a page of events: [eventId, sum]. */
     default List<Object[]> sumOpenOrLostMinorByEventIds(Collection<UUID> eventIds) {
         return sumMinorByEventIdsAndStatusIn(eventIds, DisputeWithholding.STATUSES);
+    }
+
+    /** OPEN or LOST face value on the org's orders created in {@code [since, until)}; the org home's window. */
+    default long sumOpenOrLostMinorByOrgOrderWindow(UUID orgId, Instant since, Instant until) {
+        return sumMinorByOrgOrderWindowAndStatusIn(orgId, since, until, DisputeWithholding.STATUSES);
     }
 
     /**

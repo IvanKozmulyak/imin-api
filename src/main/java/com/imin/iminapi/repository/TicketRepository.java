@@ -148,6 +148,30 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID> {
 
     List<Ticket> findByIdInAndOrderId(Collection<UUID> ids, UUID orderId);
 
+    /**
+     * SOLD tickets ({@code state not in ('refunded','revoked')}) on the org's orders created in
+     * {@code [since, until)}, all modes. The org home's "tickets sold" for a window.
+     */
+    @Query("""
+            select count(t) from Ticket t
+              join com.imin.iminapi.model.Order o on o.id = t.orderId
+             where o.orgId = :orgId
+               and o.createdAt >= :since
+               and o.createdAt < :until
+               and t.state not in ('refunded', 'revoked')
+            """)
+    long countSoldByOrgInWindow(@Param("orgId") UUID orgId,
+                                @Param("since") Instant since,
+                                @Param("until") Instant until);
+
+    /** SOLD tickets on an event, all modes; the org home's per-ticket denominator. */
+    @Query("""
+            select count(t) from Ticket t
+             where t.eventId = :eventId
+               and t.state not in ('refunded', 'revoked')
+            """)
+    long countSoldByEventId(@Param("eventId") UUID eventId);
+
     /** Ticket count for an event in a given state. Predictor finalize uses it for refund_count ('refunded'). */
     long countByEventIdAndState(UUID eventId, String state);
 

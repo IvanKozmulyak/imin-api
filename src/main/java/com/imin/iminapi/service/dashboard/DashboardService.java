@@ -1,5 +1,6 @@
 package com.imin.iminapi.service.dashboard;
 
+import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.dispute.DisputeWithholding;
 import com.imin.iminapi.dto.dashboard.DashboardResponse;
 import com.imin.iminapi.dto.dashboard.DashboardResponse.*;
@@ -41,10 +42,13 @@ public class DashboardService {
     private final AuditLogRepository auditLogs;
     private final RefundRepository refunds;
     private final DisputeWithholding disputeWithholding;
+    private final DashboardRevenue revenue;
+    private final MembershipRepository memberships;
 
     public DashboardService(EventRepository events, TicketTierRepository tiers, UserRepository users,
                             OrderRepository orders, AuditLogRepository auditLogs,
-                            RefundRepository refunds, DisputeWithholding disputeWithholding) {
+                            RefundRepository refunds, DisputeWithholding disputeWithholding,
+                            DashboardRevenue revenue, MembershipRepository memberships) {
         this.events = events;
         this.tiers = tiers;
         this.users = users;
@@ -52,6 +56,8 @@ public class DashboardService {
         this.auditLogs = auditLogs;
         this.refunds = refunds;
         this.disputeWithholding = disputeWithholding;
+        this.revenue = revenue;
+        this.memberships = memberships;
     }
 
     /**
@@ -92,11 +98,10 @@ public class DashboardService {
         LastEvent lastEvent = past.map(e -> {
             int capacity = tiers.sumQuantityByEventId(e.getId());
             int sold = soldNetOfDisputes(e.getId());
-            long revenue = revenueNetOfRefundsAndDisputes(e.getId());
-            int avgTicket = sold == 0 ? 0 : (int) (revenue / sold);
-            return new LastEvent(summaryWithLiveMetrics(e, sold, capacity, revenue),
-                    new LastEventMetrics(sold, capacity, avgTicket, /* nps */ null));
-        }).orElse(new LastEvent(null, new LastEventMetrics(0, 0, 0, null)));
+            long eventRevenue = revenueNetOfRefundsAndDisputes(e.getId());
+            return new LastEvent(summaryWithLiveMetrics(e, sold, capacity, eventRevenue),
+                    new LastEventMetrics(sold, capacity, avgTicketMinor(e.getId()), /* nps */ null));
+        }).orElse(new LastEvent(null, new LastEventMetrics(0, 0, null, null)));
 
         Business business = buildBusiness(p, now, businessPeriod);
         List<Activity> activity = recentActivity(p);
@@ -125,45 +130,35 @@ public class DashboardService {
                 - disputeWithholding.withheldMinor(eventId));
     }
 
+    /** The event's net over its tickets not refunded or revoked, half up; null with no such ticket. */
+    private Integer avgTicketMinor(UUID eventId) {
+        long tickets = revenue.ticketsForEvent(eventId);
+        return tickets == 0 ? null : (int) Math.round((double) revenue.netForEvent(eventId) / tickets);
+    }
+
     private Cycle buildCycle(AuthPrincipal p, Instant now, DashboardPeriod period, long activeCount) {
         if (period.isAll()) {
-            Object[] sums = orders.sumRevenueAndCountByOrgInWindow(p.orgId(), Instant.EPOCH, now).get(0);
-            long rev = ((Number) sums[0]).longValue();
-            long sold = ((Number) sums[1]).longValue();
-            return new Cycle(period.wire(), rev, (int) sold, (int) activeCount, new Deltas(0, 0));
+            DashboardRevenue.Window w = revenue.forOrgWindow(p.orgId(), Instant.EPOCH, now);
+            return new Cycle(period.wire(), w.netRevenueMinor(), (int) w.ticketsSold(), (int) activeCount,
+                    new Deltas(null, null));
         }
 
         Duration d = period.duration();
         Instant since = now.minus(d);
-        Instant priorSince = since.minus(d);
+        DashboardRevenue.Window cur = revenue.forOrgWindow(p.orgId(), since, now);
+        DashboardRevenue.Window prior = revenue.forOrgWindow(p.orgId(), since.minus(d), since);
 
-        Object[] current = orders.sumRevenueAndCountByOrgInWindow(p.orgId(), since, now).get(0);
-        Object[] prior = orders.sumRevenueAndCountByOrgInWindow(p.orgId(), priorSince, since).get(0);
-
-        long curRev = ((Number) current[0]).longValue();
-        long curCnt = ((Number) current[1]).longValue();
-        long priorRev = ((Number) prior[0]).longValue();
-        long priorCnt = ((Number) prior[1]).longValue();
-
-        return new Cycle(period.wire(), curRev, (int) curCnt, (int) activeCount,
-                new Deltas(pctDelta(curRev, priorRev), pctDelta(curCnt, priorCnt)));
+        return new Cycle(period.wire(), cur.netRevenueMinor(), (int) cur.ticketsSold(), (int) activeCount,
+                new Deltas(pctDelta(cur.netRevenueMinor(), prior.netRevenueMinor()),
+                        pctDelta(cur.ticketsSold(), prior.ticketsSold())));
     }
 
     private Business buildBusiness(AuthPrincipal p, Instant now, DashboardPeriod period) {
-        long revenue;
-        int repeatRate;
-        if (period.isAll()) {
-            Object[] sums = orders.sumRevenueAndCountByOrgInWindow(p.orgId(), Instant.EPOCH, now).get(0);
-            revenue = ((Number) sums[0]).longValue();
-            repeatRate = repeatRatePct(orders.orderCountsByEmailSince(p.orgId(), Instant.EPOCH));
-        } else {
-            Instant since = now.minus(period.duration());
-            Object[] sums = orders.sumRevenueAndCountByOrgInWindow(p.orgId(), since, now).get(0);
-            revenue = ((Number) sums[0]).longValue();
-            repeatRate = repeatRatePct(orders.orderCountsByEmailSince(p.orgId(), since));
-        }
-        return new Business(revenue, events.countPublished(p.orgId()), events.countPast(p.orgId()),
-                /* audienceCount */ 0, repeatRate);
+        Instant since = period.isAll() ? Instant.EPOCH : now.minus(period.duration());
+        long total = revenue.forOrgWindow(p.orgId(), since, now).netRevenueMinor();
+        int repeatRate = repeatRatePct(orders.orderCountsByEmailSince(p.orgId(), since));
+        return new Business(total, events.countPublished(p.orgId()), events.countPast(p.orgId()),
+                memberships.countByOrgId(p.orgId()), repeatRate);
     }
 
     /**
@@ -198,9 +193,11 @@ public class DashboardService {
         return (int) Math.round(100.0 * repeat / total);
     }
 
-    private static int pctDelta(long current, long prior) {
-        if (prior == 0) return current == 0 ? 0 : 100;
-        return (int) Math.round(100.0 * (current - prior) / prior);
+    /** Null when the prior window is empty: a percentage of nothing is not a number to show. */
+    private static Integer pctDelta(long current, long prior) {
+        if (prior == 0) return null;
+        long pct = Math.round(100.0 * (current - prior) / prior);
+        return (int) Math.max(Integer.MIN_VALUE, Math.min(Integer.MAX_VALUE, pct));
     }
 
     private static String displayFirstName(String firstName, String email) {

@@ -52,7 +52,7 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
      * Org-wide order count (= completed payments) since a cutoff. Drives the
      * PAYMENTS_COMPLETED stage of the org-wide Meta signal-health funnel (spec §8).
      * Counts by {@code o.orgId} directly — the same org-wide aggregation convention
-     * as {@link #sumRevenueAndCountByOrgInWindow} — so it does not join events.
+     * as {@link #sumTotalAndApplicationFeeByOrgInWindow} — so it does not join events.
      */
     @Query("select count(o) from Order o where o.orgId = :orgId and o.createdAt >= :since")
     long countByOrgIdSince(@Param("orgId") UUID orgId, @Param("since") Instant since);
@@ -131,18 +131,19 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
                                        @Param("cutoff") Instant cutoff);
 
     /**
-     * (revenueMinor, orderCount) for an org over a half-open time window.
-     * Used by the dashboard "This cycle" and "Business" cards.
+     * One row {@code [totalMinor, applicationFeeMinor]} over the org's orders created in
+     * {@code [since, until)}, all modes. The org home's window revenue nets refunds and
+     * chargebacks of the same cohort off this (see {@code DashboardRevenue}).
      */
     @Query("""
-            select coalesce(sum(o.totalMinor), 0), count(o) from Order o
+            select coalesce(sum(o.totalMinor), 0), coalesce(sum(o.applicationFeeMinor), 0) from Order o
              where o.orgId = :orgId
                and o.createdAt >= :since
                and o.createdAt < :until
             """)
-    List<Object[]> sumRevenueAndCountByOrgInWindow(@Param("orgId") UUID orgId,
-                                                   @Param("since") Instant since,
-                                                   @Param("until") Instant until);
+    List<Object[]> sumTotalAndApplicationFeeByOrgInWindow(@Param("orgId") UUID orgId,
+                                                          @Param("since") Instant since,
+                                                          @Param("until") Instant until);
 
     /**
      * TRUE per-order last-touch revenue by campaign (V62): (utmCampaign, revenueMinor) for

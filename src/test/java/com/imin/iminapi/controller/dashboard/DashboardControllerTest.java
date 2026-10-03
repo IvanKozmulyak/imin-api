@@ -22,6 +22,9 @@ import java.lang.annotation.RetentionPolicy;
 import java.util.List;
 import java.util.UUID;
 
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.hasKey;
+import static org.hamcrest.Matchers.nullValue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -70,5 +73,39 @@ class DashboardControllerTest {
                 .andExpect(jsonPath("$.greeting.name").value("Jaune"))
                 .andExpect(jsonPath("$.cycle.period").value("30d"))
                 .andExpect(jsonPath("$.activity.length()").value(0));
+    }
+
+    @Test
+    @WithStubUser
+    void null_deltas_and_avg_ticket_are_sent_as_null_not_dropped() throws Exception {
+        when(service.build(any(), any(), any())).thenReturn(new DashboardResponse(
+                new Greeting("Jaune"),
+                new Now(null, 0, 0, 0),
+                new Cycle("all", 2_502L, 3, 1, new Deltas(null, null)),
+                new LastEvent(null, new LastEventMetrics(0, 0, null, null)),
+                null,
+                new Business(2_502L, 1L, 0L, 7L, 0),
+                List.of()));
+
+        mvc.perform(get("/api/v1/dashboard"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.cycle.deltas", hasKey("revenuePct")))
+                .andExpect(jsonPath("$.cycle.deltas.revenuePct").value(nullValue()))
+                .andExpect(jsonPath("$.cycle.deltas", hasKey("ticketsPct")))
+                .andExpect(jsonPath("$.cycle.deltas.ticketsPct").value(nullValue()))
+                .andExpect(jsonPath("$.lastEvent.metrics", hasKey("avgTicketMinor")))
+                .andExpect(jsonPath("$.lastEvent.metrics.avgTicketMinor").value(nullValue()))
+                .andExpect(jsonPath("$.business.audienceCount").value(7));
+    }
+
+    @Test
+    void openapi_publishes_the_nullable_delta_marker_and_a_64_bit_audience_count() throws Exception {
+        mvc.perform(get("/v3/api-docs"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.components.schemas.Deltas.properties.revenuePct.description",
+                        containsString("Null when the prior window is empty")))
+                .andExpect(jsonPath("$.components.schemas.Deltas.properties.ticketsPct.description",
+                        containsString("Null when the prior window is empty")))
+                .andExpect(jsonPath("$.components.schemas.Business.properties.audienceCount.format").value("int64"));
     }
 }

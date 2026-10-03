@@ -13,7 +13,8 @@ import java.util.UUID;
  * What an event's chargebacks take off the organizer-facing totals. One definition of the
  * withholding set — {@link DisputeStatus#OPEN} (money at risk) and {@link DisputeStatus#LOST}
  * (money gone) — shared by every readout an organizer sees, so Overview, Sales and the org
- * home cannot drift into telling three stories about the same event.
+ * home cannot drift into telling three stories about the same event. The org home's window
+ * figures read the same set through {@code DisputeRepository.sumOpenOrLostMinorByOrgOrderWindow}.
  *
  * <p>WON and WITHDRAWN_REINSTATED give the money back by construction: they are simply not in
  * the set, so the amount stops being subtracted.

@@ -1,5 +1,6 @@
 package com.imin.iminapi.service.dashboard;
 
+import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.dispute.DisputeWithholding;
 import com.imin.iminapi.dto.dashboard.DashboardResponse;
 import com.imin.iminapi.model.Event;
@@ -13,6 +14,7 @@ import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.service.dashboard.DashboardRevenue.Window;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
@@ -36,16 +38,17 @@ class DashboardServiceTest {
     AuditLogRepository auditLogs = mock(AuditLogRepository.class);
     RefundRepository refunds = mock(RefundRepository.class);
     DisputeWithholding disputeWithholding = mock(DisputeWithholding.class);
+    DashboardRevenue revenue = mock(DashboardRevenue.class);
+    MembershipRepository memberships = mock(MembershipRepository.class);
     DashboardService sut = new DashboardService(events, tiers, users, orders, auditLogs,
-            refunds, disputeWithholding);
+            refunds, disputeWithholding, revenue, memberships);
 
     private AuthPrincipal owner(UUID orgId) {
         return new AuthPrincipal(UUID.randomUUID(), orgId, UserRole.OWNER, UUID.randomUUID());
     }
 
     private void stubEmptyAuxiliary(UUID orgId) {
-        when(orders.sumRevenueAndCountByOrgInWindow(eq(orgId), any(), any()))
-                .thenReturn(java.util.Collections.singletonList(new Object[]{0L, 0L}));
+        when(revenue.forOrgWindow(eq(orgId), any(), any())).thenReturn(new Window(0, 0));
         when(orders.orderCountsByEmailSince(eq(orgId), any())).thenReturn(List.of());
         Page<com.imin.iminapi.model.AuditLog> emptyPage = new PageImpl<>(List.of());
         when(auditLogs.findByOrgIdOrderByOccurredAtDesc(eq(orgId), any())).thenReturn(emptyPage);
@@ -104,6 +107,8 @@ class DashboardServiceTest {
         when(tiers.sumQuantityByEventId(past.getId())).thenReturn(200);
         when(tiers.sumSoldByEventId(past.getId())).thenReturn(198);
         when(orders.sumTotalMinorByEventId(past.getId())).thenReturn(475_200L);
+        when(revenue.netForEvent(past.getId())).thenReturn(475_200L);
+        when(revenue.ticketsForEvent(past.getId())).thenReturn(198L);
 
         when(events.countLive(orgId)).thenReturn(3L);
         when(events.countPublished(orgId)).thenReturn(6L);
@@ -222,31 +227,155 @@ class DashboardServiceTest {
         assertThat(r.now().nextEvent().revenueMinor()).isEqualTo(3047L);
     }
 
-    @Test
-    void cycle_30d_uses_window_aggregates_with_prior_window_delta() {
-        UUID orgId = UUID.randomUUID();
+    private AuthPrincipal emptyHome(UUID orgId) {
         AuthPrincipal p = owner(orgId);
         User u = new User(); u.setId(p.userId()); u.setFirstName("Jaune"); u.setEmail("j@x.com");
         when(users.findById(p.userId())).thenReturn(Optional.of(u));
         when(events.findUpcomingLive(eq(orgId), any(), any())).thenReturn(List.of());
         when(events.findRecentPast(eq(orgId), any())).thenReturn(List.of());
-        when(events.countLive(orgId)).thenReturn(2L);
-        when(events.countPublished(orgId)).thenReturn(3L);
-        when(events.countPast(orgId)).thenReturn(1L);
-        Page<com.imin.iminapi.model.AuditLog> emptyPage = new PageImpl<>(List.of());
-        when(auditLogs.findByOrgIdOrderByOccurredAtDesc(eq(orgId), any())).thenReturn(emptyPage);
+        stubEmptyAuxiliary(orgId);
+        return p;
+    }
 
-        // Current 30d: 120,000 minor / 30 orders. Prior 30d: 100,000 / 20 → +20% rev, +50% tickets.
-        when(orders.sumRevenueAndCountByOrgInWindow(eq(orgId), any(), any()))
-                .thenReturn(java.util.Collections.singletonList(new Object[]{120_000L, 30L}))
-                .thenReturn(java.util.Collections.singletonList(new Object[]{100_000L, 20L}));
-        when(orders.orderCountsByEmailSince(eq(orgId), any())).thenReturn(List.of());
+    /** Stubs the current 30-day cycle window and the one before it, as the service asks for them. */
+    private void stubCycle30d(UUID orgId, Window current, Window prior) {
+        when(revenue.forOrgWindow(eq(orgId), any(), any())).thenAnswer(inv -> {
+            Instant since = inv.getArgument(1);
+            Instant until = inv.getArgument(2);
+            long days = java.time.Duration.between(since, until).toDays();
+            boolean endsNow = java.time.Duration.between(until, Instant.now()).abs().toMinutes() < 1;
+            if (days == 30 && endsNow) return current;
+            if (days == 30) return prior;
+            return new Window(0, 0);
+        });
+    }
+
+    @Test
+    void cycle_worked_example_reads_net_and_tickets_with_deltas_against_the_prior_window() {
+        UUID orgId = UUID.randomUUID();
+        AuthPrincipal p = emptyHome(orgId);
+        stubCycle30d(orgId, new Window(2_502, 3), new Window(3_000, 1));
 
         DashboardResponse r = sut.build(p, DashboardPeriod.D30, DashboardPeriod.D90);
-        assertThat(r.cycle().revenueMinor()).isEqualTo(120_000L);
-        assertThat(r.cycle().ticketsSold()).isEqualTo(30);
-        assertThat(r.cycle().deltas().revenuePct()).isEqualTo(20);
-        assertThat(r.cycle().deltas().ticketsPct()).isEqualTo(50);
+
+        assertThat(r.cycle().revenueMinor()).isEqualTo(2_502L);
+        assertThat(r.cycle().ticketsSold()).isEqualTo(3);
+        // round(100 × (2502 − 3000) / 3000) = round(−16.6) = −17; tickets (3 − 1) / 1 = +200%.
+        assertThat(r.cycle().deltas().revenuePct()).isEqualTo(-17);
+        assertThat(r.cycle().deltas().ticketsPct()).isEqualTo(200);
+    }
+
+    @Test
+    void cycle_delta_rounds_a_rise_and_a_fall() {
+        UUID orgId = UUID.randomUUID();
+        AuthPrincipal p = emptyHome(orgId);
+        stubCycle30d(orgId, new Window(4_500, 1), new Window(3_000, 2));
+
+        DashboardResponse r = sut.build(p, DashboardPeriod.D30, DashboardPeriod.D90);
+
+        assertThat(r.cycle().deltas().revenuePct()).isEqualTo(50);
+        assertThat(r.cycle().deltas().ticketsPct()).isEqualTo(-50);
+    }
+
+    @Test
+    void cycle_deltas_are_null_when_the_prior_window_is_empty_and_the_current_is_not() {
+        UUID orgId = UUID.randomUUID();
+        AuthPrincipal p = emptyHome(orgId);
+        stubCycle30d(orgId, new Window(2_502, 3), new Window(0, 0));
+
+        DashboardResponse r = sut.build(p, DashboardPeriod.D30, DashboardPeriod.D90);
+
+        assertThat(r.cycle().deltas().revenuePct()).isNull();
+        assertThat(r.cycle().deltas().ticketsPct()).isNull();
+    }
+
+    @Test
+    void cycle_deltas_are_null_when_both_windows_are_empty() {
+        UUID orgId = UUID.randomUUID();
+        AuthPrincipal p = emptyHome(orgId);
+
+        DashboardResponse r = sut.build(p, DashboardPeriod.D30, DashboardPeriod.D90);
+
+        assertThat(r.cycle().deltas().revenuePct()).isNull();
+        assertThat(r.cycle().deltas().ticketsPct()).isNull();
+    }
+
+    @Test
+    void cycle_all_reads_from_epoch_with_null_deltas() {
+        UUID orgId = UUID.randomUUID();
+        AuthPrincipal p = emptyHome(orgId);
+        when(revenue.forOrgWindow(eq(orgId), eq(Instant.EPOCH), any())).thenReturn(new Window(2_502, 3));
+
+        DashboardResponse r = sut.build(p, DashboardPeriod.ALL, DashboardPeriod.ALL);
+
+        assertThat(r.cycle().revenueMinor()).isEqualTo(2_502L);
+        assertThat(r.cycle().ticketsSold()).isEqualTo(3);
+        assertThat(r.cycle().deltas().revenuePct()).isNull();
+        assertThat(r.cycle().deltas().ticketsPct()).isNull();
+        assertThat(r.business().totalRevenueMinor()).isEqualTo(2_502L);
+    }
+
+    @Test
+    void last_event_avg_ticket_is_net_over_sold_tickets_rounded_half_up() {
+        UUID orgId = UUID.randomUUID();
+        AuthPrincipal p = emptyHome(orgId);
+        Event past = pastEvent(orgId);
+        when(revenue.netForEvent(past.getId())).thenReturn(3_851L);
+        when(revenue.ticketsForEvent(past.getId())).thenReturn(2L);
+
+        DashboardResponse r = sut.build(p, DashboardPeriod.D30, DashboardPeriod.D90);
+
+        // 3851 / 2 = 1925.5 → 1926.
+        assertThat(r.lastEvent().metrics().avgTicketMinor()).isEqualTo(1_926);
+    }
+
+    @Test
+    void last_event_avg_ticket_is_null_with_no_sold_ticket() {
+        UUID orgId = UUID.randomUUID();
+        AuthPrincipal p = emptyHome(orgId);
+        Event past = pastEvent(orgId);
+        when(revenue.netForEvent(past.getId())).thenReturn(0L);
+        when(revenue.ticketsForEvent(past.getId())).thenReturn(0L);
+
+        DashboardResponse r = sut.build(p, DashboardPeriod.D30, DashboardPeriod.D90);
+
+        assertThat(r.lastEvent().metrics().avgTicketMinor()).isNull();
+    }
+
+    @Test
+    void last_event_avg_ticket_is_null_with_no_past_event() {
+        UUID orgId = UUID.randomUUID();
+        AuthPrincipal p = emptyHome(orgId);
+
+        DashboardResponse r = sut.build(p, DashboardPeriod.D30, DashboardPeriod.D90);
+
+        assertThat(r.lastEvent().event()).isNull();
+        assertThat(r.lastEvent().metrics().avgTicketMinor()).isNull();
+    }
+
+    @Test
+    void business_reads_net_over_its_own_period_and_the_audience_total() {
+        UUID orgId = UUID.randomUUID();
+        AuthPrincipal p = emptyHome(orgId);
+        when(revenue.forOrgWindow(eq(orgId), any(), any())).thenAnswer(inv -> {
+            long days = java.time.Duration.between((Instant) inv.getArgument(1), (Instant) inv.getArgument(2)).toDays();
+            return days == 90 ? new Window(9_000, 4) : new Window(0, 0);
+        });
+        when(memberships.countByOrgId(orgId)).thenReturn(7L);
+
+        DashboardResponse r = sut.build(p, DashboardPeriod.D30, DashboardPeriod.D90);
+
+        assertThat(r.business().totalRevenueMinor()).isEqualTo(9_000L);
+        assertThat(r.business().audienceCount()).isEqualTo(7L);
+    }
+
+    private Event pastEvent(UUID orgId) {
+        Event past = new Event();
+        past.setId(UUID.randomUUID()); past.setOrgId(orgId);
+        past.setName("Last Night"); past.setSlug("last-night");
+        past.setStatus(EventStatus.PAST);
+        when(events.findRecentPast(eq(orgId), any())).thenReturn(List.of(past));
+        return past;
     }
 
     @Test
@@ -260,8 +389,7 @@ class DashboardServiceTest {
         when(events.countLive(orgId)).thenReturn(0L);
         when(events.countPublished(orgId)).thenReturn(0L);
         when(events.countPast(orgId)).thenReturn(0L);
-        when(orders.sumRevenueAndCountByOrgInWindow(eq(orgId), any(), any()))
-                .thenReturn(java.util.Collections.singletonList(new Object[]{0L, 0L}));
+        when(revenue.forOrgWindow(eq(orgId), any(), any())).thenReturn(new Window(0, 0));
         Page<com.imin.iminapi.model.AuditLog> emptyPage = new PageImpl<>(List.of());
         when(auditLogs.findByOrgIdOrderByOccurredAtDesc(eq(orgId), any())).thenReturn(emptyPage);
 
