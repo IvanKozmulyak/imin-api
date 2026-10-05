@@ -87,6 +87,30 @@ public class Dispute {
     @Column(name = "last_event_at")
     private Instant lastEventAt;
 
+    // Written only by DisputeRepository.markRecovered/markReturned; a full-entity save from
+    // dispute ingest must not revert them.
+    /** When the payout sweep reversed the organizer's share of a LOST dispute (V172). */
+    @Column(name = "recovered_at", insertable = false, updatable = false)
+    private Instant recoveredAt;
+
+    /** What that reversal took back; 0 when nothing was left to take. */
+    @Column(name = "recovered_minor", insertable = false, updatable = false)
+    private Long recoveredMinor;
+
+    @Column(name = "recovery_reversal_id", length = 64, insertable = false, updatable = false)
+    private String recoveryReversalId;
+
+    /** Sum of what was transferred back to the organizer from this row's reversal; null when nothing. */
+    @Column(name = "returned_minor", insertable = false, updatable = false)
+    private Long returnedMinor;
+
+    /** When the latest transfer back went out. */
+    @Column(name = "returned_at", insertable = false, updatable = false)
+    private Instant returnedAt;
+
+    @Column(name = "return_transfer_id", length = 64, insertable = false, updatable = false)
+    private String returnTransferId;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Times.nowMicros();
 

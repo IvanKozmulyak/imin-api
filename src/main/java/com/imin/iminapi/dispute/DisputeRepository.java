@@ -145,6 +145,154 @@ public interface DisputeRepository extends JpaRepository<Dispute, UUID> {
                                                           @Param("until") Instant until,
                                                           @Param("statuses") Collection<DisputeStatus> statuses);
 
+    /** The org's LOST disputes whose organizer share is not reversed yet, in one Stripe mode, oldest first. */
+    @Query("""
+            select d from Dispute d
+             where d.orgId = :orgId
+               and d.status = :lost
+               and d.recoveredAt is null
+               and d.orderId is not null
+               and d.testMode = :testMode
+             order by d.createdAt
+            """)
+    List<Dispute> findUnrecoveredLostByOrgId(@Param("orgId") UUID orgId,
+                                             @Param("lost") DisputeStatus lost,
+                                             @Param("testMode") boolean testMode);
+
+    /** Rows still holding reversed money on orders where a dispute turned won or reinstated, oldest first. */
+    @Query("""
+            select d from Dispute d
+             where d.orgId = :orgId
+               and d.recoveredAt is not null
+               and d.recoveredMinor - coalesce(d.returnedMinor, 0) > 0
+               and d.testMode = :testMode
+               and exists (select 1 from Dispute w where w.orderId = d.orderId and w.status in :back)
+             order by d.createdAt
+            """)
+    List<Dispute> findReturnCandidatesByOrgId(@Param("orgId") UUID orgId,
+                                              @Param("back") Collection<DisputeStatus> back,
+                                              @Param("testMode") boolean testMode);
+
+    /** Every org with a LOST dispute still to reverse or a recovered one still to transfer back. */
+    @Query("""
+            select distinct d.orgId from Dispute d
+             where d.testMode = :testMode
+               and ((d.status = :lost and d.recoveredAt is null and d.orderId is not null)
+                 or (d.recoveredAt is not null and d.recoveredMinor - coalesce(d.returnedMinor, 0) > 0
+                     and exists (select 1 from Dispute w where w.orderId = d.orderId and w.status in :back)))
+            """)
+    List<UUID> findOrgIdsOwingDisputeMoney(@Param("lost") DisputeStatus lost,
+                                           @Param("back") Collection<DisputeStatus> back,
+                                           @Param("testMode") boolean testMode);
+
+    @Query("""
+            select coalesce(sum(d.amountMinor), 0) from Dispute d
+             where d.orderId = :orderId and d.status = :lost
+            """)
+    long sumLostAmountByOrderId(@Param("orderId") UUID orderId, @Param("lost") DisputeStatus lost);
+
+    /** Other disputes on the order that still block a return: OPEN, or LOST and not reversed yet. */
+    @Query("""
+            select count(d) from Dispute d
+             where d.orderId = :orderId and d.id <> :id
+               and (d.status = :open or (d.status = :lost and d.recoveredAt is null))
+            """)
+    long countOtherOpenOrUnrecoveredLostByOrderId(@Param("orderId") UUID orderId, @Param("id") UUID id,
+                                                  @Param("open") DisputeStatus open,
+                                                  @Param("lost") DisputeStatus lost);
+
+    /** The row's returned sum read from the database, never from a stale persistence context. */
+    @Query("select coalesce(d.returnedMinor, 0) from Dispute d where d.id = :id")
+    long returnedMinorById(@Param("id") UUID id);
+
+    /** What this order's reversals still hold, capped ones included: Σ (recovered − returned). */
+    @Query("""
+            select coalesce(sum(coalesce(d.recoveredMinor, 0) - coalesce(d.returnedMinor, 0)), 0) from Dispute d
+             where d.orderId = :orderId
+            """)
+    long sumHeldByOrderId(@Param("orderId") UUID orderId);
+
+    /**
+     * Add a reversal and close the debt. Lands only from the {@code before} it was sized at and while the
+     * debt is open; with {@link #markPartlyRecovered} the only writer of these {@code updatable = false} columns.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            update Dispute d
+               set d.recoveredAt = :now, d.recoveredMinor = coalesce(d.recoveredMinor, 0) + :amount,
+                   d.recoveryReversalId = :reversalId, d.updatedAt = :now
+             where d.id = :id and d.recoveredAt is null and coalesce(d.recoveredMinor, 0) = :before
+            """)
+    int markRecovered(@Param("id") UUID id,
+                      @Param("before") long before,
+                      @Param("amount") long amount,
+                      @Param("reversalId") String reversalId,
+                      @Param("now") Instant now);
+
+    /** Close the debt with nothing more taken: an earlier capped reversal's id and amount stay as they are. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            update Dispute d
+               set d.recoveredAt = :now, d.recoveredMinor = coalesce(d.recoveredMinor, 0), d.updatedAt = :now
+             where d.id = :id and d.recoveredAt is null and coalesce(d.recoveredMinor, 0) = :before
+            """)
+    int closeRecovery(@Param("id") UUID id, @Param("before") long before, @Param("now") Instant now);
+
+    /** Add a reversal the transfer capped short of the debt; {@code recoveredAt} stays null, so the rest stays owed. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            update Dispute d
+               set d.recoveredMinor = coalesce(d.recoveredMinor, 0) + :amount,
+                   d.recoveryReversalId = :reversalId, d.updatedAt = :now
+             where d.id = :id and d.recoveredAt is null and coalesce(d.recoveredMinor, 0) = :before
+            """)
+    int markPartlyRecovered(@Param("id") UUID id,
+                            @Param("before") long before,
+                            @Param("amount") long amount,
+                            @Param("reversalId") String reversalId,
+                            @Param("now") Instant now);
+
+    /** The row's reversed sum read from the database, never from a stale persistence context. */
+    @Query("select coalesce(d.recoveredMinor, 0) from Dispute d where d.id = :id")
+    long recoveredMinorById(@Param("id") UUID id);
+
+    /**
+     * Add one transfer back to {@code returnedMinor}. Lands only from the {@code before} it was sent at
+     * (so one transfer counts once) and never past what was recovered.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            update Dispute d
+               set d.returnedMinor = coalesce(d.returnedMinor, 0) + :amount, d.returnedAt = :now,
+                   d.returnTransferId = :transferId, d.updatedAt = :now
+             where d.id = :id and d.recoveredAt is not null
+               and coalesce(d.returnedMinor, 0) = :before
+               and coalesce(d.returnedMinor, 0) + :amount <= d.recoveredMinor
+            """)
+    int markReturned(@Param("id") UUID id,
+                     @Param("transferId") String transferId,
+                     @Param("before") long before,
+                     @Param("amount") long amount,
+                     @Param("now") Instant now);
+
+    /** Live unreversed LOST disputes per order in {@code currency} (lowercase) on the org's other events: a payout's hold. */
+    @Query("""
+            select new com.imin.iminapi.dispute.DisputeOrderRow(
+                       d.eventId, d.orderId, o.totalMinor, o.applicationFeeMinor, sum(d.amountMinor))
+              from Dispute d join com.imin.iminapi.model.Order o on o.id = d.orderId
+             where d.orgId = :orgId
+               and d.status = :lost
+               and d.testMode = false
+               and d.recoveredAt is null
+               and d.eventId <> :eventId
+               and lower(o.currency) = :currency
+             group by d.eventId, d.orderId, o.totalMinor, o.applicationFeeMinor
+            """)
+    List<DisputeOrderRow> unrecoveredLostRowsByOrgExcludingEvent(@Param("orgId") UUID orgId,
+                                                                 @Param("lost") DisputeStatus lost,
+                                                                 @Param("eventId") UUID eventId,
+                                                                 @Param("currency") String currency);
+
     /**
      * The org-level payout gate: any OPEN dispute freezes every payout for the org, because
      * the connected balance is one shared pool and the funds may still be clawed back. A

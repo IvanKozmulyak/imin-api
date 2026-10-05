@@ -1,5 +1,6 @@
 package com.imin.iminapi.dispute;
 
+import com.imin.iminapi.model.Order;
 import com.imin.iminapi.refund.RefundOrderSums;
 import com.imin.iminapi.refund.RefundRepository;
 import com.imin.iminapi.repository.TicketRepository;
@@ -26,6 +27,9 @@ import java.util.stream.Collectors;
  *
  * <p>WON and WITHDRAWN_REINSTATED give the money back by construction: they are simply not in
  * the set, so the amount stops being subtracted.
+ *
+ * <p>Also sizes the LOST-dispute recovery ({@link #owedOnOrder}) and the hold the payout keeps
+ * back for debts not reversed yet ({@link #unrecoveredLostShareLiveMinorByOrg}).
  */
 @Component
 public class DisputeWithholding {
@@ -71,6 +75,53 @@ public class DisputeWithholding {
     public long organizerShareMinorByOrgWindow(UUID orgId, Instant since, Instant until) {
         return totals(disputes.withholdingRowsByOrgOrderWindow(orgId, since, until, STATUSES))
                 .values().stream().mapToLong(Totals::organizerShare).sum();
+    }
+
+    /**
+     * What is still to reverse for this order's LOST disputes: their organizer share less what earlier
+     * reversals on the order still hold. An OPEN sibling is not owed yet.
+     */
+    public long owedOnOrder(Order order) {
+        return owed(order.getId(), order.getTotalMinor(), order.getApplicationFeeMinor());
+    }
+
+    private long owed(UUID orderId, long totalMinor, long feeMinor) {
+        long share = lostShare(orderId, totalMinor, feeMinor);
+        if (share <= 0L) return 0L;
+        return Math.max(0L, share - disputes.sumHeldByOrderId(orderId));
+    }
+
+    /** What the order's reversals still hold beyond the organizer share of its LOST disputes: owed back. */
+    public long returnableOnOrder(Order order) {
+        return Math.max(0L, disputes.sumHeldByOrderId(order.getId())
+                - lostShare(order.getId(), order.getTotalMinor(), order.getApplicationFeeMinor()));
+    }
+
+    private long lostShare(UUID orderId, long totalMinor, long feeMinor) {
+        long lost = disputes.sumLostAmountByOrderId(orderId, DisputeStatus.LOST);
+        if (lost <= 0L) return 0L;
+        RefundOrderSums r = refunds.sumSucceededAmountAndFeeByOrderIds(List.of(orderId)).stream()
+                .findFirst().orElse(null);
+        return DisputeShare.of(totalMinor, feeMinor,
+                r == null ? 0L : nz(r.refundedMinor()), r == null ? 0L : nz(r.feeRefundedMinor()),
+                lost).organizerShareMinor();
+    }
+
+    /**
+     * What is still owed on the org's live orders with an open LOST debt in {@code currency}, on events other
+     * than {@code excludeEventId}: {@link #owedOnOrder} per order, so a capped reversal counts what it took.
+     */
+    public long unrecoveredLostShareLiveMinorByOrg(UUID orgId, UUID excludeEventId, String currency) {
+        Map<UUID, DisputeOrderRow> byOrder = new HashMap<>();
+        for (DisputeOrderRow row : disputes.unrecoveredLostRowsByOrgExcludingEvent(orgId, DisputeStatus.LOST,
+                excludeEventId, currency.toLowerCase(java.util.Locale.ROOT))) {
+            byOrder.putIfAbsent(row.orderId(), row);
+        }
+        long sum = 0L;
+        for (DisputeOrderRow row : byOrder.values()) {
+            sum += owed(row.orderId(), nz(row.totalMinor()), nz(row.feeMinor()));
+        }
+        return sum;
     }
 
     /** Charged-back ORDERS on this event, one per order however many disputes it collected. */

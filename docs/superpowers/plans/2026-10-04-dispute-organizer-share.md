@@ -503,3 +503,133 @@ Plan correction: the "fee clamp" row of the DisputeShareTest table (1149, 149, 0
 - New `DisputeWithholdingTest.a_dispute_whose_order_is_missing_withholds_its_whole_amount` (stubbed row, order id set, total null → 700/700); the FK on `disputes.order_id` keeps such a row out of the DB. Red proof M9, branch reduced to `orderId() == null`: NullPointerException on `totalMinor()`.
 - CLAUDE.md and STRIPE_LIVE_CUTOVER.md: "disputed face value" → "organizer share of open/lost disputes"; DisputeWithholding split paragraph trimmed to 2 lines.
 - Branch fast-forwarded to origin/master b340bd2a with `git merge --ff-only` (no branch commits, no file overlap, no stash).
+
+### Part B implementation (2026-10-05)
+
+**Stripe sandbox check (OQ6)**, platform sandbox (FR, EUR), stdlib Python over the REST API with the `sk_test_` key from `.env.local` (checked to start with `sk_test_`, never printed). Accounts v1 creation is disabled on this platform, so the connected account is a v2 account: `acct_1UNDuh2I8KWX5mBe` (`dashboard: none`, `losses_collector`/`fees_collector: application`, `stripe_transfers` active). Correction (review-fix round 1): production creates `dashboard: express` accounts (`StripeConnectService.buildCreateParams`, `Dashboard.EXPRESS`), not `none`; both types have `losses_collector: application`. The Express repeat is in review-fix round 1 below, display name and metadata `imin-dispute-reversal-probe-20261005173451`. Objects left in test mode, tagged with that name.
+1. **Reversal larger than the connected balance: not refused; the balance goes negative.** Destination charge `ch_3UNDwz2I8K3TBNXz0PPTl6Lm` 1149, `application_fee_amount` 149 → transfer `tr_3UNDwz2I8K3TBNXz0LcpKAtn` 1149 (the connected balance gains 1000). Whole available balance paid out (`po_1UNDx72I8KWX5mBeiaYl13KQ`, available 0). Reversal of 1000 → HTTP 200 `trr_1UNDx82I8K3TBNXzm20vSKnl`; connected available **−1000 EUR**. Replay with the same key → the same `trr_`; same key with amount 999 → 400 `idempotency_error`. `GET /v1/transfers/tr_…/reversals` returns `metadata.dispute_id`.
+2. **Error codes.** No refusal for the connected balance, so no code. A reversal above the transfer's unreversed remainder: HTTP 400, `type=invalid_request_error`, **code null**, "This transfer only has (€1.49) remaining to reverse. We cannot reverse (€20.00)." A platform transfer above the platform balance (the return path): HTTP 400 `balance_insufficient`.
+3. **`lost` is final.** `pm_card_createDispute` charge `ch_3UNDxW2I8K3TBNXz1Jbj7FPp` → `du_1UNDxY2I8K3TBNXzxsuWaURy` `needs_response`; transfer `tr_3UNDxW2I8K3TBNXz1xR8oLq5` `amount_reversed` 0 (Stripe does not reverse it); `losing_evidence` → `lost`. Then `winning_evidence` + submit and `POST …/close` both 400 "This dispute is already closed"; status stays `lost`, `amount_reversed` still 0. Events: created, funds_withdrawn, updated, closed.
+
+Consequence for the code: the `balance_insufficient` branch and the reserve still exist (design for both), but on this account type (and on Express, see review-fix round 1) a reversal draws the connected balance negative instead (a receivable Stripe collects on imin's behalf, imin being the losses collector), so the reserve mostly holds debts the recovery could not even attempt (no charge id, no transfer, currency mismatch, other Stripe errors). The WON-after-recovery return stays as a safety net; Stripe refused to move a lost dispute.
+
+**Plan corrections found while implementing.**
+- `PostEventPayoutServiceTest` does not run on `sk_test_dummy`: its `setUp` sets `sk_live_dummy` on the shared `StripeProperties`. Its LOST fixtures are live and have no charge id, so recovery now reaches them and stops at "no charge id" (ERROR log, no Stripe call); figures unchanged, no edit needed.
+- B6b: `TransferListParams.setCreated(Long)` is an exact-match filter. The lookup uses `Created.builder().setGte(recoveredAt − 60)`.
+- B6b "blank `org.stripeAccountId` → ERROR, continue" is unreachable: both `payOneEvent` and `recoverForOrg` return first on a blank account. The branch is not written; t7 asserts no transfer through `recoverForOrg`.
+- `findRecoveredToReturnByOrgId` filters on `d.orgId = :orgId` (the plan's JPQL omitted it).
+- Guard "`d.recoveredAt is null` → r15" cannot go red: a recovered dispute re-listed has `owedOnOrder` 0 (its own reversal is subtracted), so no Stripe call follows. The guard is proven by `DisputeRecoveryColumnsTest.a_recovered_dispute_is_no_longer_listed_as_owed` instead. Extra test r17 (second LOST dispute on an order reverses only what the first did not) proves the subtraction in `owedOnOrder`.
+
+Guard proofs, each in a scratch copy of the worktree (`scratchpad/mut`), one mutation at a time, the file restored byte-exact from the worktree after each run (`filecmp` checked, `diff -r src` clean at the end). Every row: `Tests run: 1, Failures: 1`.
+
+| Mutation | Test | Result |
+|---|---|---|
+| G1 drop `d.recoveredAt is null` in `findUnrecoveredLostByOrgId` | `DisputeRecoveryColumnsTest.a_recovered_dispute_is_no_longer_listed_as_owed` | red |
+| G2 `d.testMode = :testMode` → `or 1 = 1` | r13 | red |
+| G3 `d.status = :lost` → `or 1 = 1` | r14 | red |
+| G4 skip the reversal lookup before create | r12 (create count 2) | red |
+| G5 drop the transfer-remaining cap | r8 | red |
+| G6 drop `countOtherOpenOrLostByOrderId` check on return | t2 | red |
+| G7 `d.eventId <> :eventId` → `or 1 = 1` in the reserve query | v2 | red |
+| G8 `recovered_at` without `insertable/updatable = false` | `DisputeRecoveryColumnsTest.an_ingest_that_loaded_the_row_before_the_marker_committed…` | red |
+| G9 `REQUIRES_NEW` off `DisputeRecoveryMarker.markRecovered` | r16 | red |
+| G10 dispute owers out of the sweeper union | `PostEventPayoutSweeperTest.sweep_recovers_a_lost_dispute…` | red |
+| G11 no reserve (step 3b) | r10 | red |
+| G12 `owedOnOrder` ignores earlier reversals on the order | r17 | red |
+| G13 no currency check | r2 | red |
+| G14 `markReturned` without `recoveredAt is not null` | `DisputeRecoveryColumnsTest.a_return_cannot_be_stamped…` | red |
+| G15 `markRecovered` without `recoveredAt is null` | `DisputeRecoveryColumnsTest.a_second_recovery_marker_changes_nothing` | red |
+| G16 drop `d.recoveredMinor > 0` in `findRecoveredToReturnByOrgId` | `DisputeRecoveryQueriesPostgresTest.to_return…` | red |
+
+### Part B review-fix round 1 (2026-10-05)
+
+- Reserve: `unrecoveredLostRowsByOrgExcludingEvent` takes the paying event's lowercase currency (`lower(o.currency) = :currency`); the `ponytail:` comment is gone.
+- Dispute recovery refuses a transfer whose currency differs from the dispute's (ERROR, debt open); the platform-funded refund recovery reads the transfer and refuses the same way.
+- A Stripe error (refusal or timeout) or a failed marker on one dispute leaves the order's other disputes for the rest of the pass (one `recoverForOrg` or `payOneEvent` call; corrected in round 2, it was described as "the next tick").
+- Return lookup walks every page (`autoPagingIterable`) of `GET /v1/transfers?destination=…&created[gte]=recoveredAt−60`, matching `metadata.dispute_return_id`.
+- Return amount = `min(recovered_minor, max(0, Σ recovered-unreturned on the order − share(Σ LOST on the order)))` (`DisputeWithholding.returnableOnOrder`), same key. It waits while another dispute on the order is OPEN, or LOST and not reversed yet (`countOtherOpenOrUnrecoveredLostByOrderId`): an unreversed LOST sibling would otherwise reverse its full share again after the return, since a returned dispute leaves the recovered-unreturned sum. Worked example: order 1149/149, D1 recovered 1000 then WON, D2 LOST 500 (share = 500 − round(149 × 500 / 1149) = 500 − 65 = 435, already held) → return 1000 − 435 = **565**.
+- The G6 row above (`others > 0L`) no longer exists; R5/R8 below replace it.
+- Tests: plan-row prefixes dropped from method names; the return test pins `destination` and `created.gte`; the Postgres test covers `markRecovered(…, 0, null)`, the return blockers and the currency filter; new tests for a non-`balance_insufficient` return error and an OPEN sibling.
+
+Red proofs (scratch copy, one mutation at a time, byte-exact restore, `diff -r src` clean; each `Tests run: 1, Failures: 1`):
+
+| Mutation | Test | Result |
+|---|---|---|
+| R1 reserve without the currency filter | `a_debt_in_another_currency_is_not_held_back` (3000 expected, 2500 without) | red |
+| R2 no dispute/transfer currency check | `a_transfer_in_another_currency_than_the_dispute_is_never_reversed` | red |
+| R3 no refund/transfer currency check | `a_platform_funded_refund_on_a_converted_transfer_is_never_reversed` | red |
+| R4 no stop after a failure on the order | `a_timed_out_reversal_stops_the_orders_other_disputes_until_the_next_tick` | red |
+| R5 any LOST sibling blocks the return (old rule) | `a_won_dispute_returns_only_what_a_lost_sibling_does_not_owe` | red |
+| R6 first page only on the return lookup | `a_return_transfer_past_the_first_page_of_transfers_is_still_found` | red |
+| R7 return the whole recovered amount | `a_won_dispute_returns_only_what_a_lost_sibling_does_not_owe` (565 expected) | red |
+| R8 unreversed LOST sibling not a blocker | `DisputeRecoveryQueriesPostgresTest.return_blockers_are_open_siblings_and_lost_ones_not_reversed_yet` | red |
+
+Sandbox probes (test key checked `sk_test_`, never printed):
+- (a) Express. A fresh v2 account with production's create params (`acct_1UNEde2I8KLiThVR`, `dashboard: express`, tagged `imin-dispute-reversal-probe-express-20261005182117`) cannot be activated through the API: "You cannot accept the Terms of Service on behalf of accounts where requirement collection is owned by Stripe" (`tos_acceptance_on_behalf_not_allowed`). It is left restricted. The repeat therefore used an existing active Express sandbox account, `acct_1TYpDQ2I8Kr9anLL` ("Vechirka", `losses_collector: application`, `requirements_collector: stripe`, available 0). Charge `ch_3UNEgs2I8K3TBNXz0VZGkAgo` 1149 with fee 149 → transfer `tr_3UNEgs2I8K3TBNXz0hJxdWLm` 1149 eur, available 1000. Reversal of 1149 → HTTP 200 `trr_1UNEgy2I8K3TBNXzhk67U8xb`, available **−149 EUR**: not refused, same as `dashboard: none`. Balance put back to 0 with charge `ch_3UNEgz2I8K3TBNXz0VMkb1MG` (149, no fee).
+- (b) **Currency conversion.** USD destination charge `ch_3UNEh62I8K3TBNXz1unv2OsT` 1149 usd, fee 149, to the EUR account `acct_1UNDuh2I8KWX5mBe`: the platform balance transaction is 1025 **eur** (rate 0.892011), and transfer `tr_3UNEh62I8K3TBNXz1NHmIChW` is **1025 eur**, not 1149 usd (destination payment `py_1UNEh92I8KWX5mBev2C3581Y` 1025 eur). A reversal on it is in EUR (500 → `amount_reversed` 500 eur). So for any non-EUR event a dispute's or refund's minor units are in another currency than its transfer: the new currency guards leave such debts open (ERROR) rather than reverse a wrong amount.
+
+### Part B review-fix round 2 (2026-10-05)
+
+V172 re-checked against origin/master (709d2e29, max V171) and amended in place: `returned_minor BIGINT` added.
+
+- **Ledger.** `disputes.returned_minor` (insert/update-protected on the entity) is the sum of every transfer back from that row's reversal; `returned_at`/`return_transfer_id` are the latest one. `markReturned(id, transferId, before, amount)` adds `amount` only while `coalesce(returned_minor, 0) = before` and the new sum stays `≤ recovered_minor`, so one transfer is counted once and never past what was recovered. Held on an order = Σ (recovered − coalesce(returned, 0)) (`sumHeldByOrderId`), used by both `owedOnOrder` and `returnableOnOrder`.
+- **Return candidates** (`findReturnCandidatesByOrgId`, and the second branch of `findOrgIdsOwingDisputeMoney`): rows still holding money (`recovered − returned > 0`) on an order that has a WON or WITHDRAWN_REINSTATED dispute, whatever the row's own status. This goes one step past the brief ("a WON row stays listed"): when two LOST disputes are recovered in one pass, the first takes the whole order share and the other holds 0; if the one holding 0 then wins, the excess sits on a LOST row, and restricting candidates to WON rows would strand it. The return is per order and is paid from the rows that hold it, oldest first.
+- **Order of a pass.** `settleDisputes` runs the return pass and then the recovery pass, sharing one `failedOrders` set. For each candidate order with something returnable, the return pass first walks every page of the account's transfers since the oldest recovery (−60 s). Any return already sent but not recorded (`metadata.dispute_return_id` + `dispute_returned_before` = the row's current returned sum) is adopted at its **real** amount, before anything is sized and whatever the blockers. A new transfer is created only when no dispute on the order is OPEN or LOST-not-reversed. The recovery pass then sizes debts against what is really held. A failed lookup, create or marker puts the order in `failedOrders`.
+- **Keys.** `dispute:<id>:reversal:<amount>` and `dispute:<id>:return:<returned before>:<amount>`. `before` is added to the return key and metadata (the brief said `:<amount>` only) so that two partial returns of the same amount cannot replay one another within Stripe's 24 h key window, and so the adoption lookup matches exactly one transfer.
+- **Reversal lookup** walks every page (`autoPagingIterable`); the `ponytail:` comment is gone.
+- **"This pass"**: comment, log line, the round-1 note above and the test name (`…_for_the_rest_of_the_pass`) now say pass, not tick.
+- **CLAUDE.md**: operator note that non-EUR LOST and platform-funded refund debts log an ERROR every night and need manual reconciliation; the ledger, pass order and keys are described.
+
+Hand-computed figures (order 1149/149 unless noted), pinned by tests:
+- share(500) = 500 − round(149 × 500 / 1149 = 64.84) = 500 − 65 = **435**; first return = 1000 − 435 = **565** (two passes: the first is blocked by the unreversed sibling, which is sized at 0).
+- Failure A: after the 565 return, D3 LOST 300. LOST total 800: fee round(149 × 800 / 1149 = 103.74) = 104, share 696. Held = 1000 − 565 = 435. Reversal = 696 − 435 = **261**, key `dispute:<D3>:reversal:261`.
+- Failure B: after the 565 return, D2 turns WON. Held 435, LOST share 0 → return **435**, key `dispute:<D1>:return:565:435`, `returned_minor` 1000. A further pass sends nothing.
+- Two LOST on 2298/298 (1149 each) in one pass: D1 reverses the order share 2000, D2 is sized 0. One turns WON; the remaining LOST 1149 has fee round(298 × 1149 / 2298) = 149, share 1000. Return = 2000 − 1000 = **1000** from D1's row, whichever of the two won.
+- Adopted timed-out return: D1 recovered 1000 then WON; the 1000 return times out after Stripe executed it; D2 LOST 500 arrives. The next pass adopts the 1000 (`returned_minor` 1000, no second transfer), held becomes 0, and D2 reverses its full **435**.
+
+Red proofs (scratch copy, one mutation at a time, byte-exact restore, `diff -r src` clean; each `Tests run: 1, Failures: 1`):
+
+| Mutation | Test | Result |
+|---|---|---|
+| S1 held = Σ recovered (returns ignored) | `failure_A_a_third_dispute_lost_after_a_partial_return_reverses_only_what_is_not_held` | red |
+| S2 candidates `returnedAt is null` (old rule) | `failure_B_the_rest_goes_back_when_the_lost_sibling_turns_won` | red |
+| S3 candidates limited to WON/REINSTATED rows | `two_lost_recovered_in_one_pass_then_the_one_holding_nothing_wins_returns_the_excess` | red |
+| S4 no adoption before sizing | `an_adopted_timed_out_return_reopens_a_new_lost_siblings_debt` | red |
+| S5 adopted return recorded below its real amount | same | red |
+| S6 reversal key without the amount | `worked_A_a_lost_11_49_order_reverses_the_10_00_ticket_share` | red |
+| S7 return key without the amount | `a_recovered_share_goes_back_once_the_dispute_is_won` | red |
+| S8 reversal lookup first page only | `an_existing_reversal_past_the_first_page_is_adopted` | red |
+| S9 `markReturned` without the `before` check | `DisputeRecoveryQueriesPostgresTest.the_bulk_updates_are_conditional` | red |
+
+The first S9 run stayed green: the old case (565 twice) was already blocked by the `≤ recovered` cap. The case is now 300 twice, so only the `before` check can refuse it, and it went red.
+
+Known limit (handled in round 3 below): a return is a new platform transfer, so it does not refill the original transfer's reversible remainder; Failure A and the adopted case are both capped at the 149 left on the transfer.
+
+### Part B review-fix round 3 (2026-10-05)
+
+1. **HIGH, adoption before the returnable check.** The return pass used to skip an order once `returnableOnOrder ≤ 0`, *before* adopting an unrecorded return. A timed-out return of 1000 followed by a LOST sibling of 1149 (share 1000) therefore looked like "held 1000 = owed 1000, nothing to return": the 1000 was never adopted, the sibling was sized at 0 and closed, and imin was short 1000. Now `adoptUnrecordedReturns` runs for every candidate order first; then the OPEN/unreversed-LOST blockers; then `returnableOnOrder`.
+2. **MEDIUM, a capped reversal leaves the rest owed.**
+   - When the transfer's remainder caps a reversal below what is owed, `markPartlyRecovered` adds the reversed amount to `recovered_minor` and leaves `recovered_at` null.
+   - A transfer with nothing left at all (it used to close the debt at 0) now logs ERROR and leaves the debt open.
+   - The open rest keeps counting in nightly recovery (ERROR each pass) and in the sibling-payout hold, which is now `owedOnOrder` per order with an open LOST debt rather than the raw share. It keeps blocking returns as "LOST and not reversed".
+   - Held (`sumHeldByOrderId`) now counts every row's `recovered − returned`, open rows included, so the next reversal is sized `owed − held` and nothing is reversed twice.
+   - Reversal metadata carries `dispute_reversed_before`, and the lookup adopts only the reversal sized from the row's current `recovered_minor`, so an earlier partial reversal is never adopted a second time.
+   - `markRecovered`/`markPartlyRecovered` are compare-and-set on `before`. `closeRecovery` closes a debt with nothing more to take, without a nullable-string parameter.
+   - The test fixture now reverses 1000 of the order's 1149 transfer, so the fake tracks the real remainder.
+
+Hand-computed figures (order 1149/149, D1's reversal took 1000 of the 1149 transfer → 149 left):
+- Failure A: owed 696 − 435 = 261, capped at **149**; **112** still owed (`recovered_at` null). The next pass reverses nothing; a sibling event's payout with net 3000 and 3050 available pays min(3000, 3050 − 112) = **2938**.
+- Adopted case (return of 1000 timed out, D2 LOST 500): adopted 1000, held 0, D2 owes 435, capped at **149**, **286** still owed.
+- HIGH case (return of 1000 timed out, D2 LOST 1149, share 1149 − 149 = 1000): adopted 1000 (`returned_minor` 1000, no second transfer), held 0, D2 owes 1000, capped at **149**, **851** still owed. The brief said "reverse D2's 1000"; the realistic transfer only has 149 left, so the test pins the capped figure.
+- A transfer already fully reversed: nothing reversed, the order's 1000 stays owed.
+
+Red proofs (scratch copy, one mutation at a time, byte-exact restore, `diff -r src` clean; each `Tests run: 1, Failures: 1`):
+
+| Mutation | Test | Result |
+|---|---|---|
+| T1 old ordering: `returnableOnOrder ≤ 0` skip before adoption | `a_timed_out_return_is_adopted_even_when_nothing_looks_returnable_any_more` | red |
+| T2 a capped reversal closes the debt | `failure_A_a_third_dispute_lost_after_a_partial_return_is_capped_and_the_rest_stays_owed` | red |
+| T3 nothing left on the transfer closes the debt | `a_fully_reversed_transfer_leaves_the_debt_open` | red |
+| T4 reserve holds the full share instead of what is owed | Failure A (2938 expected) | red |
+| T5 held leaves out open (capped) rows | `an_adopted_timed_out_return_reopens_a_new_lost_siblings_debt` (286 expected) | red |
+| T6 reversal lookup ignores `dispute_reversed_before` | Failure A (second pass would re-adopt the 149) | red |

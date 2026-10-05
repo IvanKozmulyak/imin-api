@@ -1,8 +1,11 @@
 package com.imin.iminapi.payout;
 
+import com.imin.iminapi.dispute.Dispute;
 import com.imin.iminapi.dispute.DisputeRepository;
+import com.imin.iminapi.dispute.DisputeStatus;
 import com.imin.iminapi.dispute.DisputeWithholding;
 import com.imin.iminapi.model.Event;
+import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.refund.RefundRepository;
 import com.imin.iminapi.repository.EventRepository;
@@ -17,10 +20,16 @@ import com.stripe.exception.StripeException;
 import com.stripe.model.Account;
 import com.stripe.model.Balance;
 import com.stripe.model.Payout;
+import com.stripe.model.Transfer;
+import com.stripe.model.TransferReversal;
 import com.stripe.net.RequestOptions;
 import com.stripe.param.AccountRetrieveParams;
 import com.stripe.param.BalanceRetrieveParams;
 import com.stripe.param.PayoutCreateParams;
+import com.stripe.param.TransferCreateParams;
+import com.stripe.param.TransferListParams;
+import com.stripe.param.TransferReversalCreateParams;
+import com.stripe.param.TransferReversalListParams;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
@@ -30,10 +39,16 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -48,8 +63,10 @@ import java.util.UUID;
  * <ol>
  *   <li><b>step 0b — recover platform-funded refunds.</b> Reverse the destination transfer of
  *       every refund imin fronted for this org and has not pulled back yet, BEFORE the balance
- *       is read, so the payout clamps against a balance that is already net of it. The sweeper
- *       also runs this org-wide ({@link #recoverForOrg}) for orgs with no candidate event.</li>
+ *       is read, so the payout clamps against a balance that is already net of it. Then reverse
+ *       the organizer's share of every LOST dispute not recovered yet, and transfer a recovered
+ *       share back once its dispute turned won with no other dispute withholding on the order.
+ *       The sweeper also runs this org-wide ({@link #recoverForOrg}) for orgs with no candidate event.</li>
  *   <li><b>step 0 — double-pay guard (DB, not Stripe), FIRST.</b> A connected
  *       balance is one shared pool across all of an org's events, so AT MOST ONE
  *       in-flight payout per org per tick. Skip the event entirely if any
@@ -68,7 +85,9 @@ import java.util.UUID;
  *       balance and is subtracted out here, so the computed ceiling is the
  *       organizer's net.</li>
  *   <li><b>step 3 — live available balance</b> ON the connected account, matched to
- *       the event currency (Stripe reports lowercase; the event stores uppercase).</li>
+ *       the event currency (Stripe reports lowercase; the event stores uppercase). Step 3b holds
+ *       back the organizer share of live LOST disputes on the org's OTHER events that the
+ *       recovery could not reverse yet: that part of the balance is imin's.</li>
  *   <li><b>step 4 — subtract what already moved, then clamp.</b>
  *       {@code owed = net − already triggered (SUBMITTED/PAID/PARTIAL)};
  *       {@code payoutMinor = min(owed, available)}; skip if {@code <= 0} (nothing left,
@@ -117,6 +136,9 @@ public class PostEventPayoutService {
     private static final Logger log = LoggerFactory.getLogger(PostEventPayoutService.class);
 
     /** In-flight statuses for the org-level one-payout-per-tick guard. */
+    /** No dispute id: counts every dispute on the order. */
+    private static final UUID NO_DISPUTE = new UUID(0L, 0L);
+
     private static final List<PayoutRunStatus> IN_FLIGHT =
             List.of(PayoutRunStatus.PLANNED, PayoutRunStatus.SUBMITTED);
 
@@ -139,6 +161,7 @@ public class PostEventPayoutService {
     private final DisputeRepository disputes;
     private final DisputeWithholding disputeWithholding;
     private final RefundRecoveryMarker recoveryMarker;
+    private final DisputeRecoveryMarker disputeMarker;
     private final ApplicationEventPublisher publisher;
 
     public PostEventPayoutService(StripeClient stripeClient,
@@ -151,6 +174,7 @@ public class PostEventPayoutService {
                                   DisputeRepository disputes,
                                   DisputeWithholding disputeWithholding,
                                   RefundRecoveryMarker recoveryMarker,
+                                  DisputeRecoveryMarker disputeMarker,
                                   ApplicationEventPublisher publisher) {
         this.stripeClient = stripeClient;
         this.props = props;
@@ -162,6 +186,7 @@ public class PostEventPayoutService {
         this.disputes = disputes;
         this.disputeWithholding = disputeWithholding;
         this.recoveryMarker = recoveryMarker;
+        this.disputeMarker = disputeMarker;
         this.publisher = publisher;
     }
 
@@ -192,7 +217,9 @@ public class PostEventPayoutService {
 
         // ── step 0b — RECOVER PLATFORM-FUNDED REFUNDS (real money, before any balance read) ──
         // Ahead of the guards below so a fully refunded event (net 0) still repays imin.
+        // Refunds first: they share the destination transfer with a later chargeback.
         recoverPlatformFundedRefunds(org);
+        settleDisputes(org);
 
         // ── step 0a — PARKED-RUN GUARD ──
         // A run parked BLOCKED by the attempt cap needs a human and must never re-candidate.
@@ -285,6 +312,17 @@ public class PostEventPayoutService {
             log.warn("[payout] balance read failed for event {} org {} acct {} — {} (rolling to next tick)",
                     eventId, org.getId(), acct, e.getCode());
             return;
+        }
+
+        // ── step 3b — hold back lost-dispute debts the recovery could not reverse yet ──
+        // That debt is imin's money in this balance; this event's own share is already out of its net.
+        long reservedMinor = disputeWithholding.unrecoveredLostShareLiveMinorByOrg(org.getId(), eventId, cur);
+        if (reservedMinor > 0L) {
+            long before = availableMinor;
+            availableMinor = Math.max(0L, availableMinor - reservedMinor);
+            log.warn("[payout] event {} org {} — {} of unrecovered lost-dispute shares on the org's other "
+                    + "events held back from the available balance ({} → {})",
+                    eventId, org.getId(), reservedMinor, before, availableMinor);
         }
 
         // ── step 4 — subtract what already moved for this event, then clamp ──
@@ -427,7 +465,8 @@ public class PostEventPayoutService {
     }
 
     /**
-     * Recover this org's platform-funded refunds on their own, with no event being paid out.
+     * Recover this org's platform-funded refunds and lost-dispute shares on their own, and transfer
+     * back shares of disputes that turned won, with no event being paid out.
      *
      * <p>{@link #payOneEvent} only reaches step 0b for an org that still has a payout CANDIDATE.
      * An org whose events have all been paid out already has no candidate, so a refund imin
@@ -445,6 +484,7 @@ public class PostEventPayoutService {
         if (org == null) return;
         if (org.getStripeAccountId() == null || org.getStripeAccountId().isBlank()) return;
         recoverPlatformFundedRefunds(org);
+        settleDisputes(org);
     }
 
     /**
@@ -656,6 +696,14 @@ public class PostEventPayoutService {
                             chargeId, refund.getId(), amount, org.getId());
                     continue;
                 }
+                // A charge in another currency is converted into the transfer's: its minor units do not apply.
+                String trCurrency = stripeClient.transfers().retrieve(transferId).getCurrency();
+                if (refund.getCurrency() == null || !refund.getCurrency().equalsIgnoreCase(trCurrency)) {
+                    log.error("[payout] platform-funded refund {} is in {} but transfer {} is in {} — never "
+                            + "reverse across currencies; {} stays owed by org {}", refund.getId(),
+                            refund.getCurrency(), transferId, trCurrency, amount, org.getId());
+                    continue;
+                }
                 com.stripe.model.TransferReversal reversal = stripeClient.transfers().reversals().create(
                         transferId,
                         com.stripe.param.TransferReversalCreateParams.builder()
@@ -699,6 +747,279 @@ public class PostEventPayoutService {
                     + "succeeded but recovered_at could not be committed; reconcile before the next "
                     + "tick or the debt will be reversed twice", reversalId, refund.getId(), e);
         }
+    }
+
+    /**
+     * Return what LOST-dispute reversals hold beyond what the orders still owe, then reverse what they owe.
+     * Returns go first so an adopted return of an earlier pass is counted before any debt is sized.
+     */
+    private void settleDisputes(Organization org) {
+        // A failure may have moved money without a marker; the order's other disputes wait for the next pass.
+        Set<UUID> failedOrders = new HashSet<>();
+        returnRecoveredDisputes(org, failedOrders);
+        recoverLostDisputes(org, failedOrders);
+    }
+
+    /**
+     * Reverse each unrecovered LOST dispute's organizer share from its destination transfer: Stripe debits
+     * the platform for the chargeback. The key carries the amount; an existing reversal is looked up first.
+     */
+    private void recoverLostDisputes(Organization org, Set<UUID> failedOrders) {
+        // Only the running mode's transfers are reachable.
+        boolean testMode = !props.isLiveKey();
+        List<Dispute> lost = disputes.findUnrecoveredLostByOrgId(org.getId(), DisputeStatus.LOST, testMode);
+        for (Dispute d : lost) {
+            if (failedOrders.contains(d.getOrderId())) {
+                log.info("[payout] LOST dispute {} left for the next pass — a call on order {} failed in this pass",
+                        d.getId(), d.getOrderId());
+                continue;
+            }
+            Order order = orders.findById(d.getOrderId()).orElse(null);
+            if (order == null) {
+                log.error("[payout] LOST dispute {} names order {}, which does not exist — nothing reversed",
+                        d.getId(), d.getOrderId());
+                continue;
+            }
+            if (order.getCurrency() == null || !order.getCurrency().equalsIgnoreCase(d.getCurrency())) {
+                log.error("[payout] LOST dispute {} is in {} but order {} is in {} — never reverse across "
+                        + "currencies; the debt stays open", d.getId(), d.getCurrency(), order.getId(),
+                        order.getCurrency());
+                continue;
+            }
+            long owed = disputeWithholding.owedOnOrder(order);
+            // What this row's earlier capped reversals took; owed above already counts it as held.
+            long before = disputes.recoveredMinorById(d.getId());
+            if (owed <= 0L) {
+                // Refunds or an earlier reversal on the order already took the organizer's stake.
+                if (!commitDisputeMarker(d, before, 0L, null, true)) failedOrders.add(d.getOrderId());
+                continue;
+            }
+            String chargeId = d.getStripeChargeId();
+            if (chargeId == null || chargeId.isBlank()) {
+                log.error("[payout] LOST dispute {} carries no charge id — cannot reverse its transfer; {} "
+                        + "stays owed by org {}", d.getId(), owed, org.getId());
+                continue;
+            }
+            try {
+                String transferId = stripeClient.charges().retrieve(chargeId).getTransfer();
+                if (transferId == null || transferId.isBlank()) {
+                    log.error("[payout] charge {} behind LOST dispute {} has no destination transfer — {} "
+                            + "stays owed by org {}", chargeId, d.getId(), owed, org.getId());
+                    continue;
+                }
+                TransferReversal existing = null;
+                for (TransferReversal r : stripeClient.transfers().reversals().list(transferId,
+                                TransferReversalListParams.builder().setLimit(100L).build())
+                        .autoPagingIterable()) {
+                    if (r.getMetadata() != null && d.getId().toString().equals(r.getMetadata().get("dispute_id"))
+                            && String.valueOf(before).equals(
+                                    r.getMetadata().getOrDefault("dispute_reversed_before", "0"))) {
+                        existing = r;
+                        break;
+                    }
+                }
+                if (existing != null) {
+                    long took = nz(existing.getAmount());
+                    if (!commitDisputeMarker(d, before, took, existing.getId(), took >= owed)) {
+                        failedOrders.add(d.getOrderId());
+                    }
+                    log.info("[payout] LOST dispute {} — adopted existing reversal {} ({})",
+                            d.getId(), existing.getId(), existing.getAmount());
+                    continue;
+                }
+                Transfer tr = stripeClient.transfers().retrieve(transferId);
+                // A charge in another currency is converted into the transfer's: its minor units do not apply.
+                if (!d.getCurrency().equalsIgnoreCase(tr.getCurrency())) {
+                    log.error("[payout] LOST dispute {} is in {} but transfer {} is in {} — never reverse across "
+                            + "currencies; {} stays owed by org {}", d.getId(), d.getCurrency(), transferId,
+                            tr.getCurrency(), owed, org.getId());
+                    continue;
+                }
+                long remaining = nz(tr.getAmount()) - nz(tr.getAmountReversed());
+                long amount = Math.min(owed, remaining);
+                if (amount <= 0L) {
+                    // The debt stays open: it keeps the hold on sibling payouts and blocks returns on the order.
+                    log.error("[payout] LOST dispute {} — nothing left on transfer {} to reverse; {} owed by "
+                            + "org {} stays open", d.getId(), transferId, owed, org.getId());
+                    continue;
+                }
+                if (amount < owed) {
+                    log.error("[payout] LOST dispute {} — transfer {} has only {} left; {} of the {} owed by org {} "
+                            + "stays open", d.getId(), transferId, remaining, owed - amount, owed, org.getId());
+                }
+                TransferReversal rv = stripeClient.transfers().reversals().create(transferId,
+                        TransferReversalCreateParams.builder()
+                                .setAmount(amount)
+                                .putMetadata("dispute_id", d.getId().toString())
+                                .putMetadata("stripe_dispute_id", d.getStripeDisputeId())
+                                .putMetadata("dispute_reversed_before", String.valueOf(before))
+                                .build(),
+                        RequestOptions.builder()
+                                .setIdempotencyKey("dispute:" + d.getId() + ":reversal:" + amount)
+                                .build());
+                if (!commitDisputeMarker(d, before, amount, rv.getId(), amount >= owed)) {
+                    failedOrders.add(d.getOrderId());
+                }
+                log.info("[payout] LOST dispute {} — reversed {} on transfer {} ({}), org {}",
+                        d.getId(), amount, transferId, rv.getId(), org.getId());
+            } catch (StripeException e) {
+                failedOrders.add(d.getOrderId());
+                if ("balance_insufficient".equals(e.getCode())) {
+                    log.warn("[payout] cannot reverse LOST dispute {} yet ({} owed by org {}) — the debt stays "
+                            + "open; payouts of this org's other events hold it back", d.getId(), owed, org.getId());
+                } else {
+                    log.error("[payout] transfer reversal failed for LOST dispute {} (org {}, owed {}) — {}",
+                            d.getId(), org.getId(), owed, e.getCode(), e);
+                }
+            }
+        }
+    }
+
+    /**
+     * Per order with a won or reinstated dispute: give back what its reversals hold beyond the share its
+     * LOST disputes owe, from the rows that hold it. Never while a sibling is OPEN or LOST and not reversed.
+     */
+    private void returnRecoveredDisputes(Organization org, Set<UUID> failedOrders) {
+        boolean testMode = !props.isLiveKey();
+        Map<UUID, List<Dispute>> byOrder = new LinkedHashMap<>();
+        for (Dispute d : disputes.findReturnCandidatesByOrgId(org.getId(),
+                List.of(DisputeStatus.WON, DisputeStatus.WITHDRAWN_REINSTATED), testMode)) {
+            byOrder.computeIfAbsent(d.getOrderId(), k -> new ArrayList<>()).add(d);
+        }
+        // Both callers return first when the org has no connected account.
+        String acct = org.getStripeAccountId();
+        for (Map.Entry<UUID, List<Dispute>> e : byOrder.entrySet()) {
+            UUID orderId = e.getKey();
+            Order order = orders.findById(orderId).orElse(null);
+            if (order == null) continue;
+            try {
+                // A return sent in an earlier pass but never recorded counts before anything is sized,
+                // including whether there is anything left to return at all.
+                adoptUnrecordedReturns(e.getValue(), acct);
+            } catch (StripeException ex) {
+                failedOrders.add(orderId);
+                log.error("[payout] return lookup failed for order {} (org {}) — {}", orderId, org.getId(),
+                        ex.getCode(), ex);
+                continue;
+            } catch (RuntimeException ex) {
+                failedOrders.add(orderId);
+                log.error("[payout] MONEY MOVED, MARKER MISSING — an earlier return on order {} could not be "
+                        + "recorded; the next pass adopts it again", orderId, ex);
+                continue;
+            }
+            long pending = disputes.countOtherOpenOrUnrecoveredLostByOrderId(orderId, NO_DISPUTE,
+                    DisputeStatus.OPEN, DisputeStatus.LOST);
+            if (pending > 0L) {
+                log.info("[payout] order {} — return kept: {} dispute(s) still open or not reversed", orderId, pending);
+                continue;
+            }
+            long returnable = disputeWithholding.returnableOnOrder(order);
+            if (returnable <= 0L) continue;
+            for (Dispute d : e.getValue()) {
+                if (returnable <= 0L) break;
+                long before = disputes.returnedMinorById(d.getId());
+                long amount = Math.min(returnable, nz(d.getRecoveredMinor()) - before);
+                if (amount <= 0L) continue;
+                try {
+                    Transfer tr = stripeClient.transfers().create(
+                            TransferCreateParams.builder()
+                                    .setAmount(amount)
+                                    .setCurrency(d.getCurrency())
+                                    .setDestination(acct)
+                                    .putMetadata("dispute_return_id", d.getId().toString())
+                                    .putMetadata("dispute_returned_before", String.valueOf(before))
+                                    .putMetadata("event_id", String.valueOf(d.getEventId()))
+                                    .build(),
+                            RequestOptions.builder()
+                                    .setIdempotencyKey("dispute:" + d.getId() + ":return:" + before + ":" + amount)
+                                    .build());
+                    if (!commitReturnMarker(d, tr.getId(), before, amount)) {
+                        failedOrders.add(orderId);
+                        break;
+                    }
+                    returnable -= amount;
+                    log.info("[payout] order {} — {} {} of dispute {}'s reversal transferred back to {} ({})",
+                            orderId, amount, d.getCurrency(), d.getId(), acct, tr.getId());
+                } catch (StripeException ex) {
+                    failedOrders.add(orderId);
+                    if ("balance_insufficient".equals(ex.getCode())) {
+                        log.warn("[payout] cannot transfer back {} for dispute {} yet — the platform balance is "
+                                + "short; retrying next pass", amount, d.getId());
+                    } else {
+                        log.error("[payout] return transfer failed for dispute {} (org {}, amount {}) — {}",
+                                d.getId(), org.getId(), amount, ex.getCode(), ex);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    /** Record every return transfer Stripe holds for these rows that the ledger has not counted yet. */
+    private void adoptUnrecordedReturns(List<Dispute> holders, String acct) throws StripeException {
+        Map<String, Dispute> byId = new HashMap<>();
+        long since = Long.MAX_VALUE;
+        for (Dispute d : holders) {
+            byId.put(d.getId().toString(), d);
+            since = Math.min(since, d.getRecoveredAt().getEpochSecond() - 60L);
+        }
+        List<Transfer> found = new ArrayList<>();
+        for (Transfer t : stripeClient.transfers().list(TransferListParams.builder()
+                        .setDestination(acct)
+                        .setCreated(TransferListParams.Created.builder().setGte(since).build())
+                        .setLimit(100L)
+                        .build())
+                .autoPagingIterable()) {
+            if (t.getMetadata() != null && byId.containsKey(t.getMetadata().get("dispute_return_id"))) found.add(t);
+        }
+        for (Dispute d : holders) {
+            long before = disputes.returnedMinorById(d.getId());
+            boolean adopted = true;
+            while (adopted) {
+                adopted = false;
+                for (Transfer t : found) {
+                    if (d.getId().toString().equals(t.getMetadata().get("dispute_return_id"))
+                            && String.valueOf(before).equals(t.getMetadata().get("dispute_returned_before"))) {
+                        disputeMarker.markReturned(d.getId(), t.getId(), before, nz(t.getAmount()));
+                        log.info("[payout] dispute {} — adopted return transfer {} ({})", d.getId(), t.getId(),
+                                t.getAmount());
+                        before += nz(t.getAmount());
+                        adopted = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    /** {@link #commitRecoveryMarker} for a dispute: its own transaction, never rethrown; false when it failed. */
+    private boolean commitDisputeMarker(Dispute d, long before, long amountMinor, String reversalId,
+                                        boolean complete) {
+        try {
+            disputeMarker.markRecovered(d.getId(), before, amountMinor, reversalId, complete);
+            return true;
+        } catch (RuntimeException e) {
+            log.error("[payout] MONEY MOVED, MARKER MISSING — reversal {} ({}) for dispute {} succeeded but "
+                    + "recovered_at could not be committed; the next pass adopts it by metadata",
+                    reversalId, amountMinor, d.getId(), e);
+            return false;
+        }
+    }
+
+    private boolean commitReturnMarker(Dispute d, String transferId, long before, long amountMinor) {
+        try {
+            disputeMarker.markReturned(d.getId(), transferId, before, amountMinor);
+            return true;
+        } catch (RuntimeException e) {
+            log.error("[payout] MONEY MOVED, MARKER MISSING — return transfer {} ({}) for dispute {} succeeded but "
+                    + "returned_minor could not be committed; the next pass adopts it by metadata",
+                    transferId, amountMinor, d.getId(), e);
+            return false;
+        }
+    }
+
+    private static long nz(Long v) {
+        return v == null ? 0L : v;
     }
 
     /** What Stripe says about the connected account's payout destination. */

@@ -181,6 +181,15 @@ class PostEventPayoutServiceTest {
                     """.formatted(poId, amount);
                 return (T) ApiResource.GSON.fromJson(json, Payout.class);
             }
+            // GET /v1/transfers/{id} — the refund recovery checks the transfer's currency first.
+            if (path != null && path.startsWith("/v1/transfers/") && !path.endsWith("/reversals")
+                    && req.getMethod() == ApiResource.RequestMethod.GET) {
+                String json = """
+                    { "object": "transfer", "id": "%s", "amount": 100000, "amount_reversed": 0,
+                      "currency": "eur" }
+                    """.formatted(path.substring("/v1/transfers/".length()));
+                return (T) ApiResource.GSON.fromJson(json, com.stripe.model.Transfer.class);
+            }
             // POST /v1/transfers/{id}/reversals — platform-funded refund recovery.
             if (path != null && path.startsWith("/v1/transfers/")) {
                 if (req.getOptions() != null) lastReversalKey.set(req.getOptions().getIdempotencyKey());

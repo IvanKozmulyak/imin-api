@@ -1,6 +1,9 @@
 package com.imin.iminapi.payout;
 
 import com.imin.iminapi.config.TestRateLimitConfig;
+import com.imin.iminapi.dispute.Dispute;
+import com.imin.iminapi.dispute.DisputeRepository;
+import com.imin.iminapi.dispute.DisputeStatus;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.Order;
@@ -67,6 +70,7 @@ class PostEventPayoutSweeperTest {
     @Autowired OrganizationRepository orgs;
     @Autowired OrderRepository orders;
     @Autowired RefundRepository refunds;
+    @Autowired DisputeRepository disputes;
     @Autowired SettlementRepository settlements;
     @Autowired PayoutRunRepository payoutRuns;
     @Autowired UserRepository users;
@@ -84,6 +88,7 @@ class PostEventPayoutSweeperTest {
     /** Reversals the sweep asked Stripe for; the payout paths are not wired here on purpose. */
     private final AtomicInteger reversalCount = new AtomicInteger(0);
     private final AtomicReference<Long> lastReversalAmount = new AtomicReference<>(null);
+    private final AtomicReference<String> lastReversalKey = new AtomicReference<>(null);
 
     @BeforeEach
     void setUp() {
@@ -92,6 +97,7 @@ class PostEventPayoutSweeperTest {
         props.setPayoutScheduleManual(true);
         reversalCount.set(0);
         lastReversalAmount.set(null);
+        lastReversalKey.set(null);
         wireRecoveryStripeCalls();
     }
 
@@ -102,6 +108,7 @@ class PostEventPayoutSweeperTest {
     }
 
     private void wipe() {
+        disputes.deleteAll();
         payoutRuns.deleteAll();
         settlements.deleteAll();
         refunds.deleteAll();
@@ -296,6 +303,38 @@ class PostEventPayoutSweeperTest {
         assertThat(refunds.findById(fronted.getId()).orElseThrow().getRecoveredAt()).isNotNull();
     }
 
+    /**
+     * A LOST dispute owes imin the organizer's share whether or not the org still has an event to
+     * pay out, so the sweep's org pass must reach it. The test key makes it a test-mode dispute.
+     */
+    @Test
+    void sweep_recovers_a_lost_dispute_for_an_org_with_no_candidate_event() {
+        Organization org = eligibleOrg();
+        Event e = endedEvent(org, Instant.now().minus(10, ChronoUnit.DAYS));
+        seedRun(org, e, PayoutRunStatus.PAID);          // already disbursed → not a candidate
+        Order o = orderOn(e);                           // 4000 / 400
+        Dispute d = new Dispute();
+        d.setStripeDisputeId("du_" + UUID.randomUUID().toString().replace("-", "").substring(0, 20));
+        d.setOrgId(org.getId());
+        d.setEventId(e.getId());
+        d.setOrderId(o.getId());
+        d.setStripeChargeId("ch_1");
+        d.setAmountMinor(4_000);
+        d.setCurrency("eur");
+        d.setStatus(DisputeStatus.LOST);
+        d.setTestMode(true);
+        d = disputes.save(d);
+
+        assertThat(events.findPayoutCandidates(cutoff, PageRequest.of(0, 50))).isEmpty();
+
+        sweeper.sweep();
+
+        assertThat(reversalCount.get()).isEqualTo(1);
+        assertThat(lastReversalAmount.get()).as("4000 less its 400 booking fee").isEqualTo(3_600L);
+        assertThat(lastReversalKey.get()).isEqualTo("dispute:" + d.getId() + ":reversal:3600");
+        assertThat(disputes.findById(d.getId()).orElseThrow().getRecoveredAt()).isNotNull();
+    }
+
     // ── fixtures ────────────────────────────────────────────────────────────────
 
     private Organization eligibleOrg() {
@@ -378,7 +417,8 @@ class PostEventPayoutSweeperTest {
 
     /**
      * Real {@code ChargeService}/{@code TransferService} over a mocked response getter (both
-     * accessors on {@link StripeClient} are final), answering the two calls recovery makes.
+     * accessors on {@link StripeClient} are final), answering the charge read, the transfer read, the
+     * reversal list and the reversal create that refund and dispute recovery make.
      */
     private void wireRecoveryStripeCalls() {
         StripeResponseGetter rg = mock(StripeResponseGetter.class);
@@ -391,7 +431,24 @@ class PostEventPayoutSweeperTest {
                             "{ \"object\": \"charge\", \"id\": \"ch_1\", \"transfer\": \"tr_test_1\" }",
                             Charge.class);
                 }
+                boolean post = req.getMethod() == ApiResource.RequestMethod.POST;
+                if (path != null && path.endsWith("/reversals") && !post) {
+                    com.stripe.model.StripeCollection<?> list = ApiResource.GSON.fromJson(
+                            "{ \"object\": \"list\", \"data\": [], \"has_more\": false, \"url\": \"" + path + "\" }",
+                            (Type) inv.getArgument(1));
+                    // What the live response getter does; auto-paging falls back to the global key otherwise.
+                    list.setResponseGetter(rg);
+                    list.setRequestParams(req.getParams());
+                    list.setRequestOptions(req.getOptions());
+                    return list;
+                }
+                if (path != null && path.startsWith("/v1/transfers/") && !post) {
+                    return ApiResource.GSON.fromJson(
+                            "{ \"object\": \"transfer\", \"id\": \"tr_test_1\", \"amount\": 4000, \"amount_reversed\": 0, \"currency\": \"eur\" }",
+                            com.stripe.model.Transfer.class);
+                }
                 if (path != null && path.startsWith("/v1/transfers/")) {
+                    if (req.getOptions() != null) lastReversalKey.set(req.getOptions().getIdempotencyKey());
                     Object amt = req.getParams() == null ? null : req.getParams().get("amount");
                     lastReversalAmount.set(amt == null ? 0L : ((Number) amt).longValue());
                     return ApiResource.GSON.fromJson(

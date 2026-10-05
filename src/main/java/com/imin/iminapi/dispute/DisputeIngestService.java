@@ -160,6 +160,12 @@ public class DisputeIngestService {
                     stripeDispute.getId(), eventType, status.toWire(), row.getOrderId(),
                     row.getEventId(), row.isTestMode(), revoked);
         } else if (fundsBack && previous != status) {
+            if (previous == DisputeStatus.LOST && row.getRecoveredAt() != null) {
+                log.warn("[dispute] {} ({}) {} after LOST — the {} recovered from org {} will be transferred "
+                                + "back by the payout sweep once no other dispute on order {} withholds",
+                        stripeDispute.getId(), eventType, status.toWire(), row.getRecoveredMinor(), orgId,
+                        row.getOrderId());
+            }
             // Revocation is per ORDER, so only the last WITHHOLDING dispute on it may restore —
             // a LOST sibling keeps the tickets dead, or the sweep would re-revoke them anyway.
             long stillWithholding = order == null ? 0L
@@ -179,7 +185,8 @@ public class DisputeIngestService {
             // Tickets stay revoked: the cardholder has their money back. The organizer's share comes
             // off the event's net; the booking fee and Stripe's dispute fee stay with the platform.
             log.warn("[dispute] {} ({}) LOST org={} event={} — {} {} disputed; the organizer's share "
-                            + "comes off the event's net",
+                            + "comes off the event's net and is reversed from the connected balance by "
+                            + "the next payout sweep",
                     stripeDispute.getId(), eventType, orgId, row.getEventId(),
                     row.getAmountMinor(), row.getCurrency());
         } else {
