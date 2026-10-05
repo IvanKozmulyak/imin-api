@@ -1,5 +1,6 @@
 package com.imin.iminapi.service.event;
 
+import com.imin.iminapi.dispute.DisputeOrderRow;
 import com.imin.iminapi.dispute.DisputeRepository;
 import com.imin.iminapi.dispute.DisputeWithholding;
 import com.imin.iminapi.dto.event.EventSalesFigures;
@@ -11,6 +12,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -31,7 +33,7 @@ class EventSalesTotalsTest {
     DisputeRepository disputes = mock(DisputeRepository.class);
     TicketRepository tickets = mock(TicketRepository.class);
     EventSalesTotals sut = new EventSalesTotals(tiers, orders, refunds,
-            new DisputeWithholding(disputes, tickets));
+            new DisputeWithholding(disputes, tickets, refunds));
 
     private static List<Object[]> rows(Object[]... rows) {
         return List.of(rows);
@@ -55,7 +57,10 @@ class EventSalesTotalsTest {
         when(refunds.sumSucceededRefundMinorByEventIds(ids)).thenReturn(rows(new Object[] {a, 1000L}));
         when(tickets.countRevokedInDisputedOrdersByEventIds(ids, DisputeWithholding.STATUSES))
                 .thenReturn(rows(new Object[] {b, 1L}));
-        when(disputes.sumOpenOrLostMinorByEventIds(ids)).thenReturn(rows(new Object[] {b, 1000L}));
+        UUID orderB = UUID.randomUUID();
+        when(disputes.withholdingRowsByEventIds(ids, DisputeWithholding.STATUSES))
+                .thenReturn(List.of(new DisputeOrderRow(b, orderB, 1000L, 0L, 1000L)));
+        when(refunds.sumSucceededAmountAndFeeByOrderIds(Set.of(orderB))).thenReturn(List.of());
 
         Map<UUID, EventSalesFigures> out = sut.forEvents(ids);
 
@@ -67,7 +72,8 @@ class EventSalesTotalsTest {
         verify(orders, times(1)).sumTotalMinorByEventIds(ids);
         verify(refunds, times(1)).sumSucceededRefundMinorByEventIds(ids);
         verify(tickets, times(1)).countRevokedInDisputedOrdersByEventIds(ids, DisputeWithholding.STATUSES);
-        verify(disputes, times(1)).sumOpenOrLostMinorByEventIds(ids);
+        verify(disputes, times(1)).withholdingRowsByEventIds(ids, DisputeWithholding.STATUSES);
+        verify(refunds, times(1)).sumSucceededAmountAndFeeByOrderIds(Set.of(orderB));
         verify(tiers, never()).sumSoldByEventId(any());
         verify(tiers, never()).sumQuantityByEventId(any());
         verify(orders, never()).sumTotalMinorByEventId(any());
@@ -92,7 +98,8 @@ class EventSalesTotalsTest {
         List<UUID> ids = List.of(a);
         when(orders.sumTotalMinorByEventIds(ids)).thenReturn(rows(new Object[] {a, 1000L}));
         when(refunds.sumSucceededRefundMinorByEventIds(ids)).thenReturn(rows(new Object[] {a, 800L}));
-        when(disputes.sumOpenOrLostMinorByEventIds(ids)).thenReturn(rows(new Object[] {a, 500L}));
+        when(disputes.withholdingRowsByEventIds(ids, DisputeWithholding.STATUSES))
+                .thenReturn(List.of(new DisputeOrderRow(a, UUID.randomUUID(), 500L, 0L, 500L)));
 
         assertThat(sut.forEvents(ids).get(a).revenueMinor()).isZero();
     }

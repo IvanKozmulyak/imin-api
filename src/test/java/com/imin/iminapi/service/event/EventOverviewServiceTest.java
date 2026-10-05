@@ -391,6 +391,26 @@ class EventOverviewServiceTest {
         assertThat(homeRevenue).isEqualTo(overviewRevenue);
     }
 
+    /** Two €11.49 orders with 149 booking fee each; one is lost to a chargeback. */
+    @Test
+    void after_fees_counts_a_disputed_orders_fee_once() {
+        tiers.deleteAll();
+        Order kept = newOrder("keeps@example.com", 1149, Instant.now().minusSeconds(120));
+        kept.setApplicationFeeMinor(149);
+        orders.save(kept);
+        Order lost = newOrder("lost@example.com", 1149, Instant.now().minusSeconds(60));
+        lost.setApplicationFeeMinor(149);
+        orders.save(lost);
+        newDispute(lost, DisputeStatus.LOST, 1149);
+
+        EventOverviewResponse r = service.overview(principal, event.getId());
+
+        assertThat(r.metrics().revenueMinor()).isEqualTo(1149L);
+        // 2298 − 298 fee − 1000 share (1149 less its own 149 fee); the old formula gave 851
+        assertThat(r.metrics().revenueAfterFeesMinor()).isEqualTo(1000L);
+        assertThat(r.metrics().disputedMinor()).isEqualTo(1149L);
+    }
+
     @Test
     void won_dispute_changes_none_of_the_numbers() {
         tiers.deleteAll();

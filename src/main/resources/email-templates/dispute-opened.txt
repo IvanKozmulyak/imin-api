@@ -10,7 +10,7 @@ DISPUTED AMOUNT
 WHAT HAPPENS NEXT
 - Submit your evidence in Stripe — the bank decides, and the deadline is set by them.
 - Payouts stay paused — they resume automatically the moment the dispute closes, either way.
-- If the dispute is lost — the disputed amount is not paid out. If it is won, it goes back.
+- If the dispute is lost — your share of the disputed amount (what you received for those tickets, not imin's service fee) is not paid out. If it is won, it goes back.
 
 Open your dashboard: {{dashboardUrl}}
 

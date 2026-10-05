@@ -128,7 +128,7 @@ refunds are deliberately kept.
 re-enter `EventRepository.findPayoutCandidates` once its org re-onboards live and Track B
 is enabled, and its fake gross would be paid out of the organizer's real connected balance.
 Every input to the per-event net is filtered to `test_mode = false`: gross and application
-fee (`orders`), the refunds netted off them, the disputed face value withheld
+fee (`orders`), the refunds netted off them, the organizer share of open/lost disputes withheld
 (`disputes`), and the already-triggered amount subtracted (`payout_runs`) — a test-era
 payout moved nothing out of a live balance, so counting it would short the first live
 payout. Both candidate queries apply the same exclusion; an event whose orders are ALL

@@ -417,7 +417,7 @@ Response: {
 }
 ```
 Field notes:
-- `cycle.revenueMinor` / `business.totalRevenueMinor`: orders created in the window (test mode included), totals less their succeeded refunds, unrefunded booking fee and OPEN/LOST chargebacks, clamped at 0 (the payout per-event net formula, applied to the window as a whole, so it can be lower than the sum of per-event payouts).
+- `cycle.revenueMinor` / `business.totalRevenueMinor`: orders placed in the window, test mode included: totals less their succeeded refunds, the unrefunded booking fee and the organizer share of open or lost chargebacks (what the organizer still holds from each disputed order, booking fee excluded), clamped at 0 (the payout per-event net formula, applied to the window as a whole, so it can be lower than the sum of per-event payouts).
 - `cycle.ticketsSold`: tickets (not orders) on those orders that are not refunded or revoked.
 - `cycle.deltas.*`: rounded % change against the equal prior window; null when the prior window is 0 or the period is `all`.
 - `lastEvent.metrics.avgTicketMinor`: the event's net (same formula) over its tickets not refunded or revoked, rounded half up; null when there are none. `attended` is tier sold net of chargebacks, not door scans.

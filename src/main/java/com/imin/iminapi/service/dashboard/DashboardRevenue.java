@@ -1,6 +1,6 @@
 package com.imin.iminapi.service.dashboard;
 
-import com.imin.iminapi.dispute.DisputeRepository;
+import com.imin.iminapi.dispute.DisputeWithholding;
 import com.imin.iminapi.refund.RefundRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketRepository;
@@ -11,7 +11,7 @@ import java.util.UUID;
 
 /**
  * The org home's organizer money: order totals less succeeded refunds, the unrefunded booking
- * fee and OPEN/LOST chargebacks, all modes. Overview and Sales keep their gross-based figures.
+ * fee and the organizer share of OPEN/LOST chargebacks, all modes. Sales keeps its gross figure.
  */
 @Component
 public class DashboardRevenue {
@@ -20,28 +20,31 @@ public class DashboardRevenue {
 
     private final OrderRepository orders;
     private final RefundRepository refunds;
-    private final DisputeRepository disputes;
+    private final DisputeWithholding disputeWithholding;
     private final TicketRepository tickets;
 
     public DashboardRevenue(OrderRepository orders, RefundRepository refunds,
-                            DisputeRepository disputes, TicketRepository tickets) {
+                            DisputeWithholding disputeWithholding, TicketRepository tickets) {
         this.orders = orders;
         this.refunds = refunds;
-        this.disputes = disputes;
+        this.disputeWithholding = disputeWithholding;
         this.tickets = tickets;
     }
 
-    /** Same expression as the payout per-event net in PostEventPayoutService.payOneEvent, applied to a whole window. */
-    public static long net(long gross, long refunded, long appFee, long appFeeRefunded, long disputed) {
-        return Math.max(0L, Math.max(0L, gross - refunded) - Math.max(0L, appFee - appFeeRefunded) - disputed);
+    /**
+     * Same expression as the payout per-event net in PostEventPayoutService.payOneEvent, applied to
+     * a whole window; {@code disputedShare} is the organizer share of the chargebacks, fee excluded.
+     */
+    public static long net(long gross, long refunded, long appFee, long appFeeRefunded, long disputedShare) {
+        return Math.max(0L, Math.max(0L, gross - refunded) - Math.max(0L, appFee - appFeeRefunded) - disputedShare);
     }
 
     /** Net and sold tickets of the org's orders created in {@code [since, until)}, with their own refunds and disputes. */
     public Window forOrgWindow(UUID orgId, Instant since, Instant until) {
         Object[] o = orders.sumTotalAndApplicationFeeByOrgInWindow(orgId, since, until).get(0);
         Object[] r = refunds.sumSucceededRefundAndFeeByOrgInWindow(orgId, since, until).get(0);
-        long disputed = disputes.sumOpenOrLostMinorByOrgOrderWindow(orgId, since, until);
-        long net = net(num(o[0]), num(r[0]), num(o[1]), num(r[1]), disputed);
+        long disputedShare = disputeWithholding.organizerShareMinorByOrgWindow(orgId, since, until);
+        long net = net(num(o[0]), num(r[0]), num(o[1]), num(r[1]), disputedShare);
         return new Window(net, tickets.countSoldByOrgInWindow(orgId, since, until));
     }
 
@@ -51,7 +54,7 @@ public class DashboardRevenue {
                 refunds.sumSucceededRefundMinorByEventId(eventId),
                 orders.sumApplicationFeeMinorByEventId(eventId),
                 refunds.sumSucceededRefundApplicationFeeMinorByEventId(eventId),
-                disputes.sumOpenOrLostMinorByEventId(eventId));
+                disputeWithholding.organizerShareMinor(eventId));
     }
 
     /** Tickets on the event that are not refunded or revoked. */

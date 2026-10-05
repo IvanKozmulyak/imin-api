@@ -10,7 +10,7 @@ IMPORTE DISPUTADO
 QUÉ PASA AHORA
 - Envía tus pruebas en Stripe — decide el banco, y el plazo lo fija él.
 - Los pagos siguen pausados — se reanudan solos en cuanto se cierre la disputa, sea cual sea el resultado.
-- Si se pierde la disputa — el importe disputado no se paga. Si se gana, vuelve.
+- Si se pierde la disputa — tu parte del importe disputado (lo que recibiste por esas entradas, sin la comisión de servicio de imin) no se paga. Si se gana, vuelve.
 
 Abre tu panel: {{dashboardUrl}}
 

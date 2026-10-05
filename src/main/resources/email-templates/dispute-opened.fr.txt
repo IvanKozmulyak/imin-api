@@ -10,7 +10,7 @@ MONTANT CONTESTÉ
 LA SUITE
 - Envoyez vos preuves dans Stripe — c'est la banque qui tranche, et elle fixe le délai.
 - Les virements restent suspendus — ils reprennent automatiquement dès la clôture du litige, quelle qu'en soit l'issue.
-- Si le litige est perdu — le montant contesté n'est pas versé. S'il est gagné, il revient.
+- Si le litige est perdu — votre part du montant contesté (ce que vous avez reçu pour ces billets, hors frais de service imin) n'est pas versée. S'il est gagné, elle vous revient.
 
 Ouvrir votre tableau de bord: {{dashboardUrl}}
 

@@ -7,16 +7,16 @@ import java.util.Locale;
  *
  * <p>Stored in its lowercase wire form via {@link DisputeStatusConverter}, matching
  * {@code SettlementStatus} / {@code PayoutRunStatus}. Only {@link #OPEN} blocks an org's
- * payouts; {@link #LOST} stops blocking but permanently reduces the event's payable net,
- * while {@link #WON} and {@link #WITHDRAWN_REINSTATED} give the money back by construction
- * (they are excluded from the reduction sum).
+ * payouts; {@link #LOST} stops blocking but permanently withholds the organizer's share of
+ * the order from the event's payable net, while {@link #WON} and {@link #WITHDRAWN_REINSTATED}
+ * give the money back by construction (they are excluded from the withholding set).
  */
 public enum DisputeStatus {
     /** Funds are at risk and the outcome is unknown — payouts for the org are frozen. */
     OPEN,
     /** Stripe found for the organizer; the money stays. */
     WON,
-    /** Stripe found for the cardholder; the face value is gone for good. */
+    /** Stripe found for the cardholder; permanently withholds the organizer's share of the order. */
     LOST,
     /** The cardholder withdrew, or Stripe reinstated the funds without a formal win. */
     WITHDRAWN_REINSTATED;

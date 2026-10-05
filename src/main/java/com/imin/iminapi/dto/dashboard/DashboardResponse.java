@@ -23,7 +23,9 @@ public record DashboardResponse(
 
     public record Cycle(String period,
                         @Schema(description = "Orders placed in the window, test mode included: totals less their"
-                                + " succeeded refunds, unrefunded booking fee and open or lost chargebacks."
+                                + " succeeded refunds, the unrefunded booking fee and the organizer share of open"
+                                + " or lost chargebacks (what the organizer still holds from each disputed order,"
+                                + " booking fee excluded)."
                                 + " Minor units, never negative.")
                         long revenueMinor,
                         @Schema(description = "Tickets on orders placed in the window that are not refunded or"

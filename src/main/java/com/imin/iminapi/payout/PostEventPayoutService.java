@@ -1,6 +1,7 @@
 package com.imin.iminapi.payout;
 
 import com.imin.iminapi.dispute.DisputeRepository;
+import com.imin.iminapi.dispute.DisputeWithholding;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.refund.RefundRepository;
@@ -58,11 +59,12 @@ import java.util.UUID;
  *       between scan and commit.</li>
  *   <li><b>step 1 — dispute/hold guard.</b> Skip while the org has any OPEN dispute
  *       in the {@code disputes} registry. A CLOSED dispute never blocks: a win releases
- *       the funds, and a loss is recovered by subtracting its face value from the
- *       event's net in step 2. Also skip if the account is no longer payable.</li>
+ *       the funds, and a loss is settled by withholding the organizer's share of the order
+ *       (the disputed amount less its booking fee) from the event's net in step 2. Also skip
+ *       if the account is no longer payable.</li>
  *   <li><b>step 2 — per-event net (the ceiling).</b> Reuse the
  *       {@code EventOverviewService} derivation: {@code gross − refunds − net app
- *       fee}, less the face value of the event's open/lost disputes. <b>Fee EXCLUDED</b> (§4.4): imin's application fee sits on the platform
+ *       fee}, less the organizer's share of the event's open/lost disputes. <b>Fee EXCLUDED</b> (§4.4): imin's application fee sits on the platform
  *       balance and is subtracted out here, so the computed ceiling is the
  *       organizer's net.</li>
  *   <li><b>step 3 — live available balance</b> ON the connected account, matched to
@@ -135,6 +137,7 @@ public class PostEventPayoutService {
     private final OrderRepository orders;
     private final RefundRepository refunds;
     private final DisputeRepository disputes;
+    private final DisputeWithholding disputeWithholding;
     private final RefundRecoveryMarker recoveryMarker;
     private final ApplicationEventPublisher publisher;
 
@@ -146,6 +149,7 @@ public class PostEventPayoutService {
                                   OrderRepository orders,
                                   RefundRepository refunds,
                                   DisputeRepository disputes,
+                                  DisputeWithholding disputeWithholding,
                                   RefundRecoveryMarker recoveryMarker,
                                   ApplicationEventPublisher publisher) {
         this.stripeClient = stripeClient;
@@ -156,6 +160,7 @@ public class PostEventPayoutService {
         this.orders = orders;
         this.refunds = refunds;
         this.disputes = disputes;
+        this.disputeWithholding = disputeWithholding;
         this.recoveryMarker = recoveryMarker;
         this.publisher = publisher;
     }
@@ -231,15 +236,14 @@ public class PostEventPayoutService {
         long appFee = orders.sumLiveApplicationFeeMinorByEventId(eventId);
         long appFeeRefunded = refunds.sumSucceededLiveRefundApplicationFeeMinorByEventId(eventId);
         long netAppFee = Math.max(0L, appFee - appFeeRefunded);
-        // Chargebacks come off the top: the organizer bears the disputed FACE VALUE, imin
-        // absorbs Stripe's separate dispute fee (which never reaches this table). A dispute
-        // that is later won or reinstated leaves the OPEN/LOST sum and the net recovers.
-        long disputedMinor = disputes.sumOpenOrLostLiveMinorByEventId(eventId);
+        // A chargeback takes the organizer's ticket share off the net; its booking fee is already
+        // in netAppFee and stays imin's loss. A won or reinstated dispute leaves the set again.
+        long disputedShareMinor = disputeWithholding.organizerShareLiveMinor(eventId);
         long perEventNetMinor = Math.max(0L,
-                Math.max(0L, gross - refunded) - netAppFee - disputedMinor);
-        if (disputedMinor > 0L) {
-            log.info("[payout] event {} org {} — {} of disputed face value withheld from the net (now {})",
-                    eventId, org.getId(), disputedMinor, perEventNetMinor);
+                Math.max(0L, gross - refunded) - netAppFee - disputedShareMinor);
+        if (disputedShareMinor > 0L) {
+            log.info("[payout] event {} org {} — {} of the organizer's share of open/lost disputes withheld "
+                    + "from the net (now {})", eventId, org.getId(), disputedShareMinor, perEventNetMinor);
         }
         if (perEventNetMinor <= 0L) {
             log.info("[payout] skip event {} org {} — computed net is {} (nothing to pay)",

@@ -21,6 +21,17 @@ public interface RefundRepository extends JpaRepository<Refund, UUID> {
 
     List<Refund> findByOrderIdOrderByCreatedAtDesc(UUID orderId);
 
+    /** SUCCEEDED refund amount and booking-fee part per order, one row per order that has any. */
+    @Query("""
+            select new com.imin.iminapi.refund.RefundOrderSums(
+                       r.orderId, sum(r.amountMinor), sum(r.applicationFeeRefundMinor))
+              from Refund r
+             where r.orderId in :orderIds
+               and r.status = com.imin.iminapi.refund.RefundStatus.SUCCEEDED
+             group by r.orderId
+            """)
+    List<RefundOrderSums> sumSucceededAmountAndFeeByOrderIds(@Param("orderIds") Collection<UUID> orderIds);
+
     /**
      * All refunds for any order in the given event, newest first. Includes the
      * order's email and short identifier so callers can render a per-event

@@ -54,7 +54,7 @@ public class Dispute {
     @Column(name = "stripe_payment_intent_id", length = 255)
     private String stripePaymentIntentId;
 
-    /** The disputed FACE VALUE in minor units. Stripe's dispute fee is not in here. */
+    /** Stripe {@code dispute.amount}: the disputed part of the charge, booking fee included; Stripe's dispute fee is not. */
     @Column(name = "amount_minor", nullable = false)
     private long amountMinor;
 

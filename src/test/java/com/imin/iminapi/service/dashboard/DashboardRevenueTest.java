@@ -98,8 +98,9 @@ class DashboardRevenueTest {
     void worked_example_window_includes_test_mode_and_nets_refunds_fee_and_chargebacks() {
         workedExample(event);
 
-        // gross 12045 − refunds 2149 − fee (1045 − 149) − disputes (1149 + 5349) = 2502.
-        assertThat(revenue.forOrgWindow(org.getId(), since, now)).isEqualTo(new Window(2_502, 3));
+        // gross 12045 − refunds 2149 − fee (1045 − 149) − organizer shares (C 1000 + D 4000) = 4000,
+        // i.e. A's stake 4398 − 398. D: 5349 − 1000 refunded leaves 4349 of stake, less its 349 fee.
+        assertThat(revenue.forOrgWindow(org.getId(), since, now)).isEqualTo(new Window(4_000, 3));
     }
 
     @Test
@@ -168,7 +169,7 @@ class DashboardRevenueTest {
         Event older = event(org);
         workedExample(event, older);
 
-        assertThat(revenue.netForEvent(event.getId())).isEqualTo(2_502L);
+        assertThat(revenue.netForEvent(event.getId())).isEqualTo(4_000L);
         assertThat(revenue.netForEvent(older.getId())).isEqualTo(3_000L);
     }
 

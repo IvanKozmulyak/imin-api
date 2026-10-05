@@ -8,8 +8,9 @@ class DashboardRevenueNetTest {
 
     @Test
     void worked_example_nets_refunds_unrefunded_fee_and_chargebacks() {
-        // 12045 gross − 2149 refunded = 9896; − (1045 − 149) fee = 9000; − 6498 disputed = 2502.
-        assertThat(DashboardRevenue.net(12_045, 2_149, 1_045, 149, 6_498)).isEqualTo(2_502L);
+        // 12045 gross − 2149 refunded = 9896; − (1045 − 149) fee = 9000; − 5000 = 4000.
+        // 5000 = organizer shares 1000 + 4000
+        assertThat(DashboardRevenue.net(12_045, 2_149, 1_045, 149, 5_000)).isEqualTo(4_000L);
     }
 
     @Test

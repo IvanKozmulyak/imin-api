@@ -100,7 +100,9 @@ public class EventOverviewService {
         long appFee = orders.sumApplicationFeeMinorByEventId(id);
         long appFeeRefunded = refunds.sumSucceededRefundApplicationFeeMinorByEventId(id);
         long netAppFee = Math.max(0L, appFee - appFeeRefunded);
-        long revenueAfterFeesMinor = Math.max(0L, revenueMinor - netAppFee);
+        // A chargeback costs the organizer only its ticket share: the booking fee is in netAppFee once.
+        long revenueAfterFeesMinor = Math.max(0L, Math.max(0L, gross - refunded) - netAppFee
+                - disputeWithholding.organizerShareMinor(id));
 
         Metrics m = new Metrics(sold, capacity, revenueMinor, revenueAfterFeesMinor,
                 e.getCurrency(), Math.max(0, daysOut), disputedCount, disputedMinor);

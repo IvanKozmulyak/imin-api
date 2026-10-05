@@ -94,57 +94,62 @@ public interface DisputeRepository extends JpaRepository<Dispute, UUID> {
     long countByOrderIdAndStatusInAndIdNot(UUID orderId, Collection<DisputeStatus> statuses,
                                            UUID excludedId);
 
+    /**
+     * Withholding disputes summed per order, for every event in {@code eventIds}, all modes.
+     * Left join: a dispute with no order keeps a row with null total and fee.
+     */
     @Query("""
-            select coalesce(sum(d.amountMinor), 0) from Dispute d
-             where d.eventId = :eventId
-               and d.status in :statuses
-            """)
-    long sumMinorByEventIdAndStatusIn(@Param("eventId") UUID eventId,
-                                      @Param("statuses") Collection<DisputeStatus> statuses);
-
-    /** {@link #sumMinorByEventIdAndStatusIn} for a page of events: [eventId, sum]. */
-    @Query("""
-            select d.eventId, coalesce(sum(d.amountMinor), 0) from Dispute d
+            select new com.imin.iminapi.dispute.DisputeOrderRow(
+                       d.eventId, d.orderId, o.totalMinor, o.applicationFeeMinor, sum(d.amountMinor))
+              from Dispute d left join com.imin.iminapi.model.Order o on o.id = d.orderId
              where d.eventId in :eventIds
                and d.status in :statuses
-             group by d.eventId
+             group by d.eventId, d.orderId, o.totalMinor, o.applicationFeeMinor
             """)
-    List<Object[]> sumMinorByEventIdsAndStatusIn(@Param("eventIds") Collection<UUID> eventIds,
-                                                 @Param("statuses") Collection<DisputeStatus> statuses);
-
-    /** Same sum, LIVE-mode rows only (V130) — the payout path's variant. */
-    @Query("""
-            select coalesce(sum(d.amountMinor), 0) from Dispute d
-             where d.eventId = :eventId
-               and d.status in :statuses
-               and d.testMode = false
-            """)
-    long sumLiveMinorByEventIdAndStatusIn(@Param("eventId") UUID eventId,
-                                          @Param("statuses") Collection<DisputeStatus> statuses);
+    List<DisputeOrderRow> withholdingRowsByEventIds(@Param("eventIds") Collection<UUID> eventIds,
+                                                    @Param("statuses") Collection<DisputeStatus> statuses);
 
     /**
-     * Disputes in {@code statuses} on the org's orders created in {@code [since, until)},
+     * {@link #withholdingRowsByEventIds} for one event, LIVE-mode disputes only (V130): the payout
+     * path's variant, since a test-era chargeback clawed back no real money.
+     */
+    @Query("""
+            select new com.imin.iminapi.dispute.DisputeOrderRow(
+                       d.eventId, d.orderId, o.totalMinor, o.applicationFeeMinor, sum(d.amountMinor))
+              from Dispute d left join com.imin.iminapi.model.Order o on o.id = d.orderId
+             where d.eventId = :eventId
+               and d.testMode = false
+               and d.status in :statuses
+             group by d.eventId, d.orderId, o.totalMinor, o.applicationFeeMinor
+            """)
+    List<DisputeOrderRow> liveWithholdingRowsByEventId(@Param("eventId") UUID eventId,
+                                                       @Param("statuses") Collection<DisputeStatus> statuses);
+
+    /**
+     * Withholding disputes summed per order, on the org's orders created in {@code [since, until)},
      * all modes. A dispute with no order cannot be placed in a window and is not counted.
      */
     @Query("""
-            select coalesce(sum(d.amountMinor), 0) from Dispute d
+            select new com.imin.iminapi.dispute.DisputeOrderRow(
+                       d.eventId, d.orderId, o.totalMinor, o.applicationFeeMinor, sum(d.amountMinor))
+              from Dispute d join com.imin.iminapi.model.Order o on o.id = d.orderId
              where d.orgId = :orgId
+               and o.orgId = :orgId
+               and o.createdAt >= :since
+               and o.createdAt < :until
                and d.status in :statuses
-               and d.orderId in (select o.id from com.imin.iminapi.model.Order o
-                                  where o.orgId = :orgId
-                                    and o.createdAt >= :since
-                                    and o.createdAt < :until)
+             group by d.eventId, d.orderId, o.totalMinor, o.applicationFeeMinor
             """)
-    long sumMinorByOrgOrderWindowAndStatusIn(@Param("orgId") UUID orgId,
-                                             @Param("since") Instant since,
-                                             @Param("until") Instant until,
-                                             @Param("statuses") Collection<DisputeStatus> statuses);
+    List<DisputeOrderRow> withholdingRowsByOrgOrderWindow(@Param("orgId") UUID orgId,
+                                                          @Param("since") Instant since,
+                                                          @Param("until") Instant until,
+                                                          @Param("statuses") Collection<DisputeStatus> statuses);
 
     /**
      * The org-level payout gate: any OPEN dispute freezes every payout for the org, because
      * the connected balance is one shared pool and the funds may still be clawed back. A
-     * CLOSED dispute — won or lost — never blocks; a loss is settled by the net reduction
-     * below instead of by an indefinite freeze.
+     * CLOSED dispute — won or lost — never blocks; a loss is settled by withholding the
+     * organizer's share of the order from the event's net instead of by an indefinite freeze.
      */
     default long countOpenByOrgId(UUID orgId) {
         return countByOrgIdAndStatus(orgId, DisputeStatus.OPEN);
@@ -160,34 +165,6 @@ public interface DisputeRepository extends JpaRepository<Dispute, UUID> {
      */
     default long countOtherOpenOrLostByOrderId(UUID orderId, UUID excludedId) {
         return countByOrderIdAndStatusInAndIdNot(orderId, DisputeWithholding.STATUSES, excludedId);
-    }
-
-    /**
-     * Face value this event must not pay out: disputes still OPEN plus those definitively
-     * LOST. WON and WITHDRAWN_REINSTATED are excluded, which is how a reinstatement adds the
-     * money back — the sum simply stops counting it.
-     */
-    default long sumOpenOrLostMinorByEventId(UUID eventId) {
-        return sumMinorByEventIdAndStatusIn(eventId, DisputeWithholding.STATUSES);
-    }
-
-    /** {@link #sumOpenOrLostMinorByEventId} for a page of events: [eventId, sum]. */
-    default List<Object[]> sumOpenOrLostMinorByEventIds(Collection<UUID> eventIds) {
-        return sumMinorByEventIdsAndStatusIn(eventIds, DisputeWithholding.STATUSES);
-    }
-
-    /** OPEN or LOST face value on the org's orders created in {@code [since, until)}; the org home's window. */
-    default long sumOpenOrLostMinorByOrgOrderWindow(UUID orgId, Instant since, Instant until) {
-        return sumMinorByOrgOrderWindowAndStatusIn(orgId, since, until, DisputeWithholding.STATUSES);
-    }
-
-    /**
-     * The payout path's variant of {@link #sumOpenOrLostMinorByEventId}: LIVE-mode disputes
-     * only (V130). A test-era chargeback clawed back no real money, so subtracting it from a
-     * live net would withhold the organizer's own funds against a loss that never happened.
-     */
-    default long sumOpenOrLostLiveMinorByEventId(UUID eventId) {
-        return sumLiveMinorByEventIdAndStatusIn(eventId, DisputeWithholding.STATUSES);
     }
 
     /**

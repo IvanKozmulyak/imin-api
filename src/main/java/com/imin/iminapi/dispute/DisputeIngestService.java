@@ -176,9 +176,10 @@ public class DisputeIngestService {
                         stripeDispute.getId(), eventType, status.toWire(), orgId, row.getEventId(), restored);
             }
         } else if (status == DisputeStatus.LOST && previous != DisputeStatus.LOST) {
-            // Tickets stay revoked: the cardholder has their money back. The face value comes
-            // off the event's payable net; Stripe's separate dispute fee is on the platform.
-            log.warn("[dispute] {} ({}) LOST org={} event={} — {} {} comes off the event's payable net",
+            // Tickets stay revoked: the cardholder has their money back. The organizer's share comes
+            // off the event's net; the booking fee and Stripe's dispute fee stay with the platform.
+            log.warn("[dispute] {} ({}) LOST org={} event={} — {} {} disputed; the organizer's share "
+                            + "comes off the event's net",
                     stripeDispute.getId(), eventType, orgId, row.getEventId(),
                     row.getAmountMinor(), row.getCurrency());
         } else {
@@ -236,7 +237,7 @@ public class DisputeIngestService {
      * The conditional UPDATE and its ticket consequence. {@code test_mode} comes from the ORDER
      * rather than the running key: the order recorded whether the money was real, and a sweep
      * under a live key would otherwise re-stamp a test-era orphan as live and withhold real
-     * face value from the event's payout net. {@code org_id} likewise: an orphan's org was
+     * money from the event's payout net. {@code org_id} likewise: an orphan's org was
      * guessed from the charge's transfer destination and the order is the precise answer.
      */
     private boolean attach(Dispute row, Order order) {

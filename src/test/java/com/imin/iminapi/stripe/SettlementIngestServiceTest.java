@@ -4,6 +4,7 @@ import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.dispute.Dispute;
 import com.imin.iminapi.dispute.DisputeRepository;
 import com.imin.iminapi.dispute.DisputeStatus;
+import com.imin.iminapi.dispute.DisputeWithholding;
 import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
@@ -65,6 +66,7 @@ class SettlementIngestServiceTest {
     @Autowired StripeWebhookService webhook;
     @Autowired StripeProperties props;
     @Autowired DisputeRepository disputes;
+    @Autowired DisputeWithholding disputeWithholding;
     @Autowired SettlementRepository settlements;
     @Autowired OrganizationRepository orgs;
     @Autowired EventRepository events;
@@ -268,8 +270,8 @@ class SettlementIngestServiceTest {
         assertThat(disputes.countOpenByOrgId(org.getId()))
                 .as("a closed dispute stops blocking payouts")
                 .isZero();
-        assertThat(disputes.sumOpenOrLostMinorByEventId(event.getId()))
-                .as("a win adds the face value back by leaving the open/lost sum")
+        assertThat(disputeWithholding.withheldMinor(event.getId()))
+                .as("a win adds the disputed amount back by leaving the open/lost set")
                 .isZero();
     }
 

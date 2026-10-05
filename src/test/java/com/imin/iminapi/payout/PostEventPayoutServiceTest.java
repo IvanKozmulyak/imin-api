@@ -551,7 +551,7 @@ class PostEventPayoutServiceTest {
         fake.availableMinor.set(50_000L);
 
         // A lost chargeback: the transfer row keeps its FAILED annotation, but the payout
-        // must run — reduced by the face value the organizer bears.
+        // must run, reduced by the organizer's share of the disputed order.
         Settlement transferRow = new Settlement();
         transferRow.setOrgId(org.getId());
         transferRow.setStripeObjectId("tr_lost_dispute");
@@ -568,9 +568,27 @@ class PostEventPayoutServiceTest {
         assertThat(fake.payoutCount.get())
                 .as("a CLOSED dispute never blocks — the loss is settled by the net, not a freeze")
                 .isEqualTo(1);
+        // gross withheld 2_000; fee share round(800 × 2_000 / 8_000) = 200; share 1_800
         assertThat(fake.lastPayoutAmount.get())
-                .as("net 7_200 − 2_000 of lost face value")
-                .isEqualTo(5_200L);
+                .as("net 7_200 − the organizer's share 1_800")
+                .isEqualTo(5_400L);
+    }
+
+    @Test
+    void mixed_event_lost_11_49_dispute_withholds_only_the_ticket_share() {
+        Event e = newEndedEvent(org);
+        Order lost = order(e, 1_149, 149);
+        order(e, 1_149, 149);
+        order(e, 2_298, 298);
+        fake.availableMinor.set(50_000L);
+        dispute(lost, e, 1_149, DisputeStatus.LOST);
+
+        service.payOneEvent(e.getId());
+
+        // 4_596 − 596 fee − 1_000 share (1_149 less its own 149 fee, which is already in the 596)
+        assertThat(fake.lastPayoutAmount.get())
+                .as("the booking fee of the disputed order is taken once, not twice (old formula: 2_851)")
+                .isEqualTo(3_000L);
     }
 
     @Test

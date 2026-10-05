@@ -68,7 +68,7 @@ class EventServiceSalesFiguresTest {
     @BeforeEach
     void setUp() {
         var salesTotals = new EventSalesTotals(tiers, orders, refunds,
-                new DisputeWithholding(disputes, tickets));
+                new DisputeWithholding(disputes, tickets, refunds));
         sut = new EventService(events, tiers, promos, predictions, new EventValidator(),
                 new IfMatchSupport(), mock(TicketTierService.class), mock(StripeConnectService.class),
                 null, null, null, null, salesTotals);
