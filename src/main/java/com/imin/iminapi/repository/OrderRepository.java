@@ -42,6 +42,11 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
 
     List<Order> findByEventIdOrderByCreatedAtDesc(UUID eventId, Pageable pageable);
 
+    /** The org's orders, newest first (dashboard pulse). */
+    @Query("select o from Order o where o.orgId = :orgId " +
+           "order by o.createdAt desc")
+    List<Order> findByOrgIdOrderByCreatedAtDesc(@Param("orgId") UUID orgId, Pageable pageable);
+
     /** Number of orders (= completed payments) for an event. Drives the funnel's PAYMENTS_COMPLETED stage. */
     long countByEventId(UUID eventId);
 

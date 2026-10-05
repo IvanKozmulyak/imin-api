@@ -63,6 +63,7 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
      * {@code saleClosesAt > now}), so an event whose sales window has already CLOSED
      * (but not yet started) is excluded: the organizer could not act on a suggestion
      * with sales shut. Null {@code onSaleAt}/{@code saleClosesAt} mean "no bound".
+     * The same predicate backs countOnSaleByOrg and countOnSaleById; change all three together.
      */
     @Query("SELECT e FROM Event e WHERE e.deletedAt IS NULL " +
            "AND e.status = com.imin.iminapi.model.EventStatus.LIVE " +
@@ -71,6 +72,24 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
            "AND (e.saleClosesAt IS NULL OR e.saleClosesAt > :now) " +
            "ORDER BY e.startsAt ASC")
     List<Event> findMomentumCandidates(@Param("now") Instant now);
+
+    /** The org's events in an open sale window now. Same on-sale predicate as findMomentumCandidates; change both together. */
+    @Query("SELECT COUNT(e) FROM Event e WHERE e.orgId = :orgId " +
+           "AND e.deletedAt IS NULL " +
+           "AND e.status = com.imin.iminapi.model.EventStatus.LIVE " +
+           "AND e.startsAt > :now " +
+           "AND (e.onSaleAt IS NULL OR e.onSaleAt <= :now) " +
+           "AND (e.saleClosesAt IS NULL OR e.saleClosesAt > :now)")
+    long countOnSaleByOrg(@Param("orgId") UUID orgId, @Param("now") Instant now);
+
+    /** 1 when this event is in an open sale window now. Same on-sale predicate as findMomentumCandidates; change both together. */
+    @Query("SELECT COUNT(e) FROM Event e WHERE e.id = :id " +
+           "AND e.deletedAt IS NULL " +
+           "AND e.status = com.imin.iminapi.model.EventStatus.LIVE " +
+           "AND e.startsAt > :now " +
+           "AND (e.onSaleAt IS NULL OR e.onSaleAt <= :now) " +
+           "AND (e.saleClosesAt IS NULL OR e.saleClosesAt > :now)")
+    long countOnSaleById(@Param("id") UUID id, @Param("now") Instant now);
 
     /**
      * Live, non-deleted events starting in (from, to), soonest first, for the date-check radar. Reads every
