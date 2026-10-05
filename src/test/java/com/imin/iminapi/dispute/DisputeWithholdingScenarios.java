@@ -93,6 +93,25 @@ abstract class DisputeWithholdingScenarios {
     }
 
     @Test
+    void a_usd_order_withholds_its_settled_share() {
+        // Sandbox 2026-10-05: 1149 USD (fee 149) settled as 1025 EUR, fee 133 EUR.
+        Order usd = order(event, 1_149, 149, "usd", "eur", 1_025L, 133L, false, now);
+        dispute(usd, 1_149, DisputeStatus.LOST, false);
+
+        assertThat(withholding.organizerShareLiveMinor(event.getId())).as("1025 − 133, in eur").isEqualTo(892L);
+        assertThat(withholding.organizerShareMinor(event.getId())).as("the readout stays in usd").isEqualTo(1_000L);
+    }
+
+    @Test
+    void a_dispute_on_an_unstamped_order_withholds_its_whole_amount_from_the_payout() {
+        Order unstamped = order(event, 1_149, 149, "usd", null, null, null, false, now);
+        dispute(unstamped, 1_149, DisputeStatus.LOST, false);
+
+        assertThat(withholding.organizerShareLiveMinor(event.getId())).as("cannot be sized, so all of it")
+                .isEqualTo(1_149L);
+    }
+
+    @Test
     void full_charge_dispute_after_a_refund_withholds_only_what_was_not_refunded() {
         order(event, 1_149, 149, false, now);
         Order o3 = order(event, 2_298, 298, false, now);
@@ -245,18 +264,27 @@ abstract class DisputeWithholdingScenarios {
         return e;
     }
 
+    /** An EUR order, settled 1:1 as V174 stamps every EUR order. */
     private Order order(Event e, long totalMinor, long feeMinor, boolean testMode, Instant createdAt) {
+        return order(e, totalMinor, feeMinor, "eur", "eur", totalMinor, feeMinor, testMode, createdAt);
+    }
+
+    private Order order(Event e, long totalMinor, long feeMinor, String currency, String sCur, Long settledGross,
+                        Long settledFee, boolean testMode, Instant createdAt) {
         Order o = new Order();
         o.setToken(UUID.randomUUID().toString().replace("-", ""));
         o.setEventId(e.getId());
         o.setOrgId(e.getOrgId());
         o.setEmail("buyer@test.example");
         o.setTotalMinor(totalMinor);
-        o.setCurrency("eur");
+        o.setCurrency(currency);
         o.setApplicationFeeMinor(feeMinor);
         o.setPaymentMethod("card");
         o.setTestMode(testMode);
         o.setCreatedAt(createdAt);
+        o.setSettlementCurrency(sCur);
+        o.setSettlementGrossMinor(settledGross);
+        o.setSettlementFeeMinor(settledFee);
         o = orders.save(o);
         orderIds.add(o.getId());
         return o;

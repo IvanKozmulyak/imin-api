@@ -118,16 +118,14 @@ class PayoutTestModeExclusionTest {
     @Test
     void netSumsExcludeTestModeOrders() {
         Event e = endedEvent();
-        order(e, 10_000, 1_000, false);
+        Order live = order(e, 10_000, 1_000, false);
         order(e, 90_000, 9_000, true);
         refund(order(e, 4_000, 400, true), 4_000, 400);
 
-        assertThat(orders.sumLiveTotalMinorByEventId(e.getId())).isEqualTo(10_000L);
-        assertThat(orders.sumLiveApplicationFeeMinorByEventId(e.getId())).isEqualTo(1_000L);
-        assertThat(refunds.sumSucceededLiveRefundMinorByEventId(e.getId()))
-                .as("a refund of a test-mode order is netted off nothing")
-                .isZero();
-        assertThat(refunds.sumSucceededLiveRefundApplicationFeeMinorByEventId(e.getId())).isZero();
+        assertThat(orders.settlementRowsByEventId(e.getId()))
+                .as("only the live order, and a refund of a test-mode order is netted off nothing")
+                .containsExactly(new OrderSettlementRow(live.getId(), 10_000L, 1_000L, "eur", 10_000L, 1_000L,
+                        0L, 0L));
         // The unfiltered sums are untouched — the organizer's own revenue readouts still
         // show the full history.
         assertThat(orders.sumTotalMinorByEventId(e.getId())).isEqualTo(104_000L);
@@ -461,6 +459,10 @@ class PayoutTestModeExclusionTest {
         o.setApplicationFeeMinor(appFeeMinor);
         o.setPaymentMethod("card");
         o.setTestMode(testMode);
+        // EUR settles 1:1, as V174 stamps it.
+        o.setSettlementCurrency("eur");
+        o.setSettlementGrossMinor(totalMinor);
+        o.setSettlementFeeMinor(appFeeMinor);
         return orders.save(o);
     }
 

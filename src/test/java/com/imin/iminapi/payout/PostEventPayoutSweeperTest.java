@@ -396,6 +396,10 @@ class PostEventPayoutSweeperTest {
         o.setCurrency("eur");
         o.setApplicationFeeMinor(400);
         o.setPaymentMethod("card");
+        // EUR settles 1:1, as V174 stamps it.
+        o.setSettlementCurrency("eur");
+        o.setSettlementGrossMinor(4_000L);
+        o.setSettlementFeeMinor(400L);
         return orders.save(o);
     }
 

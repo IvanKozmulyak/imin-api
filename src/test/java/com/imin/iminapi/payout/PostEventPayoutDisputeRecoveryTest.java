@@ -32,6 +32,10 @@ import com.stripe.service.BalanceService;
 import com.stripe.service.ChargeService;
 import com.stripe.service.PayoutService;
 import com.stripe.service.TransferService;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import org.slf4j.LoggerFactory;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -58,6 +62,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.doCallRealMethod;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -91,6 +96,9 @@ class PostEventPayoutDisputeRecoveryTest {
         final List<Call> transferCreates = new ArrayList<>();
         final List<Call> payouts = new ArrayList<>();
         final List<String> recoveryReads = new ArrayList<>();
+        /** Canned PaymentIntents the settlement stamper reads, by id; and the ids it read. */
+        final Map<String, String> paymentIntents = new HashMap<>();
+        final List<String> paymentIntentReads = new ArrayList<>();
         long available = 50_000L;
         String reversalFailure;      // "balance_insufficient" | "server" | "timeout_after" (executed, then timed out) | null
         String transferFailure;      // "balance_insufficient" | "server" | "timeout_after" | null
@@ -101,6 +109,11 @@ class PostEventPayoutDisputeRecoveryTest {
             boolean post = req.getMethod() == ApiResource.RequestMethod.POST;
             String key = req.getOptions() == null ? null : req.getOptions().getIdempotencyKey();
             Map<String, Object> params = req.getParams() == null ? Map.of() : req.getParams();
+            if (path.startsWith("/v1/payment_intents/")) {
+                String id = path.substring("/v1/payment_intents/".length());
+                paymentIntentReads.add(id);
+                return ApiResource.GSON.fromJson(paymentIntents.get(id), type);
+            }
             if (path.startsWith("/v1/balance")) {
                 return json(Map.of("object", "balance",
                         "available", List.of(Map.of("amount", available, "currency", "eur")),
@@ -219,7 +232,7 @@ class PostEventPayoutDisputeRecoveryTest {
     @Autowired PostEventPayoutService service;
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
-    @Autowired OrderRepository orders;
+    @MockitoSpyBean OrderRepository orders;
     @Autowired RefundRepository refunds;
     @Autowired DisputeRepository disputes;
     @Autowired PayoutRunRepository payoutRuns;
@@ -245,6 +258,7 @@ class PostEventPayoutDisputeRecoveryTest {
         when(stripeClient.accounts()).thenReturn(new AccountService(rg));
         when(stripeClient.charges()).thenReturn(new ChargeService(rg));
         when(stripeClient.transfers()).thenReturn(new TransferService(rg));
+        when(stripeClient.paymentIntents()).thenReturn(new com.stripe.service.PaymentIntentService(rg));
         org = org("acct_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16));
     }
 
@@ -539,15 +553,87 @@ class PostEventPayoutDisputeRecoveryTest {
         assertThat(fake.reversalCreates).extracting(Call::amount).containsExactly(1_000L, 1_000L);
     }
 
+    // ── converted orders: sandbox 1149 USD (fee 149) settled as 1025 EUR, fee 133 EUR ──
+
     @Test
-    void a_transfer_in_another_currency_than_the_dispute_is_never_reversed() {
-        Order o = order(event(), 1_149, 149);
-        o.setCurrency("usd");
-        orders.save(o);
-        Dispute d = lost(o, 1_149, 1_025);
-        d.setCurrency("usd");
-        disputes.save(d);
-        fake.transferCurrency.put(fake.chargeTransfer.get(d.getStripeChargeId()), "eur");
+    void worked_W3_a_lost_usd_order_reverses_892_eur() {
+        Order o = usdOrder(event());
+        Dispute d = lostUsd(o, 1_149, 1_025);
+        String tr = fake.chargeTransfer.get(d.getStripeChargeId());
+
+        service.recoverForOrg(org.getId());
+
+        // gross_s(1149) = 1025, fee_s(149) = 133, share min(892, stake 892)
+        assertThat(fake.reversalCreates).hasSize(1);
+        Call c = fake.reversalCreates.get(0);
+        assertThat(c.path()).isEqualTo("/v1/transfers/" + tr + "/reversals");
+        assertThat(c.amount()).isEqualTo(892L);
+        assertThat(c.key()).isEqualTo("dispute:" + d.getId() + ":reversal:892");
+        Dispute r = reload(d);
+        assertThat(r.getRecoveredMinor()).isEqualTo(892L);
+        assertThat(r.getRecoveredAt()).isNotNull();
+    }
+
+    @Test
+    void worked_W4_a_won_usd_dispute_returns_892_in_eur() {
+        Order o = usdOrder(event());
+        Dispute d = lostUsd(o, 1_149, 1_025);
+        service.recoverForOrg(org.getId());
+        Dispute won = reload(d);
+        won.setStatus(DisputeStatus.WON);
+        disputes.save(won);
+
+        service.recoverForOrg(org.getId());
+
+        assertThat(fake.transferCreates).hasSize(1);
+        Call c = fake.transferCreates.get(0);
+        assertThat(c.amount()).isEqualTo(892L);
+        assertThat(c.params()).containsEntry("currency", "eur").containsEntry("destination", org.getStripeAccountId());
+        assertThat(c.key()).isEqualTo("dispute:" + d.getId() + ":return:0:892");
+        assertThat(reload(d).getReturnedMinor()).isEqualTo(892L);
+    }
+
+    @Test
+    void worked_W2_a_platform_funded_usd_refund_reverses_446_eur() {
+        Order o = usdOrder(event());
+        Refund fronted = refund(o, 574, 74, true);
+        fronted.setCurrency("usd");
+        refunds.save(fronted);
+        String tr = fake.chargeTransfer.get(chargeOf(o));
+        fake.transfers.put(tr, new long[] {1_025L, 0L});
+
+        service.recoverForOrg(org.getId());
+
+        // gross_s(574) = 512, fee_s(74) = 66
+        assertThat(fake.reversalCreates).hasSize(1);
+        assertThat(fake.reversalCreates.get(0).amount()).isEqualTo(446L);
+        assertThat(fake.reversalCreates.get(0).key()).isEqualTo("refund:" + fronted.getId() + ":reversal");
+        assertThat(refunds.findById(fronted.getId()).orElseThrow().getRecoveredAt()).isNotNull();
+    }
+
+    @Test
+    void worked_W5_refund_then_lost_reverses_446_eur() {
+        Order o = usdOrder(event());
+        Refund r = refund(o, 574, 74, false);
+        r.setCurrency("usd");
+        refunds.save(r);
+        Dispute d = lostUsd(o, 1_149, 1_025);
+        // the refund's reverse_transfer took gross_s(574) = 512 of the transfer
+        fake.transfers.get(fake.chargeTransfer.get(d.getStripeChargeId()))[1] = 512L;
+
+        service.recoverForOrg(org.getId());
+
+        // DisputeShare (575, 75, 500) → 513 − 67 = 446, stake 446, 513 left on the transfer
+        assertThat(fake.reversalCreates).extracting(Call::amount).containsExactly(446L);
+        assertThat(reload(d).getRecoveredAt()).isNotNull();
+    }
+
+    @Test
+    void a_transfer_in_another_currency_than_the_settlement_is_never_reversed() {
+        Order o = usdOrder(event());
+        Dispute d = lostUsd(o, 1_149, 1_025);
+        // The dispute and the transfer agree (usd); the order settled in eur, so 892 is not usd units.
+        fake.transferCurrency.put(fake.chargeTransfer.get(d.getStripeChargeId()), "usd");
 
         service.recoverForOrg(org.getId());
 
@@ -556,16 +642,104 @@ class PostEventPayoutDisputeRecoveryTest {
     }
 
     @Test
-    void a_platform_funded_refund_on_a_converted_transfer_is_never_reversed() {
-        Order o = order(event(), 1_149, 149);
-        Refund fronted = refund(o, 1_149, 149, true);
+    void a_platform_funded_refund_on_a_transfer_in_another_currency_is_never_reversed() {
+        Order o = usdOrder(event());
+        Refund fronted = refund(o, 574, 74, true);
+        fronted.setCurrency("usd");
+        refunds.save(fronted);
+        fake.transferCurrency.put(fake.chargeTransfer.get(chargeOf(o)), "usd");
+
+        service.recoverForOrg(org.getId());
+
+        assertThat(fake.reversalCreates).isEmpty();
+        assertThat(refunds.findById(fronted.getId()).orElseThrow().getRecoveredAt()).isNull();
+    }
+
+    @Test
+    void an_unstamped_order_is_never_reversed() {
+        // Other key mode and no PaymentIntent: the stamper cannot fill it.
+        Order o = order(event(), 1_149, 149, "usd", true, null, null, null);
+        Dispute d = lostUsd(o, 1_149, 1_025);
+        Refund fronted = refund(o, 574, 74, true);
         fronted.setCurrency("usd");
         refunds.save(fronted);
 
         service.recoverForOrg(org.getId());
 
         assertThat(fake.reversalCreates).isEmpty();
+        assertThat(reload(d).getRecoveredAt()).isNull();
         assertThat(refunds.findById(fronted.getId()).orElseThrow().getRecoveredAt()).isNull();
+    }
+
+    @Test
+    void a_won_dispute_on_an_unstamped_order_returns_nothing() {
+        // Other key mode and no PaymentIntent: the stamper cannot fill it.
+        Order o = order(event(), 1_149, 149, "usd", true, null, null, null);
+        Dispute won = dispute(o, 1_149, DisputeStatus.WON, Instant.now());
+        won.setCurrency("usd");
+        disputes.save(won);
+        marker.markRecovered(won.getId(), 0L, 892L, "trr_old", true);
+
+        assertThatCode(() -> service.recoverForOrg(org.getId())).doesNotThrowAnyException();
+
+        assertThat(fake.transferCreates).isEmpty();
+        assertThat(fake.recoveryReads).as("refused before the return lookup").doesNotContain("/v1/transfers");
+        assertThat(disputes.returnedMinorById(won.getId())).isZero();
+    }
+
+    @Test
+    void a_lost_sibling_of_an_unstamped_return_waits_for_the_next_pass() {
+        Order o = order(event(), 1_149, 149, "usd", true, null, null, null);
+        Dispute won = dispute(o, 1_149, DisputeStatus.WON, Instant.now());
+        won.setCurrency("usd");
+        disputes.save(won);
+        marker.markRecovered(won.getId(), 0L, 892L, "trr_old", true);
+        Dispute sibling = lostUsd(o, 1_149, 1_025);
+        Logger logger = (Logger) LoggerFactory.getLogger(PostEventPayoutService.class);
+        ListAppender<ILoggingEvent> logs = new ListAppender<>();
+        logs.start();
+        logger.addAppender(logs);
+        try {
+            service.recoverForOrg(org.getId());
+        } finally {
+            logger.detachAppender(logs);
+        }
+
+        assertThat(fake.transferCreates).isEmpty();
+        assertThat(fake.reversalCreates).isEmpty();
+        assertThat(reload(sibling).getRecoveredAt()).isNull();
+        assertThat(logs.list).filteredOn(l -> l.getFormattedMessage().contains(sibling.getId().toString()))
+                .extracting(ILoggingEvent::getFormattedMessage)
+                .singleElement().asString().contains("left for the next pass");
+    }
+
+    @Test
+    void a_platform_funded_refund_whose_order_is_missing_stays_open() {
+        Order o = usdOrder(event());
+        Refund fronted = refund(o, 574, 74, true);
+        doReturn(java.util.Optional.empty()).when(orders).findById(o.getId());
+
+        assertThatCode(() -> service.recoverForOrg(org.getId())).doesNotThrowAnyException();
+
+        assertThat(fake.recoveryReads).as("nothing read for a refund that cannot be sized").isEmpty();
+        assertThat(fake.reversalCreates).isEmpty();
+        assertThat(refunds.findById(fronted.getId()).orElseThrow().getRecoveredAt()).isNull();
+    }
+
+    @Test
+    void recovery_for_an_org_without_candidates_stamps_first() {
+        Order o = order(event(), 1_149, 149, "usd", false, null, null, null);
+        o.setStripePaymentIntentId("pi_" + UUID.randomUUID().toString().replace("-", "").substring(0, 20));
+        o = orders.save(o);
+        fake.paymentIntents.put(o.getStripePaymentIntentId(),
+                OrderSettlementStamperTest.usdProbe(o.getStripePaymentIntentId()));
+        Dispute d = lostUsd(o, 1_149, 1_025);
+
+        service.recoverForOrg(org.getId());
+
+        assertThat(fake.paymentIntentReads).containsExactly(o.getStripePaymentIntentId());
+        assertThat(fake.reversalCreates).extracting(Call::amount).containsExactly(892L);
+        assertThat(reload(d).getRecoveredMinor()).isEqualTo(892L);
     }
 
     @Test
@@ -933,13 +1107,28 @@ class PostEventPayoutDisputeRecoveryTest {
     }
 
     @Test
+    void a_usd_order_settled_in_eur_is_held_back_from_the_eur_payout() {
+        Event x = event();
+        x.setCurrency("USD");
+        events.save(x);
+        Dispute d = lostUsd(usdOrder(x), 1_149, 1_025);
+        fake.reversalFailure = "balance_insufficient";
+        Event y = event();
+        order(y, 3_300, 300);
+        fake.available = 3_500L;
+
+        service.payOneEvent(y.getId());
+
+        assertThat(reload(d).getRecoveredAt()).isNull();
+        assertThat(fake.payouts).extracting(Call::amount).as("min(3000, 3500 − 892)").containsExactly(2_608L);
+    }
+
+    @Test
     void a_debt_in_another_currency_is_not_held_back() {
         Event x = event();
         x.setCurrency("GBP");
         events.save(x);
-        Order gbp = order(x, 1_149, 149);
-        gbp.setCurrency("gbp");
-        orders.save(gbp);
+        Order gbp = order(x, 1_149, 149, "gbp", false, "gbp", 1_149L, 149L);
         Dispute d = lost(gbp, 1_149, 1_149);
         d.setCurrency("gbp");
         disputes.save(d);
@@ -1003,17 +1192,40 @@ class PostEventPayoutDisputeRecoveryTest {
         return events.save(e);
     }
 
+    /** An EUR order, settled 1:1 as V174 stamps every EUR order. */
     private Order order(Event e, long totalMinor, long feeMinor) {
+        return order(e, totalMinor, feeMinor, "eur", false, "eur", totalMinor, feeMinor);
+    }
+
+    /** The sandbox order: 1149 USD, fee 149, settled as 1025 EUR with a 133 EUR fee. */
+    private Order usdOrder(Event e) {
+        return order(e, 1_149, 149, "usd", false, "eur", 1_025L, 133L);
+    }
+
+    /** Stamped at insert ({@code sCur} null = unstamped), as the settlement columns are never updatable. */
+    private Order order(Event e, long totalMinor, long feeMinor, String currency, boolean testMode,
+                        String sCur, Long settledGross, Long settledFee) {
         Order o = new Order();
         o.setToken("tok_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24));
         o.setEventId(e.getId());
         o.setOrgId(e.getOrgId());
         o.setEmail("buyer@test.example");
         o.setTotalMinor(totalMinor);
-        o.setCurrency("eur");
+        o.setCurrency(currency);
         o.setApplicationFeeMinor(feeMinor);
         o.setPaymentMethod("card");
+        o.setTestMode(testMode);
+        o.setSettlementCurrency(sCur);
+        o.setSettlementGrossMinor(settledGross);
+        o.setSettlementFeeMinor(settledFee);
         return orders.save(o);
+    }
+
+    /** {@link #lost} in USD, the presentment currency of {@link #usdOrder}. */
+    private Dispute lostUsd(Order o, long amountMinor, long transferMinor) {
+        Dispute d = lost(o, amountMinor, transferMinor);
+        d.setCurrency("usd");
+        return disputes.save(d);
     }
 
     private Refund refund(Order o, long amountMinor, long feeMinor, boolean platformFunded) {

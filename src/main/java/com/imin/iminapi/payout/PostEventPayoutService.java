@@ -8,6 +8,7 @@ import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.refund.RefundRepository;
+import com.imin.iminapi.settlement.SettlementRate;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
@@ -79,13 +80,15 @@ import java.util.UUID;
  *       the funds, and a loss is settled by withholding the organizer's share of the order
  *       (the disputed amount less its booking fee) from the event's net in step 2. Also skip
  *       if the account is no longer payable.</li>
- *   <li><b>step 2 — per-event net (the ceiling).</b> Reuse the
- *       {@code EventOverviewService} derivation: {@code gross − refunds − net app
- *       fee}, less the organizer's share of the event's open/lost disputes. <b>Fee EXCLUDED</b> (§4.4): imin's application fee sits on the platform
- *       balance and is subtracted out here, so the computed ceiling is the
+ *   <li><b>step 2 — per-event net (the ceiling), in what Stripe settled.</b> Per live order,
+ *       {@code transfer − refunds − net app fee}, each presentment figure converted at the order's
+ *       own Stripe ratio ({@code SettlementRate}), less the organizer's share of the event's
+ *       open/lost disputes. Every order must be stamped ({@link OrderSettlementStamper}) and all in
+ *       one settlement currency, else the event waits. <b>Fee EXCLUDED</b> (§4.4): imin's application
+ *       fee sits on the platform balance and is subtracted out here, so the computed ceiling is the
  *       organizer's net.</li>
  *   <li><b>step 3 — live available balance</b> ON the connected account, matched to
- *       the event currency (Stripe reports lowercase; the event stores uppercase). Step 3b holds
+ *       the event's settlement currency. Step 3b holds
  *       back the organizer share of live LOST disputes on the org's OTHER events that the
  *       recovery could not reverse yet: that part of the balance is imin's.</li>
  *   <li><b>step 4 — subtract what already moved, then clamp.</b>
@@ -162,6 +165,7 @@ public class PostEventPayoutService {
     private final DisputeWithholding disputeWithholding;
     private final RefundRecoveryMarker recoveryMarker;
     private final DisputeRecoveryMarker disputeMarker;
+    private final OrderSettlementStamper stamper;
     private final ApplicationEventPublisher publisher;
 
     public PostEventPayoutService(StripeClient stripeClient,
@@ -175,6 +179,7 @@ public class PostEventPayoutService {
                                   DisputeWithholding disputeWithholding,
                                   RefundRecoveryMarker recoveryMarker,
                                   DisputeRecoveryMarker disputeMarker,
+                                  OrderSettlementStamper stamper,
                                   ApplicationEventPublisher publisher) {
         this.stripeClient = stripeClient;
         this.props = props;
@@ -187,6 +192,7 @@ public class PostEventPayoutService {
         this.disputeWithholding = disputeWithholding;
         this.recoveryMarker = recoveryMarker;
         this.disputeMarker = disputeMarker;
+        this.stamper = stamper;
         this.publisher = publisher;
     }
 
@@ -218,6 +224,8 @@ public class PostEventPayoutService {
         // ── step 0b — RECOVER PLATFORM-FUNDED REFUNDS (real money, before any balance read) ──
         // Ahead of the guards below so a fully refunded event (net 0) still repays imin.
         // Refunds first: they share the destination transfer with a later chargeback.
+        // Every amount below is sized from what Stripe settled, so read that first.
+        stamper.stampOrg(org);
         recoverPlatformFundedRefunds(org);
         settleDisputes(org);
 
@@ -253,21 +261,57 @@ public class PostEventPayoutService {
             return;
         }
 
-        // ── step 2 — per-event net (the ceiling). Fee EXCLUDED (§4.4). ──
-        // Mirrors EventOverviewService: gross − refunds − max(0, appFee − appFeeRefunded).
+        // ── step 1b — a lost-dispute debt we cannot size cannot be held back ──
+        long unsized = disputes.countLiveUnrecoveredLostOnUnstampedOrdersByOrgId(org.getId(), DisputeStatus.LOST);
+        if (unsized > 0L) {
+            // Past the payout buffer an unstamped order is stuck, not new: that needs a human.
+            if (disputes.countLiveUnrecoveredLostOnUnstampedOrdersByOrgIdCreatedBefore(org.getId(),
+                    DisputeStatus.LOST, stuckBefore()) > 0L) {
+                log.error("[payout] skip event {} org {} — {} lost dispute(s) on orders Stripe has not been read for, "
+                        + "some older than the payout buffer; stamp them by hand (CLAUDE.md, settlement rule)",
+                        eventId, org.getId(), unsized);
+            } else {
+                log.warn("[payout] skip event {} org {} — {} lost dispute(s) on orders Stripe has not been read for; "
+                        + "rolling to next tick", eventId, org.getId(), unsized);
+            }
+            return;
+        }
+
+        // ── step 2 — per-event net (the ceiling), in settlement units. Fee EXCLUDED (§4.4). ──
         // LIVE-mode rows only, on every input (V130): test-era money never reached a real
         // balance, so counting it here would disburse fake revenue out of the organizer's live
         // funds — and a test-era dispute or payout run would shrink a live net for free.
-        long gross = orders.sumLiveTotalMinorByEventId(eventId);
-        long refunded = refunds.sumSucceededLiveRefundMinorByEventId(eventId);
-        long appFee = orders.sumLiveApplicationFeeMinorByEventId(eventId);
-        long appFeeRefunded = refunds.sumSucceededLiveRefundApplicationFeeMinorByEventId(eventId);
-        long netAppFee = Math.max(0L, appFee - appFeeRefunded);
+        List<OrderSettlementRow> rows = orders.settlementRowsByEventId(eventId);
+        long unstamped = rows.stream().filter(r -> r.settlementCurrency() == null).count();
+        if (unstamped > 0L) {
+            long stuck = orders.countLiveUnstampedByEventIdCreatedBefore(eventId, stuckBefore());
+            if (stuck > 0L) {
+                log.error("[payout] skip event {} org {} — {} orders not stamped with what Stripe settled, {} older "
+                        + "than the payout buffer; stamp them by hand (CLAUDE.md, settlement rule)",
+                        eventId, org.getId(), unstamped, stuck);
+            } else {
+                log.warn("[payout] skip event {} org {} — {} orders not stamped yet with what Stripe settled; "
+                        + "rolling to next tick", eventId, org.getId(), unstamped);
+            }
+            return;
+        }
+        Set<String> currencies = new HashSet<>();
+        rows.forEach(r -> currencies.add(r.settlementCurrency().toLowerCase(Locale.ROOT)));
+        if (currencies.size() > 1) {
+            log.error("[payout] skip event {} org {} — its orders settled in more than one currency {}; "
+                    + "pay it out by hand", eventId, org.getId(), currencies);
+            return;
+        }
+        String cur = currencies.isEmpty() ? null : currencies.iterator().next();
+        long stake = 0L;
+        for (OrderSettlementRow r : rows) {
+            stake += new SettlementRate(r.totalMinor(), r.feeMinor(), r.settlementGrossMinor(),
+                    r.settlementFeeMinor()).stake(r.refundedMinor(), r.feeRefundedMinor());
+        }
         // A chargeback takes the organizer's ticket share off the net; its booking fee is already
-        // in netAppFee and stays imin's loss. A won or reinstated dispute leaves the set again.
+        // out of the stake and stays imin's loss. A won or reinstated dispute leaves the set again.
         long disputedShareMinor = disputeWithholding.organizerShareLiveMinor(eventId);
-        long perEventNetMinor = Math.max(0L,
-                Math.max(0L, gross - refunded) - netAppFee - disputedShareMinor);
+        long perEventNetMinor = Math.max(0L, stake - disputedShareMinor);
         if (disputedShareMinor > 0L) {
             log.info("[payout] event {} org {} — {} of the organizer's share of open/lost disputes withheld "
                     + "from the net (now {})", eventId, org.getId(), disputedShareMinor, perEventNetMinor);
@@ -288,16 +332,14 @@ public class PostEventPayoutService {
                 return;
             }
             case NONE -> {
-                parkNoBankAccount(event, org, perEventNetMinor);
+                parkNoBankAccount(event, org, perEventNetMinor, cur);
                 return;
             }
             case HAS -> { /* fall through to the payout */ }
         }
 
-        // ── step 3 — live AVAILABLE balance ON the connected account, by currency ──
-        // event.currency is UPPERCASE ('EUR'); Stripe balance/payout currency is
-        // lowercase ('eur'). Match the available bucket on the lowercase form.
-        String cur = event.getCurrency().toLowerCase(Locale.ROOT);
+        // ── step 3 — live AVAILABLE balance ON the connected account, in the settlement currency ──
+        // Stripe balance/payout currency is lowercase, like the stamp.
         long availableMinor;
         try {
             RequestOptions onAcct = RequestOptions.builder().setStripeAccount(acct).build();
@@ -329,6 +371,11 @@ public class PostEventPayoutService {
         // A previous tick may have paid a CLAMPED amount (available balance short of the
         // net). That run carries remaining_minor and reconciles to PARTIAL, which keeps the
         // event a candidate; here we pay only the outstanding difference, never the net again.
+        if (payoutRuns.existsByEventIdAndTestModeFalseAndStatusInAndCurrencyNot(eventId, ALREADY_TRIGGERED, cur)) {
+            log.error("[payout] skip event {} org {} — an earlier payout of this event went out in another currency "
+                    + "than {}; amounts would not compare, reconcile by hand", eventId, org.getId(), cur);
+            return;
+        }
         long alreadyTriggered = payoutRuns.sumLiveAmountByEventAndStatusIn(eventId, ALREADY_TRIGGERED);
         long owedMinor = Math.max(0L, perEventNetMinor - alreadyTriggered);
         if (owedMinor <= 0L) {
@@ -483,6 +530,7 @@ public class PostEventPayoutService {
         Organization org = orgs.findById(orgId).orElse(null);
         if (org == null) return;
         if (org.getStripeAccountId() == null || org.getStripeAccountId().isBlank()) return;
+        stamper.stampOrg(org);
         recoverPlatformFundedRefunds(org);
         settleDisputes(org);
     }
@@ -617,7 +665,7 @@ public class PostEventPayoutService {
      * sweep neither duplicates it nor re-emails, and the event pays out normally on the first
      * tick after a bank account is attached.
      */
-    private void parkNoBankAccount(Event event, Organization org, long netMinor) {
+    private void parkNoBankAccount(Event event, Organization org, long netMinor, String currency) {
         UUID eventId = event.getId();
         if (payoutRuns.existsByEventIdAndStatusAndFailureReason(
                 eventId, PayoutRunStatus.BLOCKED, PayoutBlockReason.NO_BANK_ACCOUNT)) {
@@ -633,7 +681,7 @@ public class PostEventPayoutService {
         // The net we could not send — no money moved, and BLOCKED is in neither IN_FLIGHT
         // nor ALREADY_TRIGGERED, so this amount never enters the payout math.
         r.setAmountMinor(netMinor);
-        r.setCurrency(event.getCurrency().toLowerCase(Locale.ROOT));
+        r.setCurrency(currency);
         r.setStatus(PayoutRunStatus.BLOCKED);
         r.setFailureReason(PayoutBlockReason.NO_BANK_ACCOUNT);
         // Same stamp as a real run (V130): the era is the running key's, not the outcome's.
@@ -660,9 +708,10 @@ public class PostEventPayoutService {
      * money stayed there and the debt was marked settled, so imin was permanently short. A
      * transfer reversal is the movement.
      *
-     * <p>Amount = {@code refund.amountMinor − refund.applicationFeeRefundMinor}: the organizer's
-     * share only. The fee share was the platform's money already, so reversing it would take the
-     * organizer's side of the fee twice.
+     * <p>Amount = {@code gross_s(refund.amountMinor) − fee_s(refund.applicationFeeRefundMinor)}, both
+     * converted at the order's own Stripe ratio into the transfer currency: the organizer's share only.
+     * The fee share was the platform's money already, so reversing it would take the organizer's side
+     * of the fee twice. An order not stamped yet is left for the next tick.
      *
      * <p>Per refund, never all-or-nothing: {@code balance_insufficient} leaves THAT debt open
      * (no partial reversal — a partial would burn the idempotency key at the wrong amount and
@@ -674,7 +723,15 @@ public class PostEventPayoutService {
         if (owed.isEmpty()) return;
 
         for (com.imin.iminapi.refund.Refund refund : owed) {
-            long amount = refund.getAmountMinor() - refund.getApplicationFeeRefundMinor();
+            Order order = orders.findById(refund.getOrderId()).orElse(null);
+            if (order == null || order.getSettlementCurrency() == null) {
+                log.error("[payout] platform-funded refund {} — order {} is {}; it cannot be sized in the transfer "
+                        + "currency, the debt stays open for org {}", refund.getId(), refund.getOrderId(),
+                        order == null ? "missing" : "not stamped yet", org.getId());
+                continue;
+            }
+            SettlementRate rate = SettlementRate.of(order);
+            long amount = rate.gross(refund.getAmountMinor()) - rate.fee(refund.getApplicationFeeRefundMinor());
             if (amount <= 0L) {
                 // The whole refund was the platform's own fee — nothing of the organizer's to pull.
                 commitRecoveryMarker(refund, null);
@@ -696,12 +753,12 @@ public class PostEventPayoutService {
                             chargeId, refund.getId(), amount, org.getId());
                     continue;
                 }
-                // A charge in another currency is converted into the transfer's: its minor units do not apply.
+                // The amount is sized in the currency Stripe settled the order in; the transfer must match it.
                 String trCurrency = stripeClient.transfers().retrieve(transferId).getCurrency();
-                if (refund.getCurrency() == null || !refund.getCurrency().equalsIgnoreCase(trCurrency)) {
-                    log.error("[payout] platform-funded refund {} is in {} but transfer {} is in {} — never "
-                            + "reverse across currencies; {} stays owed by org {}", refund.getId(),
-                            refund.getCurrency(), transferId, trCurrency, amount, org.getId());
+                if (!order.getSettlementCurrency().equalsIgnoreCase(trCurrency)) {
+                    log.error("[payout] platform-funded refund {} — order {} settled in {} but transfer {} is in {}; "
+                            + "never reverse across currencies, {} stays owed by org {}", refund.getId(),
+                            order.getId(), order.getSettlementCurrency(), transferId, trCurrency, amount, org.getId());
                     continue;
                 }
                 com.stripe.model.TransferReversal reversal = stripeClient.transfers().reversals().create(
@@ -786,6 +843,11 @@ public class PostEventPayoutService {
                         order.getCurrency());
                 continue;
             }
+            if (order.getSettlementCurrency() == null) {
+                log.error("[payout] LOST dispute {} — order {} is not stamped yet with what Stripe settled; the debt "
+                        + "stays open", d.getId(), order.getId());
+                continue;
+            }
             long owed = disputeWithholding.owedOnOrder(order);
             // What this row's earlier capped reversals took; owed above already counts it as held.
             long before = disputes.recoveredMinorById(d.getId());
@@ -828,11 +890,11 @@ public class PostEventPayoutService {
                     continue;
                 }
                 Transfer tr = stripeClient.transfers().retrieve(transferId);
-                // A charge in another currency is converted into the transfer's: its minor units do not apply.
-                if (!d.getCurrency().equalsIgnoreCase(tr.getCurrency())) {
-                    log.error("[payout] LOST dispute {} is in {} but transfer {} is in {} — never reverse across "
-                            + "currencies; {} stays owed by org {}", d.getId(), d.getCurrency(), transferId,
-                            tr.getCurrency(), owed, org.getId());
+                // owed is in the order's settlement currency; the transfer must be in it too.
+                if (!order.getSettlementCurrency().equalsIgnoreCase(tr.getCurrency())) {
+                    log.error("[payout] LOST dispute {} — order {} settled in {} but transfer {} is in {}; never "
+                            + "reverse across currencies, {} stays owed by org {}", d.getId(), order.getId(),
+                            order.getSettlementCurrency(), transferId, tr.getCurrency(), owed, org.getId());
                     continue;
                 }
                 long remaining = nz(tr.getAmount()) - nz(tr.getAmountReversed());
@@ -892,6 +954,11 @@ public class PostEventPayoutService {
             UUID orderId = e.getKey();
             Order order = orders.findById(orderId).orElse(null);
             if (order == null) continue;
+            if (order.getSettlementCurrency() == null) {
+                failedOrders.add(orderId);
+                log.error("[payout] order {} — return kept: not stamped yet with what Stripe settled", orderId);
+                continue;
+            }
             try {
                 // A return sent in an earlier pass but never recorded counts before anything is sized,
                 // including whether there is anything left to return at all.
@@ -924,7 +991,7 @@ public class PostEventPayoutService {
                     Transfer tr = stripeClient.transfers().create(
                             TransferCreateParams.builder()
                                     .setAmount(amount)
-                                    .setCurrency(d.getCurrency())
+                                    .setCurrency(order.getSettlementCurrency())
                                     .setDestination(acct)
                                     .putMetadata("dispute_return_id", d.getId().toString())
                                     .putMetadata("dispute_returned_before", String.valueOf(before))
@@ -939,7 +1006,7 @@ public class PostEventPayoutService {
                     }
                     returnable -= amount;
                     log.info("[payout] order {} — {} {} of dispute {}'s reversal transferred back to {} ({})",
-                            orderId, amount, d.getCurrency(), d.getId(), acct, tr.getId());
+                            orderId, amount, order.getSettlementCurrency(), d.getId(), acct, tr.getId());
                 } catch (StripeException ex) {
                     failedOrders.add(orderId);
                     if ("balance_insufficient".equals(ex.getCode())) {
@@ -1020,6 +1087,11 @@ public class PostEventPayoutService {
 
     private static long nz(Long v) {
         return v == null ? 0L : v;
+    }
+
+    /** An order created before this and still unstamped has outlived the payout buffer. */
+    private Instant stuckBefore() {
+        return Instant.now().minus(Duration.ofDays(Math.max(0, props.getPayoutBufferDays())));
     }
 
     /** What Stripe says about the connected account's payout destination. */

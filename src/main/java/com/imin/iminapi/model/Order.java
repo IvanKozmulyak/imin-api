@@ -109,6 +109,21 @@ public class Order {
     @Column(name = "test_mode", nullable = false)
     private boolean testMode = false;
 
+    /**
+     * What Stripe settled for this order, in the destination transfer's currency (V174). Written by
+     * the insert (NULL in production) and by {@code OrderRepository.stampSettlement} only.
+     */
+    @Column(name = "settlement_currency", length = 8, insertable = true, updatable = false)
+    private String settlementCurrency;
+
+    /** The destination transfer's amount, in {@link #settlementCurrency} minor units. */
+    @Column(name = "settlement_gross_minor", insertable = true, updatable = false)
+    private Long settlementGrossMinor;
+
+    /** The application fee's balance-transaction amount, in {@link #settlementCurrency} minor units. */
+    @Column(name = "settlement_fee_minor", insertable = true, updatable = false)
+    private Long settlementFeeMinor;
+
     /** Buyer phone captured on the order-confirmation SMS opt-in (§4). E.164, nullable. */
     @Column(name = "buyer_phone", length = 20)
     private String buyerPhone;

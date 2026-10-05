@@ -26,7 +26,8 @@ import org.springframework.stereotype.Service;
  * account's balance cannot cover the reversal, the refund is paid entirely from the platform
  * balance, the connected account is untouched, and
  * {@code PostEventPayoutService.recoverPlatformFundedRefunds} later reverses
- * {@code A − F·A/G} off the charge's destination transfer. The fee flag is {@code false}
+ * {@code gross_s(A) − fee_s(F·A/G)} off the charge's destination transfer, in the transfer's
+ * currency at the order's own Stripe ratio ({@code SettlementRate}). The fee flag is {@code false}
  * there: refunding the fee would hand the connected account a share that the organizer-only
  * reversal never claws back.
  */

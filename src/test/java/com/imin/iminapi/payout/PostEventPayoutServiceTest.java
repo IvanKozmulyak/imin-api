@@ -35,6 +35,11 @@ import com.stripe.net.ApiResource;
 import com.stripe.net.StripeResponseGetter;
 import com.stripe.service.BalanceService;
 import com.stripe.service.PayoutService;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import org.slf4j.LoggerFactory;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -109,6 +114,11 @@ class PostEventPayoutServiceTest {
         /** Status the reconciliation poll (GET /v1/payouts/{id}) reports back. */
         volatile String retrievedStatus = "paid";
         volatile String retrievedFailureCode = null;
+        /** Canned PaymentIntents the settlement stamper reads, by id; and the ids it read. */
+        final java.util.Map<String, String> paymentIntents = new java.util.concurrent.ConcurrentHashMap<>();
+        final java.util.List<String> paymentIntentReads = new java.util.concurrent.CopyOnWriteArrayList<>();
+        /** Currency of the transfers the recovery reads. */
+        volatile String transferCurrency = "eur";
 
         void reset() {
             availableMinor.set(0L);
@@ -128,11 +138,19 @@ class PostEventPayoutServiceTest {
             crashAfterRecovery = false;
             retrievedStatus = "paid";
             retrievedFailureCode = null;
+            paymentIntents.clear();
+            paymentIntentReads.clear();
+            transferCurrency = "eur";
         }
 
         @SuppressWarnings("unchecked")
         <T extends StripeObject> T handle(ApiRequest req) throws Exception {
             String path = req.getPath();
+            if (path != null && path.startsWith("/v1/payment_intents/")) {
+                String id = path.substring("/v1/payment_intents/".length());
+                paymentIntentReads.add(id);
+                return (T) ApiResource.GSON.fromJson(paymentIntents.get(id), com.stripe.model.PaymentIntent.class);
+            }
             if (path != null && path.startsWith("/v1/balance")) {
                 String json = """
                     { "object": "balance",
@@ -186,8 +204,8 @@ class PostEventPayoutServiceTest {
                     && req.getMethod() == ApiResource.RequestMethod.GET) {
                 String json = """
                     { "object": "transfer", "id": "%s", "amount": 100000, "amount_reversed": 0,
-                      "currency": "eur" }
-                    """.formatted(path.substring("/v1/transfers/".length()));
+                      "currency": "%s" }
+                    """.formatted(path.substring("/v1/transfers/".length()), transferCurrency);
                 return (T) ApiResource.GSON.fromJson(json, com.stripe.model.Transfer.class);
             }
             // POST /v1/transfers/{id}/reversals — platform-funded refund recovery.
@@ -289,6 +307,7 @@ class PostEventPayoutServiceTest {
         when(stripeClient.accounts()).thenReturn(new com.stripe.service.AccountService(rg));
         when(stripeClient.charges()).thenReturn(new com.stripe.service.ChargeService(rg));
         when(stripeClient.transfers()).thenReturn(new com.stripe.service.TransferService(rg));
+        when(stripeClient.paymentIntents()).thenReturn(new com.stripe.service.PaymentIntentService(rg));
 
         org = newEligibleOrg();
     }
@@ -1126,6 +1145,230 @@ class PostEventPayoutServiceTest {
                 .isEqualTo(1);
     }
 
+    // ── settlement currency: the payout is sized in what Stripe settled ─────────────
+    // Sandbox 2026-10-05: 1149 USD (fee 149) settled as a 1025 EUR transfer and a 133 EUR fee balance transaction.
+
+    @Test
+    void worked_W1_a_usd_event_pays_892_eur() {
+        Event e = usdEvent();
+        order(e, 1_149, 149, "usd", "eur", 1_025L, 133L);
+        fake.availableMinor.set(5_000L);
+
+        service.payOneEvent(e.getId());
+
+        assertThat(fake.payoutCount.get()).isEqualTo(1);
+        assertThat(fake.lastPayoutAmount.get()).as("1025 − 133").isEqualTo(892L);
+        PayoutRun run = payoutRuns.findByEventId(e.getId()).get(0);
+        assertThat(run.getCurrency()).isEqualTo("eur");
+        assertThat(run.getAmountMinor()).isEqualTo(892L);
+    }
+
+    @Test
+    void worked_W2_half_refunded_usd_order_pays_446_eur() {
+        Event e = usdEvent();
+        Order o = order(e, 1_149, 149, "usd", "eur", 1_025L, 133L);
+        succeededRefund(o, 574, 74, false);
+        fake.availableMinor.set(5_000L);
+
+        service.payOneEvent(e.getId());
+
+        // (1025 − 512) − (133 − 66) = 513 − 67
+        assertThat(fake.lastPayoutAmount.get()).isEqualTo(446L);
+        assertThat(payoutRuns.findByEventId(e.getId()).get(0).getCurrency()).isEqualTo("eur");
+    }
+
+    @Test
+    void an_unstamped_order_holds_the_event() {
+        Event e = newEndedEvent(org);
+        order(e, 10_000, 1_000);
+        order(e, 1_149, 149, "usd", null, null, null);   // no PaymentIntent id: the stamper cannot read it
+        fake.availableMinor.set(50_000L);
+
+        service.payOneEvent(e.getId());
+
+        assertThat(fake.payoutCount.get()).isZero();
+        assertThat(payoutRuns.findByEventId(e.getId())).isEmpty();
+    }
+
+    @Test
+    void two_settlement_currencies_on_one_event_pay_nothing() {
+        Event e = newEndedEvent(org);
+        order(e, 10_000, 1_000);
+        order(e, 1_149, 149, "gbp", "gbp", 1_149L, 149L);
+        fake.availableMinor.set(50_000L);
+
+        service.payOneEvent(e.getId());
+
+        assertThat(fake.payoutCount.get()).isZero();
+        assertThat(payoutRuns.findByEventId(e.getId())).isEmpty();
+    }
+
+    @Test
+    void a_triggered_run_in_another_currency_pays_nothing() {
+        Event e = newEndedEvent(org);
+        order(e, 10_000, 1_000);                          // net 9000 eur
+        PayoutRun earlier = new PayoutRun();
+        earlier.setOrgId(org.getId());
+        earlier.setEventId(e.getId());
+        earlier.setStripeAccountId(org.getStripeAccountId());
+        earlier.setAmountMinor(100L);
+        earlier.setRemainingMinor(0L);
+        earlier.setCurrency("usd");
+        earlier.setStatus(PayoutRunStatus.PAID);
+        earlier.setAttempt(1);
+        earlier.setIdempotencyKey("evt:" + e.getId() + ":attempt:1");
+        earlier.setTestMode(false);
+        payoutRuns.save(earlier);
+        fake.availableMinor.set(50_000L);
+
+        service.payOneEvent(e.getId());
+
+        assertThat(fake.payoutCount.get()).as("9000 eur − 100 usd does not compare").isZero();
+        assertThat(payoutRuns.findByEventId(e.getId())).hasSize(1);
+    }
+
+    @Test
+    void no_bank_parks_the_settled_net_in_settlement_currency() {
+        Event e = usdEvent();
+        order(e, 1_149, 149, "usd", "eur", 1_025L, 133L);
+        fake.hasBank = false;
+
+        service.payOneEvent(e.getId());
+
+        PayoutRun parked = payoutRuns.findByEventId(e.getId()).get(0);
+        assertThat(parked.getStatus()).isEqualTo(PayoutRunStatus.BLOCKED);
+        assertThat(parked.getAmountMinor()).isEqualTo(892L);
+        assertThat(parked.getCurrency()).isEqualTo("eur");
+    }
+
+    @Test
+    void the_payout_tick_stamps_the_orgs_orders() {
+        Event e = usdEvent();
+        Order o = order(e, 1_149, 149, "usd", null, null, null);
+        o.setStripePaymentIntentId("pi_" + UUID.randomUUID().toString().replace("-", "").substring(0, 20));
+        // A full save may set the id; it cannot write the stamp (updatable = false).
+        o = orders.save(o);
+        fake.paymentIntents.put(o.getStripePaymentIntentId(), OrderSettlementStamperTest.usdProbe(o.getStripePaymentIntentId()));
+        fake.availableMinor.set(5_000L);
+
+        service.payOneEvent(e.getId());
+
+        assertThat(fake.paymentIntentReads).containsExactly(o.getStripePaymentIntentId());
+        Order stamped = orders.findById(o.getId()).orElseThrow();
+        assertThat(stamped.getSettlementCurrency()).isEqualTo("eur");
+        assertThat(stamped.getSettlementGrossMinor()).isEqualTo(1_025L);
+        assertThat(stamped.getSettlementFeeMinor()).isEqualTo(133L);
+        assertThat(fake.lastPayoutAmount.get()).isEqualTo(892L);
+    }
+
+    @Test
+    void an_unstamped_lost_debt_elsewhere_holds_the_payout() {
+        Event other = newEndedEvent(org);
+        Order debt = order(other, 1_149, 149, "usd", null, null, null);   // no PaymentIntent id: stays unstamped
+        dispute(debt, other, 1_149, DisputeStatus.LOST);
+        Event e = newEndedEvent(org);
+        order(e, 10_000, 1_000);
+        fake.availableMinor.set(50_000L);
+
+        service.payOneEvent(e.getId());
+
+        assertThat(fake.payoutCount.get()).as("a debt that cannot be sized cannot be held back").isZero();
+        assertThat(payoutRuns.findByEventId(e.getId())).isEmpty();
+    }
+
+    @Test
+    void an_unstamped_order_older_than_the_payout_buffer_is_an_error() {
+        Event e = newEndedEvent(org);
+        order(e, 10_000, 1_000);
+        unstampedOrderAt(e, Instant.now().minus(bufferDays()).minus(1, ChronoUnit.HOURS));
+        fake.availableMinor.set(50_000L);
+
+        List<ILoggingEvent> logs = capturePayoutLogs(() -> service.payOneEvent(e.getId()));
+
+        assertThat(fake.payoutCount.get()).isZero();
+        assertThat(levelsMentioning(logs, "not stamped")).containsExactly(Level.ERROR);
+    }
+
+    @Test
+    void an_unstamped_order_inside_the_payout_buffer_is_a_warning() {
+        Event e = newEndedEvent(org);
+        order(e, 10_000, 1_000);
+        unstampedOrderAt(e, Instant.now().minus(bufferDays()).plus(1, ChronoUnit.HOURS));
+        fake.availableMinor.set(50_000L);
+
+        List<ILoggingEvent> logs = capturePayoutLogs(() -> service.payOneEvent(e.getId()));
+
+        assertThat(fake.payoutCount.get()).isZero();
+        assertThat(levelsMentioning(logs, "not stamped")).containsExactly(Level.WARN);
+    }
+
+    @Test
+    void an_unsized_lost_debt_older_than_the_payout_buffer_is_an_error() {
+        Event other = newEndedEvent(org);
+        dispute(unstampedOrderAt(other, Instant.now().minus(bufferDays()).minus(1, ChronoUnit.HOURS)), other,
+                1_149, DisputeStatus.LOST);
+        Event e = newEndedEvent(org);
+        order(e, 10_000, 1_000);
+        fake.availableMinor.set(50_000L);
+
+        List<ILoggingEvent> logs = capturePayoutLogs(() -> service.payOneEvent(e.getId()));
+
+        assertThat(fake.payoutCount.get()).isZero();
+        assertThat(levelsMentioning(logs, "lost dispute(s) on orders")).containsExactly(Level.ERROR);
+    }
+
+    @Test
+    void an_unsized_lost_debt_inside_the_payout_buffer_is_a_warning() {
+        Event other = newEndedEvent(org);
+        dispute(unstampedOrderAt(other, Instant.now().minus(bufferDays()).plus(1, ChronoUnit.HOURS)), other,
+                1_149, DisputeStatus.LOST);
+        Event e = newEndedEvent(org);
+        order(e, 10_000, 1_000);
+        fake.availableMinor.set(50_000L);
+
+        List<ILoggingEvent> logs = capturePayoutLogs(() -> service.payOneEvent(e.getId()));
+
+        assertThat(fake.payoutCount.get()).isZero();
+        assertThat(levelsMentioning(logs, "lost dispute(s) on orders")).containsExactly(Level.WARN);
+    }
+
+    private java.time.Duration bufferDays() {
+        return java.time.Duration.ofDays(props.getPayoutBufferDays());
+    }
+
+    /** Collects what PostEventPayoutService logs while {@code run} runs. */
+    private List<ILoggingEvent> capturePayoutLogs(Runnable run) {
+        Logger logger = (Logger) LoggerFactory.getLogger(PostEventPayoutService.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            run.run();
+        } finally {
+            logger.detachAppender(appender);
+        }
+        return appender.list;
+    }
+
+    private static List<Level> levelsMentioning(List<ILoggingEvent> logs, String text) {
+        return logs.stream().filter(l -> l.getFormattedMessage().contains(text)).map(ILoggingEvent::getLevel).toList();
+    }
+
+    /** A live paid order Stripe has not been read for (no PaymentIntent id, so the stamper skips it). */
+    private Order unstampedOrderAt(Event e, Instant createdAt) {
+        Order o = new Order();
+        o.setToken("tok_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24));
+        o.setEventId(e.getId());
+        o.setOrgId(e.getOrgId());
+        o.setEmail("buyer@test.example");
+        o.setTotalMinor(1_149);
+        o.setCurrency("usd");
+        o.setApplicationFeeMinor(149);
+        o.setPaymentMethod("card");
+        o.setCreatedAt(createdAt);
+        return orders.save(o);
+    }
+
     // ── fixtures ───────────────────────────────────────────────────────────────────
 
     private Organization newEligibleOrg() {
@@ -1159,17 +1402,33 @@ class PostEventPayoutServiceTest {
         return events.save(e);
     }
 
+    /** An EUR order, settled 1:1 as V174 stamps every EUR order. */
     private Order order(Event e, long totalMinor, long appFeeMinor) {
+        return order(e, totalMinor, appFeeMinor, "eur", "eur", totalMinor, appFeeMinor);
+    }
+
+    /** An order in {@code currency} that Stripe settled as {@code settledGross}/{@code settledFee} in {@code sCur}; null = unstamped. */
+    private Order order(Event e, long totalMinor, long appFeeMinor, String currency,
+                        String sCur, Long settledGross, Long settledFee) {
         Order o = new Order();
         o.setToken("tok_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24));
         o.setEventId(e.getId());
         o.setOrgId(e.getOrgId());
         o.setEmail("buyer@test.example");
         o.setTotalMinor(totalMinor);
-        o.setCurrency("eur");
+        o.setCurrency(currency);
         o.setApplicationFeeMinor(appFeeMinor);
         o.setPaymentMethod("card");
+        o.setSettlementCurrency(sCur);
+        o.setSettlementGrossMinor(settledGross);
+        o.setSettlementFeeMinor(settledFee);
         return orders.save(o);
+    }
+
+    private Event usdEvent() {
+        Event e = newEndedEvent(org);
+        e.setCurrency("USD");
+        return events.save(e);
     }
 
     private Dispute dispute(Order o, Event e, long amountMinor, DisputeStatus status) {

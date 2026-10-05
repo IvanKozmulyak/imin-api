@@ -63,6 +63,7 @@ class DisputeRecoveryQueriesPostgresTest {
     @Autowired UserRepository users;
     @Autowired EventRepository events;
     @Autowired OrderRepository orders;
+    @Autowired com.imin.iminapi.refund.RefundRepository refunds;
     @Autowired TransactionTemplate tx;
 
     private final List<UUID> orgIds = new ArrayList<>();
@@ -70,6 +71,7 @@ class DisputeRecoveryQueriesPostgresTest {
     private final List<UUID> eventIds = new ArrayList<>();
     private final List<UUID> orderIds = new ArrayList<>();
     private final List<UUID> disputeIds = new ArrayList<>();
+    private final List<UUID> refundIds = new ArrayList<>();
 
     private Organization org;
     private Event event;
@@ -83,6 +85,7 @@ class DisputeRecoveryQueriesPostgresTest {
     @AfterEach
     void tearDown() {
         disputes.deleteAllById(disputeIds);
+        refunds.deleteAllById(refundIds);
         orders.deleteAllById(orderIds);
         events.deleteAllById(eventIds);
         users.deleteAllById(userIds);
@@ -231,17 +234,34 @@ class DisputeRecoveryQueriesPostgresTest {
         dispute(order(other), DisputeStatus.OPEN, false, Instant.now());
         dispute(order(event), DisputeStatus.LOST, false, Instant.now());   // the event being paid
 
-        Order gbp = order(other);
-        gbp.setCurrency("GBP");
-        orders.save(gbp);
+        Order gbp = order(other, "GBP", "gbp", 1_149L, 149L);
         dispute(gbp, DisputeStatus.LOST, false, Instant.now());
 
-        List<DisputeOrderRow> rows =
+        List<DisputeSettlementRow> rows =
                 disputes.unrecoveredLostRowsByOrgExcludingEvent(org.getId(), DisputeStatus.LOST, event.getId(), "eur");
 
-        assertThat(rows).containsExactly(new DisputeOrderRow(other.getId(), a.getId(), 1_149L, 149L, 1_149L));
+        assertThat(rows).containsExactly(
+                new DisputeSettlementRow(other.getId(), a.getId(), 1_149L, 149L, "eur", 1_149L, 149L, 1_149L));
         assertThat(disputes.unrecoveredLostRowsByOrgExcludingEvent(org.getId(), DisputeStatus.LOST,
-                event.getId(), "gbp")).extracting(DisputeOrderRow::orderId).containsExactly(gbp.getId());
+                event.getId(), "gbp")).extracting(DisputeSettlementRow::orderId).containsExactly(gbp.getId());
+    }
+
+    @Test
+    void settlement_rows_sum_succeeded_refunds_per_live_order() {
+        Order live = order(event, "USD", "eur", 1_025L, 133L);
+        Order test = order(event, "EUR", "eur", 1_149L, 149L);
+        test.setTestMode(true);
+        orders.save(test);
+        refund(live, 574, 74, com.imin.iminapi.refund.RefundStatus.SUCCEEDED);
+        refund(live, 300, 39, com.imin.iminapi.refund.RefundStatus.FAILED);
+        refund(test, 1_149, 149, com.imin.iminapi.refund.RefundStatus.SUCCEEDED);
+        Order unrefunded = order(event, "EUR", "eur", 1_149L, 149L);
+
+        assertThat(orders.settlementRowsByEventId(event.getId())).containsExactlyInAnyOrder(
+                new com.imin.iminapi.payout.OrderSettlementRow(live.getId(), 1_149L, 149L, "eur", 1_025L, 133L,
+                        574L, 74L),
+                new com.imin.iminapi.payout.OrderSettlementRow(unrefunded.getId(), 1_149L, 149L, "eur", 1_149L,
+                        149L, 0L, 0L));
     }
 
     // ── fixtures ────────────────────────────────────────────────────────────────
@@ -291,7 +311,13 @@ class DisputeRecoveryQueriesPostgresTest {
         return e;
     }
 
+    /** An EUR order, settled 1:1 as V174 stamps every EUR order. */
     private Order order(Event e) {
+        return order(e, "eur", "eur", 1_149L, 149L);
+    }
+
+    /** Stamped at insert, as the settlement columns are never updatable. */
+    private Order order(Event e, String currency, String sCur, Long settledGross, Long settledFee) {
         Order o = new Order();
         o.setToken(UUID.randomUUID().toString().replace("-", ""));
         o.setEventId(e.getId());
@@ -299,8 +325,11 @@ class DisputeRecoveryQueriesPostgresTest {
         o.setEmail("b@test.example");
         o.setTotalMinor(1_149);
         o.setApplicationFeeMinor(149);
-        o.setCurrency("eur");
+        o.setCurrency(currency);
         o.setPaymentMethod("card");
+        o.setSettlementCurrency(sCur);
+        o.setSettlementGrossMinor(settledGross);
+        o.setSettlementFeeMinor(settledFee);
         o = orders.save(o);
         orderIds.add(o.getId());
         return o;
@@ -308,6 +337,20 @@ class DisputeRecoveryQueriesPostgresTest {
 
     private Dispute dispute(Order o, DisputeStatus status, boolean testMode, Instant createdAt) {
         return dispute(o, status, testMode, createdAt, 1_149);
+    }
+
+    private void refund(Order o, long amountMinor, long feeMinor, com.imin.iminapi.refund.RefundStatus status) {
+        com.imin.iminapi.refund.Refund r = new com.imin.iminapi.refund.Refund();
+        r.setOrderId(o.getId());
+        r.setStripePaymentIntentId("pi_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16));
+        r.setStripeRefundId("re_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16));
+        r.setAmountMinor(amountMinor);
+        r.setCurrency("eur");
+        r.setApplicationFeeRefundMinor(feeMinor);
+        r.setReason(com.imin.iminapi.refund.RefundReason.OTHER);
+        r.setStatus(status);
+        r.setIdempotencyKey("idem-" + UUID.randomUUID());
+        refundIds.add(refunds.save(r).getId());
     }
 
     private Dispute dispute(Order o, DisputeStatus status, boolean testMode, Instant createdAt, long amount) {

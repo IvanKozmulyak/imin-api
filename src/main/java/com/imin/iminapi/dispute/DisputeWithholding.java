@@ -4,6 +4,7 @@ import com.imin.iminapi.model.Order;
 import com.imin.iminapi.refund.RefundOrderSums;
 import com.imin.iminapi.refund.RefundRepository;
 import com.imin.iminapi.repository.TicketRepository;
+import com.imin.iminapi.settlement.SettlementRate;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -29,7 +30,9 @@ import java.util.stream.Collectors;
  * the set, so the amount stops being subtracted.
  *
  * <p>Also sizes the LOST-dispute recovery ({@link #owedOnOrder}) and the hold the payout keeps
- * back for debts not reversed yet ({@link #unrecoveredLostShareLiveMinorByOrg}).
+ * back for debts not reversed yet ({@link #unrecoveredLostShareLiveMinorByOrg}). Those payout-only methods,
+ * and {@link #organizerShareLiveMinor}, answer in settlement minor units ({@link SettlementRate}); the
+ * organizer readouts stay in the event's presentment currency.
  */
 @Component
 public class DisputeWithholding {
@@ -65,10 +68,29 @@ public class DisputeWithholding {
                 .getOrDefault(eventId, Totals.ZERO).organizerShare();
     }
 
-    /** {@link #organizerShareMinor}, LIVE-mode disputes only (V130): the payout net's figure. */
+    /**
+     * {@link #organizerShareMinor}, LIVE-mode disputes only (V130), in settlement minor units: the payout
+     * net's figure. A dispute with no order, or on an order not stamped yet, counts its amount in full.
+     */
     public long organizerShareLiveMinor(UUID eventId) {
-        return totals(disputes.liveWithholdingRowsByEventId(eventId, STATUSES))
-                .getOrDefault(eventId, Totals.ZERO).organizerShare();
+        List<DisputeSettlementRow> rows = disputes.liveWithholdingRowsByEventId(eventId, STATUSES);
+        Map<UUID, RefundOrderSums> refunded = refundsByOrder(rows.stream().map(DisputeSettlementRow::orderId)
+                .filter(Objects::nonNull).collect(Collectors.toSet()));
+        long sum = 0L;
+        for (DisputeSettlementRow row : rows) {
+            long disputed = nz(row.disputedMinor());
+            if (row.orderId() == null || row.totalMinor() == null || row.settlementCurrency() == null) {
+                sum += disputed;
+                continue;
+            }
+            RefundOrderSums r = refunded.get(row.orderId());
+            long ref = r == null ? 0L : nz(r.refundedMinor());
+            long feeRef = r == null ? 0L : nz(r.feeRefundedMinor());
+            SettlementRate rate = rateOf(row);
+            sum += rate.organizerShare(DisputeShare.of(row.totalMinor(), nz(row.feeMinor()), ref, feeRef, disputed),
+                    ref, feeRef);
+        }
+        return sum;
     }
 
     /** The organizer's share over the org's orders created in {@code [since, until)}, all modes. */
@@ -78,50 +100,66 @@ public class DisputeWithholding {
     }
 
     /**
-     * What is still to reverse for this order's LOST disputes: their organizer share less what earlier
-     * reversals on the order still hold. An OPEN sibling is not owed yet.
+     * What is still to reverse for this order's LOST disputes, in settlement minor units: their organizer
+     * share less what earlier reversals on the order still hold. An OPEN sibling is not owed yet.
+     * Throws when the order is not stamped.
      */
     public long owedOnOrder(Order order) {
-        return owed(order.getId(), order.getTotalMinor(), order.getApplicationFeeMinor());
+        return owed(order.getId(), SettlementRate.of(order));
     }
 
-    private long owed(UUID orderId, long totalMinor, long feeMinor) {
-        long share = lostShare(orderId, totalMinor, feeMinor);
+    private long owed(UUID orderId, SettlementRate rate) {
+        long share = lostShare(orderId, rate);
         if (share <= 0L) return 0L;
         return Math.max(0L, share - disputes.sumHeldByOrderId(orderId));
     }
 
-    /** What the order's reversals still hold beyond the organizer share of its LOST disputes: owed back. */
+    /**
+     * What the order's reversals still hold beyond the organizer share of its LOST disputes, in settlement
+     * minor units: owed back. Throws when the order is not stamped.
+     */
     public long returnableOnOrder(Order order) {
-        return Math.max(0L, disputes.sumHeldByOrderId(order.getId())
-                - lostShare(order.getId(), order.getTotalMinor(), order.getApplicationFeeMinor()));
+        return Math.max(0L, disputes.sumHeldByOrderId(order.getId()) - lostShare(order.getId(), SettlementRate.of(order)));
     }
 
-    private long lostShare(UUID orderId, long totalMinor, long feeMinor) {
+    private long lostShare(UUID orderId, SettlementRate rate) {
         long lost = disputes.sumLostAmountByOrderId(orderId, DisputeStatus.LOST);
         if (lost <= 0L) return 0L;
         RefundOrderSums r = refunds.sumSucceededAmountAndFeeByOrderIds(List.of(orderId)).stream()
                 .findFirst().orElse(null);
-        return DisputeShare.of(totalMinor, feeMinor,
-                r == null ? 0L : nz(r.refundedMinor()), r == null ? 0L : nz(r.feeRefundedMinor()),
-                lost).organizerShareMinor();
+        long ref = r == null ? 0L : nz(r.refundedMinor());
+        long feeRef = r == null ? 0L : nz(r.feeRefundedMinor());
+        return rate.organizerShare(DisputeShare.of(rate.totalMinor(), rate.feeMinor(), ref, feeRef, lost), ref, feeRef);
     }
 
     /**
-     * What is still owed on the org's live orders with an open LOST debt in {@code currency}, on events other
-     * than {@code excludeEventId}: {@link #owedOnOrder} per order, so a capped reversal counts what it took.
+     * What is still owed, in settlement minor units, on the org's live orders that settled in
+     * {@code settlementCurrency} with an open LOST debt, on events other than {@code excludeEventId}:
+     * {@link #owedOnOrder} per order, so a capped reversal counts what it took.
      */
-    public long unrecoveredLostShareLiveMinorByOrg(UUID orgId, UUID excludeEventId, String currency) {
-        Map<UUID, DisputeOrderRow> byOrder = new HashMap<>();
-        for (DisputeOrderRow row : disputes.unrecoveredLostRowsByOrgExcludingEvent(orgId, DisputeStatus.LOST,
-                excludeEventId, currency.toLowerCase(java.util.Locale.ROOT))) {
+    public long unrecoveredLostShareLiveMinorByOrg(UUID orgId, UUID excludeEventId, String settlementCurrency) {
+        Map<UUID, DisputeSettlementRow> byOrder = new HashMap<>();
+        for (DisputeSettlementRow row : disputes.unrecoveredLostRowsByOrgExcludingEvent(orgId, DisputeStatus.LOST,
+                excludeEventId, settlementCurrency.toLowerCase(java.util.Locale.ROOT))) {
             byOrder.putIfAbsent(row.orderId(), row);
         }
         long sum = 0L;
-        for (DisputeOrderRow row : byOrder.values()) {
-            sum += owed(row.orderId(), nz(row.totalMinor()), nz(row.feeMinor()));
+        for (DisputeSettlementRow row : byOrder.values()) {
+            sum += owed(row.orderId(), rateOf(row));
         }
         return sum;
+    }
+
+    private static SettlementRate rateOf(DisputeSettlementRow row) {
+        return new SettlementRate(nz(row.totalMinor()), nz(row.feeMinor()),
+                nz(row.settlementGrossMinor()), nz(row.settlementFeeMinor()));
+    }
+
+    private Map<UUID, RefundOrderSums> refundsByOrder(Set<UUID> orderIds) {
+        // Hibernate cannot bind an empty IN list.
+        return orderIds.isEmpty() ? Map.of()
+                : refunds.sumSucceededAmountAndFeeByOrderIds(orderIds).stream()
+                        .collect(Collectors.toMap(RefundOrderSums::orderId, r -> r));
     }
 
     /** Charged-back ORDERS on this event, one per order however many disputes it collected. */

@@ -45,6 +45,14 @@ public interface PayoutRunRepository extends JpaRepository<PayoutRun, UUID> {
      */
     boolean existsByStripeAccountIdAndStatusIn(String stripeAccountId, Collection<PayoutRunStatus> statuses);
 
+    /**
+     * A live run of this event in {@code statuses} paid in another currency than {@code currency}. Its amount
+     * is in other units, so the event's already-triggered sum would not compare.
+     */
+    boolean existsByEventIdAndTestModeFalseAndStatusInAndCurrencyNot(UUID eventId,
+                                                                    Collection<PayoutRunStatus> statuses,
+                                                                    String currency);
+
     /** Runs for an event, e.g. to compute the next {@code attempt} after a FAILED run. */
     List<PayoutRun> findByEventId(UUID eventId);
 

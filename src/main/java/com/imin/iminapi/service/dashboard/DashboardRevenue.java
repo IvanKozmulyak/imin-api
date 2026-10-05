@@ -32,8 +32,8 @@ public class DashboardRevenue {
     }
 
     /**
-     * Same expression as the payout per-event net in PostEventPayoutService.payOneEvent, applied to
-     * a whole window; {@code disputedShare} is the organizer share of the chargebacks, fee excluded.
+     * The presentment-currency counterpart of the payout per-event net, applied to a whole window; the payout
+     * itself is sized per order in what Stripe settled. {@code disputedShare} is the organizer share, fee excluded.
      */
     public static long net(long gross, long refunded, long appFee, long appFeeRefunded, long disputedShare) {
         return Math.max(0L, Math.max(0L, gross - refunded) - Math.max(0L, appFee - appFeeRefunded) - disputedShare);

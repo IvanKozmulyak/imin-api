@@ -110,19 +110,21 @@ public interface DisputeRepository extends JpaRepository<Dispute, UUID> {
                                                     @Param("statuses") Collection<DisputeStatus> statuses);
 
     /**
-     * {@link #withholdingRowsByEventIds} for one event, LIVE-mode disputes only (V130): the payout
-     * path's variant, since a test-era chargeback clawed back no real money.
+     * {@link #withholdingRowsByEventIds} for one event, LIVE-mode disputes only (V130), with what Stripe
+     * settled for each order: the payout path's variant, since a test-era chargeback clawed back no real money.
      */
     @Query("""
-            select new com.imin.iminapi.dispute.DisputeOrderRow(
-                       d.eventId, d.orderId, o.totalMinor, o.applicationFeeMinor, sum(d.amountMinor))
+            select new com.imin.iminapi.dispute.DisputeSettlementRow(
+                       d.eventId, d.orderId, o.totalMinor, o.applicationFeeMinor,
+                       o.settlementCurrency, o.settlementGrossMinor, o.settlementFeeMinor, sum(d.amountMinor))
               from Dispute d left join com.imin.iminapi.model.Order o on o.id = d.orderId
              where d.eventId = :eventId
                and d.testMode = false
                and d.status in :statuses
-             group by d.eventId, d.orderId, o.totalMinor, o.applicationFeeMinor
+             group by d.eventId, d.orderId, o.totalMinor, o.applicationFeeMinor,
+                      o.settlementCurrency, o.settlementGrossMinor, o.settlementFeeMinor
             """)
-    List<DisputeOrderRow> liveWithholdingRowsByEventId(@Param("eventId") UUID eventId,
+    List<DisputeSettlementRow> liveWithholdingRowsByEventId(@Param("eventId") UUID eventId,
                                                        @Param("statuses") Collection<DisputeStatus> statuses);
 
     /**
@@ -275,23 +277,47 @@ public interface DisputeRepository extends JpaRepository<Dispute, UUID> {
                      @Param("amount") long amount,
                      @Param("now") Instant now);
 
-    /** Live unreversed LOST disputes per order in {@code currency} (lowercase) on the org's other events: a payout's hold. */
+    /**
+     * Live unreversed LOST disputes per order that settled in {@code currency} (lowercase) on the org's other
+     * events: a payout's hold. An unstamped order matches no currency; the payout refuses while one exists.
+     */
     @Query("""
-            select new com.imin.iminapi.dispute.DisputeOrderRow(
-                       d.eventId, d.orderId, o.totalMinor, o.applicationFeeMinor, sum(d.amountMinor))
+            select new com.imin.iminapi.dispute.DisputeSettlementRow(
+                       d.eventId, d.orderId, o.totalMinor, o.applicationFeeMinor,
+                       o.settlementCurrency, o.settlementGrossMinor, o.settlementFeeMinor, sum(d.amountMinor))
               from Dispute d join com.imin.iminapi.model.Order o on o.id = d.orderId
              where d.orgId = :orgId
                and d.status = :lost
                and d.testMode = false
                and d.recoveredAt is null
                and d.eventId <> :eventId
-               and lower(o.currency) = :currency
-             group by d.eventId, d.orderId, o.totalMinor, o.applicationFeeMinor
+               and o.settlementCurrency = :currency
+             group by d.eventId, d.orderId, o.totalMinor, o.applicationFeeMinor,
+                      o.settlementCurrency, o.settlementGrossMinor, o.settlementFeeMinor
             """)
-    List<DisputeOrderRow> unrecoveredLostRowsByOrgExcludingEvent(@Param("orgId") UUID orgId,
+    List<DisputeSettlementRow> unrecoveredLostRowsByOrgExcludingEvent(@Param("orgId") UUID orgId,
                                                                  @Param("lost") DisputeStatus lost,
                                                                  @Param("eventId") UUID eventId,
                                                                  @Param("currency") String currency);
+
+    /** Live unreversed LOST disputes of the org on orders Stripe has not been read for: a debt that cannot be sized. */
+    @Query("""
+            select count(d) from Dispute d join com.imin.iminapi.model.Order o on o.id = d.orderId
+             where d.orgId = :orgId and d.status = :lost and d.testMode = false
+               and d.recoveredAt is null and o.settlementCurrency is null
+            """)
+    long countLiveUnrecoveredLostOnUnstampedOrdersByOrgId(@Param("orgId") UUID orgId,
+                                                          @Param("lost") DisputeStatus lost);
+
+    /** {@link #countLiveUnrecoveredLostOnUnstampedOrdersByOrgId} for orders created before {@code before}: stuck. */
+    @Query("""
+            select count(d) from Dispute d join com.imin.iminapi.model.Order o on o.id = d.orderId
+             where d.orgId = :orgId and d.status = :lost and d.testMode = false
+               and d.recoveredAt is null and o.settlementCurrency is null and o.createdAt < :before
+            """)
+    long countLiveUnrecoveredLostOnUnstampedOrdersByOrgIdCreatedBefore(@Param("orgId") UUID orgId,
+                                                                       @Param("lost") DisputeStatus lost,
+                                                                       @Param("before") java.time.Instant before);
 
     /**
      * The org-level payout gate: any OPEN dispute freezes every payout for the org, because

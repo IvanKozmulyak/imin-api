@@ -81,20 +81,57 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
     long sumApplicationFeeMinorByEventId(@Param("eventId") UUID eventId);
 
     /**
-     * Gross for an event counting ONLY live-mode orders (V130). The payout path's ceiling:
-     * a test-era order's money never existed, so paying it out would move real funds out of
-     * the organizer's balance against fake revenue. Deliberately separate from
-     * {@link #sumTotalMinorByEventId} — the organizer's own revenue readouts still show the
-     * full history, filtering them would rewrite what an organizer already saw.
+     * The payout net's inputs for an event: one row per LIVE-mode paid order (V130) with what Stripe
+     * settled for it and its SUCCEEDED refunds summed. Test-mode orders and their refunds are out of
+     * every term; the organizer's own revenue readouts still read the full history.
      */
-    @Query("select coalesce(sum(o.totalMinor), 0) from Order o "
-            + "where o.eventId = :eventId and o.testMode = false")
-    long sumLiveTotalMinorByEventId(@Param("eventId") UUID eventId);
+    @Query("""
+            select new com.imin.iminapi.payout.OrderSettlementRow(o.id, o.totalMinor, o.applicationFeeMinor,
+                       o.settlementCurrency, o.settlementGrossMinor, o.settlementFeeMinor,
+                       coalesce(sum(r.amountMinor), 0), coalesce(sum(r.applicationFeeRefundMinor), 0))
+              from Order o left join com.imin.iminapi.refund.Refund r
+                     on r.orderId = o.id and r.status = com.imin.iminapi.refund.RefundStatus.SUCCEEDED
+             where o.eventId = :eventId and o.testMode = false and o.totalMinor > 0
+             group by o.id, o.totalMinor, o.applicationFeeMinor, o.settlementCurrency,
+                      o.settlementGrossMinor, o.settlementFeeMinor
+            """)
+    List<com.imin.iminapi.payout.OrderSettlementRow> settlementRowsByEventId(@Param("eventId") UUID eventId);
 
-    /** Application fees for an event counting ONLY live-mode orders. Payout path — see above. */
-    @Query("select coalesce(sum(o.applicationFeeMinor), 0) from Order o "
-            + "where o.eventId = :eventId and o.testMode = false")
-    long sumLiveApplicationFeeMinorByEventId(@Param("eventId") UUID eventId);
+    /**
+     * {@code {id, stripePaymentIntentId, createdAt}} of the org's paid orders in this key mode that Stripe has not
+     * been read for, newest first, so orders Stripe keeps refusing never hold back a new one.
+     */
+    @Query("""
+            select o.id, o.stripePaymentIntentId, o.createdAt from Order o
+             where o.orgId = :orgId and o.settlementCurrency is null and o.totalMinor > 0
+               and o.testMode = :testMode and o.stripePaymentIntentId is not null
+             order by o.createdAt desc, o.id desc
+            """)
+    List<Object[]> findUnstampedPaidByOrgId(@Param("orgId") UUID orgId, @Param("testMode") boolean testMode,
+                                            Pageable pageable);
+
+    /**
+     * Write what Stripe settled, once: lands only while the order is unstamped. Its own transaction, so it
+     * never clears the payout's persistence context and survives that transaction rolling back.
+     */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.REQUIRES_NEW)
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("""
+            update Order o set o.settlementCurrency = :currency, o.settlementGrossMinor = :gross,
+                               o.settlementFeeMinor = :fee
+             where o.id = :id and o.settlementCurrency is null
+            """)
+    int stampSettlement(@Param("id") UUID id, @Param("currency") String currency,
+                        @Param("gross") long gross, @Param("fee") long fee);
+
+    /** Live paid orders of the event not stamped yet and created before {@code before}: stuck, not just new. */
+    @Query("""
+            select count(o) from Order o
+             where o.eventId = :eventId and o.testMode = false and o.totalMinor > 0
+               and o.settlementCurrency is null and o.createdAt < :before
+            """)
+    long countLiveUnstampedByEventIdCreatedBefore(@Param("eventId") UUID eventId,
+                                                  @Param("before") Instant before);
 
     /**
      * Created-at + total-minor pairs for orders since {@code since}. Used by the

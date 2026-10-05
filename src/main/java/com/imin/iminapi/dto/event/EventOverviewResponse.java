@@ -18,9 +18,9 @@ public record EventOverviewResponse(
      *
      * @param revenueMinor          gross revenue net of refunded and disputed amounts, in minor units.
      * @param revenueAfterFeesMinor gross net of refunds, the platform's unrefunded application fee
-     *                              and the organizer share of chargebacks (fee counted once).
-     *                              This is what lands in the organizer's payout,
-     *                              excluding Stripe's processing fees.
+     *                              and the organizer share of chargebacks (fee counted once),
+     *                              in the event currency. The payout is sized in the currency
+     *                              Stripe settled each order in, so for a converted event it differs.
      * @param disputedCount         charged-back ORDERS excluded from {@code sold}, not tickets.
      * @param disputedMinor         disputed amount withheld, capped per order at what was not refunded.
      */
