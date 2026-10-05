@@ -6,11 +6,17 @@ import com.imin.iminapi.predictor.config.DateCheckProperties;
 import com.imin.iminapi.predictor.config.PredictorProperties;
 import com.imin.iminapi.predictor.sources.openevents.OpenEventsProperties;
 import com.imin.iminapi.predictor.sources.wikimedia.WikimediaProperties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.function.BooleanSupplier;
+import java.util.stream.Collectors;
 
 /**
  * Maps a {@code sources.yaml} gate key to the live flag that turns that source on or off:
@@ -20,6 +26,8 @@ import java.util.function.BooleanSupplier;
  */
 @Component
 public class SourceGates {
+
+    private static final Logger log = LoggerFactory.getLogger(SourceGates.class);
 
     private final Map<String, BooleanSupplier> gates;
 
@@ -43,6 +51,14 @@ public class SourceGates {
 
     public Set<String> keys() {
         return gates.keySet();
+    }
+
+    /** One boot line with each gate on/off (flags only, never a key), so the deploy log shows what the process sees. */
+    @EventListener(ApplicationReadyEvent.class)
+    public void logGates() {
+        log.info("Predictor source gates: {}", new TreeSet<>(gates.keySet()).stream()
+                .map(key -> key + "=" + (isOn(key) ? "on" : "off"))
+                .collect(Collectors.joining(" ")));
     }
 
     /** Read at call time, so a flag flipped at runtime shows on the next request. */
