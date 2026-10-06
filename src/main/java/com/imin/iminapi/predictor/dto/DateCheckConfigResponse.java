@@ -4,7 +4,7 @@ import java.util.List;
 
 /**
  * What the "Check a date" form may offer: genre buckets with sub-genres, and the request limits.
- * {@code researchAvailable} is true only for an org on the research list while research is on.
+ * {@code researchAvailable} is true wherever "Check a date" is open for the org.
  */
 public record DateCheckConfigResponse(boolean researchAvailable, List<Genre> genres, int maxDates,
                                       int maxHorizonMonths) {

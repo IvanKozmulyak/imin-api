@@ -30,12 +30,6 @@ public class DateCheckProperties {
     /** Opens the gate to every org while enabled; the beta list is then ignored. */
     private Boolean allOrgs = Boolean.FALSE;
 
-    /** Cite-only web research; also needs the org in {@link #researchOrgIds}. */
-    private Boolean researchEnabled = Boolean.FALSE;
-
-    /** Orgs that may run web research; empty means no org, whatever the other flags say. */
-    private Set<UUID> researchOrgIds = Set.of();
-
     /** Research runs queued per org and across all orgs per UTC day; below 1 binds the default. */
     private Integer researchDailyCapPerOrg = DEFAULT_RESEARCH_CAP_PER_ORG;
     private Integer researchDailyCapGlobal = DEFAULT_RESEARCH_CAP_GLOBAL;
@@ -58,8 +52,6 @@ public class DateCheckProperties {
     public Set<UUID> getBetaOrgIds() { return betaOrgIds; }
     public Boolean getAllOrgs() { return allOrgs; }
     public void setAllOrgs(Boolean v) { this.allOrgs = Boolean.TRUE.equals(v); }
-    public Boolean getResearchEnabled() { return researchEnabled; }
-    public void setResearchEnabled(Boolean v) { this.researchEnabled = Boolean.TRUE.equals(v); }
     public Boolean getRadarEnabled() { return radarEnabled; }
     public void setRadarEnabled(Boolean v) { this.radarEnabled = Boolean.TRUE.equals(v); }
     public Integer getMaxDates() { return maxDates; }
@@ -67,8 +59,6 @@ public class DateCheckProperties {
     public Integer getMaxHorizonMonths() { return maxHorizonMonths; }
     public void setMaxHorizonMonths(Integer v) { this.maxHorizonMonths = v == null || v < 1 ? DEFAULT_MAX_HORIZON_MONTHS : v; }
 
-    public Set<UUID> getResearchOrgIds() { return researchOrgIds; }
-    public void setResearchOrgIds(Set<UUID> v) { this.researchOrgIds = withoutNulls(v); }
     public Integer getResearchDailyCapPerOrg() { return researchDailyCapPerOrg; }
     public void setResearchDailyCapPerOrg(Integer v) { this.researchDailyCapPerOrg = v == null || v < 1 ? DEFAULT_RESEARCH_CAP_PER_ORG : v; }
     public Integer getResearchDailyCapGlobal() { return researchDailyCapGlobal; }

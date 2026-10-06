@@ -17,9 +17,9 @@ import java.util.UUID;
 
 /**
  * Runs a check's web research ({@code {"dateCheckId": ...}}). Idempotent: a check whose research is no longer running
- * is skipped, so a re-delivered job makes no second call. An org taken off the research list meanwhile fails the
- * research without a call. When the last attempt throws, the research is marked failed before the error is rethrown,
- * and a lease that expires on the last attempt marks it failed through {@link #onTerminalFailure}, so the check never
+ * is skipped, so a re-delivered job makes no second call. An org whose "Check a date" access closed meanwhile fails
+ * the research without a call. When the last attempt throws, the research is marked failed before the error is
+ * rethrown, and a lease that expires on the last attempt marks it failed through {@link #onTerminalFailure}, so the check never
  * stays running.
  */
 @Component
@@ -50,7 +50,7 @@ public class DateCheckResearchJobHandler implements PredictorJobHandler {
         try {
             Optional<WebResearchService.Request> req = checks.researchSnapshot(id);
             if (req.isEmpty()) return;
-            WebResearchService.Outcome outcome = access.isResearchEnabled(req.get().orgId())
+            WebResearchService.Outcome outcome = access.isResearchAvailable(req.get().orgId())
                     ? research.research(req.get())
                     : WebResearchService.Outcome.failed("gate_closed", null, null);
             checks.completeResearch(id, outcome);

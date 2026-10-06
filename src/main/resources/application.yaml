@@ -611,10 +611,7 @@ imin:
       beta-org-ids: ${PREDICTOR_DATE_CHECK_BETA_ORGS:}
       # Opens "Check a date" to every org while enabled; the beta list is then ignored.
       all-orgs: ${PREDICTOR_DATE_CHECK_ALL_ORGS:false}
-      # Cite-only web research (OpenRouter web plugin, Exa engine); runs only for orgs in research-org-ids.
-      research-enabled: ${PREDICTOR_DATE_CHECK_RESEARCH_ENABLED:false}
-      # Comma-separated org UUIDs allowed to run web research; empty = no org. A malformed entry fails startup.
-      research-org-ids: ${PREDICTOR_DATE_CHECK_RESEARCH_ORGS:}
+      # Cite-only web research (OpenRouter web plugin, Exa engine), open wherever "Check a date" is.
       # Research runs queued per org and in total per UTC day; over a cap the check answers researchStatus=failed.
       research-daily-cap-per-org: ${PREDICTOR_DATE_CHECK_RESEARCH_DAILY_CAP_PER_ORG:10}
       research-daily-cap-global: ${PREDICTOR_DATE_CHECK_RESEARCH_DAILY_CAP_GLOBAL:100}

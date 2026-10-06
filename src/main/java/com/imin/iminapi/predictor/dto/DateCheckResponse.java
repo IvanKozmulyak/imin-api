@@ -8,7 +8,7 @@ import java.util.UUID;
  * A stored date check. Keys, enums, numbers and facts only — never rendered prose. {@code researchStatus}: "off"
  * (not asked for or not allowed for the org), "running" ({@code status} is "running" too), "done" (web findings
  * merged, source "web"), or "failed": the calendar result stands, because of a provider error, a timeout, an
- * unusable or unparseable answer, findings without citations, the payload guard, the daily cap, the research gate
+ * unusable or unparseable answer, findings without citations, the payload guard, the daily cap, "Check a date"
  * closed for the org when the job ran, or the job running out of attempts.
  */
 public record DateCheckResponse(UUID id, String status, String city, String country, String postalCode, UUID eventId,

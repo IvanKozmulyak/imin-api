@@ -80,15 +80,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * "Check a date" with web research on H2, the research call mocked, the clock fixed at 1 Oct 2026 10:00 UTC. Orgs A
- * and C are on the research list, B is not; caps are 2 per org and 3 in total per UTC day.
+ * and C are in the date-check beta, B is not; caps are 2 per org and 3 in total per UTC day.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
 @Import(TestRateLimitConfig.class)
 @TestPropertySource(properties = {"imin.predictor.date-check.enabled=true",
-        "imin.predictor.date-check.all-orgs=true",
-        "imin.predictor.date-check.research-enabled=true",
-        "imin.predictor.date-check.research-org-ids=" + DateCheckResearchFlowTest.ORG_A + ","
+        "imin.predictor.date-check.beta-org-ids=" + DateCheckResearchFlowTest.ORG_A + ","
                 + DateCheckResearchFlowTest.ORG_C,
         "imin.predictor.date-check.research-daily-cap-per-org=2",
         "imin.predictor.date-check.research-daily-cap-global=3"})
@@ -475,18 +473,15 @@ class DateCheckResearchFlowTest {
                 owners.get(ORG_A).getEmail());
     }
 
-    // --- allowlist and caps ---
+    // --- gate and caps ---
 
     @Test
-    void orgNotOnTheResearchListGetsNoResearch() throws Exception {
-        JsonNode r = json(postCheck(ORG_B, body(true)).andExpect(status().isOk()));
+    void closedDateCheckGateQueuesNoResearch() throws Exception {
+        postCheck(ORG_B, body(true)).andExpect(status().isNotFound());
+        mvc.perform(get(BASE + "/config").with(authentication(as(ORG_B)))).andExpect(status().isNotFound());
 
-        assertThat(r.get("research").asBoolean()).isFalse();
-        assertThat(r.get("researchStatus").asText()).isEqualTo("off");
-        assertThat(r.get("status").asText()).isEqualTo("done");
+        assertThat(checks.count()).isZero();
         assertThat(jobs.count()).isZero();
-        mvc.perform(get(BASE + "/config").with(authentication(as(ORG_B))))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.researchAvailable").value(false));
         mvc.perform(get(BASE + "/config").with(authentication(as(ORG_A))))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.researchAvailable").value(true));
         verify(client, never()).research(anyString(), anyString(), anyString());
@@ -516,7 +511,7 @@ class DateCheckResearchFlowTest {
         assertThat(checks.findById(UUID.fromString(third.get("id").asText())).orElseThrow().getResearchQueuedAt())
                 .isNull();
         assertThat(jobs.count()).isEqualTo(2);
-        // Another listed org is still under its own cap.
+        // Another org is still under its own cap.
         postCheck(ORG_C, body(true)).andExpect(status().isAccepted());
         verify(client, never()).research(anyString(), anyString(), anyString());
     }
@@ -534,8 +529,8 @@ class DateCheckResearchFlowTest {
     }
 
     @Test
-    void orgTakenOffTheListBeforeTheJobRunsFailsWithoutACall() throws Exception {
-        // A row queued for B while B was listed: the job re-checks the list and makes no call.
+    void dateCheckClosedBeforeTheJobRunsFailsWithoutACall() throws Exception {
+        // A row queued for B while B had access: the job re-checks the gate and makes no call.
         DateCheck c = new DateCheck();
         c.setOrgId(UUID.fromString(ORG_B));
         c.setCreatedBy(owners.get(ORG_B).getId());

@@ -408,18 +408,6 @@ class DateCheckControllerTest {
     }
 
     @Test
-    void researchFlagIgnoredWhileDisabled() throws Exception {
-        Map<String, Object> b = body(PLAIN);
-        b.put("research", true);
-
-        JsonNode r = created(b);
-
-        assertThat(r.get("research").asBoolean()).isFalse();
-        assertThat(r.get("researchStatus").asText()).isEqualTo("off");
-        assertThat(jobs.count()).isZero();
-    }
-
-    @Test
     void ledgerRowWrittenBeforeResponse() throws Exception {
         JsonNode r = created(body(BREAK, PLAIN));
 
@@ -590,7 +578,7 @@ class DateCheckControllerTest {
     void configListsGenresAndLimits() throws Exception {
         mvc.perform(get(BASE + "/config").with(authentication(mine())))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.researchAvailable").value(false))
+                .andExpect(jsonPath("$.researchAvailable").value(true))
                 .andExpect(jsonPath("$.maxDates").value(5))
                 .andExpect(jsonPath("$.maxHorizonMonths").value(18))
                 .andExpect(jsonPath("$.genres.length()").value(QuestionBank.GENRE_BUCKETS.size()))

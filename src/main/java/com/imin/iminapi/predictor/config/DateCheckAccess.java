@@ -20,10 +20,9 @@ public class DateCheckAccess {
                 && (Boolean.TRUE.equals(props.getAllOrgs()) || props.getBetaOrgIds().contains(orgId));
     }
 
-    /** Web research for this org: the gate above, the research flag, and the org on the research list. */
-    public boolean isResearchEnabled(UUID orgId) {
-        return isEnabled(orgId) && Boolean.TRUE.equals(props.getResearchEnabled())
-                && props.getResearchOrgIds().contains(orgId);
+    /** Web research is available wherever "Check a date" is; the daily caps are the only further brake. */
+    public boolean isResearchAvailable(UUID orgId) {
+        return isEnabled(orgId);
     }
 
     /** Call first, before any org or event lookup, so a closed gate and a missing resource return the same 404. */

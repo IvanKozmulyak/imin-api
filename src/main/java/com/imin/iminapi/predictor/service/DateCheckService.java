@@ -95,7 +95,7 @@ import java.util.stream.Collectors;
  * "Check a date": runs the rule engine on each candidate date, scores, ranks and stores the result, and
  * writes the DATE_CHECK ledger row in the same transaction before answering. The rule run is synchronous.
  *
- * <p>Web research: when asked for, allowed for the org ({@link DateCheckAccess#isResearchEnabled}) and under the
+ * <p>Web research: when asked for, allowed for the org ({@link DateCheckAccess#isResearchAvailable}) and under the
  * daily caps, the check is stored {@code running} with its calendar result and a {@code date_check_research} job;
  * {@link #completeResearch} re-scores with the web findings, {@link #failResearch} keeps the calendar result. Over a
  * cap the check answers {@code researchStatus=failed} without any call.
@@ -220,7 +220,7 @@ public class DateCheckService {
      * org's or the global daily cap is reached; else running. True when a research job must be queued.
      */
     private boolean requestResearch(DateCheck c, boolean asked) {
-        c.setResearch(asked && access.isResearchEnabled(c.getOrgId()));
+        c.setResearch(asked && access.isResearchAvailable(c.getOrgId()));
         if (!c.isResearch()) {
             c.setResearchStatus(DateCheck.RESEARCH_OFF);
             return false;
@@ -618,7 +618,7 @@ public class DateCheckService {
                     return new DateCheckConfigResponse.Genre(b, gp == null ? List.of() : gp.subGenres());
                 })
                 .toList();
-        return new DateCheckConfigResponse(access.isResearchEnabled(p.orgId()), genres,
+        return new DateCheckConfigResponse(access.isResearchAvailable(p.orgId()), genres,
                 props.getMaxDates(), props.getMaxHorizonMonths());
     }
 
