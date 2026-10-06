@@ -282,6 +282,7 @@ The backend contract the Expo fan app is built against shipped ahead of the app 
 - **Integration tests clean up committed rows and never date fixtures with a literal.** A `@SpringBootTest` that commits rows deletes them in `@AfterEach` (or rolls back via `@Transactional`) and dates fixtures relative to now or the injected `Clock`. A test of a global (all-orgs) query asserts on its own fixture ids, not on a total count, so another test's rows cannot turn it red when the calendar moves.
 
 - **A job's failure level is judged against the planned work, not the attempted work.** A batch job that had failures and stored nothing logs ERROR, whatever stopped it; a run whose calls all succeeded but returned nothing to store is a WARN. Compute "all failed" / "partial" against the items the run planned, not the items it reached, so an early stop (429, cap, timeout) cannot make a total failure look partial; test the early-stop branch.
+- **Re-pick the Flyway version against fresh origin before review.** A new migration's version is a placeholder until review: `git fetch` and run `git ls-tree origin/master src/main/resources/db/migration/` right before handing to the reviewer and again in `/ship-imin` before the rebase, then renumber to max+1 if anything landed (then `./mvnw clean`, see the rule above). Never trust the number written in the plan.
 
 ### Planning docs
 
