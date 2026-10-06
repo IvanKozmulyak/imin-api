@@ -45,7 +45,7 @@ public class ResearchCache {
     private final Clock clock;
     private final Map<Key, Entry> entries = new LinkedHashMap<>(16, 0.75f, true) {
         @Override
-        protected boolean removeEldestEntry(Map.Entry<Key, Entry> eldest) {
+        protected boolean removeEldestEntry(Map.Entry<Key, ResearchCache.Entry> eldest) {
             return size() > MAX_ENTRIES;
         }
     };
