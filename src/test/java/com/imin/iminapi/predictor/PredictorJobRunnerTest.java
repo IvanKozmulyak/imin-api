@@ -128,6 +128,35 @@ class PredictorJobRunnerTest {
     }
 
     @Test
+    void expiredLastAttemptCallsTheTerminalHookOnce() {
+        UUID spent = saveRunning(3, T0.plusSeconds(60));
+        UUID retried = saveRunning(1, T0.plusSeconds(60));
+        List<UUID> hooked = new ArrayList<>();
+        PredictorJobHandler h = new PredictorJobHandler() {
+            @Override public String kind() { return "k"; }
+            @Override public void run(PredictorJob job) {}
+            @Override public void onTerminalFailure(PredictorJob job) {
+                hooked.add(job.getId());
+                throw new IllegalStateException("hook broke for a@b.example");
+            }
+        };
+        PredictorJobRunner r = runner(h);
+        clock.advance(PredictorJobService.LOCK.plusMinutes(1));
+
+        List<ILoggingEvent> logged = captureWhile(r::tick);
+        r.tick();
+
+        assertThat(hooked).containsExactly(spent);
+        assertThat(repo.findById(spent).orElseThrow().getStatus()).isEqualTo("failed");
+        assertThat(repo.findById(retried).orElseThrow().getStatus()).isEqualTo("done");
+        assertThat(logged).filteredOn(e -> e.getFormattedMessage().contains("hook broke"))
+                .singleElement().satisfies(e -> {
+                    assertThat(e.getLevel()).isEqualTo(Level.ERROR);
+                    assertThat(e.getFormattedMessage()).contains(spent.toString()).doesNotContain("a@b.example");
+                });
+    }
+
+    @Test
     void thirdFailureMarksFailed() {
         UUID id = service.enqueue("k", null);
         AtomicInteger runs = new AtomicInteger();

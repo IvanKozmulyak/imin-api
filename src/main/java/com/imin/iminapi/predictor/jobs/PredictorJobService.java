@@ -14,6 +14,8 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -64,15 +66,23 @@ public class PredictorJobService {
         return repo.save(job).getId();
     }
 
-    /** Requeues running jobs whose lease expired, failing those out of attempts; returns rows touched. */
-    public int requeueExpired() {
-        int[] n = tx.execute(s -> {
+    /**
+     * Requeues running jobs whose lease expired and fails those out of attempts; returns the jobs this call failed,
+     * so their handlers can clean up.
+     */
+    public List<PredictorJob> requeueExpired() {
+        List<UUID> failed = tx.execute(s -> {
             Instant now = now();
-            return new int[] {repo.requeueExpired(now, MAX_ATTEMPTS), repo.failExpired(now, MAX_ATTEMPTS, "lock expired")};
+            repo.requeueExpired(now, MAX_ATTEMPTS);
+            List<UUID> ids = new ArrayList<>();
+            for (UUID id : repo.findExpiredAtMax(now, MAX_ATTEMPTS)) {
+                if (repo.failExpired(id, now, MAX_ATTEMPTS, "lock expired") == 1) ids.add(id);
+            }
+            return ids;
         });
-        if (n == null) return 0;
-        if (n[1] > 0) log.error("PredictorJobService: {} predictor job(s) failed: lock expired at max attempts", n[1]);
-        return n[0] + n[1];
+        if (failed == null || failed.isEmpty()) return List.of();
+        log.error("PredictorJobService: {} predictor job(s) failed: lock expired at max attempts", failed.size());
+        return repo.findAllById(failed);
     }
 
     /** The lease end when this caller took the job, empty when another runner has it. */

@@ -108,6 +108,42 @@ class PredictorJobRunnerPostgresTest {
     }
 
     @Test
+    void concurrentRequeueFailsAnExpiredLastAttemptForOneCallerOnly() throws Exception {
+        clock.advance(PredictorJobService.LOCK.plusMinutes(1));
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            // Repeated so both callers often read the expired row before either fails it.
+            for (int round = 0; round < 20; round++) {
+                PredictorJob spent = new PredictorJob();
+                spent.setKind("k");
+                spent.setStatus("running");
+                spent.setAttempts(PredictorJobService.MAX_ATTEMPTS);
+                spent.setRunAfter(T0);
+                spent.setLockedUntil(T0.plusSeconds(60));
+                UUID id = repo.save(spent).getId();
+                CountDownLatch go = new CountDownLatch(1);
+                Callable<List<UUID>> requeue = () -> {
+                    go.await();
+                    return service.requeueExpired().stream().map(PredictorJob::getId).toList();
+                };
+                Future<List<UUID>> a = pool.submit(requeue);
+                Future<List<UUID>> b = pool.submit(requeue);
+                go.countDown();
+
+                List<List<UUID>> got = List.of(a.get(30, TimeUnit.SECONDS), b.get(30, TimeUnit.SECONDS));
+
+                assertThat(got).as("round " + round).filteredOn(l -> l.contains(id)).hasSize(1);
+                assertThat(got).as("round " + round).allSatisfy(l -> assertThat(l).isSubsetOf(id));
+                PredictorJob row = repo.findById(id).orElseThrow();
+                assertThat(row.getStatus()).isEqualTo("failed");
+                assertThat(row.getLastError()).isEqualTo("lock expired");
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
     void expiredLockIsRequeued() {
         UUID id = service.enqueue("k", null);
         Instant lease = service.claim(id).orElseThrow();

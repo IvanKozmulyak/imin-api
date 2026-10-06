@@ -164,9 +164,10 @@ class RuleEngineTest {
         assertThat(out.stream().filter(f -> f.questionId().equals("2.1")).map(Finding::sourceKind))
                 .containsExactly(SourceKind.INTERNAL, SourceKind.ORGANIZER);
         assertThat(out.stream().map(f -> f.questionId() + "|" + f.sourceKind()).distinct()).hasSize(out.size());
-        // bank order kept even though evaluators answer in groups
+        // bank order kept even though evaluators answer in groups; web rows come from research, not the engine
         List<String> expected = BANK.questionsFor("FR").stream()
-                .filter(q -> q.cities().isEmpty()).map(q -> q.id() + "|" + q.source()).toList();
+                .filter(q -> q.cities().isEmpty() && q.source() != SourceKind.WEB)
+                .map(q -> q.id() + "|" + q.source()).toList();
         assertThat(out.stream().map(f -> f.questionId() + "|" + f.sourceKind()).toList()).isEqualTo(expected);
         assertThatThrownBy(() -> out.add(out.get(0))).isInstanceOf(UnsupportedOperationException.class);
     }

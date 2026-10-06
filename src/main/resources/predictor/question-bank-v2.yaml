@@ -1,8 +1,9 @@
 # Date-check question bank. Ids follow the product question bank v1; one entry per (id, source).
 # Every weight is an estimate (the v1 bank gives none); windows follow its night/week/month tags.
 # Adds 9.1 (v3).
-# Adds 2.6, 5.3, 2.3 from open event listings (v4); the web-sourced questions bump again.
-version: 4
+# Adds 2.6, 5.3, 2.3 from open event listings (v4).
+# Adds web-sourced 2.1, 2.2, 5.3 from cite-only research (v5).
+version: 5
 thresholds: { adjust_min_risk: 3, move_min_risk: 7, min_coverage: 0.6, max_points_per_finding: 4 }
 questions:
   # --- calendar (structured) ---
@@ -269,6 +270,45 @@ questions:
     # Estimate pending product review.
     params: { missed_share_min: 0.25 }
     template: predictor.q.10_2
+
+  # --- cite-only web research (web, capped at strength 2, never a stop factor) ---
+  # FindingValidator sets the question from the quoted date: same genre within a night 2.1, within a week 2.2;
+  # a big local event within a night 5.3.
+  - id: "2.1"
+    family: competition
+    star: true
+    source: web
+    kinds: [risk]
+    weight: 3
+    max_strength: 2
+    window: night
+    applies_when: { countries: [FR, NL, DE, ES, UA] }
+    template: predictor.q.2_1
+    actions:
+      - { key: predictor.a.competitor_differentiate, when: risk, due: "D-21" }
+
+  - id: "2.2"
+    family: competition
+    star: true
+    source: web
+    kinds: [risk]
+    weight: 2
+    max_strength: 2
+    window: week
+    applies_when: { countries: [FR, NL, DE, ES, UA] }
+    template: predictor.q.2_2
+    actions:
+      - { key: predictor.a.competitor_differentiate, when: risk, due: "D-21" }
+
+  - id: "5.3"
+    family: communities
+    source: web
+    kinds: [risk]
+    weight: 2
+    max_strength: 2
+    window: night
+    applies_when: { countries: [FR, NL, DE, ES, UA] }
+    template: predictor.q.5_3
 
   # --- form input ---
   # Thresholds from tech spec section 7.1.

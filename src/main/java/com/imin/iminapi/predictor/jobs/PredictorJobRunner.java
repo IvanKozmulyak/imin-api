@@ -72,7 +72,7 @@ public class PredictorJobRunner {
 
     /** One pass: requeue expired leases, then claim and run up to {@link #BATCH} due jobs. */
     public void tick() {
-        service.requeueExpired();
+        for (PredictorJob failed : service.requeueExpired()) onTerminalFailure(failed);
         List<UUID> ids = repo.findClaimable(service.now(), PageRequest.of(0, BATCH));
         for (UUID id : ids) {
             // The claim commits before the handler runs, so another runner sees the job as taken.
@@ -119,6 +119,18 @@ public class PredictorJobRunner {
             }
         }
         return service.markDone(job.getId(), lease);
+    }
+
+    /** The handler's clean-up for a job failed outside its run; a failure there must not stop the tick. */
+    private void onTerminalFailure(PredictorJob job) {
+        PredictorJobHandler handler = handlers.get(job.getKind());
+        if (handler == null) return;
+        try {
+            handler.onTerminalFailure(job);
+        } catch (Exception e) {
+            log.error("PredictorJobRunner: terminal clean-up of job {} ({}) failed: {}: {}", job.getId(),
+                    job.getKind(), e.getClass().getSimpleName(), LogSafe.redact(e.getMessage()));
+        }
     }
 
     private static boolean terminal(PredictorJob job) {

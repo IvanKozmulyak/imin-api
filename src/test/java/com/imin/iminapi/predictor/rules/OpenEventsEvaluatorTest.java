@@ -227,7 +227,8 @@ class OpenEventsEvaluatorTest {
     void sourceGateOffIsSourceOff() {
         when(gates.isOn("openagenda")).thenReturn(false);
         List<Question> bankOrder = BANK.questions().stream()
-                .filter(x -> evaluator().questionIds().contains(x.id())).toList();
+                .filter(x -> evaluator().questionIds().contains(x.id()) && x.source() == SourceKind.STRUCTURED)
+                .toList();
 
         List<Finding> out = evaluator().evaluateAll(bankOrder, lille(), SAT);
 

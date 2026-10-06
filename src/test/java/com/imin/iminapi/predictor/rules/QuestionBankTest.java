@@ -7,6 +7,7 @@ import com.imin.iminapi.predictor.rules.QuestionBank.Kind;
 import com.imin.iminapi.predictor.rules.QuestionBank.ProfileField;
 import com.imin.iminapi.predictor.rules.QuestionBank.Question;
 import com.imin.iminapi.predictor.rules.QuestionBank.SourceKind;
+import com.imin.iminapi.predictor.rules.QuestionBank.Window;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.io.DefaultResourceLoader;
 
@@ -74,9 +75,9 @@ class QuestionBankTest {
     void loadsShippedBank() {
         QuestionBank bank = QuestionBankLoader.load(new DefaultResourceLoader());
 
-        assertThat(bank.questions()).hasSize(23);
+        assertThat(bank.questions()).hasSize(26);
         assertThat(bank.questions().stream().map(Question::id).distinct()).hasSize(21);
-        assertThat(bank.version()).isEqualTo("qb4-gp1");
+        assertThat(bank.version()).isEqualTo("qb5-gp1");
         assertThat(bank.profiles()).hasSize(8);
         for (GenreProfile p : bank.profiles().values()) {
             for (ProfileField<?> f : List.of(p.audienceAge(), p.communities(), p.typicalPriceEur(),
@@ -91,12 +92,29 @@ class QuestionBankTest {
         QuestionBank bank = QuestionBankLoader.load(new DefaultResourceLoader());
 
         for (String id : List.of("2.6", "5.3", "2.3")) {
-            assertThat(bank.questions()).filteredOn(q -> q.id().equals(id)).singleElement().satisfies(q -> {
+            assertThat(bank.questions()).filteredOn(q -> q.id().equals(id) && q.source() == SourceKind.STRUCTURED)
+                    .singleElement().satisfies(q -> {
                 assertThat(q.star()).as(id).isFalse();
                 assertThat(q.source()).isEqualTo(SourceKind.STRUCTURED);
                 assertThat(q.kinds()).containsExactly(Kind.RISK);
                 assertThat(q.countries()).containsExactlyInAnyOrder("FR", "NL", "DE", "ES", "UA");
             });
+        }
+    }
+
+    @Test
+    void webQuestionsAreCappedRiskRowsWithoutStopFactor() {
+        QuestionBank bank = QuestionBankLoader.load(new DefaultResourceLoader());
+
+        List<Question> web = bank.questions().stream().filter(q -> q.source() == SourceKind.WEB).toList();
+        assertThat(web).extracting(Question::id).containsExactly("2.1", "2.2", "5.3");
+        assertThat(web).extracting(Question::window).containsExactly(Window.NIGHT, Window.WEEK, Window.NIGHT);
+        assertThat(web).extracting(Question::weight).containsExactly(3, 2, 2);
+        for (Question q : web) {
+            assertThat(q.maxStrength()).as(q.id()).isEqualTo(2);
+            assertThat(q.stopFactor()).as(q.id()).isFalse();
+            assertThat(q.kinds()).as(q.id()).containsExactly(Kind.RISK);
+            assertThat(q.countries()).containsExactlyInAnyOrder("FR", "NL", "DE", "ES", "UA");
         }
     }
 

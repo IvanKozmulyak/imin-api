@@ -23,6 +23,11 @@ public class DateCheck {
     public static final String ORIGIN_ORGANIZER = "organizer";
     public static final String ORIGIN_RADAR = "radar";
 
+    public static final String RESEARCH_OFF = "off";
+    public static final String RESEARCH_RUNNING = "running";
+    public static final String RESEARCH_DONE = "done";
+    public static final String RESEARCH_FAILED = "failed";
+
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
@@ -73,6 +78,14 @@ public class DateCheck {
 
     @Column(nullable = false)
     private boolean research = false;
+
+    /** off | running | done | failed (V173); anything but off needs {@code research}. */
+    @Column(name = "research_status", nullable = false, length = 16)
+    private String researchStatus = RESEARCH_OFF;
+
+    /** When web research was queued; the daily caps count these, so a refused request leaves it null. */
+    @Column(name = "research_queued_at")
+    private Instant researchQueuedAt;
 
     /** pending | running | done | partial | failed. */
     @Column(nullable = false, length = 16)

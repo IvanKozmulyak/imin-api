@@ -19,12 +19,16 @@ import com.imin.iminapi.predictor.dto.DateCheckResponse;
 import com.imin.iminapi.predictor.dto.DateCheckSummaryDto;
 import com.imin.iminapi.predictor.dto.EventDateCheckDto;
 import com.imin.iminapi.predictor.dto.FindingDto;
+import com.imin.iminapi.predictor.jobs.PredictorJobService;
 import com.imin.iminapi.predictor.model.DateCheck;
 import com.imin.iminapi.predictor.model.DateCheckDate;
 import com.imin.iminapi.predictor.model.DateCheckFinding;
 import com.imin.iminapi.predictor.repository.DateCheckDateRepository;
 import com.imin.iminapi.predictor.repository.DateCheckFindingRepository;
 import com.imin.iminapi.predictor.repository.DateCheckRepository;
+import com.imin.iminapi.predictor.research.DateCheckResearchJobHandler;
+import com.imin.iminapi.predictor.research.ResearchPrompt;
+import com.imin.iminapi.predictor.research.WebResearchService;
 import com.imin.iminapi.predictor.rules.ActionItem;
 import com.imin.iminapi.predictor.rules.ActionPicker;
 import com.imin.iminapi.predictor.rules.Assumption;
@@ -39,6 +43,7 @@ import com.imin.iminapi.predictor.rules.QuestionBank.GenreProfile;
 import com.imin.iminapi.predictor.rules.QuestionBank.Kind;
 import com.imin.iminapi.predictor.rules.QuestionBank.Question;
 import com.imin.iminapi.predictor.rules.QuestionBank.SourceKind;
+import com.imin.iminapi.predictor.rules.QuestionBank.Window;
 import com.imin.iminapi.predictor.rules.Ranker;
 import com.imin.iminapi.predictor.rules.RuleEngine;
 import com.imin.iminapi.predictor.rules.Scorer;
@@ -51,11 +56,14 @@ import com.imin.iminapi.security.RateLimiter;
 import com.imin.iminapi.util.CountryTimeZones;
 import com.imin.iminapi.util.Times;
 import jakarta.persistence.EntityManager;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -80,11 +88,17 @@ import java.util.OptionalInt;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 /**
  * "Check a date": runs the rule engine on each candidate date, scores, ranks and stores the result, and
- * writes the DATE_CHECK ledger row in the same transaction before answering. Synchronous; no LLM, no quota.
+ * writes the DATE_CHECK ledger row in the same transaction before answering. The rule run is synchronous.
+ *
+ * <p>Web research: when asked for, allowed for the org ({@link DateCheckAccess#isResearchEnabled}) and under the
+ * daily caps, the check is stored {@code running} with its calendar result and a {@code date_check_research} job;
+ * {@link #completeResearch} re-scores with the web findings, {@link #failResearch} keeps the calendar result. Over a
+ * cap the check answers {@code researchStatus=failed} without any call.
  *
  * <p>Event link: an event created from a check stores it in {@code events.date_check_id}, and a check made with
  * {@code eventId} stores the event. The most recently scored of the two is the event's current check.
@@ -98,9 +112,10 @@ import java.util.stream.Collectors;
 @Service
 public class DateCheckService {
 
+    private static final Logger log = LoggerFactory.getLogger(DateCheckService.class);
+
     static final String STATUS_DONE = "done";
-    /** ponytail: research is not built yet, so every check answers "off" and nothing is queued. */
-    static final String RESEARCH_OFF = "off";
+    static final String STATUS_RUNNING = "running";
     static final int DEFAULT_LIMIT = 20;
     static final int MAX_LIMIT = 50;
 
@@ -128,12 +143,13 @@ public class DateCheckService {
     private final EventRepository events;
     private final Clock clock;
     private final EntityManager entityManager;
+    private final PredictorJobService jobs;
 
     public DateCheckService(DateCheckAccess access, RateLimiter rateLimiter, DateCheckValidator validator,
                             DateCheckProperties props, QuestionBank bank, RuleEngine engine, DateCheckRepository checks,
                             DateCheckDateRepository dates, DateCheckFindingRepository findings,
                             PredictionLedgerService ledger, OrganizationRepository orgs, EventRepository events,
-                            Clock clock, EntityManager entityManager) {
+                            Clock clock, EntityManager entityManager, PredictorJobService jobs) {
         this.access = access;
         this.rateLimiter = rateLimiter;
         this.validator = validator;
@@ -148,6 +164,7 @@ public class DateCheckService {
         this.events = events;
         this.clock = clock;
         this.entityManager = entityManager;
+        this.jobs = jobs;
     }
 
     @Transactional
@@ -182,8 +199,8 @@ public class DateCheckService {
         c.setKnownEventsJson(req.knownEvents() == null ? null : write(req.knownEvents().stream()
                 .map(k -> new KnownEvent(k.name().trim(), k.date(), trimToNull(k.venue()), k.strength()))
                 .toList()));
-        c.setResearch(false);
-        c.setStatus(STATUS_DONE);
+        boolean queued = requestResearch(c, Boolean.TRUE.equals(req.research()));
+        c.setStatus(queued ? STATUS_RUNNING : STATUS_DONE);
 
         List<LocalDate> candidates = req.dates().stream().sorted().toList();
         Answers answers = new Answers(req.audienceAge(), upper(req.communities()), req.buyingLeadDays());
@@ -192,8 +209,33 @@ public class DateCheckService {
         c.setAssumptionsJson(write(AssumptionResolver.resolve(in, profile(c))));
         c.setQuestionBankVersion(bank.version());
         checks.save(c);
-        run(c, in, candidates);
+        run(c, in, candidates, Map.of());
+        // Joins this transaction, so the job exists only if the check commits.
+        if (queued) jobs.enqueue(DateCheckResearchJobHandler.KIND, Map.of("dateCheckId", c.getId().toString()));
         return toResponse(c);
+    }
+
+    /**
+     * Sets the check's research state: off unless asked for and allowed for the org; failed without a call when the
+     * org's or the global daily cap is reached; else running. True when a research job must be queued.
+     */
+    private boolean requestResearch(DateCheck c, boolean asked) {
+        c.setResearch(asked && access.isResearchEnabled(c.getOrgId()));
+        if (!c.isResearch()) {
+            c.setResearchStatus(DateCheck.RESEARCH_OFF);
+            return false;
+        }
+        Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
+        Instant utcDay = now.truncatedTo(ChronoUnit.DAYS);
+        if (checks.countResearchQueuedSince(c.getOrgId(), utcDay) >= props.getResearchDailyCapPerOrg()
+                || checks.countAllResearchQueuedSince(utcDay) >= props.getResearchDailyCapGlobal()) {
+            log.info("Date-check research cap reached for org {}; the check runs without web search", c.getOrgId());
+            c.setResearchStatus(DateCheck.RESEARCH_FAILED);
+            return false;
+        }
+        c.setResearchStatus(DateCheck.RESEARCH_RUNNING);
+        c.setResearchQueuedAt(now);
+        return true;
     }
 
     @Transactional(readOnly = true)
@@ -237,18 +279,131 @@ public class DateCheckService {
         if (patch.priceMinor() != null) c.setPriceMinor(patch.priceMinor());
         if (patch.startHour() != null) c.setStartHour(patch.startHour().shortValue());
 
-        findings.deleteByDateCheckDateIdIn(old.stream().map(DateCheckDate::getId).toList());
-        dates.deleteByDateCheckId(c.getId());
-        // The unique (check, date) key needs the deletes flushed before the re-insert.
-        dates.flush();
+        // Web findings came from a paid, dated search; a re-score keeps them as they were.
+        Map<LocalDate, List<Finding>> web = storedFindings(old, DateCheckService::isWeb);
+        replaceDates(c, old);
 
         DateCheckInput in = input(c, today, merged);
         c.setAssumptionsJson(write(AssumptionResolver.resolve(in, profile(c))));
         c.setQuestionBankVersion(bank.version());
         c.setUpdatedAt(Times.nowMicros());
         checks.saveAndFlush(c);
-        run(c, in, candidates);
+        run(c, in, candidates, web);
         return toResponse(c);
+    }
+
+    // --- web research ---
+
+    /** The research inputs while the check's research is running; empty once it finished or the check is gone. */
+    @Transactional(readOnly = true)
+    public Optional<WebResearchService.Request> researchSnapshot(UUID id) {
+        return checks.findById(id)
+                .filter(c -> c.isResearch() && DateCheck.RESEARCH_RUNNING.equals(c.getResearchStatus()))
+                .map(c -> new WebResearchService.Request(c.getOrgId(), c.getCity(), c.getCountry(),
+                        c.getGenreFamily(), c.getSubGenre(),
+                        dates.findByDateCheckIdOrderByCandidateDateAsc(c.getId()).stream()
+                                .map(DateCheckDate::getCandidateDate).toList()));
+    }
+
+    /**
+     * Ends a running research: a done outcome re-scores every date with its web findings next to the stored ones
+     * and writes a ledger row with the call's usage; a failed one keeps the calendar result. False when the research
+     * is not running any more, so a repeated job changes nothing; a paid call that ends late is still ledgered.
+     */
+    @Transactional
+    public boolean completeResearch(UUID id, WebResearchService.Outcome outcome) {
+        DateCheck c = checks.findLockedById(id).orElse(null);
+        if (c == null) return false;
+        if (!DateCheck.RESEARCH_RUNNING.equals(c.getResearchStatus())) {
+            if (outcome.usage() != null) recordSpend(c, outcome, c.getResearchStatus(), "late");
+            return false;
+        }
+        if (!outcome.done()) {
+            // A paid call that produced nothing usable is still ledgered, so its spend is counted.
+            if (outcome.usage() != null) recordSpend(c, outcome, DateCheck.RESEARCH_FAILED, outcome.reason());
+            return checks.finishResearch(id, DateCheck.RESEARCH_FAILED) == 1;
+        }
+        List<DateCheckDate> old = dates.findByDateCheckIdOrderByCandidateDateAsc(c.getId());
+        Map<LocalDate, List<Finding>> byDate = storedFindings(old, f -> !isWeb(f));
+        outcome.findings().forEach((d, fs) -> {
+            if (byDate.containsKey(d)) byDate.get(d).addAll(fs);
+        });
+        replaceDates(c, old);
+        c.setResearchStatus(DateCheck.RESEARCH_DONE);
+        c.setStatus(STATUS_DONE);
+        c.setUpdatedAt(Times.nowMicros());
+        checks.saveAndFlush(c);
+        LocalDate today = validator.today(c.getCountry());
+        List<Map<String, Object>> output = score(c, today, byDate);
+        Map<String, Object> canonical = new LinkedHashMap<>();
+        canonical.put("dateCheckId", c.getId().toString());
+        canonical.put("research", ResearchPrompt.VERSION);
+        canonical.put("findings", byDate.values().stream().flatMap(List::stream)
+                .filter(f -> f.sourceKind() == SourceKind.WEB).map(f -> f.questionId() + "|" + f.url()).toList());
+        ledger.recordDateCheck(c.getOrgId(), c.getId(), bank.version(), sha256(write(canonical)),
+                write(Map.of("dates", output, "researchStatus", DateCheck.RESEARCH_DONE)), usage(outcome));
+        return true;
+    }
+
+    /** Marks a running research failed and keeps the calendar result; false when it was not running. */
+    @Transactional
+    public boolean failResearch(UUID id) {
+        return checks.finishResearch(id, DateCheck.RESEARCH_FAILED) == 1;
+    }
+
+    /** A ledger row for a research call whose answer changed no date, so its spend is still counted. */
+    private void recordSpend(DateCheck c, WebResearchService.Outcome outcome, String status, String reason) {
+        ledger.recordDateCheck(c.getOrgId(), c.getId(), c.getQuestionBankVersion(),
+                sha256(write(Map.of("dateCheckId", c.getId().toString(), "research", reason))),
+                write(Map.of("researchStatus", status, "reason", reason)), usage(outcome));
+    }
+
+    private static PredictionLedgerService.ResearchUsage usage(WebResearchService.Outcome o) {
+        if (o.usage() == null) {
+            // A cache hit: no call was made, so nothing was spent.
+            return new PredictionLedgerService.ResearchUsage(o.model(), ResearchPrompt.VERSION, 0, 0, 0,
+                    BigDecimal.ZERO);
+        }
+        return new PredictionLedgerService.ResearchUsage(o.model(), ResearchPrompt.VERSION, o.usage().tokensIn(),
+                o.usage().tokensOut(), o.usage().searches(), o.usage().costUsd());
+    }
+
+    /** The stored findings that pass {@code keep}, as rule-engine findings, per candidate date (every date listed). */
+    private Map<LocalDate, List<Finding>> storedFindings(List<DateCheckDate> rows,
+                                                         Predicate<DateCheckFinding> keep) {
+        Map<LocalDate, List<Finding>> out = new LinkedHashMap<>();
+        Map<UUID, LocalDate> dateOf = new HashMap<>();
+        for (DateCheckDate d : rows) {
+            out.put(d.getCandidateDate(), new ArrayList<>());
+            dateOf.put(d.getId(), d.getCandidateDate());
+        }
+        if (rows.isEmpty()) return out;
+        for (DateCheckFinding f : findings.findByDateCheckDateIdIn(List.copyOf(dateOf.keySet()))) {
+            if (keep.test(f)) out.get(dateOf.get(f.getDateCheckDateId())).add(finding(f));
+        }
+        return out;
+    }
+
+    private static Finding finding(DateCheckFinding f) {
+        return new Finding(f.getQuestionId(), Kind.valueOf(upper(f.getKind())),
+                Finding.Status.valueOf(upper(f.getStatus())), f.getStrength(), f.getWeight(),
+                SourceKind.valueOf(upper(f.getSourceKind())), Window.valueOf(upper(f.getTimeWindow())),
+                f.isStopFactor(), read(f.getFactsJson(), FACTS), f.getUrl(), f.getQuote(), f.getFetchedAt());
+    }
+
+    private static boolean isWeb(DateCheckFinding f) {
+        return SourceKind.WEB.name().equalsIgnoreCase(f.getSourceKind());
+    }
+
+    private static String upper(String s) {
+        return s.toUpperCase(Locale.ROOT);
+    }
+
+    /** Deletes a check's date and finding rows; the unique (check, date) key needs them flushed before a re-insert. */
+    private void replaceDates(DateCheck c, List<DateCheckDate> old) {
+        findings.deleteByDateCheckDateIdIn(old.stream().map(DateCheckDate::getId).toList());
+        dates.deleteByDateCheckId(c.getId());
+        dates.flush();
     }
 
     // --- event link ---
@@ -388,7 +543,7 @@ public class DateCheckService {
         c.setQuestionBankVersion(bank.version());
         // uq_date_check_radar_run is the backstop against a second writer.
         checks.saveAndFlush(c);
-        run(c, in, List.of(night));
+        run(c, in, List.of(night), Map.of());
         DateCheckDate now = dates.findByDateCheckIdOrderByCandidateDateAsc(c.getId()).get(0);
         checks.recordRadarResult(c.getId(), now.getVerdict(), now.getRiskScore());
         RadarAlertRule.Alert alert = null;
@@ -463,24 +618,39 @@ public class DateCheckService {
                     return new DateCheckConfigResponse.Genre(b, gp == null ? List.of() : gp.subGenres());
                 })
                 .toList();
-        return new DateCheckConfigResponse(Boolean.TRUE.equals(props.getResearchEnabled()), genres,
+        return new DateCheckConfigResponse(access.isResearchEnabled(p.orgId()), genres,
                 props.getMaxDates(), props.getMaxHorizonMonths());
     }
 
     // --- run ---
 
-    private void run(DateCheck c, DateCheckInput in, List<LocalDate> candidates) {
-        LocalDate today = in.today();
-        List<Ranker.Candidate> scored = new ArrayList<>();
+    /** Rule-engine findings plus {@code extra} (kept web findings) per date, scored, stored and ledgered. */
+    private void run(DateCheck c, DateCheckInput in, List<LocalDate> candidates,
+                     Map<LocalDate, List<Finding>> extra) {
         Map<LocalDate, List<Finding>> findingsByDate = new LinkedHashMap<>();
-        Map<LocalDate, List<ActionItem>> actionsByDate = new HashMap<>();
         for (LocalDate d : candidates) {
-            List<Finding> fs = engine.evaluate(in, d);
-            DateResult result = Scorer.score(fs, bank);
+            List<Finding> fs = new ArrayList<>(engine.evaluate(in, d));
+            fs.addAll(extra.getOrDefault(d, List.of()));
             findingsByDate.put(d, fs);
+        }
+        List<Map<String, Object>> output = score(c, in.today(), findingsByDate);
+
+        Map<String, Object> canonical = new LinkedHashMap<>();
+        canonical.put("input", in);
+        canonical.put("dates", candidates.stream().map(LocalDate::toString).toList());
+        ledger.recordDateCheck(c.getOrgId(), c.getId(), bank.version(), sha256(write(canonical)),
+                write(Map.of("dates", output)));
+    }
+
+    /** Scores, ranks and stores each date's findings, in the map's order; returns the ledger output per date. */
+    private List<Map<String, Object>> score(DateCheck c, LocalDate today, Map<LocalDate, List<Finding>> findingsByDate) {
+        List<Ranker.Candidate> scored = new ArrayList<>();
+        Map<LocalDate, List<ActionItem>> actionsByDate = new HashMap<>();
+        findingsByDate.forEach((d, fs) -> {
+            DateResult result = Scorer.score(fs, bank);
             actionsByDate.put(d, ActionPicker.pick(fs, bank, d, today));
             scored.add(new Ranker.Candidate(d, result, (int) ChronoUnit.DAYS.between(today, d)));
-        }
+        });
         List<Ranker.Ranked> ranked = Ranker.rank(scored);
 
         List<Map<String, Object>> output = new ArrayList<>();
@@ -511,12 +681,7 @@ public class DateCheckService {
             out.put("rank", rank);
             output.add(out);
         }
-
-        Map<String, Object> canonical = new LinkedHashMap<>();
-        canonical.put("input", in);
-        canonical.put("dates", candidates.stream().map(LocalDate::toString).toList());
-        ledger.recordDateCheck(c.getOrgId(), c.getId(), bank.version(), sha256(write(canonical)),
-                write(Map.of("dates", output)));
+        return output;
     }
 
     private static DateCheckFinding findingRow(UUID dateId, Finding f) {
@@ -588,7 +753,7 @@ public class DateCheckService {
                 .toList();
         return new DateCheckResponse(c.getId(), c.getStatus(), c.getCity(), c.getCountry(), c.getPostalCode(),
                 c.getEventId(), c.getGenreFamily(), c.getSubGenre(), c.getCapacity(), c.getPriceMinor(),
-                c.isResearch(), RESEARCH_OFF, c.getQuestionBankVersion(), c.getCreatedAt(), c.getUpdatedAt(),
+                c.isResearch(), c.getResearchStatus(), c.getQuestionBankVersion(), c.getCreatedAt(), c.getUpdatedAt(),
                 assumptions, dateDtos);
     }
 

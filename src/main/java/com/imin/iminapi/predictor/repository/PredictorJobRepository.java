@@ -39,12 +39,20 @@ public interface PredictorJobRepository extends JpaRepository<PredictorJob, UUID
              where j.status = 'running' and j.lockedUntil < :now and j.attempts < :maxAttempts""")
     int requeueExpired(@Param("now") Instant now, @Param("maxAttempts") int maxAttempts);
 
+    /** Running jobs whose lease expired on their last attempt, in id order so concurrent callers lock alike. */
+    @Query("""
+            select j.id from PredictorJob j
+             where j.status = 'running' and j.lockedUntil < :now and j.attempts >= :maxAttempts
+             order by j.id""")
+    List<UUID> findExpiredAtMax(@Param("now") Instant now, @Param("maxAttempts") int maxAttempts);
+
+    /** 1 when this caller failed the job; 0 when another runner got to it first. */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("""
             update PredictorJob j
                set j.status = 'failed', j.lockedUntil = null, j.lastError = :error, j.updatedAt = :now
-             where j.status = 'running' and j.lockedUntil < :now and j.attempts >= :maxAttempts""")
-    int failExpired(@Param("now") Instant now, @Param("maxAttempts") int maxAttempts,
+             where j.id = :id and j.status = 'running' and j.lockedUntil < :now and j.attempts >= :maxAttempts""")
+    int failExpired(@Param("id") UUID id, @Param("now") Instant now, @Param("maxAttempts") int maxAttempts,
                     @Param("error") String error);
 
     /** Ends a run only while the caller's own lease is on the row; 0 means the lease was lost. */

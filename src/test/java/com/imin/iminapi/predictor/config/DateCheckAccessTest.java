@@ -174,7 +174,62 @@ class DateCheckAccessTest {
         assertThat(props.getBetaOrgIds()).isEmpty();
         assertThat(props.getMaxDates()).isEqualTo(5);
         assertThat(props.getMaxHorizonMonths()).isEqualTo(18);
+        assertThat(props.getResearchOrgIds()).isEmpty();
         assertNotFound(new DateCheckAccess(props), A);
+        assertThat(new DateCheckAccess(props).isResearchEnabled(A)).isFalse();
+    }
+
+    // ---- web research allowlist ----
+
+    /** Every term of the research gate open for {@code A}; each test closes exactly one. */
+    private static DateCheckProperties researchOpen() {
+        DateCheckProperties props = new DateCheckProperties();
+        props.setEnabled(true);
+        props.setBetaOrgIds(Set.of(A, B));
+        props.setResearchEnabled(true);
+        props.setResearchOrgIds(Set.of(A));
+        return props;
+    }
+
+    @Test
+    void researchOpenForListedOrgOnly() {
+        DateCheckAccess access = new DateCheckAccess(researchOpen());
+        assertThat(access.isResearchEnabled(A)).isTrue();
+        assertThat(access.isResearchEnabled(B)).isFalse();
+        assertThat(access.isResearchEnabled(null)).isFalse();
+    }
+
+    @Test
+    void emptyResearchListMeansNoResearch() {
+        DateCheckProperties props = researchOpen();
+        props.setResearchOrgIds(Set.of());
+        DateCheckAccess access = new DateCheckAccess(props);
+        assertThat(access.isResearchEnabled(A)).isFalse();
+        assertThat(access.isResearchEnabled(B)).isFalse();
+    }
+
+    @Test
+    void researchOffWhenTheResearchFlagIsOff() {
+        DateCheckProperties props = researchOpen();
+        props.setResearchEnabled(false);
+        assertThat(new DateCheckAccess(props).isResearchEnabled(A)).isFalse();
+    }
+
+    @Test
+    void researchOffWhenTheDateCheckGateIsClosedForTheOrg() {
+        DateCheckProperties off = researchOpen();
+        off.setEnabled(false);
+        assertThat(new DateCheckAccess(off).isResearchEnabled(A)).isFalse();
+        DateCheckProperties notBeta = researchOpen();
+        notBeta.setBetaOrgIds(Set.of(B));
+        assertThat(new DateCheckAccess(notBeta).isResearchEnabled(A)).isFalse();
+    }
+
+    @Test
+    void allOrgsDoesNotOpenResearch() {
+        DateCheckProperties props = researchOpen();
+        props.setAllOrgs(true);
+        assertThat(new DateCheckAccess(props).isResearchEnabled(B)).isFalse();
     }
 
     @Test
@@ -187,12 +242,22 @@ class DateCheckAccessTest {
                         "PREDICTOR_DATE_CHECK_RADAR_ENABLED=",
                         "PREDICTOR_DATE_CHECK_MAX_DATES=",
                         "PREDICTOR_DATE_CHECK_MAX_HORIZON_MONTHS=",
+                        "PREDICTOR_DATE_CHECK_RESEARCH_ORGS=",
+                        "PREDICTOR_DATE_CHECK_RESEARCH_DAILY_CAP_PER_ORG=",
+                        "PREDICTOR_DATE_CHECK_RESEARCH_DAILY_CAP_GLOBAL=",
+                        "PREDICTOR_DATE_CHECK_RESEARCH_MODEL=",
+                        "PREDICTOR_DATE_CHECK_RESEARCH_TIMEOUT=",
                         "imin.predictor.date-check.enabled=${PREDICTOR_DATE_CHECK_ENABLED:false}",
                         "imin.predictor.date-check.all-orgs=${PREDICTOR_DATE_CHECK_ALL_ORGS:false}",
                         "imin.predictor.date-check.research-enabled=${PREDICTOR_DATE_CHECK_RESEARCH_ENABLED:false}",
                         "imin.predictor.date-check.radar-enabled=${PREDICTOR_DATE_CHECK_RADAR_ENABLED:false}",
                         "imin.predictor.date-check.max-dates=${PREDICTOR_DATE_CHECK_MAX_DATES:5}",
-                        "imin.predictor.date-check.max-horizon-months=${PREDICTOR_DATE_CHECK_MAX_HORIZON_MONTHS:18}")
+                        "imin.predictor.date-check.max-horizon-months=${PREDICTOR_DATE_CHECK_MAX_HORIZON_MONTHS:18}",
+                        "imin.predictor.date-check.research-org-ids=${PREDICTOR_DATE_CHECK_RESEARCH_ORGS:}",
+                        "imin.predictor.date-check.research-daily-cap-per-org=${PREDICTOR_DATE_CHECK_RESEARCH_DAILY_CAP_PER_ORG:10}",
+                        "imin.predictor.date-check.research-daily-cap-global=${PREDICTOR_DATE_CHECK_RESEARCH_DAILY_CAP_GLOBAL:100}",
+                        "imin.predictor.date-check.research-model=${PREDICTOR_DATE_CHECK_RESEARCH_MODEL:anthropic/claude-haiku-4.5}",
+                        "imin.predictor.date-check.research-timeout=${PREDICTOR_DATE_CHECK_RESEARCH_TIMEOUT:30s}")
                 .run(ctx -> {
                     assertThat(ctx).hasNotFailed();
                     DateCheckProperties props = ctx.getBean(DateCheckProperties.class);
@@ -202,6 +267,11 @@ class DateCheckAccessTest {
                     assertThat(props.getRadarEnabled()).isFalse();
                     assertThat(props.getMaxDates()).isEqualTo(5);
                     assertThat(props.getMaxHorizonMonths()).isEqualTo(18);
+                    assertThat(props.getResearchOrgIds()).isEmpty();
+                    assertThat(props.getResearchDailyCapPerOrg()).isEqualTo(10);
+                    assertThat(props.getResearchDailyCapGlobal()).isEqualTo(100);
+                    assertThat(props.getResearchModel()).isEqualTo("anthropic/claude-haiku-4.5");
+                    assertThat(props.getResearchTimeout()).isEqualTo(java.time.Duration.ofSeconds(30));
                 });
     }
 
@@ -233,7 +303,12 @@ class DateCheckAccessTest {
                 "      research-enabled: ${PREDICTOR_DATE_CHECK_RESEARCH_ENABLED:false}\n",
                 "      radar-enabled: ${PREDICTOR_DATE_CHECK_RADAR_ENABLED:false}\n",
                 "      max-dates: ${PREDICTOR_DATE_CHECK_MAX_DATES:5}\n",
-                "      max-horizon-months: ${PREDICTOR_DATE_CHECK_MAX_HORIZON_MONTHS:18}\n");
+                "      max-horizon-months: ${PREDICTOR_DATE_CHECK_MAX_HORIZON_MONTHS:18}\n",
+                "      research-org-ids: ${PREDICTOR_DATE_CHECK_RESEARCH_ORGS:}\n",
+                "      research-daily-cap-per-org: ${PREDICTOR_DATE_CHECK_RESEARCH_DAILY_CAP_PER_ORG:10}\n",
+                "      research-daily-cap-global: ${PREDICTOR_DATE_CHECK_RESEARCH_DAILY_CAP_GLOBAL:100}\n",
+                "      research-model: ${PREDICTOR_DATE_CHECK_RESEARCH_MODEL:anthropic/claude-haiku-4.5}\n",
+                "      research-timeout: ${PREDICTOR_DATE_CHECK_RESEARCH_TIMEOUT:30s}\n");
 
         String block = dateCheckBlock(yaml);
         Set<String> missing = new TreeSet<>();

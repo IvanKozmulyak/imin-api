@@ -7,7 +7,7 @@ import java.util.UUID;
 /**
  * POST /api/v1/predictions/date-checks. Validated by {@code DateCheckValidator} (422 FIELD_INVALID), not bean
  * validation. {@code country} falls back to the org's; {@code knownEvents}/{@code communities}: null = not
- * provided, empty = none. {@code research} is ignored while research is off. {@code eventId} links the new check to
+ * provided, empty = none. {@code research} asks for web research; it is ignored unless research is on for the org. {@code eventId} links the new check to
  * that event, where it becomes the event's current check.
  */
 public record DateCheckRequest(String city, String country, String postalCode, UUID eventId, String genreFamily,

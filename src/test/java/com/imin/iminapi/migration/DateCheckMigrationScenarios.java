@@ -27,7 +27,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * V162 on a fresh database per test: the date-check tables, the ledger CHECKs and the events link; V165 open events;
- * V167 radar runs; V168 predictor alerts; V169 Radar mute and run-time snapshots.
+ * V167 radar runs; V168 predictor alerts; V169 Radar mute and run-time snapshots; V173 web research state.
  */
 abstract class DateCheckMigrationScenarios {
 
@@ -199,7 +199,11 @@ abstract class DateCheckMigrationScenarios {
                 new CheckCase("ck_date_check_radar_snapshot_shape", DateCheckMigrationScenarios::dateCheckFresh,
                         Map.of("radar_verdict", "good", "radar_risk", 1)),
                 new CheckCase("ck_date_check_radar_snapshot_shape", DateCheckMigrationScenarios::dateCheckFresh,
-                        Map.of("radar_prev_verdict", "good", "radar_prev_risk", 1)));
+                        Map.of("radar_prev_verdict", "good", "radar_prev_risk", 1)),
+                new CheckCase("ck_date_check_research_status", DateCheckMigrationScenarios::dateCheckFresh,
+                        Map.of("research", true, "research_status", "queued")),
+                new CheckCase("ck_date_check_research_off", DateCheckMigrationScenarios::dateCheckFresh,
+                        Map.of("research", false, "research_status", "running")));
     }
 
     private static Map<String, Object> radarWithout(String column) {
@@ -237,6 +241,34 @@ abstract class DateCheckMigrationScenarios {
         assertThatThrownBy(() -> finding(jdbc, Map.of("source_kind", "input", "stop_factor", true)))
                 .isInstanceOf(DataIntegrityViolationException.class)
                 .satisfies(ex -> assertThat(ex.getMessage()).containsIgnoringCase("ck_date_check_finding_stop_source"));
+    }
+
+    // ---- web research (V173) ------------------------------------------------------------
+
+    @Test
+    void existingDateChecksKeepResearchOff() {
+        DataSource ds = freshDatabase();
+        migrate(ds, "171");
+        JdbcTemplate jdbc = new JdbcTemplate(ds);
+        UUID dc = dateCheck(jdbc, org(jdbc), Map.of());
+
+        migrate(ds, "latest");
+
+        Map<String, Object> r = jdbc.queryForMap(
+                "select research, research_status, research_queued_at from date_check where id = ?", dc);
+        assertThat(r.get("research")).isEqualTo(false);
+        assertThat(r.get("research_status")).isEqualTo("off");
+        assertThat(r.get("research_queued_at")).isNull();
+    }
+
+    @Test
+    void researchStatesNeedTheResearchFlag() {
+        JdbcTemplate jdbc = latest(freshDatabase());
+        for (String status : List.of("running", "done", "failed")) {
+            assertThatCode(() -> dateCheckFresh(jdbc, Map.of("research", true, "research_status", status,
+                    "research_queued_at", NOW))).as(status).doesNotThrowAnyException();
+        }
+        assertThatCode(() -> dateCheckFresh(jdbc, Map.of("research", true))).doesNotThrowAnyException();
     }
 
     // ---- radar runs --------------------------------------------------------------------

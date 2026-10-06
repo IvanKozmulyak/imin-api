@@ -80,24 +80,44 @@ public class PredictionLedgerService {
     /** Deterministic rules model id for "Check a date" renders; no LLM is involved. */
     public static final String DATE_CHECK_MODEL_ID = "rules/date-check";
 
+    /** The web research call behind a date-check render; counts are null when the provider did not report them. */
+    public record ResearchUsage(String modelId, String promptVersion, Integer tokensIn, Integer tokensOut,
+                                Integer searches, BigDecimal costUsd) {}
+
     /**
      * The write-before-render call for a "Check a date" run: no event, stage 0, and the
      * question-bank version stamped as both prompt version and {@code question_bank_version}.
      */
     @Transactional
     public UUID recordDateCheck(UUID orgId, UUID dateCheckId, String qbVersion, String inputHash, String outputJson) {
+        return recordDateCheck(orgId, dateCheckId, qbVersion, inputHash, outputJson, null);
+    }
+
+    /**
+     * As above for a run that used web research: the row names the research model and prompt version and carries
+     * its tokens, searches and USD cost; {@code question_bank_version} still names the bank.
+     */
+    @Transactional
+    public UUID recordDateCheck(UUID orgId, UUID dateCheckId, String qbVersion, String inputHash, String outputJson,
+                                ResearchUsage usage) {
         PredictionLedger row = new PredictionLedger();
         row.setEventId(null);
         row.setOrgId(orgId);
         row.setDateCheckId(dateCheckId);
         row.setSurface(PredictionSurface.DATE_CHECK);
         row.setStage((short) 0);
-        row.setModelId(DATE_CHECK_MODEL_ID);
-        row.setPromptVersion(qbVersion);
+        row.setModelId(usage == null ? DATE_CHECK_MODEL_ID : usage.modelId());
+        row.setPromptVersion(usage == null ? qbVersion : usage.promptVersion());
         row.setQuestionBankVersion(qbVersion);
         row.setInputSnapshotHash(inputHash);
         row.setComparablesJson("{}");
         row.setOutputJson(outputJson == null ? "{}" : outputJson);
+        if (usage != null) {
+            row.setTokensIn(usage.tokensIn());
+            row.setTokensOut(usage.tokensOut());
+            row.setSearches(usage.searches());
+            row.setCostUsd(usage.costUsd());
+        }
         row.setCreatedAt(Instant.now());
         return ledger.save(row).getId();
     }
