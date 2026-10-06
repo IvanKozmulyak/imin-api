@@ -241,6 +241,28 @@ class FindingValidatorTest {
     }
 
     @Test
+    void sameEventOnTwoSitesCountsOnce() {
+        // A club page gives the night's same-genre event; a city agenda lists the same night as a big event.
+        Checked same = new Checked("Amelie Lens", URL, QUOTE, FindingValidator.Type.SAME_GENRE_EVENT, 2);
+        Checked big = new Checked("Amelie Lens", URL + "/agenda",
+                "Amelie Lens, samedi 17 octobre 2026 : la soirée techno du week-end", FindingValidator.Type.BIG_EVENT, 2);
+        for (boolean bigFirst : List.of(true, false)) {
+            assertThat(questions(same, big, bigFirst)).as("bigFirst=" + bigFirst).containsExactly("2.1");
+        }
+    }
+
+    @Test
+    void differentBigEventOnAnotherSiteIsKept() {
+        Checked same = new Checked("Amelie Lens", URL, QUOTE, FindingValidator.Type.SAME_GENRE_EVENT, 2);
+        Checked big = new Checked("Fête des Lumières", URL + "/agenda",
+                "Fête des Lumières sur les quais le samedi 17 octobre 2026", FindingValidator.Type.BIG_EVENT, 2);
+        for (boolean bigFirst : List.of(true, false)) {
+            assertThat(questions(same, big, bigFirst)).as("bigFirst=" + bigFirst)
+                    .containsExactlyInAnyOrder("2.1", "5.3");
+        }
+    }
+
+    @Test
     void oneEventQuotedTwiceAsBothTypesCountsOnce() {
         // The names differ; the big item's name is in the same-genre item's quote.
         Checked same = new Checked("Amelie Lens", URL, QUOTE, FindingValidator.Type.SAME_GENRE_EVENT, 2);
@@ -350,7 +372,9 @@ class FindingValidatorTest {
         List<Finding> out = FindingValidator.assign(List.of(
                 new Checked("Amelie Lens", URL, QUOTE, FindingValidator.Type.SAME_GENRE_EVENT, 2),
                 new Checked("Amelie Lens", URL + "/b", week, FindingValidator.Type.SAME_GENRE_EVENT, 2),
-                new Checked("Amelie Lens", URL + "/c", QUOTE, FindingValidator.Type.BIG_EVENT, 2)), SAT_17_OCT, "Paris",
+                new Checked("Fête des Lumières", URL + "/c",
+                        "Fête des Lumières sur les quais le samedi 17 octobre 2026", FindingValidator.Type.BIG_EVENT, 2)),
+                SAT_17_OCT, "Paris",
                 BANK, FETCHED);
         assertThat(out).extracting(Finding::questionId).containsExactly("2.1", "2.2", "5.3");
         assertThat(out).allSatisfy(f -> {

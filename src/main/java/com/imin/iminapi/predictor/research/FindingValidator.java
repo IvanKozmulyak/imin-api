@@ -118,9 +118,9 @@ public final class FindingValidator {
 
     /**
      * The web findings for one candidate night: a same-genre event within a night is 2.1, within a week 2.2; a big
-     * event within a night is 5.3, unless its page gave that night's 2.1 for the same event (either name shares an
-     * event word, not the city, with the other's quote). One finding per question, as the rule engine gives: the
-     * nearest date, then the strongest, so two pages on one event count once.
+     * event within a night is 5.3, unless it names the same event as one of that night's same-genre items from any
+     * page (either name shares an event word, not the city, with the other's quote). One finding per question, as the
+     * rule engine gives: the nearest date, then the strongest, so two pages on one event count once.
      */
     public static List<Finding> assign(List<Checked> items, LocalDate candidate, String city, QuestionBank bank,
                                        Instant fetchedAt) {
@@ -130,13 +130,13 @@ public final class FindingValidator {
         }
         Set<String> cityWords = words(city);
         List<LocalDate> nearestOf = new ArrayList<>();
-        Map<String, List<Checked>> sameGenreNightByUrl = new HashMap<>();
+        List<Checked> sameGenreNight = new ArrayList<>();
         for (Checked c : items) {
             QuoteDates.Classified dates = QuoteDates.classify(c.quote(), candidate, WEEK_DAYS);
             LocalDate nearest = dates.stale() || dates.inWindow().isEmpty() ? null : dates.inWindow().get(0);
             nearestOf.add(nearest);
             if (nearest != null && c.type() == Type.SAME_GENRE_EVENT && withinNight(candidate, nearest)) {
-                sameGenreNightByUrl.computeIfAbsent(normUrl(c.url()), k -> new ArrayList<>()).add(c);
+                sameGenreNight.add(c);
             }
         }
         Map<String, Finding> byQuestion = new LinkedHashMap<>();
@@ -148,9 +148,8 @@ public final class FindingValidator {
             long delta = Math.abs(ChronoUnit.DAYS.between(candidate, nearest));
             String questionId = switch (c.type()) {
                 case SAME_GENRE_EVENT -> delta <= NIGHT_DAYS ? "2.1" : "2.2";
-                // A page that gave this night's same-genre finding for this event does not also count it as big.
-                case BIG_EVENT -> delta <= NIGHT_DAYS
-                        && !namesSameEventOnPage(c, sameGenreNightByUrl.get(normUrl(c.url())), cityWords)
+                // A big event naming one of this night's same-genre items, from any page, is not also counted as big.
+                case BIG_EVENT -> delta <= NIGHT_DAYS && !namesSameEvent(c, sameGenreNight, cityWords)
                         ? "5.3" : null;
             };
             Question q = questionId == null ? null : web.get(questionId);
@@ -170,8 +169,7 @@ public final class FindingValidator {
         return List.copyOf(byQuestion.values());
     }
 
-    private static boolean namesSameEventOnPage(Checked big, List<Checked> sameGenre, Set<String> cityWords) {
-        if (sameGenre == null) return false;
+    private static boolean namesSameEvent(Checked big, List<Checked> sameGenre, Set<String> cityWords) {
         for (Checked s : sameGenre) {
             if (sameEvent(big, s, cityWords)) return true;
         }
