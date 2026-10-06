@@ -1,36 +1,28 @@
 package com.imin.iminapi.service.event;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.dto.event.EventPatchRequest;
 import com.imin.iminapi.dto.event.TicketTierEmbeddedPatch;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
-import com.imin.iminapi.model.EventVisibility;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.TicketTier;
 import com.imin.iminapi.model.User;
-import com.imin.iminapi.model.UserRole;
-import com.imin.iminapi.repository.EventRepository;
-import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
-import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
 import com.stripe.StripeClient;
 import com.stripe.model.Price;
 import com.stripe.model.Product;
 import com.stripe.param.ProductCreateParams;
 import com.stripe.service.PriceService;
 import com.stripe.service.ProductService;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.util.List;
 import java.util.Map;
@@ -45,20 +37,16 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /** The tier-id write runs inside the organizer's event patch; nothing else that patch changes may be lost. */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class EventPatchStripeSyncPersistenceTest {
 
-    @MockitoBean StripeClient stripeClient;
+    @Autowired StripeClient stripeClient;
+    @Autowired IminFixtures fx;
 
     @Autowired EventService eventService;
-    @Autowired EventRepository events;
     @Autowired TicketTierRepository tiers;
-    @Autowired OrganizationRepository orgs;
-    @Autowired UserRepository users;
     @Autowired JdbcTemplate jdbc;
 
-    private UUID orgId;
     private UUID eventId;
     private UUID existingTierId;
     private AuthPrincipal principal;
@@ -80,45 +68,16 @@ class EventPatchStripeSyncPersistenceTest {
         existing.setCurrency("eur");
         when(prices.retrieve("price_existing")).thenReturn(existing);
 
-        Organization o = new Organization();
-        o.setName("Patch sync");
-        o.setSlug("eps-" + UUID.randomUUID().toString().substring(0, 8));
-        o.setContactEmail("eps@example.test");
-        o.setCountry("DE");
-        orgId = orgs.save(o).getId();
-        User u = new User();
-        u.setEmail("eps-" + UUID.randomUUID() + "@example.test");
-        u.setOrgId(orgId);
-        u.setRole(UserRole.OWNER);
-        principal = new AuthPrincipal(users.save(u).getId(), orgId, UserRole.OWNER, UUID.randomUUID());
+        Organization org = fx.org();
+        User owner = fx.owner(org);
+        principal = fx.principal(owner);
+        Event e = fx.event(org, owner, EventStatus.DRAFT, null);
+        eventId = e.getId();
 
-        Event e = new Event();
-        e.setOrgId(orgId);
-        e.setCreatedBy(principal.userId());
-        e.setName("Before");
-        e.setSlug("eps-" + UUID.randomUUID().toString().substring(0, 8));
-        e.setVisibility(EventVisibility.PUBLIC);
-        e.setStatus(EventStatus.DRAFT);
-        e.setCurrency("EUR");
-        eventId = events.save(e).getId();
-
-        TicketTier t = new TicketTier();
-        t.setEventId(eventId);
-        t.setName("Early");
-        t.setPriceMinor(1000);
-        t.setQuantity(50);
-        t.setStripeProductId("prod_existing");
-        t.setStripePriceId("price_existing");
-        existingTierId = tiers.save(t).getId();
-    }
-
-    @AfterEach
-    void tearDown() {
-        jdbc.update("DELETE FROM audit_logs WHERE org_id = ?", orgId);
-        jdbc.update("DELETE FROM ticket_tiers WHERE event_id IN (SELECT id FROM events WHERE org_id = ?)", orgId);
-        jdbc.update("DELETE FROM events WHERE org_id = ?", orgId);
-        jdbc.update("DELETE FROM users WHERE org_id = ?", orgId);
-        jdbc.update("DELETE FROM organizations WHERE id = ?", orgId);
+        existingTierId = fx.tier(e, 1000, 50).getId();
+        // The id columns are updatable=false, so set them the way the sync does: a targeted UPDATE.
+        jdbc.update("UPDATE ticket_tiers SET stripe_product_id = 'prod_existing', stripe_price_id = 'price_existing' "
+                + "WHERE id = ?", existingTierId);
     }
 
     @Test

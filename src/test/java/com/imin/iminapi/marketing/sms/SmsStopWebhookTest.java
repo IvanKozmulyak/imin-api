@@ -4,13 +4,11 @@ import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
-import com.imin.iminapi.config.TestRateLimitConfig;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PropertyFlips;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 
 import javax.crypto.Mac;
@@ -18,6 +16,7 @@ import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -29,18 +28,23 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * the membership flips to sms_consent_status=unsubscribed. Also asserts a forged
  * signature is rejected (401) and leaves consent intact.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
-@TestPropertySource(properties = "imin.sms.webhook-secret=sms-test-secret-0123456789")
+@IminIntegrationTest
 class SmsStopWebhookTest {
 
     private static final String SECRET = "sms-test-secret-0123456789";
-    private static final String PHONE = "+33612345678";
-
     @Autowired MockMvc mvc;
     @Autowired ConsumerRepository consumers;
     @Autowired MembershipRepository memberships;
+    @Autowired SmsProperties smsProperties;
+    @Autowired PropertyFlips flips;
+
+    // A STOP applies to every member with the number, and the database is shared: one number per test.
+    private final String phone = "+336" + (10_000_000 + ThreadLocalRandom.current().nextInt(90_000_000));
+
+    @BeforeEach
+    void webhookSecret() {
+        flips.set(smsProperties, "webhookSecret", SECRET);
+    }
 
     private Membership seedSubscribedMember() {
         Consumer c = new Consumer();
@@ -52,7 +56,7 @@ class SmsStopWebhookTest {
         m.setOrgId(UUID.randomUUID());
         m.setConsumerId(c.getConsumerId());
         m.setDisplayName("Attendee");
-        m.setPhoneE164(PHONE);
+        m.setPhoneE164(phone);
         m.setSmsConsentStatus("subscribed");
         m.setSmsConsentBasis("explicit");
         return memberships.save(m);
@@ -67,7 +71,7 @@ class SmsStopWebhookTest {
     @Test
     void signedStopUnsubscribesTheNumber() throws Exception {
         Membership m = seedSubscribedMember();
-        String body = "{\"id\":\"mo-1\",\"type\":\"mo\",\"originator\":\"" + PHONE + "\",\"body\":\"STOP\"}";
+        String body = "{\"id\":\"mo-" + UUID.randomUUID() + "\",\"type\":\"mo\",\"originator\":\"" + phone + "\",\"body\":\"STOP\"}";
 
         mvc.perform(post("/api/v1/public/webhooks/sms")
                         .header("Messagebird-Signature", sign(body))
@@ -82,7 +86,7 @@ class SmsStopWebhookTest {
     @Test
     void forgedSignatureIs401AndConsentUntouched() throws Exception {
         Membership m = seedSubscribedMember();
-        String body = "{\"id\":\"mo-2\",\"type\":\"mo\",\"originator\":\"" + PHONE + "\",\"body\":\"STOP\"}";
+        String body = "{\"id\":\"mo-" + UUID.randomUUID() + "\",\"type\":\"mo\",\"originator\":\"" + phone + "\",\"body\":\"STOP\"}";
 
         mvc.perform(post("/api/v1/public/webhooks/sms")
                         .header("Messagebird-Signature", "not-a-valid-signature")

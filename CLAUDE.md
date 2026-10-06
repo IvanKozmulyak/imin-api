@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Language**: Java 17
 - **Framework**: Spring Boot 4.0.5
 - **Build Tool**: Maven (via `./mvnw` wrapper)
-- **Database**: PostgreSQL 17 (Docker Compose for dev; H2 in PG-compat mode for tests)
+- **Database**: PostgreSQL 17 (Docker Compose for dev; one Testcontainers Postgres 17 for `@IminIntegrationTest`; H2 only for the legacy allow-listed tests until they migrate)
 - **ORM**: Spring Data JPA + Flyway migrations
 - **REST**: Spring Data REST + `@RestController` for custom endpoints; SpringDoc OpenAPI
 - **Security**: Spring Security (SAML2 deps present but not wired; `/api/**` routes are currently `permitAll`)
@@ -27,7 +27,7 @@ docker compose up -d
 # Build
 ./mvnw clean package
 
-# Tests — use H2 in-memory, no external services
+# Tests — Docker must be running (Postgres Testcontainers); no external services
 ./mvnw test
 ./mvnw test -Dtest=ClassName
 ./mvnw test -Dtest=ClassName#methodName
@@ -102,6 +102,46 @@ Wallet endpoints (both unauthenticated — the 24-byte ticket token is the crede
 - `PublicTicketResponse` / `PublicOrderResponse.tickets[]` carry `wallet: { apple: {available, url}, google: {available, url} }` — `url` non-null iff `available`. The legacy `walletAvailable` boolean is **deprecated but permanent**, means Apple only, and equals `wallet.apple.available`.
 
 Swagger UI: `http://localhost:8085/swagger-ui.html` (dev only; disabled in prod).
+
+## Testing
+
+Docker must be running: `./mvnw test` starts one Postgres 17 container per JVM. A run that skips Testcontainers tests is red.
+
+### Three kinds of test, nothing else
+
+| kind | when | how |
+|---|---|---|
+| **Unit** (no Spring) | non-trivial logic: money maths, state machines, parsers, scoring, validation, crypto, timezone | JUnit + plain objects; Mockito only for collaborators at a boundary |
+| **Integration** (the one context) | a user-visible flow through a real seam: HTTP endpoint via MockMvc, webhook, scheduled job effect, repository query that matters | `@IminIntegrationTest`; real beans, real DB; only external boundaries are fakes |
+| **Config check** (no full context) | a bean that must refuse bad config, a property default that protects prod | `ApplicationContextRunner` with the one config class |
+
+### What gets a test — a test must fail for a bug a user, organizer, or auditor would notice:
+- money (checkout, fees, refunds, disputes, payouts, settlement, idempotency) — integration per flow + unit for the maths
+- auth, sessions, roles, org scoping / no-leak 404 — one integration per endpoint family, not per endpoint × role
+- consent, DSAR, erasure, suppression, legal identity
+- each Flyway migration that changes data (not "column exists")
+- concurrency/locks — Postgres only
+- a prod incident gets one regression test, named for the behaviour
+
+### What does not get a test
+getters/records/DTO mapping, enum/constant/yaml echoes, "source file contains X", annotation/cron/pool-size reflection, framework behaviour (JPA round-trip, Jackson, Spring wiring), controller tests that mock the service and echo its return, the same rule asserted in several layers (pick one owner), one method per permutation (use `@ParameterizedTest`), log-level assertions, prompt wording via `contains()`.
+
+### Context budget
+**At most three Spring contexts**, all on **one Postgres container** for the whole run; H2 goes away.
+- **Main** `@IminIntegrationTest` — ~95% of integration tests.
+- **Features-off / prod-config** (only if needed) — full flows where a bean is absent by property or a value is captured at startup and cannot be flipped at runtime.
+- **Reserve** — only by explicit decision, reason in code.
+Today only `@IminIntegrationTest` exists (`SpringContextGuard.NAMED_CONTEXTS`). Migration tests run without Spring (Flyway + JDBC, own schema).
+
+### Writing an integration test
+- Annotate the class `@IminIntegrationTest` and add nothing that changes the context: no `@MockitoBean`/`@MockitoSpyBean`/`@TestBean`, `@TestPropertySource`/`@SpringBootTest(properties=)`, `@DynamicPropertySource`, `@Import`, `@DirtiesContext`, `@ActiveProfiles`, nested `@TestConfiguration`/`@Configuration`, slice or own container (`@Testcontainers`/`@Container`). `SpringContextGuardTest` fails the build otherwise.
+- Fakes, declared once: mocks of `StripeClient`, `CampaignEmailProvider`, `ResendDomainsClient`, `BirdSmsClient`, `ExpoPushSender`, `MetaGraphClient`, `IdeogramV3Client`, `RecraftClient`, `ResearchLlmClient`, `PortraitLlmClient` and the primary `ChatClient`; spies of `GoogleOAuthService`, `AppleOAuthService`, `AppleNativeIdentityService` (real unless stubbed — stub `exchangeCode`/`verify*IdToken`, they call Google/Apple); `RecordingEmailService`, `RecordingRateLimiter`, `InMemoryMediaStorage`, `MutableClock`. `@Autowired` a fake to stub or read it; all reset after every test.
+- Data: `IminFixtures` (unique org/owner/event/tier/order/ticket). Assert by id or delta.
+- Audit: `AuditLogger` is real; assert the row with `AuditRows.assertRecorded(orgId, action, targetType, targetId)` instead of verifying a mock.
+- Time: `MutableClock` follows system time until `setInstant`/`advance`; reset after each test. Code that calls `Instant.now()` directly does not see it.
+- Properties: `PropertyFlips.set(bean, "path", value)` for values read per call. Captured at startup, so not flippable: Apple/Google Wallet credentials (`AppleWalletPassService`, `GoogleWalletJwtSigner` constructors), `imin.oauth.state-secret` (`OAuthStateService` constructor), the key inside `StripeClient` (faked anyway — `isLiveKey()` is per call and flippable), bean selection by `imin.geocoding.enabled`, `imin.media.enabled`, `imin.scheduling.enabled`, `management.health.resend-tracking.enabled`. Those need a config check or the reserved second context.
+- Rate limits: `RecordingRateLimiter.limit("bucket", n)` makes call n+1 per key a 429.
+- Legacy: `src/test/resources/test-guard/legacy-spring-tests.txt` lists classes not yet migrated. It only shrinks — the guard fails when a listed class no longer violates, and a diff that adds a line is a review blocker. Do not add `@MockitoBean`/properties to a legacy class either.
 
 ## Architecture
 
@@ -243,7 +283,7 @@ The backend contract the Expo fan app is built against shipped ahead of the app 
 - **Migration numbers**: Railway runs with `SPRING_FLYWAY_OUT_OF_ORDER=true` permanently (reserved lower numbers such as V138/V140/V144 may land late); a new migration takes the next number above the current max on `origin/master`.
 - **Config**: `application.yaml` + profile-specific `application-dev.yaml` / `application-prod.yaml`. Dev is the default profile. Secrets via env vars; never hardcode.
 - **REST endpoints**: Spring Data REST for plain CRUD; `@RestController` (as under `controller/`) when the flow has custom logic.
-- **Tests**: `src/test/resources/application.yaml` pins `spring.profiles.active=test`, disables docker-compose integration, and uses H2 with PG dialect + Flyway. External services (OpenRouter, Replicate, Ideogram) must be mocked in tests.
+- **Tests**: see § Testing. `src/test/resources/application.yaml` pins `spring.profiles.active=test` and disables docker-compose; its H2 datasource serves only the classes in `src/test/resources/test-guard/legacy-spring-tests.txt` — `@IminIntegrationTest` replaces it with the shared Postgres container. External services are faked once, on `@IminIntegrationTest`.
 - **Security**: `/api/events/**`, `/api/posters/**`, `/images/**`, `/swagger-ui/**` are `permitAll`. If you add new API surface that should be public, update `SecurityConfig` explicitly.
 - **Auth flows email users via Resend.** Signup persists the user with `verified_at = NULL` and emails a 4-digit code; login is hard-blocked with `403 EMAIL_NOT_VERIFIED` until verification. Password reset uses a long random token link. See `docs/superpowers/specs/2026-05-04-resend-integration-design.md`.
 - **Row locks**: a native `SELECT … FOR UPDATE` that re-reads an entity already in the persistence context returns the first-level-cache instance: the row is locked, but no field is refreshed. Select the scalar column you need (or `entityManager.refresh`), and make the test assert the scalar value AND that the caller's entity is still stale — a Mockito repository handing back a different instance proves the opposite of what the lock does. Every writer of a tier's `quantity`/`sold`/`reserved` holds the tier row lock from read to commit; organizer paths take it through `TicketTierService.lockForWrite` (UUID order) before loading. Unpublish holds every tier lock of the event while it checks sold/reserved, and `reserve` re-reads the event status as a scalar under the tier lock.
@@ -263,7 +303,7 @@ The backend contract the Expo fan app is built against shipped ahead of the app 
 - **An exclusion flag covers every term of the computation.** When adding a flag that excludes rows from a money figure (`test_mode`, `voided`, `archived`), list every table the figure sums — orders, disputes, refunds, prior payout runs — and stamp and filter the flag on all of them, including rows in terminal states a cleanup script would not touch. Filtering the one table you were thinking about leaves the other terms subtracting the excluded era. Extends L-20260911-20.
 - **A new refusal state ships with a recovery path and a visible signal.** Adding a state in which the system refuses to act on a record (mode mismatch, failed verification, stale credential) requires, in the same change, the path that gets the record OUT of that state and a status the UI reads as not-ready. An early return on stored state plus a `getStatus` that still says ACTIVE is an unrecoverable dead end nobody can see.
 - **One-off data-repair SQL re-derives; it never applies a delta.** A repair or reset script sets each value from the rows that still exist (`reserved = (SELECT count(*) … WHERE status = 'HELD')`) instead of subtracting a number measured during pre-flight. Re-deriving is idempotent, survives a re-run, and cannot be inflated by a write that commits between pre-flight and execution.
-- **A test never mutates a shared Spring bean.** To exercise alternate configuration, construct your own properties instance or use `@TestPropertySource`/`@DynamicPropertySource` — never set a field on an injected singleton (`StripeProperties`, feature-flag beans). The mutation leaks to every later test sharing the context and makes green depend on execution order.
+- **A test never mutates a shared Spring bean by hand.** In `@IminIntegrationTest`, flip a property that is read per call only through `PropertyFlips.set(bean, "path", value)`, which restores the raw field after every test; never set a field on an injected singleton directly, never flip a value captured at construction (§ Testing lists them), and never add `@TestPropertySource`/`properties=` — that is a new context. A unit test constructs its own properties instance.
 - **Run ./mvnw clean after renaming or renumbering a migration.** Renaming a Flyway migration leaves the old file in `target/classes`, so the next run fails with "Found more than one migration with version N" against source that looks correct — always `./mvnw clean` after the rename. Companion to L-20260911-24 (amend unshipped migrations in place).
 - **Config/YAML loaders must reject duplicate keys and validate enum-like and bound fields at load time.** A YAML/config loader must set the underlying parser to reject duplicate keys (e.g., SnakeYAML `LoaderOptions.setAllowDuplicateKeys(false)`), validate every enum-like token (verdict/exclusion/timing-arm style fields) against a closed set at load time, and check `min<=max` on any bound pair — never let a typo or inverted range load silently and fail later at request time.
 - **Config loaders reject unknown keys at every level, with one test per validation rule.** A YAML/config loader rejects unknown keys at every map level it reads (root, entry, nested), because a misspelled optional key falls back to its default and a permissive default widens scope. Each validation rule (bound, enum, required, unknown key) ships with a test feeding the smallest input that trips it. Extends L-20260926-17.
@@ -279,7 +319,7 @@ The backend contract the Expo fan app is built against shipped ahead of the app 
 - **A recurrence matcher that recognises a series owns its verdict, and observed gaps beat the pattern.** In a chain of pattern matchers, the first matcher that recognises a series' kind returns its verdict, including "ended" or "does not occur"; only "not my kind" passes to the next matcher. Before predicting a date from a pattern, check observed occurrences around it: a listing after the date that skips it means no prediction. Test both cases.
 - **Places resolve by name and country, never name alone.** City and venue lookups key on (name, country) or a stored id, and a test uses a city name that exists in two countries.
 - **A malformed stored JSON value degrades one row, never the request.** Parsing a JSON/text column read from the database is fault-isolated per row: a malformed value is logged and treated as unknown or skipped, never a 500 for the whole request. Test with one malformed row among valid ones.
-- **Integration tests clean up committed rows and never date fixtures with a literal.** A `@SpringBootTest` that commits rows deletes them in `@AfterEach` (or rolls back via `@Transactional`) and dates fixtures relative to now or the injected `Clock`. A test of a global (all-orgs) query asserts on its own fixture ids, not on a total count, so another test's rows cannot turn it red when the calendar moves.
+- **Integration tests own their rows and never date fixtures with a literal.** Each test creates its own org/event/buyer through `IminFixtures` (unique ids) and asserts by id or by delta — never `deleteAll()`, never a global `count()`/`findAll().size()`; reference/seed data is read-only. Date fixtures relative to the injected `Clock`. A test of a global (all-orgs) query or sweep asserts on its own fixture ids, because every integration test shares one database.
 
 - **A job's failure level is judged against the planned work, not the attempted work.** A batch job that had failures and stored nothing logs ERROR, whatever stopped it; a run whose calls all succeeded but returned nothing to store is a WARN. Compute "all failed" / "partial" against the items the run planned, not the items it reached, so an early stop (429, cap, timeout) cannot make a total failure look partial; test the early-stop branch.
 - **Re-pick the Flyway version against fresh origin before review.** A new migration's version is a placeholder until review: `git fetch` and run `git ls-tree origin/master src/main/resources/db/migration/` right before handing to the reviewer and again in `/ship-imin` before the rebase, then renumber to max+1 if anything landed (then `./mvnw clean`, see the rule above). Never trust the number written in the plan.

@@ -1,30 +1,21 @@
 package com.imin.iminapi.service.ticket;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
-import com.imin.iminapi.email.EmailService;
-import com.imin.iminapi.model.Order;
-import com.imin.iminapi.repository.OrderRepository;
+import com.imin.iminapi.email.RecordingEmailService;
+import com.imin.iminapi.model.Event;
+import com.imin.iminapi.model.EventStatus;
+import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.bean.override.convention.TestBean;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 
-import java.time.Instant;
+import java.time.Clock;
+import java.time.Duration;
 import java.util.List;
-import java.util.Queue;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.isNull;
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * {@code POST /api/v1/public/orders/recover} is unauthenticated (SecurityConfig
@@ -36,53 +27,32 @@ import static org.mockito.Mockito.when;
  * this pattern as a defect for exactly this emailer — "holding a pooled
  * connection open across an outbound HTTP request is how a slow third party
  * turns into an exhausted connection pool".
- *
- * <p>Mocks are stubbed in {@code @TestBean} factories: stubbing in the test raced the async
- * fan-feature recompute calling {@code OrderRepository}, which could steal the stub.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class OrderRecoveryTransactionBoundaryTest {
 
-    private static final String BUYER = "buyer@example.com";
-
-    record SendCall(String to, boolean inTransaction) {}
-
-    private static final Queue<SendCall> SENDS = new ConcurrentLinkedQueue<>();
-
     @Autowired OrderRecoveryService service;
-    @TestBean OrderRepository orders;
-    @TestBean EmailService email;
-
-    static OrderRepository orders() {
-        Order o = new Order();
-        o.setId(UUID.randomUUID());
-        o.setToken("ORDTOK");
-        o.setEmail(BUYER);
-        o.setEventId(UUID.randomUUID());
-        o.setCreatedAt(Instant.now());
-        OrderRepository repo = mock(OrderRepository.class);
-        when(repo.findRecentForRecovery(eq(BUYER), isNull(), any())).thenReturn(List.of(o));
-        return repo;
-    }
-
-    static EmailService email() {
-        EmailService mail = mock(EmailService.class);
-        doAnswer(inv -> {
-            SENDS.add(new SendCall(inv.getArgument(0),
-                    TransactionSynchronizationManager.isActualTransactionActive()));
-            return null;
-        }).when(mail).send(anyString(), anyString(), anyString(), anyString());
-        return mail;
-    }
+    @Autowired IminFixtures fx;
+    @Autowired RecordingEmailService email;
+    @Autowired Clock clock;
 
     @Test
     void the_resend_call_does_not_hold_a_pooled_connection() {
-        service.requestRecovery(BUYER, null, "1.2.3.4");
+        Organization org = fx.org();
+        Event event = fx.event(org, fx.owner(org), EventStatus.LIVE, clock.instant().plus(Duration.ofDays(7)));
+        String buyer = fx.email("buyer");
+        fx.order(event, buyer);
+        // The 5/hour cap counts by email and by IP over a shared table, so both are unique here.
+        String u = UUID.randomUUID().toString();
+        String clientIp = "2001:db8::" + u.substring(0, 4) + ":" + u.substring(4, 8);
 
-        List<SendCall> toBuyer = SENDS.stream().filter(c -> BUYER.equals(c.to())).toList();
+        service.requestRecovery(buyer, null, clientIp);
+
+        List<RecordingEmailService.SentEmail> sent = email.sent();
+        List<Integer> toBuyer = IntStream.range(0, sent.size())
+                .filter(i -> buyer.equals(sent.get(i).to())).boxed().toList();
         assertThat(toBuyer).as("the recovery email is sent exactly once").hasSize(1);
-        assertThat(toBuyer.get(0).inTransaction())
+        assertThat(email.sentInTransaction(toBuyer.get(0)))
                 .as("the outbound Resend send must happen outside any transaction")
                 .isFalse();
     }
