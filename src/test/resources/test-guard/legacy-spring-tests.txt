@@ -238,6 +238,7 @@ com.imin.iminapi.predictor.DateCheckControllerTest
 com.imin.iminapi.predictor.DateCheckEventLinkGateOffTest
 com.imin.iminapi.predictor.DateCheckEventLinkTest
 com.imin.iminapi.predictor.DateCheckResearchFlowTest
+com.imin.iminapi.predictor.DateCheckResearchSweepPostgresTest
 com.imin.iminapi.predictor.DateCheckSchemaTest
 com.imin.iminapi.predictor.DateVerdictFeedbackStoreH2Test
 com.imin.iminapi.predictor.DateVerdictFeedbackStorePostgresTest
