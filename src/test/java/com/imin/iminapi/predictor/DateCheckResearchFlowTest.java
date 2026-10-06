@@ -7,6 +7,7 @@ import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.model.UserRole;
+import com.imin.iminapi.predictor.config.PredictorProperties;
 import com.imin.iminapi.predictor.jobs.PredictorJobRunner;
 import com.imin.iminapi.predictor.jobs.PredictorJobService;
 import com.imin.iminapi.predictor.model.DateCheck;
@@ -20,6 +21,7 @@ import com.imin.iminapi.predictor.repository.DateCheckRepository;
 import com.imin.iminapi.predictor.repository.PredictionLedgerRepository;
 import com.imin.iminapi.predictor.repository.PredictorJobRepository;
 import com.imin.iminapi.predictor.research.DateCheckResearchJobHandler;
+import com.imin.iminapi.predictor.research.DateCheckResearchSweeper;
 import com.imin.iminapi.predictor.research.ResearchCache;
 import com.imin.iminapi.predictor.research.ResearchLlmClient;
 import com.imin.iminapi.predictor.research.ResearchLlmClient.Citation;
@@ -54,6 +56,7 @@ import org.springframework.web.client.ResourceAccessException;
 
 import java.math.BigDecimal;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
@@ -125,6 +128,9 @@ class DateCheckResearchFlowTest {
     @Autowired PredictorJobRunner runner;
     @Autowired DateCheckResearchJobHandler handler;
     @Autowired ResearchCache cache;
+    @Autowired DateCheckResearchSweeper sweeper;
+    @Autowired PredictorJobService jobService;
+    @Autowired PredictorProperties props;
 
     private final ObjectMapper om = new ObjectMapper();
     private final Map<String, User> owners = new LinkedHashMap<>();
@@ -471,6 +477,151 @@ class DateCheckResearchFlowTest {
         assertThat(sent).doesNotContain("75011", "Gala Zebrafish", e.getId().toString(), "4321", "8765", "warehouse",
                 "Quokkalicious", "Narwhal", "Hangar", "Research Org", "r@example.test", ORG_A,
                 owners.get(ORG_A).getEmail());
+    }
+
+    // --- stuck research sweep ---
+
+    private String queueResearch() throws Exception {
+        return json(postCheck(ORG_A, body(true)).andExpect(status().isAccepted())).get("id").asText();
+    }
+
+    private void queuedAgo(String id, Duration ago) {
+        jdbc.update("update date_check set research_queued_at = ? where id = ?",
+                java.sql.Timestamp.from(NOW.minus(ago)), UUID.fromString(id));
+    }
+
+    private String researchStatus(String id) {
+        return checks.findById(UUID.fromString(id)).orElseThrow().getResearchStatus();
+    }
+
+    @Test
+    void unknownKindFailedAtMaxAttemptsIsSweptToFailed() throws Exception {
+        String id = queueResearch();
+        queuedAgo(id, Duration.ofMinutes(2));
+        jdbc.update("update predictor_job set attempts = ?", PredictorJobService.MAX_ATTEMPTS - 1);
+        // An older build without the research handler releases the job on its last attempt.
+        new PredictorJobRunner(jobService, jobs, List.of(), new PredictorProperties()).tick();
+
+        assertThat(jobs.findAll()).singleElement().satisfies(j -> {
+            assertThat(j.getStatus()).isEqualTo("failed");
+            assertThat(j.getLastError()).isEqualTo("unknown kind: date_check_research");
+        });
+        assertThat(researchStatus(id)).isEqualTo("running");
+
+        assertThat(sweeper.sweep()).isEqualTo(1);
+
+        DateCheck after = checks.findById(UUID.fromString(id)).orElseThrow();
+        assertThat(after.getResearchStatus()).isEqualTo("failed");
+        assertThat(after.getStatus()).isEqualTo("done");
+        verify(client, never()).research(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void tickDiedBeforeTerminalCleanupIsSweptToFailed() throws Exception {
+        String id = queueResearch();
+        queuedAgo(id, Duration.ofMinutes(2));
+        jdbc.update("update predictor_job set status = 'running', attempts = ?, locked_until = ?",
+                PredictorJobService.MAX_ATTEMPTS, java.sql.Timestamp.from(NOW.minusSeconds(60)));
+        // The requeue commits; the handler clean-up that would follow never runs.
+        jobService.requeueExpired();
+
+        assertThat(jobs.findAll()).singleElement().extracting(PredictorJob::getStatus).isEqualTo("failed");
+        assertThat(researchStatus(id)).isEqualTo("running");
+
+        assertThat(sweeper.sweep()).isEqualTo(1);
+
+        assertThat(researchStatus(id)).isEqualTo("failed");
+    }
+
+    @Test
+    void liveJobKeepsResearchRunning() throws Exception {
+        String id = queueResearch();
+        queuedAgo(id, Duration.ofMinutes(49));
+
+        assertThat(sweeper.sweep()).isZero();
+        assertThat(researchStatus(id)).isEqualTo("running");
+
+        jdbc.update("update predictor_job set status = 'running', attempts = 1, locked_until = ?",
+                java.sql.Timestamp.from(NOW.plus(PredictorJobService.LOCK)));
+        assertThat(sweeper.sweep()).isZero();
+        assertThat(researchStatus(id)).isEqualTo("running");
+    }
+
+    @Test
+    void overdueResearchFailsEvenWithALiveJobAndTheJobThenMakesNoCall() throws Exception {
+        String id = queueResearch();
+        queuedAgo(id, Duration.ofMinutes(50).plusSeconds(1));
+
+        assertThat(sweeper.sweep()).isEqualTo(1);
+        assertThat(researchStatus(id)).isEqualTo("failed");
+
+        runner.tick();
+
+        assertThat(jobs.findAll()).singleElement().extracting(PredictorJob::getStatus).isEqualTo("done");
+        verify(client, never()).research(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void orphanWithinTheGraceIsLeftRunning() throws Exception {
+        String id = queueResearch();
+        jdbc.update("delete from predictor_job");
+        queuedAgo(id, Duration.ofSeconds(59));
+
+        assertThat(sweeper.sweep()).isZero();
+        assertThat(researchStatus(id)).isEqualTo("running");
+
+        queuedAgo(id, Duration.ofSeconds(61));
+        assertThat(sweeper.sweep()).isEqualTo(1);
+        assertThat(researchStatus(id)).isEqualTo("failed");
+    }
+
+    @Test
+    void finishedResearchIsNotTouched() {
+        queuedYesterday(ORG_A);
+        for (String research : List.of(DateCheck.RESEARCH_FAILED, DateCheck.RESEARCH_OFF)) {
+            DateCheck c = new DateCheck();
+            c.setOrgId(UUID.fromString(ORG_A));
+            c.setCreatedBy(owners.get(ORG_A).getId());
+            c.setCity("Paris");
+            c.setCountry("FR");
+            c.setGenreFamily("house & techno");
+            c.setStatus("done");
+            c.setQuestionBankVersion("qb5-gp1");
+            c.setResearch(!research.equals(DateCheck.RESEARCH_OFF));
+            c.setResearchStatus(research);
+            c.setResearchQueuedAt(research.equals(DateCheck.RESEARCH_OFF) ? null : NOW.minusSeconds(7200));
+            checks.save(c);
+        }
+
+        assertThat(sweeper.sweep()).isZero();
+
+        assertThat(checks.findAll()).extracting(DateCheck::getResearchStatus)
+                .containsExactlyInAnyOrder("done", "failed", "off");
+        assertThat(checks.findAll()).extracting(DateCheck::getStatus).containsOnly("done");
+    }
+
+    @Test
+    void pollSkipsWhileJobsPollIsOff() throws Exception {
+        String id = queueResearch();
+        jdbc.update("delete from predictor_job");
+        queuedAgo(id, Duration.ofMinutes(2));
+        assertThat(props.isJobsPollEnabled()).isFalse();
+
+        sweeper.poll();
+        assertThat(researchStatus(id)).isEqualTo("running");
+
+        sweeper.sweep();
+        assertThat(researchStatus(id)).isEqualTo("failed");
+    }
+
+    @Test
+    void unreadableJobPayloadIsIgnored() throws Exception {
+        String id = queueResearch();
+        queuedAgo(id, Duration.ofMinutes(2));
+        jdbc.update("update predictor_job set payload_json = '{}'");
+
+        assertThat(sweeper.sweep()).isEqualTo(1);
+        assertThat(researchStatus(id)).isEqualTo("failed");
     }
 
     // --- gate and caps ---

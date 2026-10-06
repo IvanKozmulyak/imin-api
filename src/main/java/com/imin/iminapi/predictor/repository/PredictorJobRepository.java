@@ -55,6 +55,10 @@ public interface PredictorJobRepository extends JpaRepository<PredictorJob, UUID
     int failExpired(@Param("id") UUID id, @Param("now") Instant now, @Param("maxAttempts") int maxAttempts,
                     @Param("error") String error);
 
+    /** Payloads of the kind's queued or running jobs. */
+    @Query("select j.payloadJson from PredictorJob j where j.kind = :kind and j.status in ('queued','running')")
+    List<String> findLivePayloads(@Param("kind") String kind);
+
     /** Ends a run only while the caller's own lease is on the row; 0 means the lease was lost. */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("""

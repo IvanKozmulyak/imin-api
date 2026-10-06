@@ -20,7 +20,7 @@ import java.util.UUID;
  * is skipped, so a re-delivered job makes no second call. An org whose "Check a date" access closed meanwhile fails
  * the research without a call. When the last attempt throws, the research is marked failed before the error is
  * rethrown, and a lease that expires on the last attempt marks it failed through {@link #onTerminalFailure}, so the check never
- * stays running.
+ * stays running. {@link DateCheckResearchSweeper} is the backstop for a job that ends without reaching this handler.
  */
 @Component
 public class DateCheckResearchJobHandler implements PredictorJobHandler {
@@ -76,11 +76,17 @@ public class DateCheckResearchJobHandler implements PredictorJobHandler {
     }
 
     private static UUID dateCheckId(PredictorJob job) {
+        return dateCheckIdOf(job.getPayloadJson()).orElseThrow(() ->
+                new IllegalArgumentException("date_check_research job " + job.getId() + " has no dateCheckId"));
+    }
+
+    /** The check a job payload names; empty when the payload is unreadable. */
+    static Optional<UUID> dateCheckIdOf(String payloadJson) {
         try {
-            JsonNode payload = PredictorJson.MAPPER.readTree(job.getPayloadJson());
-            return UUID.fromString(payload.path("dateCheckId").asText());
+            JsonNode payload = PredictorJson.MAPPER.readTree(payloadJson);
+            return Optional.of(UUID.fromString(payload.path("dateCheckId").asText()));
         } catch (Exception e) {
-            throw new IllegalArgumentException("date_check_research job " + job.getId() + " has no dateCheckId", e);
+            return Optional.empty();
         }
     }
 }

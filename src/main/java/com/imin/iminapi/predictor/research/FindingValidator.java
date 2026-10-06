@@ -12,6 +12,7 @@ import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -117,23 +118,25 @@ public final class FindingValidator {
 
     /**
      * The web findings for one candidate night: a same-genre event within a night is 2.1, within a week 2.2; a big
-     * event within a night is 5.3, unless its page gave that night's 2.1. One finding per question, as the rule
-     * engine gives: the nearest date, then the strongest, so two pages on one event count once.
+     * event within a night is 5.3, unless its page gave that night's 2.1 for the same event (either name shares an
+     * event word, not the city, with the other's quote). One finding per question, as the rule engine gives: the
+     * nearest date, then the strongest, so two pages on one event count once.
      */
-    public static List<Finding> assign(List<Checked> items, LocalDate candidate, QuestionBank bank,
+    public static List<Finding> assign(List<Checked> items, LocalDate candidate, String city, QuestionBank bank,
                                        Instant fetchedAt) {
         Map<String, Question> web = new LinkedHashMap<>();
         for (Question q : bank.questions()) {
             if (q.source() == SourceKind.WEB) web.putIfAbsent(q.id(), q);
         }
+        Set<String> cityWords = words(city);
         List<LocalDate> nearestOf = new ArrayList<>();
-        Set<String> sameGenreNightUrls = new HashSet<>();
+        Map<String, List<Checked>> sameGenreNightByUrl = new HashMap<>();
         for (Checked c : items) {
             QuoteDates.Classified dates = QuoteDates.classify(c.quote(), candidate, WEEK_DAYS);
             LocalDate nearest = dates.stale() || dates.inWindow().isEmpty() ? null : dates.inWindow().get(0);
             nearestOf.add(nearest);
             if (nearest != null && c.type() == Type.SAME_GENRE_EVENT && withinNight(candidate, nearest)) {
-                sameGenreNightUrls.add(normUrl(c.url()));
+                sameGenreNightByUrl.computeIfAbsent(normUrl(c.url()), k -> new ArrayList<>()).add(c);
             }
         }
         Map<String, Finding> byQuestion = new LinkedHashMap<>();
@@ -145,8 +148,10 @@ public final class FindingValidator {
             long delta = Math.abs(ChronoUnit.DAYS.between(candidate, nearest));
             String questionId = switch (c.type()) {
                 case SAME_GENRE_EVENT -> delta <= NIGHT_DAYS ? "2.1" : "2.2";
-                // A page that gave this night's same-genre finding does not also count as its big event.
-                case BIG_EVENT -> delta <= NIGHT_DAYS && !sameGenreNightUrls.contains(normUrl(c.url())) ? "5.3" : null;
+                // A page that gave this night's same-genre finding for this event does not also count it as big.
+                case BIG_EVENT -> delta <= NIGHT_DAYS
+                        && !namesSameEventOnPage(c, sameGenreNightByUrl.get(normUrl(c.url())), cityWords)
+                        ? "5.3" : null;
             };
             Question q = questionId == null ? null : web.get(questionId);
             if (q == null) continue;
@@ -163,6 +168,29 @@ public final class FindingValidator {
             }
         }
         return List.copyOf(byQuestion.values());
+    }
+
+    private static boolean namesSameEventOnPage(Checked big, List<Checked> sameGenre, Set<String> cityWords) {
+        if (sameGenre == null) return false;
+        for (Checked s : sameGenre) {
+            if (sameEvent(big, s, cityWords)) return true;
+        }
+        return false;
+    }
+
+    // ponytail: a shared generic word (club, festival) counts as the same event, so a real 5.3 can be skipped.
+    private static boolean sameEvent(Checked a, Checked b, Set<String> cityWords) {
+        return !Collections.disjoint(eventWords(a.name(), cityWords), eventWords(b.quote(), cityWords))
+                || !Collections.disjoint(eventWords(b.name(), cityWords), eventWords(a.quote(), cityWords));
+    }
+
+    /** The folded words of {@code s} that can name an event. */
+    private static Set<String> eventWords(String s, Set<String> cityWords) {
+        Set<String> out = new HashSet<>();
+        for (String w : wordList(s)) {
+            if (namesEvent(w, cityWords)) out.add(w);
+        }
+        return out;
     }
 
     private static boolean withinNight(LocalDate candidate, LocalDate date) {

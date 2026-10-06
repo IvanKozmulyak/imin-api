@@ -90,8 +90,8 @@ public class WebResearchService {
                 req.subGenre(), in.from(), in.to(), now.atZone(ZoneOffset.UTC).toLocalDate());
         var hit = cache.get(key);
         if (hit.isPresent()) {
-            return new Outcome(true, assign(hit.get().items(), req.dates(), hit.get().fetchedAt()), null, model,
-                    null);
+            return new Outcome(true, assign(hit.get().items(), req.dates(), req.city(), hit.get().fetchedAt()), null,
+                    model, null);
         }
 
         String system = ResearchPrompt.system();
@@ -137,13 +137,13 @@ public class WebResearchService {
         log.info("Date-check research for org {}: {} reported, {} kept, dropped {}", req.orgId(), reported.size(),
                 checked.kept().size(), checked.dropped());
         cache.put(key, new ResearchCache.Entry(checked.kept(), now));
-        return new Outcome(true, assign(checked.kept(), req.dates(), now), reply.usage(), model, null);
+        return new Outcome(true, assign(checked.kept(), req.dates(), req.city(), now), reply.usage(), model, null);
     }
 
     private Map<LocalDate, List<Finding>> assign(List<FindingValidator.Checked> items, List<LocalDate> dates,
-                                                 Instant fetchedAt) {
+                                                 String city, Instant fetchedAt) {
         Map<LocalDate, List<Finding>> out = new LinkedHashMap<>();
-        for (LocalDate d : dates) out.put(d, FindingValidator.assign(items, d, bank, fetchedAt));
+        for (LocalDate d : dates) out.put(d, FindingValidator.assign(items, d, city, bank, fetchedAt));
         return out;
     }
 

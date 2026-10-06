@@ -65,6 +65,9 @@ public interface DateCheckRepository extends JpaRepository<DateCheck, UUID> {
             + "WHERE c.id = :id AND c.researchStatus = 'running'")
     int finishResearch(@Param("id") UUID id, @Param("to") String to);
 
+    /** Checks in a research status queued before {@code before}; backs the stuck-research sweep. */
+    List<DateCheck> findByResearchStatusAndResearchQueuedAtBefore(String researchStatus, Instant before);
+
     /**
      * Serialises re-scores of one check: its dates are replaced under a unique (check, date) key. Native
      * {@code FOR UPDATE}: PESSIMISTIC_WRITE renders {@code FOR NO KEY UPDATE}, which H2 cannot parse.

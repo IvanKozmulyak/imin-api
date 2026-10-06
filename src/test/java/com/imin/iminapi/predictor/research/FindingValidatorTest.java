@@ -52,7 +52,7 @@ class FindingValidatorTest {
 
     private static List<Finding> findings(Reported r, Cited c, LocalDate candidate) {
         FindingValidator.Result res = check(r, c);
-        return FindingValidator.assign(res.kept(), candidate, BANK, FETCHED);
+        return FindingValidator.assign(res.kept(), candidate, "Paris", BANK, FETCHED);
     }
 
     @Test
@@ -147,7 +147,7 @@ class FindingValidatorTest {
 
         assertThat(res.kept()).singleElement().extracting(Checked::name)
                 .isEqualTo("AMÉLIE LENS b2b Charlotte de Witte");
-        assertThat(FindingValidator.assign(res.kept(), SAT_17_OCT, BANK, FETCHED)).singleElement()
+        assertThat(FindingValidator.assign(res.kept(), SAT_17_OCT, "Paris", BANK, FETCHED)).singleElement()
                 .satisfies(f -> assertThat(f.facts()).containsEntry("name", "AMÉLIE LENS b2b Charlotte de Witte"));
     }
 
@@ -188,7 +188,7 @@ class FindingValidatorTest {
                 new Checked("Amelie Lens", URL + "/b", friday, FindingValidator.Type.SAME_GENRE_EVENT, 2),
                 new Checked("Amelie Lens", URL, QUOTE, FindingValidator.Type.SAME_GENRE_EVENT, 1),
                 new Checked("Amelie Lens", other, QUOTE, FindingValidator.Type.SAME_GENRE_EVENT, 2)),
-                SAT_17_OCT, BANK, FETCHED);
+                SAT_17_OCT, "Paris", BANK, FETCHED);
 
         assertThat(out).singleElement().satisfies(f -> {
             assertThat(f.questionId()).isEqualTo("2.1");
@@ -218,9 +218,69 @@ class FindingValidatorTest {
             Checked big = new Checked("Amelie Lens", URL + "/?utm_source=x", bigQuote,
                     FindingValidator.Type.BIG_EVENT, 2);
             List<Finding> out = FindingValidator.assign(bigFirst ? List.of(big, same) : List.of(same, big),
-                    SAT_17_OCT, BANK, FETCHED);
+                    SAT_17_OCT, "Paris", BANK, FETCHED);
 
             assertThat(out).as("bigFirst=" + bigFirst).extracting(Finding::questionId).containsExactly("2.1");
+        }
+    }
+
+    private static List<String> questions(Checked a, Checked b, boolean bFirst) {
+        return FindingValidator.assign(bFirst ? List.of(b, a) : List.of(a, b), SAT_17_OCT, "Paris", BANK, FETCHED)
+                .stream().map(Finding::questionId).toList();
+    }
+
+    @Test
+    void agendaPageKeepsADifferentBigEventOnTheSameNight() {
+        Checked same = new Checked("Amelie Lens", URL, QUOTE, FindingValidator.Type.SAME_GENRE_EVENT, 2);
+        Checked big = new Checked("Fête des Lumières", URL,
+                "Fête des Lumières sur les quais le samedi 17 octobre 2026", FindingValidator.Type.BIG_EVENT, 2);
+        for (boolean bigFirst : List.of(true, false)) {
+            assertThat(questions(same, big, bigFirst)).as("bigFirst=" + bigFirst)
+                    .containsExactlyInAnyOrder("2.1", "5.3");
+        }
+    }
+
+    @Test
+    void oneEventQuotedTwiceAsBothTypesCountsOnce() {
+        // The names differ; the big item's name is in the same-genre item's quote.
+        Checked same = new Checked("Amelie Lens", URL, QUOTE, FindingValidator.Type.SAME_GENRE_EVENT, 2);
+        Checked big = new Checked("Rex Club", URL, "Rex Club: complet ce samedi 17 octobre 2026",
+                FindingValidator.Type.BIG_EVENT, 2);
+        for (boolean bigFirst : List.of(true, false)) {
+            assertThat(questions(same, big, bigFirst)).as("bigFirst=" + bigFirst).containsExactly("2.1");
+        }
+    }
+
+    @Test
+    void bigEventWhoseQuoteNamesTheSameGenreEventCountsOnce() {
+        // Only the same-genre name appears in the big item's quote, not the other way round.
+        Checked same = new Checked("Amelie Lens", URL, QUOTE, FindingValidator.Type.SAME_GENRE_EVENT, 2);
+        Checked big = new Checked("Nuit Blanche", URL,
+                "Nuit Blanche : Amelie Lens en clôture, samedi 17 octobre 2026", FindingValidator.Type.BIG_EVENT, 2);
+        for (boolean bigFirst : List.of(true, false)) {
+            assertThat(questions(same, big, bigFirst)).as("bigFirst=" + bigFirst).containsExactly("2.1");
+        }
+    }
+
+    @Test
+    void bigEventSharingOnlyTheCityIsKept() {
+        Checked same = new Checked("Amelie Lens", URL, "Amelie Lens au Rex Club Paris le samedi 17 octobre 2026",
+                FindingValidator.Type.SAME_GENRE_EVENT, 2);
+        Checked big = new Checked("Paris Saint-Germain - OM", URL,
+                "Paris Saint-Germain - OM au Parc des Princes, samedi 17 octobre 2026", FindingValidator.Type.BIG_EVENT,
+                2);
+        assertThat(questions(same, big, false)).containsExactlyInAnyOrder("2.1", "5.3");
+    }
+
+    @Test
+    void sameGenreLaterInTheWeekOnTheSamePageDoesNotHideTheBigEvent() {
+        Checked same = new Checked("Amelie Lens", URL, "Amelie Lens au Rex Club le mardi 20 octobre 2026",
+                FindingValidator.Type.SAME_GENRE_EVENT, 2);
+        Checked big = new Checked("Amelie Lens", URL, "Rex Club: Amelie Lens, samedi 17 octobre 2026, complet",
+                FindingValidator.Type.BIG_EVENT, 2);
+        for (boolean bigFirst : List.of(true, false)) {
+            assertThat(questions(same, big, bigFirst)).as("bigFirst=" + bigFirst)
+                    .containsExactlyInAnyOrder("2.2", "5.3");
         }
     }
 
@@ -236,7 +296,7 @@ class FindingValidatorTest {
         String quote = "Amelie Lens au Rex Club, bientôt";
         FindingValidator.Result res = check(item(quote), page(quote));
         assertThat(res.kept()).hasSize(1);
-        assertThat(FindingValidator.assign(res.kept(), SAT_17_OCT, BANK, FETCHED)).isEmpty();
+        assertThat(FindingValidator.assign(res.kept(), SAT_17_OCT, "Paris", BANK, FETCHED)).isEmpty();
     }
 
     @Test
@@ -290,8 +350,8 @@ class FindingValidatorTest {
         List<Finding> out = FindingValidator.assign(List.of(
                 new Checked("Amelie Lens", URL, QUOTE, FindingValidator.Type.SAME_GENRE_EVENT, 2),
                 new Checked("Amelie Lens", URL + "/b", week, FindingValidator.Type.SAME_GENRE_EVENT, 2),
-                new Checked("Amelie Lens", URL + "/c", QUOTE, FindingValidator.Type.BIG_EVENT, 2)), SAT_17_OCT, BANK,
-                FETCHED);
+                new Checked("Amelie Lens", URL + "/c", QUOTE, FindingValidator.Type.BIG_EVENT, 2)), SAT_17_OCT, "Paris",
+                BANK, FETCHED);
         assertThat(out).extracting(Finding::questionId).containsExactly("2.1", "2.2", "5.3");
         assertThat(out).allSatisfy(f -> {
             assertThat(f.stopFactor()).isFalse();
