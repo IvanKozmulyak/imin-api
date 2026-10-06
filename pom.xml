@@ -343,7 +343,8 @@
                       Production (Railway) runs UTC, so this makes the suite
                       match it instead of matching whoever ran it.
                     -->
-                    <argLine>-Duser.timezone=UTC</argLine>
+                    <!-- Heap cap: about twice the measured live set with Spring's default 32-context cache. -->
+                    <argLine>-Xmx6g -Duser.timezone=UTC</argLine>
                 </configuration>
             </plugin>
             <plugin>

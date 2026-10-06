@@ -58,21 +58,15 @@ import static org.mockito.Mockito.when;
  * it. The failing case this exists to catch: a buyer with a device gets the push
  * but silently loses the email, or gets it twice.
  *
- * <p><b>The sender is constructed by hand, not autowired.</b> Two hazards make
- * the autowired bean useless here, and both produce a green-looking test that
- * proves nothing:
+ * <p><b>The sender is constructed by hand, not autowired.</b> The autowired
+ * bean's {@code sweep()} is proxied by {@code @SchedulerLock(lockAtLeastFor =
+ * "PT10S")}, so the second sweep inside ten seconds — in this method or in the
+ * next test — is silently skipped, and {@code verify(push).send(...)} then
+ * fails with zero interactions.
  *
- * <ol>
- *   <li>{@code sweep()} is proxied by {@code @SchedulerLock(lockAtLeastFor =
- *       "PT10S")}, so the second sweep inside ten seconds — in this method or in
- *       the next test — is silently skipped, and
- *       {@code verify(push).send(...)} then fails with zero interactions.</li>
- *   <li>{@code @EnableScheduling} is active in tests with no profile guard, so
- *       the background dispatcher can fire the real bean's {@code sweep()} on
- *       these rows and steal the {@code notifiedAt} marks. {@code @Transactional}
- *       keeps the fixtures invisible to it (and out of sibling test classes
- *       sharing the context).</li>
- * </ol>
+ * <p>Scheduled dispatch is off in tests ({@code imin.scheduling.enabled: false}),
+ * so nothing ticks the real bean; {@code @Transactional} stays to keep the
+ * fixtures out of sibling test classes sharing the context.
  *
  * <p>Same construction pattern, and the same reasons, as
  * {@code NotifyReleaseSenderTest}.

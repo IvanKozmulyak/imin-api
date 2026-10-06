@@ -9,7 +9,7 @@ import java.util.UUID;
  * The mechanism behind §2.2's "do not vary response time by branch".
  *
  * <p>That sentence is not self-executing (§15 D-1). BCrypt at cost 12
- * ({@code SecurityConfig:36-39}) takes 250–400 ms, and every credential flow
+ * ({@code PasswordEncoderConfig}) takes 250–400 ms, and every credential flow
  * here has one branch that hashes and one that does not:
  *
  * <ul>
