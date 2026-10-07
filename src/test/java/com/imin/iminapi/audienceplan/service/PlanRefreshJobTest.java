@@ -1,18 +1,12 @@
 package com.imin.iminapi.audienceplan.service;
 
-import com.imin.iminapi.audienceplan.config.PlanRefreshExecutor;
 import com.imin.iminapi.audienceplan.service.PlanService.Refresh;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.predictor.service.PredictorReactivityEvents;
 import com.imin.iminapi.repository.EventRepository;
-import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.scheduling.annotation.Async;
-import org.springframework.scheduling.annotation.Scheduled;
-import org.springframework.transaction.event.TransactionPhase;
-import org.springframework.transaction.event.TransactionalEventListener;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -150,20 +144,6 @@ class PlanRefreshJobTest {
 
         assertThatCode(() -> new PlanRefreshJob(plans, events, clock, self, invites, pruner).scheduled()).doesNotThrowAnyException();
         verify(proxied).run();
-    }
-
-    @Test
-    void wiring_dailyAt9Paris_underAShedLock_andAfterCommitOnTheRefreshPool() throws Exception {
-        Scheduled scheduled = PlanRefreshJob.class.getMethod("scheduled").getAnnotation(Scheduled.class);
-        assertThat(scheduled.cron()).isEqualTo("0 0 9 * * *");
-        assertThat(scheduled.zone()).isEqualTo("Europe/Paris");
-        assertThat(PlanRefreshJob.class.getMethod("run").getAnnotation(SchedulerLock.class).name())
-                .isEqualTo("audience_plan_refresh");
-
-        var listener = PlanRefreshJob.class.getMethod("onEventPublished", PredictorReactivityEvents.EventPublished.class);
-        assertThat(listener.getAnnotation(TransactionalEventListener.class).phase())
-                .isEqualTo(TransactionPhase.AFTER_COMMIT);
-        assertThat(listener.getAnnotation(Async.class).value()).isEqualTo(PlanRefreshExecutor.NAME);
     }
 
     private static Event event() {

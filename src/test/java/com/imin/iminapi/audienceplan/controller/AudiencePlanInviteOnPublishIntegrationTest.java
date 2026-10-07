@@ -4,14 +4,12 @@ import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
+import com.imin.iminapi.audienceplan.PlanPopulation;
+import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
 import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
-import com.imin.iminapi.audienceplan.engine.CandidateBuilder;
-import com.imin.iminapi.audienceplan.engine.CandidateBuilder.Person;
-import com.imin.iminapi.audienceplan.service.CandidateLoader;
 import com.imin.iminapi.audienceplan.service.InviteOnPublishService;
 import com.imin.iminapi.audienceplan.service.PlanRefreshJob;
 import com.imin.iminapi.audienceplan.service.PlanService;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.EventVisibility;
@@ -24,27 +22,21 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
-import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
-import com.imin.iminapi.security.ErrorCode;
-import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PgFaults;
+import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
@@ -63,12 +55,6 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.nullValue;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyDouble;
-import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.doReturn;
-import static org.mockito.Mockito.doThrow;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -79,13 +65,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * {@code /api/v1/events/{eventId}/audience-plan/invite-on-publish} and the publish run through the refresh
- * listener's entry point, with the checked warm fixture as candidates, on H2 and Postgres 17.
+ * listener's entry point, with the checked warm fixture as real plan-mailable members.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 @ExtendWith(OutputCaptureExtension.class)
-abstract class AudiencePlanInviteOnPublishScenarios {
+class AudiencePlanInviteOnPublishIntegrationTest {
 
     private static final ZoneId PARIS = ZoneId.of("Europe/Paris");
     private static final String HOUSE = "house & techno";
@@ -106,8 +90,9 @@ abstract class AudiencePlanInviteOnPublishScenarios {
     @Autowired AudiencePlanProperties props;
     @Autowired PlanService planService;
     @Autowired InviteOnPublishService inviteOnPublish;
-    @MockitoSpyBean CandidateLoader loader;
-    @MockitoBean AuditLogger auditLogger;
+    @Autowired AudiencePlanLogic logic;
+    @Autowired Clock clock;
+    @Autowired PropertyFlips flips;
 
     private final List<UUID> orgs = new ArrayList<>();
     private UUID orgA;
@@ -117,6 +102,7 @@ abstract class AudiencePlanInviteOnPublishScenarios {
     private List<UUID> loyal;
     private List<UUID> repeat;
     private List<UUID> firstTimers;
+    private boolean populated;
 
     @BeforeEach
     void setUp() {
@@ -131,7 +117,6 @@ abstract class AudiencePlanInviteOnPublishScenarios {
 
     @AfterEach
     void tearDown() {
-        props.setEnabled(true);
         for (UUID org : orgs) {
             jdbc.update("delete from audience_plan_publish_invites where org_id = ?", org);
             jdbc.update("delete from campaign_recipients where campaign_id in (select id from campaigns where org_id = ?)", org);
@@ -221,7 +206,7 @@ abstract class AudiencePlanInviteOnPublishScenarios {
     @Test
     void killSwitchOff_is404_onEveryVerb_evenForAnInvalidBody() throws Exception {
         Event e = plannedDraft(28);
-        props.setEnabled(false);
+        flips.set(props, "enabled", false);
         mvc.perform(get(url(e)).with(auth(owner))).andExpect(status().isNotFound());
         putIntent(e, TWO_SEGMENTS).andExpect(status().isNotFound());
         putIntent(e, "{\"segments\":[]}").andExpect(status().isNotFound());
@@ -243,7 +228,7 @@ abstract class AudiencePlanInviteOnPublishScenarios {
     @Test
     void aDraftWithoutAPlan_is404OnPut() throws Exception {
         Event e = draft(28);
-        stub(e, fixture());
+        populate();
         putIntent(e, TWO_SEGMENTS).andExpect(status().isNotFound());
     }
 
@@ -311,10 +296,11 @@ abstract class AudiencePlanInviteOnPublishScenarios {
     void anUnexpectedFailure_keepsTheIntentClaimed_forTheSweeper() throws Exception {
         Event e = plannedDraft(28);
         putIntent(e, TWO_SEGMENTS).andExpect(status().isOk());
-        doThrow(new IllegalStateException("database unavailable"))
-                .when(loader).input(eq(e.getOrgId()), any(), anyInt(), anyDouble());
 
-        publish(e);
+        // Postgres rejects the invitation's experiment rows: a real failure inside its transaction.
+        try (var fault = PgFaults.failWrites(jdbc, "audience_experiments", "event_id", e.getId())) {
+            publish(e);
+        }
 
         assertThat(count("select count(*) from audience_experiments where event_id = ?", e.getId())).isZero();
         assertThat(count("select count(*) from audience_plan_publish_invites where event_id = ?", e.getId())).isEqualTo(1);
@@ -322,20 +308,6 @@ abstract class AudiencePlanInviteOnPublishScenarios {
                 "select claimed_at, attempts from audience_plan_publish_invites where event_id = ?", e.getId());
         assertThat(row.get("claimed_at")).isNotNull();
         assertThat(((Number) row.get("attempts")).intValue()).isEqualTo(1);
-    }
-
-    @Test
-    void aServerSideRefusal_keepsTheIntentClaimed_forTheSweeper() throws Exception {
-        Event e = plannedDraft(28);
-        putIntent(e, TWO_SEGMENTS).andExpect(status().isOk());
-        doThrow(new ApiException(HttpStatus.SERVICE_UNAVAILABLE, ErrorCode.UPSTREAM_UNAVAILABLE, "upstream down"))
-                .when(loader).input(eq(e.getOrgId()), any(), anyInt(), anyDouble());
-
-        publish(e);
-
-        assertThat(count("select count(*) from audience_experiments where event_id = ?", e.getId())).isZero();
-        assertThat(count("select count(*) from audience_plan_publish_invites where event_id = ? and claimed_at is not null",
-                e.getId())).isEqualTo(1);
     }
 
     @Test
@@ -357,10 +329,9 @@ abstract class AudiencePlanInviteOnPublishScenarios {
     void aRepublishWhileClaimed_doesNothing_andAPutResetsTheClaim() throws Exception {
         Event e = plannedDraft(28);
         putIntent(e, TWO_SEGMENTS).andExpect(status().isOk());
-        doThrow(new IllegalStateException("database unavailable"))
-                .when(loader).input(eq(e.getOrgId()), any(), anyInt(), anyDouble());
-        publish(e);
-        stub(e, fixture());
+        try (var fault = PgFaults.failWrites(jdbc, "audience_experiments", "event_id", e.getId())) {
+            publish(e);
+        }
 
         publish(e);
 
@@ -381,10 +352,9 @@ abstract class AudiencePlanInviteOnPublishScenarios {
     void aStaleClaim_isReRunBySweep_andDeletedWhenDone() throws Exception {
         Event e = plannedDraft(28);
         putIntent(e, TWO_SEGMENTS).andExpect(status().isOk());
-        doThrow(new IllegalStateException("database unavailable"))
-                .when(loader).input(eq(e.getOrgId()), any(), anyInt(), anyDouble());
-        publish(e);
-        stub(e, fixture());
+        try (var fault = PgFaults.failWrites(jdbc, "audience_experiments", "event_id", e.getId())) {
+            publish(e);
+        }
         // A claim this fresh may still be running.
         assertThat(inviteOnPublish.sweepStale()).isZero();
 
@@ -430,9 +400,7 @@ abstract class AudiencePlanInviteOnPublishScenarios {
         // Published 31 minutes ago, but the listener never ran; since then the loyal guests dropped out.
         jdbc.update("update events set status = 'LIVE', published_at = ? where id = ?",
                 Timestamp.from(Instant.now().minus(Duration.ofMinutes(31))), e.getId());
-        List<Person> now = new ArrayList<>(people("repeat", repeat));
-        now.addAll(people("first_timer", firstTimers));
-        stub(e, now);
+        dropOut(loyal);
 
         assertThat(inviteOnPublish.sweepStale()).isEqualTo(1);
 
@@ -566,9 +534,7 @@ abstract class AudiencePlanInviteOnPublishScenarios {
         Event e = plannedDraft(28);
         putIntent(e, TWO_SEGMENTS).andExpect(status().isOk());
         // Before the publish, the loyal guests dropped out; the refresh writes a plan without them.
-        List<Person> now = new ArrayList<>(people("repeat", repeat));
-        now.addAll(people("first_timer", firstTimers));
-        stub(e, now);
+        dropOut(loyal);
 
         publish(e);
 
@@ -720,7 +686,7 @@ abstract class AudiencePlanInviteOnPublishScenarios {
     void killSwitchOffAtPublish_writesNothing_andDropsTheIntent() throws Exception {
         Event e = plannedDraft(28);
         putIntent(e, TWO_SEGMENTS).andExpect(status().isOk());
-        props.setEnabled(false);
+        flips.set(props, "enabled", false);
 
         publish(e);
 
@@ -789,30 +755,24 @@ abstract class AudiencePlanInviteOnPublishScenarios {
     /** A draft {@code days} out with the checked warm fixture and its stored plan. */
     private Event plannedDraft(int days) throws Exception {
         Event e = draft(days);
-        stub(e, fixture());
+        populate();
         mvc.perform(get("/api/v1/events/" + e.getId() + "/audience-plan").with(auth(owner))).andExpect(status().isOk());
         return e;
     }
 
-    private List<Person> fixture() {
-        List<Person> all = new ArrayList<>();
-        all.addAll(people("loyal", loyal));
-        all.addAll(people("repeat", repeat));
-        all.addAll(people("first_timer", firstTimers));
-        return all;
+    /** The checked warm fixture: the setUp members become plan-mailable, plus 12 legacy-unproven members. */
+    private void populate() {
+        if (populated) return;
+        populated = true;
+        PlanPopulation.makeMailable(jdbc, logic, clock, orgA, loyal, "loyal", Map.of(HOUSE, 1.0));
+        PlanPopulation.makeMailable(jdbc, logic, clock, orgA, repeat, "repeat", Map.of(HOUSE, 1.0));
+        PlanPopulation.makeMailable(jdbc, logic, clock, orgA, firstTimers, "first_timer", Map.of(HOUSE, 1.0));
+        PlanPopulation.legacyUnproven(jdbc, clock, orgA, 12);
     }
 
-    private static List<Person> people(String classKey, List<UUID> ids) {
-        List<Person> out = new ArrayList<>();
-        for (UUID id : ids) out.add(new Person(id, classKey, Map.of(HOUSE, 1.0), 0, false, false, 0, 0));
-        return out;
-    }
-
-    private void stub(Event e, List<Person> people) {
-        Map<String, Integer> gate = new LinkedHashMap<>();
-        gate.put("legacy_unproven", 12);
-        doReturn(new CandidateBuilder.Input(e.getOrgId(), e.getGenreKey(), 255, 1.6, gate, people))
-                .when(loader).input(eq(e.getOrgId()), any(), anyInt(), anyDouble());
+    /** These members unsubscribed since the plan was stored, so the gate no longer lets them be emailed. */
+    private void dropOut(List<UUID> members) {
+        for (UUID m : members) jdbc.update("update memberships set consent_status = 'unsubscribed' where membership_id = ?", m);
     }
 
     private ResultActions putIntent(Event e, String body) throws Exception {

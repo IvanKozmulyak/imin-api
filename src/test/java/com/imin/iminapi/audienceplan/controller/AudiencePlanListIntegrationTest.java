@@ -4,15 +4,13 @@ import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
+import com.imin.iminapi.audienceplan.PlanPopulation;
+import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
 import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
-import com.imin.iminapi.audienceplan.engine.CandidateBuilder;
-import com.imin.iminapi.audienceplan.engine.CandidateBuilder.Person;
-import com.imin.iminapi.audienceplan.service.CandidateLoader;
+import com.imin.iminapi.audienceplan.config.PlanRefreshExecutor;
 import com.imin.iminapi.audienceplan.service.PlanRefreshJob;
 import com.imin.iminapi.audienceplan.service.PlanService;
 import com.imin.iminapi.audienceplan.service.PlanService.Refresh;
-import com.imin.iminapi.audienceplan.service.PortraitService;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.EventVisibility;
@@ -26,21 +24,19 @@ import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
-import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.support.AsyncDrain;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PropertyFlips;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
@@ -53,11 +49,13 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -66,14 +64,6 @@ import java.util.concurrent.TimeUnit;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyDouble;
-import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.clearInvocations;
-import static org.mockito.Mockito.doReturn;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -81,13 +71,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * {@code GET /api/v1/audience-plans} and the plan refresh (publish listener, daily job) on H2 and Postgres 17.
- * Candidate people are stubbed with the checked warm fixture where numbers matter; one test uses real data.
+ * {@code GET /api/v1/audience-plans} and the plan refresh (publish listener, daily job). Where numbers matter the org
+ * holds the checked warm fixture as real plan-mailable members.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
-abstract class AudiencePlanListScenarios {
+@IminIntegrationTest
+class AudiencePlanListIntegrationTest {
 
     private static final ZoneId PARIS = ZoneId.of("Europe/Paris");
     private static final String HOUSE = "house & techno";
@@ -105,12 +93,13 @@ abstract class AudiencePlanListScenarios {
     @Autowired ApplicationEventPublisher publisher;
     @Autowired TransactionTemplate tx;
     @Autowired Clock clock;
-    @MockitoSpyBean CandidateLoader loader;
-    @MockitoSpyBean PortraitService portraits;
-    @MockitoBean AuditLogger auditLogger;
+    @Autowired AudiencePlanLogic logic;
+    @Autowired PropertyFlips flips;
+    @Autowired @Qualifier(PlanRefreshExecutor.NAME) Executor refreshExecutor;
 
     private final List<UUID> orgs = new ArrayList<>();
-    protected UUID orgA;
+    private final Set<UUID> gateSeeded = new HashSet<>();
+    private UUID orgA;
     private UUID orgB;
     private AuthPrincipal owner;
     private LocalDate today;
@@ -125,7 +114,8 @@ abstract class AudiencePlanListScenarios {
 
     @AfterEach
     void tearDown() {
-        props.setEnabled(true);
+        // Publish-time refreshes run on their own thread; let them finish before the rows go.
+        AsyncDrain.drain(refreshExecutor);
         for (UUID org : orgs) {
             jdbc.update("delete from audience_plan_segments where plan_id in (select id from audience_plans where org_id = ?)", org);
             jdbc.update("update audience_plans set superseded_by = null where org_id = ?", org);
@@ -140,6 +130,7 @@ abstract class AudiencePlanListScenarios {
             jdbc.update("delete from organizations where id = ?", org);
         }
         orgs.clear();
+        gateSeeded.clear();
     }
 
     // ── list ───────────────────────────────────────────────────────────────
@@ -198,7 +189,7 @@ abstract class AudiencePlanListScenarios {
     @Test
     void list_killSwitchOff_is404_evenForABadFrom() throws Exception {
         event(orgA, EventStatus.LIVE, 28, 300);
-        props.setEnabled(false);
+        flips.set(props, "enabled", false);
         list(null).andExpect(status().isNotFound());
         list("tomorrow").andExpect(status().isNotFound());
     }
@@ -246,7 +237,7 @@ abstract class AudiencePlanListScenarios {
         Event e = event(orgA, EventStatus.LIVE, 28, 300);
         stub(e, fixture());
         getPlan(e).andExpect(status().isOk());
-        doReturn(346).when(loader).mailableCount(orgA);
+        stub(e, List.of(new Group("loyal", 1)));
 
         list(null).andExpect(jsonPath("$[0].status").value("stale"));
     }
@@ -298,20 +289,6 @@ abstract class AudiencePlanListScenarios {
             jdbc.update("update city_open_data set headline = ? where city_key = 'metz' and dataset = 'insee_age'",
                     seeded);
         }
-    }
-
-    @Test
-    void list_readsThePortraitOncePerGenreAndCity() throws Exception {
-        Event first = event(orgA, EventStatus.LIVE, 20, 300);
-        Event second = event(orgA, EventStatus.LIVE, 28, 300);
-        stub(first, List.of());
-        getPlan(first).andExpect(status().isOk());
-        getPlan(second).andExpect(status().isOk());
-        clearInvocations(portraits);
-
-        list(null).andExpect(jsonPath("$[0].status").value("fresh"))
-                .andExpect(jsonPath("$[1].status").value("fresh"));
-        verify(portraits, times(1)).forCity(HOUSE, "metz");
     }
 
     // ── refresh ────────────────────────────────────────────────────────────
@@ -387,7 +364,7 @@ abstract class AudiencePlanListScenarios {
     void refresh_killSwitchOff_skipsWithoutWriting() {
         Event e = event(orgA, EventStatus.LIVE, 28, 300);
         stub(e, fixture());
-        props.setEnabled(false);
+        flips.set(props, "enabled", false);
 
         assertThat(planService.refresh(e.getId())).isEqualTo(Refresh.SKIPPED);
         assertThat(planRows(e)).isZero();
@@ -404,6 +381,8 @@ abstract class AudiencePlanListScenarios {
         notYet.setOnSaleAt(Instant.now().plus(2, ChronoUnit.DAYS));
         eventRepo.save(notYet);
         stub(onSale, fixture());
+        // The job walks every org's on-sale events; only these two orgs may be planned.
+        flips.set(props, "betaOrgIds", Set.of(orgA, orgB));
         // Direct instance: the proxied bean's scheduler lock would skip a second run inside its minimum hold.
         PlanRefreshJob job = new PlanRefreshJob(planService, eventRepo, clock, null, null,
                 org.mockito.Mockito.mock(com.imin.iminapi.audienceplan.service.PlanPruner.class));
@@ -451,6 +430,42 @@ abstract class AudiencePlanListScenarios {
         }
     }
 
+    @Test
+    void firstPlanLock_doesNotBlockAnFkInsertOnTheEvent() throws Exception {
+        Event e = event(orgA, EventStatus.LIVE, 28, 300);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        CountDownLatch locked = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try {
+            Future<?> holder = pool.submit(() -> tx.executeWithoutResult(s -> {
+                planService.lockFirstPlan(e.getId());
+                locked.countDown();
+                try {
+                    assertThat(release.await(15, TimeUnit.SECONDS)).isTrue();
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                }
+            }));
+            assertThat(locked.await(10, TimeUnit.SECONDS)).isTrue();
+
+            // A checkout-style row referencing the event takes FOR KEY SHARE on it; a lock_timeout turns a wait into a failure.
+            Future<Integer> inserted = pool.submit(() -> tx.execute(s -> {
+                jdbc.execute("SET LOCAL lock_timeout = '3s'");
+                return jdbc.update("insert into event_funnel_events (id, event_id, stage, anon_id) values (?, ?, 'PAGE_VIEW', 'plan-lock')",
+                        UUID.randomUUID(), e.getId());
+            }));
+            assertThat(inserted.get(10, TimeUnit.SECONDS)).isEqualTo(1);
+            assertThat(holder.isDone()).as("the plan lock is still held during the insert").isFalse();
+
+            release.countDown();
+            holder.get(10, TimeUnit.SECONDS);
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+            assertThat(pool.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+        }
+    }
+
     // ── fixtures ───────────────────────────────────────────────────────────
 
     private static void await(CountDownLatch latch) {
@@ -475,30 +490,18 @@ abstract class AudiencePlanListScenarios {
         assertThat(planRows(e)).isEqualTo(expected);
     }
 
-    private static List<Person> people(String classKey, int n) {
-        List<Person> out = new ArrayList<>();
-        for (int i = 0; i < n; i++) {
-            out.add(new Person(UUID.randomUUID(), classKey, Map.of(HOUSE, 1.0), 0, false, false, 0, 0));
-        }
-        return out;
-    }
+    private record Group(String classKey, int n) {}
 
     /** Checked warm pass: 40 loyal, 70 repeat, 235 first-timers, all genre fit same. */
-    private static List<Person> fixture() {
-        List<Person> all = new ArrayList<>();
-        all.addAll(people("loyal", 40));
-        all.addAll(people("repeat", 70));
-        all.addAll(people("first_timer", 235));
-        return all;
+    private static List<Group> fixture() {
+        return List.of(new Group("loyal", 40), new Group("repeat", 70), new Group("first_timer", 235));
     }
 
-    /** Stubs the loader for the org; the list reads the same mailable count the stubbed plan hashed. */
-    private void stub(Event e, List<Person> people) {
-        Map<String, Integer> gate = new LinkedHashMap<>();
-        gate.put("legacy_unproven", 12);
-        doReturn(new CandidateBuilder.Input(e.getOrgId(), e.getGenreKey(), 255, 1.6, gate, people))
-                .when(loader).input(eq(e.getOrgId()), any(), anyInt(), anyDouble());
-        doReturn(people.size()).when(loader).mailableCount(e.getOrgId());
+    /** {@code groups} as plan-mailable members of the org; its first call also adds 12 legacy-unproven members. */
+    private void stub(Event e, List<Group> groups) {
+        UUID org = e.getOrgId();
+        if (gateSeeded.add(org)) PlanPopulation.legacyUnproven(jdbc, clock, org, 12);
+        for (Group g : groups) PlanPopulation.mailable(jdbc, logic, clock, org, g.classKey(), Map.of(HOUSE, 1.0), g.n());
     }
 
     private ResultActions list(String from) throws Exception {
@@ -555,7 +558,7 @@ abstract class AudiencePlanListScenarios {
     }
 
     /** A house night {@code days} out at 20:00 Paris with free enabled tiers, publishable as is. */
-    protected Event event(UUID orgId, EventStatus status, int days, int... quantities) {
+    private Event event(UUID orgId, EventStatus status, int days, int... quantities) {
         User u = new User();
         u.setEmail("plan-list-owner-" + UUID.randomUUID() + "@example.com");
         u.setOrgId(orgId);

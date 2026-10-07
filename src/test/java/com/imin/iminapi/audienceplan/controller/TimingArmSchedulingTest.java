@@ -4,13 +4,12 @@ import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
+import com.imin.iminapi.audienceplan.PlanPopulation;
+import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
 import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
+import com.imin.iminapi.audienceplan.config.PlanRefreshExecutor;
 import com.imin.iminapi.audienceplan.engine.ArmTimes;
-import com.imin.iminapi.audienceplan.engine.CandidateBuilder;
-import com.imin.iminapi.audienceplan.engine.CandidateBuilder.Person;
-import com.imin.iminapi.audienceplan.service.CandidateLoader;
 import com.imin.iminapi.audienceplan.service.TimingArmScheduler;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
@@ -29,44 +28,38 @@ import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
-import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.support.AsyncDrain;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PropertyFlips;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import java.sql.Timestamp;
+import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Executor;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyDouble;
-import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.doReturn;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
@@ -75,12 +68,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * Timing arms on the H2 test profile: approving an arm draft through {@code POST /marketing/campaigns/{id}/send}
- * stores the arm's own send time, a slump arm waits for Momentum's SLUMP, and the sends switch still comes first.
+ * Timing arms: approving an arm draft through {@code POST /marketing/campaigns/{id}/send} stores the arm's own send
+ * time, a slump arm waits for Momentum's SLUMP, and the sends switch still comes first.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class TimingArmSchedulingTest {
 
     private static final ZoneId PARIS = ZoneId.of("Europe/Paris");
@@ -100,14 +91,17 @@ class TimingArmSchedulingTest {
     @Autowired AudiencePlanProperties props;
     @Autowired ApplicationEventPublisher publisher;
     @Autowired TimingArmScheduler scheduler;
-    @MockitoSpyBean CandidateLoader loader;
-    @MockitoBean AuditLogger auditLogger;
+    @Autowired AudiencePlanLogic logic;
+    @Autowired Clock clock;
+    @Autowired PropertyFlips flips;
+    @Autowired @Qualifier(PlanRefreshExecutor.NAME) Executor refreshExecutor;
 
     private final List<UUID> orgs = new ArrayList<>();
     private UUID orgA;
     private AuthPrincipal owner;
     private LocalDate today;
     private List<UUID> loyal;
+    private boolean populated;
 
     @BeforeEach
     void setUp() {
@@ -115,13 +109,12 @@ class TimingArmSchedulingTest {
         owner = new AuthPrincipal(user(orgA), orgA, UserRole.OWNER, UUID.randomUUID());
         today = LocalDate.now(PARIS);
         loyal = members(orgA, 60);
-        props.setSendsEnabled(true);
+        flips.set(props, "sendsEnabled", true);
     }
 
     @AfterEach
     void tearDown() {
-        props.setSendsEnabled(false);
-        props.setEnabled(true);
+        AsyncDrain.drain(refreshExecutor);
         for (UUID org : orgs) {
             jdbc.update("delete from campaign_recipients where campaign_id in (select id from campaigns where org_id = ?)", org);
             jdbc.update("delete from audience_assignments where experiment_id in (select id from audience_experiments where org_id = ?)", org);
@@ -229,7 +222,7 @@ class TimingArmSchedulingTest {
     void theSendsSwitch_stillAnswersFirst() throws Exception {
         Event e = plannedEvent(28, null);
         UUID campaign = armCampaign(invite(e, "[\"launch\",\"slump\"]"), "slump");
-        props.setSendsEnabled(false);
+        flips.set(props, "sendsEnabled", false);
 
         approve(campaign, Instant.now().plusSeconds(3600)).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error.code").value("AUDIENCE_SENDS_DISABLED"));
@@ -371,7 +364,7 @@ class TimingArmSchedulingTest {
     void aSlumpWhileSendsAreOff_schedulesNothing() throws Exception {
         Event e = plannedEvent(28, null);
         UUID campaign = armedSlump(e);
-        props.setSendsEnabled(false);
+        flips.set(props, "sendsEnabled", false);
 
         publisher.publishEvent(new MomentumTriggered(orgA, e.getId(), "slump"));
 
@@ -382,7 +375,7 @@ class TimingArmSchedulingTest {
     void aSlumpForAnOrgOffTheBeta_schedulesNothing() throws Exception {
         Event e = plannedEvent(28, null);
         UUID campaign = armedSlump(e);
-        props.setEnabled(false);
+        flips.set(props, "enabled", false);
 
         publisher.publishEvent(new MomentumTriggered(orgA, e.getId(), "slump"));
 
@@ -471,8 +464,7 @@ class TimingArmSchedulingTest {
         UUID member = jdbc.queryForObject("""
                 select a.membership_id from audience_assignments a join audience_experiments x on x.id = a.experiment_id
                  where x.campaign_id = ? order by a.membership_id limit 1""", UUID.class, campaign);
-        // SendGate admits this member, so only the per-event cap can hold them back.
-        jdbc.update("update memberships set consent_basis = 'explicit' where membership_id = ?", member);
+        // SendGate and the consent gate admit this member, so only the per-event cap can hold them back.
         sentAboutEvent(e, member);
         sentAboutEvent(e, member);
 
@@ -582,14 +574,13 @@ class TimingArmSchedulingTest {
         return jdbc.queryForObject(sql, Integer.class, args);
     }
 
-    /** An event {@code days} out with 60 loyal members (warm) stubbed as candidates and its stored plan. */
+    /** An event {@code days} out whose org's 60 loyal members (warm) are plan-mailable, and its stored plan. */
     private Event plannedEvent(int days, Instant onSaleAt) throws Exception {
         Event e = event(orgA, days, onSaleAt, 200, 100);
-        List<Person> people = new ArrayList<>();
-        for (UUID id : loyal) people.add(new Person(id, "loyal", Map.of(HOUSE, 1.0), 0, false, false, 0, 0));
-        Map<String, Integer> gate = new LinkedHashMap<>();
-        doReturn(new CandidateBuilder.Input(e.getOrgId(), e.getGenreKey(), 255, 1.6, gate, people))
-                .when(loader).input(eq(e.getOrgId()), any(), anyInt(), anyDouble());
+        if (!populated) {
+            populated = true;
+            PlanPopulation.makeMailable(jdbc, logic, clock, orgA, loyal, "loyal", Map.of(HOUSE, 1.0));
+        }
         mvc.perform(get("/api/v1/events/" + e.getId() + "/audience-plan").with(auth(owner)))
                 .andExpect(status().isOk());
         return e;

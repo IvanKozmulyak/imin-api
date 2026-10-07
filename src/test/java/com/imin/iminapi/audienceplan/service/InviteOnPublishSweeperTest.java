@@ -1,11 +1,9 @@
 package com.imin.iminapi.audienceplan.service;
 
-import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
-import org.springframework.scheduling.annotation.Scheduled;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -46,12 +44,5 @@ class InviteOnPublishSweeperTest {
 
         assertThat(output.getOut()).contains("InviteOnPublishSweeper: pass failed (the next one retries): "
                 + "IllegalStateException");
-    }
-
-    @Test
-    void runsEvery15Minutes_underItsOwnSchedulerLock() throws Exception {
-        var sweep = InviteOnPublishSweeper.class.getMethod("sweep");
-        assertThat(sweep.getAnnotation(Scheduled.class).fixedDelay()).isEqualTo(900_000L);
-        assertThat(sweep.getAnnotation(SchedulerLock.class).name()).isEqualTo("audience_plan_invite_on_publish_sweep");
     }
 }

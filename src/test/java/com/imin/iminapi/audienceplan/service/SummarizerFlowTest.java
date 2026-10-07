@@ -1,13 +1,12 @@
 package com.imin.iminapi.audienceplan.service;
 
+import com.imin.iminapi.audienceplan.PlanPopulation;
+import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
 import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
 import com.imin.iminapi.audienceplan.config.PlanRefreshExecutor;
 import com.imin.iminapi.audienceplan.config.SummaryChatClient;
 import com.imin.iminapi.audienceplan.config.SummaryExecutor;
 import com.imin.iminapi.audienceplan.dto.AudiencePlanResponse;
-import com.imin.iminapi.audienceplan.engine.CandidateBuilder;
-import com.imin.iminapi.audienceplan.engine.CandidateBuilder.Person;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.service.MomentumTriggered;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
@@ -21,7 +20,9 @@ import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
-import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.support.AsyncDrain;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PropertyFlips;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -36,20 +37,16 @@ import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.ChatOptions;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import java.math.BigDecimal;
+import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -65,11 +62,7 @@ import java.util.concurrent.TimeUnit;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.nullValue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyDouble;
-import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -82,12 +75,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * Plan GET → async summary → stored per locale on the same plan row, on H2. The ChatClient is a mock that answers
- * with the recorded OpenRouter contents; nothing reaches the network.
+ * Plan GET → async summary → stored per locale on the same plan row. The summary ChatClient is the shared fake,
+ * answering with the recorded OpenRouter contents; nothing reaches the network.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class SummarizerFlowTest {
 
     private static final ZoneId PARIS = ZoneId.of("Europe/Paris");
@@ -105,9 +96,10 @@ class SummarizerFlowTest {
     @Autowired @Qualifier(SummaryExecutor.NAME) Executor summaryExecutor;
     @Autowired @Qualifier(PlanRefreshExecutor.NAME) Executor refreshExecutor;
     @Autowired ApplicationEventPublisher events;
-    @MockitoSpyBean CandidateLoader loader;
-    @MockitoBean AuditLogger auditLogger;
-    @MockitoBean(name = SummaryChatClient.NAME) ChatClient chat;
+    @Autowired AudiencePlanLogic logic;
+    @Autowired Clock clock;
+    @Autowired PropertyFlips flips;
+    @Autowired @Qualifier(SummaryChatClient.NAME) ChatClient chat;
 
     private ChatClient.ChatClientRequestSpec spec;
     private ChatClient.CallResponseSpec call;
@@ -116,7 +108,7 @@ class SummarizerFlowTest {
 
     @BeforeEach
     void setUp() {
-        props.setSummaryEnabled(true);
+        flips.set(props, "summaryEnabled", true);
         spec = mock(ChatClient.ChatClientRequestSpec.class);
         call = mock(ChatClient.CallResponseSpec.class);
         when(chat.prompt()).thenReturn(spec);
@@ -136,12 +128,14 @@ class SummarizerFlowTest {
 
     @AfterEach
     void tearDown() {
-        props.setSummaryEnabled(false);
-        props.setSummaryPriceInputUsdPerMtok(null);
-        props.setSummaryPriceOutputUsdPerMtok(null);
+        AsyncDrain.drain(refreshExecutor);
+        AsyncDrain.drain(summaryExecutor);
         jdbc.update("delete from audience_plan_segments where plan_id in (select id from audience_plans where org_id = ?)", orgId);
         jdbc.update("update audience_plans set superseded_by = null where org_id = ?", orgId);
         jdbc.update("delete from audience_plans where org_id = ?", orgId);
+        List<UUID> consumers = jdbc.queryForList("select consumer_id from memberships where org_id = ?", UUID.class, orgId);
+        jdbc.update("delete from memberships where org_id = ?", orgId);
+        for (UUID c : consumers) jdbc.update("delete from consumers where consumer_id = ?", c);
         jdbc.update("delete from ticket_tiers where event_id in (select id from events where org_id = ?)", orgId);
         jdbc.update("delete from events where org_id = ?", orgId);
         jdbc.update("delete from users where org_id = ?", orgId);
@@ -196,8 +190,8 @@ class SummarizerFlowTest {
 
     @Test
     void configuredPrices_storeTheCost() throws Exception {
-        props.setSummaryPriceInputUsdPerMtok(new BigDecimal("0.15"));
-        props.setSummaryPriceOutputUsdPerMtok(new BigDecimal("0.60"));
+        flips.set(props, "summaryPriceInputUsdPerMtok", new BigDecimal("0.15"));
+        flips.set(props, "summaryPriceOutputUsdPerMtok", new BigDecimal("0.60"));
         answer("undated-en.json");
         Event e = event();
 
@@ -232,7 +226,7 @@ class SummarizerFlowTest {
 
     @Test
     void switchedOff_getNeverAsks() throws Exception {
-        props.setSummaryEnabled(false);
+        flips.set(props, "summaryEnabled", false);
         answer("undated-en.json");
         Event e = event();
 
@@ -316,7 +310,7 @@ class SummarizerFlowTest {
     @Test
     void store_templateWithoutCalls_leavesTokensAndModelUnset() throws Exception {
         Event e = event();
-        props.setSummaryEnabled(false);
+        flips.set(props, "summaryEnabled", false);
         String id = id(getPlan(e, "uk"));
 
         AudiencePlanResponse.Summary template = SummaryTemplates.summary(SummaryFixtures.warm(), "uk", Instant.now());
@@ -408,19 +402,12 @@ class SummarizerFlowTest {
         t.setEnabled(true);
         tierRepo.save(t);
 
-        List<Person> people = new ArrayList<>();
-        addPeople(people, "loyal", 40);
-        addPeople(people, "repeat", 70);
-        addPeople(people, "first_timer", 235);
-        Map<String, Integer> gate = new LinkedHashMap<>();
-        gate.put("legacy_unproven", 12);
-        doReturn(new CandidateBuilder.Input(orgId, e.getGenreKey(), 255, 1.6, gate, people))
-                .when(loader).input(eq(orgId), any(), anyInt(), anyDouble());
+        // The checked warm fixture as real members: 40 loyal, 70 repeat, 235 first-timers, 12 legacy-unproven.
+        PlanPopulation.mailable(jdbc, logic, clock, orgId, "loyal", Map.of(HOUSE, 1.0), 40);
+        PlanPopulation.mailable(jdbc, logic, clock, orgId, "repeat", Map.of(HOUSE, 1.0), 70);
+        PlanPopulation.mailable(jdbc, logic, clock, orgId, "first_timer", Map.of(HOUSE, 1.0), 235);
+        PlanPopulation.legacyUnproven(jdbc, clock, orgId, 12);
         return e;
-    }
-
-    private static void addPeople(List<Person> out, String classKey, int n) {
-        for (int i = 0; i < n; i++) out.add(new Person(UUID.randomUUID(), classKey, Map.of(HOUSE, 1.0), 0, false, false, 0, 0));
     }
 
     private ResultActions getPlan(Event e, String locale) throws Exception {

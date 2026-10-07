@@ -4,12 +4,10 @@ import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
+import com.imin.iminapi.audienceplan.PlanPopulation;
+import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
 import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
-import com.imin.iminapi.audienceplan.engine.CandidateBuilder;
-import com.imin.iminapi.audienceplan.engine.CandidateBuilder.Person;
 import com.imin.iminapi.audienceplan.repository.AudiencePlanRepository;
-import com.imin.iminapi.audienceplan.service.CandidateLoader;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.EventVisibility;
@@ -22,35 +20,33 @@ import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
-import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PropertyFlips;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.sql.Timestamp;
+import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -60,11 +56,6 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.nullValue;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyDouble;
-import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.doReturn;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -72,13 +63,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * {@code GET/POST /api/v1/events/{eventId}/audience-plan} through the web layer, on H2 and on Postgres 17. Candidate
- * people are stubbed with the checked warm fixture where the numbers matter; one test runs the real SQL loader.
+ * {@code GET/POST /api/v1/events/{eventId}/audience-plan} through the web layer. Where the numbers matter the org
+ * holds the checked warm fixture as real members, so the consent gate and the loader run for real.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
-abstract class AudiencePlanControllerScenarios {
+@IminIntegrationTest
+class AudiencePlanControllerIntegrationTest {
 
     private static final ZoneId PARIS = ZoneId.of("Europe/Paris");
     private static final String HOUSE = "house & techno";
@@ -94,10 +83,12 @@ abstract class AudiencePlanControllerScenarios {
     @Autowired AudiencePlanProperties props;
     @Autowired AudiencePlanRepository planRepo;
     @Autowired TransactionTemplate tx;
-    @MockitoSpyBean CandidateLoader loader;
-    @MockitoBean AuditLogger auditLogger;
+    @Autowired AudiencePlanLogic logic;
+    @Autowired Clock clock;
+    @Autowired PropertyFlips flips;
 
     private final List<UUID> orgs = new ArrayList<>();
+    private final Set<UUID> gateSeeded = new HashSet<>();
     private UUID orgA;
     private UUID orgB;
     private AuthPrincipal owner;
@@ -113,7 +104,6 @@ abstract class AudiencePlanControllerScenarios {
 
     @AfterEach
     void tearDown() {
-        props.setEnabled(true);
         for (UUID org : orgs) {
             jdbc.update("delete from audience_plan_segments where plan_id in (select id from audience_plans where org_id = ?)", org);
             jdbc.update("update audience_plans set superseded_by = null where org_id = ?", org);
@@ -127,6 +117,7 @@ abstract class AudiencePlanControllerScenarios {
             jdbc.update("delete from organizations where id = ?", org);
         }
         orgs.clear();
+        gateSeeded.clear();
     }
 
     // ── checked warm fixture through the API ─────────────────────────────────────
@@ -223,8 +214,8 @@ abstract class AudiencePlanControllerScenarios {
     @Test
     void get_moreThanThreeSegments_showsTheTopThree_andCountsTheRest() throws Exception {
         Event e = event(orgA, 300);
-        List<Person> people = fixture();
-        people.addAll(people("lapsing", Map.of(HOUSE, 1.0), 20));
+        List<Group> people = fixture();
+        people.add(new Group("lapsing", Map.of(HOUSE, 1.0), 20));
         stub(e, people);
 
         getPlan(e, null).andExpect(status().isOk())
@@ -239,9 +230,7 @@ abstract class AudiencePlanControllerScenarios {
     @Test
     void get_memberWithoutTaste_isCarriedAsUnknownFit() throws Exception {
         Event e = event(orgA, 300);
-        List<Person> people = people("loyal", Map.of(HOUSE, 1.0), 40);
-        people.addAll(people("imported", Map.of(), 12));
-        stub(e, people);
+        stub(e, List.of(new Group("loyal", Map.of(HOUSE, 1.0), 40), new Group("imported", Map.of(), 12)));
 
         getPlan(e, null).andExpect(status().isOk())
                 .andExpect(jsonPath("$.segments[1].classKey").value("imported"))
@@ -560,7 +549,7 @@ abstract class AudiencePlanControllerScenarios {
     @Test
     void killSwitchOff_is404_andNothingIsComputed() throws Exception {
         Event e = event(orgA, 300);
-        props.setEnabled(false);
+        flips.set(props, "enabled", false);
 
         getPlan(e, null).andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.error.message").value("Audience plan not found"));
@@ -692,9 +681,8 @@ abstract class AudiencePlanControllerScenarios {
         stub(e, fixture());
         String first = id(getPlan(e, null));
 
-        List<Person> more = fixture();
-        more.addAll(people("loyal", Map.of(HOUSE, 1.0), 1));
-        stub(e, more);
+        // One more plan-mailable loyal member joins the fixture.
+        stub(e, List.of(new Group("loyal", Map.of(HOUSE, 1.0), 1)));
         String second = id(getPlan(e, null).andExpect(jsonPath("$.mailable").value(346)));
 
         assertThat(second).isNotEqualTo(first);
@@ -816,38 +804,34 @@ abstract class AudiencePlanControllerScenarios {
     @Test
     void storedPlanHoldsNoMembershipIds() throws Exception {
         Event e = event(orgA, 300);
-        List<Person> people = fixture();
-        stub(e, people);
+        List<UUID> people = stub(e, fixture());
         String id = id(getPlan(e, null));
 
         String stored = jdbc.queryForList("select * from audience_plans where id = ?", UUID.fromString(id)).toString()
                 + jdbc.queryForList("select * from audience_plan_segments where plan_id = ?", UUID.fromString(id));
-        for (Person p : people) assertThat(stored).doesNotContain(p.membershipId().toString());
+        for (UUID p : people) assertThat(stored).doesNotContain(p.toString());
     }
 
     // ── fixtures ───────────────────────────────────────────────────────────
 
-    private static List<Person> people(String classKey, Map<String, Double> taste, int n) {
-        List<Person> out = new ArrayList<>();
-        for (int i = 0; i < n; i++) out.add(new Person(UUID.randomUUID(), classKey, taste, 0, false, false, 0, 0));
-        return out;
-    }
+    private record Group(String classKey, Map<String, Double> taste, int n) {}
 
     /** Checked warm pass: 40 loyal, 70 repeat, 235 first-timers, all genre fit same. */
-    private static List<Person> fixture() {
-        List<Person> all = new ArrayList<>();
-        all.addAll(people("loyal", Map.of(HOUSE, 1.0), 40));
-        all.addAll(people("repeat", Map.of(HOUSE, 1.0), 70));
-        all.addAll(people("first_timer", Map.of(HOUSE, 1.0), 235));
-        return all;
+    private static List<Group> fixture() {
+        return new ArrayList<>(List.of(new Group("loyal", Map.of(HOUSE, 1.0), 40),
+                new Group("repeat", Map.of(HOUSE, 1.0), 70), new Group("first_timer", Map.of(HOUSE, 1.0), 235)));
     }
 
-    private void stub(Event e, List<Person> people) {
-        Map<String, Integer> gate = new LinkedHashMap<>();
-        gate.put("legacy_unproven", 12);
-        gate.put("unsubscribed", 3);
-        doReturn(new CandidateBuilder.Input(e.getOrgId(), e.getGenreKey(), 255, 1.6, gate, people))
-                .when(loader).input(eq(e.getOrgId()), any(), anyInt(), anyDouble());
+    /** {@code groups} as plan-mailable members of the org; its first call also adds 12 legacy-unproven, 3 unsubscribed. */
+    private List<UUID> stub(Event e, List<Group> groups) {
+        UUID org = e.getOrgId();
+        if (gateSeeded.add(org)) {
+            PlanPopulation.legacyUnproven(jdbc, clock, org, 12);
+            PlanPopulation.unsubscribed(jdbc, org, 3);
+        }
+        List<UUID> ids = new ArrayList<>();
+        for (Group g : groups) ids.addAll(PlanPopulation.mailable(jdbc, logic, clock, org, g.classKey(), g.taste(), g.n()));
+        return ids;
     }
 
     private ResultActions getPlan(Event e, String locale) throws Exception {

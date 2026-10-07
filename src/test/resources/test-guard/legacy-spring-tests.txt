@@ -2,24 +2,11 @@
 # This list only shrinks.
 com.imin.iminapi.IminApiApplicationTests
 com.imin.iminapi.app.AppConfigControllerTest
-com.imin.iminapi.audienceplan.controller.AudiencePlanControllerPostgresTest
-com.imin.iminapi.audienceplan.controller.AudiencePlanControllerScenarios
-com.imin.iminapi.audienceplan.controller.AudiencePlanControllerWebTest
-com.imin.iminapi.audienceplan.controller.AudiencePlanInvitationPostgresTest
-com.imin.iminapi.audienceplan.controller.AudiencePlanInvitationScenarios
-com.imin.iminapi.audienceplan.controller.AudiencePlanInvitationWebTest
-com.imin.iminapi.audienceplan.controller.AudiencePlanInviteOnPublishPostgresTest
-com.imin.iminapi.audienceplan.controller.AudiencePlanInviteOnPublishScenarios
-com.imin.iminapi.audienceplan.controller.AudiencePlanInviteOnPublishWebTest
-com.imin.iminapi.audienceplan.controller.AudiencePlanListPostgresTest
-com.imin.iminapi.audienceplan.controller.AudiencePlanListScenarios
-com.imin.iminapi.audienceplan.controller.AudiencePlanListWebTest
 com.imin.iminapi.audienceplan.controller.DoorOptInControllerWebTest
 com.imin.iminapi.audienceplan.controller.PortraitControllerPostgresTest
 com.imin.iminapi.audienceplan.controller.PortraitControllerScenarios
 com.imin.iminapi.audienceplan.controller.PortraitControllerWebTest
 com.imin.iminapi.audienceplan.controller.SurveyControllerWebTest
-com.imin.iminapi.audienceplan.controller.TimingArmSchedulingTest
 com.imin.iminapi.audienceplan.service.CityOpenDataSeederTest
 com.imin.iminapi.audienceplan.service.DoorOptInServiceTest
 com.imin.iminapi.audienceplan.service.OutcomeH2Test
@@ -31,7 +18,6 @@ com.imin.iminapi.audienceplan.service.PlanPrunerTest
 com.imin.iminapi.audienceplan.service.PortraitResearchStoreH2Test
 com.imin.iminapi.audienceplan.service.PortraitResearchStorePostgresTest
 com.imin.iminapi.audienceplan.service.PortraitResearchStoreScenarios
-com.imin.iminapi.audienceplan.service.SummarizerFlowTest
 com.imin.iminapi.audienceplan.service.SurveyRetentionJobTest
 com.imin.iminapi.audienceplan.service.SurveyServiceTest
 com.imin.iminapi.config.AsyncConfigTest

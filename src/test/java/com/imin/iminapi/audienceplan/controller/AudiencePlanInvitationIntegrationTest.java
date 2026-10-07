@@ -4,11 +4,12 @@ import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
+import com.imin.iminapi.audience.service.ConsentOrigin;
+import com.imin.iminapi.audience.service.ConsentService;
+import com.imin.iminapi.audienceplan.PlanPopulation;
+import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
 import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
-import com.imin.iminapi.audienceplan.engine.CandidateBuilder;
-import com.imin.iminapi.audienceplan.engine.CandidateBuilder.Person;
-import com.imin.iminapi.audienceplan.service.CandidateLoader;
-import com.imin.iminapi.config.TestRateLimitConfig;
+import com.imin.iminapi.audienceplan.config.FanFeatureExecutors;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.marketing.send.RecipientMaterializer;
 import com.imin.iminapi.model.Event;
@@ -23,38 +24,41 @@ import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
-import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.support.AsyncDrain;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PgFaults;
+import com.imin.iminapi.support.PropertyFlips;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.MediaType;
-import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
+import javax.sql.DataSource;
+import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HashSet;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -62,14 +66,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.hamcrest.Matchers.nullValue;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyDouble;
-import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.doReturn;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -78,13 +75,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * {@code POST /api/v1/events/{eventId}/audience-plan/invitations} on H2 and Postgres 17. Candidate people are stubbed
- * with the checked warm fixture, but every person is a real membership so the assignment foreign keys hold.
+ * {@code POST /api/v1/events/{eventId}/audience-plan/invitations}. The org holds the checked warm fixture as real
+ * plan-mailable members, so the consent gate and the loader run for real.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
-abstract class AudiencePlanInvitationScenarios {
+@IminIntegrationTest
+class AudiencePlanInvitationIntegrationTest {
 
     private static final ZoneId PARIS = ZoneId.of("Europe/Paris");
     private static final String HOUSE = "house & techno";
@@ -105,8 +100,12 @@ abstract class AudiencePlanInvitationScenarios {
     @Autowired CampaignRepository campaignRepo;
     @Autowired RecipientMaterializer materializer;
     @Autowired AudiencePlanProperties props;
-    @MockitoSpyBean CandidateLoader loader;
-    @MockitoBean AuditLogger auditLogger;
+    @Autowired AudiencePlanLogic logic;
+    @Autowired ConsentService consentService;
+    @Autowired DataSource dataSource;
+    @Autowired Clock clock;
+    @Autowired PropertyFlips flips;
+    @Autowired @Qualifier(FanFeatureExecutors.LIVE) Executor fanFeatureExecutor;
 
     private final List<UUID> orgs = new ArrayList<>();
     private UUID orgA;
@@ -116,6 +115,7 @@ abstract class AudiencePlanInvitationScenarios {
     private List<UUID> loyal;
     private List<UUID> repeat;
     private List<UUID> firstTimers;
+    private boolean populated;
 
     @BeforeEach
     void setUp() {
@@ -130,8 +130,10 @@ abstract class AudiencePlanInvitationScenarios {
 
     @AfterEach
     void tearDown() {
-        props.setEnabled(true);
+        // A consent change recomputes features after commit; let it land before the members go.
+        AsyncDrain.drain(fanFeatureExecutor);
         for (UUID org : orgs) {
+            jdbc.update("delete from marketing_optouts where org_id = ?", org);
             jdbc.update("delete from campaign_recipients where campaign_id in (select id from campaigns where org_id = ?)", org);
             jdbc.update("delete from audience_assignments where experiment_id in (select id from audience_experiments where org_id = ?)", org);
             jdbc.update("delete from audience_experiments where org_id = ?", org);
@@ -237,6 +239,34 @@ abstract class AudiencePlanInvitationScenarios {
         assertThat(recipients).hasSize(240).doesNotContainAnyElementsOf(heldOut);
     }
 
+    /** Owns the end-to-end path: arm segment, real SendGate, real SendPathGuard; the individual skip reasons are owned by the SendGate and SendPathGuardMaterialize tests. */
+    @Test
+    void membersWhoWithdrawAfterTheInvitation_areSkipped_andNeverPending() throws Exception {
+        Event e = plannedEvent(28);
+        String body = invite(e, BOTH_SEGMENTS).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        UUID experiment = UUID.fromString(JsonPath.read(body, "$.invitations[1].arms[0].experimentId"));
+        UUID campaignId = UUID.fromString(JsonPath.read(body, "$.invitations[1].arms[0].campaignId"));
+        List<UUID> armMembers = jdbc.queryForList(
+                "select membership_id from audience_assignments where experiment_id = ?", UUID.class, experiment);
+        UUID leaver = armMembers.get(0);
+        UUID objector = armMembers.get(1);
+        consentService.unsubscribe(orgA, leaver, "one_click", ConsentOrigin.DATA_SUBJECT, null);
+        // The profiling objection alone: the send gate still admits this member, only the consent gate does not.
+        jdbc.update("update memberships set objected_profiling = true where membership_id = ?", objector);
+
+        materializer.materialize(campaignRepo.findById(campaignId).orElseThrow());
+
+        assertThat(jdbc.queryForMap("select status, skip_reason from campaign_recipients where campaign_id = ?"
+                + " and membership_id = ?", campaignId, leaver))
+                .containsEntry("status", "skipped").containsEntry("skip_reason", "marketing_unsubscribed");
+        assertThat(jdbc.queryForMap("select status, skip_reason from campaign_recipients where campaign_id = ?"
+                + " and membership_id = ?", campaignId, objector))
+                .containsEntry("status", "skipped").containsEntry("skip_reason", "consent_gate");
+        assertThat(jdbc.queryForList("select membership_id from campaign_recipients where campaign_id = ?"
+                + " and status = 'pending'", UUID.class, campaignId))
+                .containsExactlyInAnyOrderElementsOf(armMembers.subList(2, armMembers.size()));
+    }
+
     @Test
     void armSegments_areHiddenFromTheSegmentList_andCannotBeDeleted() throws Exception {
         Event e = plannedEvent(28);
@@ -318,50 +348,52 @@ abstract class AudiencePlanInvitationScenarios {
     @Test
     void twoCallsOnDifferentPlanGenerations_serialiseOnTheEventLock_andInviteOnce() throws Exception {
         Event e = plannedEvent(28);
-        CountDownLatch aInLoader = new CountDownLatch(1);
-        CountDownLatch releaseA = new CountDownLatch(1);
-        CountDownLatch bInLoader = new CountDownLatch(1);
-        List<Person> people = fixture();
-        doAnswer(inv -> {
-            String thread = Thread.currentThread().getName();
-            if (thread.equals("invite-a")) {
-                aInLoader.countDown();
-                assertThat(releaseA.await(20, TimeUnit.SECONDS)).isTrue();
-            } else if (thread.equals("invite-b")) {
-                bInLoader.countDown();
+        ExecutorService a = Executors.newSingleThreadExecutor();
+        ExecutorService b = Executors.newSingleThreadExecutor();
+        try (PgFaults.Pause pause = PgFaults.pauseWrites(dataSource, "audience_experiments", "event_id", e.getId())) {
+            try {
+                UUID oldPlan = currentPlan(e);
+                Future<String> first = a.submit(() -> invite(e, BOTH_SEGMENTS).andExpect(status().isOk())
+                        .andReturn().getResponse().getContentAsString());
+                // A holds the event lock on plan generation 1, paused at its first experiment write.
+                pause.awaitBlocked(Duration.ofSeconds(20));
+                mvc.perform(post(planUrl(e)).with(auth(owner)).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"targetPct\":90}")).andExpect(status().isOk());
+                assertThat(currentPlan(e)).isNotEqualTo(oldPlan);
+
+                Future<String> second = b.submit(() -> invite(e, BOTH_SEGMENTS).andExpect(status().isOk())
+                        .andReturn().getResponse().getContentAsString());
+                awaitEventLockWaiter(e);
+                assertThat(second.isDone()).as("B waits for A's event lock").isFalse();
+                pause.release();
+                String x = first.get(60, TimeUnit.SECONDS);
+                String y = second.get(60, TimeUnit.SECONDS);
+                assertSameIds(x, y);
+                assertThat((Object) JsonPath.read(y, "$.invitations[0].planId")).isEqualTo(oldPlan.toString());
+            } finally {
+                pause.release();
+                a.shutdownNow();
+                b.shutdownNow();
+                a.awaitTermination(30, TimeUnit.SECONDS);
+                b.awaitTermination(30, TimeUnit.SECONDS);
             }
-            Map<String, Integer> gate = new LinkedHashMap<>();
-            gate.put("legacy_unproven", 12);
-            return new CandidateBuilder.Input(e.getOrgId(), e.getGenreKey(), 255, 1.6, gate, people);
-        }).when(loader).input(eq(e.getOrgId()), any(), anyInt(), anyDouble());
-
-        ExecutorService a = Executors.newSingleThreadExecutor(r -> new Thread(r, "invite-a"));
-        ExecutorService b = Executors.newSingleThreadExecutor(r -> new Thread(r, "invite-b"));
-        try {
-            UUID oldPlan = currentPlan(e);
-            Future<String> first = a.submit(() -> invite(e, BOTH_SEGMENTS).andExpect(status().isOk())
-                    .andReturn().getResponse().getContentAsString());
-            assertThat(aInLoader.await(20, TimeUnit.SECONDS)).isTrue();
-            // A holds the event lock on plan generation 1; a recompute commits generation 2 meanwhile.
-            mvc.perform(post(planUrl(e)).with(auth(owner)).contentType(MediaType.APPLICATION_JSON)
-                    .content("{\"targetPct\":90}")).andExpect(status().isOk());
-            assertThat(currentPlan(e)).isNotEqualTo(oldPlan);
-
-            Future<String> second = b.submit(() -> invite(e, BOTH_SEGMENTS).andExpect(status().isOk())
-                    .andReturn().getResponse().getContentAsString());
-            assertThat(bInLoader.await(1500, TimeUnit.MILLISECONDS)).as("B waits for A's event lock").isFalse();
-            releaseA.countDown();
-            String x = first.get(60, TimeUnit.SECONDS);
-            String y = second.get(60, TimeUnit.SECONDS);
-            assertSameIds(x, y);
-            assertThat((Object) JsonPath.read(y, "$.invitations[0].planId")).isEqualTo(oldPlan.toString());
-        } finally {
-            releaseA.countDown();
-            a.shutdownNow();
-            b.shutdownNow();
         }
         assertThat(count("select count(*) from audience_experiments where event_id = ?", e.getId())).isEqualTo(5);
         assertThat(count("select count(*) from campaigns where org_id = ?", orgA)).isEqualTo(4);
+    }
+
+    /** Waits until a transaction is queued on the event's advisory lock (PlanService.lockFirstPlan). */
+    private void awaitEventLockWaiter(Event e) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+        while (System.nanoTime() < deadline) {
+            if (count("select count(*) from pg_locks where locktype = 'advisory' and objsubid = 1 and not granted"
+                    + " and ((classid::bigint << 32) | objid::bigint) = hashtextextended(cast(? as text), 0)",
+                    e.getId().toString()) > 0) {
+                return;
+            }
+            Thread.sleep(10);
+        }
+        throw new AssertionError("no call waited on the event lock of " + e.getId());
     }
 
     @Test
@@ -387,9 +419,7 @@ abstract class AudiencePlanInvitationScenarios {
         String first = invite(e, loyalBoth).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
         UUID oldPlan = currentPlan(e);
         // The loyal guests dropped out; the recomputed plan no longer shows loyal/same.
-        List<Person> now = new ArrayList<>(people("repeat", repeat));
-        now.addAll(people("first_timer", firstTimers));
-        stub(e, now);
+        dropOut(loyal);
         mvc.perform(post(planUrl(e)).with(auth(owner)).contentType(MediaType.APPLICATION_JSON)
                 .content("{\"targetPct\":90}")).andExpect(status().isOk());
         assertThat(currentPlan(e)).isNotEqualTo(oldPlan);
@@ -429,21 +459,14 @@ abstract class AudiencePlanInvitationScenarios {
                 .andExpect(jsonPath("$.error.fields['segments[0]']").exists());
     }
 
-    @Test
-    void aNullClassKey_is400() throws Exception {
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "{\"segments\":[{\"genreFit\":\"same\",\"arms\":[\"launch\"]}]}",
+            "{\"segments\":[{\"classKey\":\"loyal\",\"arms\":[\"launch\"]}]}",
+            "{\"segments\":[{\"classKey\":\"  \",\"genreFit\":\"same\",\"arms\":[\"launch\"]}]}"})
+    void aMissingOrBlankClassKeyOrFit_is400(String body) throws Exception {
         Event e = plannedEvent(28);
-        invite(e, "{\"segments\":[{\"genreFit\":\"same\",\"arms\":[\"launch\"]}]}").andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.fields['segments[0]']").exists());
-        invite(e, "{\"segments\":[{\"classKey\":\"loyal\",\"arms\":[\"launch\"]}]}").andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.fields['segments[0]']").exists());
-        assertNothingWritten(e);
-    }
-
-    @Test
-    void aBlankClassKey_is400() throws Exception {
-        Event e = plannedEvent(28);
-        invite(e, "{\"segments\":[{\"classKey\":\"  \",\"genreFit\":\"same\",\"arms\":[\"launch\"]}]}")
-                .andExpect(status().isBadRequest())
+        invite(e, body).andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.fields['segments[0]']").value("classKey and genreFit are required"));
         assertNothingWritten(e);
     }
@@ -646,7 +669,7 @@ abstract class AudiencePlanInvitationScenarios {
     @Test
     void killSwitchOff_is404_evenForAnInvalidBody_andWritesNothing() throws Exception {
         Event e = plannedEvent(28);
-        props.setEnabled(false);
+        flips.set(props, "enabled", false);
         invite(e, BOTH_SEGMENTS).andExpect(status().isNotFound());
         invite(e, "{\"segments\":[]}").andExpect(status().isNotFound());
         assertNothingWritten(e);
@@ -655,7 +678,7 @@ abstract class AudiencePlanInvitationScenarios {
     @Test
     void anEventWithoutAPlan_is404() throws Exception {
         Event e = event(orgA, 28, 200, 100);
-        stub(e, fixture());
+        populate();
         invite(e, BOTH_SEGMENTS).andExpect(status().isNotFound());
         assertNothingWritten(e);
     }
@@ -706,9 +729,8 @@ abstract class AudiencePlanInvitationScenarios {
     void aSegmentNobodyCanBeEmailedInNow_is409_andWritesNothing() throws Exception {
         Event e = plannedEvent(28);
         // Since the plan was stored, the first-timers dropped out (e.g. unsubscribed).
-        List<Person> now = new ArrayList<>();
-        now.addAll(people("loyal", loyal));
-        stub(e, now);
+        dropOut(repeat);
+        dropOut(firstTimers);
         invite(e, BOTH_SEGMENTS).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error.code").value("INVALID_STATE"));
         assertNothingWritten(e);
@@ -717,9 +739,8 @@ abstract class AudiencePlanInvitationScenarios {
     @Test
     void membersAreReadNow_notFromTheStoredPlan() throws Exception {
         Event e = plannedEvent(28);
-        List<Person> now = new ArrayList<>(people("loyal", loyal.subList(0, 30)));
-        now.addAll(people("first_timer", firstTimers));
-        stub(e, now);
+        dropOut(loyal.subList(30, 40));
+        dropOut(repeat);
         invite(e, seg("loyal", "same", "[\"launch\"]", null)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.invitations[0].members").value(30));
         assertThat(assigned(e)).containsExactlyInAnyOrderElementsOf(loyal.subList(0, 30));
@@ -750,8 +771,7 @@ abstract class AudiencePlanInvitationScenarios {
 
     @Test
     void anEventWithInvitations_canBeHardDeleted_andTakesItsExperimentsAlong() throws Exception {
-        // H2 checks NO ACTION row by row inside a cascade (plans go before experiments); Postgres at statement end.
-        assumeTrue(postgres(), "cascade through a NO ACTION FK only holds on Postgres");
+        // Postgres checks the NO ACTION plan FK at statement end, after the cascade removed the experiments.
         Event e = plannedEvent(28);
         invite(e, BOTH_SEGMENTS).andExpect(status().isOk());
 
@@ -765,8 +785,6 @@ abstract class AudiencePlanInvitationScenarios {
 
     @Test
     void anOrgWithInvitations_canStillBeDeleted() throws Exception {
-        // H2 checks events.created_by → users row by row inside the cascade, so any org with an event 400s there.
-        assumeTrue(postgres(), "org delete with events only runs on Postgres");
         Event e = plannedEvent(28);
         invite(e, BOTH_SEGMENTS).andExpect(status().isOk());
         assertThat(count("select count(*) from audience_experiments where org_id = ?", orgA)).isEqualTo(5);
@@ -835,10 +853,6 @@ abstract class AudiencePlanInvitationScenarios {
         return out;
     }
 
-    private boolean postgres() {
-        return "PostgreSQL".equals(jdbc.execute((ConnectionCallback<String>) c -> c.getMetaData().getDatabaseProductName()));
-    }
-
     private int count(String sql, Object... args) {
         return jdbc.queryForObject(sql, Integer.class, args);
     }
@@ -856,30 +870,24 @@ abstract class AudiencePlanInvitationScenarios {
     /** An event {@code days} out with the checked warm fixture and its stored plan. */
     private Event plannedEvent(int days) throws Exception {
         Event e = event(orgA, days, 200, 100);
-        stub(e, fixture());
+        populate();
         mvc.perform(get(planUrl(e)).with(auth(owner))).andExpect(status().isOk());
         return e;
     }
 
-    private List<Person> fixture() {
-        List<Person> all = new ArrayList<>();
-        all.addAll(people("loyal", loyal));
-        all.addAll(people("repeat", repeat));
-        all.addAll(people("first_timer", firstTimers));
-        return all;
+    /** The checked warm fixture: the setUp members become plan-mailable, plus 12 legacy-unproven members. */
+    private void populate() {
+        if (populated) return;
+        populated = true;
+        PlanPopulation.makeMailable(jdbc, logic, clock, orgA, loyal, "loyal", Map.of(HOUSE, 1.0));
+        PlanPopulation.makeMailable(jdbc, logic, clock, orgA, repeat, "repeat", Map.of(HOUSE, 1.0));
+        PlanPopulation.makeMailable(jdbc, logic, clock, orgA, firstTimers, "first_timer", Map.of(HOUSE, 1.0));
+        PlanPopulation.legacyUnproven(jdbc, clock, orgA, 12);
     }
 
-    private static List<Person> people(String classKey, List<UUID> ids) {
-        List<Person> out = new ArrayList<>();
-        for (UUID id : ids) out.add(new Person(id, classKey, Map.of(HOUSE, 1.0), 0, false, false, 0, 0));
-        return out;
-    }
-
-    private void stub(Event e, List<Person> people) {
-        Map<String, Integer> gate = new LinkedHashMap<>();
-        gate.put("legacy_unproven", 12);
-        doReturn(new CandidateBuilder.Input(e.getOrgId(), e.getGenreKey(), 255, 1.6, gate, people))
-                .when(loader).input(eq(e.getOrgId()), any(), anyInt(), anyDouble());
+    /** These members unsubscribed since the plan was stored, so the gate no longer lets them be emailed. */
+    private void dropOut(List<UUID> members) {
+        for (UUID m : members) jdbc.update("update memberships set consent_status = 'unsubscribed' where membership_id = ?", m);
     }
 
     private ResultActions invite(Event e, String body) throws Exception {
