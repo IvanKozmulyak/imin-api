@@ -13,11 +13,9 @@ import com.imin.iminapi.buyer.repository.BuyerPasswordResetTokenRepository;
 import com.imin.iminapi.buyer.repository.BuyerSessionRepository;
 import com.imin.iminapi.buyer.repository.BuyerVerificationAttemptRepository;
 import com.imin.iminapi.buyer.service.BuyerAccountSweeper;
-import com.imin.iminapi.config.TestRateLimitConfig;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -29,8 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * The §4.5 sweeper. Every buyer table grows a row per attempt — including
  * rate-limited ones — so this is a launch requirement, not housekeeping.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class BuyerAccountSweeperTest {
 
     @Autowired BuyerProperties props;

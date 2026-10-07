@@ -8,18 +8,16 @@ import com.imin.iminapi.buyer.repository.BuyerIdentityRepository;
 import com.imin.iminapi.buyer.service.BuyerOAuthService;
 import com.imin.iminapi.oauth.GoogleOAuthService;
 import com.imin.iminapi.oauth.OAuthStateService;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.oauth.OAuthUserInfo;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Instant;
@@ -29,21 +27,20 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.doAnswer;
 
 /**
  * {@link BuyerOAuthService}'s resolution matrix, exercised over an
  * already-verified {@link OAuthUserInfo} so no Google round-trip is involved.
  *
  * <p>The load-bearing assertion in this file is the one that looks like
- * bookkeeping: <b>a buyer Google sign-in creates zero rows in
- * {@code organizations} and {@code users}</b>. Reusing
+ * bookkeeping: <b>a buyer Google sign-in creates no {@code organizations} or
+ * {@code users} row for the address or subject</b>. Reusing
  * {@code OAuthAccountService} for buyers would silently turn every new buyer
  * into an organizer, and the sign-in would still appear to succeed — so nothing
- * except a row count catches it.
+ * except those rows catches it.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class BuyerGoogleSignInTest {
 
     @Autowired BuyerOAuthService google;
@@ -53,32 +50,35 @@ class BuyerGoogleSignInTest {
     @Autowired OrganizationRepository organizations;
     @Autowired UserRepository users;
     @Autowired OAuthStateService states;
-    @MockitoBean GoogleOAuthService googleTokens;
+    @Autowired GoogleOAuthService googleTokens;
+    @Autowired JdbcTemplate jdbc;
 
     private String address;
     private String subject;
-    private long organizationsBefore;
-    private long usersBefore;
 
     @BeforeEach
     void setUp() {
         address = "ada+" + UUID.randomUUID() + "@example.com";
         subject = "google-sub-" + UUID.randomUUID();
-        organizationsBefore = organizations.count();
-        usersBefore = users.count();
     }
 
     private OAuthUserInfo info(String email, boolean emailVerified) {
         return new OAuthUserInfo("google", subject, email, emailVerified, "Ada", "Lovelace", "Ada Lovelace");
     }
 
-    private void assertNoOrganizerRowsWereCreated() {
-        assertThat(organizations.count())
-                .as("a buyer signing in with Google must never provision an Organization")
-                .isEqualTo(organizationsBefore);
-        assertThat(users.count())
-                .as("a buyer signing in with Google must never become a User")
-                .isEqualTo(usersBefore);
+    /** OAuthAccountService provisions an org with this contact email, a user with it and an identity on the subject. */
+    private void assertNoOrganizerRowsWereCreated(String... emails) {
+        for (String email : emails) {
+            assertThat(jdbc.queryForObject("select count(*) from organizations where lower(contact_email) = ?",
+                    Integer.class, email.toLowerCase()))
+                    .as("a buyer signing in with Google must never provision an Organization")
+                    .isZero();
+            assertThat(users.existsByEmailLower(email.toLowerCase()))
+                    .as("a buyer signing in with Google must never become a User")
+                    .isFalse();
+        }
+        assertThat(jdbc.queryForObject("select count(*) from user_identities where provider_user_id = ?",
+                Integer.class, subject)).isZero();
     }
 
     /**
@@ -97,10 +97,10 @@ class BuyerGoogleSignInTest {
     @Test
     void the_google_token_exchange_never_runs_inside_a_transaction() {
         AtomicBoolean insideTransaction = new AtomicBoolean(true);
-        when(googleTokens.exchangeCode(anyString(), anyString())).thenAnswer(invocation -> {
+        doAnswer(invocation -> {
             insideTransaction.set(TransactionSynchronizationManager.isActualTransactionActive());
             return info(address, true);
-        });
+        }).when(googleTokens).exchangeCode(anyString(), anyString());
 
         String nonce = states.newBrowserNonce();
         String state = states.sign("google", OAuthStateService.AUDIENCE_BUYER, nonce);
@@ -112,7 +112,7 @@ class BuyerGoogleSignInTest {
                 .as("an outbound HTTP call must not be made while a database connection is pinned")
                 .isFalse();
         assertThat(signedIn.session().rawToken()).isNotBlank();
-        assertNoOrganizerRowsWereCreated();
+        assertNoOrganizerRowsWereCreated(address);
     }
 
     // ── (5) Create ─────────────────────────────────────────────────────────
@@ -137,7 +137,7 @@ class BuyerGoogleSignInTest {
                 .isEqualTo(account.getId());
 
         assertThat(signedIn.session().rawToken()).isNotBlank();
-        assertNoOrganizerRowsWereCreated();
+        assertNoOrganizerRowsWereCreated(address);
     }
 
     // ── (1) Known identity ─────────────────────────────────────────────────
@@ -145,17 +145,21 @@ class BuyerGoogleSignInTest {
     @Test
     void a_returning_google_buyer_is_matched_by_subject_and_creates_nothing_new() {
         var first = google.resolve(info(address, true), "JUnit/1.0");
-        long accountsAfterFirst = accounts.count();
 
         // Same subject, DIFFERENT email — the buyer changed the address on their
         // Google account. Matching by email would strand them with a new,
         // empty account and no tickets.
-        var second = google.resolve(
-                info("moved+" + UUID.randomUUID() + "@example.com", true), "JUnit/1.0");
+        String moved = "moved+" + UUID.randomUUID() + "@example.com";
+        var second = google.resolve(info(moved, true), "JUnit/1.0");
 
         assertThat(second.account().getId()).isEqualTo(first.account().getId());
-        assertThat(accounts.count()).isEqualTo(accountsAfterFirst);
-        assertNoOrganizerRowsWereCreated();
+        assertThat(identities.findByProviderAndProviderUserId("google", subject)).get()
+                .extracting(i -> i.getBuyerAccountId()).isEqualTo(first.account().getId());
+        assertThat(emails.findByVerifiedKey(moved).map(BuyerAccountEmail::getBuyerAccountId)
+                .filter(id -> !id.equals(first.account().getId())))
+                .as("no new account was created for the new address")
+                .isEmpty();
+        assertNoOrganizerRowsWereCreated(address, moved);
     }
 
     @Test
@@ -178,7 +182,7 @@ class BuyerGoogleSignInTest {
                 .isInstanceOf(ApiException.class)
                 .hasFieldOrPropertyWithValue("code", ErrorCode.OAUTH_EMAIL_REQUIRED);
 
-        assertNoOrganizerRowsWereCreated();
+        assertNoOrganizerRowsWereCreated(address);
     }
 
     @Test
@@ -186,15 +190,14 @@ class BuyerGoogleSignInTest {
         // §15 D-3. Without this gate the create branch mints a *verified*
         // buyer_account_emails row straight from the token, handing whoever can
         // get Google to name an address a pre-verified claim on it.
-        long accountsBefore = accounts.count();
-
         assertThatThrownBy(() -> google.resolve(info(address, false), "JUnit/1.0"))
                 .isInstanceOf(ApiException.class)
                 .hasFieldOrPropertyWithValue("code", ErrorCode.OAUTH_EMAIL_UNVERIFIED);
 
-        assertThat(accounts.count()).isEqualTo(accountsBefore);
+        assertThat(identities.findByProviderAndProviderUserId("google", subject))
+                .as("no account was created for this subject").isEmpty();
         assertThat(emails.findByVerifiedKey(address)).isEmpty();
-        assertNoOrganizerRowsWereCreated();
+        assertNoOrganizerRowsWereCreated(address);
     }
 
     @Test
@@ -216,14 +219,15 @@ class BuyerGoogleSignInTest {
     @Test
     void a_verified_google_address_links_to_the_existing_buyer_account() {
         BuyerAccount existing = seedVerifiedAccount(address);
-        long accountsBefore = accounts.count();
 
         var signedIn = google.resolve(info(address, true), "JUnit/1.0");
 
         assertThat(signedIn.account().getId()).isEqualTo(existing.getId());
-        assertThat(accounts.count()).as("linking must not fork a second account").isEqualTo(accountsBefore);
+        assertThat(emails.findByVerifiedKey(address)).get()
+                .extracting(BuyerAccountEmail::getBuyerAccountId)
+                .as("linking must not fork a second account").isEqualTo(existing.getId());
         assertThat(identities.findByBuyerAccountId(existing.getId())).hasSize(1);
-        assertNoOrganizerRowsWereCreated();
+        assertNoOrganizerRowsWereCreated(address);
     }
 
     @Test

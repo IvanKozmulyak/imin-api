@@ -1,18 +1,14 @@
 package com.imin.iminapi.buyer;
 
 import com.imin.iminapi.buyer.security.BuyerSessionCookie;
-import com.imin.iminapi.config.TestRateLimitConfig;
+import com.imin.iminapi.support.IminIntegrationTest;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MvcResult;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.reset;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
@@ -25,21 +21,16 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * without an Origin, a web sign-in is byte-identical to before, and a request
  * carrying a cookie still gets the full CSRF guard.
  *
- * <p>{@code mvc}, the mocked {@code EmailService} and the signup/verify/native-login
- * helpers live on {@link NativeBuyerTestBase} — re-declaring the mock here would
- * break context startup, see that class.
+ * <p>{@code mvc}, the recording mailer and the signup/verify/native-login
+ * helpers live on {@link NativeBuyerTestBase}.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class BuyerNativeSessionTest extends NativeBuyerTestBase {
 
     private String address;
 
     @BeforeEach
     void anAddressPerTest() {
-        BuyerMailSync.drain(mailExecutor);
-        reset(email);
         address = newAddress();
     }
 

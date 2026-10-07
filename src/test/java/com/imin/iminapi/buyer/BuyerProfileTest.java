@@ -4,33 +4,28 @@ import com.imin.iminapi.buyer.repository.BuyerAccountRepository;
 import com.imin.iminapi.buyer.repository.BuyerIdentityRepository;
 import com.imin.iminapi.buyer.security.BuyerSessionCookie;
 import com.imin.iminapi.buyer.service.BuyerOAuthService;
-import com.imin.iminapi.config.TestRateLimitConfig;
-import com.imin.iminapi.email.EmailService;
+import com.imin.iminapi.email.RecordingEmailService;
 import com.imin.iminapi.oauth.OAuthUserInfo;
+import com.imin.iminapi.support.IminIntegrationTest;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.ResultActions;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
-import java.util.List;
 import java.util.UUID;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.atLeast;
-import static org.mockito.Mockito.reset;
-import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
@@ -48,15 +43,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * <p>Every state-changing call carries {@code Origin} —
  * {@code BuyerRequestGuardFilter} 403s without it before any controller runs.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class BuyerProfileTest {
 
     private static final String ORIGIN = "http://localhost:3000";
     private static final String PASSWORD = "correct-horse-battery";
     private static final String NEW_PASSWORD = "tr0ubador-and-more";
-    private static final Pattern SIX_DIGITS = Pattern.compile("\\b(\\d{6})\\b");
 
     @Autowired MockMvc mvc;
     @Autowired BuyerOAuthService google;
@@ -64,7 +56,7 @@ class BuyerProfileTest {
     @Autowired BuyerIdentityRepository identities;
     @Autowired com.imin.iminapi.buyer.repository.BuyerNotificationPreferenceRepository preferences;
     @Autowired com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository emailRows;
-    @MockitoBean EmailService email;
+    @Autowired RecordingEmailService mail;
 
     /** Buyer account mail is sent AFTER_COMMIT on this pool — see {@link BuyerMailSync}. */
     @Autowired @org.springframework.beans.factory.annotation.Qualifier("ticketEmailExecutor")
@@ -72,29 +64,18 @@ class BuyerProfileTest {
 
     private String address;
     private String cookie;
-    /** This test's own account. The suite shares one H2 instance, so every
-     *  assertion below is scoped to it rather than to findAll().findFirst(). */
+    /** This test's own account. The database is shared, so every assertion below is scoped to it. */
     private UUID accountId;
 
     @BeforeEach
     void signedInBuyer() throws Exception {
-        BuyerMailSync.drain(mailExecutor);
-        reset(email);
         address = address();
         cookie = signUpAndSignIn(address);
         accountId = accountIdOf(address);
-        BuyerMailSync.drain(mailExecutor);
-        reset(email);
     }
 
     private UUID accountIdOf(String to) {
-        String normalized = to.trim().toLowerCase();
-        return accounts.findAll().stream()
-                .filter(a -> emailRows.findByBuyerAccountIdOrderByCreatedAtAsc(a.getId()).stream()
-                        .anyMatch(r -> normalized.equals(r.getEmailNormalized())))
-                .findFirst()
-                .orElseThrow()
-                .getId();
+        return emailRows.findByVerifiedKey(to.trim().toLowerCase()).orElseThrow().getBuyerAccountId();
     }
 
     // ── PATCH /buyer/me ────────────────────────────────────────────────────
@@ -112,12 +93,6 @@ class BuyerProfileTest {
                 .andExpect(jsonPath("$.city").doesNotExist());             // cleared
     }
 
-    @Test
-    void aBlankNameIsStoredAsNullNotAsWhitespace() throws Exception {
-        patchMe("{\"displayName\":\"   \"}")
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.displayName").doesNotExist());
-    }
 
     @Test
     void anUnknownLocaleIsRejected() throws Exception {
@@ -126,51 +101,47 @@ class BuyerProfileTest {
                 .andExpect(jsonPath("$.error.code").value("INVALID_REQUEST"));
     }
 
-    @Test
-    void firstAndLastNameKeepDisplayNameInStep() throws Exception {
-        patchMe("{\"firstName\":\"Sofiya\",\"lastName\":\"K.\"}")
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.firstName").value("Sofiya"))
-                .andExpect(jsonPath("$.lastName").value("K."))
+    static Stream<Arguments> nameRules() {
+        String halves = "{\"firstName\":\"Sofiya\",\"lastName\":\"K.\"}";
+        return Stream.of(
+                Arguments.of("a blank name is stored as null, not whitespace",
+                        null, "{\"displayName\":\"   \"}", null, null, null),
                 // display_name stays authoritative for display and follows the halves.
-                .andExpect(jsonPath("$.displayName").value("Sofiya K."));
+                Arguments.of("first and last name keep the display name in step",
+                        null, halves, "Sofiya", "K.", "Sofiya K."),
+                Arguments.of("an explicit display name wins over the derived one",
+                        null, "{\"firstName\":\"Sofiya\",\"lastName\":\"K.\",\"displayName\":\"Sof\"}",
+                        "Sofiya", "K.", "Sof"),
+                Arguments.of("clearing both halves clears the display name",
+                        halves, "{\"firstName\":null,\"lastName\":null}", null, null, null));
     }
 
-    @Test
-    void anExplicitDisplayNameWinsOverTheDerivedOne() throws Exception {
-        patchMe("{\"firstName\":\"Sofiya\",\"lastName\":\"K.\",\"displayName\":\"Sof\"}")
+    /** A null expectation means the key is absent from the response. */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("nameRules")
+    void nameRules(String rule, String before, String body, String first, String last, String display)
+            throws Exception {
+        if (before != null) patchMe(before).andExpect(status().isOk());
+        patchMe(body)
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.displayName").value("Sof"));
+                .andExpect(first == null ? jsonPath("$.firstName").doesNotExist() : jsonPath("$.firstName").value(first))
+                .andExpect(last == null ? jsonPath("$.lastName").doesNotExist() : jsonPath("$.lastName").value(last))
+                .andExpect(display == null
+                        ? jsonPath("$.displayName").doesNotExist() : jsonPath("$.displayName").value(display));
     }
 
-    @Test
-    void clearingBothHalvesClearsTheDisplayName() throws Exception {
-        patchMe("{\"firstName\":\"Sofiya\",\"lastName\":\"K.\"}").andExpect(status().isOk());
-        patchMe("{\"firstName\":null,\"lastName\":null}")
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.displayName").doesNotExist());
-    }
-
-    @Test
-    void aDateOfBirthRoundTrips() throws Exception {
-        patchMe("{\"dateOfBirth\":\"1994-03-17\"}")
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.dateOfBirth").value("1994-03-17"));
-    }
-
-    @Test
-    void animplausibleDateOfBirthIsRejected() throws Exception {
-        patchMe("{\"dateOfBirth\":\"2099-01-01\"}")
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code").value("INVALID_REQUEST"));
-        patchMe("{\"dateOfBirth\":\"not-a-date\"}")
-                .andExpect(status().isBadRequest());
-    }
-
-    /** No age gate exists, so the optional field must not become one. */
-    @Test
-    void aRecentButValidDateOfBirthIsAccepted() throws Exception {
-        patchMe("{\"dateOfBirth\":\"2015-06-01\"}").andExpect(status().isOk());
+    /** 2015 is accepted because no age gate exists, so the optional field must not become one. */
+    @ParameterizedTest(name = "{0} -> {1}")
+    @CsvSource(nullValues = "null", value = {
+            "1994-03-17, 200, null",
+            "2015-06-01, 200, null",
+            "2099-01-01, 400, INVALID_REQUEST",
+            "not-a-date, 400, null"})
+    void dateOfBirth(String dob, int expectedStatus, String errorCode) throws Exception {
+        ResultActions result = patchMe("{\"dateOfBirth\":\"" + dob + "\"}")
+                .andExpect(status().is(expectedStatus));
+        if (expectedStatus == 200) result.andExpect(jsonPath("$.dateOfBirth").value(dob));
+        if (errorCode != null) result.andExpect(jsonPath("$.error.code").value(errorCode));
     }
 
     @Test
@@ -234,18 +205,17 @@ class BuyerProfileTest {
         assertThat(account.getTermsProof()).isNotBlank();
     }
 
-    /** Not a toggle the client may send false for — the screen cannot continue without it. */
-    @Test
-    void onboardingWithoutAcceptingTheTermsIsRefused() throws Exception {
-        onboard("{\"firstName\":\"Ada\",\"acceptedTerms\":false}")
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code").value("INVALID_REQUEST"));
-    }
-
-    /** An absent answer is not a false one; it is a client that skipped the gate. */
-    @Test
-    void onboardingWithNoTermsFieldAtAllIsRefused() throws Exception {
-        onboard("{\"firstName\":\"Ada\"}").andExpect(status().isBadRequest());
+    /**
+     * False is not a toggle the client may send — the screen cannot continue without it — and an
+     * absent answer is not a false one; it is a client that skipped the gate.
+     */
+    @ParameterizedTest(name = "{0}")
+    @CsvSource(delimiter = '|', nullValues = "null", value = {
+            "{\"firstName\":\"Ada\",\"acceptedTerms\":false} | INVALID_REQUEST",
+            "{\"firstName\":\"Ada\"}                         | null"})
+    void onboardingWithoutAcceptingTheTermsIsRefused(String body, String errorCode) throws Exception {
+        ResultActions result = onboard(body).andExpect(status().isBadRequest());
+        if (errorCode != null) result.andExpect(jsonPath("$.error.code").value(errorCode));
     }
 
     @Test
@@ -298,15 +268,6 @@ class BuyerProfileTest {
         // Neither "v1" nor "v2" — the version has never come from the client.
         assertThat(again.getTermsVersion())
                 .isEqualTo(com.imin.iminapi.buyer.BuyerTerms.CURRENT_VERSION);
-    }
-
-    @Test
-    void onboardingNeedsABuyerSession() throws Exception {
-        mvc.perform(post("/api/v1/buyer/me/onboarding")
-                        .header(HttpHeaders.ORIGIN, ORIGIN)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"acceptedTerms\":true}"))
-                .andExpect(status().isUnauthorized());
     }
 
     /**
@@ -456,14 +417,23 @@ class BuyerProfileTest {
                 .andExpect(jsonPath("$[0].providerUserId").doesNotExist());
     }
 
-    @Test
-    void theProfileEndpointsNeedABuyerSession() throws Exception {
-        mvc.perform(get("/api/v1/buyer/identities")).andExpect(status().isUnauthorized());
-        mvc.perform(patch("/api/v1/buyer/me")
+    static Stream<Arguments> sessionlessCalls() {
+        return Stream.of(
+                Arguments.of("POST /buyer/me/onboarding", post("/api/v1/buyer/me/onboarding")
                         .header(HttpHeaders.ORIGIN, ORIGIN)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"city\":\"Metz\"}"))
-                .andExpect(status().isUnauthorized());
+                        .content("{\"acceptedTerms\":true}")),
+                Arguments.of("GET /buyer/identities", get("/api/v1/buyer/identities")),
+                Arguments.of("PATCH /buyer/me", patch("/api/v1/buyer/me")
+                        .header(HttpHeaders.ORIGIN, ORIGIN)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"city\":\"Metz\"}")));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("sessionlessCalls")
+    void theProfileEndpointsNeedABuyerSession(String call, MockHttpServletRequestBuilder request) throws Exception {
+        mvc.perform(request).andExpect(status().isUnauthorized());
     }
 
     // ── plumbing ───────────────────────────────────────────────────────────
@@ -542,21 +512,6 @@ class BuyerProfileTest {
     }
 
     private String codeSentTo(String to) {
-        BuyerMailSync.drain(mailExecutor);
-        ArgumentCaptor<String> recipient = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> text = ArgumentCaptor.forClass(String.class);
-        verify(email, atLeast(1)).send(recipient.capture(), subject.capture(), html.capture(), text.capture());
-
-        List<String> to_ = recipient.getAllValues();
-        List<String> bodies = text.getAllValues();
-        for (int i = to_.size() - 1; i >= 0; i--) {
-            if (to.equalsIgnoreCase(to_.get(i))) {
-                Matcher m = SIX_DIGITS.matcher(bodies.get(i));
-                if (m.find()) return m.group(1);
-            }
-        }
-        throw new AssertionError("no six-digit code mailed to " + to);
+        return BuyerMailSync.codeTo(mail, mailExecutor, to);
     }
 }

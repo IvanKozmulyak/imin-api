@@ -7,19 +7,16 @@ import com.imin.iminapi.buyer.repository.BuyerAccountRepository;
 import com.imin.iminapi.buyer.repository.BuyerEmailVerificationCodeRepository;
 import com.imin.iminapi.buyer.repository.BuyerSessionRepository;
 import com.imin.iminapi.buyer.security.BuyerSessionCookie;
-import com.imin.iminapi.config.TestRateLimitConfig;
-import com.imin.iminapi.email.EmailService;
+import com.imin.iminapi.email.RecordingEmailService;
+import com.imin.iminapi.email.RecordingEmailService.SentEmail;
+import com.imin.iminapi.support.IminIntegrationTest;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
@@ -32,12 +29,6 @@ import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.atLeast;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.reset;
-import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
@@ -54,12 +45,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * buyer receives — a service-level test that reached into the repository would
  * pass with a broken template.
  *
- * <p>{@link EmailService} is mocked because the test profile carries a dummy
- * Resend key and a real send would attempt network.
+ * <p>Mail is read back out of the shared {@link RecordingEmailService}, filtered
+ * by this test's own address, because an async send from another test can land late.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class BuyerCredentialFlowTest {
 
     private static final String ORIGIN = "http://localhost:3000";
@@ -74,21 +63,22 @@ class BuyerCredentialFlowTest {
     @Autowired BuyerAccountEmailRepository emails;
     @Autowired BuyerSessionRepository sessions;
     @Autowired BuyerEmailVerificationCodeRepository codes;
-    @MockitoBean EmailService email;
+    @Autowired RecordingEmailService mail;
+    @Autowired JdbcTemplate jdbc;
 
     /** Buyer account mail is sent AFTER_COMMIT on this pool — see {@link BuyerMailSync}. */
     @Autowired @org.springframework.beans.factory.annotation.Qualifier("ticketEmailExecutor")
     java.util.concurrent.Executor mailExecutor;
 
     private String address;
+    /** Recorder index before which mail is ignored; {@link #forgetMail()} moves it forward. */
+    private int mailMark;
 
     @BeforeEach
     void freshAddress() {
         // uq_bae_verified_email is a real platform-wide UNIQUE and these tests
         // share one database, so every test needs its own address.
         address = "ada+" + UUID.randomUUID() + "@example.com";
-        BuyerMailSync.drain(mailExecutor);
-        reset(email);
     }
 
     // ── Signup branches on VERIFIED, never on EXISTS (§15 C-2) ─────────────
@@ -112,8 +102,7 @@ class BuyerCredentialFlowTest {
         // "exists" here would mail them "sign in or reset your password" for an
         // account that is not theirs, with no diagnosable error.
         signup(address).andExpect(status().isNoContent());
-        BuyerMailSync.drain(mailExecutor);
-        reset(email);
+        forgetMail();
 
         signup(address).andExpect(status().isNoContent());
 
@@ -126,14 +115,13 @@ class BuyerCredentialFlowTest {
     @Test
     void signup_to_a_verified_address_creates_nothing_and_sends_the_neutral_notice() throws Exception {
         signupAndVerify(address);
-        long accountsBefore = accounts.count();
-        BuyerMailSync.drain(mailExecutor);
-        reset(email);
+        UUID owner = onlyRowFor(address).getBuyerAccountId();
+        forgetMail();
 
         signup(address).andExpect(status().isNoContent());
 
-        assertThat(accounts.count()).isEqualTo(accountsBefore);
-        assertThat(rowsFor(address)).hasSize(1);
+        assertThat(rowsFor(address)).as("no second account holds this address")
+                .extracting(BuyerAccountEmail::getBuyerAccountId).containsExactly(owner);
         assertThat(subjectSentTo(address))
                 .as("the notice, not a code")
                 .isEqualTo("You already have an imin account");
@@ -156,11 +144,12 @@ class BuyerCredentialFlowTest {
 
     @Test
     void signup_still_answers_204_when_the_mail_provider_is_down() throws Exception {
-        doThrow(new RuntimeException("resend is down"))
-                .when(email).send(anyString(), anyString(), anyString(), anyString());
+        BuyerMailSync.drain(mailExecutor);   // no earlier async send may take the failure
+        mail.failNextSendWith(new RuntimeException("resend is down"));
 
         signup(address).andExpect(status().isNoContent());
 
+        assertThat(mailTo(address)).as("the injected failure hit this signup's send").isEmpty();
         assertThat(rowsFor(address))
                 .as("a send failure must not roll the signup back, or a Resend outage becomes an oracle")
                 .hasSize(1);
@@ -193,8 +182,7 @@ class BuyerCredentialFlowTest {
     void verifying_an_address_deletes_every_unverified_claim_on_it_elsewhere() throws Exception {
         // §2.3 rule 3: whoever proves control wins. The squatter's row goes.
         signup(address).andExpect(status().isNoContent());   // squatter
-        BuyerMailSync.drain(mailExecutor);
-        reset(email);
+        forgetMail();
         signup(address).andExpect(status().isNoContent());   // real owner
         String code = codeSentTo(address);
         assertThat(rowsFor(address)).hasSize(2);
@@ -218,8 +206,7 @@ class BuyerCredentialFlowTest {
         signup(address).andExpect(status().isNoContent());   // real owner
         UUID owner = onlyRowFor(address).getBuyerAccountId();
         String ownerCode = codeSentTo(address);
-        BuyerMailSync.drain(mailExecutor);
-        reset(email);
+        forgetMail();
 
         signup(address).andExpect(status().isNoContent());   // squatter, afterwards
         UUID squatter = rowsFor(address).stream()
@@ -255,12 +242,10 @@ class BuyerCredentialFlowTest {
         String ownerCode = codeSentTo(address);
 
         signup(address).andExpect(status().isNoContent());   // squatter
-        BuyerMailSync.drain(mailExecutor);
-        reset(email);
+        forgetMail();
 
         resendVerification(address).andExpect(status().isNoContent());
-        BuyerMailSync.drain(mailExecutor);
-        verify(email, never()).send(anyString(), anyString(), anyString(), anyString());
+        assertThat(mailTo(address)).isEmpty();
 
         verifyEmail(address, ownerCode).andExpect(status().isOk());
         assertThat(onlyRowFor(address).getBuyerAccountId()).isEqualTo(owner);
@@ -346,8 +331,7 @@ class BuyerCredentialFlowTest {
     void resend_mails_a_fresh_code_and_retires_the_previous_one() throws Exception {
         signup(address).andExpect(status().isNoContent());
         String first = codeSentTo(address);
-        BuyerMailSync.drain(mailExecutor);
-        reset(email);
+        forgetMail();
 
         resendVerification(address).andExpect(status().isNoContent());
         String second = codeSentTo(address);
@@ -362,20 +346,17 @@ class BuyerCredentialFlowTest {
     @Test
     void resend_is_204_and_silent_for_an_address_nobody_claimed() throws Exception {
         resendVerification(address).andExpect(status().isNoContent());
-        BuyerMailSync.drain(mailExecutor);
-        verify(email, never()).send(anyString(), anyString(), anyString(), anyString());
+        assertThat(mailTo(address)).isEmpty();
     }
 
     @Test
     void resend_is_204_and_silent_for_an_already_verified_address() throws Exception {
         signupAndVerify(address);
-        BuyerMailSync.drain(mailExecutor);
-        reset(email);
+        forgetMail();
 
         resendVerification(address).andExpect(status().isNoContent());
 
-        BuyerMailSync.drain(mailExecutor);
-        verify(email, never()).send(anyString(), anyString(), anyString(), anyString());
+        assertThat(mailTo(address)).isEmpty();
     }
 
     /**
@@ -460,8 +441,7 @@ class BuyerCredentialFlowTest {
     @Test
     void forgot_password_is_204_and_silent_for_an_unknown_address() throws Exception {
         forgotPassword(address).andExpect(status().isNoContent());
-        BuyerMailSync.drain(mailExecutor);
-        verify(email, never()).send(anyString(), anyString(), anyString(), anyString());
+        assertThat(mailTo(address)).isEmpty();
     }
 
     @Test
@@ -469,13 +449,11 @@ class BuyerCredentialFlowTest {
         // An unverified row grants nothing (§2.3 rule 4) — including the ability
         // to be sent a reset link for somebody else's future account.
         signup(address).andExpect(status().isNoContent());
-        BuyerMailSync.drain(mailExecutor);
-        reset(email);
+        forgetMail();
 
         forgotPassword(address).andExpect(status().isNoContent());
 
-        BuyerMailSync.drain(mailExecutor);
-        verify(email, never()).send(anyString(), anyString(), anyString(), anyString());
+        assertThat(mailTo(address)).isEmpty();
     }
 
     @Test
@@ -484,8 +462,7 @@ class BuyerCredentialFlowTest {
         MvcResult signedIn = login(address, PASSWORD).andExpect(status().isOk()).andReturn();
         String liveCookie = sessionCookieValue(signedIn);
         UUID accountId = onlyRowFor(address).getBuyerAccountId();
-        BuyerMailSync.drain(mailExecutor);
-        reset(email);
+        forgetMail();
 
         forgotPassword(address).andExpect(status().isNoContent());
         String token = resetTokenSentTo(address);
@@ -506,8 +483,7 @@ class BuyerCredentialFlowTest {
     @Test
     void a_reset_token_is_single_use() throws Exception {
         signupAndVerify(address);
-        BuyerMailSync.drain(mailExecutor);
-        reset(email);
+        forgetMail();
         forgotPassword(address).andExpect(status().isNoContent());
         String token = resetTokenSentTo(address);
 
@@ -530,13 +506,11 @@ class BuyerCredentialFlowTest {
     @Test
     void asking_for_a_new_reset_link_retires_the_previous_one() throws Exception {
         signupAndVerify(address);
-        BuyerMailSync.drain(mailExecutor);
-        reset(email);
+        forgetMail();
 
         forgotPassword(address).andExpect(status().isNoContent());
         String first = resetTokenSentTo(address);
-        BuyerMailSync.drain(mailExecutor);
-        reset(email);
+        forgetMail();
         forgotPassword(address).andExpect(status().isNoContent());
         String second = resetTokenSentTo(address);
         assertThat(second).isNotBlank().isNotEqualTo(first);
@@ -654,11 +628,9 @@ class BuyerCredentialFlowTest {
     }
 
     private List<BuyerAccountEmail> rowsFor(String to) {
-        String normalized = to.trim().toLowerCase();
-        return accounts.findAll().stream()
-                .flatMap(a -> emails.findByBuyerAccountIdOrderByCreatedAtAsc(a.getId()).stream())
-                .filter(r -> normalized.equals(r.getEmailNormalized()))
-                .toList();
+        return jdbc.queryForList("select id from buyer_account_emails where email_normalized = ? order by created_at",
+                        UUID.class, to.trim().toLowerCase())
+                .stream().map(id -> emails.findById(id).orElseThrow()).toList();
     }
 
     private BuyerAccountEmail onlyRowFor(String to) {
@@ -683,36 +655,26 @@ class BuyerCredentialFlowTest {
     }
 
     private String subjectSentTo(String to) {
-        Sends sends = capture();
-        for (int i = sends.to().size() - 1; i >= 0; i--) {
-            if (to.equalsIgnoreCase(sends.to().get(i))) return sends.subject().get(i);
-        }
-        return null;
+        List<SentEmail> sent = mailTo(to);
+        return sent.isEmpty() ? null : sent.get(sent.size() - 1).subject();
     }
 
     /** The plain-text body of the most recent message to this address. */
     private Optional<String> bodySentTo(String to) {
-        Sends sends = capture();
-        for (int i = sends.to().size() - 1; i >= 0; i--) {
-            if (to.equalsIgnoreCase(sends.to().get(i))) return Optional.of(sends.text().get(i));
-        }
-        return Optional.empty();
+        List<SentEmail> sent = mailTo(to);
+        return sent.isEmpty() ? Optional.empty() : Optional.of(sent.get(sent.size() - 1).text());
     }
 
-    private record Sends(List<String> to, List<String> subject, List<String> text) {}
-
-    private Sends capture() {
+    /** Mail to this address sent after the last {@link #forgetMail()}, oldest first. */
+    private List<SentEmail> mailTo(String to) {
         BuyerMailSync.drain(mailExecutor);
-        ArgumentCaptor<String> to = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> text = ArgumentCaptor.forClass(String.class);
-        try {
-            verify(email, atLeast(0)).send(to.capture(), subject.capture(), html.capture(), text.capture());
-        } catch (AssertionError e) {
-            return new Sends(List.of(), List.of(), List.of());
-        }
-        return new Sends(to.getAllValues(), subject.getAllValues(), text.getAllValues());
+        return mail.sent().stream().skip(mailMark).filter(m -> to.equalsIgnoreCase(m.to())).toList();
+    }
+
+    /** Ignore everything mailed so far, so the next read sees only what follows. */
+    private void forgetMail() {
+        BuyerMailSync.drain(mailExecutor);
+        mailMark = mail.sent().size();
     }
 
     private static String sessionCookieValue(MvcResult result) {

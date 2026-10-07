@@ -1,30 +1,24 @@
 package com.imin.iminapi.buyer;
 
 import com.imin.iminapi.buyer.email.BuyerMailEvents;
-import com.imin.iminapi.config.TestRateLimitConfig;
-import com.imin.iminapi.email.EmailService;
+import com.imin.iminapi.email.RecordingEmailService;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
-import java.util.concurrent.CountDownLatch;
+import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.Executor;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
 
 /**
  * The two properties that make the buyer account mail safe to send at all.
@@ -35,59 +29,82 @@ import static org.mockito.Mockito.verify;
  * unauthenticated endpoints in the API — and made before the work it describes
  * was committed.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class BuyerMailListenerTest {
 
     @Autowired ApplicationEventPublisher publisher;
     @Autowired PlatformTransactionManager txManager;
     @Autowired @Qualifier("ticketEmailExecutor") Executor mailExecutor;
-
-    @MockitoBean EmailService email;
+    @Autowired RecordingEmailService mail;
 
     /** A slow Resend must not be able to hold a database connection open. */
     @Test
-    void the_send_happens_with_no_transaction_in_scope() throws InterruptedException {
-        AtomicReference<Boolean> txActive = new AtomicReference<>(null);
-        AtomicBoolean sameThread = new AtomicBoolean(true);
-        Thread caller = Thread.currentThread();
-        CountDownLatch answered = new CountDownLatch(1);
-        doAnswer(invocation -> {
-            txActive.set(TransactionSynchronizationManager.isActualTransactionActive());
-            sameThread.set(Thread.currentThread() == caller);
-            // Counted down last: Mockito records the call before this body runs, so verify alone can read too early.
-            answered.countDown();
-            return null;
-        }).when(email).send(anyString(), anyString(), anyString(), anyString());
+    void the_send_happens_with_no_transaction_in_scope() {
+        String to = "ada-" + UUID.randomUUID() + "@example.test";
 
         new TransactionTemplate(txManager).executeWithoutResult(status ->
-                publisher.publishEvent(new BuyerMailEvents.AccountExistsNotice(
-                        "ada@example.com", "en")));
+                publisher.publishEvent(new BuyerMailEvents.AccountExistsNotice(to, "en")));
 
-        assertThat(answered.await(10, TimeUnit.SECONDS)).as("the mail was sent").isTrue();
-        verify(email).send(anyString(), anyString(), anyString(), anyString());
-        assertThat(txActive.get())
+        BuyerMailSync.drain(mailExecutor);
+        int index = indexOfOnlyMailTo(to);
+        assertThat(mail.sentInTransaction(index))
                 .as("the listener must run after the commit, outside the transaction")
                 .isFalse();
-        assertThat(sameThread.get())
+        assertThat(mail.sentOnThread(index))
                 .as("and off the request thread, so a slow send costs a mail thread")
-                .isFalse();
+                .isNotSameAs(Thread.currentThread());
     }
 
     /** Mail about work that was rolled back describes something that never happened. */
     @Test
     void a_rolled_back_transaction_mails_nothing() {
+        String to = "ada-" + UUID.randomUUID() + "@example.test";
         try {
             new TransactionTemplate(txManager).executeWithoutResult(status -> {
-                publisher.publishEvent(new BuyerMailEvents.VerificationCode(
-                        "ada@example.com", "en", "123456", 15));
+                publisher.publishEvent(new BuyerMailEvents.VerificationCode(to, "en", "123456", 15));
                 throw new IllegalStateException("signup blew up after the code was issued");
             });
         } catch (IllegalStateException expected) {
             // the point of the test
         }
 
-        BuyerMailSync.drain(mailExecutor);
-        verify(email, never()).send(anyString(), anyString(), anyString(), anyString());
+        assertThat(BuyerMailSync.sentTo(mail, mailExecutor, to)).isEmpty();
+    }
+
+    /**
+     * A transaction that fails at commit, after the code was issued, mails nothing either:
+     * the send waits for AFTER_COMMIT, not for the commit to start.
+     */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"verification code", "account-exists notice"})
+    void a_transaction_that_fails_while_committing_mails_nothing(String mailKind) {
+        String to = "ada-" + UUID.randomUUID() + "@example.test";
+        Object event = mailKind.equals("verification code")
+                ? new BuyerMailEvents.VerificationCode(to, "en", "123456", 15)
+                : new BuyerMailEvents.AccountExistsNotice(to, "en");
+        try {
+            new TransactionTemplate(txManager).executeWithoutResult(status -> {
+                publisher.publishEvent(event);
+                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                    @Override
+                    public void beforeCommit(boolean readOnly) {
+                        throw new IllegalStateException("commit blew up after the code was issued");
+                    }
+                });
+            });
+        } catch (IllegalStateException expected) {
+            // the point of the test
+        }
+
+        assertThat(BuyerMailSync.sentTo(mail, mailExecutor, to)).isEmpty();
+    }
+
+    /** Position of the one mail to {@code to} in the recorder, for its per-send facts. */
+    private int indexOfOnlyMailTo(String to) {
+        List<RecordingEmailService.SentEmail> sent = mail.sent();
+        List<Integer> hits = java.util.stream.IntStream.range(0, sent.size())
+                .filter(i -> to.equalsIgnoreCase(sent.get(i).to())).boxed().toList();
+        assertThat(hits).as("the mail was sent").hasSize(1);
+        return hits.get(0);
     }
 }

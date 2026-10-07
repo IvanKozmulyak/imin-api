@@ -1,24 +1,19 @@
 package com.imin.iminapi.buyer;
 
 import com.imin.iminapi.buyer.security.BuyerSessionCookie;
-import com.imin.iminapi.config.TestRateLimitConfig;
-import com.imin.iminapi.email.EmailService;
+import com.imin.iminapi.email.RecordingEmailService;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.IminIntegrationTest;
 import com.imin.iminapi.support.OrderFixtures;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.ResultActions;
@@ -26,12 +21,7 @@ import org.springframework.test.web.servlet.ResultActions;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
-import static org.mockito.Mockito.atLeast;
-import static org.mockito.Mockito.reset;
-import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -54,20 +44,17 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * with a 403 before any controller runs — a test that omits it fails
  * identically whether the endpoint is correct or missing.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class BuyerSavedEventsTest {
 
     private static final String ORIGIN = "http://localhost:3000";
     private static final String PASSWORD = "correct-horse-battery";
-    private static final Pattern SIX_DIGITS = Pattern.compile("\\b(\\d{6})\\b");
 
     @Autowired MockMvc mvc;
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
     @Autowired UserRepository users;
-    @MockitoBean EmailService email;
+    @Autowired RecordingEmailService mail;
 
     /** Buyer account mail is sent AFTER_COMMIT on this pool — see {@link BuyerMailSync}. */
     @Autowired @org.springframework.beans.factory.annotation.Qualifier("ticketEmailExecutor")
@@ -79,13 +66,9 @@ class BuyerSavedEventsTest {
 
     @BeforeEach
     void signedInBuyer() throws Exception {
-        BuyerMailSync.drain(mailExecutor);
-        reset(email);
         cookie = signUpAndSignIn(address());
         eventId = event("Vechirka").getId();
         otherEventId = event("Second Night").getId();
-        BuyerMailSync.drain(mailExecutor);
-        reset(email);
     }
 
     @Test
@@ -237,21 +220,6 @@ class BuyerSavedEventsTest {
     }
 
     private String codeSentTo(String to) {
-        BuyerMailSync.drain(mailExecutor);
-        ArgumentCaptor<String> recipient = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> text = ArgumentCaptor.forClass(String.class);
-        verify(email, atLeast(1)).send(recipient.capture(), subject.capture(), html.capture(), text.capture());
-
-        List<String> to_ = recipient.getAllValues();
-        List<String> bodies = text.getAllValues();
-        for (int i = to_.size() - 1; i >= 0; i--) {
-            if (to.equalsIgnoreCase(to_.get(i))) {
-                Matcher m = SIX_DIGITS.matcher(bodies.get(i));
-                if (m.find()) return m.group(1);
-            }
-        }
-        throw new AssertionError("no six-digit code mailed to " + to);
+        return BuyerMailSync.codeTo(mail, mailExecutor, to);
     }
 }

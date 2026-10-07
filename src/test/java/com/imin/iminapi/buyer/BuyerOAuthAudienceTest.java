@@ -1,27 +1,32 @@
 package com.imin.iminapi.buyer;
 
-import com.imin.iminapi.buyer.repository.BuyerAccountRepository;
 import com.imin.iminapi.buyer.security.BuyerOAuthNonceCookie;
-import com.imin.iminapi.config.TestRateLimitConfig;
+import com.imin.iminapi.oauth.GoogleOAuthService;
+import com.imin.iminapi.oauth.OAuthProperties;
 import com.imin.iminapi.oauth.OAuthStateService;
-import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.oauth.OAuthUserInfo;
 import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PropertyFlips;
 import jakarta.servlet.http.Cookie;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
-import org.springframework.test.context.TestPropertySource;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -36,24 +41,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * organizer callback</b>. Accepted there, it reaches
  * {@code OAuthAccountService.resolve} step 5, which auto-provisions an
  * {@code Organization} and an {@code OWNER} user from a buyer's Google account —
- * and the sign-in appears to succeed, so nothing surfaces it. Hence the row-count
- * assertions rather than a bare status check.
+ * and the sign-in appears to succeed, so nothing surfaces it. Hence the
+ * assertions on the rows a provisioning would write, rather than a bare status check.
  *
- * <p>No Google network is reachable in tests, which is exactly the point: state
- * verification happens <b>before</b> the token exchange, so a rejected state
- * produces 400 and not a connection error. A test that reached Google would mean
- * the ordering had regressed.
+ * <p>State verification must happen <b>before</b> the token exchange, so every
+ * callback test asserts the exchange was never called. The exchange is still
+ * stubbed to name a fresh address, so a regression that reached it shows up as rows.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
-@TestPropertySource(properties = {
-        "imin.oauth.state-secret=audience-test-secret",
-        "imin.oauth.google.client-id=test-client-id",
-        "imin.oauth.google.client-secret=test-client-secret",
-        "imin.oauth.google.redirect-uri=https://dashboard.imin.wtf/auth/callback/google",
-        "imin.oauth.google.buyer-redirect-uri=https://app.imin.wtf/auth/callback/google",
-})
+@IminIntegrationTest
 class BuyerOAuthAudienceTest {
 
     private static final String ORIGIN = "http://localhost:3000";
@@ -62,9 +57,26 @@ class BuyerOAuthAudienceTest {
 
     @Autowired MockMvc mvc;
     @Autowired OAuthStateService states;
-    @Autowired BuyerAccountRepository buyerAccounts;
-    @Autowired OrganizationRepository organizations;
     @Autowired UserRepository users;
+    @Autowired JdbcTemplate jdbc;
+    @Autowired GoogleOAuthService google;
+    @Autowired OAuthProperties oauthProps;
+    @Autowired PropertyFlips flips;
+
+    /** What Google would answer, had the exchange been reached. */
+    private String victim;
+
+    /** Both Google flows configured; state-secret is captured at startup and not flipped. */
+    @BeforeEach
+    void bothGoogleFlowsConfigured() {
+        flips.set(oauthProps, "google.clientId", "test-client-id");
+        flips.set(oauthProps, "google.clientSecret", "test-client-secret");
+        flips.set(oauthProps, "google.redirectUri", ORGANIZER_REDIRECT);
+        flips.set(oauthProps, "google.buyerRedirectUri", BUYER_REDIRECT);
+        victim = "victim-" + UUID.randomUUID() + "@example.com";
+        doReturn(new OAuthUserInfo("google", "google-sub-" + UUID.randomUUID(), victim, true,
+                "Ada", "Lovelace", "Ada Lovelace")).when(google).exchangeCode(anyString(), anyString());
+    }
 
     // ── The authorize URL and its browser binding ──────────────────────────
 
@@ -101,8 +113,6 @@ class BuyerOAuthAudienceTest {
 
     @Test
     void a_buyer_state_posted_to_the_organizer_callback_is_rejected_and_provisions_nothing() throws Exception {
-        long organizationsBefore = organizations.count();
-        long usersBefore = users.count();
         String buyerState = states.sign("google", OAuthStateService.AUDIENCE_BUYER, "some-browser-nonce");
 
         mvc.perform(post("/api/v1/auth/google/callback")
@@ -110,11 +120,13 @@ class BuyerOAuthAudienceTest {
                         .content("{\"code\":\"stolen-code\",\"state\":\"" + buyerState + "\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("OAUTH_INVALID_STATE"));
+        verify(google, never()).exchangeCode(anyString(), anyString());
 
-        assertThat(organizations.count())
+        assertThat(jdbc.queryForObject("select count(*) from organizations where lower(contact_email) = ?",
+                Integer.class, victim))
                 .as("OAuthAccountService.resolve step 5 must never be reached from a buyer state")
-                .isEqualTo(organizationsBefore);
-        assertThat(users.count()).isEqualTo(usersBefore);
+                .isZero();
+        assertThat(users.existsByEmailLower(victim)).isFalse();
     }
 
     // ── Direction 2: organizer state → buyer callback ──────────────────────
@@ -122,7 +134,6 @@ class BuyerOAuthAudienceTest {
     @Test
     void an_organizer_state_posted_to_the_buyer_callback_is_rejected_and_creates_no_buyer_account()
             throws Exception {
-        long buyersBefore = buyerAccounts.count();
         String organizerState = states.sign("google");
 
         mvc.perform(post("/api/v1/buyer/auth/google/callback")
@@ -132,8 +143,10 @@ class BuyerOAuthAudienceTest {
                         .content("{\"code\":\"stolen-code\",\"state\":\"" + organizerState + "\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("OAUTH_INVALID_STATE"));
+        verify(google, never()).exchangeCode(anyString(), anyString());
 
-        assertThat(buyerAccounts.count()).isEqualTo(buyersBefore);
+        assertThat(jdbc.queryForObject("select count(*) from buyer_account_emails where email_normalized = ?",
+                Integer.class, victim)).isZero();
     }
 
     // ── The browser binding (login CSRF) ───────────────────────────────────
@@ -152,6 +165,7 @@ class BuyerOAuthAudienceTest {
                         .content("{\"code\":\"attacker-code\",\"state\":\"" + state + "\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("OAUTH_INVALID_STATE"));
+        verify(google, never()).exchangeCode(anyString(), anyString());
     }
 
     @Test
@@ -166,6 +180,7 @@ class BuyerOAuthAudienceTest {
                         .content("{\"code\":\"attacker-code\",\"state\":\"" + stateOf(attackerFlow) + "\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("OAUTH_INVALID_STATE"));
+        verify(google, never()).exchangeCode(anyString(), anyString());
     }
 
     /** Pulls the signed state back out of the authorize URL the endpoint returned. */

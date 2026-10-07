@@ -5,8 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository;
 import com.imin.iminapi.buyer.repository.BuyerAccountRepository;
 import com.imin.iminapi.buyer.security.BuyerSessionCookie;
-import com.imin.iminapi.config.TestRateLimitConfig;
-import com.imin.iminapi.email.EmailService;
+import com.imin.iminapi.email.RecordingEmailService;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.repository.EventRepository;
@@ -15,21 +14,17 @@ import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.support.IminIntegrationTest;
 import com.imin.iminapi.support.OrderFixtures;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.ResultActions;
@@ -37,15 +32,9 @@ import org.springframework.test.web.servlet.ResultActions;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import java.util.UUID;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.atLeast;
-import static org.mockito.Mockito.reset;
-import static org.mockito.Mockito.verify;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -63,14 +52,11 @@ import com.imin.iminapi.buyer.model.BuyerAccountEmail;
  * tickets with no further authentication, so a query that matched unverified
  * rows would turn "add an address" into "read a stranger's tickets".
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class BuyerOrdersTest {
 
     private static final String ORIGIN = "http://localhost:3000";
     private static final String PASSWORD = "correct-horse-battery";
-    private static final Pattern SIX_DIGITS = Pattern.compile("\\b(\\d{6})\\b");
 
     @Autowired MockMvc mvc;
     @Autowired BuyerAccountRepository accounts;
@@ -80,7 +66,8 @@ class BuyerOrdersTest {
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
     @Autowired UserRepository users;
-    @MockitoBean EmailService email;
+    @Autowired RecordingEmailService mail;
+    @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     /** Buyer account mail is sent AFTER_COMMIT on this pool — see {@link BuyerMailSync}. */
     @Autowired @org.springframework.beans.factory.annotation.Qualifier("ticketEmailExecutor")
@@ -93,12 +80,8 @@ class BuyerOrdersTest {
 
     @BeforeEach
     void signedInBuyer() throws Exception {
-        BuyerMailSync.drain(mailExecutor);
-        reset(email);
         primary = address();
         cookie = signUpAndSignIn(primary);
-        BuyerMailSync.drain(mailExecutor);
-        reset(email);
     }
 
     // ── The security boundary ──────────────────────────────────────────────
@@ -451,10 +434,9 @@ class BuyerOrdersTest {
 
     private com.imin.iminapi.buyer.model.BuyerAccountEmail rowFor(String to) {
         String normalized = to.trim().toLowerCase();
-        List<com.imin.iminapi.buyer.model.BuyerAccountEmail> rows = accounts.findAll().stream()
-                .flatMap(a -> emails.findByBuyerAccountIdOrderByCreatedAtAsc(a.getId()).stream())
-                .filter(r -> normalized.equals(r.getEmailNormalized()))
-                .toList();
+        List<com.imin.iminapi.buyer.model.BuyerAccountEmail> rows = jdbc.queryForList(
+                        "select id from buyer_account_emails where email_normalized = ?", UUID.class, normalized)
+                .stream().map(id -> emails.findById(id).orElseThrow()).toList();
         assertThat(rows).hasSize(1);
         return rows.get(0);
     }
@@ -466,27 +448,6 @@ class BuyerOrdersTest {
     }
 
     private String codeSentTo(String to) {
-        return bodySentTo(to).map(body -> {
-            Matcher m = SIX_DIGITS.matcher(body);
-            return m.find() ? m.group(1) : null;
-        }).orElse(null);
-    }
-
-    private Optional<String> bodySentTo(String to) {
-        BuyerMailSync.drain(mailExecutor);
-        ArgumentCaptor<String> recipients = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> text = ArgumentCaptor.forClass(String.class);
-        try {
-            verify(email, atLeast(0)).send(recipients.capture(), subject.capture(), html.capture(), text.capture());
-        } catch (AssertionError e) {
-            return Optional.empty();
-        }
-        List<String> to0 = recipients.getAllValues();
-        for (int i = to0.size() - 1; i >= 0; i--) {
-            if (to.equalsIgnoreCase(to0.get(i))) return Optional.of(text.getAllValues().get(i));
-        }
-        return Optional.empty();
+        return BuyerMailSync.codeTo(mail, mailExecutor, to);
     }
 }

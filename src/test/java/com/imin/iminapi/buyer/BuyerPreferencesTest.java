@@ -8,34 +8,24 @@ import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.ConsentOrigin;
 import com.imin.iminapi.audience.service.ConsentService;
 import com.imin.iminapi.buyer.security.BuyerSessionCookie;
-import com.imin.iminapi.config.TestRateLimitConfig;
-import com.imin.iminapi.email.EmailService;
+import com.imin.iminapi.email.RecordingEmailService;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.support.IminIntegrationTest;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.ResultActions;
 
 import java.util.List;
 import java.util.UUID;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.atLeast;
-import static org.mockito.Mockito.reset;
-import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -51,14 +41,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * organizer. Without it the toggle manufactures consent on an organizer's
  * behalf, and nothing else in the system would notice.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class BuyerPreferencesTest {
 
     private static final String ORIGIN = "http://localhost:3000";
     private static final String PASSWORD = "correct-horse-battery";
-    private static final Pattern SIX_DIGITS = Pattern.compile("\\b(\\d{6})\\b");
 
     @Autowired MockMvc mvc;
     @Autowired ConsumerRepository consumers;
@@ -68,7 +55,7 @@ class BuyerPreferencesTest {
     @Autowired ConsentService consentService;
     @Autowired com.imin.iminapi.buyer.repository.BuyerNotificationPreferenceRepository preferences;
     @Autowired com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository accountEmails;
-    @MockitoBean EmailService email;
+    @Autowired RecordingEmailService mail;
 
     /** Buyer account mail is sent AFTER_COMMIT on this pool — see {@link BuyerMailSync}. */
     @Autowired @org.springframework.beans.factory.annotation.Qualifier("ticketEmailExecutor")
@@ -83,8 +70,6 @@ class BuyerPreferencesTest {
 
     @BeforeEach
     void signedInBuyerWithTwoOrganizers() throws Exception {
-        BuyerMailSync.drain(mailExecutor);
-        reset(email);
         address = address();
         cookie = signUpAndSignIn(address);
 
@@ -93,8 +78,6 @@ class BuyerPreferencesTest {
         orgB = org("Beta");
         membershipA = membership(orgA, consumerId, "subscribed");
         membershipB = membership(orgB, consumerId, "subscribed");
-        BuyerMailSync.drain(mailExecutor);
-        reset(email);
     }
 
     // ── the consent-laundering guard ───────────────────────────────────────
@@ -116,13 +99,11 @@ class BuyerPreferencesTest {
 
     @Test
     void masterToggleOffWritesNoStickyRow() throws Exception {
-        long before = optOuts.count();
-
         patchPrefs("{\"organizerUpdates\":false}").andExpect(status().isOk());
 
-        assertThat(optOuts.count())
+        assertThat(optOuts.findByEmailNormalized(address.trim().toLowerCase()))
                 .as("DATA_SUBJECT_GLOBAL is globally reversible and leaves no sticky row")
-                .isEqualTo(before);
+                .isEmpty();
         assertThat(memberships.findByIdAndOrgId(membershipA, orgA).orElseThrow().getConsentStatus())
                 .isEqualTo("unsubscribed");
         assertThat(memberships.findByIdAndOrgId(membershipB, orgB).orElseThrow().getConsentStatus())
@@ -379,21 +360,6 @@ class BuyerPreferencesTest {
     }
 
     private String codeSentTo(String to) {
-        BuyerMailSync.drain(mailExecutor);
-        ArgumentCaptor<String> recipient = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> text = ArgumentCaptor.forClass(String.class);
-        verify(email, atLeast(1)).send(recipient.capture(), subject.capture(), html.capture(), text.capture());
-
-        List<String> to_ = recipient.getAllValues();
-        List<String> bodies = text.getAllValues();
-        for (int i = to_.size() - 1; i >= 0; i--) {
-            if (to.equalsIgnoreCase(to_.get(i))) {
-                Matcher m = SIX_DIGITS.matcher(bodies.get(i));
-                if (m.find()) return m.group(1);
-            }
-        }
-        throw new AssertionError("no six-digit code mailed to " + to);
+        return BuyerMailSync.codeTo(mail, mailExecutor, to);
     }
 }

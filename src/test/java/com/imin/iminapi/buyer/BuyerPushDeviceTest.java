@@ -2,16 +2,13 @@ package com.imin.iminapi.buyer;
 
 import com.imin.iminapi.buyer.model.BuyerPushDevice;
 import com.imin.iminapi.buyer.repository.BuyerPushDeviceRepository;
-import com.imin.iminapi.config.TestRateLimitConfig;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.MediaType;
-import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.ResultActions;
 
 import java.util.List;
@@ -35,37 +32,41 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * {@code UNIQUE (expo_token)} backstop that turns a future re-point bug into a
  * failed write instead of a silent second subscriber.
  *
- * <p>{@code mvc} and the mocked {@code EmailService} come from
- * {@link NativeBuyerTestBase} and must not be re-declared here.
+ * <p>{@code mvc} and the recording mailer come from {@link NativeBuyerTestBase}.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class BuyerPushDeviceTest extends NativeBuyerTestBase {
 
-    private static final String TOKEN = "ExponentPushToken[aaaaaaaaaaaaaaaaaaaaaa]";
-
     @Autowired BuyerPushDeviceRepository devices;
+    @Autowired JdbcTemplate jdbc;
 
-    /**
-     * Every assertion below counts rows, and the H2 schema is shared by the
-     * whole suite, so the table starts empty on each test rather than carrying
-     * the previous method's device.
-     */
+    /** Unique per test: expo_token is UNIQUE and the database is shared. */
+    private String token;
+
     @BeforeEach
-    void emptyRegistry() {
-        devices.deleteAll();
+    void ownToken() {
+        token = "ExponentPushToken[" + UUID.randomUUID().toString().replace("-", "").substring(0, 22) + "]";
+    }
+
+    /** Device rows held by these accounts. */
+    private int devicesOf(UUID... accountIds) {
+        int n = 0;
+        for (UUID id : accountIds) {
+            n += jdbc.queryForObject("select count(*) from buyer_push_devices where buyer_account_id = ?",
+                    Integer.class, id);
+        }
+        return n;
     }
 
     @Test
     void registrationIsIdempotent() throws Exception {
         String bearer = signUpAndSignInNative();
 
-        register(bearer, TOKEN).andExpect(status().isNoContent());
-        register(bearer, TOKEN).andExpect(status().isNoContent());
+        register(bearer, token).andExpect(status().isNoContent());
+        register(bearer, token).andExpect(status().isNoContent());
 
-        assertThat(devices.findByExpoToken(TOKEN)).isPresent();
-        assertThat(devices.count()).isEqualTo(1);
+        assertThat(devices.findByExpoToken(token)).isPresent();
+        assertThat(devicesOf(accountIdOf(bearer))).isEqualTo(1);
     }
 
     @Test
@@ -73,11 +74,11 @@ class BuyerPushDeviceTest extends NativeBuyerTestBase {
         String first = signUpAndSignInNative();
         String second = signUpAndSignInNative();
 
-        register(first, TOKEN).andExpect(status().isNoContent());
-        register(second, TOKEN).andExpect(status().isNoContent());
+        register(first, token).andExpect(status().isNoContent());
+        register(second, token).andExpect(status().isNoContent());
 
-        assertThat(devices.count()).isEqualTo(1);
-        BuyerPushDevice row = devices.findByExpoToken(TOKEN).orElseThrow();
+        assertThat(devicesOf(accountIdOf(first), accountIdOf(second))).isEqualTo(1);
+        BuyerPushDevice row = devices.findByExpoToken(token).orElseThrow();
         assertThat(row.getBuyerAccountId()).isEqualTo(accountIdOf(second));
         assertThat(row.getRevokedAt()).isNull();
 
@@ -85,7 +86,7 @@ class BuyerPushDeviceTest extends NativeBuyerTestBase {
         // no live delivery address on this phone any more.
         assertThat(devices.findLiveTokensForAccounts(List.of(accountIdOf(first)))).isEmpty();
         assertThat(devices.findLiveTokensForAccounts(List.of(accountIdOf(second))))
-                .containsExactly(TOKEN);
+                .containsExactly(token);
     }
 
     /**
@@ -98,11 +99,11 @@ class BuyerPushDeviceTest extends NativeBuyerTestBase {
     void theTokenIsUniqueAcrossAccountsInTheDatabase() throws Exception {
         String first = signUpAndSignInNative();
         String second = signUpAndSignInNative();
-        register(first, TOKEN).andExpect(status().isNoContent());
+        register(first, token).andExpect(status().isNoContent());
 
         BuyerPushDevice duplicate = new BuyerPushDevice();
         duplicate.setBuyerAccountId(accountIdOf(second));
-        duplicate.setExpoToken(TOKEN);
+        duplicate.setExpoToken(token);
         duplicate.setPlatform("android");
 
         assertThatThrownBy(() -> devices.saveAndFlush(duplicate))
@@ -112,11 +113,11 @@ class BuyerPushDeviceTest extends NativeBuyerTestBase {
     @Test
     void revokeStopsTheDeviceCountingAsLive() throws Exception {
         String bearer = signUpAndSignInNative();
-        register(bearer, TOKEN).andExpect(status().isNoContent());
+        register(bearer, token).andExpect(status().isNoContent());
 
-        revoke(bearer, TOKEN).andExpect(status().isNoContent());
+        revoke(bearer, token).andExpect(status().isNoContent());
 
-        assertThat(devices.findByExpoToken(TOKEN).orElseThrow().getRevokedAt()).isNotNull();
+        assertThat(devices.findByExpoToken(token).orElseThrow().getRevokedAt()).isNotNull();
         assertThat(devices.findLiveTokensForAccounts(List.of(accountIdOf(bearer)))).isEmpty();
     }
 
@@ -124,24 +125,24 @@ class BuyerPushDeviceTest extends NativeBuyerTestBase {
     @Test
     void signingBackInReRegistersTheSameRow() throws Exception {
         String bearer = signUpAndSignInNative();
-        register(bearer, TOKEN).andExpect(status().isNoContent());
-        revoke(bearer, TOKEN).andExpect(status().isNoContent());
+        register(bearer, token).andExpect(status().isNoContent());
+        revoke(bearer, token).andExpect(status().isNoContent());
 
-        register(bearer, TOKEN).andExpect(status().isNoContent());
+        register(bearer, token).andExpect(status().isNoContent());
 
-        assertThat(devices.count()).isEqualTo(1);
-        assertThat(devices.findByExpoToken(TOKEN).orElseThrow().getRevokedAt()).isNull();
+        assertThat(devicesOf(accountIdOf(bearer))).isEqualTo(1);
+        assertThat(devices.findByExpoToken(token).orElseThrow().getRevokedAt()).isNull();
     }
 
     @Test
     void oneBuyerCannotRevokeAnothersDevice() throws Exception {
         String owner = signUpAndSignInNative();
         String stranger = signUpAndSignInNative();
-        register(owner, TOKEN).andExpect(status().isNoContent());
+        register(owner, token).andExpect(status().isNoContent());
 
-        revoke(stranger, TOKEN).andExpect(status().isNoContent());   // idempotent, leaks nothing
+        revoke(stranger, token).andExpect(status().isNoContent());   // idempotent, leaks nothing
 
-        assertThat(devices.findByExpoToken(TOKEN).orElseThrow().getRevokedAt()).isNull();
+        assertThat(devices.findByExpoToken(token).orElseThrow().getRevokedAt()).isNull();
     }
 
     /**
@@ -153,13 +154,13 @@ class BuyerPushDeviceTest extends NativeBuyerTestBase {
     void revokeAnswersTheSameWhateverTheTokenIs() throws Exception {
         String owner = signUpAndSignInNative();
         String stranger = signUpAndSignInNative();
-        register(owner, TOKEN).andExpect(status().isNoContent());
+        register(owner, token).andExpect(status().isNoContent());
 
-        revoke(stranger, TOKEN)
+        revoke(stranger, token)
                 .andExpect(status().isNoContent())
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
                         .content().string(""));
-        revoke(stranger, "ExponentPushToken[zzzzzzzzzzzzzzzzzzzzzz]")
+        revoke(stranger, "ExponentPushToken[" + UUID.randomUUID().toString().substring(0, 22) + "]")
                 .andExpect(status().isNoContent())
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
                         .content().string(""));
@@ -170,12 +171,12 @@ class BuyerPushDeviceTest extends NativeBuyerTestBase {
         mvc.perform(post("/api/v1/buyer/push-devices")
                         .header("X-Imin-Client", "native")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"expoToken\":\"" + TOKEN + "\",\"platform\":\"ios\"}"))
+                        .content("{\"expoToken\":\"" + token + "\",\"platform\":\"ios\"}"))
                 .andExpect(status().isUnauthorized());
         mvc.perform(post("/api/v1/buyer/push-devices/revoke")
                         .header("X-Imin-Client", "native")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"expoToken\":\"" + TOKEN + "\"}"))
+                        .content("{\"expoToken\":\"" + token + "\"}"))
                 .andExpect(status().isUnauthorized());
     }
 
@@ -187,10 +188,10 @@ class BuyerPushDeviceTest extends NativeBuyerTestBase {
                         .header("Authorization", "Bearer " + bearer)
                         .header("X-Imin-Client", "native")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"expoToken\":\"" + TOKEN + "\",\"platform\":\"web\"}"))
+                        .content("{\"expoToken\":\"" + token + "\",\"platform\":\"web\"}"))
                 .andExpect(status().isBadRequest());
 
-        assertThat(devices.count()).isZero();
+        assertThat(devicesOf(accountIdOf(bearer))).isZero();
     }
 
     @Test

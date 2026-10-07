@@ -18,6 +18,8 @@ public class RecordingEmailService implements EmailService {
     private final List<String> froms = new ArrayList<>();
     // Whether each sent email went out while a transaction was active (a pooled connection held).
     private final List<Boolean> inTransaction = new ArrayList<>();
+    // The thread each sent email went out on, so a test can prove a send left the caller's thread.
+    private final List<Thread> threads = new ArrayList<>();
     private RuntimeException nextFailure;
 
     @Override
@@ -36,6 +38,7 @@ public class RecordingEmailService implements EmailService {
         sent.add(new SentEmail(to, subject, html, text, headers == null ? java.util.Map.of() : headers));
         froms.add(null);
         inTransaction.add(TransactionSynchronizationManager.isActualTransactionActive());
+        threads.add(Thread.currentThread());
     }
 
     @Override
@@ -50,6 +53,7 @@ public class RecordingEmailService implements EmailService {
     public synchronized List<SentEmail> sent() { return Collections.unmodifiableList(new ArrayList<>(sent)); }
     public synchronized SentEmail lastSent() { return sent.isEmpty() ? null : sent.get(sent.size() - 1); }
     public synchronized boolean sentInTransaction(int index) { return inTransaction.get(index); }
-    public synchronized void clear() { sent.clear(); froms.clear(); inTransaction.clear(); nextFailure = null; }
+    public synchronized Thread sentOnThread(int index) { return threads.get(index); }
+    public synchronized void clear() { sent.clear(); froms.clear(); inTransaction.clear(); threads.clear(); nextFailure = null; }
     public synchronized void failNextSendWith(RuntimeException ex) { this.nextFailure = ex; }
 }

@@ -8,16 +8,13 @@ import com.imin.iminapi.buyer.repository.BuyerAccountRepository;
 import com.imin.iminapi.buyer.repository.BuyerSessionRepository;
 import com.imin.iminapi.buyer.security.BuyerSessionCookie;
 import com.imin.iminapi.buyer.service.BuyerSessionService;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.support.IminIntegrationTest;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -45,9 +42,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * CORS registration, and the CSRF mitigations that make the platform-wide
  * {@code csrf.disable()} survivable (buyer-accounts epic §2.6).
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class BuyerSecurityIntegrationTest {
 
     private static final String ALLOWED_ORIGIN = "http://localhost:3000";
@@ -113,9 +108,7 @@ class BuyerSecurityIntegrationTest {
     @Test
     void me_with_an_expired_cookie_is_401() throws Exception {
         String raw = issueSession();
-        BuyerSession session = sessions.findAll().stream()
-                .filter(s -> s.getBuyerAccountId().equals(account.getId()))
-                .findFirst().orElseThrow();
+        BuyerSession session = sessions.findByBuyerAccountIdAndRevokedAtIsNull(account.getId()).get(0);
         session.setExpiresAt(Instant.now().minus(1, ChronoUnit.HOURS));
         sessions.save(session);
 

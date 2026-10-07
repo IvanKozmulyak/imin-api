@@ -10,28 +10,25 @@ import com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository;
 import com.imin.iminapi.buyer.repository.BuyerAccountRepository;
 import com.imin.iminapi.buyer.repository.BuyerSessionRepository;
 import com.imin.iminapi.buyer.security.BuyerSessionCookie;
-import com.imin.iminapi.config.TestRateLimitConfig;
-import com.imin.iminapi.email.EmailService;
+import com.imin.iminapi.email.RecordingEmailService;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PgFaults;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.ResultActions;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -39,13 +36,6 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.doReturn;
-import static org.mockito.Mockito.atLeast;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.reset;
-import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
@@ -62,9 +52,7 @@ import com.imin.iminapi.buyer.model.BuyerAccountEmail;
  * every channel. Only the destructive cascade waits out the 30 days, and that
  * lives in {@code BuyerAccountErasureTest}.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class BuyerAccountDeletionTest {
 
     private static final String ORIGIN = "http://localhost:3000";
@@ -76,9 +64,10 @@ class BuyerAccountDeletionTest {
     @Autowired BuyerAccountEmailRepository emails;
     @Autowired BuyerSessionRepository sessions;
     @Autowired ConsumerRepository consumers;
-    @MockitoSpyBean MembershipRepository memberships;
+    @Autowired MembershipRepository memberships;
     @Autowired OrganizationRepository orgs;
-    @MockitoBean EmailService email;
+    @Autowired RecordingEmailService mail;
+    @Autowired JdbcTemplate jdbc;
 
     /** Buyer account mail is sent AFTER_COMMIT on this pool — see {@link BuyerMailSync}. */
     @Autowired @org.springframework.beans.factory.annotation.Qualifier("ticketEmailExecutor")
@@ -87,16 +76,14 @@ class BuyerAccountDeletionTest {
     private String primary;
     private String cookie;
     private UUID accountId;
+    /** The orgs this test created; memberships are looked up within them only. */
+    private final List<UUID> ownOrgs = new ArrayList<>();
 
     @BeforeEach
     void signedInBuyer() throws Exception {
-        BuyerMailSync.drain(mailExecutor);
-        reset(email);
         primary = address();
         cookie = signUpAndSignIn(primary);
         accountId = accountFor(primary);
-        BuyerMailSync.drain(mailExecutor);
-        reset(email);
     }
 
     // ── Scheduling ─────────────────────────────────────────────────────────
@@ -233,8 +220,6 @@ class BuyerAccountDeletionTest {
         assertThat(emails.findVerifiedEmailsByBuyerAccountId(accountId))
                 .as("both addresses must be verified before the notice can prove anything")
                 .hasSize(2);
-        BuyerMailSync.drain(mailExecutor);
-        reset(email);
 
         requestDeletion().andExpect(status().isOk());
 
@@ -256,11 +241,13 @@ class BuyerAccountDeletionTest {
      */
     @Test
     void a_failing_notice_does_not_fail_the_deletion() throws Exception {
-        doThrow(new RuntimeException("resend is down"))
-                .when(email).send(any(), any(), any(), any());
+        BuyerMailSync.drain(mailExecutor);   // no earlier async send may take the failure
+        mail.failNextSendWith(new RuntimeException("resend is down"));
 
         requestDeletion().andExpect(status().isOk());
 
+        assertThat(bodySentTo(primary)).as("the injected failure hit the deletion notice")
+                .get().asString().doesNotContain("/profile/delete");
         BuyerAccount account = accounts.findById(accountId).orElseThrow();
         assertThat(account.getStatus()).isEqualTo(BuyerAccount.STATUS_DELETE_PENDING);
         assertThat(account.getDeleteAt()).isNotNull();
@@ -282,7 +269,8 @@ class BuyerAccountDeletionTest {
      *
      * <p>The failure is injected inside the transactional boundary on purpose:
      * stubbing {@code ConsentService} itself would throw before the transaction
-     * interceptor ever ran and would prove nothing.
+     * interceptor ever ran and would prove nothing. Postgres rejects the write of
+     * the one membership, inside {@code ConsentService.unsubscribe}'s transaction.
      */
     @Test
     void one_org_whose_unsubscribe_fails_does_not_undo_the_whole_deletion() throws Exception {
@@ -290,11 +278,12 @@ class BuyerAccountDeletionTest {
         UUID boom = membership(org("DeleteUnsubBoom"), consumerId, "subscribed");
         UUID survivor = membership(org("DeleteUnsubSurvivor"), consumerId, "subscribed");
 
-        // requireMembership's re-read comes up empty — the shape an organizer
-        // DSAR erase committing mid-deletion actually produces.
-        doReturn(Optional.empty()).when(memberships).findByIdAndOrgId(eq(boom), any());
-
-        requestDeletion().andExpect(status().isOk());
+        try (PgFaults.Fault ignored = PgFaults.failWrites(jdbc, "memberships", "membership_id", boom)) {
+            requestDeletion().andExpect(status().isOk());
+        }
+        assertThat(membershipById(boom).getConsentStatus())
+                .as("the injected fault fired: that one org's unsubscribe was rolled back")
+                .isEqualTo("subscribed");
 
         BuyerAccount account = accounts.findById(accountId).orElseThrow();
         assertThat(account.getStatus()).isEqualTo(BuyerAccount.STATUS_DELETE_PENDING);
@@ -463,14 +452,7 @@ class BuyerAccountDeletionTest {
     }
 
     private UUID accountFor(String to) {
-        String normalized = EmailNormalizer.normalize(to);
-        List<UUID> ids = accounts.findAll().stream()
-                .filter(a -> emails.findByBuyerAccountIdOrderByCreatedAtAsc(a.getId()).stream()
-                        .anyMatch(r -> normalized.equals(r.getEmailNormalized())))
-                .map(BuyerAccount::getId)
-                .toList();
-        assertThat(ids).hasSize(1);
-        return ids.get(0);
+        return emails.findByVerifiedKey(EmailNormalizer.normalize(to)).orElseThrow().getBuyerAccountId();
     }
 
     private UUID org(String name) {
@@ -479,7 +461,9 @@ class BuyerAccountDeletionTest {
         o.setSlug(name.toLowerCase() + "-" + UUID.randomUUID().toString().substring(0, 8));
         o.setContactEmail(name + "@test.com");
         o.setCountry("DE");
-        return orgs.save(o).getId();
+        UUID id = orgs.save(o).getId();
+        ownOrgs.add(id);
+        return id;
     }
 
     private UUID consumer(String rawEmail) {
@@ -507,8 +491,8 @@ class BuyerAccountDeletionTest {
 
     /** Re-reads a membership from the database — the repository exposes no unscoped find-by-id. */
     private Membership membershipById(UUID id) {
-        for (Organization o : orgs.findAll()) {
-            Optional<Membership> m = memberships.findByIdAndOrgId(id, o.getId());
+        for (UUID orgId : ownOrgs) {
+            Optional<Membership> m = memberships.findByIdAndOrgId(id, orgId);
             if (m.isPresent()) return m.get();
         }
         throw new AssertionError("membership not found: " + id);
@@ -529,22 +513,9 @@ class BuyerAccountDeletionTest {
         }).orElse(null);
     }
 
+    /** The plain-text body of the newest mail to this address. */
     private Optional<String> bodySentTo(String to) {
-        BuyerMailSync.drain(mailExecutor);
-        ArgumentCaptor<String> recipients = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> text = ArgumentCaptor.forClass(String.class);
-        try {
-            verify(email, atLeast(0)).send(recipients.capture(), subject.capture(),
-                    html.capture(), text.capture());
-        } catch (AssertionError e) {
-            return Optional.empty();
-        }
-        List<String> sentTo = recipients.getAllValues();
-        for (int i = sentTo.size() - 1; i >= 0; i--) {
-            if (to.equalsIgnoreCase(sentTo.get(i))) return Optional.of(text.getAllValues().get(i));
-        }
-        return Optional.empty();
+        List<RecordingEmailService.SentEmail> sent = BuyerMailSync.sentTo(mail, mailExecutor, to);
+        return sent.isEmpty() ? Optional.empty() : Optional.of(sent.get(sent.size() - 1).text());
     }
 }

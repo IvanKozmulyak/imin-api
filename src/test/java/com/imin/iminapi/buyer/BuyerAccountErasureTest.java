@@ -25,7 +25,6 @@ import com.imin.iminapi.buyer.repository.BuyerSessionRepository;
 import com.imin.iminapi.buyer.repository.BuyerVerificationAttemptRepository;
 import com.imin.iminapi.buyer.service.BuyerAccountErasureJob;
 import com.imin.iminapi.buyer.service.BuyerAccountErasureService;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.AuditLog;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
@@ -34,21 +33,19 @@ import com.imin.iminapi.model.NotifySubscription;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.model.UserRole;
-import com.imin.iminapi.repository.AuditLogRepository;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.NotifySubscriptionRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.service.audit.AuditActions;
+import com.imin.iminapi.support.AuditRows;
+import com.imin.iminapi.support.IminIntegrationTest;
 import com.imin.iminapi.util.Times;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -56,8 +53,6 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.doReturn;
 
 /**
  * The §7.2 cascade: {@code BuyerAccountErasureService}, its job, the
@@ -71,15 +66,14 @@ import static org.mockito.Mockito.doReturn;
  * and rolled the whole cascade back every night. A tombstone test that mocks
  * the logger tests nothing.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class BuyerAccountErasureTest {
 
     @Autowired BuyerAccountErasureService erasureService;
     @Autowired BuyerAccountErasureJob erasureJob;
     @Autowired DsarService dsarService;
 
-    @MockitoSpyBean BuyerAccountRepository accounts;
+    @Autowired BuyerAccountRepository accounts;
     @Autowired BuyerAccountEmailRepository emails;
     @Autowired BuyerSessionRepository sessions;
     @Autowired BuyerIdentityRepository identities;
@@ -91,7 +85,7 @@ class BuyerAccountErasureTest {
     @Autowired ConsentRecordRepository consentRecords;
     @Autowired SuppressionRepository suppressions;
     @Autowired NotifySubscriptionRepository notifySubscriptions;
-    @Autowired AuditLogRepository auditLogs;
+    @Autowired AuditRows audit;
     @Autowired OrganizationRepository orgs;
     @Autowired EventRepository events;
     @Autowired UserRepository users;
@@ -348,18 +342,13 @@ class BuyerAccountErasureTest {
 
         assertThat(result.tombstoned()).isTrue();
 
-        List<AuditLog> tombstones = auditLogs.findAll().stream()
-                .filter(r -> AuditActions.BUYER_ACCOUNT_ERASED.equals(r.getAction()))
-                .filter(r -> account.equals(r.getTargetId()))
-                .toList();
-
-        assertThat(tombstones).hasSize(2);
-        assertThat(tombstones).extracting(AuditLog::getOrgId).containsExactlyInAnyOrder(orgA, orgB);
-        assertThat(tombstones).allSatisfy(r -> {
-            assertThat(r.getOrgId()).isNotNull();
-            assertThat(r.getTargetType()).isEqualTo("buyer_account");
-            assertThat(r.getSummary()).contains("Art.17");
-        });
+        for (UUID org : List.of(orgA, orgB)) {
+            AuditLog tombstone = audit.assertRecorded(org, AuditActions.BUYER_ACCOUNT_ERASED, "buyer_account", account);
+            assertThat(tombstone.getSummary()).contains("Art.17");
+        }
+        assertThat(auditOrgs(AuditActions.BUYER_ACCOUNT_ERASED, account))
+                .as("one tombstone per affected org and none elsewhere")
+                .containsExactlyInAnyOrder(orgA, orgB);
     }
 
     /**
@@ -376,13 +365,8 @@ class BuyerAccountErasureTest {
 
         erasureService.erase(account);
 
-        List<AuditLog> rows = auditLogs.findAll().stream()
-                .filter(r -> AuditActions.DSAR_ERASE_EXECUTED.equals(r.getAction()))
-                .filter(r -> mid.equals(r.getTargetId()))
-                .toList();
-
-        assertThat(rows).hasSize(1);
-        assertThat(rows.get(0).getOrgId()).isEqualTo(orgA);
+        audit.assertRecorded(orgA, AuditActions.DSAR_ERASE_EXECUTED, "membership", mid);
+        assertThat(auditOrgs(AuditActions.DSAR_ERASE_EXECUTED, mid)).containsExactly(orgA);
     }
 
     /**
@@ -474,7 +458,8 @@ class BuyerAccountErasureTest {
 
     /**
      * "Keep my account", pressed after the job took its snapshot and before this
-     * account's turn in the loop.
+     * account's turn in the loop. The job's own use of {@code eraseIfStillDue} is
+     * pinned by {@code BuyerAccountErasureJobTest}; this proves the re-check.
      *
      * <p>The job materialises the whole due list up front and then erases each
      * entry in its own transaction, so the row it holds is a snapshot from
@@ -505,8 +490,7 @@ class BuyerAccountErasureTest {
         kept.setDeleteAt(null);
         accounts.save(kept);
 
-        doReturn(snapshot).when(accounts).findErasureDue(any());
-        erasureJob.run();
+        erasureService.eraseIfStillDue(account);
 
         assertThat(accounts.findById(account))
                 .as("an account that is no longer delete_pending must survive the run")
@@ -674,6 +658,12 @@ class BuyerAccountErasureTest {
         s.setEventId(eventId);
         s.setEmail(address);
         return notifySubscriptions.save(s).getId();
+    }
+
+    /** Every org holding an audit row with this action on this target, across all orgs. */
+    private List<UUID> auditOrgs(String action, UUID targetId) {
+        return jdbc.queryForList("select org_id from audit_logs where action = ? and target_id = ?",
+                UUID.class, action, targetId);
     }
 
     private int count(String table, String column, UUID value) {

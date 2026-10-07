@@ -8,16 +8,13 @@ import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.IminIntegrationTest;
 import com.imin.iminapi.support.OrderFixtures;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.test.web.servlet.MockMvc;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -36,9 +33,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * <p>There is no refund-protection row. imin does not sell that product, and
  * the design's mock-up showing one is not a reason to invent a charge.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class BuyerOrderReceiptTest {
 
     @Autowired MockMvc mvc;

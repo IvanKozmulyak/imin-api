@@ -1,9 +1,13 @@
 package com.imin.iminapi.buyer;
 
+import com.imin.iminapi.email.RecordingEmailService;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
+import java.util.List;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadPoolExecutor;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Waits for the buyer account emails to actually be sent.
@@ -21,6 +25,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 final class BuyerMailSync {
 
     private static final long TIMEOUT_MILLIS = 10_000;
+    private static final Pattern SIX_DIGITS = Pattern.compile("\\b(\\d{6})\\b");
 
     private BuyerMailSync() {}
 
@@ -42,5 +47,25 @@ final class BuyerMailSync {
             }
         }
         throw new AssertionError("buyer mail executor still busy after " + TIMEOUT_MILLIS + "ms");
+    }
+
+    /** Drains, then the six digits of the newest mail to {@code to}; fails when there is none. */
+    static String codeTo(RecordingEmailService mail, Executor executor, String to) {
+        drain(executor);
+        List<RecordingEmailService.SentEmail> sent = mail.sent();
+        for (int i = sent.size() - 1; i >= 0; i--) {
+            RecordingEmailService.SentEmail m = sent.get(i);
+            if (!to.equalsIgnoreCase(m.to())) continue;
+            Matcher digits = SIX_DIGITS.matcher(m.text() == null ? m.html() : m.text());
+            if (!digits.find()) throw new AssertionError("newest mail to " + to + " carries no six-digit code: " + m.subject());
+            return digits.group(1);
+        }
+        throw new AssertionError("no mail sent to " + to);
+    }
+
+    /** Drains, then every mail sent to {@code to}, oldest first; never a global read, async sends land late. */
+    static List<RecordingEmailService.SentEmail> sentTo(RecordingEmailService mail, Executor executor, String to) {
+        drain(executor);
+        return mail.sent().stream().filter(m -> to.equalsIgnoreCase(m.to())).toList();
     }
 }

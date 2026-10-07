@@ -2,6 +2,11 @@ package com.imin.iminapi.buyer;
 
 import com.imin.iminapi.buyer.service.BuyerPreferencesService;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -26,45 +31,31 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class BuyerPreferencesProofTextTest {
 
-    @Test
-    void englishProofTextMatchesTheScreen() {
-        assertThat(BuyerPreferencesService.proofText("en")).isEqualTo(
-                "Marketing from organizers you've bought from."
-                        + " Turning this on won't undo an unsubscribe you've already made.");
-    }
-
-    @Test
-    void spanishProofTextMatchesTheScreen() {
-        assertThat(BuyerPreferencesService.proofText("es")).isEqualTo(
-                "Marketing de organizadores a los que has comprado."
-                        + " Activarlo no deshará una baja que ya hayas hecho.");
-    }
-
-    @Test
-    void frenchProofTextMatchesTheScreen() {
-        assertThat(BuyerPreferencesService.proofText("fr")).isEqualTo(
-                "Le marketing des organisateurs chez qui tu as acheté."
-                        + " L’activer n’annulera pas une désinscription déjà faite.");
-    }
-
-    @Test
-    void ukrainianProofTextMatchesTheScreen() {
-        assertThat(BuyerPreferencesService.proofText("uk")).isEqualTo(
-                "Розсилки від організаторів, у яких ти вже маєш покупки."
-                        + " Увімкнення не скасує відписку, яку ти вже оформив(ла).");
-    }
+    private static final String ENGLISH =
+            "Marketing from organizers you've bought from."
+                    + " Turning this on won't undo an unsubscribe you've already made.";
 
     /**
-     * An unknown or absent locale falls back to English rather than throwing —
-     * a buyer whose account predates the locale column must still be able to
-     * use the toggle.
+     * One row per screen locale. An unknown or absent locale falls back to English rather than
+     * throwing — a buyer whose account predates the locale column must still be able to use the toggle.
      */
-    @Test
-    void anUnknownLocaleFallsBackToEnglish() {
-        assertThat(BuyerPreferencesService.proofText(null))
-                .isEqualTo(BuyerPreferencesService.proofText("en"));
-        assertThat(BuyerPreferencesService.proofText("de"))
-                .isEqualTo(BuyerPreferencesService.proofText("en"));
+    static Stream<Arguments> screenSentences() {
+        return Stream.of(
+                Arguments.of("en", ENGLISH),
+                Arguments.of("es", "Marketing de organizadores a los que has comprado."
+                        + " Activarlo no deshará una baja que ya hayas hecho."),
+                Arguments.of("fr", "Le marketing des organisateurs chez qui tu as acheté."
+                        + " L’activer n’annulera pas une désinscription déjà faite."),
+                Arguments.of("uk", "Розсилки від організаторів, у яких ти вже маєш покупки."
+                        + " Увімкнення не скасує відписку, яку ти вже оформив(ла)."),
+                Arguments.of(null, ENGLISH),
+                Arguments.of("de", ENGLISH));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("screenSentences")
+    void theProofTextIsTheSentenceOnTheScreen(String locale, String sentence) {
+        assertThat(BuyerPreferencesService.proofText(locale)).isEqualTo(sentence);
     }
 
     /** Four distinct sentences — a copy-paste that left two locales identical is a defect. */

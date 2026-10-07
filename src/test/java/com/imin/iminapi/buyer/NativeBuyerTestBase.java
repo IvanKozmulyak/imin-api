@@ -1,11 +1,9 @@
 package com.imin.iminapi.buyer;
 
-import com.imin.iminapi.email.EmailService;
+import com.imin.iminapi.email.RecordingEmailService;
 import com.jayway.jsonpath.JsonPath;
-import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
@@ -14,9 +12,6 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.atLeast;
-import static org.mockito.Mockito.reset;
-import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -25,28 +20,19 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * Signup → verify → <b>native</b> sign-in, for every test that needs a bearer
  * token rather than a session cookie.
  *
- * <p>Deliberately not annotated. Subclasses carry {@code @SpringBootTest},
- * {@code @AutoConfigureMockMvc} and {@code @Import(TestRateLimitConfig.class)}
- * themselves, so a reader of a concrete test still sees how its context is
- * built.
- *
- * <p><b>{@code mvc} and {@code email} live here and must not be re-declared in
- * a subclass.</b> Spring collects {@code @BeanOverride} fields across the whole
- * class hierarchy, and two by-type Mockito handlers with the same type and the
- * same field name compare equal — the override registry's {@code Assert.state}
- * then fails the context before a single test runs. Inherited field injection
- * covers both, so a subclass simply uses them.
+ * <p>Deliberately not annotated: subclasses carry {@code @IminIntegrationTest}
+ * themselves, so a reader of a concrete test still sees which context it runs in.
+ * The six-digit code is read back out of the shared {@link RecordingEmailService}.
  */
 abstract class NativeBuyerTestBase {
 
     protected static final String ORIGIN = "http://localhost:3000";
     protected static final String PASSWORD = "correct-horse-battery";
-    private static final Pattern SIX_DIGITS = Pattern.compile("\\b(\\d{6})\\b");
 
     @Autowired protected MockMvc mvc;
 
-    /** The mocked mailer the six-digit verification code is read back out of. */
-    @MockitoBean protected EmailService email;
+    /** The recording mailer the six-digit verification code is read back out of. */
+    @Autowired protected RecordingEmailService mail;
 
     /** Buyer account mail is sent AFTER_COMMIT on this pool — see {@link BuyerMailSync}. */
     @Autowired @org.springframework.beans.factory.annotation.Qualifier("ticketEmailExecutor")
@@ -104,39 +90,23 @@ abstract class NativeBuyerTestBase {
     }
 
     /**
-     * Signup → read the six-digit code out of the mocked mail → verify.
-     *
-     * <p>The parameter is {@code to}, not {@code email}: naming it {@code email}
-     * would shadow the {@code @MockitoBean EmailService email} field, so
-     * {@code verify(email, …)} would infer {@code String} and stop compiling.
-     *
-     * <p>The mock is reset on the way in as well as on the way out, so a second
-     * account created inside one test method reads its own code and not the
-     * previous one's.
+     * Signup → read the six-digit code out of the newest mail to {@code to} → verify.
+     * Every account has its own address, so a second account in one test reads its own code.
      */
     protected void register(String to) throws Exception {
-        BuyerMailSync.drain(mailExecutor);
-        reset(email);
         mvc.perform(post("/api/v1/buyer/auth/signup")
                         .header("Origin", ORIGIN)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"email\":\"" + to + "\",\"password\":\"" + PASSWORD + "\"}"))
                 .andExpect(status().isNoContent());
 
-        BuyerMailSync.drain(mailExecutor);
-        ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
-        verify(email, atLeast(1)).send(org.mockito.ArgumentMatchers.eq(to),
-                org.mockito.ArgumentMatchers.anyString(), html.capture(),
-                org.mockito.ArgumentMatchers.anyString());
-        Matcher m = SIX_DIGITS.matcher(html.getValue());
-        assertThat(m.find()).isTrue();
+        String code = BuyerMailSync.codeTo(mail, mailExecutor, to);
 
         mvc.perform(post("/api/v1/buyer/auth/verify-email")
                         .header("Origin", ORIGIN)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"email\":\"" + to + "\",\"code\":\"" + m.group(1) + "\"}"))
+                        .content("{\"email\":\"" + to + "\",\"code\":\"" + code + "\"}"))
                 .andExpect(status().isOk());
         BuyerMailSync.drain(mailExecutor);
-        reset(email);
     }
 }
