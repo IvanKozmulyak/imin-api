@@ -6,7 +6,6 @@ import com.imin.iminapi.audience.repository.SuppressionRepository;
 import com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository;
 import com.imin.iminapi.buyer.repository.BuyerNotificationPreferenceRepository;
 import com.imin.iminapi.buyer.repository.BuyerPushDeviceRepository;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.email.EmailService;
 import com.imin.iminapi.email.EmailTemplateRenderer;
@@ -25,11 +24,10 @@ import com.imin.iminapi.repository.NotifySubscriptionRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
@@ -52,18 +50,17 @@ import static org.mockito.Mockito.verify;
  * {@link NotifyReleaseSender} — the sweeper that turns "we'll email you if tickets
  * release" into an actual email, exactly once per subscription.
  *
- * <p>Real JPA (H2) + real template renderer, mocked {@link EmailService}. The sender is
+ * <p>Real JPA + real template renderer, mocked {@link EmailService}. The sender is
  * constructed by hand rather than autowired so the call skips the {@code @SchedulerLock}
  * proxy — ShedLock's {@code lockAtLeastFor} would otherwise make the second sweep in a
  * test (and every sweep in a later test) a no-op. The scheduling annotations are
  * declarative config, not behaviour under test.
  *
- * <p>{@code @Transactional} rolls every fixture back so the shared H2 database isn't
+ * <p>{@code @Transactional} rolls every fixture back so the shared database isn't
  * polluted for sibling tests (there is no delete API for deliverability suppressions).
  */
-@SpringBootTest
+@IminIntegrationTest
 @Transactional
-@Import(TestRateLimitConfig.class)
 class NotifyReleaseSenderTest {
 
     /** Fixed "now": 2026-06-01T12:00:00Z. */
@@ -89,12 +86,19 @@ class NotifyReleaseSenderTest {
 
     Organization org;
     User owner;
+    /** The sweep reads every pending subscription, so each test mails only addresses it owns. */
+    String uid;
+
+    private String addr(String local) {
+        return local + "-" + uid + "@example.com";
+    }
 
     @org.springframework.beans.factory.annotation.Autowired
     com.imin.iminapi.marketing.unsubscribe.UnsubscribeTokenService unsubscribeTokens;
 
     @BeforeEach
     void setUp() {
+        uid = UUID.randomUUID().toString().substring(0, 8);
         emailService = mock(EmailService.class);
         // Push is dark in every case in this file. These tests exist to protect
         // the EMAIL promise, and the whole point of the fan-out's placement is
@@ -129,24 +133,24 @@ class NotifyReleaseSenderTest {
     void the_release_email_carries_a_per_subscriber_optout_link() {
         Event e = liveEvent();
         tier(e.getId(), 100, 0);
-        NotifySubscription a = subscribe(e.getId(), "ada@example.com");
-        NotifySubscription b = subscribe(e.getId(), "grace@example.com");
+        NotifySubscription a = subscribe(e.getId(), addr("ada"));
+        NotifySubscription b = subscribe(e.getId(), addr("grace"));
 
         sender.sweep();
 
-        ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> text = ArgumentCaptor.forClass(String.class);
-        verify(emailService, times(2))
-                .send(anyString(), anyString(), html.capture(), text.capture());
-
         String expectedA = "/notify/unsubscribe/" + unsubscribeTokens.signNotify(a.getId());
         String expectedB = "/notify/unsubscribe/" + unsubscribeTokens.signNotify(b.getId());
-        assertThat(html.getAllValues()).anyMatch(h -> h.contains(expectedA));
-        assertThat(html.getAllValues()).anyMatch(h -> h.contains(expectedB));
-        assertThat(text.getAllValues()).allMatch(t -> t.contains("/notify/unsubscribe/"));
-        // The sentinel is an implementation detail and must never reach an inbox.
-        assertThat(html.getAllValues()).noneMatch(h -> h.contains("PLACEHOLDER"));
-        assertThat(text.getAllValues()).noneMatch(t -> t.contains("PLACEHOLDER"));
+        for (var sub : java.util.List.of(java.util.Map.entry(a, expectedA), java.util.Map.entry(b, expectedB))) {
+            ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
+            ArgumentCaptor<String> text = ArgumentCaptor.forClass(String.class);
+            verify(emailService, times(1))
+                    .send(eq(sub.getKey().getEmail()), anyString(), html.capture(), text.capture());
+            assertThat(html.getValue()).contains(sub.getValue());
+            assertThat(text.getValue()).contains("/notify/unsubscribe/");
+            // The sentinel is an implementation detail and must never reach an inbox.
+            assertThat(html.getValue()).doesNotContain("PLACEHOLDER");
+            assertThat(text.getValue()).doesNotContain("PLACEHOLDER");
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -205,12 +209,12 @@ class NotifyReleaseSenderTest {
     void sendsOnce_andMarksNotified_whenATierIsPurchasable() {
         Event e = liveEvent();
         tier(e.getId(), 100, 0);
-        NotifySubscription sub = subscribe(e.getId(), "ada@example.com");
+        NotifySubscription sub = subscribe(e.getId(), addr("ada"));
 
         sender.sweep();
 
         verify(emailService, times(1)).send(
-                eq("ada@example.com"),
+                eq(addr("ada")),
                 contains("Release Night"),
                 contains("one-time notification"),
                 contains("one-time notification"));
@@ -231,24 +235,24 @@ class NotifyReleaseSenderTest {
     void mailsEachSubscriberInTheLocaleTheySignedUpWith() {
         Event e = liveEvent();
         tier(e.getId(), 100, 0);
-        subscribe(e.getId(), "es@example.com", "es");
-        subscribe(e.getId(), "uk@example.com", "uk");
-        subscribe(e.getId(), "none@example.com", null);
+        subscribe(e.getId(), addr("es"), "es");
+        subscribe(e.getId(), addr("uk"), "uk");
+        subscribe(e.getId(), addr("none"), null);
 
         sender.sweep();
 
         verify(emailService).send(
-                eq("es@example.com"),
+                eq(addr("es")),
                 eq("Ya hay entradas disponibles para Release Night"),
                 contains("<html lang=\"es\">"),
                 contains("ENTRADAS A LA VENTA"));
         verify(emailService).send(
-                eq("uk@example.com"),
+                eq(addr("uk")),
                 eq("Квитки на Release Night уже доступні"),
                 contains("<html lang=\"uk\">"),
                 contains("КВИТКИ У ПРОДАЖУ"));
         verify(emailService).send(
-                eq("none@example.com"),
+                eq(addr("none")),
                 eq("Tickets are available for Release Night"),
                 contains("<html lang=\"en\">"),
                 contains("one-time notification"));
@@ -259,12 +263,12 @@ class NotifyReleaseSenderTest {
     void unsupportedSubscriptionLocale_fallsBackToEnglish() {
         Event e = liveEvent();
         tier(e.getId(), 100, 0);
-        NotifySubscription sub = subscribe(e.getId(), "de@example.com", "de");
+        NotifySubscription sub = subscribe(e.getId(), addr("de"), "de");
 
         sender.sweep();
 
         verify(emailService).send(
-                eq("de@example.com"),
+                eq(addr("de")),
                 eq("Tickets are available for Release Night"),
                 contains("<html lang=\"en\">"),
                 anyString());
@@ -275,12 +279,12 @@ class NotifyReleaseSenderTest {
     void secondSweep_doesNotResend() {
         Event e = liveEvent();
         tier(e.getId(), 100, 0);
-        subscribe(e.getId(), "ada@example.com");
+        subscribe(e.getId(), addr("ada"));
 
         sender.sweep();
         sender.sweep();
 
-        verify(emailService, times(1)).send(eq("ada@example.com"), anyString(), anyString(), anyString());
+        verify(emailService, times(1)).send(eq(addr("ada")), anyString(), anyString(), anyString());
     }
 
     // -----------------------------------------------------------------------
@@ -290,11 +294,11 @@ class NotifyReleaseSenderTest {
     void leavesRowPending_whenNoTierIsPurchasable() {
         Event e = liveEvent();
         tier(e.getId(), 50, 50); // sold out — the exact state that shows the notify form
-        NotifySubscription sub = subscribe(e.getId(), "ada@example.com");
+        NotifySubscription sub = subscribe(e.getId(), addr("ada"));
 
         sender.sweep();
 
-        verify(emailService, never()).send(anyString(), anyString(), anyString(), anyString());
+        verify(emailService, never()).send(eq(sub.getEmail()), anyString(), anyString(), anyString());
         assertThat(notifiedAtOf(sub)).isNull();
     }
 
@@ -305,11 +309,11 @@ class NotifyReleaseSenderTest {
         events.save(e);
         tier(e.getId(), 100, 0); // stock exists, but the event is off
 
-        NotifySubscription sub = subscribe(e.getId(), "ada@example.com");
+        NotifySubscription sub = subscribe(e.getId(), addr("ada"));
 
         sender.sweep();
 
-        verify(emailService, never()).send(anyString(), anyString(), anyString(), anyString());
+        verify(emailService, never()).send(eq(sub.getEmail()), anyString(), anyString(), anyString());
         assertThat(notifiedAtOf(sub)).isNull();
     }
 
@@ -320,19 +324,19 @@ class NotifyReleaseSenderTest {
     void suppressedEmail_isMarkedWithoutSending() {
         SuppressionEntry entry = new SuppressionEntry();
         entry.setScope(SuppressionEntry.SCOPE_DELIVERABILITY);
-        entry.setNormalizedEmail("bounced@example.com");
+        entry.setNormalizedEmail(addr("bounced"));
         entry.setReason(SuppressionEntry.REASON_HARD_BOUNCE);
         suppressions.save(entry);
 
         Event e = liveEvent();
         tier(e.getId(), 100, 0);
-        NotifySubscription suppressed = subscribe(e.getId(), "bounced@example.com");
-        NotifySubscription fine = subscribe(e.getId(), "ada@example.com");
+        NotifySubscription suppressed = subscribe(e.getId(), addr("bounced"));
+        NotifySubscription fine = subscribe(e.getId(), addr("ada"));
 
         sender.sweep();
 
-        verify(emailService, never()).send(eq("bounced@example.com"), anyString(), anyString(), anyString());
-        verify(emailService, times(1)).send(eq("ada@example.com"), anyString(), anyString(), anyString());
+        verify(emailService, never()).send(eq(addr("bounced")), anyString(), anyString(), anyString());
+        verify(emailService, times(1)).send(eq(addr("ada")), anyString(), anyString(), anyString());
         // Marked so the pending scan stops returning it, but never mailed.
         assertThat(notifiedAtOf(suppressed)).isEqualTo(NOW);
         assertThat(notifiedAtOf(fine)).isEqualTo(NOW);
@@ -348,11 +352,11 @@ class NotifyReleaseSenderTest {
 
         Event e = liveEvent();
         tier(e.getId(), 100, 0);
-        NotifySubscription sub = subscribe(e.getId(), "ada@example.com");
+        NotifySubscription sub = subscribe(e.getId(), addr("ada"));
 
         sender.sweep();
 
-        verify(emailService, times(1)).send(eq("ada@example.com"), anyString(), anyString(), anyString());
+        verify(emailService, times(1)).send(eq(addr("ada")), anyString(), anyString(), anyString());
         assertThat(notifiedAtOf(sub)).isNull();
     }
 }

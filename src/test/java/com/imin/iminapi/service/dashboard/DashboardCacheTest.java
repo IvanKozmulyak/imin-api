@@ -1,6 +1,5 @@
 package com.imin.iminapi.service.dashboard;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.dto.dashboard.DashboardResponse;
 import com.imin.iminapi.dto.event.TicketTierPatchRequest;
 import com.imin.iminapi.model.Event;
@@ -10,26 +9,26 @@ import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.TicketTier;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.model.UserRole;
-import com.imin.iminapi.repository.AuditLogRepository;
 import com.imin.iminapi.repository.EventRepository;
-import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.service.event.TicketTierService;
-import com.imin.iminapi.stripe.StripeProductService;
+import com.imin.iminapi.support.AsyncDrain;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.cache.CacheManager;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.Executor;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -46,22 +45,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       greeted with the first one's name or the local part of their email.</li>
  * </ul>
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class DashboardCacheTest {
 
     @Autowired DashboardService dashboard;
     @Autowired TicketTierService tierService;
-    @Autowired CacheManager caches;
     @Autowired OrganizationRepository orgs;
     @Autowired UserRepository users;
     @Autowired EventRepository events;
     @Autowired TicketTierRepository tiers;
-    @Autowired OrderRepository orders;
-    @Autowired AuditLogRepository auditLogs;
-
-    /** The tier write is otherwise a live Stripe product call. */
-    @MockitoBean StripeProductService stripeProductService;
+    @Autowired JdbcTemplate jdbc;
+    // The tier write queues a Stripe product sync here; the unstubbed StripeClient fails it into FAILED.
+    @Autowired @Qualifier("tierStripeSyncExecutor") Executor tierStripeSync;
 
     private Organization org;
     private User owner;
@@ -71,8 +66,6 @@ class DashboardCacheTest {
 
     @BeforeEach
     void setUp() {
-        wipe();
-
         org = new Organization();
         org.setName("Org");
         org.setSlug("org-" + UUID.randomUUID().toString().substring(0, 8));
@@ -112,18 +105,11 @@ class DashboardCacheTest {
 
     @AfterEach
     void tearDown() {
-        wipe();
-    }
-
-    private void wipe() {
-        var cache = caches.getCache("dashboard");
-        if (cache != null) cache.clear();
-        auditLogs.deleteAll();
-        orders.deleteAll();
-        tiers.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+        try {
+            AsyncDrain.drain(tierStripeSync);
+        } finally {
+            if (org != null) OrgRows.delete(jdbc, List.of(org.getId()));
+        }
     }
 
     /** infra-4: the write must be visible on the next read, not 30 seconds later. */

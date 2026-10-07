@@ -1,6 +1,5 @@
 package com.imin.iminapi.service.analytics;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.dto.analytics.AttributionResponse;
 import com.imin.iminapi.dto.analytics.UntaggedLinksResponse;
 import com.imin.iminapi.model.Event;
@@ -17,20 +16,21 @@ import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class AttributionServiceTest {
 
     @Autowired AttributionService service;
@@ -39,6 +39,7 @@ class AttributionServiceTest {
     @Autowired EventRepository events;
     @Autowired OrderRepository orders;
     @Autowired FunnelEventRepository funnel;
+    @Autowired JdbcTemplate jdbc;
 
     private Organization org;
     private Event event;
@@ -46,7 +47,6 @@ class AttributionServiceTest {
 
     @BeforeEach
     void setUp() {
-        wipe();
         org = new Organization();
         org.setName("Org");
         org.setSlug("org-" + UUID.randomUUID().toString().substring(0, 8));
@@ -75,10 +75,8 @@ class AttributionServiceTest {
     }
 
     @AfterEach
-    void tearDown() { wipe(); }
-
-    private void wipe() {
-        funnel.deleteAll(); orders.deleteAll(); events.deleteAll(); users.deleteAll(); orgs.deleteAll();
+    void tearDown() {
+        if (org != null) OrgRows.delete(jdbc, List.of(org.getId()));
     }
 
     private void visit(String anon, String source, String referrerHost) {

@@ -17,41 +17,31 @@ import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
-import com.imin.iminapi.stripe.StripeProperties;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.MutableClock;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
-import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
-import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
-import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Import;
-import org.springframework.context.annotation.Primary;
 import org.springframework.http.HttpStatus;
+import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Clock;
 import java.time.Instant;
-import java.time.ZoneOffset;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-@DataJpaTest
-@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import({QuoteService.class, QuoteServiceTest.FixedClockConfig.class})
-@EnableConfigurationProperties(StripeProperties.class)
+@IminIntegrationTest
+// Read-only service: rollback keeps these LIVE PUBLIC events out of every other class's global listing.
+@Transactional
 class QuoteServiceTest {
 
     static final Instant NOW = Instant.parse("2026-06-01T12:00:00Z");
-
-    @TestConfiguration
-    static class FixedClockConfig {
-        @Bean
-        @Primary
-        Clock fixedClock() { return Clock.fixed(NOW, ZoneOffset.UTC); }
-    }
 
     @Autowired QuoteService quoteService;
     @Autowired EventRepository eventRepository;
@@ -59,15 +49,18 @@ class QuoteServiceTest {
     @Autowired TicketTierRepository ticketTierRepository;
     @Autowired PromoCodeRepository promoCodeRepository;
     @Autowired UserRepository userRepository;
+    @Autowired MutableClock clock;
 
     Organization org;
     User owner;
 
     @BeforeEach
     void setUp() {
+        clock.setInstant(NOW);
+
         org = new Organization();
         org.setName("Quote Test Org");
-        org.setSlug("quote-org-" + UUID.randomUUID().toString().substring(0, 8));
+        org.setSlug("quote-org-" + UUID.randomUUID());
         org.setContactEmail("quote-org@example.com");
         org.setCountry("DE");
         org = organizationRepository.save(org);
@@ -81,7 +74,7 @@ class QuoteServiceTest {
 
     // ---- fixtures ----------------------------------------------------------
 
-    private Event publishedLiveEvent() {
+    Event publishedLiveEvent() {
         Event e = new Event();
         e.setOrgId(org.getId());
         e.setName("Quote Event");
@@ -94,25 +87,27 @@ class QuoteServiceTest {
         return eventRepository.save(e);
     }
 
-    private Event draftEvent() {
+    Event draftEvent() {
         Event e = new Event();
         e.setOrgId(org.getId());
         e.setName("Draft Event");
         e.setSlug("draft-event-" + UUID.randomUUID().toString().substring(0, 8));
         e.setVisibility(EventVisibility.PUBLIC);
         e.setStatus(EventStatus.DRAFT);
+        // An unpublished event keeps its publishedAt, so only the status check hides it.
+        e.setPublishedAt(NOW.minusSeconds(3600));
         e.setCreatedBy(owner.getId());
         e.setCurrency("EUR");
         return eventRepository.save(e);
     }
 
-    private Event cancelledEvent() {
+    Event cancelledEvent() {
         Event e = publishedLiveEvent();
         e.setStatus(EventStatus.CANCELLED);
         return eventRepository.save(e);
     }
 
-    private TicketTier tier(UUID eventId, int priceMinor) {
+    TicketTier tier(UUID eventId, int priceMinor) {
         TicketTier t = new TicketTier();
         t.setEventId(eventId);
         t.setName("GA");
@@ -122,7 +117,7 @@ class QuoteServiceTest {
         return ticketTierRepository.save(t);
     }
 
-    private PromoCode promo(UUID eventId, String code, int pct, int maxUses,
+    PromoCode promo(UUID eventId, String code, int pct, int maxUses,
                             int usedCount, boolean enabled) {
         PromoCode p = new PromoCode();
         p.setEventId(eventId);
@@ -182,87 +177,94 @@ class QuoteServiceTest {
         assertThat(reloaded.getUsedCount()).isZero();
     }
 
-    // ---- (c) 200 with invalid promo: applied=false + reason ----------------
+    // ---- (c) 200 with an unusable promo: applied=false + reason ---------
+    // (PromoCode model has no `expiresAt`; the closest "expired-like" state in
+    //  the schema is `usedCount >= maxUses`.)
 
-    @Test
-    void quote_returnsAppliedFalse_whenPromoUnknown() {
+    static Stream<Arguments> rejectedPromos() {
+        return Stream.of(
+                Arguments.of("unknown", "NOPE", null, "Invalid code"),
+                Arguments.of("exhausted", "SOLDOUT", new int[] {15, 50, 50, 1}, "Promo code has reached its usage limit"),
+                Arguments.of("disabled", "OFF", new int[] {25, 50, 0, 0}, "Promo code is no longer active"));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("rejectedPromos")
+    void quote_returnsAppliedFalse_whenPromoUnusable(String name, String code, int[] stored, String reason) {
         Event e = publishedLiveEvent();
         TicketTier t = tier(e.getId(), 2500);
+        if (stored != null) promo(e.getId(), code, stored[0], stored[1], stored[2], stored[3] == 1);
 
         QuoteResponse r = quoteService.quote(e.getId(),
-                new QuoteRequest(t.getId(), 2, "NOPE", null));
+                new QuoteRequest(t.getId(), 2, code, null));
 
+        // No discount; the fee still applies (99 × 2 + 5% × 5000 = 448).
         assertThat(r.discountMinor()).isZero();
-        // Invalid promo → no discount; fee still applies (99 × 2 + 5% × 5000 = 448).
         assertThat(r.feeMinor()).isEqualTo(448L);
         assertThat(r.totalMinor()).isEqualTo(5448L);
         assertThat(r.promo()).isNotNull();
         assertThat(r.promo().applied()).isFalse();
-        assertThat(r.promo().code()).isEqualTo("NOPE");
-        assertThat(r.promo().reason()).isEqualTo("Invalid code");
+        assertThat(r.promo().code()).isEqualTo(code);
+        assertThat(r.promo().discountPct()).isZero();
+        assertThat(r.promo().reason()).isEqualTo(reason);
     }
 
-    // ---- (d) 200 with exhausted promo: applied=false + reason --------------
-    // (PromoCode model has no `expiresAt`; the closest "expired-like" state in
-    //  the schema is `usedCount >= maxUses`. Disabled is covered separately.)
-
-    @Test
-    void quote_returnsAppliedFalse_whenPromoExhausted() {
-        Event e = publishedLiveEvent();
-        TicketTier t = tier(e.getId(), 2500);
-        promo(e.getId(), "SOLDOUT", 15, 50, 50, true);
-
-        QuoteResponse r = quoteService.quote(e.getId(),
-                new QuoteRequest(t.getId(), 1, "SOLDOUT", null));
-
-        assertThat(r.discountMinor()).isZero();
-        assertThat(r.promo().applied()).isFalse();
-        assertThat(r.promo().code()).isEqualTo("SOLDOUT");
-        assertThat(r.promo().reason()).contains("usage limit");
-    }
-
-    @Test
-    void quote_returnsAppliedFalse_whenPromoDisabled() {
-        Event e = publishedLiveEvent();
-        TicketTier t = tier(e.getId(), 2500);
-        promo(e.getId(), "OFF", 25, 50, 0, false);
-
-        QuoteResponse r = quoteService.quote(e.getId(),
-                new QuoteRequest(t.getId(), 1, "OFF", null));
-
-        assertThat(r.promo().applied()).isFalse();
-        assertThat(r.promo().reason()).contains("no longer active");
-    }
-
-    // ---- (e) 404 on draft event --------------------------------------------
-
-    @Test
-    void quote_returns404_onDraftEvent() {
-        Event e = draftEvent();
-        TicketTier t = tier(e.getId(), 2500);
-
-        assertThatThrownBy(() ->
-                quoteService.quote(e.getId(), new QuoteRequest(t.getId(), 1, null, null)))
-                .isInstanceOf(ApiException.class)
-                .satisfies(ex -> {
-                    ApiException api = (ApiException) ex;
-                    assertThat(api.status()).isEqualTo(HttpStatus.NOT_FOUND);
-                    assertThat(api.code()).isEqualTo(ErrorCode.NOT_FOUND);
-                });
-    }
-
-    // ---- event-level gate: status + event sale window (events-1) -----------
-
+    // ---- 404: event not buyable, or tier not buyable on this event -----
     // A CANCELLED event stays reachable by share-link (EventRepository.findPublic is
     // deliberately CANCELLED-tolerant so the detail page can render the banner), but a
     // buyer holding a tierId must not be able to price or buy a ticket for it.
-    @Test
-    void quote_returns404_onCancelledEvent() {
-        Event e = cancelledEvent();
-        TicketTier t = tier(e.getId(), 2500);
+
+    /** Returns {eventId, tierId} for the quote that must 404. */
+    static Stream<Arguments> notBuyable() {
+        return Stream.of(
+                Arguments.of("draft event", (Function<QuoteServiceTest, UUID[]>) t -> {
+                    Event e = t.draftEvent();
+                    return new UUID[] {e.getId(), t.tier(e.getId(), 2500).getId()};
+                }),
+                Arguments.of("cancelled event", (Function<QuoteServiceTest, UUID[]>) t -> {
+                    Event e = t.cancelledEvent();
+                    return new UUID[] {e.getId(), t.tier(e.getId(), 2500).getId()};
+                }),
+                Arguments.of("past event", (Function<QuoteServiceTest, UUID[]>) t -> {
+                    Event e = t.publishedLiveEvent();
+                    e.setStatus(EventStatus.PAST);
+                    t.eventRepository.save(e);
+                    return new UUID[] {e.getId(), t.tier(e.getId(), 2500).getId()};
+                }),
+                // The event-level sale window is enforced even when the tier itself has none.
+                Arguments.of("event sale not opened yet", (Function<QuoteServiceTest, UUID[]>) t -> {
+                    Event e = t.publishedLiveEvent();
+                    e.setOnSaleAt(NOW.plusSeconds(3600));
+                    t.eventRepository.save(e);
+                    return new UUID[] {e.getId(), t.tier(e.getId(), 2500).getId()};
+                }),
+                Arguments.of("event sale closed", (Function<QuoteServiceTest, UUID[]>) t -> {
+                    Event e = t.publishedLiveEvent();
+                    e.setSaleClosesAt(NOW.minusSeconds(60));
+                    t.eventRepository.save(e);
+                    return new UUID[] {e.getId(), t.tier(e.getId(), 2500).getId()};
+                }),
+                Arguments.of("tier of a different event", (Function<QuoteServiceTest, UUID[]>) t -> {
+                    Event a = t.publishedLiveEvent();
+                    Event b = t.publishedLiveEvent();
+                    return new UUID[] {a.getId(), t.tier(b.getId(), 2500).getId()};
+                }),
+                Arguments.of("tier sale closed", (Function<QuoteServiceTest, UUID[]>) t -> {
+                    Event e = t.publishedLiveEvent();
+                    TicketTier tier = t.tier(e.getId(), 2000);
+                    tier.setSaleClosesAt(NOW.minusSeconds(60)); // closed a minute ago
+                    t.ticketTierRepository.save(tier);
+                    return new UUID[] {e.getId(), tier.getId()};
+                }));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("notBuyable")
+    void quote_returns404_whenNotBuyable(String name, Function<QuoteServiceTest, UUID[]> arrange) {
+        UUID[] ids = arrange.apply(this);
 
         assertThatThrownBy(() ->
-                quoteService.quote(e.getId(), new QuoteRequest(t.getId(), 1, null, null)))
+                quoteService.quote(ids[0], new QuoteRequest(ids[1], 1, null, null)))
                 .isInstanceOf(ApiException.class)
                 .satisfies(ex -> {
                     ApiException api = (ApiException) ex;
@@ -271,134 +273,32 @@ class QuoteServiceTest {
                 });
     }
 
-    // The event-level sale window is enforced even when the tier itself has none.
-    @Test
-    void quote_returns404_whenEventSaleHasNotOpenedYet() {
-        Event e = publishedLiveEvent();
-        e.setOnSaleAt(NOW.plusSeconds(3600));
-        eventRepository.save(e);
-        TicketTier t = tier(e.getId(), 2500);
+    // ---- 400: malformed body -------------------------------------------
 
-        assertThatThrownBy(() ->
-                quoteService.quote(e.getId(), new QuoteRequest(t.getId(), 1, null, null)))
-                .isInstanceOf(ApiException.class)
-                .satisfies(ex -> assertThat(((ApiException) ex).status())
-                        .isEqualTo(HttpStatus.NOT_FOUND));
+    static Stream<Arguments> malformed() {
+        return Stream.of(
+                Arguments.of("quantity zero", true, 0, null, "quantity"),
+                Arguments.of("quantity missing", true, null, null, "quantity"),
+                Arguments.of("tierId missing", false, 1, null, "tierId"),
+                Arguments.of("promoCode blank", true, 1, "   ", "promoCode"));
     }
 
-    @Test
-    void quote_returns404_whenEventSaleHasClosed() {
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("malformed")
+    void quote_returns400_whenBodyMalformed(String name, boolean withTier, Integer quantity, String promoCode,
+                                            String field) {
         Event e = publishedLiveEvent();
-        e.setSaleClosesAt(NOW.minusSeconds(60));
-        eventRepository.save(e);
-        TicketTier t = tier(e.getId(), 2500);
+        UUID tierId = withTier ? tier(e.getId(), 2500).getId() : null;
 
         assertThatThrownBy(() ->
-                quoteService.quote(e.getId(), new QuoteRequest(t.getId(), 1, null, null)))
-                .isInstanceOf(ApiException.class)
-                .satisfies(ex -> assertThat(((ApiException) ex).status())
-                        .isEqualTo(HttpStatus.NOT_FOUND));
-    }
-
-    // ---- (f) 404 on tier from different event ------------------------------
-
-    @Test
-    void quote_returns404_whenTierBelongsToDifferentEvent() {
-        Event a = publishedLiveEvent();
-        Event b = publishedLiveEvent();
-        TicketTier tOfB = tier(b.getId(), 2500);
-
-        // Request quote on event A with a tier owned by event B.
-        assertThatThrownBy(() ->
-                quoteService.quote(a.getId(), new QuoteRequest(tOfB.getId(), 1, null, null)))
-                .isInstanceOf(ApiException.class)
-                .satisfies(ex -> {
-                    ApiException api = (ApiException) ex;
-                    assertThat(api.status()).isEqualTo(HttpStatus.NOT_FOUND);
-                });
-    }
-
-    // ---- (g) 400 on quantity=0 ---------------------------------------------
-
-    @Test
-    void quote_returns400_whenQuantityZero() {
-        Event e = publishedLiveEvent();
-        TicketTier t = tier(e.getId(), 2500);
-
-        assertThatThrownBy(() ->
-                quoteService.quote(e.getId(), new QuoteRequest(t.getId(), 0, null, null)))
+                quoteService.quote(e.getId(), new QuoteRequest(tierId, quantity, promoCode, null)))
                 .isInstanceOf(ApiException.class)
                 .satisfies(ex -> {
                     ApiException api = (ApiException) ex;
                     assertThat(api.status()).isEqualTo(HttpStatus.BAD_REQUEST);
                     assertThat(api.code()).isEqualTo(ErrorCode.INVALID_REQUEST);
-                    assertThat(api.fields()).containsKey("quantity");
+                    assertThat(api.fields()).containsOnlyKeys(field);
                 });
-    }
-
-    @Test
-    void quote_returns400_whenQuantityMissing() {
-        Event e = publishedLiveEvent();
-        TicketTier t = tier(e.getId(), 2500);
-
-        assertThatThrownBy(() ->
-                quoteService.quote(e.getId(), new QuoteRequest(t.getId(), null, null, null)))
-                .isInstanceOf(ApiException.class)
-                .satisfies(ex -> {
-                    ApiException api = (ApiException) ex;
-                    assertThat(api.status()).isEqualTo(HttpStatus.BAD_REQUEST);
-                    assertThat(api.fields()).containsKey("quantity");
-                });
-    }
-
-    @Test
-    void quote_returns400_whenTierIdMissing() {
-        Event e = publishedLiveEvent();
-
-        assertThatThrownBy(() ->
-                quoteService.quote(e.getId(), new QuoteRequest(null, 1, null, null)))
-                .isInstanceOf(ApiException.class)
-                .satisfies(ex -> {
-                    ApiException api = (ApiException) ex;
-                    assertThat(api.status()).isEqualTo(HttpStatus.BAD_REQUEST);
-                    assertThat(api.fields()).containsKey("tierId");
-                });
-    }
-
-    @Test
-    void quote_returns400_whenPromoCodeBlank() {
-        Event e = publishedLiveEvent();
-        TicketTier t = tier(e.getId(), 2500);
-
-        assertThatThrownBy(() ->
-                quoteService.quote(e.getId(), new QuoteRequest(t.getId(), 1, "   ", null)))
-                .isInstanceOf(ApiException.class)
-                .satisfies(ex -> {
-                    ApiException api = (ApiException) ex;
-                    assertThat(api.status()).isEqualTo(HttpStatus.BAD_REQUEST);
-                    assertThat(api.fields()).containsKey("promoCode");
-                });
-    }
-
-    // ---- bonus: tier with closed sale window → 404 -------------------------
-
-    @Test
-    void quote_returns404_whenTierSaleHasClosed() {
-        Event e = publishedLiveEvent();
-        TicketTier t = new TicketTier();
-        t.setEventId(e.getId());
-        t.setName("Early bird");
-        t.setPriceMinor(2000);
-        t.setQuantity(50);
-        t.setEnabled(true);
-        t.setSaleClosesAt(NOW.minusSeconds(60)); // closed a minute ago
-        ticketTierRepository.save(t);
-
-        assertThatThrownBy(() ->
-                quoteService.quote(e.getId(), new QuoteRequest(t.getId(), 1, null, null)))
-                .isInstanceOf(ApiException.class)
-                .satisfies(ex -> assertThat(((ApiException) ex).status())
-                        .isEqualTo(HttpStatus.NOT_FOUND));
     }
 
     // ---- price-drift detection ---------------------------------------------

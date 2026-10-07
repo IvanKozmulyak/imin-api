@@ -1,52 +1,40 @@
 package com.imin.iminapi.service.event;
 
-import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
+import java.util.Arrays;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class SalesMilestonesTest {
 
-    @Test
-    void nothingBelowHalf() {
-        assertEquals(List.of(), SalesMilestones.satisfied(0, 100));
-        assertEquals(List.of(), SalesMilestones.satisfied(49, 100));
-    }
-
-    @Test
-    void eachThresholdReachedInOrder() {
-        assertEquals(List.of(50), SalesMilestones.satisfied(50, 100));
-        assertEquals(List.of(50), SalesMilestones.satisfied(79, 100));
-        assertEquals(List.of(50, 80), SalesMilestones.satisfied(80, 100));
-        assertEquals(List.of(50, 80), SalesMilestones.satisfied(99, 100));
-        assertEquals(List.of(50, 80, 100), SalesMilestones.satisfied(100, 100));
-    }
-
-    @Test
-    void bigJumpReportsEverySatisfiedThreshold() {
-        // A single purchase that jumps 0 -> sold out reports all three; the caller
-        // records each (so none re-fire) but only notifies on the highest.
-        assertEquals(List.of(50, 80, 100), SalesMilestones.satisfied(100, 100));
-    }
-
-    @Test
-    void floorRoundingOnSmallTiers() {
-        assertEquals(List.of(), SalesMilestones.satisfied(1, 3));          // 33%
-        assertEquals(List.of(50), SalesMilestones.satisfied(2, 3));        // 66%
-        assertEquals(List.of(50, 80, 100), SalesMilestones.satisfied(3, 3)); // 100%
-    }
-
-    @Test
-    void nonPositiveCapacityIsEmpty() {
-        assertEquals(List.of(), SalesMilestones.satisfied(5, 0));
-        assertEquals(List.of(), SalesMilestones.satisfied(0, 0));
-        assertEquals(List.of(), SalesMilestones.satisfied(3, -1));
-    }
-
-    @Test
-    void overCapacityStillCapsAtAllThree() {
-        // Oversold (the [OVERSOLD] reconciliation path) must not produce phantom thresholds.
-        assertEquals(List.of(50, 80, 100), SalesMilestones.satisfied(120, 100));
+    @ParameterizedTest(name = "{0}/{1} sold → [{2}]")
+    @CsvSource({
+            // nothing below half
+            "0, 100, ''",
+            "49, 100, ''",
+            // each threshold reached in order; a jump straight to sold out reports all three
+            "50, 100, '50'",
+            "79, 100, '50'",
+            "80, 100, '50 80'",
+            "99, 100, '50 80'",
+            "100, 100, '50 80 100'",
+            // floor rounding on small tiers: 33%, 66%, 100%
+            "1, 3, ''",
+            "2, 3, '50'",
+            "3, 3, '50 80 100'",
+            // non-positive capacity
+            "5, 0, ''",
+            "0, 0, ''",
+            "3, -1, ''",
+            // oversold (the [OVERSOLD] reconciliation path) must not produce phantom thresholds
+            "120, 100, '50 80 100'"
+    })
+    void satisfied(int sold, int capacity, String thresholds) {
+        List<Integer> expected = thresholds.isBlank() ? List.of()
+                : Arrays.stream(thresholds.split(" ")).map(Integer::valueOf).toList();
+        assertEquals(expected, SalesMilestones.satisfied(sold, capacity));
     }
 }

@@ -1,6 +1,7 @@
 package com.imin.iminapi.service.event;
 
 import com.imin.iminapi.dto.PageResponse;
+import com.imin.iminapi.dto.publicapi.PublicCityItem;
 import com.imin.iminapi.dto.publicapi.PublicEventListItem;
 import com.imin.iminapi.model.*;
 import com.imin.iminapi.repository.EventRepository;
@@ -9,73 +10,55 @@ import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
-import com.imin.iminapi.stripe.StripeProperties;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.MutableClock;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.test.util.ReflectionTestUtils;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
-import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
-import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Import;
-import org.springframework.context.annotation.Primary;
 import org.springframework.http.HttpStatus;
+import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Clock;
 import java.time.Instant;
-import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
+import java.util.function.Consumer;
+import java.util.function.Function;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.*;
 
-@DataJpaTest
-@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import({PublicEventService.class, PublicListingConfig.class, PublicEventServiceListTest.FixedClockConfig.class})
+@IminIntegrationTest
+// Read-only service: rollback keeps these LIVE PUBLIC events out of every other class's global listing.
+@Transactional
 class PublicEventServiceListTest {
 
     /** Fixed "now" for all flag-computation tests: 2026-06-01T12:00:00Z */
     static final Instant NOW = Instant.parse("2026-06-01T12:00:00Z");
-
-    @TestConfiguration
-    static class FixedClockConfig {
-        @Bean
-        @Primary
-        Clock fixedClock() {
-            return Clock.fixed(NOW, ZoneOffset.UTC);
-        }
-
-        /**
-         * priceFromMinor is fee-inclusive, so the slice needs the fee rates. Defaults
-         * (500 bps + 99 minor) are the production values — StripeConfig can't be
-         * imported here because it eagerly builds a Stripe client.
-         */
-        @Bean
-        StripeProperties stripeProperties() {
-            return new StripeProperties();
-        }
-    }
-
-    /** Fee added on top of a single ticket at price {@code p} (0 stays free). */
-    private static int withFee(int p) {
-        return p == 0 ? 0 : (int) (p + QuoteService.computeFee(p, 1, 500, 99));
-    }
 
     @Autowired PublicEventService publicEventService;
     @Autowired EventRepository eventRepository;
     @Autowired OrganizationRepository organizationRepository;
     @Autowired TicketTierRepository ticketTierRepository;
     @Autowired UserRepository userRepository;
+    @Autowired MutableClock clock;
 
     Organization org;
     User owner;
+    /** Suffix that makes this test's facet keys its own on the shared database. */
+    String uid;
 
     @BeforeEach
     void setUp() {
+        clock.setInstant(NOW);
+        uid = UUID.randomUUID().toString().substring(0, 8);
+
         org = new Organization();
         org.setName("Test Org");
-        org.setSlug("test-org-" + UUID.randomUUID().toString().substring(0, 8));
+        org.setSlug("test-org-" + UUID.randomUUID());
         org.setContactEmail("org@example.com");
         org.setCountry("DE");
         org = organizationRepository.save(org);
@@ -90,11 +73,11 @@ class PublicEventServiceListTest {
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
-    private Event publishedLiveEvent() {
+    Event publishedLiveEvent() {
         Event e = new Event();
         e.setOrgId(org.getId());
         e.setName("Great Event");
-        e.setSlug("event-" + UUID.randomUUID().toString().substring(0, 8));
+        e.setSlug("event-" + UUID.randomUUID());
         e.setVisibility(EventVisibility.PUBLIC);
         e.setStatus(EventStatus.LIVE);
         e.setPublishedAt(NOW.minusSeconds(3600));
@@ -108,8 +91,12 @@ class PublicEventServiceListTest {
         return e;
     }
 
-    private TicketTier tier(UUID eventId, String name, int priceMinor, int quantity, int sold,
-                            boolean enabled, int sortOrder) {
+    Event saved(Event e) {
+        return eventRepository.save(e);
+    }
+
+    TicketTier tier(UUID eventId, String name, int priceMinor, int quantity, int sold,
+                    boolean enabled, int sortOrder) {
         TicketTier tier = new TicketTier();
         tier.setEventId(eventId);
         tier.setName(name);
@@ -122,22 +109,43 @@ class PublicEventServiceListTest {
     }
 
     /** Enabled tier with an explicit sale window — drives the purchasable-tier cases. */
-    private TicketTier tierWithWindow(UUID eventId, String name, int priceMinor, int quantity, int sold,
-                                      int sortOrder, Instant saleStartsAt, Instant saleClosesAt) {
+    TicketTier tierWithWindow(UUID eventId, String name, int priceMinor, int quantity, int sold,
+                              int sortOrder, Instant saleStartsAt, Instant saleClosesAt) {
         TicketTier tier = tier(eventId, name, priceMinor, quantity, sold, true, sortOrder);
         tier.setSaleStartsAt(saleStartsAt);
         tier.setSaleClosesAt(saleClosesAt);
         return ticketTierRepository.save(tier);
     }
 
+    /** This org's listing; every listing assertion is scoped to it on the shared database. */
     private PublicEventListQuery emptyQuery() {
-        return new PublicEventListQuery(
-                null, null, null, null, null, null, null, null, false, false, false, 1, 20);
+        return onlyPage(1, 20);
     }
 
     private PublicEventListQuery onlyPage(int page, int pageSize) {
         return new PublicEventListQuery(
-                null, null, null, null, null, null, null, null, false, false, false, page, pageSize);
+                null, null, null, null, null, null, org.getSlug(), null, false, false, false, page, pageSize);
+    }
+
+    private List<UUID> ownIds(PublicEventListQuery query) {
+        return publicEventService.list(query).items().stream().map(PublicEventListItem::id).toList();
+    }
+
+    /** A facet key only this test writes. */
+    private String own(String base) {
+        return base + "-" + uid;
+    }
+
+    private boolean isOwn(String label) {
+        return label != null && label.toLowerCase(Locale.ROOT).endsWith("-" + uid);
+    }
+
+    private List<PublicCityItem> ownCities() {
+        return publicEventService.listCities().stream().filter(c -> isOwn(c.city())).toList();
+    }
+
+    private List<String> ownGenres() {
+        return publicEventService.listGenres().stream().filter(this::isOwn).toList();
     }
 
     /**
@@ -177,64 +185,29 @@ class PublicEventServiceListTest {
     // -----------------------------------------------------------------------
     // Eligibility filtering
     // -----------------------------------------------------------------------
-    @Test
-    void excludes_draft_events() {
-        Event e = publishedLiveEvent();
-        e.setStatus(EventStatus.DRAFT);
-        e.setPublishedAt(null);
-        eventRepository.save(e);
-
-        PageResponse<PublicEventListItem> result = publicEventService.list(emptyQuery());
-        assertThat(result.items()).isEmpty();
-        assertThat(result.total()).isZero();
+    static Stream<Arguments> ineligible() {
+        return Stream.of(
+                // An unpublished event keeps its publishedAt, so only the status clause excludes it.
+                Arguments.of("draft", (Consumer<Event>) e -> e.setStatus(EventStatus.DRAFT)),
+                // Passes every other clause, so this pins the dedicated CANCELLED guard; detail still serves it.
+                Arguments.of("cancelled", (Consumer<Event>) e -> e.setStatus(EventStatus.CANCELLED)),
+                Arguments.of("private", (Consumer<Event>) e -> e.setVisibility(EventVisibility.PRIVATE)),
+                Arguments.of("null publishedAt", (Consumer<Event>) e -> e.setPublishedAt(null)),
+                Arguments.of("soft-deleted", (Consumer<Event>) e -> e.setDeletedAt(NOW.minusSeconds(60))));
     }
 
-    @Test
-    void excludes_cancelled_events() {
-        // Published + future + PUBLIC, but CANCELLED — passes every other clause of the
-        // eligibility predicate, so this pins the dedicated status guard. The detail
-        // endpoint still serves it (PublicEventServiceTest.returnsEvent_whenStatusCancelled).
-        Event e = publishedLiveEvent();
-        e.setStatus(EventStatus.CANCELLED);
-        eventRepository.save(e);
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("ineligible")
+    void excludes_ineligible_events(String name, Consumer<Event> makeIneligible) {
+        Event visible = saved(publishedLiveEvent());
+        Event excluded = publishedLiveEvent();
+        excluded.setStartsAt(NOW.plusSeconds(3600)); // would sort first if it leaked
+        makeIneligible.accept(excluded);
+        saved(excluded);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(emptyQuery());
-        assertThat(result.items()).isEmpty();
-        assertThat(result.total()).isZero();
-    }
-
-    @Test
-    void excludes_private_events() {
-        Event e = publishedLiveEvent();
-        e.setVisibility(EventVisibility.PRIVATE);
-        eventRepository.save(e);
-
-        PageResponse<PublicEventListItem> result = publicEventService.list(emptyQuery());
-        assertThat(result.items()).isEmpty();
-    }
-
-    @Test
-    void excludes_unpublished_events_with_null_publishedAt() {
-        // Defensive: status=LIVE but publishedAt=null shouldn't actually occur in practice
-        // (the persistence path always sets publishedAt before LIVE), but the predicate must
-        // still exclude it. Isolates the `publishedAt IS NOT NULL` branch from the draft test.
-        Event e = publishedLiveEvent();
-        e.setPublishedAt(null);
-        eventRepository.save(e);
-
-        PageResponse<PublicEventListItem> result = publicEventService.list(emptyQuery());
-        assertThat(result.items()).isEmpty();
-        assertThat(result.total()).isZero();
-    }
-
-    @Test
-    void excludes_soft_deleted_events() {
-        Event e = publishedLiveEvent();
-        e.setDeletedAt(NOW.minusSeconds(60));
-        eventRepository.save(e);
-
-        PageResponse<PublicEventListItem> result = publicEventService.list(emptyQuery());
-        assertThat(result.items()).isEmpty();
+        assertThat(result.items()).extracting(PublicEventListItem::id).containsExactly(visible.getId());
+        assertThat(result.total()).isEqualTo(1);
     }
 
     // -----------------------------------------------------------------------
@@ -250,41 +223,9 @@ class PublicEventServiceListTest {
         eventRepository.save(b);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, List.of("techno"), null, null, null, null, null, false, false, false, 1, 20));
+                null, null, List.of("techno"), null, null, null, org.getSlug(), null, false, false, false, 1, 20));
         assertThat(result.items()).hasSize(1);
         assertThat(result.items().get(0).genre()).isEqualTo("techno");
-    }
-
-    /**
-     * The facet placeholder must be text every engine accepts.
-     *
-     * <p>This exists because the first version used a NUL byte: unmatchable, which
-     * was the requirement being thought about, and accepted by H2, so the whole
-     * suite passed while production returned 400 for every listing call — Postgres
-     * rejects NUL in text. No behavioural test on H2 can catch that, so the
-     * invariant is asserted directly on the value instead.
-     */
-    @Test
-    void theEmptyFacetPlaceholderContainsNoControlCharacters() {
-        PageResponse<PublicEventListItem> unfiltered = publicEventService.list(new PublicEventListQuery(
-                null, null, List.of(), List.of(), null, null, null, null,
-                false, false, false, 1, 20));
-        assertThat(unfiltered).isNotNull();
-
-        // The value bound whenever a facet is off, read back from the service.
-        String placeholder = ReflectionTestUtils.getField(PublicEventService.class, "NO_FACET") == null
-                ? null
-                : ((java.util.Collection<?>) java.util.Objects.requireNonNull(
-                        ReflectionTestUtils.getField(PublicEventService.class, "NO_FACET")))
-                        .iterator().next().toString();
-
-        assertThat(placeholder)
-                .as("the placeholder is bound on every query where a facet is absent")
-                .isNotNull();
-        assertThat(placeholder.chars().anyMatch(Character::isISOControl))
-                .as("Postgres rejects control characters in text; H2 accepts them, "
-                        + "so only this assertion stands between the two")
-                .isFalse();
     }
 
     /**
@@ -305,7 +246,7 @@ class PublicEventServiceListTest {
         eventRepository.save(disco);
 
         PageResponse<PublicEventListItem> both = publicEventService.list(new PublicEventListQuery(
-                null, null, List.of("techno", "house"), null, null, null, null, null,
+                null, null, List.of("techno", "house"), null, null, null, org.getSlug(), null,
                 false, false, false, 1, 20));
         assertThat(both.items())
                 .extracting(PublicEventListItem::id)
@@ -314,13 +255,13 @@ class PublicEventServiceListTest {
         // Casing still folds to one key, and a key repeated across spellings is
         // not a wider query — it is the same single value.
         PageResponse<PublicEventListItem> shouted = publicEventService.list(new PublicEventListQuery(
-                null, null, List.of("TECHNO", "  techno "), null, null, null, null, null,
+                null, null, List.of("TECHNO", "  techno "), null, null, null, org.getSlug(), null,
                 false, false, false, 1, 20));
         assertThat(shouted.items()).extracting(PublicEventListItem::id).containsExactly(techno.getId());
 
         // Blank-only input is not a filter that matches nothing.
         PageResponse<PublicEventListItem> blanks = publicEventService.list(new PublicEventListQuery(
-                null, null, List.of("", "   "), null, null, null, null, null,
+                null, null, List.of("", "   "), null, null, null, org.getSlug(), null,
                 false, false, false, 1, 20));
         assertThat(blanks.items()).hasSize(3);
     }
@@ -345,7 +286,7 @@ class PublicEventServiceListTest {
         eventRepository.save(technoConcert);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, List.of("techno"), List.of("Rave", "Club"), null, null, null, null,
+                null, null, List.of("techno"), List.of("Rave", "Club"), null, null, org.getSlug(), null,
                 false, false, false, 1, 20));
 
         // "techno AND (Rave OR Club)" — the house rave and the techno concert both
@@ -372,7 +313,7 @@ class PublicEventServiceListTest {
 
         for (String probe : List.of("Techno", "techno", "  TECHNO ")) {
             PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                    null, null, List.of(probe), null, null, null, null, null, false, false, false, 1, 20));
+                    null, null, List.of(probe), null, null, null, org.getSlug(), null, false, false, false, 1, 20));
             assertThat(result.items())
                     .as("?genre=%s must find both spellings of one genre", probe)
                     .extracting(PublicEventListItem::id)
@@ -395,7 +336,7 @@ class PublicEventServiceListTest {
         eventRepository.save(b);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, List.of("festival"), null, null, null, null, false, false, false, 1, 20));
+                null, null, null, List.of("festival"), null, null, org.getSlug(), null, false, false, false, 1, 20));
         assertThat(result.items()).hasSize(1);
         assertThat(result.items().get(0).type()).isEqualTo("festival");
     }
@@ -410,7 +351,7 @@ class PublicEventServiceListTest {
         eventRepository.save(b);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, "fr", null, null, false, false, false, 1, 20));
+                null, null, null, null, null, "fr", org.getSlug(), null, false, false, false, 1, 20));
         assertThat(result.items()).hasSize(1);
         assertThat(result.items().get(0).venueCountry()).isEqualTo("FR");
     }
@@ -431,12 +372,12 @@ class PublicEventServiceListTest {
         eventRepository.save(b);
 
         PageResponse<PublicEventListItem> exact = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, "  BERLIN ", null, null, null, false, false, false, 1, 20));
+                null, null, null, null, "  BERLIN ", null, org.getSlug(), null, false, false, false, 1, 20));
         assertThat(exact.items()).hasSize(1);
         assertThat(exact.items().get(0).venueCity()).isEqualTo("Berlin");
 
         PageResponse<PublicEventListItem> prefix = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, "berl", null, null, null, false, false, false, 1, 20));
+                null, null, null, null, "berl", null, org.getSlug(), null, false, false, false, 1, 20));
         assertThat(prefix.items()).isEmpty();
     }
 
@@ -455,7 +396,7 @@ class PublicEventServiceListTest {
         eventRepository.save(padded);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, "Metz", null, null, null, false, false, false, 1, 20));
+                null, null, null, null, "Metz", null, org.getSlug(), null, false, false, false, 1, 20));
         assertThat(result.items()).hasSize(3);
     }
 
@@ -469,37 +410,56 @@ class PublicEventServiceListTest {
         eventRepository.save(b);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, null, null, "festIVAL", false, false, false, 1, 20));
+                null, null, null, null, null, null, org.getSlug(), "festIVAL", false, false, false, 1, 20));
         assertThat(result.items()).hasSize(1);
         assertThat(result.items().get(0).name()).isEqualTo("Summer Festival");
     }
 
     // -----------------------------------------------------------------------
-    // from/to window boundaries
+    // from/to window boundaries, includeOngoing
     // -----------------------------------------------------------------------
-    @Test
-    void from_window_includes_boundary() {
+    static Stream<Arguments> windowBoundaries() {
         Instant start = NOW.plusSeconds(86400);
-        Event a = publishedLiveEvent();
-        a.setStartsAt(start);
-        eventRepository.save(a);
-
-        PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                start, null, null, null, null, null, null, null, false, false, false, 1, 20));
-        assertThat(result.items()).hasSize(1);
+        return Stream.of(
+                Arguments.of("from == startsAt is included", start, null, true),
+                // to == startsAt means startsAt < to is false
+                Arguments.of("to == startsAt is excluded", null, start, false));
     }
 
-    @Test
-    void to_window_excludes_boundary() {
-        Instant start = NOW.plusSeconds(86400);
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("windowBoundaries")
+    void window_boundaries(String name, Instant from, Instant to, boolean listed) {
         Event a = publishedLiveEvent();
-        a.setStartsAt(start);
-        eventRepository.save(a);
+        a.setStartsAt(NOW.plusSeconds(86400));
+        a = saved(a);
 
-        // to == startsAt means startsAt < to is false → excluded
-        PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, start, null, null, null, null, null, null, false, false, false, 1, 20));
-        assertThat(result.items()).isEmpty();
+        List<UUID> ids = ownIds(new PublicEventListQuery(
+                from, to, null, null, null, null, org.getSlug(), null, false, false, false, 1, 20));
+        assertThat(ids.contains(a.getId())).isEqualTo(listed);
+    }
+
+    static Stream<Arguments> ongoing() {
+        return Stream.of(
+                // Doors open: started 1h ago, ends in 1h.
+                Arguments.of("ongoing, includeOngoing=false", -3600L, 3600L, false, false),
+                Arguments.of("ongoing, includeOngoing=true", -3600L, 3600L, true, true),
+                // Started and ended in the past: drops in both modes.
+                Arguments.of("finished, includeOngoing=true", -7200L, -3600L, true, false),
+                Arguments.of("finished, includeOngoing=false", -7200L, -3600L, false, false));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("ongoing")
+    void includeOngoing_keeps_running_events_and_drops_finished_ones(
+            String name, long startOffset, long endOffset, boolean includeOngoing, boolean listed) {
+        Event e = publishedLiveEvent();
+        e.setStartsAt(NOW.plusSeconds(startOffset));
+        e.setEndsAt(NOW.plusSeconds(endOffset));
+        e = saved(e);
+
+        List<UUID> ids = ownIds(new PublicEventListQuery(
+                NOW, null, null, null, null, null, org.getSlug(), null, false, includeOngoing, false, 1, 20));
+        assertThat(ids).isEqualTo(listed ? List.of(e.getId()) : List.of());
     }
 
     // -----------------------------------------------------------------------
@@ -509,7 +469,7 @@ class PublicEventServiceListTest {
     void filter_by_orgSlug_resolves_org() {
         Organization other = new Organization();
         other.setName("Other Org");
-        other.setSlug("other-org-" + UUID.randomUUID().toString().substring(0, 8));
+        other.setSlug("other-org-" + UUID.randomUUID());
         other.setContactEmail("other@example.com");
         other.setCountry("FR");
         other = organizationRepository.save(other);
@@ -526,11 +486,11 @@ class PublicEventServiceListTest {
         Event b = publishedLiveEvent();
         b.setOrgId(other.getId());
         b.setCreatedBy(otherOwner.getId());
-        eventRepository.save(b);
+        b = eventRepository.save(b);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
                 null, null, null, null, null, null, other.getSlug(), null, false, false, false, 1, 20));
-        assertThat(result.items()).hasSize(1);
+        assertThat(result.items()).extracting(PublicEventListItem::id).containsExactly(b.getId());
         assertThat(result.items().get(0).organization().slug()).isEqualTo(other.getSlug());
     }
 
@@ -539,7 +499,7 @@ class PublicEventServiceListTest {
         eventRepository.save(publishedLiveEvent());
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, null, "no-such-org", null, false, false, false, 1, 20));
+                null, null, null, null, null, null, "no-such-org-" + uid, null, false, false, false, 1, 20));
         assertThat(result.items()).isEmpty();
         assertThat(result.total()).isZero();
         assertThat(result.page()).isEqualTo(1);
@@ -549,38 +509,29 @@ class PublicEventServiceListTest {
     // -----------------------------------------------------------------------
     // onSaleOnly
     // -----------------------------------------------------------------------
-    @Test
-    void onSaleOnly_excludes_future_onSaleAt() {
-        Event a = publishedLiveEvent();
-        a.setOnSaleAt(NOW.plusSeconds(3600)); // future
-        eventRepository.save(a);
-
-        PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, null, null, null, true, false, false, 1, 20));
-        assertThat(result.items()).isEmpty();
+    static Stream<Arguments> onSaleOnly() {
+        return Stream.of(
+                Arguments.of("future onSaleAt is excluded",
+                        (Consumer<Event>) e -> e.setOnSaleAt(NOW.plusSeconds(3600)), false),
+                Arguments.of("null onSaleAt is included",
+                        (Consumer<Event>) e -> e.setOnSaleAt(null), true),
+                Arguments.of("past saleClosesAt is excluded",
+                        (Consumer<Event>) e -> {
+                            e.setOnSaleAt(NOW.minusSeconds(7200));
+                            e.setSaleClosesAt(NOW.minusSeconds(60));
+                        }, false));
     }
 
-    @Test
-    void onSaleOnly_includes_null_onSaleAt() {
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("onSaleOnly")
+    void onSaleOnly_filters_on_the_event_sale_window(String name, Consumer<Event> window, boolean listed) {
         Event a = publishedLiveEvent();
-        a.setOnSaleAt(null);
-        eventRepository.save(a);
+        window.accept(a);
+        a = saved(a);
 
-        PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, null, null, null, true, false, false, 1, 20));
-        assertThat(result.items()).hasSize(1);
-    }
-
-    @Test
-    void onSaleOnly_excludes_past_saleClosesAt() {
-        Event a = publishedLiveEvent();
-        a.setOnSaleAt(NOW.minusSeconds(7200));
-        a.setSaleClosesAt(NOW.minusSeconds(60)); // past
-        eventRepository.save(a);
-
-        PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, null, null, null, true, false, false, 1, 20));
-        assertThat(result.items()).isEmpty();
+        List<UUID> ids = ownIds(new PublicEventListQuery(
+                null, null, null, null, null, null, org.getSlug(), null, true, false, false, 1, 20));
+        assertThat(ids).isEqualTo(listed ? List.of(a.getId()) : List.of());
     }
 
     // -----------------------------------------------------------------------
@@ -640,8 +591,6 @@ class PublicEventServiceListTest {
         assertThat(result.items().get(0).startsAt()).isEqualTo(earlier);
         assertThat(result.items().get(1).startsAt()).isEqualTo(earlier);
         // Tie-break by id ASC: the smaller id (per DB ordering) sorts first.
-        // Build the expected ordering directly from the two persisted ids,
-        // sorting them the same way the DB does — natural UUID compare.
         UUID firstReturned = result.items().get(0).id();
         UUID secondReturned = result.items().get(1).id();
         assertThat(firstReturned).isNotEqualTo(secondReturned);
@@ -657,152 +606,127 @@ class PublicEventServiceListTest {
     // -----------------------------------------------------------------------
     // priceFromMinor — min over PURCHASABLE tiers, fee-inclusive for one ticket
     // -----------------------------------------------------------------------
-    @Test
-    void priceFromMinor_uses_min_purchasable_tier_fee_inclusive() {
-        Event a = eventRepository.save(publishedLiveEvent());
-        tier(a.getId(), "VIP", 5000, 100, 0, true, 0);
-        tier(a.getId(), "GA", 2500, 100, 0, true, 1);
-        tier(a.getId(), "Cheap", 1500, 100, 0, true, 2);
-
-        PageResponse<PublicEventListItem> result = publicEventService.list(emptyQuery());
-        assertThat(result.items()).hasSize(1);
-        // 1500 + 5% (75) + €0.99 (99) = 1674
-        assertThat(result.items().get(0).priceFromMinor()).isEqualTo(withFee(1500)).isEqualTo(1674);
+    static Stream<Arguments> priceFrom() {
+        return Stream.of(
+                // 1500 + 5% (75) + €0.99 (99) = 1674
+                Arguments.of("min purchasable tier, fee-inclusive", (Function<PublicEventServiceListTest, Event>) t -> {
+                    Event a = t.saved(t.publishedLiveEvent());
+                    t.tier(a.getId(), "VIP", 5000, 100, 0, true, 0);
+                    t.tier(a.getId(), "GA", 2500, 100, 0, true, 1);
+                    t.tier(a.getId(), "Cheap", 1500, 100, 0, true, 2);
+                    return a;
+                }, 1674),
+                Arguments.of("no enabled tier", (Function<PublicEventServiceListTest, Event>) t ->
+                        t.saved(t.publishedLiveEvent()), null),
+                // 2000 + 100 + 99
+                Arguments.of("disabled tier ignored", (Function<PublicEventServiceListTest, Event>) t -> {
+                    Event a = t.saved(t.publishedLiveEvent());
+                    t.tier(a.getId(), "Disabled Cheap", 100, 100, 0, false, 0);
+                    t.tier(a.getId(), "Enabled GA", 2000, 100, 0, true, 1);
+                    return a;
+                }, 2199),
+                // 3500 + 175 + 99
+                Arguments.of("sold-out tier excluded", (Function<PublicEventServiceListTest, Event>) t -> {
+                    Event a = t.saved(t.publishedLiveEvent());
+                    t.tier(a.getId(), "Cheap but gone", 1000, 50, 50, true, 0);
+                    t.tier(a.getId(), "Still buyable", 3500, 100, 0, true, 1);
+                    return a;
+                }, 3774),
+                Arguments.of("tier not yet on sale excluded", (Function<PublicEventServiceListTest, Event>) t -> {
+                    Event a = t.saved(t.publishedLiveEvent());
+                    t.tierWithWindow(a.getId(), "Early bird, opens later", 1000, 100, 0, 0,
+                            NOW.plusSeconds(3600), null);
+                    t.tier(a.getId(), "On sale now", 3500, 100, 0, true, 1);
+                    return a;
+                }, 3774),
+                Arguments.of("tier whose sale closed excluded", (Function<PublicEventServiceListTest, Event>) t -> {
+                    Event a = t.saved(t.publishedLiveEvent());
+                    t.tierWithWindow(a.getId(), "Presale, closed", 1000, 100, 0, 0, null, NOW.minusSeconds(60));
+                    t.tier(a.getId(), "Door price", 3500, 100, 0, true, 1);
+                    return a;
+                }, 3774),
+                // onSaleOnly=false keeps the event listed, but nothing is buyable yet.
+                Arguments.of("event not yet on sale", (Function<PublicEventServiceListTest, Event>) t -> {
+                    Event a = t.publishedLiveEvent();
+                    a.setOnSaleAt(NOW.plusSeconds(3600));
+                    a = t.saved(a);
+                    t.tier(a.getId(), "GA", 2500, 100, 0, true, 0);
+                    return a;
+                }, null),
+                Arguments.of("every tier unpurchasable", (Function<PublicEventServiceListTest, Event>) t -> {
+                    Event a = t.saved(t.publishedLiveEvent());
+                    t.tier(a.getId(), "Sold out", 1000, 20, 20, true, 0);
+                    t.tierWithWindow(a.getId(), "Closed", 2000, 100, 0, 1, null, NOW.minusSeconds(1));
+                    return a;
+                }, null),
+                // The fee is waived on €0, matching QuoteService.
+                Arguments.of("free tier stays zero", (Function<PublicEventServiceListTest, Event>) t -> {
+                    Event a = t.saved(t.publishedLiveEvent());
+                    t.tier(a.getId(), "Free entry", 0, 100, 0, true, 0);
+                    t.tier(a.getId(), "Supporter", 2000, 100, 0, true, 1);
+                    return a;
+                }, 0));
     }
 
-    @Test
-    void priceFromMinor_null_when_no_enabled_tier() {
-        eventRepository.save(publishedLiveEvent());
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("priceFrom")
+    void priceFromMinor_is_the_cheapest_purchasable_tier_fee_inclusive(
+            String name, Function<PublicEventServiceListTest, Event> arrange, Integer expected) {
+        Event a = arrange.apply(this);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(emptyQuery());
-        assertThat(result.items()).hasSize(1);
-        assertThat(result.items().get(0).priceFromMinor()).isNull();
-    }
-
-    @Test
-    void priceFromMinor_ignores_disabled_tiers() {
-        Event a = eventRepository.save(publishedLiveEvent());
-        tier(a.getId(), "Disabled Cheap", 100, 100, 0, false, 0);
-        tier(a.getId(), "Enabled GA", 2000, 100, 0, true, 1);
-
-        PageResponse<PublicEventListItem> result = publicEventService.list(emptyQuery());
-        assertThat(result.items()).hasSize(1);
-        assertThat(result.items().get(0).priceFromMinor()).isEqualTo(withFee(2000));
-    }
-
-    @Test
-    void priceFromMinor_excludes_sold_out_tiers() {
-        Event a = eventRepository.save(publishedLiveEvent());
-        tier(a.getId(), "Cheap but gone", 1000, 50, 50, true, 0);
-        tier(a.getId(), "Still buyable", 3500, 100, 0, true, 1);
-
-        PageResponse<PublicEventListItem> result = publicEventService.list(emptyQuery());
-        assertThat(result.items().get(0).priceFromMinor()).isEqualTo(withFee(3500));
-    }
-
-    @Test
-    void priceFromMinor_excludes_tiers_not_yet_on_sale() {
-        Event a = eventRepository.save(publishedLiveEvent());
-        tierWithWindow(a.getId(), "Early bird, opens later", 1000, 100, 0, 0,
-                NOW.plusSeconds(3600), null);
-        tier(a.getId(), "On sale now", 3500, 100, 0, true, 1);
-
-        PageResponse<PublicEventListItem> result = publicEventService.list(emptyQuery());
-        assertThat(result.items().get(0).priceFromMinor()).isEqualTo(withFee(3500));
-    }
-
-    @Test
-    void priceFromMinor_excludes_tiers_whose_sale_closed() {
-        Event a = eventRepository.save(publishedLiveEvent());
-        tierWithWindow(a.getId(), "Presale, closed", 1000, 100, 0, 0,
-                null, NOW.minusSeconds(60));
-        tier(a.getId(), "Door price", 3500, 100, 0, true, 1);
-
-        PageResponse<PublicEventListItem> result = publicEventService.list(emptyQuery());
-        assertThat(result.items().get(0).priceFromMinor()).isEqualTo(withFee(3500));
-    }
-
-    @Test
-    void priceFromMinor_null_when_event_not_yet_on_sale() {
-        Event a = publishedLiveEvent();
-        a.setOnSaleAt(NOW.plusSeconds(3600)); // event-level gate still shut
-        a = eventRepository.save(a);
-        tier(a.getId(), "GA", 2500, 100, 0, true, 0);
-
-        // onSaleOnly=false, so the event is still listed — but nothing is buyable yet.
-        PageResponse<PublicEventListItem> result = publicEventService.list(emptyQuery());
-        assertThat(result.items()).hasSize(1);
-        assertThat(result.items().get(0).priceFromMinor()).isNull();
-    }
-
-    @Test
-    void priceFromMinor_null_when_every_tier_unpurchasable() {
-        Event a = eventRepository.save(publishedLiveEvent());
-        tier(a.getId(), "Sold out", 1000, 20, 20, true, 0);
-        tierWithWindow(a.getId(), "Closed", 2000, 100, 0, 1, null, NOW.minusSeconds(1));
-
-        PageResponse<PublicEventListItem> result = publicEventService.list(emptyQuery());
-        assertThat(result.items()).hasSize(1);
-        assertThat(result.items().get(0).priceFromMinor()).isNull();
-    }
-
-    @Test
-    void priceFromMinor_free_tier_stays_zero() {
-        Event a = eventRepository.save(publishedLiveEvent());
-        tier(a.getId(), "Free entry", 0, 100, 0, true, 0);
-        tier(a.getId(), "Supporter", 2000, 100, 0, true, 1);
-
-        PageResponse<PublicEventListItem> result = publicEventService.list(emptyQuery());
-        assertThat(result.items().get(0).priceFromMinor()).isZero();
+        assertThat(result.items()).extracting(PublicEventListItem::id).containsExactly(a.getId());
+        assertThat(result.items().get(0).priceFromMinor()).isEqualTo(expected);
     }
 
     // -----------------------------------------------------------------------
-    // soldOut / lowStock — unchanged semantics after the query swap
+    // soldOut / lowStock
     // -----------------------------------------------------------------------
-    @Test
-    void soldOut_true_when_every_enabled_tier_is_empty() {
-        Event a = eventRepository.save(publishedLiveEvent());
-        tier(a.getId(), "GA", 2000, 30, 30, true, 0);
-        tier(a.getId(), "VIP", 5000, 10, 10, true, 1);
-        tier(a.getId(), "Disabled with stock", 100, 500, 0, false, 2);
-
-        PublicEventListItem item = publicEventService.list(emptyQuery()).items().get(0);
-        assertThat(item.soldOut()).isTrue();
-        assertThat(item.lowStock()).isFalse();
-        assertThat(item.priceFromMinor()).isNull();
+    static Stream<Arguments> availabilityFlags() {
+        return Stream.of(
+                Arguments.of("every enabled tier empty, disabled stock ignored",
+                        (Function<PublicEventServiceListTest, Event>) t -> {
+                            Event a = t.saved(t.publishedLiveEvent());
+                            t.tier(a.getId(), "GA", 2000, 30, 30, true, 0);
+                            t.tier(a.getId(), "VIP", 5000, 10, 10, true, 1);
+                            t.tier(a.getId(), "Disabled with stock", 100, 500, 0, false, 2);
+                            return a;
+                        }, true, false),
+                Arguments.of("one enabled tier still has stock",
+                        (Function<PublicEventServiceListTest, Event>) t -> {
+                            Event a = t.saved(t.publishedLiveEvent());
+                            t.tier(a.getId(), "GA", 2000, 30, 30, true, 0);
+                            t.tier(a.getId(), "VIP", 5000, 100, 0, true, 1);
+                            return a;
+                        }, false, false),
+                // Default imin.public.low-stock-threshold = 10: 4 + 6 left is at the threshold.
+                Arguments.of("total remaining at the threshold",
+                        (Function<PublicEventServiceListTest, Event>) t -> {
+                            Event a = t.saved(t.publishedLiveEvent());
+                            t.tier(a.getId(), "GA", 2000, 100, 96, true, 0);
+                            t.tier(a.getId(), "VIP", 5000, 20, 14, true, 1);
+                            return a;
+                        }, false, true),
+                Arguments.of("no enabled tiers",
+                        (Function<PublicEventServiceListTest, Event>) t -> {
+                            Event a = t.saved(t.publishedLiveEvent());
+                            t.tier(a.getId(), "Disabled", 2000, 100, 0, false, 0);
+                            return a;
+                        }, false, false));
     }
 
-    @Test
-    void soldOut_false_when_one_enabled_tier_still_has_stock() {
-        Event a = eventRepository.save(publishedLiveEvent());
-        tier(a.getId(), "GA", 2000, 30, 30, true, 0);
-        tier(a.getId(), "VIP", 5000, 100, 0, true, 1);
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("availabilityFlags")
+    void soldOut_and_lowStock_roll_up_the_enabled_tiers(
+            String name, Function<PublicEventServiceListTest, Event> arrange, boolean soldOut, boolean lowStock) {
+        Event a = arrange.apply(this);
 
         PublicEventListItem item = publicEventService.list(emptyQuery()).items().get(0);
-        assertThat(item.soldOut()).isFalse();
-        assertThat(item.lowStock()).isFalse();
-    }
-
-    @Test
-    void lowStock_true_when_total_remaining_at_or_below_threshold() {
-        // Default imin.public.low-stock-threshold = 10.
-        Event a = eventRepository.save(publishedLiveEvent());
-        tier(a.getId(), "GA", 2000, 100, 96, true, 0); // 4 left
-        tier(a.getId(), "VIP", 5000, 20, 14, true, 1); // 6 left → total 10
-
-        PublicEventListItem item = publicEventService.list(emptyQuery()).items().get(0);
-        assertThat(item.soldOut()).isFalse();
-        assertThat(item.lowStock()).isTrue();
-    }
-
-    @Test
-    void soldOut_and_lowStock_false_when_event_has_no_enabled_tiers() {
-        Event a = eventRepository.save(publishedLiveEvent());
-        tier(a.getId(), "Disabled", 2000, 100, 0, false, 0);
-
-        PublicEventListItem item = publicEventService.list(emptyQuery()).items().get(0);
-        assertThat(item.soldOut()).isFalse();
-        assertThat(item.lowStock()).isFalse();
+        assertThat(item.id()).isEqualTo(a.getId());
+        assertThat(item.soldOut()).isEqualTo(soldOut);
+        assertThat(item.lowStock()).isEqualTo(lowStock);
+        // A sold-out card shows no price, not the price of a tier nobody can buy.
+        if (soldOut) assertThat(item.priceFromMinor()).isNull();
     }
 
     // -----------------------------------------------------------------------
@@ -820,96 +744,77 @@ class PublicEventServiceListTest {
     }
 
     // -----------------------------------------------------------------------
-    // Empty result
-    // -----------------------------------------------------------------------
-    @Test
-    void empty_result_returns_empty_page() {
-        // No events at all
-        PageResponse<PublicEventListItem> result = publicEventService.list(emptyQuery());
-        assertThat(result.items()).isEmpty();
-        assertThat(result.total()).isZero();
-        assertThat(result.page()).isEqualTo(1);
-        assertThat(result.pageSize()).isEqualTo(20);
-    }
-
-    // -----------------------------------------------------------------------
     // Validation
     // -----------------------------------------------------------------------
-    @Test
-    void q_below_min_length_returns_400() {
-        assertThatThrownBy(() -> publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, null, null, "a", false, false, false, 1, 20)))
-                .isInstanceOf(ApiException.class)
-                .satisfies(ex -> {
-                    ApiException apiEx = (ApiException) ex;
-                    assertThat(apiEx.status()).isEqualTo(HttpStatus.BAD_REQUEST);
-                    assertThat(apiEx.code()).isEqualTo(ErrorCode.INVALID_REQUEST);
-                    assertThat(apiEx.fields()).containsKey("q");
-                });
+    static Stream<Arguments> invalidFilters() {
+        return Stream.of(
+                Arguments.of("a", null, "q"),
+                Arguments.of(null, "DEU", "country"));
     }
 
-    @Test
-    void country_wrong_length_returns_400() {
+    @ParameterizedTest(name = "q={0} country={1} → 400 on {2}")
+    @MethodSource("invalidFilters")
+    void invalid_filter_returns_400(String q, String country, String field) {
         assertThatThrownBy(() -> publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, null, "DEU", null, null, false, false, false, 1, 20)))
+                null, null, null, null, null, country, org.getSlug(), q, false, false, false, 1, 20)))
                 .isInstanceOf(ApiException.class)
                 .satisfies(ex -> {
                     ApiException apiEx = (ApiException) ex;
                     assertThat(apiEx.status()).isEqualTo(HttpStatus.BAD_REQUEST);
                     assertThat(apiEx.code()).isEqualTo(ErrorCode.INVALID_REQUEST);
-                    assertThat(apiEx.fields()).containsKey("country");
+                    assertThat(apiEx.fields()).containsOnlyKeys(field);
                 });
     }
 
     // -----------------------------------------------------------------------
-    // listCities
+    // listCities (global facet: assertions read only this test's keys)
     // -----------------------------------------------------------------------
     @Test
     void listCities_returns_distinct_pairs_alphabetical() {
         Event berlinDe1 = publishedLiveEvent();
-        berlinDe1.setVenueCity("Berlin");
+        berlinDe1.setVenueCity(own("Berlin"));
         berlinDe1.setVenueCountry("DE");
         eventRepository.save(berlinDe1);
 
         Event berlinDe2 = publishedLiveEvent();
-        berlinDe2.setVenueCity("Berlin");
+        berlinDe2.setVenueCity(own("Berlin"));
         berlinDe2.setVenueCountry("DE");
         eventRepository.save(berlinDe2);
 
         Event paris = publishedLiveEvent();
-        paris.setVenueCity("Paris");
+        paris.setVenueCity(own("Paris"));
         paris.setVenueCountry("FR");
         eventRepository.save(paris);
 
         Event amsterdam = publishedLiveEvent();
-        amsterdam.setVenueCity("Amsterdam");
+        amsterdam.setVenueCity(own("Amsterdam"));
         amsterdam.setVenueCountry("NL");
         eventRepository.save(amsterdam);
 
-        List<com.imin.iminapi.dto.publicapi.PublicCityItem> cities = publicEventService.listCities();
-        assertThat(cities).extracting(com.imin.iminapi.dto.publicapi.PublicCityItem::city)
-                .containsExactly("Amsterdam", "Berlin", "Paris");
-        assertThat(cities).extracting(com.imin.iminapi.dto.publicapi.PublicCityItem::country)
+        List<PublicCityItem> cities = ownCities();
+        assertThat(cities).extracting(PublicCityItem::city)
+                .containsExactly(own("Amsterdam"), own("Berlin"), own("Paris"));
+        assertThat(cities).extracting(PublicCityItem::country)
                 .containsExactly("NL", "DE", "FR");
     }
 
     @Test
     void listCities_disambiguates_same_city_in_different_countries() {
         Event parisFr = publishedLiveEvent();
-        parisFr.setVenueCity("Paris");
+        parisFr.setVenueCity(own("Paris"));
         parisFr.setVenueCountry("FR");
         eventRepository.save(parisFr);
 
         Event parisUs = publishedLiveEvent();
-        parisUs.setVenueCity("Paris");
+        parisUs.setVenueCity(own("Paris"));
         parisUs.setVenueCountry("US");
         eventRepository.save(parisUs);
 
-        List<com.imin.iminapi.dto.publicapi.PublicCityItem> cities = publicEventService.listCities();
+        List<PublicCityItem> cities = ownCities();
         assertThat(cities).hasSize(2);
-        assertThat(cities).extracting(com.imin.iminapi.dto.publicapi.PublicCityItem::city)
-                .containsExactly("Paris", "Paris");
-        assertThat(cities).extracting(com.imin.iminapi.dto.publicapi.PublicCityItem::country)
+        assertThat(cities).extracting(PublicCityItem::city)
+                .containsExactly(own("Paris"), own("Paris"));
+        assertThat(cities).extracting(PublicCityItem::country)
                 .containsExactlyInAnyOrder("FR", "US");
     }
 
@@ -923,83 +828,81 @@ class PublicEventServiceListTest {
         eventRepository.save(emptyCity);
 
         Event berlin = publishedLiveEvent();
-        berlin.setVenueCity("Berlin");
+        berlin.setVenueCity(own("Berlin"));
         berlin.setVenueCountry("DE");
         eventRepository.save(berlin);
 
-        List<com.imin.iminapi.dto.publicapi.PublicCityItem> cities = publicEventService.listCities();
-        assertThat(cities).hasSize(1);
-        assertThat(cities.get(0).city()).isEqualTo("Berlin");
+        assertThat(publicEventService.listCities()).allSatisfy(c -> assertThat(c.city()).isNotBlank());
+        assertThat(ownCities()).extracting(PublicCityItem::city).containsExactly(own("Berlin"));
     }
 
     @Test
     void listCities_excludes_non_eligible_events() {
-        // Draft event (excluded)
+        // Unpublished back to draft, publishedAt kept (excluded by status alone)
         Event draft = publishedLiveEvent();
         draft.setStatus(EventStatus.DRAFT);
-        draft.setPublishedAt(null);
-        draft.setVenueCity("Hidden City");
+        draft.setVenueCity(own("Hidden City"));
         draft.setVenueCountry("ZZ");
         eventRepository.save(draft);
+
+        // LIVE without publishedAt (excluded by the published guard alone)
+        Event unpublished = publishedLiveEvent();
+        unpublished.setPublishedAt(null);
+        unpublished.setVenueCity(own("Unpublished City"));
+        unpublished.setVenueCountry("ZZ");
+        eventRepository.save(unpublished);
 
         // Private event (excluded)
         Event priv = publishedLiveEvent();
         priv.setVisibility(EventVisibility.PRIVATE);
-        priv.setVenueCity("Private City");
+        priv.setVenueCity(own("Private City"));
         priv.setVenueCountry("ZZ");
         eventRepository.save(priv);
 
         // Soft-deleted (excluded)
         Event deleted = publishedLiveEvent();
         deleted.setDeletedAt(NOW.minusSeconds(60));
-        deleted.setVenueCity("Deleted City");
+        deleted.setVenueCity(own("Deleted City"));
         deleted.setVenueCountry("ZZ");
         eventRepository.save(deleted);
 
         // Cancelled (excluded — the feed drops it, the detail page still serves it)
         Event cancelled = publishedLiveEvent();
         cancelled.setStatus(EventStatus.CANCELLED);
-        cancelled.setVenueCity("Cancelled City");
+        cancelled.setVenueCity(own("Cancelled City"));
         cancelled.setVenueCountry("ZZ");
         eventRepository.save(cancelled);
 
         // Public + live (included)
         Event live = publishedLiveEvent();
-        live.setVenueCity("Visible");
+        live.setVenueCity(own("Visible"));
         live.setVenueCountry("DE");
         eventRepository.save(live);
 
-        List<com.imin.iminapi.dto.publicapi.PublicCityItem> cities = publicEventService.listCities();
-        assertThat(cities).extracting(com.imin.iminapi.dto.publicapi.PublicCityItem::city)
-                .containsExactly("Visible");
-    }
-
-    @Test
-    void listCities_returns_empty_when_no_eligible_events() {
-        List<com.imin.iminapi.dto.publicapi.PublicCityItem> cities = publicEventService.listCities();
-        assertThat(cities).isEmpty();
+        assertThat(ownCities()).extracting(PublicCityItem::city)
+                .containsExactly(own("Visible"));
     }
 
     // -----------------------------------------------------------------------
-    // listGenres
+    // listGenres (global facet: assertions read only this test's keys)
     // -----------------------------------------------------------------------
     @Test
     void listGenres_returns_distinct_alphabetical() {
         Event a = publishedLiveEvent();
-        a.setGenre("techno");
+        a.setGenre(own("techno"));
         eventRepository.save(a);
         Event b = publishedLiveEvent();
-        b.setGenre("techno");
+        b.setGenre(own("techno"));
         eventRepository.save(b);
         Event c = publishedLiveEvent();
-        c.setGenre("house");
+        c.setGenre(own("house"));
         eventRepository.save(c);
         Event d = publishedLiveEvent();
-        d.setGenre("ambient");
+        d.setGenre(own("ambient"));
         eventRepository.save(d);
 
-        assertThat(publicEventService.listGenres())
-                .containsExactly("ambient", "house", "techno");
+        assertThat(ownGenres())
+                .containsExactly(own("ambient"), own("house"), own("techno"));
     }
 
     @Test
@@ -1010,20 +913,20 @@ class PublicEventServiceListTest {
         // taps the chip and asserts the listing returns every event the chip counted.
         for (int i = 0; i < 2; i++) {
             Event typed = publishedLiveEvent();
-            typed.setGenre("Techno");
+            typed.setGenre(own("Techno"));
             eventRepository.save(typed);
         }
         Event shouted = publishedLiveEvent();
-        shouted.setGenre("TECHNO");
+        shouted.setGenre(own("TECHNO"));
         eventRepository.save(shouted);
         Event spaced = publishedLiveEvent();
-        spaced.setGenre("techno");
+        spaced.setGenre(own("techno"));
         eventRepository.save(spaced);
 
-        List<String> genres = publicEventService.listGenres();
+        List<String> genres = ownGenres();
         // "Techno" (2 events) beats "TECHNO" and "techno" (1 each) as the label. Nothing
         // title-cases or folds it — the label is a real stored spelling, never an invention.
-        assertThat(genres).containsExactly("Techno");
+        assertThat(genres).containsExactly(own("Techno"));
 
         assertThat(feedBehindGenreChip(genres.get(0)).total()).isEqualTo(4L);
     }
@@ -1033,13 +936,13 @@ class PublicEventServiceListTest {
         // One event each: the count cannot decide, so the deterministic tie-break must —
         // otherwise the chip label flips with whatever order the planner returns rows in.
         Event shouted = publishedLiveEvent();
-        shouted.setGenre("HOUSE");
+        shouted.setGenre(own("HOUSE"));
         eventRepository.save(shouted);
         Event typed = publishedLiveEvent();
-        typed.setGenre("House");
+        typed.setGenre(own("House"));
         eventRepository.save(typed);
 
-        assertThat(publicEventService.listGenres()).containsExactly("House");
+        assertThat(ownGenres()).containsExactly(own("House"));
     }
 
     @Test
@@ -1051,147 +954,54 @@ class PublicEventServiceListTest {
         eventRepository.save(blank);
 
         Event withGenre = publishedLiveEvent();
-        withGenre.setGenre("techno");
+        withGenre.setGenre(own("techno"));
         eventRepository.save(withGenre);
 
-        assertThat(publicEventService.listGenres()).containsExactly("techno");
+        assertThat(publicEventService.listGenres()).allSatisfy(g -> assertThat(g).isNotBlank());
+        assertThat(ownGenres()).containsExactly(own("techno"));
     }
 
     @Test
     void listGenres_excludes_non_eligible_events() {
         Event draft = publishedLiveEvent();
         draft.setStatus(EventStatus.DRAFT);
-        draft.setPublishedAt(null);
-        draft.setGenre("hidden");
+        draft.setGenre(own("hidden"));
         eventRepository.save(draft);
+
+        Event unpublished = publishedLiveEvent();
+        unpublished.setPublishedAt(null);
+        unpublished.setGenre(own("unpublished"));
+        eventRepository.save(unpublished);
 
         Event priv = publishedLiveEvent();
         priv.setVisibility(EventVisibility.PRIVATE);
-        priv.setGenre("private");
+        priv.setGenre(own("private"));
         eventRepository.save(priv);
 
         Event deleted = publishedLiveEvent();
         deleted.setDeletedAt(NOW.minusSeconds(60));
-        deleted.setGenre("deleted");
+        deleted.setGenre(own("deleted"));
         eventRepository.save(deleted);
 
         Event cancelled = publishedLiveEvent();
         cancelled.setStatus(EventStatus.CANCELLED);
-        cancelled.setGenre("cancelled");
+        cancelled.setGenre(own("cancelled"));
         eventRepository.save(cancelled);
 
         Event live = publishedLiveEvent();
-        live.setGenre("techno");
+        live.setGenre(own("techno"));
         eventRepository.save(live);
 
-        assertThat(publicEventService.listGenres()).containsExactly("techno");
+        assertThat(ownGenres()).containsExactly(own("techno"));
     }
 
-    @Test
-    void listGenres_returns_empty_when_no_eligible_events() {
-        assertThat(publicEventService.listGenres()).isEmpty();
-    }
     // -----------------------------------------------------------------------
     // freeOnly
     // -----------------------------------------------------------------------
 
     private PublicEventListQuery freeOnlyQuery() {
         return new PublicEventListQuery(
-                null, null, null, null, null, null, null, null, false, false, true, 1, 20);
-    }
-
-    @Test
-    void freeOnly_keeps_event_with_a_purchasable_zero_priced_tier() {
-        Event free = eventRepository.save(publishedLiveEvent());
-        tier(free.getId(), "Free entry", 0, 100, 0, true, 0);
-
-        PageResponse<PublicEventListItem> result = publicEventService.list(freeOnlyQuery());
-        assertThat(result.items()).extracting(PublicEventListItem::id).containsExactly(free.getId());
-        assertThat(result.items().get(0).priceFromMinor()).isZero();
-    }
-
-    @Test
-    void freeOnly_drops_event_whose_cheapest_tier_costs_money() {
-        Event paid = eventRepository.save(publishedLiveEvent());
-        tier(paid.getId(), "GA", 1500, 100, 0, true, 0);
-
-        assertThat(publicEventService.list(freeOnlyQuery()).items()).isEmpty();
-        // ...and the same event IS listed without the filter, so this is the filter's doing.
-        assertThat(publicEventService.list(emptyQuery()).items()).hasSize(1);
-    }
-
-    @Test
-    void freeOnly_keeps_mixed_event_because_its_cheapest_purchasable_tier_is_free() {
-        Event mixed = eventRepository.save(publishedLiveEvent());
-        tier(mixed.getId(), "Free entry", 0, 50, 0, true, 0);
-        tier(mixed.getId(), "VIP", 5000, 50, 0, true, 1);
-
-        PageResponse<PublicEventListItem> result = publicEventService.list(freeOnlyQuery());
-        assertThat(result.items()).extracting(PublicEventListItem::id).containsExactly(mixed.getId());
-        assertThat(result.items().get(0).priceFromMinor()).isZero();
-    }
-
-    @Test
-    void freeOnly_drops_event_whose_only_free_tier_is_sold_out() {
-        // Sold out is NOT free, it is unavailable — priceFromMinor is null, so a "free"
-        // chip on this card would be a promise the checkout can't keep.
-        Event soldOut = eventRepository.save(publishedLiveEvent());
-        tier(soldOut.getId(), "Free entry", 0, 10, 10, true, 0);
-
-        assertThat(publicEventService.list(freeOnlyQuery()).items()).isEmpty();
-        assertThat(publicEventService.list(emptyQuery()).items().get(0).priceFromMinor()).isNull();
-    }
-
-    @Test
-    void freeOnly_drops_event_whose_free_tier_has_not_opened_yet() {
-        Event later = eventRepository.save(publishedLiveEvent());
-        tierWithWindow(later.getId(), "Free entry", 0, 100, 0, 0, NOW.plusSeconds(3600), null);
-
-        assertThat(publicEventService.list(freeOnlyQuery()).items()).isEmpty();
-    }
-
-    @Test
-    void freeOnly_drops_event_whose_free_tier_sale_window_has_closed() {
-        Event closed = eventRepository.save(publishedLiveEvent());
-        tierWithWindow(closed.getId(), "Free entry", 0, 100, 0, 0, null, NOW.minusSeconds(60));
-
-        assertThat(publicEventService.list(freeOnlyQuery()).items()).isEmpty();
-    }
-
-    @Test
-    void freeOnly_drops_event_whose_free_tier_is_disabled() {
-        Event disabled = eventRepository.save(publishedLiveEvent());
-        tier(disabled.getId(), "Free entry", 0, 100, 0, false, 0);
-
-        assertThat(publicEventService.list(freeOnlyQuery()).items()).isEmpty();
-    }
-
-    @Test
-    void freeOnly_respects_the_event_level_on_sale_gate() {
-        Event notOpen = publishedLiveEvent();
-        notOpen.setOnSaleAt(NOW.plusSeconds(3600));
-        notOpen = eventRepository.save(notOpen);
-        tier(notOpen.getId(), "Free entry", 0, 100, 0, true, 0);
-
-        assertThat(publicEventService.list(freeOnlyQuery()).items()).isEmpty();
-    }
-
-    @Test
-    void freeOnly_drops_event_with_no_tiers_at_all() {
-        eventRepository.save(publishedLiveEvent());
-        assertThat(publicEventService.list(freeOnlyQuery()).items()).isEmpty();
-    }
-
-    @Test
-    void freeOnly_false_is_the_unfiltered_listing() {
-        Event free = eventRepository.save(publishedLiveEvent());
-        tier(free.getId(), "Free entry", 0, 100, 0, true, 0);
-        Event paid = eventRepository.save(publishedLiveEvent());
-        tier(paid.getId(), "GA", 1500, 100, 0, true, 0);
-
-        assertThat(publicEventService.list(emptyQuery()).items())
-                .extracting(PublicEventListItem::id)
-                .containsExactlyInAnyOrder(free.getId(), paid.getId());
+                null, null, null, null, null, null, org.getSlug(), null, false, false, true, 1, 20);
     }
 
     @Test
@@ -1272,14 +1082,14 @@ class PublicEventServiceListTest {
         tier(pastEvent.getId(), "Free", 0, 10, 0, true, 0);
 
         // EventStatus.CANCELLED is excluded by the listing itself, so it can never reach the
-        // EXISTS — pinned in listing_excludes_cancelled_events, not here.
+        // EXISTS — pinned in the excludes_ineligible_events "cancelled" row, not here.
 
         List<UUID> zeroPricedCards = publicEventService.list(onlyPage(1, 100)).items().stream()
                 .filter(i -> i.priceFromMinor() != null && i.priceFromMinor() == 0)
                 .map(PublicEventListItem::id)
                 .toList();
         List<UUID> freeOnlyIds = publicEventService.list(
-                new PublicEventListQuery(null, null, null, null, null, null, null, null,
+                new PublicEventListQuery(null, null, null, null, null, null, org.getSlug(), null,
                         false, false, true, 1, 100)).items().stream()
                 .map(PublicEventListItem::id)
                 .toList();
@@ -1316,7 +1126,7 @@ class PublicEventServiceListTest {
         tier(parisFree.getId(), "Free", 0, 10, 0, true, 0);
 
         PageResponse<PublicEventListItem> result = publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, "berlin", null, null, null, false, false, true, 1, 20));
+                null, null, null, null, "berlin", null, org.getSlug(), null, false, false, true, 1, 20));
         assertThat(result.items()).extracting(PublicEventListItem::id).containsExactly(berlinFree.getId());
     }
 
@@ -1328,51 +1138,48 @@ class PublicEventServiceListTest {
     void listCities_counts_events_per_city() {
         for (int i = 0; i < 3; i++) {
             Event e = publishedLiveEvent();
-            e.setVenueCity("Berlin");
+            e.setVenueCity(own("Berlin"));
             e.setVenueCountry("DE");
             eventRepository.save(e);
         }
         Event paris = publishedLiveEvent();
-        paris.setVenueCity("Paris");
+        paris.setVenueCity(own("Paris"));
         paris.setVenueCountry("FR");
         eventRepository.save(paris);
 
-        List<com.imin.iminapi.dto.publicapi.PublicCityItem> cities = publicEventService.listCities();
-        assertThat(cities).extracting(
-                com.imin.iminapi.dto.publicapi.PublicCityItem::city,
-                com.imin.iminapi.dto.publicapi.PublicCityItem::eventCount)
-                .containsExactly(tuple("Berlin", 3L), tuple("Paris", 1L));
+        assertThat(ownCities()).extracting(PublicCityItem::city, PublicCityItem::eventCount)
+                .containsExactly(tuple(own("Berlin"), 3L), tuple(own("Paris"), 1L));
     }
 
     @Test
     void listCities_count_excludes_events_the_listing_would_not_show() {
         Event live = publishedLiveEvent();
-        live.setVenueCity("Berlin");
+        live.setVenueCity(own("Berlin"));
         eventRepository.save(live);
 
         Event cancelled = publishedLiveEvent();
-        cancelled.setVenueCity("Berlin");
+        cancelled.setVenueCity(own("Berlin"));
         cancelled.setStatus(EventStatus.CANCELLED);
         eventRepository.save(cancelled);
 
         Event draft = publishedLiveEvent();
-        draft.setVenueCity("Berlin");
+        draft.setVenueCity(own("Berlin"));
         draft.setStatus(EventStatus.DRAFT);
         draft.setPublishedAt(null);
         eventRepository.save(draft);
 
         Event priv = publishedLiveEvent();
-        priv.setVenueCity("Berlin");
+        priv.setVenueCity(own("Berlin"));
         priv.setVisibility(EventVisibility.PRIVATE);
         eventRepository.save(priv);
 
         Event deleted = publishedLiveEvent();
-        deleted.setVenueCity("Berlin");
+        deleted.setVenueCity(own("Berlin"));
         deleted.setDeletedAt(NOW.minusSeconds(60));
         eventRepository.save(deleted);
 
-        assertThat(publicEventService.listCities())
-                .extracting(com.imin.iminapi.dto.publicapi.PublicCityItem::eventCount)
+        assertThat(ownCities())
+                .extracting(PublicCityItem::eventCount)
                 .containsExactly(1L);
     }
 
@@ -1386,25 +1193,25 @@ class PublicEventServiceListTest {
         // promised. (Rows are written straight through the repository on purpose — this pins the
         // READ side, independent of EventService's write-time normalisation and of V82.)
         Event metzFr = publishedLiveEvent();
-        metzFr.setVenueCity("Metz");
+        metzFr.setVenueCity(own("Metz"));
         metzFr.setVenueCountry("FR");
         eventRepository.save(metzFr);
 
         Event metzNull = publishedLiveEvent();
-        metzNull.setVenueCity("Metz");
+        metzNull.setVenueCity(own("Metz"));
         metzNull.setVenueCountry(null);
         eventRepository.save(metzNull);
 
         Event metzUpper = publishedLiveEvent();
-        metzUpper.setVenueCity("METZ");
+        metzUpper.setVenueCity(own("Metz").toUpperCase(Locale.ROOT));
         metzUpper.setVenueCountry("");
         eventRepository.save(metzUpper);
 
-        List<com.imin.iminapi.dto.publicapi.PublicCityItem> cities = publicEventService.listCities();
+        List<PublicCityItem> cities = ownCities();
         assertThat(cities).hasSize(1);
         // "Metz" (2 events) beats "METZ" (1) as the label; FR is the only country on offer and
         // the country-less rows fold into it rather than inventing a second chip.
-        assertThat(cities.get(0).city()).isEqualTo("Metz");
+        assertThat(cities.get(0).city()).isEqualTo(own("Metz"));
         assertThat(cities.get(0).country()).isEqualTo("FR");
         assertThat(cities.get(0).eventCount()).isEqualTo(3L);
 
@@ -1416,20 +1223,20 @@ class PublicEventServiceListTest {
     void listCities_labels_a_key_with_its_most_common_spelling() {
         for (int i = 0; i < 2; i++) {
             Event shouted = publishedLiveEvent();
-            shouted.setVenueCity("SAINT-DENIS");
+            shouted.setVenueCity(own("SAINT-DENIS"));
             shouted.setVenueCountry("FR");
             eventRepository.save(shouted);
         }
         Event typed = publishedLiveEvent();
-        typed.setVenueCity("Saint-Denis");
+        typed.setVenueCity(own("Saint-Denis"));
         typed.setVenueCountry("FR");
         eventRepository.save(typed);
 
         // Most common wins even when it is the ugly one — the label is evidence, not taste.
         // Nothing title-cases the city: doing so would wreck 's-Hertogenbosch and L'Aquila.
-        List<com.imin.iminapi.dto.publicapi.PublicCityItem> cities = publicEventService.listCities();
+        List<PublicCityItem> cities = ownCities();
         assertThat(cities).hasSize(1);
-        assertThat(cities.get(0).city()).isEqualTo("SAINT-DENIS");
+        assertThat(cities.get(0).city()).isEqualTo(own("SAINT-DENIS"));
         assertThat(cities.get(0).eventCount()).isEqualTo(3L);
     }
 
@@ -1438,18 +1245,18 @@ class PublicEventServiceListTest {
         // Paris/FR and Paris/US are two cities, not one spelling problem. Merging them on the
         // key alone would be a fabricated fact, so the ambiguous key stays split.
         Event parisFr = publishedLiveEvent();
-        parisFr.setVenueCity("Paris");
+        parisFr.setVenueCity(own("Paris"));
         parisFr.setVenueCountry("FR");
         eventRepository.save(parisFr);
 
         Event parisUs = publishedLiveEvent();
-        parisUs.setVenueCity("PARIS");
+        parisUs.setVenueCity(own("PARIS"));
         parisUs.setVenueCountry("US");
         eventRepository.save(parisUs);
 
-        List<com.imin.iminapi.dto.publicapi.PublicCityItem> cities = publicEventService.listCities();
+        List<PublicCityItem> cities = ownCities();
         assertThat(cities).hasSize(2);
-        assertThat(cities).extracting(com.imin.iminapi.dto.publicapi.PublicCityItem::country)
+        assertThat(cities).extracting(PublicCityItem::country)
                 .containsExactly("FR", "US");
         assertThat(cities).allSatisfy(c -> assertThat(c.eventCount()).isEqualTo(1L));
     }
@@ -1469,19 +1276,19 @@ class PublicEventServiceListTest {
         // Berlin: two upcoming, one running right now, three long finished.
         for (int i = 0; i < 2; i++) {
             Event upcoming = publishedLiveEvent();
-            upcoming.setVenueCity("Berlin");
+            upcoming.setVenueCity(own("Berlin"));
             upcoming.setVenueCountry("DE");
             eventRepository.save(upcoming);
         }
         Event running = publishedLiveEvent();
-        running.setVenueCity("Berlin");
+        running.setVenueCity(own("Berlin"));
         running.setVenueCountry("DE");
         running.setStartsAt(NOW.minusSeconds(3600));
         running.setEndsAt(NOW.plusSeconds(7200));
         eventRepository.save(running);
         for (int i = 0; i < 3; i++) {
             Event over = finishedEvent();
-            over.setVenueCity("Berlin");
+            over.setVenueCity(own("Berlin"));
             over.setVenueCountry("DE");
             eventRepository.save(over);
         }
@@ -1489,20 +1296,20 @@ class PublicEventServiceListTest {
         // Metz: nothing left at all — the shape of the production bug.
         for (int i = 0; i < 4; i++) {
             Event over = finishedEvent();
-            over.setVenueCity("Metz");
+            over.setVenueCity(own("Metz"));
             over.setVenueCountry("FR");
             eventRepository.save(over);
         }
 
         Event paris = publishedLiveEvent();
-        paris.setVenueCity("Paris");
+        paris.setVenueCity(own("Paris"));
         paris.setVenueCountry("FR");
         eventRepository.save(paris);
 
-        List<com.imin.iminapi.dto.publicapi.PublicCityItem> cities = publicEventService.listCities();
+        List<PublicCityItem> cities = ownCities();
         assertThat(cities).as("fixtures must produce chips, or the loop below asserts nothing")
                 .isNotEmpty();
-        for (com.imin.iminapi.dto.publicapi.PublicCityItem chip : cities) {
+        for (PublicCityItem chip : cities) {
             assertThat(feedBehindCityChip(chip.city()).total())
                     .as("chip \"%s\" promises %d night(s); its own feed must return exactly that",
                             chip.city(), chip.eventCount())
@@ -1513,9 +1320,9 @@ class PublicEventServiceListTest {
         // agreement above is a fact about the time bound and not a vacuous pass on data that
         // happened to have no past.
         assertThat(publicEventService.list(new PublicEventListQuery(
-                null, null, null, null, "Berlin", null, null, null, false, true, false, 1, 100)).total())
+                null, null, null, null, own("Berlin"), null, null, null, false, true, false, 1, 100)).total())
                 .as("Berlin must own events no feed can reach, or this test proves nothing")
-                .isGreaterThan(feedBehindCityChip("Berlin").total());
+                .isGreaterThan(feedBehindCityChip(own("Berlin")).total());
     }
 
     @Test
@@ -1524,17 +1331,17 @@ class PublicEventServiceListTest {
         // memories and an empty feed; the honest answer is no chip, not "Metz, 4".
         for (int i = 0; i < 4; i++) {
             Event over = finishedEvent();
-            over.setVenueCity("Metz");
+            over.setVenueCity(own("Metz"));
             over.setVenueCountry("FR");
             eventRepository.save(over);
         }
 
-        assertThat(feedBehindCityChip("Metz").total())
+        assertThat(feedBehindCityChip(own("Metz")).total())
                 .as("premise: the feed for this city is empty")
                 .isZero();
         assertThat(publicEventService.listCities())
-                .extracting(com.imin.iminapi.dto.publicapi.PublicCityItem::city)
-                .doesNotContain("Metz");
+                .extracting(PublicCityItem::city)
+                .doesNotContain(own("Metz"));
     }
 
     @Test
@@ -1543,13 +1350,13 @@ class PublicEventServiceListTest {
         // future". A doors-open event is still sellable and both clients send
         // includeOngoing=true, so under-counting it would be the same lie inverted.
         Event running = publishedLiveEvent();
-        running.setVenueCity("Berlin");
+        running.setVenueCity(own("Berlin"));
         running.setVenueCountry("DE");
         running.setStartsAt(NOW.minusSeconds(3600));
         running.setEndsAt(NOW.plusSeconds(7200));
         eventRepository.save(running);
 
-        List<com.imin.iminapi.dto.publicapi.PublicCityItem> cities = publicEventService.listCities();
+        List<PublicCityItem> cities = ownCities();
         assertThat(cities).hasSize(1);
         long feedTotal = feedBehindCityChip(cities.get(0).city()).total();
         assertThat(feedTotal).as("premise: the running night is in the feed").isPositive();
@@ -1562,14 +1369,14 @@ class PublicEventServiceListTest {
         // "there are Disco nights". Same defect, same fix: a genre nobody can reach is
         // not offered.
         Event techno = publishedLiveEvent();
-        techno.setGenre("techno");
+        techno.setGenre(own("techno"));
         eventRepository.save(techno);
 
         Event disco = finishedEvent();
-        disco.setGenre("disco");
+        disco.setGenre(own("disco"));
         eventRepository.save(disco);
 
-        List<String> genres = publicEventService.listGenres();
+        List<String> genres = ownGenres();
         assertThat(genres).as("fixtures must produce chips, or the loop below asserts nothing")
                 .isNotEmpty();
         for (String genre : genres) {
@@ -1577,9 +1384,9 @@ class PublicEventServiceListTest {
                     .as("genre chip \"%s\" must open a feed with nights in it", genre)
                     .isPositive();
         }
-        assertThat(feedBehindGenreChip("disco").total())
+        assertThat(feedBehindGenreChip(own("disco")).total())
                 .as("premise: the finished genre's feed is empty")
                 .isZero();
-        assertThat(genres).doesNotContain("disco");
+        assertThat(genres).doesNotContain(own("disco"));
     }
 }

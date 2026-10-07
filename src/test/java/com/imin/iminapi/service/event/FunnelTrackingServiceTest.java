@@ -1,6 +1,5 @@
 package com.imin.iminapi.service.event;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.dto.event.TrackRequest;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
@@ -13,20 +12,23 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.FunnelEventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class FunnelTrackingServiceTest {
 
     @Autowired FunnelTrackingService service;
@@ -34,12 +36,15 @@ class FunnelTrackingServiceTest {
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
     @Autowired UserRepository users;
+    @Autowired JdbcTemplate jdbc;
 
     private Event publicEvent;
+    /** A session id only this test sends. */
+    private String anon;
 
     @BeforeEach
     void setUp() {
-        wipe();
+        anon = "sess-" + UUID.randomUUID();
         Organization org = new Organization();
         org.setName("Org");
         org.setSlug("org-" + UUID.randomUUID().toString().substring(0, 8));
@@ -67,33 +72,35 @@ class FunnelTrackingServiceTest {
     }
 
     @AfterEach
-    void tearDown() { wipe(); }
+    void tearDown() {
+        if (publicEvent != null) OrgRows.delete(jdbc, List.of(publicEvent.getOrgId()));
+    }
 
-    private void wipe() { funnel.deleteAll(); events.deleteAll(); users.deleteAll(); orgs.deleteAll(); }
+    /** This test's rows: its own event, or its own session id on any event. */
+    private List<FunnelEvent> ownRows() {
+        return funnel.findAll().stream()
+                .filter(r -> r.getEventId().equals(publicEvent.getId()) || anon.equals(r.getAnonId()))
+                .toList();
+    }
 
     @Test
     void records_a_page_view_for_a_public_event() {
-        service.track(publicEvent.getId(), new TrackRequest("PAGE_VIEW", "sess-1"));
-        assertThat(funnel.findAll()).hasSize(1);
-        assertThat(funnel.findAll().get(0).getStage()).isEqualTo(FunnelEvent.STAGE_PAGE_VIEW);
+        service.track(publicEvent.getId(), new TrackRequest("PAGE_VIEW", anon));
+        assertThat(ownRows()).hasSize(1);
+        assertThat(ownRows().get(0).getStage()).isEqualTo(FunnelEvent.STAGE_PAGE_VIEW);
     }
 
-    @Test
-    void unknown_event_is_a_noop() {
-        service.track(UUID.randomUUID(), new TrackRequest("PAGE_VIEW", "sess-1"));
-        assertThat(funnel.findAll()).isEmpty();
-    }
+    @ParameterizedTest(name = "{0}")
+    @CsvSource({
+            "unknown event, false, PAGE_VIEW, false",
+            "unknown stage, true, BOGUS, false",
+            "blank anon id, true, PAGE_VIEW, true"
+    })
+    void a_bad_beacon_is_a_noop(String name, boolean ownEvent, String stage, boolean blankAnon) {
+        UUID eventId = ownEvent ? publicEvent.getId() : UUID.randomUUID();
+        service.track(eventId, new TrackRequest(stage, blankAnon ? "  " : anon));
 
-    @Test
-    void unknown_stage_is_a_noop() {
-        service.track(publicEvent.getId(), new TrackRequest("BOGUS", "sess-1"));
-        assertThat(funnel.findAll()).isEmpty();
-    }
-
-    @Test
-    void blank_anon_id_is_a_noop() {
-        service.track(publicEvent.getId(), new TrackRequest("PAGE_VIEW", "  "));
-        assertThat(funnel.findAll()).isEmpty();
+        assertThat(ownRows()).isEmpty();
     }
 
     @Test
@@ -101,7 +108,7 @@ class FunnelTrackingServiceTest {
         String noisy = "  " + "x".repeat(100) + "  ";
         service.track(publicEvent.getId(), new TrackRequest("CHECKOUT_START", noisy));
 
-        var rows = funnel.findAll();
+        var rows = ownRows();
         assertThat(rows).hasSize(1);
         assertThat(rows.get(0).getStage()).isEqualTo(FunnelEvent.STAGE_CHECKOUT_START);
         assertThat(rows.get(0).getAnonId()).isEqualTo("x".repeat(64));
@@ -116,29 +123,22 @@ class FunnelTrackingServiceTest {
     @Test
     void records_the_client_label_normalised() {
         service.track(publicEvent.getId(), new TrackRequest(
-                "PAGE_VIEW", "sess-1", null, null, null, null, null, "  IOS "));
+                "PAGE_VIEW", anon, null, null, null, null, null, "  IOS "));
 
-        assertThat(funnel.findAll().get(0).getClient()).isEqualTo("ios");
-    }
-
-    /** A beacon from before the app — and every web beacon — stays null. */
-    @Test
-    void an_absent_client_stays_null_so_existing_rows_keep_their_meaning() {
-        service.track(publicEvent.getId(), new TrackRequest("PAGE_VIEW", "sess-1"));
-
-        assertThat(funnel.findAll().get(0).getClient()).isNull();
+        assertThat(ownRows()).singleElement().extracting(FunnelEvent::getClient).isEqualTo("ios");
     }
 
     /**
-     * An unrecognised label is dropped rather than stored. A typo'd client would
-     * otherwise show up as its own row in an organizer's attribution view.
+     * A beacon from before the app — and every web beacon — stays null. An unrecognised label is
+     * dropped rather than stored, or a typo'd client shows up as its own row in attribution.
      */
-    @Test
-    void an_unknown_client_is_dropped_not_stored() {
+    @ParameterizedTest(name = "client [{0}] stays null")
+    @CsvSource(nullValues = "NULL", value = {"NULL", "windows-phone"})
+    void an_absent_or_unknown_client_stays_null(String client) {
         service.track(publicEvent.getId(), new TrackRequest(
-                "PAGE_VIEW", "sess-1", null, null, null, null, null, "windows-phone"));
+                "PAGE_VIEW", anon, null, null, null, null, null, client));
 
-        assertThat(funnel.findAll().get(0).getClient()).isNull();
+        assertThat(ownRows()).singleElement().extracting(FunnelEvent::getClient).isNull();
     }
 
     /**
@@ -149,9 +149,9 @@ class FunnelTrackingServiceTest {
     @Test
     void the_client_label_never_lands_in_utm_source() {
         service.track(publicEvent.getId(), new TrackRequest(
-                "PAGE_VIEW", "sess-1", "instagram", null, null, null, null, "android"));
+                "PAGE_VIEW", anon, "instagram", null, null, null, null, "android"));
 
-        var row = funnel.findAll().get(0);
+        var row = ownRows().get(0);
         assertThat(row.getUtmSource()).isEqualTo("instagram");
         assertThat(row.getClient()).isEqualTo("android");
     }

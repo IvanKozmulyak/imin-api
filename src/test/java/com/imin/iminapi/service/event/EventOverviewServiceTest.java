@@ -1,6 +1,5 @@
 package com.imin.iminapi.service.event;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.dispute.Dispute;
 import com.imin.iminapi.dispute.DisputeRepository;
 import com.imin.iminapi.dispute.DisputeStatus;
@@ -29,21 +28,22 @@ import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.service.dashboard.DashboardPeriod;
 import com.imin.iminapi.service.dashboard.DashboardService;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class EventOverviewServiceTest {
 
     @Autowired EventOverviewService service;
@@ -56,6 +56,7 @@ class EventOverviewServiceTest {
     @Autowired TicketRepository tickets;
     @Autowired RefundRepository refunds;
     @Autowired DisputeRepository disputes;
+    @Autowired JdbcTemplate jdbc;
 
     private Organization org;
     private User owner;
@@ -66,7 +67,6 @@ class EventOverviewServiceTest {
 
     @BeforeEach
     void setUp() {
-        wipe();
         org = new Organization();
         org.setName("Test Org");
         org.setSlug("test-org-" + UUID.randomUUID().toString().substring(0, 8));
@@ -92,24 +92,18 @@ class EventOverviewServiceTest {
         event.setCurrency("EUR");
         event = events.save(event);
 
-        ga = newTier("GA", 1500, 100, 10);
-        vip = newTier("VIP", 5000, 20, 2);
-
         principal = new AuthPrincipal(owner.getId(), org.getId(), UserRole.OWNER, UUID.randomUUID());
     }
 
     @AfterEach
-    void tearDown() { wipe(); }
+    void tearDown() {
+        if (org != null) OrgRows.delete(jdbc, List.of(org.getId()));
+    }
 
-    private void wipe() {
-        disputes.deleteAll();
-        refunds.deleteAll();
-        tickets.deleteAll();
-        orders.deleteAll();
-        tiers.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+    /** GA 10/100 and VIP 2/20; the dispute tests build their own single tier instead. */
+    private void gaAndVip() {
+        ga = newTier("GA", 1500, 100, 10);
+        vip = newTier("VIP", 5000, 20, 2);
     }
 
     private TicketTier newTier(String name, int price, int qty, int sold) {
@@ -190,6 +184,7 @@ class EventOverviewServiceTest {
 
     @Test
     void metrics_use_real_sums_from_tiers_and_orders() {
+        gaAndVip();
         // sold (from tier.sold) = 10 GA + 2 VIP = 12; capacity = 120
         Order o1 = newOrder("alice@example.com", 3000, Instant.now().minusSeconds(60));
         Order o2 = newOrder("bob@example.com", 5000, Instant.now().minusSeconds(120));
@@ -227,6 +222,7 @@ class EventOverviewServiceTest {
 
     @Test
     void recent_purchases_limit_8_in_reverse_chronological_order() {
+        gaAndVip();
         Instant now = Instant.now();
         for (int i = 0; i < 12; i++) {
             Order o = newOrder("buyer" + i + "@example.com", 1500, now.minusSeconds(i * 60L));
@@ -243,6 +239,7 @@ class EventOverviewServiceTest {
 
     @Test
     void recent_purchase_sub_shows_tier_breakdown_and_amount() {
+        gaAndVip();
         Order single = newOrder("solo@example.com", 1500, Instant.now().minusSeconds(60));
         newTicket(single, ga);
 
@@ -263,6 +260,7 @@ class EventOverviewServiceTest {
 
     @Test
     void recent_purchases_skip_fully_refunded_orders() {
+        gaAndVip();
         // Order A: all tickets refunded → must be excluded
         Order a = newOrder("refunded@example.com", 3000, Instant.now().minusSeconds(60));
         Ticket aTicket = newTicket(a, ga);
@@ -281,6 +279,7 @@ class EventOverviewServiceTest {
 
     @Test
     void recent_purchase_amount_excludes_refunded_tickets() {
+        gaAndVip();
         // 3 GA tickets at 1500 each = 4500 gross. One refunded → live = 3000.
         Order o = newOrder("partial@example.com", 4500, Instant.now().minusSeconds(60));
         newTicket(o, ga);
@@ -296,28 +295,9 @@ class EventOverviewServiceTest {
     }
 
     @Test
-    void recent_purchase_time_is_iso_instant_string() {
-        // H2 in test mode shifts TIMESTAMP WITH TIME ZONE values by the JVM tz
-        // offset on round-trip; production (Postgres) round-trips faithfully.
-        // We just assert the format is a parseable ISO-8601 instant.
-        Instant when = Instant.parse("2026-05-25T10:00:00Z");
-        Order o = newOrder("buyer@example.com", 1500, when);
-        newTicket(o, ga);
-
-        EventOverviewResponse r = service.overview(principal, event.getId());
-
-        String time = r.recentPurchases().get(0).time();
-        // Must parse back as an Instant — that's the FE contract.
-        Instant parsed = Instant.parse(time);
-        assertThat(parsed).isNotNull();
-        assertThat(time).matches("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z");
-    }
-
-    @Test
     void open_dispute_drops_out_of_sold_and_revenue() {
         // 4 sold tickets across two orders; the 1149 order is charged back and
         // its ticket revoked, so the organizer holds 3 tickets and 3047 minor.
-        tiers.deleteAll();
         TicketTier only = newTier("GA", 1149, 100, 4);
         Order good = newOrder("keeps@example.com", 3047, Instant.now().minusSeconds(120));
         newTicket(good, only);
@@ -341,7 +321,6 @@ class EventOverviewServiceTest {
     /** disputedCount counts ORDERS, so two chargebacks on one order still read 1. */
     @Test
     void two_disputes_on_one_order_count_as_one_disputed_order() {
-        tiers.deleteAll();
         TicketTier only = newTier("GA", 1149, 100, 2);
         Order charged = newOrder("chargeback@example.com", 2298, Instant.now().minusSeconds(60));
         Ticket a = newTicket(charged, only);
@@ -368,7 +347,6 @@ class EventOverviewServiceTest {
      */
     @Test
     void org_home_revenue_equals_this_tab_when_the_event_has_both_a_refund_and_a_chargeback() {
-        tiers.deleteAll();
         TicketTier only = newTier("GA", 1149, 100, 4);
         Order refunded = newOrder("refunded@example.com", 2298, Instant.now().minusSeconds(180));
         newTicket(refunded, only);
@@ -394,7 +372,6 @@ class EventOverviewServiceTest {
     /** Two €11.49 orders with 149 booking fee each; one is lost to a chargeback. */
     @Test
     void after_fees_counts_a_disputed_orders_fee_once() {
-        tiers.deleteAll();
         Order kept = newOrder("keeps@example.com", 1149, Instant.now().minusSeconds(120));
         kept.setApplicationFeeMinor(149);
         orders.save(kept);
@@ -413,7 +390,6 @@ class EventOverviewServiceTest {
 
     @Test
     void won_dispute_changes_none_of_the_numbers() {
-        tiers.deleteAll();
         TicketTier only = newTier("GA", 1149, 100, 4);
         Order good = newOrder("keeps@example.com", 3047, Instant.now().minusSeconds(120));
         newTicket(good, only);

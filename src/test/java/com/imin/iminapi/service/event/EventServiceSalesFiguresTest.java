@@ -3,7 +3,6 @@ package com.imin.iminapi.service.event;
 import com.imin.iminapi.dispute.Dispute;
 import com.imin.iminapi.dispute.DisputeRepository;
 import com.imin.iminapi.dispute.DisputeStatus;
-import com.imin.iminapi.dispute.DisputeWithholding;
 import com.imin.iminapi.dto.event.EventDto;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
@@ -21,38 +20,36 @@ import com.imin.iminapi.refund.RefundStatus;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
-import com.imin.iminapi.repository.PredictionRepository;
-import com.imin.iminapi.repository.PromoCodeRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
-import com.imin.iminapi.stripe.StripeConnectService;
-import com.imin.iminapi.web.IfMatchSupport;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
-import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
 
 /** EventDto sold/revenue/capacity read live totals, not the never-written event columns. */
-@DataJpaTest
-@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
+@IminIntegrationTest
 class EventServiceSalesFiguresTest {
+
+    @Autowired EventService sut;
+    @Autowired JdbcTemplate jdbc;
 
     @Autowired EventRepository events;
     @Autowired TicketTierRepository tiers;
-    @Autowired PromoCodeRepository promos;
-    @Autowired PredictionRepository predictions;
     @Autowired OrganizationRepository organizations;
     @Autowired UserRepository users;
     @Autowired OrderRepository orders;
@@ -60,22 +57,15 @@ class EventServiceSalesFiguresTest {
     @Autowired RefundRepository refunds;
     @Autowired DisputeRepository disputes;
 
-    EventService sut;
     AuthPrincipal principal;
     Organization org;
     User owner;
 
     @BeforeEach
     void setUp() {
-        var salesTotals = new EventSalesTotals(tiers, orders, refunds,
-                new DisputeWithholding(disputes, tickets, refunds));
-        sut = new EventService(events, tiers, promos, predictions, new EventValidator(),
-                new IfMatchSupport(), mock(TicketTierService.class), mock(StripeConnectService.class),
-                null, null, null, null, salesTotals);
-
         org = new Organization();
         org.setName("Sales Figures Org");
-        org.setSlug("sales-org-" + UUID.randomUUID().toString().substring(0, 8));
+        org.setSlug("sales-org-" + UUID.randomUUID());
         org.setContactEmail("sales-org@example.com");
         org.setCountry("DE");
         org = organizations.save(org);
@@ -89,11 +79,16 @@ class EventServiceSalesFiguresTest {
         principal = new AuthPrincipal(owner.getId(), org.getId(), UserRole.OWNER, UUID.randomUUID());
     }
 
+    @AfterEach
+    void tearDown() {
+        if (org != null) OrgRows.delete(jdbc, List.of(org.getId()));
+    }
+
     private Event newEvent(String name) {
         Event e = new Event();
         e.setOrgId(org.getId());
         e.setName(name);
-        e.setSlug("sales-" + UUID.randomUUID().toString().substring(0, 8));
+        e.setSlug("sales-" + UUID.randomUUID());
         e.setVisibility(EventVisibility.PUBLIC);
         e.setStatus(EventStatus.LIVE);
         e.setCreatedBy(owner.getId());

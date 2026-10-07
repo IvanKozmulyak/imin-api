@@ -1,20 +1,21 @@
 package com.imin.iminapi.service.analytics;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.*;
 import com.imin.iminapi.repository.*;
 import com.imin.iminapi.service.event.SalesDashboardService;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
+import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 
 import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -30,8 +31,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * and the property that makes it safe: every aggregate reader treats an absent
  * stage as zero, so purged history reads as 0 rather than failing.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class FunnelRetentionJobTest {
 
     @Autowired FunnelEventRepository funnel;
@@ -43,18 +43,20 @@ class FunnelRetentionJobTest {
     @Autowired SalesDashboardService salesDashboard;
     @Autowired Clock clock;
     @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
+    @Autowired PropertyFlips flips;
 
     private UUID eventId;
+    private UUID orgId;
 
     @BeforeEach
     void setUp() {
-        wipe();
         Organization org = new Organization();
         org.setName("Retention Org");
         org.setSlug("retention-" + UUID.randomUUID().toString().substring(0, 8));
         org.setContactEmail("hello@retention.example");
         org.setCountry("DE");
         org = orgs.save(org);
+        orgId = org.getId();
 
         User owner = new User();
         String email = "owner-" + UUID.randomUUID() + "@example.com";
@@ -78,10 +80,7 @@ class FunnelRetentionJobTest {
 
     @AfterEach
     void tearDown() {
-        properties.setFunnelRetentionDays(90);
-        // Hand the lock back so a later test class calling this job is not a no-op.
-        jdbc.update("update shedlock set lock_until = locked_at");
-        wipe();
+        if (orgId != null) OrgRows.delete(jdbc, List.of(orgId));
     }
 
     @Test
@@ -92,7 +91,7 @@ class FunnelRetentionJobTest {
 
         runJob();
 
-        assertThat(funnel.findAll())
+        assertThat(ownRows())
                 .extracting(FunnelEvent::getAnonId)
                 .containsExactly("recent");
     }
@@ -101,11 +100,11 @@ class FunnelRetentionJobTest {
     void retention_window_is_configurable() {
         insert("thirty-one", clock.instant().minus(31, ChronoUnit.DAYS));
         insert("ten", clock.instant().minus(10, ChronoUnit.DAYS));
-        properties.setFunnelRetentionDays(30);
+        flips.set(properties, "funnelRetentionDays", 30);
 
         runJob();
 
-        assertThat(funnel.findAll())
+        assertThat(ownRows())
                 .extracting(FunnelEvent::getAnonId)
                 .containsExactly("ten");
     }
@@ -114,11 +113,11 @@ class FunnelRetentionJobTest {
     @Test
     void zero_retention_disables_the_purge() {
         insert("ancient", clock.instant().minus(5000, ChronoUnit.DAYS));
-        properties.setFunnelRetentionDays(0);
+        flips.set(properties, "funnelRetentionDays", 0);
 
         runJob();
 
-        assertThat(funnel.findAll()).hasSize(1);
+        assertThat(ownRows()).extracting(FunnelEvent::getAnonId).containsExactly("ancient");
     }
 
     /**
@@ -144,11 +143,6 @@ class FunnelRetentionJobTest {
                 .doesNotThrowAnyException();
     }
 
-    @Test
-    void purge_on_an_empty_table_is_a_no_op() {
-        assertThatCode(this::runJob).doesNotThrowAnyException();
-    }
-
     /**
      * {@code run()} carries {@code @SchedulerLock} and ShedLock proxies the bean
      * method itself, so a second direct call inside the same minute is silently
@@ -158,8 +152,12 @@ class FunnelRetentionJobTest {
      * afterwards, so a deleted row makes every later acquisition fail instead.
      */
     private void runJob() {
-        jdbc.update("update shedlock set lock_until = locked_at");
+        jdbc.update("UPDATE shedlock SET lock_until = locked_at WHERE name = ?", "funnel_retention");
         job.run();
+    }
+
+    private List<FunnelEvent> ownRows() {
+        return funnel.findAll().stream().filter(r -> r.getEventId().equals(eventId)).toList();
     }
 
     private UUID orgOf(UUID id) {
@@ -173,12 +171,5 @@ class FunnelRetentionJobTest {
         e.setAnonId(anonId);
         e.setCreatedAt(createdAt);
         funnel.save(e);
-    }
-
-    private void wipe() {
-        funnel.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
     }
 }

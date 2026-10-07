@@ -1,6 +1,5 @@
 package com.imin.iminapi.service.event;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.dispute.Dispute;
 import com.imin.iminapi.dispute.DisputeRepository;
 import com.imin.iminapi.dispute.DisputeStatus;
@@ -29,21 +28,22 @@ import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class SalesDashboardServiceTest {
 
     @Autowired SalesDashboardService service;
@@ -56,6 +56,7 @@ class SalesDashboardServiceTest {
     @Autowired RefundRepository refunds;
     @Autowired FunnelEventRepository funnel;
     @Autowired DisputeRepository disputes;
+    @Autowired JdbcTemplate jdbc;
 
     private Organization org;
     private User owner;
@@ -66,7 +67,6 @@ class SalesDashboardServiceTest {
 
     @BeforeEach
     void setUp() {
-        wipe();
         org = new Organization();
         org.setName("Org");
         org.setSlug("org-" + UUID.randomUUID().toString().substring(0, 8));
@@ -98,12 +98,8 @@ class SalesDashboardServiceTest {
     }
 
     @AfterEach
-    void tearDown() { wipe(); }
-
-    private void wipe() {
-        disputes.deleteAll(); funnel.deleteAll(); refunds.deleteAll(); tickets.deleteAll();
-        orders.deleteAll(); tiers.deleteAll(); events.deleteAll();
-        users.deleteAll(); orgs.deleteAll();
+    void tearDown() {
+        if (org != null) OrgRows.delete(jdbc, List.of(org.getId()));
     }
 
     private TicketTier newTier(String name, int price, int qty) {

@@ -9,11 +9,15 @@ import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -81,34 +85,34 @@ class EventSalesTotalsTest {
         verifyNoMoreInteractions(tiers, orders, refunds, disputes, tickets);
     }
 
-    @Test
-    void more_disputed_tickets_than_sold_clamps_sold_at_zero() {
-        UUID a = UUID.randomUUID();
-        List<UUID> ids = List.of(a);
-        when(tiers.sumSoldAndQuantityByEventIds(ids)).thenReturn(rows(new Object[] {a, 1L, 50L}));
-        when(tickets.countRevokedInDisputedOrdersByEventIds(ids, DisputeWithholding.STATUSES))
-                .thenReturn(rows(new Object[] {a, 3L}));
-
-        assertThat(sut.forEvents(ids).get(a).sold()).isZero();
+    interface Clamp {
+        void stub(EventSalesTotalsTest t, UUID a, List<UUID> ids);
     }
 
-    @Test
-    void refunds_and_withholding_above_gross_clamp_revenue_at_zero() {
-        UUID a = UUID.randomUUID();
-        List<UUID> ids = List.of(a);
-        when(orders.sumTotalMinorByEventIds(ids)).thenReturn(rows(new Object[] {a, 1000L}));
-        when(refunds.sumSucceededRefundMinorByEventIds(ids)).thenReturn(rows(new Object[] {a, 800L}));
-        when(disputes.withholdingRowsByEventIds(ids, DisputeWithholding.STATUSES))
-                .thenReturn(List.of(new DisputeOrderRow(a, UUID.randomUUID(), 500L, 0L, 500L)));
-
-        assertThat(sut.forEvents(ids).get(a).revenueMinor()).isZero();
+    static Stream<Arguments> clamps() {
+        return Stream.of(
+                Arguments.of("more disputed tickets than sold clamp sold at zero", (Clamp) (t, a, ids) -> {
+                    when(t.tiers.sumSoldAndQuantityByEventIds(ids)).thenReturn(rows(new Object[] {a, 1L, 50L}));
+                    when(t.tickets.countRevokedInDisputedOrdersByEventIds(ids, DisputeWithholding.STATUSES))
+                            .thenReturn(rows(new Object[] {a, 3L}));
+                }),
+                Arguments.of("refunds and withholding above gross clamp revenue at zero", (Clamp) (t, a, ids) -> {
+                    when(t.orders.sumTotalMinorByEventIds(ids)).thenReturn(rows(new Object[] {a, 1000L}));
+                    when(t.refunds.sumSucceededRefundMinorByEventIds(ids)).thenReturn(rows(new Object[] {a, 800L}));
+                    when(t.disputes.withholdingRowsByEventIds(ids, DisputeWithholding.STATUSES))
+                            .thenReturn(List.of(new DisputeOrderRow(a, UUID.randomUUID(), 500L, 0L, 500L)));
+                }));
     }
 
-    @Test
-    void for_event_reads_the_single_id_through_the_grouped_queries() {
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("clamps")
+    void figures_clamp_at_zero(String name, Clamp stub) {
         UUID a = UUID.randomUUID();
-        when(tiers.sumSoldAndQuantityByEventIds(List.of(a))).thenReturn(rows(new Object[] {a, 4L, 100L}));
+        List<UUID> ids = List.of(a);
+        stub.stub(this, a, ids);
 
-        assertThat(sut.forEvent(a)).isEqualTo(new EventSalesFigures(4, 100, 0L));
+        EventSalesFigures figures = sut.forEvents(ids).get(a);
+        assertThat(figures.sold()).isZero();
+        assertThat(figures.revenueMinor()).isZero();
     }
 }

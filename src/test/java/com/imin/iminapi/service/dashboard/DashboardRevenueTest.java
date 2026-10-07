@@ -1,6 +1,5 @@
 package com.imin.iminapi.service.dashboard;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.dispute.Dispute;
 import com.imin.iminapi.dispute.DisputeRepository;
 import com.imin.iminapi.dispute.DisputeStatus;
@@ -23,12 +22,11 @@ import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.service.dashboard.DashboardRevenue.Window;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -45,8 +43,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * worked example: A live 2 tickets, B refunded, C charged back (LOST), D test mode with a
  * partial refund and an OPEN test dispute, E outside the window.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class DashboardRevenueTest {
 
     @Autowired DashboardRevenue revenue;

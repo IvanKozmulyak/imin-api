@@ -1,6 +1,5 @@
 package com.imin.iminapi.service.event;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.EventVisibility;
@@ -19,12 +18,16 @@ import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.MutableClock;
+import com.imin.iminapi.support.OrgRows;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
 import java.time.LocalDate;
@@ -35,8 +38,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class EventVelocityServiceTest {
 
     @Autowired EventVelocityService service;
@@ -45,6 +47,8 @@ class EventVelocityServiceTest {
     @Autowired EventRepository events;
     @Autowired OrderRepository orders;
     @Autowired RefundRepository refunds;
+    @Autowired JdbcTemplate jdbc;
+    @Autowired MutableClock clock;
 
     private Organization org;
     private User owner;
@@ -53,7 +57,6 @@ class EventVelocityServiceTest {
 
     @BeforeEach
     void setUp() {
-        wipe();
         org = new Organization();
         org.setName("Vel Org");
         org.setSlug("vel-" + UUID.randomUUID().toString().substring(0, 8));
@@ -83,14 +86,8 @@ class EventVelocityServiceTest {
     }
 
     @AfterEach
-    void tearDown() { wipe(); }
-
-    private void wipe() {
-        refunds.deleteAll();
-        orders.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+    void tearDown() {
+        if (org != null) OrgRows.delete(jdbc, List.of(org.getId()));
     }
 
     private Refund newSucceededRefund(Order o, long amountMinor, Instant updatedAt) {
@@ -142,7 +139,7 @@ class EventVelocityServiceTest {
 
         assertThat(r.days()).hasSize(7);
         // Days are ISO local-date strings, oldest first, today last
-        LocalDate today = LocalDate.now(ZoneId.of("UTC"));
+        LocalDate today = LocalDate.now(clock);
         assertThat(r.days().get(6)).isEqualTo(today.toString());
         assertThat(r.days().get(0)).isEqualTo(today.minusDays(6).toString());
     }
@@ -150,7 +147,7 @@ class EventVelocityServiceTest {
     @Test
     void succeeded_refund_subtracts_from_its_day_bucket() {
         // Buy today (1000), refund today (300) → today bucket = 700 net
-        LocalDate today = LocalDate.now(ZoneId.of("UTC"));
+        LocalDate today = LocalDate.now(clock);
         Instant todayNoon = today.atTime(12, 0).atZone(ZoneId.of("UTC")).toInstant();
         Order o = newOrder(1000, todayNoon);
         newSucceededRefund(o, 300, todayNoon);
@@ -159,34 +156,28 @@ class EventVelocityServiceTest {
         assertThat(points.get(6)).isEqualTo(700L);
     }
 
-    @Test
-    void custom_window_returns_n_buckets() {
-        EventVelocityService.VelocityResponse r = service.windowEndingToday(principal, event.getId(), 30);
-        assertThat(r.points()).hasSize(30);
-        assertThat(r.days()).hasSize(30);
+    @ParameterizedTest(name = "requested {0} → {1} buckets")
+    @CsvSource({
+            "30, 30",
+            // clamped to the max
+            EventVelocityService.MAX_WINDOW_DAYS + 100 + ", " + EventVelocityService.MAX_WINDOW_DAYS,
+            // zero or negative is clamped to one
+            "0, 1"
+    })
+    void window_is_clamped_to_one_through_max_days(int requested, int buckets) {
+        EventVelocityService.VelocityResponse r = service.windowEndingToday(principal, event.getId(), requested);
+        assertThat(r.points()).hasSize(buckets);
+        assertThat(r.days()).hasSize(buckets);
 
-        LocalDate today = LocalDate.now(ZoneId.of("UTC"));
-        assertThat(r.days().get(29)).isEqualTo(today.toString());
-        assertThat(r.days().get(0)).isEqualTo(today.minusDays(29).toString());
-    }
-
-    @Test
-    void window_is_clamped_to_max() {
-        int huge = EventVelocityService.MAX_WINDOW_DAYS + 100;
-        EventVelocityService.VelocityResponse r = service.windowEndingToday(principal, event.getId(), huge);
-        assertThat(r.points()).hasSize(EventVelocityService.MAX_WINDOW_DAYS);
-    }
-
-    @Test
-    void window_zero_or_negative_clamped_to_one() {
-        EventVelocityService.VelocityResponse r = service.windowEndingToday(principal, event.getId(), 0);
-        assertThat(r.points()).hasSize(1);
+        LocalDate today = LocalDate.now(clock);
+        assertThat(r.days().get(buckets - 1)).isEqualTo(today.toString());
+        assertThat(r.days().get(0)).isEqualTo(today.minusDays(buckets - 1).toString());
     }
 
     @Test
     void refund_subtraction_floors_at_zero_per_bucket() {
         // A refund on today subtracting more than today's sales doesn't go negative
-        LocalDate today = LocalDate.now(ZoneId.of("UTC"));
+        LocalDate today = LocalDate.now(clock);
         Instant todayNoon = today.atTime(12, 0).atZone(ZoneId.of("UTC")).toInstant();
         Order o = newOrder(500, todayNoon);
         newSucceededRefund(o, 2000, todayNoon);
@@ -195,36 +186,32 @@ class EventVelocityServiceTest {
         assertThat(points.get(6)).isEqualTo(0L);
     }
 
-    @Test
-    void orders_today_aggregate_into_last_bucket() {
-        // Use noon UTC today to avoid any midnight-edge flake
-        LocalDate today = LocalDate.now(ZoneId.of("UTC"));
-        Instant todayNoon = today.atTime(12, 0).atZone(ZoneId.of("UTC")).toInstant();
-        newOrder(2500, todayNoon);
-        newOrder(1500, todayNoon);
+    @ParameterizedTest(name = "{0} day(s) ago → bucket {1}")
+    @CsvSource({
+            // index 6 = today; two orders sum
+            "0, 6, '2500 1500'",
+            // start = today - 6 days, so three days ago is index 6 - 3 = 3
+            "3, 3, '7000'"
+    })
+    void orders_aggregate_into_their_day_bucket(int daysAgo, int bucket, String amounts) {
+        // Noon UTC avoids any midnight-edge flake.
+        Instant noon = LocalDate.now(clock).minusDays(daysAgo).atTime(12, 0).atZone(ZoneId.of("UTC")).toInstant();
+        long sum = 0;
+        for (String amount : amounts.split(" ")) {
+            newOrder(Long.parseLong(amount), noon);
+            sum += Long.parseLong(amount);
+        }
 
         List<Long> points = service.windowEndingToday(principal, event.getId(), EventVelocityService.DEFAULT_WINDOW_DAYS).points();
         assertThat(points).hasSize(7);
-        assertThat(points.get(6)).isEqualTo(4000L);   // index 6 = today
-        for (int i = 0; i < 6; i++) {
-            assertThat(points.get(i)).as("day index %d", i).isEqualTo(0L);
+        for (int i = 0; i < 7; i++) {
+            assertThat(points.get(i)).as("day index %d", i).isEqualTo(i == bucket ? sum : 0L);
         }
     }
 
     @Test
-    void orders_three_days_ago_aggregate_into_bucket_3() {
-        LocalDate threeDaysAgo = LocalDate.now(ZoneId.of("UTC")).minusDays(3);
-        Instant threeDaysAgoNoon = threeDaysAgo.atTime(12, 0).atZone(ZoneId.of("UTC")).toInstant();
-        newOrder(7000, threeDaysAgoNoon);
-
-        List<Long> points = service.windowEndingToday(principal, event.getId(), EventVelocityService.DEFAULT_WINDOW_DAYS).points();
-        // start = today - 6 days. So three-days-ago index = 6 - 3 = 3.
-        assertThat(points.get(3)).isEqualTo(7000L);
-    }
-
-    @Test
     void orders_outside_window_are_excluded() {
-        LocalDate eightDaysAgo = LocalDate.now(ZoneId.of("UTC")).minusDays(8);
+        LocalDate eightDaysAgo = LocalDate.now(clock).minusDays(8);
         Instant outside = eightDaysAgo.atTime(12, 0).atZone(ZoneId.of("UTC")).toInstant();
         newOrder(99_000, outside);
 
@@ -242,7 +229,7 @@ class EventVelocityServiceTest {
         event.setTimezone("Pacific/Auckland");
         events.save(event);
 
-        LocalDate today = LocalDate.now(ZoneId.of("Pacific/Auckland"));
+        LocalDate today = LocalDate.now(clock.withZone(ZoneId.of("Pacific/Auckland")));
         Instant todayNoonAuckland = today.atTime(12, 0).atZone(ZoneId.of("Pacific/Auckland")).toInstant();
         newOrder(1234, todayNoonAuckland);
 

@@ -16,6 +16,9 @@ import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.service.dashboard.DashboardRevenue.Window;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 
@@ -158,11 +161,17 @@ class DashboardServiceTest {
     }
 
     /**
-     * The org home reads the same per-event net as the event Overview and Sales tabs —
-     * a chargeback must not be a number that only one of three screens knows about.
+     * The org home reads the same per-event net as the event Overview and Sales tabs: refunds and
+     * chargebacks both come off, or the card reads above the Overview for the same event.
      */
-    @Test
-    void now_and_last_event_cards_are_net_of_disputes() {
+    @ParameterizedTest(name = "{0}")
+    @CsvSource({
+            // 4196 gross − 1149 charged back
+            "net of disputes,             4196,   0",
+            // 4596 gross − 400 refunded − 1149 charged back
+            "net of refunds and disputes, 4596, 400"
+    })
+    void now_card_revenue_is_net_of_refunds_and_disputes(String name, long gross, long refunded) {
         UUID orgId = UUID.randomUUID();
         AuthPrincipal p = owner(orgId);
         User u = new User(); u.setId(p.userId()); u.setFirstName("Jaune"); u.setEmail("j@x.com");
@@ -175,7 +184,8 @@ class DashboardServiceTest {
         when(events.findUpcomingLive(eq(orgId), any(), any())).thenReturn(List.of(next));
         when(tiers.sumQuantityByEventId(next.getId())).thenReturn(100);
         when(tiers.sumSoldByEventId(next.getId())).thenReturn(4);
-        when(orders.sumTotalMinorByEventId(next.getId())).thenReturn(4196L);
+        when(orders.sumTotalMinorByEventId(next.getId())).thenReturn(gross);
+        when(refunds.sumSucceededRefundMinorByEventId(next.getId())).thenReturn(refunded);
         when(disputeWithholding.disputedTicketCount(next.getId())).thenReturn(1);
         when(disputeWithholding.withheldMinor(next.getId())).thenReturn(1149L);
 
@@ -190,41 +200,6 @@ class DashboardServiceTest {
         assertThat(r.now().nextEvent().sold()).isEqualTo(3);
         assertThat(r.now().nextEvent().revenueMinor()).isEqualTo(3047L);
         assertThat(r.now().pct()).isEqualTo(3);
-    }
-
-    /**
-     * Refunds come off the org-home card too. Subtracting only the chargeback left this
-     * number above the event Overview's for any event that had ever refunded a ticket.
-     */
-    @Test
-    void now_card_revenue_subtracts_refunds_as_well_as_disputes() {
-        UUID orgId = UUID.randomUUID();
-        AuthPrincipal p = owner(orgId);
-        User u = new User(); u.setId(p.userId()); u.setFirstName("Jaune"); u.setEmail("j@x.com");
-        when(users.findById(p.userId())).thenReturn(Optional.of(u));
-
-        Event next = new Event();
-        next.setId(UUID.randomUUID()); next.setOrgId(orgId);
-        next.setName("Next Night"); next.setSlug("next-night");
-        next.setStartsAt(Instant.now().plusSeconds(28L * 24 * 3600));
-        when(events.findUpcomingLive(eq(orgId), any(), any())).thenReturn(List.of(next));
-        when(tiers.sumQuantityByEventId(next.getId())).thenReturn(100);
-        when(tiers.sumSoldByEventId(next.getId())).thenReturn(4);
-        when(orders.sumTotalMinorByEventId(next.getId())).thenReturn(4596L);
-        when(refunds.sumSucceededRefundMinorByEventId(next.getId())).thenReturn(400L);
-        when(disputeWithholding.disputedTicketCount(next.getId())).thenReturn(1);
-        when(disputeWithholding.withheldMinor(next.getId())).thenReturn(1149L);
-
-        when(events.findRecentPast(eq(orgId), any())).thenReturn(List.of());
-        when(events.countLive(orgId)).thenReturn(1L);
-        when(events.countPublished(orgId)).thenReturn(1L);
-        when(events.countPast(orgId)).thenReturn(0L);
-        stubEmptyAuxiliary(orgId);
-
-        DashboardResponse r = sut.build(p, DashboardPeriod.D30, DashboardPeriod.D90);
-
-        // 4596 gross − 400 refunded − 1149 charged back.
-        assertThat(r.now().nextEvent().revenueMinor()).isEqualTo(3047L);
     }
 
     private AuthPrincipal emptyHome(UUID orgId) {
@@ -277,22 +252,12 @@ class DashboardServiceTest {
         assertThat(r.cycle().deltas().ticketsPct()).isEqualTo(-50);
     }
 
-    @Test
-    void cycle_deltas_are_null_when_the_prior_window_is_empty_and_the_current_is_not() {
+    @ParameterizedTest(name = "current {0}/{1} tickets, prior empty")
+    @CsvSource({"2502, 3", "0, 0"})
+    void cycle_deltas_are_null_when_the_prior_window_is_empty(long currentNet, int currentTickets) {
         UUID orgId = UUID.randomUUID();
         AuthPrincipal p = emptyHome(orgId);
-        stubCycle30d(orgId, new Window(2_502, 3), new Window(0, 0));
-
-        DashboardResponse r = sut.build(p, DashboardPeriod.D30, DashboardPeriod.D90);
-
-        assertThat(r.cycle().deltas().revenuePct()).isNull();
-        assertThat(r.cycle().deltas().ticketsPct()).isNull();
-    }
-
-    @Test
-    void cycle_deltas_are_null_when_both_windows_are_empty() {
-        UUID orgId = UUID.randomUUID();
-        AuthPrincipal p = emptyHome(orgId);
+        stubCycle30d(orgId, new Window(currentNet, currentTickets), new Window(0, 0));
 
         DashboardResponse r = sut.build(p, DashboardPeriod.D30, DashboardPeriod.D90);
 
@@ -329,27 +294,20 @@ class DashboardServiceTest {
         assertThat(r.lastEvent().metrics().avgTicketMinor()).isEqualTo(1_926);
     }
 
-    @Test
-    void last_event_avg_ticket_is_null_with_no_sold_ticket() {
+    @ParameterizedTest(name = "past event present: {0}")
+    @ValueSource(booleans = {true, false})
+    void last_event_avg_ticket_is_null_without_a_sold_ticket(boolean hasPastEvent) {
         UUID orgId = UUID.randomUUID();
         AuthPrincipal p = emptyHome(orgId);
-        Event past = pastEvent(orgId);
-        when(revenue.netForEvent(past.getId())).thenReturn(0L);
-        when(revenue.ticketsForEvent(past.getId())).thenReturn(0L);
+        if (hasPastEvent) {
+            Event past = pastEvent(orgId);
+            when(revenue.netForEvent(past.getId())).thenReturn(0L);
+            when(revenue.ticketsForEvent(past.getId())).thenReturn(0L);
+        }
 
         DashboardResponse r = sut.build(p, DashboardPeriod.D30, DashboardPeriod.D90);
 
-        assertThat(r.lastEvent().metrics().avgTicketMinor()).isNull();
-    }
-
-    @Test
-    void last_event_avg_ticket_is_null_with_no_past_event() {
-        UUID orgId = UUID.randomUUID();
-        AuthPrincipal p = emptyHome(orgId);
-
-        DashboardResponse r = sut.build(p, DashboardPeriod.D30, DashboardPeriod.D90);
-
-        assertThat(r.lastEvent().event()).isNull();
+        assertThat(r.lastEvent().event() != null).isEqualTo(hasPastEvent);
         assertThat(r.lastEvent().metrics().avgTicketMinor()).isNull();
     }
 
