@@ -1,6 +1,5 @@
 package com.imin.iminapi.service.event;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.dto.PageResponse;
 import com.imin.iminapi.dto.dashboard.DashboardResponse;
 import com.imin.iminapi.dto.event.EventDto;
@@ -23,17 +22,17 @@ import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.service.dashboard.DashboardPeriod;
 import com.imin.iminapi.service.dashboard.DashboardService;
+import com.imin.iminapi.support.AuditRows;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PgFaults;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.cache.CacheManager;
-import org.springframework.context.annotation.Import;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -42,24 +41,21 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.doReturn;
 
 /** Drives the service through its Spring bean so @Transactional and @CacheEvict are live. */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class DraftEventDeletionServiceTest {
 
     @Autowired DraftEventDeletionService sut;
     @Autowired EventService eventService;
     @Autowired DashboardService dashboard;
     @Autowired CacheManager caches;
-    @MockitoSpyBean EventRepository events;
+    @Autowired EventRepository events;
     @Autowired OrderRepository orders;
     @Autowired OrganizationRepository orgs;
     @Autowired UserRepository users;
     @Autowired AuditLogRepository auditLogs;
+    @Autowired AuditRows audit;
     @Autowired JdbcTemplate jdbc;
 
     private final List<UUID> orgIds = new ArrayList<>();
@@ -141,14 +137,13 @@ class DraftEventDeletionServiceTest {
     void lost_race_at_the_guarded_update_is_409_with_no_delete_and_no_audit() {
         UUID draft = event(orgA, userA, EventStatus.DRAFT, null, null);
         // Stands in for a publish that committed between the checks and the guarded UPDATE.
-        doReturn(0).when(events).softDeleteNeverPublishedDraft(eq(draft), eq(orgA), any(Instant.class));
-
-        assertApiError(() -> sut.deleteDraft(principal, draft), HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
-                "Only a draft that was never published can be deleted");
+        try (var fault = PgFaults.skipUpdates(jdbc, "events", "id", draft)) {
+            assertApiError(() -> sut.deleteDraft(principal, draft), HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                    "Only a draft that was never published can be deleted");
+        }
 
         assertThat(deletedAt(draft)).isNull();
-        assertThat(auditLogs.findByOrgIdOrderByOccurredAtDesc(orgA, PageRequest.of(0, 10)).getContent())
-                .noneMatch(a -> AuditActions.EVENT_DELETED.equals(a.getAction()));
+        assertThat(audit.forOrg(orgA)).noneMatch(a -> AuditActions.EVENT_DELETED.equals(a.getAction()));
     }
 
     @Test
@@ -158,13 +153,9 @@ class DraftEventDeletionServiceTest {
         sut.deleteDraft(principal, draft);
 
         assertThat(deletedAt(draft)).isNotNull();
-        List<AuditLog> rows = auditLogs.findByOrgIdOrderByOccurredAtDesc(orgA, PageRequest.of(0, 10)).getContent();
-        assertThat(rows).singleElement().satisfies(a -> {
-            assertThat(a.getAction()).isEqualTo(AuditActions.EVENT_DELETED);
-            assertThat(a.getTargetType()).isEqualTo("event");
-            assertThat(a.getTargetId()).isEqualTo(draft);
-            assertThat(a.getSummary()).isEqualTo("Deleted draft \"Night\"");
-        });
+        AuditLog row = audit.assertRecorded(orgA, AuditActions.EVENT_DELETED, "event", draft);
+        assertThat(audit.forOrg(orgA)).hasSize(1);
+        assertThat(row.getSummary()).isEqualTo("Deleted draft \"Night\"");
         assertApiError(() -> eventService.detail(principal, draft), HttpStatus.NOT_FOUND, ErrorCode.NOT_FOUND);
         PageResponse<EventDto> drafts = eventService.list(principal, EventStatus.DRAFT, 1, 20);
         assertThat(drafts.items()).extracting(EventDto::id).doesNotContain(draft);

@@ -1,6 +1,5 @@
 package com.imin.iminapi.service.event;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.CheckoutAttribution;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
@@ -16,25 +15,16 @@ import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
-import com.imin.iminapi.stripe.StripeProductService;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -50,36 +40,19 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Unpublish racing reserve and free checkout on the same event, on Postgres 17 (READ COMMITTED). */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
-@Testcontainers(disabledWithoutDocker = true)
+/** Unpublish racing reserve and free checkout on the same event, on Postgres (READ COMMITTED). */
+@IminIntegrationTest
 class UnpublishCheckoutRacePostgresTest {
 
-    @Container
-    @ServiceConnection
-    static final PostgreSQLContainer<?> PG = new PostgreSQLContainer<>("postgres:17-alpine");
-
-    @DynamicPropertySource
-    static void overrideDataSource(DynamicPropertyRegistry r) {
-        r.add("spring.datasource.url", PG::getJdbcUrl);
-        r.add("spring.datasource.username", PG::getUsername);
-        r.add("spring.datasource.password", PG::getPassword);
-        r.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
-        r.add("spring.jpa.hibernate.ddl-auto", () -> "none");
-        r.add("spring.jpa.properties.hibernate.dialect", () -> "org.hibernate.dialect.PostgreSQLDialect");
-        r.add("spring.flyway.enabled", () -> "true");
-        r.add("spring.docker.compose.enabled", () -> "false");
-    }
-
-    private static final UUID TIER_A = UUID.fromString("10000000-0000-4000-8000-000000000001");
-    private static final UUID TIER_B = UUID.fromString("f0000000-0000-4000-8000-000000000001");
+    // Sign bit clear vs set: Postgres sorts tierA first, UUID.compareTo sorts tierB first.
+    private final UUID tierA = new UUID(UUID.randomUUID().getMostSignificantBits() & Long.MAX_VALUE,
+            UUID.randomUUID().getLeastSignificantBits());
+    private final UUID tierB = new UUID(UUID.randomUUID().getMostSignificantBits() | Long.MIN_VALUE,
+            UUID.randomUUID().getLeastSignificantBits());
     private static final String SOLD_MESSAGE =
             "Cannot unpublish: tickets have been sold. Cancel the event and refund buyers first.";
     private static final String CHECKOUT_MESSAGE =
             "Cannot unpublish: a checkout is in progress. Try again once the checkout session expires.";
-
-    @MockitoBean StripeProductService stripeProductService;
 
     @Autowired EventService eventService;
     @Autowired InventoryService inventoryService;
@@ -124,8 +97,8 @@ class UnpublishCheckoutRacePostgresTest {
         e.setPublishedAt(now.minus(2, ChronoUnit.DAYS));
         eventId = events.save(e).getId();
 
-        insertTier(TIER_A, 0);
-        insertTier(TIER_B, 1);
+        insertTier(tierA, 0);
+        insertTier(tierB, 1);
     }
 
     @AfterEach
@@ -161,7 +134,7 @@ class UnpublishCheckoutRacePostgresTest {
 
             Future<UUID> buyer = pool.submit(() -> tx.execute(s -> {
                 cached.set(events.findById(eventId).orElseThrow());
-                return inventoryService.reserve(TIER_A, 2, Instant.now().plus(30, ChronoUnit.MINUTES), null);
+                return inventoryService.reserve(tierA, 2, Instant.now().plus(30, ChronoUnit.MINUTES), null);
             }));
             Thread.sleep(500);
             assertThat(buyer.isDone()).as("reserve waits for unpublish's tier lock").isFalse();
@@ -180,8 +153,8 @@ class UnpublishCheckoutRacePostgresTest {
             assertThat(cached.get().getStatus()).isEqualTo(EventStatus.LIVE);
 
             assertThat(eventStatus()).isEqualTo("DRAFT");
-            assertThat(tierInt(TIER_A, "reserved")).isZero();
-            assertThat(heldReservations(TIER_A)).isZero();
+            assertThat(tierInt(tierA, "reserved")).isZero();
+            assertThat(heldReservations(tierA)).isZero();
         } finally {
             release.countDown();
             shutdown(pool);
@@ -197,7 +170,7 @@ class UnpublishCheckoutRacePostgresTest {
         CountDownLatch release = new CountDownLatch(1);
         try {
             Future<?> buyer = pool.submit(() -> tx.executeWithoutResult(s -> {
-                inventoryService.reserve(TIER_B, 2, Instant.now().plus(30, ChronoUnit.MINUTES), null);
+                inventoryService.reserve(tierB, 2, Instant.now().plus(30, ChronoUnit.MINUTES), null);
                 held.countDown();
                 await(release);
             }));
@@ -212,8 +185,8 @@ class UnpublishCheckoutRacePostgresTest {
             assertConflict(organizer, CHECKOUT_MESSAGE);
 
             assertThat(eventStatus()).isEqualTo("LIVE");
-            assertThat(tierInt(TIER_B, "reserved")).isEqualTo(2);
-            assertThat(heldReservations(TIER_B)).isEqualTo(1);
+            assertThat(tierInt(tierB, "reserved")).isEqualTo(2);
+            assertThat(heldReservations(tierB)).isEqualTo(1);
         } finally {
             release.countDown();
             shutdown(pool);
@@ -230,7 +203,7 @@ class UnpublishCheckoutRacePostgresTest {
         try {
             Future<?> buyer = pool.submit(() -> tx.executeWithoutResult(s -> {
                 Event event = events.findById(eventId).orElseThrow();
-                TicketTier tier = tiers.findById(TIER_A).orElseThrow();
+                TicketTier tier = tiers.findById(tierA).orElseThrow();
                 freeCheckoutService.issueFreeOrder(event, tier, 1, "race@example.test", null, false, false,
                         CheckoutAttribution.NONE, null);
                 issued.countDown();
@@ -247,7 +220,7 @@ class UnpublishCheckoutRacePostgresTest {
             assertConflict(organizer, SOLD_MESSAGE);
 
             assertThat(eventStatus()).isEqualTo("LIVE");
-            assertThat(tierInt(TIER_A, "sold")).isEqualTo(1);
+            assertThat(tierInt(tierA, "sold")).isEqualTo(1);
             assertThat(jdbc.queryForObject("SELECT count(*) FROM orders WHERE event_id = ?",
                     Integer.class, eventId)).isEqualTo(1);
         } finally {

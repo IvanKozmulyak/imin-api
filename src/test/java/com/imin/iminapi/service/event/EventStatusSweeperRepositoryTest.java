@@ -9,30 +9,35 @@ import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
-import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
+import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.sql.Timestamp;
+import java.time.Clock;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Persistence test for {@link EventRepository#markLivePast(Instant, Instant)}.
- *
- * <p>Seeds four events covering every boundary case and asserts that exactly one
- * transitions to PAST — the LIVE event whose {@code endsAt} is in the past.
+ * The LIVE→PAST tick through the {@link EventStatusSweeper} bean: an ended LIVE event closes, nothing else moves.
+ * The sweep is global on the shared database, so only this test's own rows are asserted.
  */
-@DataJpaTest
-@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
+@IminIntegrationTest
 class EventStatusSweeperRepositoryTest {
 
+    @Autowired EventStatusSweeper sweeper;
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
     @Autowired UserRepository users;
+    @Autowired JdbcTemplate jdbc;
+    @Autowired Clock clock;
 
     private UUID orgId;
     private UUID userId;
@@ -41,7 +46,7 @@ class EventStatusSweeperRepositoryTest {
     void setUp() {
         Organization org = new Organization();
         org.setName("Sweeper Test Org");
-        org.setSlug("sweeper-org-" + UUID.randomUUID().toString().substring(0, 8));
+        org.setSlug("sweeper-org-" + UUID.randomUUID());
         org.setContactEmail("sweeper@example.test");
         org.setCountry("DE");
         org = orgs.save(org);
@@ -54,89 +59,65 @@ class EventStatusSweeperRepositoryTest {
         userId = users.save(owner).getId();
     }
 
-    @Test
-    void markLivePast_transitionsOnlyLiveEndedEvent() {
-        // Wall-clock-relative, NOT a pinned literal: updatedAtBefore comes from @PrePersist
-        // (real wall clock), so a pinned "now" goes stale the moment real time passes it and
-        // the isAfterOrEqualTo(updatedAtBefore) assertion becomes a time bomb.
-        Instant now = Instant.now();
+    @AfterEach
+    void tearDown() {
+        OrgRows.delete(jdbc, List.of(orgId));
+    }
 
-        // 1. LIVE event that ended 1 hour ago — should flip to PAST
+    @Test
+    void sweep_closesOnlyTheEndedLiveEvent() {
+        // The sweep compares against the app clock, so the fixture times come from it too.
+        Instant now = clock.instant();
+
         Event liveEnded = liveEvent("live-ended");
         liveEnded.setEndsAt(now.minusSeconds(3600));
         UUID liveEndedId = events.save(liveEnded).getId();
 
-        // 2. LIVE event ending in the future — must stay LIVE
         Event liveOngoing = liveEvent("live-ongoing");
         liveOngoing.setEndsAt(now.plusSeconds(3600));
         UUID liveOngoingId = events.save(liveOngoing).getId();
 
-        // 3. LIVE event with null endsAt — must stay LIVE (no end date)
         Event liveNoEnd = liveEvent("live-no-end");
         liveNoEnd.setEndsAt(null);
         UUID liveNoEndId = events.save(liveNoEnd).getId();
 
-        // 4. DRAFT event that has an ended endsAt — must NOT change (not LIVE)
         Event draftEnded = new Event();
         draftEnded.setOrgId(orgId);
         draftEnded.setCreatedBy(userId);
         draftEnded.setName("Draft Ended");
-        draftEnded.setSlug("draft-ended-" + UUID.randomUUID().toString().substring(0, 8));
+        draftEnded.setSlug("draft-ended-" + UUID.randomUUID());
         draftEnded.setVisibility(EventVisibility.PUBLIC);
         draftEnded.setStatus(EventStatus.DRAFT);
         draftEnded.setCurrency("EUR");
         draftEnded.setEndsAt(now.minusSeconds(3600));
         UUID draftEndedId = events.save(draftEnded).getId();
 
-        events.flush();
+        // A committed sentinel well before the tick, so "updatedAt advanced" cannot pass by coincidence.
+        Instant sentinel = now.minusSeconds(86_400);
+        jdbc.update("UPDATE events SET updated_at = ? WHERE id = ?", Timestamp.from(sentinel), liveEndedId);
+        // One context serves the whole run: release the lock an earlier tick may still hold.
+        jdbc.update("UPDATE shedlock SET lock_until = locked_at WHERE name = ?", "EventStatusSweeper.sweep");
 
-        // Record updatedAt before the sweep to verify it advances
-        Instant updatedAtBefore = events.findById(liveEndedId).orElseThrow().getUpdatedAt();
+        sweeper.sweep();
 
-        // Run the bulk update. The sweep clock is captured AFTER the fixtures persisted:
-        // @PrePersist stamped them with the real wall clock, so a sweep stamp taken any
-        // earlier would set updated_at backwards and fail the advance assertion below.
-        Instant sweepNow = Instant.now();
-        int updated = events.markLivePast(sweepNow, sweepNow);
-
-        assertThat(updated).isEqualTo(1);
-
-        // The ended LIVE event must now be PAST
         Event reloadedEnded = events.findById(liveEndedId).orElseThrow();
         assertThat(reloadedEnded.getStatus()).isEqualTo(EventStatus.PAST);
-        // updatedAt must have advanced (bulk JPQL sets it to :now, bypassing @PreUpdate)
-        assertThat(reloadedEnded.getUpdatedAt()).isAfterOrEqualTo(updatedAtBefore);
+        assertThat(reloadedEnded.getUpdatedAt()).isAfter(sentinel);
 
-        // All others must be unchanged
         assertThat(events.findById(liveOngoingId).orElseThrow().getStatus()).isEqualTo(EventStatus.LIVE);
         assertThat(events.findById(liveNoEndId).orElseThrow().getStatus()).isEqualTo(EventStatus.LIVE);
         assertThat(events.findById(draftEndedId).orElseThrow().getStatus()).isEqualTo(EventStatus.DRAFT);
     }
-
-    @Test
-    void markLivePast_returnsZero_whenNoEligibleEvents() {
-        // Only a LIVE ongoing event — nothing to transition
-        Event liveOngoing = liveEvent("live-ongoing-only");
-        liveOngoing.setEndsAt(Instant.now().plusSeconds(3600));
-        events.save(liveOngoing);
-        events.flush();
-
-        int updated = events.markLivePast(Instant.now(), Instant.now());
-
-        assertThat(updated).isZero();
-    }
-
-    // ── helpers ──────────────────────────────────────────────────────────────
 
     private Event liveEvent(String slugSuffix) {
         Event e = new Event();
         e.setOrgId(orgId);
         e.setCreatedBy(userId);
         e.setName("Test " + slugSuffix);
-        e.setSlug(slugSuffix + "-" + UUID.randomUUID().toString().substring(0, 8));
+        e.setSlug(slugSuffix + "-" + UUID.randomUUID());
         e.setVisibility(EventVisibility.PUBLIC);
         e.setStatus(EventStatus.LIVE);
-        e.setPublishedAt(Instant.now().minusSeconds(7200));
+        e.setPublishedAt(clock.instant().minusSeconds(7200));
         e.setCurrency("EUR");
         return e;
     }

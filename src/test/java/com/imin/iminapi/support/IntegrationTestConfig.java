@@ -8,7 +8,6 @@ import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
-import com.imin.iminapi.storage.InMemoryMediaStorage;
 import com.imin.iminapi.storage.MediaStorage;
 import org.springframework.boot.jdbc.autoconfigure.JdbcConnectionDetails;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -57,7 +56,7 @@ public class IntegrationTestConfig {
 
     @Bean
     MediaStorage iminInMemoryMediaStorage() {
-        return new InMemoryMediaStorage("https://test-media.invalid/");
+        return new PausableMediaStorage("https://test-media.invalid/");
     }
 
     @Bean @Primary

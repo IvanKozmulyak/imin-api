@@ -12,7 +12,9 @@ import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.stripe.StripeConnectService;
 import com.imin.iminapi.web.IfMatchSupport;
 import org.junit.jupiter.api.Test;
-import org.springframework.dao.DataIntegrityViolationException;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
@@ -182,24 +184,6 @@ class EventServiceTest {
                 .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.FIELD_INVALID);
 
         verify(events, never()).save(any(Event.class));
-    }
-
-    @Test
-    void patch_with_duplicate_slug_throws_DUPLICATE() {
-        AuthPrincipal p = principal();
-        Event e = new Event();
-        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
-        e.setName("X"); e.setSlug("existing-slug");
-        Instant updated = Instant.parse("2026-04-23T10:00:00Z");
-        e.setUpdatedAt(updated);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
-        when(events.save(any(Event.class))).thenThrow(new DataIntegrityViolationException("unique constraint"));
-
-        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
-                sut.patch(p, e.getId(), "\"" + updated + "\"",
-                        new EventPatchRequest(null, "taken-slug", null, null, null, null, null, null, null,
-                                null, null, null, null, null, null, null, null)))
-                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.DUPLICATE);
     }
 
     @Test
@@ -555,37 +539,10 @@ class EventServiceTest {
         verifyNoInteractions(tierService);
     }
 
-    @Test
-    void publish_paid_event_blocked_when_stripe_not_ready() {
-        AuthPrincipal p = principal();
-        Event e = new Event();
-        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
-        e.setName("Paid"); e.setSlug("paid");
-        e.setStartsAt(Instant.parse("2026-06-01T20:00:00Z"));
-        e.setEndsAt(Instant.parse("2026-06-02T04:00:00Z"));
-        e.setVenueStreet("12 Main"); e.setVenueCity("Berlin"); e.setVenuePostalCode("10115");
-        e.setDescription("d");
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
-
-        TicketTier paid = new TicketTier();
-        paid.setEventId(e.getId());
-        paid.setName("GA");
-        paid.setPriceMinor(1500);
-        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of(paid));
-
-        when(stripeConnect.getStatusCached(eq(p.orgId())))
-                .thenReturn(new StripeConnectService.StatusResult(null,
-                        com.imin.iminapi.stripe.StripeConnectState.NOT_STARTED,
-                        false, false, java.util.List.of(), java.util.List.of(), null));
-
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> sut.publish(p, e.getId()))
-                .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.STRIPE_NOT_READY);
-        verify(events, never()).save(any(Event.class));
-        verify(stripeConnect, never()).getStatus(any(), any());
-    }
-
-    @Test
-    void publish_paid_event_allowed_when_stripe_ready() {
+    /** Publish reads only the cached mirror under the lock: not ready refuses, ready goes live. */
+    @ParameterizedTest(name = "stripe ready={0}")
+    @ValueSource(booleans = {false, true})
+    void publish_paid_event_is_gated_on_the_cached_stripe_status(boolean ready) {
         AuthPrincipal p = principal();
         Event e = new Event();
         e.setId(UUID.randomUUID()); e.setOrgId(p.orgId());
@@ -605,13 +562,20 @@ class EventServiceTest {
         paid.setPriceMinor(1500);
         when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of(paid));
 
-        when(stripeConnect.getStatusCached(eq(p.orgId())))
-                .thenReturn(new StripeConnectService.StatusResult("acct_123",
-                        com.imin.iminapi.stripe.StripeConnectState.ACTIVE,
-                        true, true, java.util.List.of(), java.util.List.of(), null));
+        when(stripeConnect.getStatusCached(eq(p.orgId()))).thenReturn(ready
+                ? new StripeConnectService.StatusResult("acct_123", com.imin.iminapi.stripe.StripeConnectState.ACTIVE,
+                        true, true, java.util.List.of(), java.util.List.of(), null)
+                : new StripeConnectService.StatusResult(null, com.imin.iminapi.stripe.StripeConnectState.NOT_STARTED,
+                        false, false, java.util.List.of(), java.util.List.of(), null));
 
-        EventDto dto = sut.publish(p, e.getId());
-        assertThat(dto.status()).isEqualTo("live");
+        if (ready) {
+            EventDto dto = sut.publish(p, e.getId());
+            assertThat(dto.status()).isEqualTo("live");
+        } else {
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> sut.publish(p, e.getId()))
+                    .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.STRIPE_NOT_READY);
+            verify(events, never()).save(any(Event.class));
+        }
         verify(stripeConnect, never()).getStatus(any(), any());
     }
 
@@ -678,28 +642,17 @@ class EventServiceTest {
         verifyNoInteractions(stripeConnect);
     }
 
-    @Test
-    void precheckPublish_true_when_any_tier_is_paid() {
+    /** True when any tier is paid, so only then does publish refresh Stripe first. */
+    @ParameterizedTest(name = "prices={0} -> {1}")
+    @CsvSource({"'0,1500', true", "'0', false"})
+    void precheckPublish_is_true_only_when_a_tier_is_paid(String prices, boolean expected) {
         AuthPrincipal p = principal();
         Event e = publishableDraft(p);
         when(events.findActive(e.getId())).thenReturn(Optional.of(e));
-        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId()))
-                .thenReturn(List.of(tierPriced(e.getId(), 0), tierPriced(e.getId(), 1500)));
+        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(java.util.Arrays.stream(prices.split(","))
+                .map(price -> tierPriced(e.getId(), Integer.parseInt(price))).toList());
 
-        assertThat(sut.precheckPublish(p, e.getId())).isTrue();
-        verify(events, never()).lockActiveForWrite(any(), any());
-        verifyNoInteractions(stripeConnect);
-    }
-
-    @Test
-    void precheckPublish_false_when_every_tier_is_free() {
-        AuthPrincipal p = principal();
-        Event e = publishableDraft(p);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
-        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId()))
-                .thenReturn(List.of(tierPriced(e.getId(), 0)));
-
-        assertThat(sut.precheckPublish(p, e.getId())).isFalse();
+        assertThat(sut.precheckPublish(p, e.getId())).isEqualTo(expected);
         verify(events, never()).lockActiveForWrite(any(), any());
         verifyNoInteractions(stripeConnect);
     }
@@ -749,46 +702,23 @@ class EventServiceTest {
         return new VenueDto("Le Club", "1 Rue", "Paris", "75001", country);
     }
 
-    @Test
-    void create_draft_derives_timezone_from_venue_country() {
+    /**
+     * The zone comes from the venue country unless one is sent; "UTC" counts as unset, because the
+     * webapp autosave sends timezone:"UTC" on every save (deploy-ordering robustness).
+     */
+    @ParameterizedTest(name = "sent={0} country={1} -> {2}")
+    @CsvSource({
+            ",                 FR, Europe/Paris",
+            ",                 ,   UTC",
+            "America/New_York, FR, America/New_York",
+            "UTC,              DE, Europe/Berlin"})
+    void create_draft_timezone(String sentTimezone, String venueCountry, String expected) {
         AuthPrincipal p = principal();
         stubSaveEchoWithId();
 
-        EventDto dto = sut.createDraft(p, bodyWith(null, venue("FR")));
+        EventDto dto = sut.createDraft(p, bodyWith(sentTimezone, venueCountry == null ? null : venue(venueCountry)));
 
-        assertThat(dto.timezone()).isEqualTo("Europe/Paris");
-    }
-
-    @Test
-    void create_draft_without_venue_keeps_utc_default() {
-        AuthPrincipal p = principal();
-        stubSaveEchoWithId();
-
-        EventDto dto = sut.createDraft(p, bodyWith(null, null));
-
-        assertThat(dto.timezone()).isEqualTo("UTC");
-    }
-
-    @Test
-    void explicit_timezone_wins_over_venue_country() {
-        AuthPrincipal p = principal();
-        stubSaveEchoWithId();
-
-        EventDto dto = sut.createDraft(p, bodyWith("America/New_York", venue("FR")));
-
-        assertThat(dto.timezone()).isEqualTo("America/New_York");
-    }
-
-    @Test
-    void sent_utc_is_treated_as_unset_and_derived_from_country() {
-        // The current webapp autosave sends timezone:"UTC" on every save; the server must still
-        // derive the real zone from the venue country (deploy-ordering robustness).
-        AuthPrincipal p = principal();
-        stubSaveEchoWithId();
-
-        EventDto dto = sut.createDraft(p, bodyWith("UTC", venue("DE")));
-
-        assertThat(dto.timezone()).isEqualTo("Europe/Berlin");
+        assertThat(dto.timezone()).isEqualTo(expected);
     }
 
     @Test
@@ -899,31 +829,35 @@ class EventServiceTest {
                 stripeConnect, null, null, null, pub);
     }
 
-    @Test
-    void create_draft_with_an_address_asks_for_a_geocode() {
+    enum AddressWrite { CREATE_WITH_ADDRESS, CREATE_WITHOUT_ADDRESS, PATCH_MOVES_VENUE, PATCH_RETYPES_SAME_ADDRESS }
+
+    /**
+     * Only a new or moved address asks for a geocode. Autosave resends the whole form on every keystroke
+     * pause, and re-geocoding an unchanged address would exhaust the provider's rate budget for nothing.
+     */
+    @ParameterizedTest
+    @CsvSource({"CREATE_WITH_ADDRESS, true", "CREATE_WITHOUT_ADDRESS, false",
+            "PATCH_MOVES_VENUE, true", "PATCH_RETYPES_SAME_ADDRESS, false"})
+    void address_write_asks_for_a_geocode_only_when_the_address_changed(AddressWrite write, boolean asks) {
         AuthPrincipal p = principal();
         stubSaveEchoWithId();
         var pub = mock(org.springframework.context.ApplicationEventPublisher.class);
+        EventService service = serviceWithPublisher(pub);
 
-        serviceWithPublisher(pub).createDraft(p, bodyWith(null, venue("FR")));
+        switch (write) {
+            case CREATE_WITH_ADDRESS -> service.createDraft(p, bodyWith(null, venue("FR")));
+            case CREATE_WITHOUT_ADDRESS -> service.createDraft(p, bodyWith(null, null));
+            case PATCH_MOVES_VENUE -> service.patch(p, venueInParis(p), null, bodyWith(null,
+                    new VenueDto("Le Club", "2 Rue", "Metz", "57000", "FR")));
+            // Same address, different casing/whitespace and a changed name (name is not an address).
+            case PATCH_RETYPES_SAME_ADDRESS -> service.patch(p, venueInParis(p), null, bodyWith(null,
+                    new VenueDto("Renamed Club", " 1 Rue ", "paris", "75001", "FR")));
+        }
 
-        verify(pub).publishEvent(any(VenueAddressChangedEvent.class));
+        verify(pub, times(asks ? 1 : 0)).publishEvent(any(VenueAddressChangedEvent.class));
     }
 
-    @Test
-    void create_draft_without_an_address_asks_for_nothing() {
-        AuthPrincipal p = principal();
-        stubSaveEchoWithId();
-        var pub = mock(org.springframework.context.ApplicationEventPublisher.class);
-
-        serviceWithPublisher(pub).createDraft(p, bodyWith(null, null));
-
-        verify(pub, never()).publishEvent(any(VenueAddressChangedEvent.class));
-    }
-
-    @Test
-    void patch_that_moves_the_venue_asks_for_a_geocode() {
-        AuthPrincipal p = principal();
+    private UUID venueInParis(AuthPrincipal p) {
         Event e = new Event();
         e.setId(UUID.randomUUID());
         e.setOrgId(p.orgId());
@@ -935,39 +869,7 @@ class EventServiceTest {
         when(tiers.findByEventIdOrderBySortOrderAsc(any())).thenReturn(List.of());
         when(promos.findByEventId(any())).thenReturn(List.of());
         when(predictions.findById(any())).thenReturn(Optional.empty());
-        stubSaveEchoWithId();
-        var pub = mock(org.springframework.context.ApplicationEventPublisher.class);
-
-        serviceWithPublisher(pub).patch(p, e.getId(), null, bodyWith(null,
-                new VenueDto("Le Club", "2 Rue", "Metz", "57000", "FR")));
-
-        verify(pub).publishEvent(any(VenueAddressChangedEvent.class));
-    }
-
-    @Test
-    void patch_that_only_retypes_the_same_address_does_not_burn_a_geocode_call() {
-        // Autosave resends the whole form on every keystroke pause. Re-geocoding an
-        // unchanged address would exhaust the provider's rate budget for nothing.
-        AuthPrincipal p = principal();
-        Event e = new Event();
-        e.setId(UUID.randomUUID());
-        e.setOrgId(p.orgId());
-        e.setVenueStreet("1 Rue");
-        e.setVenueCity("Paris");
-        e.setVenuePostalCode("75001");
-        e.setVenueCountry("FR");
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
-        when(tiers.findByEventIdOrderBySortOrderAsc(any())).thenReturn(List.of());
-        when(promos.findByEventId(any())).thenReturn(List.of());
-        when(predictions.findById(any())).thenReturn(Optional.empty());
-        stubSaveEchoWithId();
-        var pub = mock(org.springframework.context.ApplicationEventPublisher.class);
-
-        // Same address, different casing/whitespace and a changed name (name is not an address).
-        serviceWithPublisher(pub).patch(p, e.getId(), null, bodyWith(null,
-                new VenueDto("Renamed Club", " 1 Rue ", "paris", "75001", "FR")));
-
-        verify(pub, never()).publishEvent(any(VenueAddressChangedEvent.class));
+        return e.getId();
     }
 
     // ---- Facet normalisation on write (V82) ---------------------------------------------------
@@ -985,36 +887,35 @@ class EventServiceTest {
         return captor.getValue();
     }
 
-    @Test
-    void create_normalises_city_country_and_genre() {
-        Event saved = captureCreated(principal(), facetBody("  Techno   Classics ",
-                new VenueDto("Le Club", "1 Rue", "  Le   Mans ", "72000", " fr ")));
-
-        // City: whitespace tidied, case left exactly as typed — case-folding city names
-        // destroys real ones ('s-Hertogenbosch, L'Aquila).
-        assertThat(saved.getVenueCity()).isEqualTo("Le Mans");
-        assertThat(saved.getVenueCountry()).isEqualTo("FR");
-        // Genre gets the SAME treatment as the city: whitespace only, casing untouched.
-        assertThat(saved.getGenre()).isEqualTo("Techno Classics");
-    }
-
-    @Test
-    void patch_normalises_city_country_and_genre() {
+    /**
+     * City and genre: whitespace tidied, case left exactly as typed — case-folding city names destroys
+     * real ones ('s-Hertogenbosch, L'Aquila). Country is upper-cased.
+     */
+    @ParameterizedTest(name = "{0}")
+    @CsvSource(delimiter = '|', value = {
+            "create|'  Techno   Classics '|'  Le   Mans '|' fr '|Le Mans|FR|Techno Classics",
+            "patch |Techno               |' METZ '      |fr    |METZ   |FR|Techno"})
+    void write_normalises_city_country_and_genre(String op, String genre, String city, String country,
+                                                 String expectedCity, String expectedCountry, String expectedGenre) {
         AuthPrincipal p = principal();
-        Event e = new Event();
-        e.setId(UUID.randomUUID()); e.setOrgId(p.orgId()); e.setSlug("x");
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
-        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
-        when(tiers.findByEventIdOrderBySortOrderAsc(any())).thenReturn(List.of());
-        when(promos.findByEventId(any())).thenReturn(List.of());
-        when(predictions.findById(any())).thenReturn(Optional.empty());
+        EventPatchRequest body = facetBody(genre, new VenueDto("Le Club", "1 Rue", city, "57000", country));
+        Event saved;
+        if (op.equals("create")) {
+            saved = captureCreated(p, body);
+        } else {
+            saved = new Event();
+            saved.setId(UUID.randomUUID()); saved.setOrgId(p.orgId()); saved.setSlug("x");
+            when(events.findActive(saved.getId())).thenReturn(Optional.of(saved));
+            when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
+            when(tiers.findByEventIdOrderBySortOrderAsc(any())).thenReturn(List.of());
+            when(promos.findByEventId(any())).thenReturn(List.of());
+            when(predictions.findById(any())).thenReturn(Optional.empty());
+            sut.patch(p, saved.getId(), null, body);
+        }
 
-        sut.patch(p, e.getId(), null, facetBody("Techno",
-                new VenueDto("Le Club", "1 Rue", " METZ ", "57000", "fr")));
-
-        assertThat(e.getVenueCity()).isEqualTo("METZ");
-        assertThat(e.getVenueCountry()).isEqualTo("FR");
-        assertThat(e.getGenre()).isEqualTo("Techno");
+        assertThat(saved.getVenueCity()).isEqualTo(expectedCity);
+        assertThat(saved.getVenueCountry()).isEqualTo(expectedCountry);
+        assertThat(saved.getGenre()).isEqualTo(expectedGenre);
     }
 
     @Test

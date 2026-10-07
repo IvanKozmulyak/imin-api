@@ -1,6 +1,5 @@
 package com.imin.iminapi.service.event;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.EventVisibility;
@@ -11,19 +10,20 @@ import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
-import com.imin.iminapi.repository.TicketReservationRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -42,21 +42,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  * availability check + decrement so exactly 50 reservations succeed and 50 see
  * a sold-out error — never 51, never 49.
  *
- * <p>H2 in PG-compat mode (the default test DB; see {@code src/test/resources/application.yaml})
- * implements {@code FOR UPDATE} as a row-level lock with the same wait-on-conflict
- * semantics as Postgres for this kind of single-row contention, so the assertion
- * also holds under the real DB.
+ * <p>Runs on the shared Postgres, so the oversell assertion reads only this test's tier.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class InventoryConcurrencyTest {
 
     @Autowired InventoryService inventory;
     @Autowired TicketTierRepository tiers;
-    @Autowired TicketReservationRepository reservations;
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
     @Autowired UserRepository users;
+    @Autowired JdbcTemplate jdbc;
 
     private TicketTier tier;
     private Event event;
@@ -65,12 +61,6 @@ class InventoryConcurrencyTest {
 
     @BeforeEach
     void setUp() {
-        reservations.deleteAll();
-        tiers.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
-
         org = new Organization();
         org.setName("Concurrency Org");
         org.setSlug("concurrency-org-" + UUID.randomUUID().toString().substring(0, 8));
@@ -87,11 +77,7 @@ class InventoryConcurrencyTest {
 
     @AfterEach
     void tearDown() {
-        reservations.deleteAll();
-        tiers.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+        OrgRows.delete(jdbc, List.of(org.getId()));
     }
 
     private TicketTier seedTier(int capacity) {

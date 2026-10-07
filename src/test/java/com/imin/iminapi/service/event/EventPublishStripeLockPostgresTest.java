@@ -1,6 +1,5 @@
 package com.imin.iminapi.service.event;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.controller.event.EventController;
 import com.imin.iminapi.dto.event.EventDto;
 import com.imin.iminapi.dto.event.EventPatchRequest;
@@ -17,25 +16,23 @@ import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.stripe.StripeConnectState;
-import com.imin.iminapi.stripe.StripeConnectStatusMirror;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.stripe.StripeClient;
+import com.stripe.model.v2.core.Account;
+import com.stripe.net.ApiResource;
+import com.stripe.param.v2.core.AccountRetrieveParams;
+import com.stripe.service.V2Services;
+import com.stripe.service.v2.CoreService;
+import com.stripe.service.v2.core.AccountService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -52,36 +49,20 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
-/** Publishing a paid event refreshes Stripe without holding the event row lock, on Postgres 17. */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
-@Testcontainers(disabledWithoutDocker = true)
+/** Publishing a paid event refreshes Stripe without holding the event row lock, on Postgres. */
+@IminIntegrationTest
 class EventPublishStripeLockPostgresTest {
-
-    @Container
-    @ServiceConnection
-    static final PostgreSQLContainer<?> PG = new PostgreSQLContainer<>("postgres:17-alpine");
-
-    @DynamicPropertySource
-    static void overrideDataSource(DynamicPropertyRegistry r) {
-        r.add("spring.datasource.url", PG::getJdbcUrl);
-        r.add("spring.datasource.username", PG::getUsername);
-        r.add("spring.datasource.password", PG::getPassword);
-        r.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
-        r.add("spring.jpa.hibernate.ddl-auto", () -> "none");
-        r.add("spring.jpa.properties.hibernate.dialect", () -> "org.hibernate.dialect.PostgreSQLDialect");
-        r.add("spring.flyway.enabled", () -> "true");
-        r.add("spring.docker.compose.enabled", () -> "false");
-    }
 
     private static final String PUBLISH_THREAD = "publish-under-test";
 
-    @MockitoBean StripeConnectStatusMirror mirror;
-
+    @Autowired StripeClient stripeClient;
     @Autowired EventController eventController;
     @Autowired EventService eventService;
     @Autowired EventRepository events;
@@ -96,9 +77,10 @@ class EventPublishStripeLockPostgresTest {
     private UUID eventId;
     private final CountDownLatch syncEntered = new CountDownLatch(1);
     private final CountDownLatch gate = new CountDownLatch(1);
+    private final AccountService accountService = mock(AccountService.class);
 
     @BeforeEach
-    void setUp() {
+    void setUp() throws Exception {
         accountId = "acct_pub_" + UUID.randomUUID().toString().substring(0, 8);
         Organization o = new Organization();
         o.setName("Publish lock");
@@ -137,18 +119,32 @@ class EventPublishStripeLockPostgresTest {
         jdbc.update("INSERT INTO ticket_tiers (id, event_id, name, price_minor, quantity, sold, reserved, "
                 + "enabled, sort_order) VALUES (?, ?, 'GA', 1500, 100, 0, 0, true, 0)", UUID.randomUUID(), eventId);
 
+        // The real mirror calls Stripe here; the StripeClient fake is reset after every test.
+        V2Services v2 = mock(V2Services.class);
+        CoreService core = mock(CoreService.class);
+        when(stripeClient.v2()).thenReturn(v2);
+        when(v2.core()).thenReturn(core);
+        when(core.accounts()).thenReturn(accountService);
         // Blocks only the publish under test; a sweeper tick on another thread returns at once.
         doAnswer(inv -> {
-            if (!PUBLISH_THREAD.equals(Thread.currentThread().getName())) return null;
+            if (!PUBLISH_THREAD.equals(Thread.currentThread().getName())) return account("active");
             syncEntered.countDown();
             if (!gate.await(15, TimeUnit.SECONDS)) throw new IllegalStateException("gate timed out");
-            Organization org = orgs.findByStripeAccountId(inv.getArgument(0)).orElseThrow();
-            org.setStripeConnectState(StripeConnectState.ACTIVE);
-            org.setStripePayoutsEnabled(true);
-            org.setStripeConnectStatusUpdatedAt(Instant.now());
-            orgs.save(org);
-            return null;
-        }).when(mirror).syncFromStripe(any());
+            return account("active");
+        }).when(accountService).retrieve(eq(accountId), any(AccountRetrieveParams.class));
+    }
+
+    /** A v2 Account whose recipient transfers capability has {@code status}; "active" projects ACTIVE. */
+    private Account account(String status) {
+        return ApiResource.GSON.fromJson("""
+                {
+                  "id": "%s",
+                  "configuration": { "recipient": { "capabilities": {
+                    "stripe_balance": { "stripe_transfers": { "status": "%s" } }
+                  } } },
+                  "requirements": { "summary": {}, "entries": [] }
+                }
+                """.formatted(accountId, status), Account.class);
     }
 
     @AfterEach
@@ -201,12 +197,12 @@ class EventPublishStripeLockPostgresTest {
         AtomicInteger publishThreadCalls = new AtomicInteger();
         // Stripe still says ONBOARDING: the first call changes nothing, a second one would block.
         doAnswer(inv -> {
-            if (!PUBLISH_THREAD.equals(Thread.currentThread().getName())) return null;
+            if (!PUBLISH_THREAD.equals(Thread.currentThread().getName())) return account("restricted");
             if (publishThreadCalls.incrementAndGet() > 1 && !gate.await(15, TimeUnit.SECONDS)) {
                 throw new IllegalStateException("gate timed out");
             }
-            return null;
-        }).when(mirror).syncFromStripe(any());
+            return account("restricted");
+        }).when(accountService).retrieve(eq(accountId), any(AccountRetrieveParams.class));
 
         ExecutorService publishPool = Executors.newSingleThreadExecutor(r -> new Thread(r, PUBLISH_THREAD));
         try {
@@ -220,7 +216,7 @@ class EventPublishStripeLockPostgresTest {
                         assertThat(api.status()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
                         assertThat(api.code()).isEqualTo(ErrorCode.STRIPE_NOT_READY);
                     });
-            verify(mirror, times(1)).syncFromStripe(accountId);
+            verify(accountService, times(1)).retrieve(eq(accountId), any(AccountRetrieveParams.class));
             assertThat(publishThreadCalls.get()).isEqualTo(1);
             assertThat(jdbc.queryForObject("SELECT status FROM events WHERE id = ?", String.class, eventId))
                     .isEqualTo("DRAFT");

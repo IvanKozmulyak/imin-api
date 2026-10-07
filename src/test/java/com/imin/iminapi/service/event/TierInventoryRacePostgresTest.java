@@ -1,6 +1,5 @@
 package com.imin.iminapi.service.event;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.dto.event.EventPatchRequest;
 import com.imin.iminapi.dto.event.TicketTierCreateRequest;
 import com.imin.iminapi.dto.event.TicketTierEmbeddedPatch;
@@ -18,25 +17,19 @@ import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
-import com.imin.iminapi.stripe.StripeProductService;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.stripe.StripeClient;
+import com.stripe.param.ProductCreateParams;
+import com.stripe.service.ProductService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -55,33 +48,20 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
-/** Organizer tier writes racing checkout inventory on one tier row, on Postgres 17 (READ COMMITTED). */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
-@Testcontainers(disabledWithoutDocker = true)
+/** Organizer tier writes racing checkout inventory on one tier row, on Postgres (READ COMMITTED). */
+@IminIntegrationTest
 class TierInventoryRacePostgresTest {
 
-    @Container
-    @ServiceConnection
-    static final PostgreSQLContainer<?> PG = new PostgreSQLContainer<>("postgres:17-alpine");
+    // Sign bit clear vs set: Postgres sorts tierA first, UUID.compareTo sorts tierB first.
+    private final UUID tierA = new UUID(UUID.randomUUID().getMostSignificantBits() & Long.MAX_VALUE,
+            UUID.randomUUID().getLeastSignificantBits());
+    private final UUID tierB = new UUID(UUID.randomUUID().getMostSignificantBits() | Long.MIN_VALUE,
+            UUID.randomUUID().getLeastSignificantBits());
 
-    @DynamicPropertySource
-    static void overrideDataSource(DynamicPropertyRegistry r) {
-        r.add("spring.datasource.url", PG::getJdbcUrl);
-        r.add("spring.datasource.username", PG::getUsername);
-        r.add("spring.datasource.password", PG::getPassword);
-        r.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
-        r.add("spring.jpa.hibernate.ddl-auto", () -> "none");
-        r.add("spring.jpa.properties.hibernate.dialect", () -> "org.hibernate.dialect.PostgreSQLDialect");
-        r.add("spring.flyway.enabled", () -> "true");
-        r.add("spring.docker.compose.enabled", () -> "false");
-    }
-
-    private static final UUID TIER_A = UUID.fromString("10000000-0000-4000-8000-000000000001");
-    private static final UUID TIER_B = UUID.fromString("f0000000-0000-4000-8000-000000000001");
-
-    @MockitoBean StripeProductService stripeProductService;
+    @Autowired StripeClient stripeClient;
 
     @Autowired EventService eventService;
     @Autowired TicketTierService tierService;
@@ -97,12 +77,12 @@ class TierInventoryRacePostgresTest {
     private AuthPrincipal principal;
     private UUID eventId;
     private UUID tierId;
-    /** When set, syncTier signals {@link #syncEntered} and blocks on it: the organizer's pause point. */
+    /** When set, the Stripe product create signals {@link #syncEntered} and blocks on it: the organizer's pause point. */
     private volatile CountDownLatch syncGate;
     private final CountDownLatch syncEntered = new CountDownLatch(1);
 
     @BeforeEach
-    void setUp() {
+    void setUp() throws Exception {
         Organization o = new Organization();
         o.setName("Tier race");
         o.setSlug("tir-" + UUID.randomUUID().toString().substring(0, 8));
@@ -132,6 +112,9 @@ class TierInventoryRacePostgresTest {
 
         tierId = insertTier(UUID.randomUUID(), 10, 0);
 
+        // The sync runs after commit on the sync executor, so the gate keys on the latch, not the thread.
+        ProductService productService = mock(ProductService.class);
+        when(stripeClient.products()).thenReturn(productService);
         doAnswer(inv -> {
             CountDownLatch gate = syncGate;
             if (gate != null) {
@@ -139,7 +122,7 @@ class TierInventoryRacePostgresTest {
                 await(gate);
             }
             return null;
-        }).when(stripeProductService).syncTier(any(), any());
+        }).when(productService).create(any(ProductCreateParams.class));
     }
 
     @AfterEach
@@ -308,31 +291,31 @@ class TierInventoryRacePostgresTest {
     @Test
     @Timeout(60)
     void embeddedPatchOfTwoTiers_lockedInRefundOrder_noDeadlock() throws Exception {
-        insertTier(TIER_A, 10, 0);
-        insertTier(TIER_B, 10, 0);
+        insertTier(tierA, 10, 0);
+        insertTier(tierB, 10, 0);
         TransactionTemplate tx = new TransactionTemplate(txManager);
         ExecutorService pool = Executors.newFixedThreadPool(2);
         CountDownLatch locked = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
         try {
-            // Same order as RefundService: UUID.compareTo puts TIER_B first.
+            // Same order as RefundService: UUID.compareTo puts tierB first.
             Future<?> refundLike = pool.submit(() -> tx.executeWithoutResult(s -> {
-                tiers.findByIdForUpdate(TIER_B).orElseThrow();
+                tiers.findByIdForUpdate(tierB).orElseThrow();
                 locked.countDown();
                 await(release);
-                tiers.findByIdForUpdate(TIER_A).orElseThrow();
+                tiers.findByIdForUpdate(tierA).orElseThrow();
             }));
             assertThat(locked.await(15, TimeUnit.SECONDS)).isTrue();
 
             Future<?> organizer = pool.submit(() -> eventService.patch(principal, eventId, null,
-                    eventPatch(null, List.of(embedded(TIER_A, "A2", null), embedded(TIER_B, "B2", null)))));
+                    eventPatch(null, List.of(embedded(tierA, "A2", null), embedded(tierB, "B2", null)))));
             Thread.sleep(500);
             release.countDown();
 
             refundLike.get(10, TimeUnit.SECONDS);
             organizer.get(10, TimeUnit.SECONDS);
-            assertThat(nameOf(TIER_A)).isEqualTo("A2");
-            assertThat(nameOf(TIER_B)).isEqualTo("B2");
+            assertThat(nameOf(tierA)).isEqualTo("A2");
+            assertThat(nameOf(tierB)).isEqualTo("B2");
         } finally {
             release.countDown();
             shutdown(pool);

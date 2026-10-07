@@ -1,6 +1,5 @@
 package com.imin.iminapi.service.event;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.dto.event.EventPatchRequest;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
@@ -14,12 +13,11 @@ import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -42,10 +40,9 @@ import java.util.concurrent.TimeUnit;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** A soft delete racing an entity save, run on H2 and on Postgres 17 (subclasses). */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
-abstract class EventSoftDeleteRaceScenarios {
+/** A soft delete racing an entity save, on Postgres 17: READ COMMITTED re-checks the lock's WHERE after the wait. */
+@IminIntegrationTest
+class EventSoftDeleteRaceIntegrationTest {
 
     @Autowired EventService eventService;
     @Autowired EventRepository events;

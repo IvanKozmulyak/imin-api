@@ -20,6 +20,9 @@ public class IminIntegrationResetListener extends AbstractTestExecutionListener 
         run(failures, () -> ctx.getBean(MutableClock.class).reset());
         run(failures, () -> ctx.getBean(RecordingEmailService.class).clear());
         run(failures, () -> ctx.getBean(RecordingRateLimiter.class).reset());
+        run(failures, () -> {
+            if (ctx.getBean(InMemoryMediaStorage.class) instanceof PausableMediaStorage media) media.reset();
+        });
         run(failures, () -> ctx.getBean(InMemoryMediaStorage.class).blobs().clear());
         if (failures.isEmpty()) return;
         Throwable first = failures.get(0);

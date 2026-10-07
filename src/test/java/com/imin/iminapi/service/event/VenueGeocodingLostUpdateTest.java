@@ -9,14 +9,17 @@ import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
-import jakarta.persistence.EntityManager;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
-import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
+import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -33,12 +36,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * of the stale snapshot written back over whatever the row became meanwhile. {@code Event} has
  * no {@code @Version}, so nothing objects.
  *
- * <p>The geocoder stub below is the window: it performs the organizer's concurrent write and
- * then clears the persistence context, which is exactly the state production is in when the
- * HTTP response finally lands.
+ * <p>The geocoder stub below is the window: it commits the organizer's concurrent write while the
+ * listener holds its detached snapshot, which is exactly the state production is in when the
+ * HTTP response finally lands. Every write commits, as the non-transactional listener's do.
  */
-@DataJpaTest
-@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
+@IminIntegrationTest
 class VenueGeocodingLostUpdateTest {
 
     private static final Instant NOW = Instant.parse("2026-06-01T12:00:00Z");
@@ -46,8 +48,9 @@ class VenueGeocodingLostUpdateTest {
     @Autowired EventRepository events;
     @Autowired OrganizationRepository organizations;
     @Autowired UserRepository users;
-    @Autowired EntityManager em;
+    @Autowired JdbcTemplate jdbc;
 
+    private UUID orgId;
     private UUID eventId;
 
     @BeforeEach
@@ -58,6 +61,7 @@ class VenueGeocodingLostUpdateTest {
         org.setContactEmail("org@example.com");
         org.setCountry("DE");
         org = organizations.save(org);
+        orgId = org.getId();
 
         User owner = new User();
         owner.setEmail("owner-" + UUID.randomUUID() + "@example.com");
@@ -78,8 +82,11 @@ class VenueGeocodingLostUpdateTest {
         e.setVenuePostalCode("10243");
         e.setVenueCountry("DE");
         eventId = events.save(e).getId();
-        em.flush();
-        em.clear();
+    }
+
+    @AfterEach
+    void tearDown() {
+        OrgRows.delete(jdbc, List.of(orgId));
     }
 
     /**
@@ -88,19 +95,11 @@ class VenueGeocodingLostUpdateTest {
      */
     private Geocoder rivalWritesDuringTheCall() {
         return (street, city, postal, country) -> {
-            em.createQuery("""
-                    UPDATE Event e
-                       SET e.publishedAt = :ts,
-                           e.deletedAt = :ts,
-                           e.status = com.imin.iminapi.model.EventStatus.PAST,
-                           e.sold = 7,
-                           e.revenueMinor = 12345
-                     WHERE e.id = :id
-                    """)
-                    .setParameter("ts", NOW)
-                    .setParameter("id", eventId)
-                    .executeUpdate();
-            em.clear();
+            jdbc.update("""
+                    UPDATE events
+                       SET published_at = ?, deleted_at = ?, status = 'PAST', sold = 7, revenue_minor = 12345
+                     WHERE id = ?
+                    """, Timestamp.from(NOW), Timestamp.from(NOW), eventId);
             return Optional.of(new Geocoder.GeoPoint(52.5111d, 13.4432d));
         };
     }
@@ -108,8 +107,6 @@ class VenueGeocodingLostUpdateTest {
     @Test
     void a_concurrent_publish_delete_and_sale_survive_the_geocode_write() {
         new VenueGeocodingListener(events, rivalWritesDuringTheCall()).geocodeAndStore(eventId);
-        em.flush();
-        em.clear();
 
         Event after = events.findById(eventId).orElseThrow();
 
@@ -136,19 +133,12 @@ class VenueGeocodingLostUpdateTest {
     @Test
     void the_old_save_merge_path_is_exactly_what_clobbered_the_row() {
         Event stale = events.findById(eventId).orElseThrow();
-        em.detach(stale);
 
-        em.createQuery("UPDATE Event e SET e.deletedAt = :ts, e.sold = 7 WHERE e.id = :id")
-                .setParameter("ts", NOW)
-                .setParameter("id", eventId)
-                .executeUpdate();
-        em.clear();
+        jdbc.update("UPDATE events SET deleted_at = ?, sold = 7 WHERE id = ?", Timestamp.from(NOW), eventId);
 
         stale.setVenueLatitude(52.5111d);
         stale.setVenueLongitude(13.4432d);
         events.save(stale);
-        em.flush();
-        em.clear();
 
         Event after = events.findById(eventId).orElseThrow();
         // deleted_at is mapped updatable=false, so even this merge can no longer resurrect the event.
@@ -159,13 +149,10 @@ class VenueGeocodingLostUpdateTest {
     @Test
     void staleSnapshotSavedAfterGeocode_keepsCoordinates() {
         Event stale = events.findById(eventId).orElseThrow();
-        em.detach(stale);
 
         new VenueGeocodingListener(events, fixedPoint()).geocodeAndStore(eventId);
         stale.setName("Renamed");
         events.save(stale);
-        em.flush();
-        em.clear();
 
         Event after = events.findById(eventId).orElseThrow();
         assertThat(after.getName()).isEqualTo("Renamed");
@@ -178,12 +165,8 @@ class VenueGeocodingLostUpdateTest {
         Event loaded = events.findById(eventId).orElseThrow();
         loaded.setName("Saved First");
         events.save(loaded);
-        em.flush();
-        em.clear();
 
         new VenueGeocodingListener(events, fixedPoint()).geocodeAndStore(eventId);
-        em.flush();
-        em.clear();
 
         Event after = events.findById(eventId).orElseThrow();
         assertThat(after.getName()).isEqualTo("Saved First");
@@ -205,14 +188,10 @@ class VenueGeocodingLostUpdateTest {
         e.setVenueLatitude(48.1196d);
         e.setVenueLongitude(6.1702d);
         UUID id = events.save(e).getId();
-        em.flush();
-        em.clear();
 
-        Object[] row = (Object[]) em.createNativeQuery("select venue_latitude, venue_longitude from events where id = :id")
-                .setParameter("id", id)
-                .getSingleResult();
-        assertThat(((Number) row[0]).doubleValue()).isEqualTo(48.1196d);
-        assertThat(((Number) row[1]).doubleValue()).isEqualTo(6.1702d);
+        var row = jdbc.queryForMap("select venue_latitude, venue_longitude from events where id = ?", id);
+        assertThat(((Number) row.get("venue_latitude")).doubleValue()).isEqualTo(48.1196d);
+        assertThat(((Number) row.get("venue_longitude")).doubleValue()).isEqualTo(6.1702d);
     }
 
     private static Geocoder fixedPoint() {

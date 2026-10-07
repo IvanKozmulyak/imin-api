@@ -15,6 +15,9 @@ import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.stripe.TierStripeSyncRequested;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 
@@ -125,21 +128,6 @@ class TicketTierServiceTest {
         ArgumentCaptor<TicketTier> captor = ArgumentCaptor.forClass(TicketTier.class);
         verify(tiers).save(captor.capture());
         assertThat(captor.getValue().getSortOrder()).isEqualTo(6);
-    }
-
-    @Test
-    void create_rejects_when_event_in_other_org_with_404() {
-        Event other = new Event();
-        other.setId(eventId);
-        other.setOrgId(otherOrgId);
-        when(events.findActive(eventId)).thenReturn(Optional.of(other));
-
-        assertThatThrownBy(() -> sut.create(principal, eventId, validCreate()))
-                .isInstanceOfSatisfying(ApiException.class, ex -> {
-                    assertThat(ex.code()).isEqualTo(ErrorCode.NOT_FOUND);
-                    assertThat(ex.status().value()).isEqualTo(404);
-                });
-        verify(tiers, never()).save(any(TicketTier.class));
     }
 
     @Test
@@ -258,37 +246,41 @@ class TicketTierServiceTest {
         assertThat(dto.name()).isEqualTo("Renamed");
     }
 
-    @Test
-    void patch_returns_404_when_tier_not_under_event() {
-        UUID tierId = UUID.randomUUID();
-        when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.empty());
+    enum NotFound { CREATE_IN_OTHER_ORG, PATCH_TIER_NOT_UNDER_EVENT, PATCH_IN_OTHER_ORG, DELETE_TIER_NOT_FOUND,
+        DELETE_IN_OTHER_ORG }
 
-        TicketTierPatchRequest req = new TicketTierPatchRequest(
+    /** Another org's event or a tier not under the event is a 404 that names the event, not the tier. */
+    @ParameterizedTest
+    @EnumSource(NotFound.class)
+    void tier_write_outside_the_principals_event_is_404_and_writes_nothing(NotFound c) {
+        UUID tierId = UUID.randomUUID();
+        if (c == NotFound.CREATE_IN_OTHER_ORG || c == NotFound.PATCH_IN_OTHER_ORG || c == NotFound.DELETE_IN_OTHER_ORG) {
+            Event other = new Event();
+            other.setId(eventId);
+            other.setOrgId(otherOrgId);
+            when(events.findActive(eventId)).thenReturn(Optional.of(other));
+            // The tier exists under the event, so only the org check can refuse.
+            when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(existingTier(tierId, 0, 0)));
+        } else {
+            when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.empty());
+        }
+        TicketTierPatchRequest rename = new TicketTierPatchRequest(
                 "Renamed", null, null, null, null, null, null, null, null);
 
-        assertThatThrownBy(() -> sut.patch(principal, eventId, tierId, req))
-                .isInstanceOfSatisfying(ApiException.class, ex -> {
-                    assertThat(ex.code()).isEqualTo(ErrorCode.NOT_FOUND);
-                    // Don't leak tier existence — message says "Event" not "TicketTier"
-                    assertThat(ex.getMessage()).contains("Event");
-                });
-    }
-
-    @Test
-    void patch_returns_404_when_event_in_other_org() {
-        Event other = new Event();
-        other.setId(eventId);
-        other.setOrgId(otherOrgId);
-        when(events.findActive(eventId)).thenReturn(Optional.of(other));
-        UUID tierId = UUID.randomUUID();
-
-        TicketTierPatchRequest req = new TicketTierPatchRequest(
-                "Renamed", null, null, null, null, null, null, null, null);
-
-        assertThatThrownBy(() -> sut.patch(principal, eventId, tierId, req))
-                .isInstanceOfSatisfying(ApiException.class, ex -> {
-                    assertThat(ex.code()).isEqualTo(ErrorCode.NOT_FOUND);
-                });
+        assertThatThrownBy(() -> {
+            switch (c) {
+                case CREATE_IN_OTHER_ORG -> sut.create(principal, eventId, validCreate());
+                case PATCH_TIER_NOT_UNDER_EVENT, PATCH_IN_OTHER_ORG -> sut.patch(principal, eventId, tierId, rename);
+                case DELETE_TIER_NOT_FOUND, DELETE_IN_OTHER_ORG -> sut.delete(principal, eventId, tierId);
+            }
+        }).isInstanceOfSatisfying(ApiException.class, ex -> {
+            assertThat(ex.code()).isEqualTo(ErrorCode.NOT_FOUND);
+            assertThat(ex.status().value()).isEqualTo(404);
+            // Don't leak tier existence — message says "Event" not "TicketTier"
+            assertThat(ex.getMessage()).contains("Event");
+        });
+        verify(tiers, never()).save(any(TicketTier.class));
+        verify(tiers, never()).delete(any(TicketTier.class));
     }
 
     // ── delete ─────────────────────────────────────────────────────────────────
@@ -304,58 +296,18 @@ class TicketTierServiceTest {
         verify(tiers).delete(tier);
     }
 
-    @Test
-    void delete_returns_404_when_tier_not_found() {
-        UUID tierId = UUID.randomUUID();
-        when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.empty());
-
-        assertThatThrownBy(() -> sut.delete(principal, eventId, tierId))
-                .isInstanceOfSatisfying(ApiException.class, ex -> {
-                    assertThat(ex.code()).isEqualTo(ErrorCode.NOT_FOUND);
-                });
-    }
-
-    @Test
-    void delete_returns_404_when_event_in_other_org() {
-        Event other = new Event();
-        other.setId(eventId);
-        other.setOrgId(otherOrgId);
-        when(events.findActive(eventId)).thenReturn(Optional.of(other));
-        UUID tierId = UUID.randomUUID();
-
-        assertThatThrownBy(() -> sut.delete(principal, eventId, tierId))
-                .isInstanceOfSatisfying(ApiException.class, ex -> {
-                    assertThat(ex.code()).isEqualTo(ErrorCode.NOT_FOUND);
-                });
-        verify(tiers, never()).delete(any(TicketTier.class));
-    }
-
-    @Test
-    void delete_returns_409_INVALID_STATE_when_tier_has_sold_tickets() {
-        UUID tierId = UUID.randomUUID();
-        TicketTier tier = existingTier(tierId, 3, 0);
-        when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(tier));
-
-        assertThatThrownBy(() -> sut.delete(principal, eventId, tierId))
-                .isInstanceOfSatisfying(ApiException.class, ex -> {
-                    assertThat(ex.code()).isEqualTo(ErrorCode.INVALID_STATE);
-                    assertThat(ex.status().value()).isEqualTo(409);
-                    assertThat(ex.getMessage()).contains("enabled=false");
-                });
-        verify(tiers, never()).delete(any(TicketTier.class));
-    }
-
     /**
      * events-14: ticket_reservations.tier_id is ON DELETE CASCADE, so deleting a tier with
      * outstanding HELD holds takes the reservation rows with it. The buyer already redirected
      * to Stripe then pays: confirmSold logs "unknown reservation id" and no-ops, but issuance
      * continues, leaving a charged buyer holding a ticket for a tier that no longer exists.
      */
-    @Test
-    void delete_returns_409_INVALID_STATE_when_a_checkout_is_in_flight() {
+    @ParameterizedTest(name = "sold={0} reserved={1}")
+    @CsvSource({"3, 0", "0, 2"})
+    void delete_returns_409_INVALID_STATE_when_tickets_are_sold_or_a_checkout_is_in_flight(int sold, int reserved) {
         UUID tierId = UUID.randomUUID();
-        TicketTier tier = existingTier(tierId, 0, 0);
-        tier.setReserved(2);
+        TicketTier tier = existingTier(tierId, sold, 0);
+        tier.setReserved(reserved);
         when(tiers.findByIdAndEventId(tierId, eventId)).thenReturn(Optional.of(tier));
 
         assertThatThrownBy(() -> sut.delete(principal, eventId, tierId))

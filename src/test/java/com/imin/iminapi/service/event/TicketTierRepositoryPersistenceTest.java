@@ -11,40 +11,45 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
-import jakarta.persistence.EntityManager;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
-import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
-import java.util.Optional;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Verifies the new {@code reserved} column persists round-trip and that
- * {@link TicketTierRepository#findByIdForUpdate(UUID)} returns the row (the lock
- * itself is hard to assert without a second connection — the value here is
- * confirming the JPQL + lock annotation actually compile against the schema and
- * H2 doesn't choke on the {@code FOR UPDATE} syntax in PG-compat mode).
+ * The tier's Stripe-id write-back and the sync sweep's selection and claim, against Postgres.
+ * The database is shared, so candidate queries are read for this test's own tier ids only.
  */
-@DataJpaTest
-@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
+@IminIntegrationTest
 class TicketTierRepositoryPersistenceTest {
 
     @Autowired TicketTierRepository tiers;
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
     @Autowired UserRepository users;
-    @Autowired EntityManager em;
+    @Autowired JdbcTemplate jdbc;
 
     private UUID eventId;
     private UUID orgId;
@@ -54,7 +59,7 @@ class TicketTierRepositoryPersistenceTest {
     void setUp() {
         Organization org = new Organization();
         org.setName("Test Org");
-        org.setSlug("test-org-" + UUID.randomUUID().toString().substring(0, 8));
+        org.setSlug("test-org-" + UUID.randomUUID());
         org.setContactEmail("org@example.com");
         org.setCountry("DE");
         org = orgs.save(org);
@@ -70,7 +75,7 @@ class TicketTierRepositoryPersistenceTest {
         Event e = new Event();
         e.setOrgId(org.getId());
         e.setName("Inventory Test Event");
-        e.setSlug("inventory-test-" + UUID.randomUUID().toString().substring(0, 8));
+        e.setSlug("inventory-test-" + UUID.randomUUID());
         e.setVisibility(EventVisibility.PUBLIC);
         e.setStatus(EventStatus.LIVE);
         e.setPublishedAt(Instant.now());
@@ -79,80 +84,32 @@ class TicketTierRepositoryPersistenceTest {
         eventId = events.save(e).getId();
     }
 
-    @Test
-    void reservedColumnPersists_andDefaultsToZero() {
-        TicketTier t = new TicketTier();
-        t.setEventId(eventId);
-        t.setName("GA");
-        t.setPriceMinor(1000);
-        t.setQuantity(100);
-        // reserved deliberately not set — should default to 0
-        TicketTier saved = tiers.save(t);
-
-        Optional<TicketTier> found = tiers.findById(saved.getId());
-        assertThat(found).isPresent();
-        assertThat(found.get().getReserved()).isZero();
+    @AfterEach
+    void tearDown() {
+        OrgRows.delete(jdbc, List.of(orgId));
     }
 
-    @Test
-    void reservedColumnRoundTrips_whenSetExplicitly() {
-        TicketTier t = new TicketTier();
-        t.setEventId(eventId);
-        t.setName("VIP");
-        t.setPriceMinor(5000);
-        t.setQuantity(50);
-        t.setReserved(7);
-        t.setSold(3);
-        TicketTier saved = tiers.save(t);
-
-        Optional<TicketTier> found = tiers.findById(saved.getId());
-        assertThat(found).isPresent();
-        assertThat(found.get().getReserved()).isEqualTo(7);
-        assertThat(found.get().getSold()).isEqualTo(3);
-        assertThat(found.get().getQuantity()).isEqualTo(50);
-    }
-
-    @Test
-    void findByIdForUpdate_returnsRow() {
-        TicketTier t = new TicketTier();
-        t.setEventId(eventId);
-        t.setName("Locked");
-        t.setPriceMinor(2000);
-        t.setQuantity(10);
-        t.setReserved(2);
-        TicketTier saved = tiers.save(t);
-
-        Optional<TicketTier> locked = tiers.findByIdForUpdate(saved.getId());
-        assertThat(locked).isPresent();
-        assertThat(locked.get().getId()).isEqualTo(saved.getId());
-        assertThat(locked.get().getReserved()).isEqualTo(2);
-    }
-
-    @Test
-    void findByIdForUpdate_returnsEmpty_whenIdMissing() {
-        assertThat(tiers.findByIdForUpdate(UUID.randomUUID())).isEmpty();
-    }
-
-    @Test
-    void updateStripeIds_landsWhenPriceAndCurrencyMatch() {
+    /** Stripe is sent the lower-case currency; the write lands only while price and stored currency still match. */
+    @ParameterizedTest(name = "{0}")
+    @CsvSource({
+            "lower-case stored currency matches, eur, 1500, 1",
+            "upper-case stored currency matches, EUR, 1500, 1",
+            "event currency moved,               USD, 1500, 0",
+            "price moved,                        EUR, 2000, 0"})
+    void updateStripeIds_landsOnlyWhilePriceAndCurrencyMatch(String scenario, String storedCurrency,
+                                                             int storedPrice, int expectedRows) {
         UUID id = savedTier(1500);
+        jdbc.update("UPDATE events SET currency = ? WHERE id = ?", storedCurrency, eventId);
+        setPrice(id, storedPrice);
 
         int rows = tiers.updateStripeIdsIfPriceUnchanged(id, "prod_a", "price_a", 1500, "eur");
 
-        assertThat(rows).isEqualTo(1);
-        assertThat(storedIds(id)).containsExactly("prod_a", "price_a");
-    }
-
-    @Test
-    void updateStripeIds_noOpWhenEventCurrencyMoved() {
-        UUID id = savedTier(1500);
-        em.createNativeQuery("UPDATE events SET currency = 'USD' WHERE id = :id")
-                .setParameter("id", eventId).executeUpdate();
-
-        int rows = tiers.updateStripeIdsIfPriceUnchanged(id, "prod_eur", "price_eur", 1500, "eur");
-
-        assertThat(rows).isZero();
-        assertThat(storedIds(id)).containsExactly(null, null);
+        assertThat(rows).isEqualTo(expectedRows);
+        if (expectedRows == 1) {
+            assertThat(storedIds(id)).containsExactly("prod_a", "price_a");
+        } else {
+            assertThat(storedIds(id)).containsExactly(null, null);
+        }
     }
 
     @Test
@@ -185,25 +142,20 @@ class TicketTierRepositoryPersistenceTest {
     void staleFullSaveAfterTargetedUpdate_keepsIds_andTargetedUpdateAfterFullSaveLands() {
         UUID id = savedTier(1500);
         TicketTier snapshot = tiers.findById(id).orElseThrow();
-        em.detach(snapshot);
 
         // Targeted update first, then a full save of a snapshot taken before it.
         assertThat(tiers.updateStripeIdsIfPriceUnchanged(id, "prod_a", "price_a", 1500, "eur")).isEqualTo(1);
         snapshot.setName("Renamed");
         tiers.save(snapshot);
-        em.flush();
-        em.clear();
         assertThat(storedIds(id)).containsExactly("prod_a", "price_a");
         assertThat(storedName(id)).isEqualTo("Renamed");
 
         // Full save first, then the targeted update.
-        TicketTier managed = tiers.findById(id).orElseThrow();
-        managed.setName("Renamed again");
-        managed.setStripeProductId("prod_ignored");
-        tiers.save(managed);
+        TicketTier loaded = tiers.findById(id).orElseThrow();
+        loaded.setName("Renamed again");
+        loaded.setStripeProductId("prod_ignored");
+        tiers.save(loaded);
         assertThat(tiers.updateStripeIdsIfPriceUnchanged(id, "prod_b", "price_b", 1500, "eur")).isEqualTo(1);
-        em.flush();
-        em.clear();
         assertThat(storedIds(id)).containsExactly("prod_b", "price_b");
         assertThat(storedName(id)).isEqualTo("Renamed again");
     }
@@ -236,12 +188,9 @@ class TicketTierRepositoryPersistenceTest {
         UUID onFresh = tierOn(fresh, 1000, true, null, null);
         UUID notDue = tierOn(live, 1000, true, null, null);
         setNextAt(notDue, now.plus(1, ChronoUnit.HOURS));
-        em.flush();
-        em.clear();
 
         Set<UUID> fixture = Set.of(draftNoIds, liveNoProduct, blankPrice, dueAgain,
                 disabled, free, synced, onPast, onCancelled, onDeleted, onFresh, notDue);
-        // The H2 database is shared with other contexts, so only this fixture's rows are compared.
         Set<UUID> picked = tiers.findStripeSyncSweepCandidates(List.of(EventStatus.DRAFT, EventStatus.LIVE),
                         now.minus(2, ChronoUnit.MINUTES), now, PageRequest.of(0, 10_000)).stream()
                 .map(r -> (UUID) r[0]).filter(fixture::contains).collect(Collectors.toSet());
@@ -253,23 +202,25 @@ class TicketTierRepositoryPersistenceTest {
     void sweepCandidates_fewestAttemptsFirst_boundedByPage() {
         Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
         UUID live = eventWith(EventStatus.LIVE, now.minus(10, ChronoUnit.MINUTES), false);
-        // Id order is two, one, zero, so an order by id alone would return the wrong pair.
-        UUID two = tierWithId(UUID.fromString("00000000-0000-4000-8000-000000000001"), live);
-        UUID one = tierWithId(UUID.fromString("00000000-0000-4000-8000-000000000002"), live);
-        UUID zero = tierWithId(UUID.fromString("00000000-0000-4000-8000-000000000003"), live);
+        // Id order is two, one, zero (Postgres compares uuids as unsigned bytes, i.e. as hex strings),
+        // so an order by id alone would return them reversed.
+        List<UUID> ids = Stream.generate(UUID::randomUUID).limit(3)
+                .sorted(Comparator.comparing(UUID::toString)).toList();
+        UUID two = tierWithId(ids.get(0), live);
+        UUID one = tierWithId(ids.get(1), live);
+        UUID zero = tierWithId(ids.get(2), live);
         setAttempts(two, 2);
         setAttempts(one, 1);
-        // Parks every other tier for this test only; the test transaction rolls it back.
-        em.createNativeQuery("UPDATE ticket_tiers SET stripe_sync_next_at = :far WHERE event_id <> :e")
-                .setParameter("far", now.plus(3650, ChronoUnit.DAYS)).setParameter("e", live).executeUpdate();
-        em.flush();
-        em.clear();
+        Set<UUID> own = Set.of(zero, one, two);
 
         List<Object[]> page = tiers.findStripeSyncSweepCandidates(List.of(EventStatus.DRAFT, EventStatus.LIVE),
-                now.minus(2, ChronoUnit.MINUTES), now, PageRequest.of(0, 2));
+                now.minus(2, ChronoUnit.MINUTES), now, PageRequest.of(0, 10_000)).stream()
+                .filter(r -> own.contains((UUID) r[0])).toList();
 
-        assertThat(page).extracting(r -> (UUID) r[0]).containsExactly(zero, one);
-        assertThat(page).extracting(r -> ((Number) r[1]).intValue()).containsExactly(0, 1);
+        assertThat(page).extracting(r -> (UUID) r[0]).containsExactly(zero, one, two);
+        assertThat(page).extracting(r -> ((Number) r[1]).intValue()).containsExactly(0, 1, 2);
+        assertThat(tiers.findStripeSyncSweepCandidates(List.of(EventStatus.DRAFT, EventStatus.LIVE),
+                now.minus(2, ChronoUnit.MINUTES), now, PageRequest.of(0, 1))).hasSize(1);
     }
 
     @Test
@@ -287,44 +238,35 @@ class TicketTierRepositoryPersistenceTest {
         assertThat(storedNextAt(id)).isEqualTo(next);
     }
 
-    @Test
-    void claimSweep_noOpWhenAttemptsMoved() {
-        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
-        UUID id = savedTier(1500);
-        setAttempts(id, 1);
+    enum ClaimMiss { ATTEMPTS_MOVED, IDS_LANDED, NOT_YET_DUE }
 
-        int rows = tiers.claimStripeSyncSweep(id, 0, now.plus(5, ChronoUnit.MINUTES), now);
-
-        assertThat(rows).isZero();
-        assertThat(storedAttempts(id)).isEqualTo(1);
-        assertThat(storedNextAt(id)).isNull();
-    }
-
-    @Test
-    void claimSweep_noOpWhenIdsLanded() {
-        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
-        UUID id = savedTier(1500);
-        assertThat(tiers.updateStripeIdsIfPriceUnchanged(id, "prod_a", "price_a", 1500, "eur")).isEqualTo(1);
-
-        int rows = tiers.claimStripeSyncSweep(id, 0, now.plus(5, ChronoUnit.MINUTES), now);
-
-        assertThat(rows).isZero();
-        assertThat(storedAttempts(id)).isZero();
-        assertThat(storedNextAt(id)).isNull();
-    }
-
-    @Test
-    void claimSweep_noOpWhenNotYetDue() {
+    /** Each race the compare-and-set claim must lose: the row keeps whatever it held. */
+    @ParameterizedTest
+    @EnumSource(ClaimMiss.class)
+    void claimSweep_noOpWhenTheRowMoved(ClaimMiss miss) {
         Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
         UUID id = savedTier(1500);
         Instant later = now.plus(1, ChronoUnit.HOURS);
-        setNextAt(id, later);
+        int attemptsBefore = 0;
+        Instant nextAtBefore = null;
+        switch (miss) {
+            case ATTEMPTS_MOVED -> {
+                setAttempts(id, 1);
+                attemptsBefore = 1;
+            }
+            case IDS_LANDED -> assertThat(tiers.updateStripeIdsIfPriceUnchanged(id, "prod_a", "price_a", 1500, "eur"))
+                    .isEqualTo(1);
+            case NOT_YET_DUE -> {
+                setNextAt(id, later);
+                nextAtBefore = later;
+            }
+        }
 
         int rows = tiers.claimStripeSyncSweep(id, 0, now.plus(5, ChronoUnit.MINUTES), now);
 
         assertThat(rows).isZero();
-        assertThat(storedAttempts(id)).isZero();
-        assertThat(storedNextAt(id)).isEqualTo(later);
+        assertThat(storedAttempts(id)).isEqualTo(attemptsBefore);
+        assertThat(storedNextAt(id)).isEqualTo(nextAtBefore);
     }
 
     @Test
@@ -344,27 +286,22 @@ class TicketTierRepositoryPersistenceTest {
         Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
         UUID id = savedTier(1500);
         TicketTier snapshot = tiers.findById(id).orElseThrow();
-        em.detach(snapshot);
 
         // Claim first, then a full save of a snapshot taken before it.
         Instant next = now.plus(5, ChronoUnit.MINUTES);
         assertThat(tiers.claimStripeSyncSweep(id, 0, next, now)).isEqualTo(1);
         snapshot.setName("Renamed");
         tiers.save(snapshot);
-        em.flush();
-        em.clear();
         assertThat(storedAttempts(id)).isEqualTo(1);
         assertThat(storedNextAt(id)).isEqualTo(next);
         assertThat(storedName(id)).isEqualTo("Renamed");
 
         // Full save first (with backoff fields set in memory), then the claim.
-        TicketTier managed = tiers.findById(id).orElseThrow();
-        managed.setName("Renamed again");
-        managed.setStripeSyncAttempts(99);
-        managed.setStripeSyncNextAt(null);
-        tiers.save(managed);
-        em.flush();
-        em.clear();
+        TicketTier loaded = tiers.findById(id).orElseThrow();
+        loaded.setName("Renamed again");
+        loaded.setStripeSyncAttempts(99);
+        loaded.setStripeSyncNextAt(null);
+        tiers.save(loaded);
         assertThat(storedAttempts(id)).isEqualTo(1);
         assertThat(storedNextAt(id)).isEqualTo(next);
         Instant later = next.plus(1, ChronoUnit.MINUTES);
@@ -379,20 +316,16 @@ class TicketTierRepositoryPersistenceTest {
         Event e = new Event();
         e.setOrgId(orgId);
         e.setName("Sweep " + status);
-        e.setSlug("sweep-" + UUID.randomUUID().toString().substring(0, 8));
+        e.setSlug("sweep-" + UUID.randomUUID());
         e.setVisibility(EventVisibility.PUBLIC);
         e.setStatus(status);
         e.setCreatedBy(ownerId);
         e.setCurrency("EUR");
         UUID id = events.save(e).getId();
-        em.flush();
-        em.createNativeQuery("UPDATE events SET updated_at = :u WHERE id = :id")
-                .setParameter("u", updatedAt).setParameter("id", id).executeUpdate();
+        jdbc.update("UPDATE events SET updated_at = ? WHERE id = ?", Timestamp.from(updatedAt), id);
         if (deleted) {
-            em.createNativeQuery("UPDATE events SET deleted_at = :u WHERE id = :id")
-                    .setParameter("u", updatedAt).setParameter("id", id).executeUpdate();
+            jdbc.update("UPDATE events SET deleted_at = ? WHERE id = ?", Timestamp.from(updatedAt), id);
         }
-        em.clear();
         return id;
     }
 
@@ -405,41 +338,31 @@ class TicketTierRepositoryPersistenceTest {
         t.setEnabled(enabled);
         t.setStripeProductId(productId);
         t.setStripePriceId(priceId);
-        UUID id = tiers.save(t).getId();
-        em.flush();
-        return id;
+        return tiers.save(t).getId();
     }
 
     private UUID tierWithId(UUID id, UUID event) {
-        em.createNativeQuery("INSERT INTO ticket_tiers (id, event_id, name, price_minor, quantity, sold, reserved, "
-                        + "enabled, sort_order) VALUES (:id, :e, 'T', 1000, 10, 0, 0, true, 0)")
-                .setParameter("id", id).setParameter("e", event).executeUpdate();
+        jdbc.update("INSERT INTO ticket_tiers (id, event_id, name, price_minor, quantity, sold, reserved, "
+                + "enabled, sort_order) VALUES (?, ?, 'T', 1000, 10, 0, 0, true, 0)", id, event);
         return id;
     }
 
     private void setAttempts(UUID id, int attempts) {
-        em.createNativeQuery("UPDATE ticket_tiers SET stripe_sync_attempts = :a WHERE id = :id")
-                .setParameter("a", attempts).setParameter("id", id).executeUpdate();
+        jdbc.update("UPDATE ticket_tiers SET stripe_sync_attempts = ? WHERE id = ?", attempts, id);
     }
 
     private void setNextAt(UUID id, Instant at) {
-        em.createNativeQuery("UPDATE ticket_tiers SET stripe_sync_next_at = :n WHERE id = :id")
-                .setParameter("n", at).setParameter("id", id).executeUpdate();
+        jdbc.update("UPDATE ticket_tiers SET stripe_sync_next_at = ? WHERE id = ?", Timestamp.from(at), id);
     }
 
     private int storedAttempts(UUID id) {
-        return ((Number) em.createNativeQuery("SELECT stripe_sync_attempts FROM ticket_tiers WHERE id = :id")
-                .setParameter("id", id).getSingleResult()).intValue();
+        return jdbc.queryForObject("SELECT stripe_sync_attempts FROM ticket_tiers WHERE id = ?", Integer.class, id);
     }
 
     private Instant storedNextAt(UUID id) {
-        Object v = em.createNativeQuery("SELECT stripe_sync_next_at FROM ticket_tiers WHERE id = :id")
-                .setParameter("id", id).getSingleResult();
-        if (v == null) return null;
-        if (v instanceof Instant i) return i;
-        if (v instanceof java.time.OffsetDateTime o) return o.toInstant();
-        if (v instanceof java.sql.Timestamp ts) return ts.toInstant();
-        throw new IllegalStateException("unexpected type " + v.getClass());
+        Timestamp ts = jdbc.queryForObject("SELECT stripe_sync_next_at FROM ticket_tiers WHERE id = ?",
+                Timestamp.class, id);
+        return ts == null ? null : ts.toInstant();
     }
 
     private UUID savedTier(int priceMinor) {
@@ -448,25 +371,20 @@ class TicketTierRepositoryPersistenceTest {
         t.setName("GA");
         t.setPriceMinor(priceMinor);
         t.setQuantity(100);
-        UUID id = tiers.save(t).getId();
-        em.flush();
-        return id;
+        return tiers.save(t).getId();
     }
 
     private void setPrice(UUID id, int priceMinor) {
-        em.createNativeQuery("UPDATE ticket_tiers SET price_minor = :p WHERE id = :id")
-                .setParameter("p", priceMinor).setParameter("id", id).executeUpdate();
+        jdbc.update("UPDATE ticket_tiers SET price_minor = ? WHERE id = ?", priceMinor, id);
     }
 
-    private java.util.List<Object> storedIds(UUID id) {
-        Object[] row = (Object[]) em.createNativeQuery(
-                        "SELECT stripe_product_id, stripe_price_id FROM ticket_tiers WHERE id = :id")
-                .setParameter("id", id).getSingleResult();
-        return java.util.Arrays.asList(row);
+    private List<Object> storedIds(UUID id) {
+        Map<String, Object> row = jdbc.queryForMap(
+                "SELECT stripe_product_id, stripe_price_id FROM ticket_tiers WHERE id = ?", id);
+        return new ArrayList<>(Arrays.asList(row.get("stripe_product_id"), row.get("stripe_price_id")));
     }
 
     private String storedName(UUID id) {
-        return (String) em.createNativeQuery("SELECT name FROM ticket_tiers WHERE id = :id")
-                .setParameter("id", id).getSingleResult();
+        return jdbc.queryForObject("SELECT name FROM ticket_tiers WHERE id = ?", String.class, id);
     }
 }

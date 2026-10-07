@@ -1,6 +1,5 @@
 package com.imin.iminapi.service.event;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.dto.event.MediaUploadResponse;
 import com.imin.iminapi.dto.event.PromoCodeCreateRequest;
 import com.imin.iminapi.dto.event.PromoCodePatchRequest;
@@ -23,28 +22,18 @@ import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
-import com.imin.iminapi.storage.MediaStorage;
-import com.imin.iminapi.stripe.StripeProductService;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PausableMediaStorage;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
@@ -63,35 +52,15 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.verify;
 
-/** Event load-then-save paths racing the LIVE→PAST sweep, on Postgres 17 (READ COMMITTED lock-wait re-check). */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
-@Testcontainers(disabledWithoutDocker = true)
+/**
+ * Event load-then-save paths racing the LIVE→PAST sweep, on Postgres (READ COMMITTED lock-wait re-check).
+ * markLivePast is global on the shared database, so each test asserts its own event's status, not the count.
+ */
+@IminIntegrationTest
 class EventStatusRevertPostgresTest {
 
-    @Container
-    @ServiceConnection
-    static final PostgreSQLContainer<?> PG = new PostgreSQLContainer<>("postgres:17-alpine");
-
-    @DynamicPropertySource
-    static void overrideDataSource(DynamicPropertyRegistry r) {
-        r.add("spring.datasource.url", PG::getJdbcUrl);
-        r.add("spring.datasource.username", PG::getUsername);
-        r.add("spring.datasource.password", PG::getPassword);
-        r.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
-        r.add("spring.jpa.hibernate.ddl-auto", () -> "none");
-        r.add("spring.jpa.properties.hibernate.dialect", () -> "org.hibernate.dialect.PostgreSQLDialect");
-        r.add("spring.flyway.enabled", () -> "true");
-        r.add("spring.docker.compose.enabled", () -> "false");
-    }
-
-    @MockitoBean StripeProductService stripeProductService;
-    @MockitoSpyBean MediaStorage storage;
+    @Autowired PausableMediaStorage media;
 
     @Autowired EventService eventService;
     @Autowired TicketTierService tierService;
@@ -179,7 +148,8 @@ class EventStatusRevertPostgresTest {
         CountDownLatch release = new CountDownLatch(1);
         try {
             Future<?> sweep = pool.submit(() -> tx.executeWithoutResult(s -> {
-                assertThat(events.markLivePast(now(), now())).isEqualTo(1);
+                events.markLivePast(now(), now());
+                assertThat(status()).as("the sweep holds this event's row").isEqualTo("PAST");
                 swept.countDown();
                 await(release);
             }));
@@ -224,7 +194,7 @@ class EventStatusRevertPostgresTest {
 
             release.countDown();
             Object result = write.get(10, TimeUnit.SECONDS);
-            assertThat(sweep.get(10, TimeUnit.SECONDS)).isEqualTo(1);
+            sweep.get(10, TimeUnit.SECONDS);
 
             assertThat(status()).isEqualTo("PAST");
             assertEffect(writer, result);
@@ -243,7 +213,8 @@ class EventStatusRevertPostgresTest {
         CountDownLatch release = new CountDownLatch(1);
         try {
             Future<?> sweep = pool.submit(() -> tx.executeWithoutResult(s -> {
-                assertThat(events.markLivePast(now(), now())).isEqualTo(1);
+                events.markLivePast(now(), now());
+                assertThat(status()).as("the sweep holds this event's row").isEqualTo("PAST");
                 swept.countDown();
                 await(release);
             }));
@@ -290,7 +261,7 @@ class EventStatusRevertPostgresTest {
 
             release.countDown();
             unpublish.get(10, TimeUnit.SECONDS);
-            assertThat(sweep.get(10, TimeUnit.SECONDS)).isEqualTo(0);
+            sweep.get(10, TimeUnit.SECONDS);
             assertThat(status()).isEqualTo("DRAFT");
         } finally {
             release.countDown();
@@ -302,27 +273,21 @@ class EventStatusRevertPostgresTest {
     @Test
     void sweepCommitsWhileAnUploadIsStoringTheObject() throws Exception {
         ExecutorService pool = Executors.newFixedThreadPool(2);
-        CountDownLatch putEntered = new CountDownLatch(1);
-        CountDownLatch releasePut = new CountDownLatch(1);
-        doAnswer(inv -> {
-            putEntered.countDown();
-            await(releasePut);
-            return inv.callRealMethod();
-        }).when(storage).put(anyString(), any(), any());
+        PausableMediaStorage.Pause put = media.pauseNextPut();
         try {
             Future<MediaUploadResponse> upload = pool.submit(() -> mediaUploadService.upload(
                     principal, eventId, MediaKind.POSTER, realPng(40, 50), "image/png", "p.png"));
-            assertThat(putEntered.await(10, TimeUnit.SECONDS)).isTrue();
+            assertThat(put.entered().await(10, TimeUnit.SECONDS)).isTrue();
 
-            assertThat(pool.submit(() -> events.markLivePast(now(), now())).get(5, TimeUnit.SECONDS))
-                    .as("the sweep does not wait for the storage put").isEqualTo(1);
+            pool.submit(() -> events.markLivePast(now(), now())).get(5, TimeUnit.SECONDS);
+            assertThat(status()).as("the sweep does not wait for the storage put").isEqualTo("PAST");
 
-            releasePut.countDown();
+            put.release().countDown();
             MediaUploadResponse result = upload.get(10, TimeUnit.SECONDS);
             assertThat(posterUrl()).isEqualTo(result.url());
             assertThat(status()).isEqualTo("PAST");
         } finally {
-            releasePut.countDown();
+            put.release().countDown();
             pool.shutdownNow();
             pool.awaitTermination(15, TimeUnit.SECONDS);
         }
@@ -330,29 +295,24 @@ class EventStatusRevertPostgresTest {
 
     @Test
     void sweepCommitsWhileADeleteIsRemovingTheObject() throws Exception {
-        storage.put("events/" + eventId + "/poster-x.png", new byte[1], "image/png");
+        String key = "events/" + eventId + "/poster-x.png";
+        media.put(key, new byte[1], "image/png");
         ExecutorService pool = Executors.newFixedThreadPool(2);
-        CountDownLatch deleteEntered = new CountDownLatch(1);
-        CountDownLatch releaseDelete = new CountDownLatch(1);
-        doAnswer(inv -> {
-            deleteEntered.countDown();
-            await(releaseDelete);
-            return inv.callRealMethod();
-        }).when(storage).delete(anyString());
+        PausableMediaStorage.Pause delete = media.pauseNextDelete();
         try {
-            Future<?> delete = pool.submit(() -> mediaUploadService.delete(principal, eventId, MediaKind.POSTER));
-            assertThat(deleteEntered.await(10, TimeUnit.SECONDS)).isTrue();
+            Future<?> deletion = pool.submit(() -> mediaUploadService.delete(principal, eventId, MediaKind.POSTER));
+            assertThat(delete.entered().await(10, TimeUnit.SECONDS)).isTrue();
 
-            assertThat(pool.submit(() -> events.markLivePast(now(), now())).get(5, TimeUnit.SECONDS))
-                    .as("the sweep does not wait for the storage delete").isEqualTo(1);
+            pool.submit(() -> events.markLivePast(now(), now())).get(5, TimeUnit.SECONDS);
+            assertThat(status()).as("the sweep does not wait for the storage delete").isEqualTo("PAST");
 
-            releaseDelete.countDown();
-            delete.get(10, TimeUnit.SECONDS);
+            delete.release().countDown();
+            deletion.get(10, TimeUnit.SECONDS);
             assertThat(posterUrl()).isNull();
             assertThat(status()).isEqualTo("PAST");
-            verify(storage).delete("events/" + eventId + "/poster-x.png");
+            assertThat(media.blobs()).doesNotContainKey(key);
         } finally {
-            releaseDelete.countDown();
+            delete.release().countDown();
             pool.shutdownNow();
             pool.awaitTermination(15, TimeUnit.SECONDS);
         }

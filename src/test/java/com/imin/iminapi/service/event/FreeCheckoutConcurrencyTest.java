@@ -1,6 +1,5 @@
 package com.imin.iminapi.service.event;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.CheckoutAttribution;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
@@ -16,19 +15,20 @@ import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.PromoCodeRepository;
 import com.imin.iminapi.repository.TicketRepository;
-import com.imin.iminapi.repository.TicketReservationRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.stripe.StripeCheckoutService;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataAccessException;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -52,13 +52,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * no payment sheet, so nothing visible happens while the request works.
  *
  * <p>{@code FreeCheckoutIdempotencyTest} covers the semantics against a mocked
- * index. This class is deliberately the opposite: real H2 in PostgreSQL-compat
- * mode, the real {@code uq_orders_idem}, the real transaction boundaries and
- * real threads — because the interesting failure is a race, and a race cannot be
- * proved against a HashMap.
+ * index. This class is deliberately the opposite: real Postgres, the real
+ * {@code uq_orders_idem}, the real transaction boundaries and real threads —
+ * because the interesting failure is a race, and a race cannot be proved
+ * against a HashMap. The database is shared, so every count is scoped to this test's rows.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class FreeCheckoutConcurrencyTest {
 
     private static final String BUYER = "double.tapper@example.test";
@@ -69,25 +68,25 @@ class FreeCheckoutConcurrencyTest {
     @Autowired OrderRepository orders;
     @Autowired TicketRepository tickets;
     @Autowired TicketTierRepository tiers;
-    @Autowired TicketReservationRepository reservations;
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
     @Autowired PromoCodeRepository promos;
     @Autowired UserRepository users;
+    @Autowired JdbcTemplate jdbc;
 
+    private final List<UUID> orgIds = new ArrayList<>();
     private Event event;
     private TicketTier freeTier;
 
     @BeforeEach
     void setUp() {
-        cleanUp();
         event = seedEvent("Free Fest");
         freeTier = seedFreeTier(event, 100);
     }
 
     @AfterEach
     void tearDown() {
-        cleanUp();
+        OrgRows.delete(jdbc, orgIds);
     }
 
     // ── The test that matters most ─────────────────────────────────────────
@@ -115,9 +114,9 @@ class FreeCheckoutConcurrencyTest {
         assertThat(tickets.findByOrderIdOrderByCreatedAtAsc(theOrder.getId()))
                 .as("tickets issued")
                 .hasSize(QUANTITY);
-        assertThat(tickets.findAll())
+        assertThat(ticketsOfEvent())
                 .as("no orphan tickets from the rolled-back loser")
-                .hasSize(QUANTITY);
+                .isEqualTo(QUANTITY);
 
         assertThat(answers)
                 .as("both callers were told about the same order")
@@ -167,13 +166,13 @@ class FreeCheckoutConcurrencyTest {
                 .isInstanceOf(DataAccessException.class);
 
         assertThat(orders.findByEventIdOrderByCreatedAtDesc(event.getId())).hasSize(1);
-        assertThat(tickets.findAll()).hasSize(QUANTITY);
+        assertThat(ticketsOfEvent()).isEqualTo(QUANTITY);
         TicketTier reloaded = tiers.findById(freeTier.getId()).orElseThrow();
         assertThat(reloaded.getSold()).isEqualTo(QUANTITY);
         assertThat(reloaded.getReserved()).isZero();
-        assertThat(reservations.findAll())
+        assertThat(reservationsOfTier())
                 .as("the loser's HELD row rolled back too — nothing for the sweeper to find")
-                .hasSize(1);
+                .isEqualTo(1);
     }
 
     /**
@@ -212,7 +211,7 @@ class FreeCheckoutConcurrencyTest {
                 .hasFieldOrPropertyWithValue("code", com.imin.iminapi.security.ErrorCode.INVALID_REQUEST);
 
         assertThat(orders.findByEventIdOrderByCreatedAtDesc(event.getId())).isEmpty();
-        assertThat(tickets.findAll()).isEmpty();
+        assertThat(ticketsOfEvent()).isZero();
         TicketTier reloaded = tiers.findById(freeTier.getId()).orElseThrow();
         assertThat(reloaded.getSold()).as("no seats consumed by the refused order").isZero();
         assertThat(reloaded.getReserved()).isZero();
@@ -373,6 +372,7 @@ class FreeCheckoutConcurrencyTest {
         org.setContactEmail("free-idem-" + UUID.randomUUID() + "@example.test");
         org.setCountry("DE");
         org = orgs.save(org);
+        orgIds.add(org.getId());
 
         User owner = new User();
         owner.setEmail("free-idem-owner-" + UUID.randomUUID() + "@example.test");
@@ -416,14 +416,12 @@ class FreeCheckoutConcurrencyTest {
         return promos.save(p);
     }
 
-    private void cleanUp() {
-        tickets.deleteAll();
-        orders.deleteAll();
-        promos.deleteAll();
-        reservations.deleteAll();
-        tiers.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+    private int ticketsOfEvent() {
+        return jdbc.queryForObject("SELECT count(*) FROM tickets WHERE event_id = ?", Integer.class, event.getId());
+    }
+
+    private int reservationsOfTier() {
+        return jdbc.queryForObject("SELECT count(*) FROM ticket_reservations WHERE tier_id = ?",
+                Integer.class, freeTier.getId());
     }
 }

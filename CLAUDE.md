@@ -144,6 +144,8 @@ Today only `@IminIntegrationTest` exists (`SpringContextGuard.NAMED_CONTEXTS`). 
 - Legacy: `src/test/resources/test-guard/legacy-spring-tests.txt` lists classes not yet migrated. It only shrinks — the guard fails when a listed class no longer violates, and a diff that adds a line is a review blocker. Do not add `@MockitoBean`/properties to a legacy class either.
 - Fault injection: `PgFaults.failWrites(jdbc, table, column, id)` makes Postgres reject INSERT/UPDATE of the rows whose `column` equals `id` until closed (try-with-resources) — a real write failure inside the code's own transaction. No repository or service spies; a read-side race a trigger cannot produce is a unit test.
 - Global sweeps and jobs (payout sweep and recoveries, dispute attribution, buyer erasure) see every test's rows: assert on your own ids, suffix `evt_` and uniquely indexed Stripe ids per test, and in money tests delete the orgs you created with `OrgRows.delete(jdbc, orgIds)` in `@AfterEach`, so a later sweep's batch never fills with them.
+- Lost races and slow storage: `PgFaults.skipUpdates(jdbc, table, column, id)` makes an UPDATE of that row affect 0 rows until closed (a concurrent writer won); `PausableMediaStorage.pauseNextPut()`/`pauseNextDelete()` holds the next media call open until you release it. No repository or storage spies.
+- Scheduled jobs: before calling a `@SchedulerLock` method directly, expire its row (`UPDATE shedlock SET lock_until = locked_at WHERE name = ?`); one context serves the whole run, so a lock taken by an earlier class would make your call a no-op.
 
 ## Architecture
 

@@ -44,6 +44,31 @@ public final class PgFaults {
         return () -> drop(jdbc, table, name);
     }
 
+    /**
+     * The UPDATE affects 0 rows for that id, as if a concurrent writer had changed it first; scoped to one row.
+     * Other rows and INSERTs are untouched; always open it in try-with-resources.
+     */
+    public static Fault skipUpdates(JdbcTemplate jdbc, String table, String column, UUID value) {
+        requireIdentifier(table);
+        requireIdentifier(column);
+        if (value == null) throw new IllegalArgumentException("value is required");
+        String name = "imin_test_skip_" + UUID.randomUUID().toString().replace("-", "");
+        jdbc.execute("CREATE FUNCTION " + name + "() RETURNS trigger LANGUAGE plpgsql AS "
+                + "$$ BEGIN RETURN NULL; END $$");
+        try {
+            jdbc.execute("CREATE TRIGGER " + name + " BEFORE UPDATE ON " + table
+                    + " FOR EACH ROW WHEN (NEW." + column + " = '" + value + "'::uuid) EXECUTE FUNCTION " + name + "()");
+        } catch (RuntimeException e) {
+            try {
+                jdbc.execute("DROP FUNCTION IF EXISTS " + name + "()");
+            } catch (RuntimeException cleanup) {
+                e.addSuppressed(cleanup);
+            }
+            throw e;
+        }
+        return () -> drop(jdbc, table, name);
+    }
+
     private static void drop(JdbcTemplate jdbc, String table, String name) {
         List<RuntimeException> failures = new ArrayList<>();
         for (String sql : List.of("DROP TRIGGER IF EXISTS " + name + " ON " + table,

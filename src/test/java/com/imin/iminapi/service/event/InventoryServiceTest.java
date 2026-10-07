@@ -13,6 +13,7 @@ import com.imin.iminapi.security.ErrorCode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
@@ -422,28 +423,16 @@ class InventoryServiceTest {
         verify(reservations, never()).save(any());
     }
 
-    @Test
-    void isAsyncProcessing_trueWhenTheColumnIsSet() {
+    enum Hold { ASYNC_PROCESSING, PLAIN, UNKNOWN }
+
+    @ParameterizedTest
+    @CsvSource({"ASYNC_PROCESSING, true", "PLAIN, false", "UNKNOWN, false"})
+    void isAsyncProcessing_trueOnlyWhenTheColumnIsSet(Hold hold, boolean expected) {
         TicketReservation r = held(UUID.randomUUID(), 1);
-        r.setAsyncProcessingAt(NOW);
-        when(reservations.findById(r.getId())).thenReturn(Optional.of(r));
+        if (hold == Hold.ASYNC_PROCESSING) r.setAsyncProcessingAt(NOW);
+        when(reservations.findById(r.getId()))
+                .thenReturn(hold == Hold.UNKNOWN ? Optional.empty() : Optional.of(r));
 
-        assertThat(svc.isAsyncProcessing(r.getId())).isTrue();
-    }
-
-    @Test
-    void isAsyncProcessing_falseOnAPlainHold() {
-        TicketReservation r = held(UUID.randomUUID(), 1);
-        when(reservations.findById(r.getId())).thenReturn(Optional.of(r));
-
-        assertThat(svc.isAsyncProcessing(r.getId())).isFalse();
-    }
-
-    @Test
-    void isAsyncProcessing_falseForAnUnknownReservation() {
-        UUID id = UUID.randomUUID();
-        when(reservations.findById(id)).thenReturn(Optional.empty());
-
-        assertThat(svc.isAsyncProcessing(id)).isFalse();
+        assertThat(svc.isAsyncProcessing(r.getId())).isEqualTo(expected);
     }
 }
