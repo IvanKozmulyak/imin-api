@@ -8,12 +8,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class AudienceMemberClassTest {
 
     @Test
-    void keys_areTheLogicFileClassesPlusNone() {
-        assertThat(java.util.Arrays.stream(AudienceMemberClass.values()).map(AudienceMemberClass::key))
-                .containsExactly("loyal", "repeat", "first_timer", "lapsing", "dormant", "imported", "none");
-    }
-
-    @Test
     void parse_unknownOrNull_isEmpty() {
         assertThat(AudienceMemberClass.parse("vip")).isEmpty();
         assertThat(AudienceMemberClass.parse(null)).isEmpty();

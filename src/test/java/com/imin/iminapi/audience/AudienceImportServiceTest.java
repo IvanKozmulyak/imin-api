@@ -19,34 +19,36 @@ import com.imin.iminapi.audienceplan.model.AudienceImport;
 import com.imin.iminapi.audienceplan.model.ImportRowProvenance;
 import com.imin.iminapi.audienceplan.repository.AudienceImportRepository;
 import com.imin.iminapi.audienceplan.repository.ImportRowProvenanceRepository;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.AuthPrincipal;
-import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.jdbc.core.JdbcTemplate;
 
-import javax.sql.DataSource;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Guardrail + counting tests for {@link AudienceImportService} against H2.
+ * Guardrail + counting tests for {@link AudienceImportService} on the shared Postgres.
  *
  * <p>Load-bearing: an organizer CSV must never resurrect a suppressed contact
  * ({@link #suppressed_email_stays_unsubscribed_or_never()}), and only a row with its own
  * proof becomes explicit consent ({@link #attestation_only_row_gets_no_basis()}).
+ *
+ * <p>Every address is unique per test: consumers, deliverability suppressions and platform-wide erasure
+ * entries are keyed by email across orgs.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class AudienceImportServiceTest {
 
     @Autowired AudienceImportService importService;
@@ -56,25 +58,41 @@ class AudienceImportServiceTest {
     @Autowired SuppressionRepository suppressionRepo;
     @Autowired ConsentRecordRepository consentRepo;
     @Autowired DsarService dsarService;
-    @Autowired DataSource dataSource;
+    @Autowired JdbcTemplate jdbc;
+    @Autowired IminFixtures fx;
     @Autowired AudienceImportRepository importRepo;
     @Autowired ImportRowProvenanceRepository provenanceRepo;
 
-    // AuditLogger is best-effort; stub it so consent-capture audit writes don't hit UserRepository.
-    @MockitoBean AuditLogger auditLogger;
-
+    private final Map<String, String> addresses = new HashMap<>();
     private UUID orgId;
     private AuthPrincipal principal;
 
     @BeforeEach
     void setUp() {
-        wipe();
         orgId = UUID.randomUUID();
         principal = new AuthPrincipal(UUID.randomUUID(), orgId, UserRole.OWNER, UUID.randomUUID());
     }
 
+    /** Own rows only: memberships cascade consent and provenance; imports, org suppressions, org ledger. */
     @AfterEach
-    void tearDown() { wipe(); }
+    void tearDown() {
+        jdbc.update("delete from memberships where org_id = ?", orgId);
+        jdbc.update("delete from audience_imports where org_id = ?", orgId);
+        jdbc.update("delete from suppression_entries where org_id = ?", orgId);
+        jdbc.update("delete from erased_addresses where org_id = ?", orgId);
+    }
+
+    /** The same unique, normalized address for a tag within one test. */
+    private String a(String tag) {
+        return addresses.computeIfAbsent(tag, fx::email);
+    }
+
+    /** The address as an organizer's CSV might spell it: capitalised, domain upper-cased. */
+    private static String mixed(String address) {
+        int at = address.indexOf('@');
+        return Character.toUpperCase(address.charAt(0)) + address.substring(1, at)
+                + address.substring(at).toUpperCase(Locale.ROOT);
+    }
 
     // ── helpers ───────────────────────────────────────────────────────────────
 
@@ -113,14 +131,14 @@ class AudienceImportServiceTest {
 
     @Test
     void attestation_only_row_gets_no_basis() {
-        ImportResultResponse r = importService.importContacts(rows("Alice@Example.com"), false, principal);
+        ImportResultResponse r = importService.importContacts(rows(mixed(a("alice"))), false, principal);
 
         assertThat(r.total()).isEqualTo(1);
         assertThat(r.imported()).isEqualTo(1);
         assertThat(r.rowsExplicit()).isZero();
         assertThat(r.rowsNoBasis()).isEqualTo(1);
 
-        Membership m = membershipFor("alice@example.com");
+        Membership m = membershipFor(a("alice"));
         assertThat(m.getConsentStatus()).isEqualTo("never");
         assertThat(m.getConsentBasis()).isNull();
         assertThat(consentRepo.findByMembershipId(m.getMembershipId())).isEmpty();
@@ -136,7 +154,7 @@ class AudienceImportServiceTest {
 
     @Test
     void opted_in_row_with_full_provenance_becomes_explicit_with_a_provenance_row() {
-        ImportResultResponse r = importService.importContacts(List.of(proven(2, "Alice@Example.com")), false,
+        ImportResultResponse r = importService.importContacts(List.of(proven(2, mixed(a("alice")))), false,
                 principal, new AudienceImportService.ImportOptions("v2-2026-09-27", "ab".repeat(32), "cd".repeat(32), null));
 
         assertThat(r.imported()).isEqualTo(1);
@@ -144,7 +162,7 @@ class AudienceImportServiceTest {
         assertThat(r.rowsNoBasis()).isZero();
         assertThat(r.importId()).isNotNull();
 
-        Membership m = membershipFor("alice@example.com");
+        Membership m = membershipFor(a("alice"));
         assertThat(m.getConsentStatus()).isEqualTo("subscribed");
         assertThat(m.getConsentBasis()).isEqualTo("explicit");
 
@@ -187,14 +205,14 @@ class AudienceImportServiceTest {
 
     @Test
     void opted_in_row_missing_proof_ref_gets_no_basis() {
-        CsvContactParser.RawContact row = new CsvContactParser.RawContact(2, "a@example.com", null, null,
+        CsvContactParser.RawContact row = new CsvContactParser.RawContact(2, a("a"), null, null,
                 "shotgun", "2026-09-01", null, null, "opted_in", null);
 
         ImportResultResponse r = importService.importContacts(List.of(row), false, principal);
 
         assertThat(r.rowsExplicit()).isZero();
         assertThat(r.rowsNoBasis()).isEqualTo(1);
-        Membership m = membershipFor("a@example.com");
+        Membership m = membershipFor(a("a"));
         assertThat(m.getConsentStatus()).isEqualTo("never");
         assertThat(provenanceRepo.findByMembershipIdOrderByCreatedAtAsc(m.getMembershipId()).get(0).getRejectReason())
                 .isEqualTo("missing_proof");
@@ -203,11 +221,11 @@ class AudienceImportServiceTest {
     @Test
     void unsubscribed_row_is_put_on_the_marketing_suppression_list() {
         ImportResultResponse r = importService.importContacts(
-                List.of(withStatus(2, "gone@example.com", "unsubscribed")), false, principal);
+                List.of(withStatus(2, a("gone-unsub"), "unsubscribed")), false, principal);
 
         assertThat(r.rowsUnsubscribed()).isEqualTo(1);
         assertThat(r.rowsExplicit()).isZero();
-        Membership m = membershipFor("gone@example.com");
+        Membership m = membershipFor(a("gone-unsub"));
         assertThat(m.getConsentStatus()).isNotEqualTo("subscribed");
         assertThat(suppressionRepo.findMarketingByOrgAndMembership(orgId, m.getMembershipId())).isPresent();
         ImportRowProvenance p = provenanceRepo.findByMembershipIdOrderByCreatedAtAsc(m.getMembershipId()).get(0);
@@ -219,9 +237,9 @@ class AudienceImportServiceTest {
     /** An older dashboard sends no version; the record says so rather than guessing. */
     @Test
     void an_unversioned_attestation_is_recorded_as_unversioned() {
-        importService.importContacts(List.of(proven(2, "Alice@Example.com")), false, principal);
+        importService.importContacts(List.of(proven(2, mixed(a("alice")))), false, principal);
 
-        Membership m = membershipFor("alice@example.com");
+        Membership m = membershipFor(a("alice"));
         ConsentRecord rec = consentRepo.findByMembershipId(m.getMembershipId()).get(0);
         assertThat(rec.getProofText()).contains(ImportAttestation.UNVERSIONED);
         assertThat(rec.getTextVersion()).isEqualTo(ImportAttestation.UNVERSIONED);
@@ -230,16 +248,16 @@ class AudienceImportServiceTest {
     @Test
     void one_provenance_row_per_imported_row_and_the_split_adds_up() {
         ImportResultResponse r = importService.importContacts(List.of(
-                proven(2, "one@example.com"),
-                new CsvContactParser.RawContact(3, "two@example.com", null, null),
-                withStatus(4, "three@example.com", "unsubscribed")), false, principal);
+                proven(2, a("one")),
+                new CsvContactParser.RawContact(3, a("two"), null, null),
+                withStatus(4, a("three"), "unsubscribed")), false, principal);
 
         assertThat(r.rowsExplicit() + r.rowsNoBasis() + r.rowsUnsubscribed())
                 .isEqualTo(r.imported() + r.updated())
                 .isEqualTo(3);
         List<ImportRowProvenance> all = provenanceRepo.findByImportId(r.importId());
         assertThat(all).hasSize(3);
-        for (String email : List.of("one@example.com", "two@example.com", "three@example.com")) {
+        for (String email : List.of(a("one"), a("two"), a("three"))) {
             assertThat(provenanceRepo.findByMembershipIdOrderByCreatedAtAsc(
                     membershipFor(email).getMembershipId())).hasSize(1);
         }
@@ -252,10 +270,10 @@ class AudienceImportServiceTest {
 
     @Test
     void source_platform_and_export_date_stay_null_when_rows_disagree() {
-        CsvContactParser.RawContact other = new CsvContactParser.RawContact(3, "b@example.com", null, null,
+        CsvContactParser.RawContact other = new CsvContactParser.RawContact(3, a("b"), null, null,
                 "dice", "2026-08-15", null, null, "opted_in", "p");
         ImportResultResponse r = importService.importContacts(
-                List.of(proven(2, "a@example.com"), other), false, principal);
+                List.of(proven(2, a("a")), other), false, principal);
 
         AudienceImport header = importRepo.findById(r.importId()).orElseThrow();
         assertThat(header.getRowsExplicit()).isEqualTo(2);
@@ -265,9 +283,9 @@ class AudienceImportServiceTest {
 
     // ── subscribed cap ─────────────────────────────────────────────────────────
 
-    private static List<CsvContactParser.RawContact> provenRows(int n) {
+    private List<CsvContactParser.RawContact> provenRows(int n) {
         List<CsvContactParser.RawContact> out = new ArrayList<>();
-        for (int i = 0; i < n; i++) out.add(proven(i + 2, "cap" + i + "@example.com"));
+        for (int i = 0; i < n; i++) out.add(proven(i + 2, fx.email("cap" + i)));
         return out;
     }
 
@@ -296,13 +314,13 @@ class AudienceImportServiceTest {
         // (a) deliverability-suppressed brand-new email → imported as member, NOT subscribed
         SuppressionEntry deliv = new SuppressionEntry();
         deliv.setScope(SuppressionEntry.SCOPE_DELIVERABILITY);
-        deliv.setNormalizedEmail("bounced@example.com");
+        deliv.setNormalizedEmail(a("bounced"));
         deliv.setReason(SuppressionEntry.REASON_HARD_BOUNCE);
         deliv.setSystemOwned(true);
         suppressionRepo.save(deliv);
 
         // (b) marketing-suppressed EXISTING member (org-scoped) → stays as-is
-        Membership existing = seedMember("marketing-suppressed@example.com");
+        Membership existing = seedMember(a("marketing-suppressed"));
         // move it to a clean 'never'/unsub baseline: unsubscribe it, then org-suppress it
         consentService.unsubscribe(orgId, existing.getMembershipId(), "test", "email",
                 ConsentOrigin.OPERATOR, null);
@@ -315,20 +333,20 @@ class AudienceImportServiceTest {
         suppressionRepo.save(mkt);
 
         ImportResultResponse r = importService.importContacts(
-                rows("bounced@example.com", "marketing-suppressed@example.com"), false, principal);
+                rows(a("bounced"), a("marketing-suppressed")), false, principal);
 
         assertThat(r.suppressed()).isEqualTo(2);
         assertThat(r.imported()).isZero();
         assertThat(r.updated()).isZero();
 
         // deliverability contact: member row created, consent NEVER
-        Membership bounced = membershipFor("bounced@example.com");
+        Membership bounced = membershipFor(a("bounced"));
         assertThat(bounced.getConsentStatus()).isEqualTo("never");
         assertThat(bounced.getConsentBasis()).isNull();
         assertThat(consentRepo.findByMembershipId(bounced.getMembershipId())).isEmpty();
 
         // marketing contact: stays unsubscribed, NOT flipped by the import
-        Membership mkSup = membershipFor("marketing-suppressed@example.com");
+        Membership mkSup = membershipFor(a("marketing-suppressed"));
         assertThat(mkSup.getConsentStatus()).isEqualTo("unsubscribed");
         assertThat(provenanceRepo.findByImportId(r.importId()))
                 .extracting(ImportRowProvenance::getRejectReason)
@@ -339,19 +357,19 @@ class AudienceImportServiceTest {
 
     @Test
     void unsubscribed_member_is_not_resubscribed() {
-        Membership m = seedMember("optout@example.com");
+        Membership m = seedMember(a("optout"));
         consentService.unsubscribe(orgId, m.getMembershipId(), "test", "email",
                 ConsentOrigin.OPERATOR, null);
-        assertThat(membershipFor("optout@example.com").getConsentStatus()).isEqualTo("unsubscribed");
+        assertThat(membershipFor(a("optout")).getConsentStatus()).isEqualTo("unsubscribed");
 
         ImportResultResponse r = importService.importContacts(
-                List.of(proven(2, "optout@example.com")), false, principal);
+                List.of(proven(2, a("optout"))), false, principal);
 
         assertThat(r.skippedUnsubscribed()).isEqualTo(1);
         assertThat(r.imported()).isZero();
         assertThat(r.updated()).isZero();
         assertThat(r.rowsExplicit()).isZero();
-        assertThat(membershipFor("optout@example.com").getConsentStatus()).isEqualTo("unsubscribed");
+        assertThat(membershipFor(a("optout")).getConsentStatus()).isEqualTo("unsubscribed");
         assertThat(provenanceRepo.findByImportId(r.importId()))
                 .singleElement()
                 .satisfies(p -> {
@@ -364,12 +382,12 @@ class AudienceImportServiceTest {
 
     @Test
     void existing_subscribed_member_keeps_its_consent_on_a_row_without_basis() {
-        seedMember("already@example.com"); // first import → imported + subscribed on its own proof
-        ImportResultResponse r = importService.importContacts(rows("already@example.com"), false, principal);
+        seedMember(a("already")); // first import → imported + subscribed on its own proof
+        ImportResultResponse r = importService.importContacts(rows(a("already")), false, principal);
         assertThat(r.imported()).isZero();
         assertThat(r.updated()).isEqualTo(1);
         assertThat(r.rowsNoBasis()).isEqualTo(1);
-        Membership m = membershipFor("already@example.com");
+        Membership m = membershipFor(a("already"));
         assertThat(m.getConsentStatus()).isEqualTo("subscribed");
         assertThat(consentRepo.findByMembershipId(m.getMembershipId())).hasSize(1);
     }
@@ -379,7 +397,7 @@ class AudienceImportServiceTest {
     @Test
     void dedup_within_file_collapses_duplicates() {
         ImportResultResponse r = importService.importContacts(
-                rows("dup@example.com", "DUP@example.com", "dup@EXAMPLE.com"), false, principal);
+                rows(a("dup"), a("dup").toUpperCase(Locale.ROOT), mixed(a("dup"))), false, principal);
         assertThat(r.total()).isEqualTo(3);
         assertThat(r.imported()).isEqualTo(1); // collapsed to one unique contact
         assertThat(membershipRepo.countByOrgId(orgId)).isEqualTo(1);
@@ -390,7 +408,7 @@ class AudienceImportServiceTest {
     @Test
     void invalid_emails_are_counted_and_reported() {
         ImportResultResponse r = importService.importContacts(
-                rows("good@example.com", "no-at-sign", "no-dot@domain", "  "), false, principal);
+                rows(a("good"), "no-at-sign", "no-dot@domain", "  "), false, principal);
         assertThat(r.total()).isEqualTo(4);
         assertThat(r.imported()).isEqualTo(1);
         assertThat(r.invalidEmails()).isEqualTo(3);
@@ -402,23 +420,26 @@ class AudienceImportServiceTest {
     @Test
     void dry_run_classifies_but_writes_nothing() {
         ImportResultResponse r = importService.importContacts(
-                List.of(proven(2, "preview@example.com"), withStatus(3, "preview2@example.com", "unsubscribed")),
+                List.of(proven(2, a("preview")), withStatus(3, a("preview2"), "unsubscribed")),
                 true, principal);
         assertThat(r.imported()).isEqualTo(2);
         assertThat(r.rowsExplicit()).isEqualTo(1);
         assertThat(r.rowsUnsubscribed()).isEqualTo(1);
         assertThat(r.importId()).isNull();
         assertThat(membershipRepo.countByOrgId(orgId)).isZero();
-        assertThat(consumerRepo.findByNormalizedEmail("preview@example.com")).isEmpty();
-        assertThat(countRows("audience_imports")).isZero();
-        assertThat(countRows("import_row_provenance")).isZero();
-        assertThat(countRows("suppression_entries")).isZero();
+        assertThat(consumerRepo.findByNormalizedEmail(a("preview"))).isEmpty();
+        assertThat(jdbc.queryForObject("select count(*) from audience_imports where org_id = ?",
+                Long.class, orgId)).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from import_row_provenance p join memberships m "
+                + "on m.membership_id = p.membership_id where m.org_id = ?", Long.class, orgId)).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from suppression_entries where org_id = ? "
+                + "or normalized_email in (?, ?)", Long.class, orgId, a("preview"), a("preview2"))).isZero();
         assertThat(consentRecordCount()).isZero();
     }
 
     @Test
     void dry_run_matches_real_counts() {
-        List<CsvContactParser.RawContact> in = rows("a@example.com", "b@example.com");
+        List<CsvContactParser.RawContact> in = rows(a("a"), a("b"));
         ImportResultResponse preview = importService.importContacts(in, true, principal);
         ImportResultResponse real = importService.importContacts(in, false, principal);
         assertThat(preview.imported()).isEqualTo(real.imported());
@@ -430,37 +451,37 @@ class AudienceImportServiceTest {
     @Test
     void phone_is_normalized_when_parseable_and_skipped_otherwise() {
         List<CsvContactParser.RawContact> in = List.of(
-                new CsvContactParser.RawContact(2, "phone@example.com", "P", "+1 (555) 123-4567"),
-                new CsvContactParser.RawContact(3, "nophone@example.com", "N", "not-a-phone"));
+                new CsvContactParser.RawContact(2, a("phone"), "P", "+1 (555) 123-4567"),
+                new CsvContactParser.RawContact(3, a("nophone"), "N", "not-a-phone"));
         ImportResultResponse r = importService.importContacts(in, false, principal);
         assertThat(r.imported()).isEqualTo(2); // bad phone does NOT reject the row
 
-        assertThat(membershipFor("phone@example.com").getPhoneE164()).isEqualTo("+15551234567");
-        assertThat(membershipFor("nophone@example.com").getPhoneE164()).isNull();
+        assertThat(membershipFor(a("phone")).getPhoneE164()).isEqualTo("+15551234567");
+        assertThat(membershipFor(a("nophone")).getPhoneE164()).isNull();
     }
 
     // ── erasure ledger: an erased address is never rebuilt by an import ────────
 
     @Test
     void platformWideErasedAddress_isSkippedAsOther_andNoProfileIsRebuilt() {
-        dsarService.recordErasure(null, "gone@x.com");
+        dsarService.recordErasure(null, a("gone"));
 
-        ImportResultResponse r = importService.importContacts(rows("Gone@X.com"), false, principal);
+        ImportResultResponse r = importService.importContacts(rows(mixed(a("gone"))), false, principal);
 
         assertThat(r.skippedOther()).isEqualTo(1);
         assertThat(r.skippedErased()).isZero();
         assertThat(r.imported()).isZero();
         assertThat(r.suppressed()).isZero();
         assertThat(r.errors()).isEmpty();
-        assertThat(consumerRepo.findByNormalizedEmail("gone@x.com")).isEmpty();
+        assertThat(consumerRepo.findByNormalizedEmail(a("gone"))).isEmpty();
         assertThat(consentRecordCount()).isZero();
     }
 
     @Test
     void orgErasedAddress_isSkipped() {
-        dsarService.recordErasure(orgId, "gone@x.com");
+        dsarService.recordErasure(orgId, a("gone"));
 
-        ImportResultResponse r = importService.importContacts(List.of(proven(2, "Gone@X.com")), false, principal);
+        ImportResultResponse r = importService.importContacts(List.of(proven(2, mixed(a("gone")))), false, principal);
 
         assertThat(r.rowsExplicit()).isZero();
         assertThat(provenanceRepo.findByImportId(r.importId())).isEmpty();
@@ -471,20 +492,20 @@ class AudienceImportServiceTest {
         assertThat(r.imported()).isZero();
         assertThat(r.suppressed()).isZero();
         assertThat(r.errors()).isEmpty();
-        assertThat(consumerRepo.findByNormalizedEmail("gone@x.com")).isEmpty();
+        assertThat(consumerRepo.findByNormalizedEmail(a("gone"))).isEmpty();
         assertThat(consentRecordCount()).isZero();
     }
 
     /** Scope pin: another org's erasure does not bind this org. */
     @Test
     void addressErasedByAnotherOrgOnly_importsNormally() {
-        dsarService.recordErasure(UUID.randomUUID(), "other@x.com");
+        dsarService.recordErasure(UUID.randomUUID(), a("other"));
 
-        ImportResultResponse r = importService.importContacts(List.of(proven(2, "other@x.com")), false, principal);
+        ImportResultResponse r = importService.importContacts(List.of(proven(2, a("other"))), false, principal);
 
         assertThat(r.imported()).isEqualTo(1);
         assertThat(r.skippedErased()).isZero();
-        Membership m = membershipFor("other@x.com");
+        Membership m = membershipFor(a("other"));
         assertThat(m.getConsentStatus()).isEqualTo("subscribed");
         assertThat(m.getConsentBasis()).isEqualTo("explicit");
     }
@@ -492,59 +513,33 @@ class AudienceImportServiceTest {
     /** An address on both ledgers is counted once, under this org's label. */
     @Test
     void addressOnBothLedgers_isCountedOnceAsErased() {
-        dsarService.recordErasure(null, "gone@x.com");
-        dsarService.recordErasure(orgId, "gone@x.com");
+        dsarService.recordErasure(null, a("gone"));
+        dsarService.recordErasure(orgId, a("gone"));
 
-        ImportResultResponse r = importService.importContacts(rows("gone@x.com"), false, principal);
+        ImportResultResponse r = importService.importContacts(rows(a("gone")), false, principal);
 
         assertThat(r.skippedErased()).isEqualTo(1);
         assertThat(r.skippedOther()).isZero();
         assertThat(r.errors()).isEmpty();
-        assertThat(consumerRepo.findByNormalizedEmail("gone@x.com")).isEmpty();
+        assertThat(consumerRepo.findByNormalizedEmail(a("gone"))).isEmpty();
     }
 
     @Test
     void dryRun_countsPlatformWideErasedAddressAsOther_withoutWriting() {
-        dsarService.recordErasure(null, "gone@x.com");
+        dsarService.recordErasure(null, a("gone"));
 
-        ImportResultResponse r = importService.importContacts(rows("gone@x.com"), true, principal);
+        ImportResultResponse r = importService.importContacts(rows(a("gone")), true, principal);
 
         assertThat(r.skippedOther()).isEqualTo(1);
         assertThat(r.skippedErased()).isZero();
         assertThat(r.errors()).isEmpty();
-        assertThat(consumerRepo.findByNormalizedEmail("gone@x.com")).isEmpty();
+        assertThat(consumerRepo.findByNormalizedEmail(a("gone"))).isEmpty();
         assertThat(consentRecordCount()).isZero();
     }
 
+    /** Consent rows of this test's org; a rebuilt profile would land here. */
     private long consentRecordCount() {
-        return countRows("consent_records");
-    }
-
-    private long countRows(String table) {
-        try (java.sql.Connection c = dataSource.getConnection();
-             java.sql.Statement s = c.createStatement();
-             java.sql.ResultSet rs = s.executeQuery("select count(*) from " + table)) {
-            rs.next();
-            return rs.getLong(1);
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    // ── wipe ───────────────────────────────────────────────────────────────────
-
-    private void wipe() {
-        try (java.sql.Connection c = dataSource.getConnection();
-             java.sql.Statement s = c.createStatement()) {
-            s.execute("delete from erased_addresses");
-            s.execute("delete from import_row_provenance");
-            s.execute("delete from audience_imports");
-            s.execute("delete from suppression_entries");
-            s.execute("delete from consent_records");
-            s.execute("delete from memberships");
-            s.execute("delete from consumers");
-        } catch (Exception e) {
-            throw new RuntimeException("wipe() failed: " + e.getMessage(), e);
-        }
+        return jdbc.queryForObject("select count(*) from consent_records c join memberships m "
+                + "on m.membership_id = c.membership_id where m.org_id = ?", Long.class, orgId);
     }
 }

@@ -11,20 +11,23 @@ import com.imin.iminapi.audienceplan.model.AudienceImport;
 import com.imin.iminapi.audienceplan.model.ImportRowProvenance;
 import com.imin.iminapi.audienceplan.repository.AudienceImportRepository;
 import com.imin.iminapi.audienceplan.repository.ImportRowProvenanceRepository;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.support.IminIntegrationTest;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
+import java.time.Clock;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -36,9 +39,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /** {@code GET /api/v1/audience/imports}: org-scoped import history without personal data. */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class AudienceImportHistoryTest {
 
     private static final String URL = "/api/v1/audience/imports";
@@ -52,13 +53,22 @@ class AudienceImportHistoryTest {
     @Autowired ImportRowProvenanceRepository provenanceRepo;
     @Autowired MembershipRepository memberships;
     @Autowired ConsumerRepository consumers;
+    @Autowired Clock clock;
+
+    /** Import times relative to the app clock; whole seconds survive the round trip unchanged. */
+    private Instant t0;
+
+    @BeforeEach
+    void setUp() {
+        t0 = clock.instant().truncatedTo(ChronoUnit.SECONDS).minus(30, ChronoUnit.DAYS);
+    }
 
     // ── role ────────────────────────────────────────────────────────────────
 
     @Test
     void owner_listsTheOrgsImports() throws Exception {
         UUID orgId = UUID.randomUUID();
-        seedHeader(orgId, Instant.parse("2026-09-01T10:00:00Z"));
+        seedHeader(orgId, t0);
 
         assertThat(list(principal(orgId, UserRole.OWNER))).hasSize(1);
     }
@@ -66,24 +76,21 @@ class AudienceImportHistoryTest {
     @Test
     void admin_listsTheOrgsImports() throws Exception {
         UUID orgId = UUID.randomUUID();
-        seedHeader(orgId, Instant.parse("2026-09-01T10:00:00Z"));
+        seedHeader(orgId, t0);
 
         assertThat(list(principal(orgId, UserRole.ADMIN))).hasSize(1);
     }
 
-    @Test
-    void member_gets403() throws Exception {
+    /** A MEMBER of the org and a door-scanner device are both refused. */
+    @ParameterizedTest
+    @ValueSource(strings = {"member", "gate"})
+    void nonManager_gets403(String who) throws Exception {
         UUID orgId = UUID.randomUUID();
-        seedHeader(orgId, Instant.parse("2026-09-01T10:00:00Z"));
+        seedHeader(orgId, t0);
+        AuthPrincipal p = who.equals("member") ? principal(orgId, UserRole.MEMBER)
+                : AuthPrincipal.forGate(UUID.randomUUID(), orgId);
 
-        mvc.perform(get(URL).with(auth(principal(orgId, UserRole.MEMBER))))
-                .andExpect(status().isForbidden());
-    }
-
-    @Test
-    void gateDevice_gets403() throws Exception {
-        AuthPrincipal gate = AuthPrincipal.forGate(UUID.randomUUID(), UUID.randomUUID());
-        mvc.perform(get(URL).with(auth(gate))).andExpect(status().isForbidden());
+        mvc.perform(get(URL).with(auth(p))).andExpect(status().isForbidden());
     }
 
     // ── scoping, order, limit ───────────────────────────────────────────────
@@ -91,8 +98,8 @@ class AudienceImportHistoryTest {
     @Test
     void anotherOrgsImport_isNeverListed() throws Exception {
         UUID orgId = UUID.randomUUID();
-        UUID mine = seedHeader(orgId, Instant.parse("2026-09-01T10:00:00Z"));
-        seedHeader(UUID.randomUUID(), Instant.parse("2026-09-02T10:00:00Z"));
+        UUID mine = seedHeader(orgId, t0);
+        seedHeader(UUID.randomUUID(), t0.plus(1, ChronoUnit.DAYS));
 
         JsonNode body = list(principal(orgId, UserRole.OWNER));
 
@@ -108,44 +115,25 @@ class AudienceImportHistoryTest {
     @Test
     void newestFirst() throws Exception {
         UUID orgId = UUID.randomUUID();
-        UUID older = seedHeader(orgId, Instant.parse("2026-08-01T10:00:00Z"));
-        UUID newer = seedHeader(orgId, Instant.parse("2026-09-01T10:00:00Z"));
+        UUID older = seedHeader(orgId, t0.minus(31, ChronoUnit.DAYS));
+        UUID newer = seedHeader(orgId, t0);
 
         JsonNode body = list(principal(orgId, UserRole.OWNER));
 
         assertThat(ids(body)).containsExactly(newer.toString(), older.toString());
     }
 
-    @Test
-    void limit_isHonoured() throws Exception {
+    @ParameterizedTest
+    @CsvSource({
+            "3,   ?limit=2,   2",
+            "2,   ?limit=0,   1",
+            "201, ?limit=500, 200",
+            "51,  '',         50"})
+    void limit_isHonouredAndClamped(int seeded, String query, int expected) throws Exception {
         UUID orgId = UUID.randomUUID();
-        seedHeaders(orgId, 3);
+        seedHeaders(orgId, seeded);
 
-        assertThat(list(principal(orgId, UserRole.OWNER), "?limit=2")).hasSize(2);
-    }
-
-    @Test
-    void limitBelowOne_isClampedToOne() throws Exception {
-        UUID orgId = UUID.randomUUID();
-        seedHeaders(orgId, 2);
-
-        assertThat(list(principal(orgId, UserRole.OWNER), "?limit=0")).hasSize(1);
-    }
-
-    @Test
-    void limitAboveMax_isClampedTo200() throws Exception {
-        UUID orgId = UUID.randomUUID();
-        seedHeaders(orgId, 201);
-
-        assertThat(list(principal(orgId, UserRole.OWNER), "?limit=500")).hasSize(200);
-    }
-
-    @Test
-    void noLimit_defaultsTo50() throws Exception {
-        UUID orgId = UUID.randomUUID();
-        seedHeaders(orgId, 51);
-
-        assertThat(list(principal(orgId, UserRole.OWNER))).hasSize(50);
+        assertThat(list(principal(orgId, UserRole.OWNER), query)).hasSize(expected);
     }
 
     // ── fields ──────────────────────────────────────────────────────────────
@@ -153,7 +141,7 @@ class AudienceImportHistoryTest {
     @Test
     void headerFields_areMapped_withHashesTruncatedTo12() throws Exception {
         UUID orgId = UUID.randomUUID();
-        AudienceImport h = header(orgId, Instant.parse("2026-09-01T10:00:00Z"));
+        AudienceImport h = header(orgId, t0);
         h.setOriginalFileSha256(SHA_A);
         h.setUploadedFileSha256(SHA_B);
         h.setSourcePlatform("shotgun");
@@ -176,13 +164,13 @@ class AudienceImportHistoryTest {
         assertThat(s.get("rowsExplicit").asInt()).isEqualTo(4);
         assertThat(s.get("rowsNoBasis").asInt()).isEqualTo(3);
         assertThat(s.get("rowsRejected").asInt()).isEqualTo(2);
-        assertThat(Instant.parse(s.get("createdAt").asText())).isEqualTo(Instant.parse("2026-09-01T10:00:00Z"));
+        assertThat(Instant.parse(s.get("createdAt").asText())).isEqualTo(t0);
     }
 
     @Test
     void missingHashes_areNull() throws Exception {
         UUID orgId = UUID.randomUUID();
-        seedHeader(orgId, Instant.parse("2026-09-01T10:00:00Z"));
+        seedHeader(orgId, t0);
 
         JsonNode s = list(principal(orgId, UserRole.OWNER)).get(0);
 
@@ -190,37 +178,24 @@ class AudienceImportHistoryTest {
         assertThat(s.get("uploadedFileHashPrefix").isNull()).isTrue();
     }
 
-    @Test
-    void proofRef_isReportedAsPresent_neverAsItsText() throws Exception {
+    /** The proof link is evidence the organizer keeps: the list says whether it exists, never what it is. */
+    @ParameterizedTest
+    @CsvSource(nullValues = "NULL", value = {
+            "https://drive.example/consent-export-secret, true",
+            "'  ',                                        false",
+            "NULL,                                        false"})
+    void proofRef_isReportedAsPresence_neverAsItsText(String proofRef, boolean present) throws Exception {
         UUID orgId = UUID.randomUUID();
-        AudienceImport h = header(orgId, Instant.parse("2026-09-01T10:00:00Z"));
-        h.setProofRef("https://drive.example/consent-export-secret");
+        AudienceImport h = header(orgId, t0);
+        h.setProofRef(proofRef);
         importRepo.save(h);
 
         String raw = rawList(principal(orgId, UserRole.OWNER), "");
         JsonNode s = json.readTree(raw).get(0);
 
-        assertThat(s.get("proofRefPresent").asBoolean()).isTrue();
+        assertThat(s.get("proofRefPresent").asBoolean()).isEqualTo(present);
         assertThat(s.has("proofRef")).isFalse();
-        assertThat(raw).doesNotContain("consent-export-secret");
-    }
-
-    @Test
-    void blankProofRef_isNotPresent() throws Exception {
-        UUID orgId = UUID.randomUUID();
-        AudienceImport h = header(orgId, Instant.parse("2026-09-01T10:00:00Z"));
-        h.setProofRef("  ");
-        importRepo.save(h);
-
-        assertThat(list(principal(orgId, UserRole.OWNER)).get(0).get("proofRefPresent").asBoolean()).isFalse();
-    }
-
-    @Test
-    void noProofRef_isNotPresent() throws Exception {
-        UUID orgId = UUID.randomUUID();
-        seedHeader(orgId, Instant.parse("2026-09-01T10:00:00Z"));
-
-        assertThat(list(principal(orgId, UserRole.OWNER)).get(0).get("proofRefPresent").asBoolean()).isFalse();
+        if (proofRef != null && !proofRef.isBlank()) assertThat(raw).doesNotContain("consent-export-secret");
     }
 
     @Test
@@ -266,7 +241,7 @@ class AudienceImportHistoryTest {
     @Test
     void notAcceptedRowWithoutReason_countsAsUnspecified() throws Exception {
         UUID orgId = UUID.randomUUID();
-        UUID importId = seedHeader(orgId, Instant.parse("2026-09-01T10:00:00Z"));
+        UUID importId = seedHeader(orgId, t0);
         seedProvenance(importId, seedMembership(orgId, email("noreason")), false, null);
 
         JsonNode p = list(principal(orgId, UserRole.OWNER)).get(0).get("provenance");
@@ -279,7 +254,7 @@ class AudienceImportHistoryTest {
     @Test
     void erasedPersonsProvenance_isNoLongerCounted() throws Exception {
         UUID orgId = UUID.randomUUID();
-        UUID importId = seedHeader(orgId, Instant.parse("2026-09-01T10:00:00Z"));
+        UUID importId = seedHeader(orgId, t0);
         UUID kept = seedMembership(orgId, email("kept"));
         UUID erased = seedMembership(orgId, email("erased"));
         seedProvenance(importId, kept, true, null);
@@ -295,7 +270,7 @@ class AudienceImportHistoryTest {
     @Test
     void importWithoutProvenanceRows_hasZeroCountsAndNoReasons() throws Exception {
         UUID orgId = UUID.randomUUID();
-        seedHeader(orgId, Instant.parse("2026-09-01T10:00:00Z"));
+        seedHeader(orgId, t0);
 
         JsonNode p = list(principal(orgId, UserRole.OWNER)).get(0).get("provenance");
 
@@ -307,8 +282,8 @@ class AudienceImportHistoryTest {
     @Test
     void provenanceOfOneImport_doesNotLeakIntoAnother() throws Exception {
         UUID orgId = UUID.randomUUID();
-        UUID first = seedHeader(orgId, Instant.parse("2026-08-01T10:00:00Z"));
-        UUID second = seedHeader(orgId, Instant.parse("2026-09-01T10:00:00Z"));
+        UUID first = seedHeader(orgId, t0.minus(31, ChronoUnit.DAYS));
+        UUID second = seedHeader(orgId, t0);
         seedProvenance(first, seedMembership(orgId, email("first")), true, null);
 
         JsonNode body = list(principal(orgId, UserRole.OWNER));
@@ -357,7 +332,7 @@ class AudienceImportHistoryTest {
     }
 
     private void seedHeaders(UUID orgId, int n) {
-        Instant base = Instant.parse("2026-01-01T00:00:00Z");
+        Instant base = t0.minus(1, ChronoUnit.DAYS);
         for (int i = 0; i < n; i++) seedHeader(orgId, base.plusSeconds(i * 60L));
     }
 

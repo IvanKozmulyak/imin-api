@@ -5,6 +5,8 @@ import com.imin.iminapi.audience.service.CsvContactParser.RawContact;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -153,28 +155,12 @@ class CsvContactParserTest {
                 });
     }
 
-    @Test
-    void id_number_column_is_rejected_by_name() {
-        assertForbidden("National ID");
-        assertForbidden("passport_number");
-    }
-
-    @Test
-    void payment_column_is_rejected_by_name() {
-        assertForbidden("IBAN");
-        assertForbidden("Card Number");
-    }
-
-    @Test
-    void ip_column_is_rejected_by_name() {
-        assertForbidden("IP Address");
-        assertForbidden("ip");
-    }
-
-    @Test
-    void health_column_is_rejected_by_name() {
-        assertForbidden("health_notes");
-        assertForbidden("Allergies");
+    /** ID numbers, payment data, IP addresses and health data are refused by column name. */
+    @ParameterizedTest
+    @ValueSource(strings = {"National ID", "passport_number", "IBAN", "Card Number", "IP Address", "ip",
+            "health_notes", "Allergies"})
+    void sensitive_column_is_rejected_by_name(String header) {
+        assertForbidden(header);
     }
 
     @Test

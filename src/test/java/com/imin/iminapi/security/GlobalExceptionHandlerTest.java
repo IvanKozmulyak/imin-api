@@ -119,4 +119,30 @@ class GlobalExceptionHandlerTest {
                 .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
                 .andExpect(jsonPath("$.error.fields.file").exists());
     }
+
+    /** A DB constraint is a client problem: a unique clash anywhere in the cause chain is 409, anything else 400. */
+    @org.junit.jupiter.params.ParameterizedTest(name = "{0}")
+    @org.junit.jupiter.params.provider.CsvSource({
+            "unique violation as direct cause,  23505, 1, 409, DUPLICATE,     This conflicts with an existing record",
+            "unique violation deeper in chain,  23505, 2, 409, DUPLICATE,     This conflicts with an existing record",
+            "not-null violation,                23502, 1, 400, FIELD_INVALID, Request violates a data constraint",
+            "cause without a SQLException,      ,      0, 400, FIELD_INVALID, Request violates a data constraint",
+            "no cause at all,                   ,     -1, 400, FIELD_INVALID, Request violates a data constraint"})
+    void dataIntegrityViolation_mapsUniqueClashTo409_andOtherConstraintsTo400(
+            String name, String sqlState, int depth, int status, String code, String message) {
+        Throwable cause = depth < 0 ? null : new RuntimeException("not sql");
+        if (depth > 0) {
+            cause = new java.sql.SQLException("constraint", sqlState);
+            for (int i = 1; i < depth; i++) cause = new RuntimeException("wrapper", cause);
+        }
+        org.springframework.dao.DataIntegrityViolationException ex = cause == null
+                ? new org.springframework.dao.DataIntegrityViolationException("violation")
+                : new org.springframework.dao.DataIntegrityViolationException("violation", cause);
+
+        org.springframework.http.ResponseEntity<ApiError> r = new GlobalExceptionHandler().handleDataIntegrity(ex);
+
+        org.assertj.core.api.Assertions.assertThat(r.getStatusCode().value()).isEqualTo(status);
+        org.assertj.core.api.Assertions.assertThat(r.getBody().error().code()).isEqualTo(code);
+        org.assertj.core.api.Assertions.assertThat(r.getBody().error().message()).isEqualTo(message);
+    }
 }

@@ -2,22 +2,6 @@
 # This list only shrinks.
 com.imin.iminapi.IminApiApplicationTests
 com.imin.iminapi.app.AppConfigControllerTest
-com.imin.iminapi.audience.AiSegmentControllerWebTest
-com.imin.iminapi.audience.AudienceComputeIngestionTest
-com.imin.iminapi.audience.AudienceControllerWebTest
-com.imin.iminapi.audience.AudienceImportControllerWebTest
-com.imin.iminapi.audience.AudienceImportHistoryTest
-com.imin.iminapi.audience.AudienceImportServiceTest
-com.imin.iminapi.audience.AudienceMemberSearchTest
-com.imin.iminapi.audience.AudienceMetricsTest
-com.imin.iminapi.audience.AudienceOrderProjectorPhoneTest
-com.imin.iminapi.audience.AudiencePersistenceTest
-com.imin.iminapi.audience.AudiencePostgresTest
-com.imin.iminapi.audience.AudienceSegmentCreateWebTest
-com.imin.iminapi.audience.AudienceSegmentTest
-com.imin.iminapi.audience.SegmentRuleGrammarPostgresTest
-com.imin.iminapi.audience.SegmentRuleGrammarTest
-com.imin.iminapi.audience.SmsPhoneCollectionSchemaTest
 com.imin.iminapi.audienceplan.controller.AudiencePlanControllerPostgresTest
 com.imin.iminapi.audienceplan.controller.AudiencePlanControllerScenarios
 com.imin.iminapi.audienceplan.controller.AudiencePlanControllerWebTest

@@ -1,301 +1,170 @@
 package com.imin.iminapi.audience;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.imin.iminapi.audience.dto.*;
+import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.model.Segment;
+import com.imin.iminapi.audience.model.SuppressionEntry;
+import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
-import com.imin.iminapi.audience.service.*;
-import com.imin.iminapi.config.TestRateLimitConfig;
-import com.imin.iminapi.model.UserRole;
-import com.imin.iminapi.security.ApiException;
+import com.imin.iminapi.audience.repository.SegmentRepository;
+import com.imin.iminapi.audience.service.AudienceOrderProjector;
+import com.imin.iminapi.audience.service.ConsentOrigin;
+import com.imin.iminapi.audience.service.ConsentService;
+import com.imin.iminapi.audience.service.PrebuiltSegment;
+import com.imin.iminapi.audience.service.SegmentService;
+import com.imin.iminapi.audience.service.SuppressionService;
+import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.service.audit.AuditActions;
-import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.support.AuditRows;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.security.test.context.support.WithSecurityContext;
-import org.springframework.security.test.context.support.WithSecurityContextFactory;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.RequestBuilder;
+import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.hasKey;
+import static org.hamcrest.Matchers.nullValue;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * Web layer (MockMvc) tests for AudienceController.
- *
- * <p>Covers:
- * <ul>
- *   <li>Happy-path GET /members and POST /handoff</li>
- *   <li>Cross-org isolation: org A GET /members/{B id} → 404 not 403</li>
- *   <li>Tampered orgId in request body is ignored (orgId always from auth context)</li>
- *   <li>M4 architecture assertion: MembershipRepository does not expose unscoped finders</li>
- *   <li>Audit ArgumentCaptor per governance mutation (consent capture, unsubscribe, handoff,
- *       segment create/delete, DSAR mutations)</li>
- *   <li>Unauthenticated requests → 401/403 (not 200)</li>
- * </ul>
+ * AudienceController over the real services: no-leak 404 across orgs, the principal's org over the body,
+ * a member payload without tracking fields, and the CSV exports; service rules live in their own classes.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class AudienceControllerWebTest {
 
+    private static final String CSV_HEADER = "\"name\",\"email\",\"city\",\"lifecycle\",\"events\",\"attended\","
+            + "\"noShow\",\"orders\",\"spend\",\"recencyDays\",\"subscriptionStatus\","
+            + "\"lawfulBasis\",\"firstTouchSource\",\"tags\",\"nps\"";
+
     @Autowired MockMvc mvc;
+    @Autowired IminFixtures fx;
+    @Autowired AuditRows audit;
+    @Autowired JdbcTemplate jdbc;
+    @Autowired AudienceOrderProjector orderProjector;
+    @Autowired ConsumerRepository consumers;
+    @Autowired MembershipRepository memberships;
+    @Autowired SegmentRepository segments;
+    @Autowired SegmentService segmentService;
+    @Autowired ConsentService consentService;
+    @Autowired SuppressionService suppressionService;
     final ObjectMapper om = new ObjectMapper();
 
-    // Mock the service layer — this is a pure web-layer test
-    @MockitoBean AudienceService audienceService;
-    @MockitoBean AudienceMetricsService metricsService;
-    @MockitoBean ConsentService consentService;
-    @MockitoBean SegmentService segmentService;
-    @MockitoBean SendGateService sendGateService;
-    @MockitoBean DsarService dsarService;
-    @MockitoBean AuditLogger auditLogger;
+    private UUID orgA;
+    private UUID orgB;
+    private AuthPrincipal principalA;
+    private AuthPrincipal principalB;
 
-    static final UUID ORG_A = UUID.fromString("aaaaaaaa-0000-0000-0000-000000000001");
-    static final UUID ORG_B = UUID.fromString("bbbbbbbb-0000-0000-0000-000000000002");
-    static final UUID USER_A = UUID.fromString("aaaaaaaa-0000-0000-0000-000000000010");
-    static final UUID MEMBER_A = UUID.fromString("aaaaaaaa-0000-0000-0000-000000000100");
-    static final UUID MEMBER_B = UUID.fromString("bbbbbbbb-0000-0000-0000-000000000100");
+    @BeforeEach
+    void setUp() {
+        Organization a = fx.org();
+        Organization b = fx.org();
+        orgA = a.getId();
+        orgB = b.getId();
+        principalA = fx.principal(fx.owner(a));
+        principalB = fx.principal(fx.owner(b));
+    }
 
-    // ── Auth factory ──────────────────────────────────────────────────────────
-
-    @Retention(RetentionPolicy.RUNTIME)
-    @WithSecurityContext(factory = StubFactory.class)
-    public @interface WithOrgA {}
-
-    public static class StubFactory implements WithSecurityContextFactory<WithOrgA> {
-        @Override
-        public org.springframework.security.core.context.SecurityContext createSecurityContext(WithOrgA ann) {
-            AuthPrincipal p = new AuthPrincipal(USER_A, ORG_A, UserRole.OWNER, UUID.randomUUID());
-            var auth = new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
-                    p, null, List.of(new SimpleGrantedAuthority("ROLE_OWNER")));
-            var ctx = org.springframework.security.core.context.SecurityContextHolder.createEmptyContext();
-            ctx.setAuthentication(auth);
-            return ctx;
+    /** Own memberships (consent rows cascade), own segments, then own orgs. */
+    @AfterEach
+    void tearDown() {
+        try {
+            jdbc.update("delete from memberships where org_id in (?, ?)", orgA, orgB);
+            jdbc.update("delete from segments where org_id in (?, ?)", orgA, orgB);
+        } finally {
+            OrgRows.delete(jdbc, List.of(orgA, orgB));
         }
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────────────
+    // ── Cross-org isolation: 404, never 403, and nothing done ────────────────
 
-    private MemberDto stubMember(UUID membershipId) {
-        return new MemberDto(
-                membershipId.toString(), "Test User", "test@example.com",
-                "Berlin", List.of("techno"), 3, 2, 0, 3,
-                9000L, 3000L,
-                Instant.parse("2025-01-01T00:00:00Z"),
-                Instant.parse("2025-06-01T00:00:00Z"),
-                Instant.parse("2025-06-01T00:00:00Z"),
-                14, "organic",
-                "explicit", "subscribed", null,
-                null, null, null,
-                List.of("vip"), "", "repeat",
-                new MemberDto.RfmInfo(4, 3, 5),
-                null, null, null, null, null
-        );
-    }
+    /** Org A naming org B's member or segment gets the no-leak 404; nothing is handed off or deleted. */
+    @ParameterizedTest
+    @ValueSource(strings = {"member", "consent-history", "dsar-access", "segment-handoff", "segment-csv",
+            "segment-delete"})
+    void cross_org_resource_returns_404_not_found(String route) throws Exception {
+        UUID memberB = subscribed(orgB, fx.email("b"), "B", principalB);
+        UUID segmentB = segmentService.createSegment(orgB, "B list", "dynamic", null, principalB).getId();
 
-    // ── GET /members — happy path ─────────────────────────────────────────────
+        // No Accept: text/csv on the CSV route: the error body is JSON, a CSV accept would turn 404 into 406.
+        RequestBuilder req = switch (route) {
+            case "member" -> get("/api/v1/audience/members/" + memberB).with(auth(principalA));
+            case "consent-history" -> get("/api/v1/audience/members/" + memberB + "/consent-history").with(auth(principalA));
+            case "dsar-access" -> post("/api/v1/audience/members/" + memberB + "/access").with(auth(principalA));
+            case "segment-handoff" -> post("/api/v1/audience/segments/" + segmentB + "/handoff").with(auth(principalA));
+            case "segment-csv" -> get("/api/v1/audience/segments/" + segmentB + "/snapshot").with(auth(principalA));
+            case "segment-delete" -> delete("/api/v1/audience/segments/" + segmentB).with(auth(principalA));
+            default -> throw new IllegalArgumentException(route);
+        };
 
-    @Test
-    @WithOrgA
-    void get_members_returns_200_with_items() throws Exception {
-        MemberDto dto = stubMember(MEMBER_A);
-        when(audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(null, 50, null, null, null, null, null, null)))
-                .thenReturn(new MemberPage(List.of(dto), null));
-
-        mvc.perform(get("/api/v1/audience/members"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.items[0].membershipId").value(MEMBER_A.toString()))
-                .andExpect(jsonPath("$.items[0].name").value("Test User"))
-                .andExpect(jsonPath("$.items[0].lifecycle").value("repeat"))
-                .andExpect(jsonPath("$.nextCursor").doesNotExist());
-    }
-
-    @Test
-    @WithOrgA
-    void get_members_with_cursor_passes_cursor_to_service() throws Exception {
-        when(audienceService.listMembers(eq(ORG_A), any())).thenReturn(new MemberPage(List.of(), null));
-
-        mvc.perform(get("/api/v1/audience/members?cursor=someCursor&limit=20&lifecycle=vip"))
-                .andExpect(status().isOk());
-
-        verify(audienceService).listMembers(ORG_A, new AudienceService.MemberListRequest("someCursor", 20, "vip", null, null, null, null, null));
-    }
-
-    @Test
-    @WithOrgA
-    void get_members_passes_sort_and_plan_filters_to_service() throws Exception {
-        when(audienceService.listMembers(eq(ORG_A), any())).thenReturn(new MemberPage(List.of(), null));
-
-        mvc.perform(get("/api/v1/audience/members")
-                        .param("sort", "spend_minor").param("guestClass", "loyal")
-                        .param("genre", "house & techno").param("mailable", "true").param("search", "ann"))
-                .andExpect(status().isOk());
-
-        verify(audienceService).listMembers(ORG_A,
-                new AudienceService.MemberListRequest(null, 50, null, "ann", "spend_minor", "loyal", "house & techno", true));
-    }
-
-    @Test
-    @WithOrgA
-    void get_members_with_next_cursor_included_in_response() throws Exception {
-        MemberDto dto = stubMember(MEMBER_A);
-        when(audienceService.listMembers(any(), any()))
-                .thenReturn(new MemberPage(List.of(dto), "nextCursorToken"));
-
-        mvc.perform(get("/api/v1/audience/members"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.nextCursor").value("nextCursorToken"));
-    }
-
-    // ── GET /members/{id} — happy path and cross-org isolation ────────────────
-
-    @Test
-    @WithOrgA
-    void get_member_by_id_returns_200() throws Exception {
-        MemberDto dto = stubMember(MEMBER_A);
-        when(audienceService.getMember(ORG_A, MEMBER_A)).thenReturn(dto);
-
-        mvc.perform(get("/api/v1/audience/members/" + MEMBER_A))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.membershipId").value(MEMBER_A.toString()))
-                .andExpect(jsonPath("$.email").value("test@example.com"))
-                .andExpect(jsonPath("$.rfm.r").value(4));
-    }
-
-    @Test
-    @WithOrgA
-    void get_member_serializes_class_taste_and_sends() throws Exception {
-        MemberDto dto = stubMember(MEMBER_A).withPlanFields(AudienceMemberClass.FIRST_TIMER,
-                Map.of("house & techno", 1.0), 2);
-        when(audienceService.getMember(ORG_A, MEMBER_A)).thenReturn(dto);
-
-        mvc.perform(get("/api/v1/audience/members/" + MEMBER_A))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.guestClass").value("first_timer"))
-                .andExpect(jsonPath("$['taste']['house & techno']").value(1.0))
-                .andExpect(jsonPath("$.sends30d").value(2));
-    }
-
-    @Test
-    @WithOrgA
-    void member_json_has_no_open_or_click_fields() throws Exception {
-        when(audienceService.getMember(ORG_A, MEMBER_A)).thenReturn(stubMember(MEMBER_A));
-        when(audienceService.listMembers(eq(ORG_A), any()))
-                .thenReturn(new MemberPage(List.of(stubMember(MEMBER_A)), null));
-
-        for (var req : List.of(get("/api/v1/audience/members/" + MEMBER_A),
-                post("/api/v1/audience/members/" + MEMBER_A + "/export"))) {
-            String body = mvc.perform(req).andExpect(status().isOk())
-                    .andReturn().getResponse().getContentAsString();
-            assertThat(body).contains("\"membershipId\"").doesNotContain("lastEmailOpenAt")
-                    .doesNotContain("lastEmailClickAt");
-        }
-        String list = mvc.perform(get("/api/v1/audience/members")).andExpect(status().isOk())
-                .andReturn().getResponse().getContentAsString();
-        assertThat(list).contains("\"membershipId\"").doesNotContain("lastEmailOpenAt")
-                .doesNotContain("lastEmailClickAt");
-    }
-
-    @Test
-    void openapi_drops_open_and_click_from_MemberDto_and_publishes_EmailEngagementRecord() throws Exception {
-        String docs = mvc.perform(get("/v3/api-docs"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.components.schemas.MemberDto.properties.membershipId").exists())
-                .andExpect(jsonPath("$.components.schemas.MemberDto.properties.lastEmailOpenAt").doesNotExist())
-                .andExpect(jsonPath("$.components.schemas.MemberDto.properties.lastEmailClickAt").doesNotExist())
-                .andExpect(jsonPath("$.components.schemas.EmailEngagementRecord.properties.lastOpenedAt").exists())
-                .andExpect(jsonPath("$.components.schemas.EmailEngagementRecord.properties.lastClickedAt").exists())
-                .andReturn().getResponse().getContentAsString();
-
-        assertThat(docs).doesNotContain("lastEmailOpenAt").doesNotContain("lastEmailClickAt");
-    }
-
-    @Test
-    void openapi_publishes_the_AudienceMemberClass_marker() throws Exception {
-        String docs = mvc.perform(get("/v3/api-docs"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.components.schemas.AudienceMemberClass.enum").value(org.hamcrest.Matchers.contains(
-                        "loyal", "repeat", "first_timer", "lapsing", "dormant", "imported", "none")))
-                .andReturn().getResponse().getContentAsString();
-
-        assertThat(docs).contains("\"AudienceMemberClass\"").contains("\"first_timer\"")
-                .contains("\"legacyNotMailable\"").contains("\"showedUpPct\"");
-    }
-
-    @Test
-    void openapi_publishes_the_SegmentRuleGroup_marker_and_the_preview_endpoint() throws Exception {
-        mvc.perform(get("/v3/api-docs"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.components.schemas.SegmentRuleGroup.properties.combinator.enum")
-                        .value(org.hamcrest.Matchers.contains("and", "or", "not")))
-                .andExpect(jsonPath("$.components.schemas.SegmentRuleGroup.properties.rules").exists())
-                .andExpect(jsonPath("$.components.schemas.SegmentResolveDto.properties.exclusions").exists())
-                .andExpect(jsonPath("$.components.schemas.SegmentDto.properties.ruleGroups").exists())
-                .andExpect(jsonPath("$.paths['/api/v1/audience/segments/preview'].post").exists());
-    }
-
-    /**
-     * Cross-org isolation: org A accessing org B's member ID must get 404, NOT 403.
-     * The service throws ApiException.notFound which maps to HTTP 404.
-     * The 404 body must NOT reveal the existence of the resource.
-     */
-    @Test
-    @WithOrgA
-    void get_member_cross_org_returns_404_not_403() throws Exception {
-        // Service throws notFound (404) when the membership doesn't belong to the org
-        when(audienceService.getMember(ORG_A, MEMBER_B))
-                .thenThrow(ApiException.notFound("Membership"));
-
-        mvc.perform(get("/api/v1/audience/members/" + MEMBER_B))
+        mvc.perform(req)
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
+
+        assertThat(audit.forOrg(orgA)).as("nothing audited for org A").isEmpty();
+        assertThat(segments.findByIdAndOrgId(segmentB, orgB)).as("org B's segment survives").isPresent();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"members", "handoff"})
+    void unauthenticated_request_is_blocked(String route) throws Exception {
+        RequestBuilder req = route.equals("members")
+                ? get("/api/v1/audience/members")
+                : post("/api/v1/audience/handoff").contentType(MediaType.APPLICATION_JSON).content("{}");
+
+        mvc.perform(req).andExpect(status().is4xxClientError());
     }
 
     /**
-     * The orgId must NEVER come from the request body — it always comes from the
-     * auth context (SPINE INVARIANT 1). This test verifies that injecting an orgId
-     * in the body is silently ignored: the service sees ORG_A from the principal.
+     * The orgId must NEVER come from the request body — it always comes from the auth context
+     * (SPINE INVARIANT 1). A body naming org B and org B's member hands off only org A's own member.
      */
     @Test
-    @WithOrgA
-    void tampered_orgId_in_body_is_ignored_for_handoff() throws Exception {
-        // Body contains ORG_B trying to tamper — service must still be called with ORG_A
-        UUID tamperOrgId = ORG_B;
-        List<UUID> memberIds = List.of(MEMBER_A);
+    void tampered_body_cannot_hand_off_another_orgs_member() throws Exception {
+        UUID memberA = subscribed(orgA, fx.email("a"), "A", principalA);
+        UUID memberB = subscribed(orgB, fx.email("b"), "B", principalB);
 
-        when(sendGateService.handoff(eq(ORG_A), any(), any()))
-                .thenReturn(new HandoffResponse(1, List.of(MEMBER_A.toString()), List.of(), "/campaigns"));
-
-        // Post with membershipIds — the orgId is from auth, not from body
-        String body = om.writeValueAsString(Map.of("membershipIds", List.of(MEMBER_A.toString())));
-        mvc.perform(post("/api/v1/audience/handoff")
+        String body = om.writeValueAsString(Map.of(
+                "orgId", orgB.toString(),
+                "membershipIds", List.of(memberA.toString(), memberB.toString())));
+        String response = mvc.perform(post("/api/v1/audience/handoff").with(auth(principalA))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.recipientCount").value(1));
+                .andExpect(jsonPath("$.recipientCount").value(1))
+                .andExpect(jsonPath("$.selectedMembershipIds.length()").value(1))
+                .andExpect(jsonPath("$.selectedMembershipIds[0]").value(memberA.toString()))
+                .andReturn().getResponse().getContentAsString();
 
-        // Verify service was called with ORG_A (from principal), never ORG_B
-        verify(sendGateService).handoff(eq(ORG_A), anyList(), any());
-        verify(sendGateService, never()).handoff(eq(tamperOrgId), anyList(), any());
+        assertThat(response).doesNotContain(memberB.toString());
+        audit.assertRecorded(orgA, AuditActions.AUDIENCE_HANDOFF, "membership", null);
+        assertThat(audit.forOrg(orgB)).as("no handoff on org B's trail")
+                .noneMatch(r -> AuditActions.AUDIENCE_HANDOFF.equals(r.getAction()));
     }
 
     // ── POST /members/bulk-action — must not fake success ─────────────────────
@@ -306,474 +175,313 @@ class AudienceControllerWebTest {
      * marketing" plus a navigate — three organizer actions reporting success over a no-op.
      */
     @Test
-    @WithOrgA
     void bulk_action_reports_that_it_is_not_implemented() throws Exception {
         String body = om.writeValueAsString(Map.of(
                 "action", "tag",
-                "membershipIds", List.of(MEMBER_A.toString()),
+                "membershipIds", List.of(UUID.randomUUID().toString()),
                 "tag", "vip"));
 
-        mvc.perform(post("/api/v1/audience/members/bulk-action")
+        mvc.perform(post("/api/v1/audience/members/bulk-action").with(auth(principalA))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isNotImplemented())
                 .andExpect(jsonPath("$.error.code").value("INVALID_STATE"));
     }
 
-    // ── POST /handoff — happy path ────────────────────────────────────────────
+    // ── Member payload ────────────────────────────────────────────────────────
 
+    /** Member detail, DSAR export and list carry no open/click fields; the list has no consent table. */
     @Test
-    @WithOrgA
-    void post_handoff_returns_recipient_count_and_campaign_url() throws Exception {
-        UUID mid1 = UUID.randomUUID();
-        UUID mid2 = UUID.randomUUID();
+    void member_json_has_no_open_or_click_fields_and_the_list_no_consent_history() throws Exception {
+        UUID member = subscribed(orgA, fx.email("m"), "Member", principalA);
 
-        when(sendGateService.handoff(eq(ORG_A), anyList(), any()))
-                .thenReturn(new HandoffResponse(
-                        2,
-                        List.of(mid1.toString(), mid2.toString()),
-                        List.of(),
-                        "/campaigns"
-                ));
-
-        String body = om.writeValueAsString(Map.of(
-                "membershipIds", List.of(mid1.toString(), mid2.toString())
-        ));
-
-        mvc.perform(post("/api/v1/audience/handoff")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
+        for (var req : List.of(get("/api/v1/audience/members/" + member),
+                post("/api/v1/audience/members/" + member + "/export"))) {
+            String body = mvc.perform(req.with(auth(principalA))).andExpect(status().isOk())
+                    .andReturn().getResponse().getContentAsString();
+            assertThat(body).contains("\"membershipId\"").doesNotContain("lastEmailOpenAt")
+                    .doesNotContain("lastEmailClickAt");
+        }
+        String list = mvc.perform(get("/api/v1/audience/members").with(auth(principalA)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.recipientCount").value(2))
-                .andExpect(jsonPath("$.selectedMembershipIds.length()").value(2))
-                .andExpect(jsonPath("$.campaignHubUrl").value("/campaigns"));
-    }
-
-    @Test
-    @WithOrgA
-    void post_handoff_with_exclusions_shows_excluded_reasons() throws Exception {
-        UUID sendable = UUID.randomUUID();
-        UUID excluded = UUID.randomUUID();
-
-        when(sendGateService.handoff(eq(ORG_A), anyList(), any()))
-                .thenReturn(new HandoffResponse(
-                        1,
-                        List.of(sendable.toString()),
-                        List.of(new ExclusionReason(excluded, "no_lawful_basis")),
-                        "/campaigns"
-                ));
-
-        String body = om.writeValueAsString(Map.of(
-                "membershipIds", List.of(sendable.toString(), excluded.toString())
-        ));
-
-        mvc.perform(post("/api/v1/audience/handoff")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.recipientCount").value(1))
-                .andExpect(jsonPath("$.excludedReasons[0].reason").value("no_lawful_basis"));
+                .andExpect(jsonPath("$.items[0].membershipId").value(member.toString()))
+                .andExpect(jsonPath("$.items[0].consentHistory").doesNotExist())
+                .andReturn().getResponse().getContentAsString();
+        assertThat(list).doesNotContain("lastEmailOpenAt").doesNotContain("lastEmailClickAt");
     }
 
     // ── GET /metrics ──────────────────────────────────────────────────────────
 
+    /** Nothing sent yet: both rates are present as null, never a fabricated 0. */
     @Test
-    @WithOrgA
-    void get_metrics_returns_200() throws Exception {
-        when(metricsService.compute(ORG_A))
-                .thenReturn(AudienceMetricsDto.base(
-                        100L, 80L, 20L, 60L, 60.0,
-                        List.of(5, 8, 10, 12, 15, 18, 20, 22),
-                        75.0, 50L, 10L, 5.0, 0.1
-                ));
-
-        mvc.perform(get("/api/v1/audience/metrics"))
+    void metrics_of_an_org_with_no_sends_serialize_null_rates() throws Exception {
+        mvc.perform(get("/api/v1/audience/metrics").with(auth(principalA)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.totalMembers").value(100))
-                .andExpect(jsonPath("$.buyers").value(80))
-                .andExpect(jsonPath("$.prospects").value(20))
-                .andExpect(jsonPath("$.listGrowth8w.length()").value(8));
+                .andExpect(jsonPath("$", hasKey("unsubRatePct")))
+                .andExpect(jsonPath("$.unsubRatePct").value(nullValue()))
+                .andExpect(jsonPath("$", hasKey("complaintRatePct")))
+                .andExpect(jsonPath("$.complaintRatePct").value(nullValue()));
     }
 
-    @Test
-    @WithOrgA
-    void get_metrics_serializes_a_null_complaint_rate_as_null() throws Exception {
-        when(metricsService.compute(ORG_A)).thenReturn(AudienceMetricsDto.base(
-                1L, 0L, 1L, 0L, 0.0, List.of(0, 0, 0, 0, 0, 0, 0, 1), 0.0, 0L, 0L, 7.03125, null));
-
-        mvc.perform(get("/api/v1/audience/metrics"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.unsubRatePct").value(7.03125))
-                .andExpect(jsonPath("$.complaintRatePct").value(org.hamcrest.Matchers.nullValue()));
-    }
+    // ── Consent trail ─────────────────────────────────────────────────────────
 
     @Test
-    @WithOrgA
-    void get_metrics_serializes_a_null_unsub_rate_as_null() throws Exception {
-        when(metricsService.compute(ORG_A)).thenReturn(AudienceMetricsDto.base(
-                1L, 0L, 1L, 0L, 0.0, List.of(0, 0, 0, 0, 0, 0, 0, 1), 0.0, 0L, 0L, null, null));
+    void consent_history_and_dsar_export_carry_the_consent_trail() throws Exception {
+        UUID member = member(orgA, fx.email("trail"), "Trail");
+        consentService.capture(orgA, member, "explicit", "signup-form", "Ticked the box at signup", principalA);
+        consentService.unsubscribe(orgA, member, "unsubscribe-link", ConsentOrigin.OPERATOR, principalA);
 
-        mvc.perform(get("/api/v1/audience/metrics"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$", org.hamcrest.Matchers.hasKey("unsubRatePct")))
-                .andExpect(jsonPath("$.unsubRatePct").value(org.hamcrest.Matchers.nullValue()));
-    }
-
-    @Test
-    @WithOrgA
-    void get_metrics_serializes_the_read_model_fields() throws Exception {
-        when(metricsService.compute(ORG_A)).thenReturn(new AudienceMetricsDto(
-                10L, 6L, 4L, 5L, 50.0, List.of(0, 0, 0, 0, 0, 0, 0, 1), 20.0, 5L, 0L, 0.0, 0.0,
-                3L, RateRange.of(1, 2), RateRange.of(2, 3), 4, 3,
-                Map.of("explicit", 4, "soft_opt_in", 0), Map.of("legacy_unproven", 3),
-                Map.of("loyal", 1L), Map.of("pop", 1.0), 1L));
-
-        mvc.perform(get("/api/v1/audience/metrics"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.newLast30Days").value(3))
-                .andExpect(jsonPath("$.showedUpPct.mid").value(50.0))
-                .andExpect(jsonPath("$.showedUpPct.n").value(2))
-                .andExpect(jsonPath("$.cameBackPct.n").value(3))
-                .andExpect(jsonPath("$.mailable").value(4))
-                .andExpect(jsonPath("$.legacyNotMailable").value(3))
-                .andExpect(jsonPath("$.mailableByBasis.explicit").value(4))
-                .andExpect(jsonPath("$.exclusions.legacy_unproven").value(3))
-                .andExpect(jsonPath("$.classCounts.loyal").value(1))
-                .andExpect(jsonPath("$.tasteShares.pop").value(1.0))
-                .andExpect(jsonPath("$.tasteMembers").value(1));
-    }
-
-    // ── POST /consent/capture — audit ArgumentCaptor ──────────────────────────
-
-    @Test
-    @WithOrgA
-    void post_consent_capture_calls_service_and_returns_200() throws Exception {
-        String body = om.writeValueAsString(Map.of(
-                "membershipId", MEMBER_A.toString(),
-                "basis", "explicit",
-                "source", "signup-form",
-                "proofText", "checkbox checked"
-        ));
-
-        mvc.perform(post("/api/v1/audience/consent/capture")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
-                .andExpect(status().isOk());
-
-        verify(consentService).capture(
-                eq(ORG_A), eq(MEMBER_A), eq("explicit"),
-                eq("signup-form"), eq("checkbox checked"), eq("email"), any());
-    }
-
-    @Test
-    @WithOrgA
-    void post_consent_unsubscribe_calls_service_and_returns_200() throws Exception {
-        String body = om.writeValueAsString(Map.of(
-                "membershipId", MEMBER_A.toString(),
-                "source", "unsubscribe-link"
-        ));
-
-        mvc.perform(post("/api/v1/audience/consent/unsubscribe")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
-                .andExpect(status().isOk());
-
-        // OPERATOR, not DATA_SUBJECT (§16): this is the organizer's own list-tidying
-        // endpoint and `source` is arbitrary request-body text. The origin is chosen by
-        // the endpoint, so no `source` an organizer can POST writes a sticky
-        // marketing_optouts row that would bar the buyer from ever opting back in.
-        verify(consentService).unsubscribe(eq(ORG_A), eq(MEMBER_A), eq("unsubscribe-link"), eq("email"),
-                eq(ConsentOrigin.OPERATOR), any());
-    }
-
-    // ── DSAR endpoints — correct status codes ────────────────────────────────
-
-    @Test
-    @WithOrgA
-    void post_dsar_access_returns_member_dto() throws Exception {
-        MemberDto dto = stubMember(MEMBER_A);
-        when(dsarService.access(eq(ORG_A), eq(MEMBER_A), any())).thenReturn(null /* not used directly */);
-        when(audienceService.getMember(eq(ORG_A), eq(MEMBER_A))).thenReturn(dto);
-
-        mvc.perform(post("/api/v1/audience/members/" + MEMBER_A + "/access"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.membershipId").value(MEMBER_A.toString()));
-    }
-
-    @Test
-    @WithOrgA
-    void post_dsar_export_carries_the_consent_trail() throws Exception {
-        when(dsarService.export(eq(ORG_A), eq(MEMBER_A), any())).thenReturn(null);
-        when(audienceService.getMember(eq(ORG_A), eq(MEMBER_A))).thenReturn(stubMember(MEMBER_A));
-        when(dsarService.consentHistory(eq(ORG_A), eq(MEMBER_A))).thenReturn(List.of(
-                new ConsentHistoryEntry(Instant.parse("2025-02-01T10:00:00Z"), "email", true,
-                        "soft_opt_in", "checkout", "Left the pre-ticked box ticked at checkout", null, null, null, true,
-                        false, null, null, null)));
-
-        mvc.perform(post("/api/v1/audience/members/" + MEMBER_A + "/export"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.membershipId").value(MEMBER_A.toString()))
-                .andExpect(jsonPath("$.consentHistory[0].granted").value(true))
-                .andExpect(jsonPath("$.consentHistory[0].lawfulBasis").value("soft_opt_in"))
-                .andExpect(jsonPath("$.consentHistory[0].source").value("checkout"))
-                .andExpect(jsonPath("$.consentHistory[0].channel").value("email"))
-                .andExpect(jsonPath("$.consentHistory[0].proofText")
-                        .value("Left the pre-ticked box ticked at checkout"))
-                .andExpect(jsonPath("$.consentHistory[0].at").exists());
-    }
-
-    /** The list payload must not grow a consent table per member. */
-    @Test
-    @WithOrgA
-    void get_members_omits_consent_history() throws Exception {
-        when(audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(null, 50, null, null, null, null, null, null)))
-                .thenReturn(new MemberPage(List.of(stubMember(MEMBER_A)), null));
-
-        mvc.perform(get("/api/v1/audience/members"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.items[0].consentHistory").doesNotExist());
-    }
-
-    @Test
-    @WithOrgA
-    void get_consent_history_returns_the_trail() throws Exception {
-        when(dsarService.consentHistory(eq(ORG_A), eq(MEMBER_A))).thenReturn(List.of(
-                new ConsentHistoryEntry(Instant.parse("2025-02-01T10:00:00Z"), "email", true,
-                        "explicit", "checkout", "Ticked the box at checkout", "2026-10-01",
-                        UUID.fromString("0f0f0f0f-0000-4000-8000-000000000001"), "fr", false,
-                        true, Instant.parse("2025-02-01T10:05:00Z"),
-                        UUID.fromString("0e0e0e0e-0000-4000-8000-000000000002"), "Night One"),
-                new ConsentHistoryEntry(Instant.parse("2025-03-01T10:00:00Z"), "email", false,
-                        null, "one_click", null, null, null, null, false, false, null, null, null)));
-
-        mvc.perform(get("/api/v1/audience/members/" + MEMBER_A + "/consent-history"))
+        mvc.perform(get("/api/v1/audience/members/" + member + "/consent-history").with(auth(principalA)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(2))
                 .andExpect(jsonPath("$[0].granted").value(true))
+                .andExpect(jsonPath("$[0].lawfulBasis").value("explicit"))
+                .andExpect(jsonPath("$[0].source").value("signup-form"))
+                .andExpect(jsonPath("$[0].channel").value("email"))
+                .andExpect(jsonPath("$[0].proofText").value("Ticked the box at signup"))
+                .andExpect(jsonPath("$[0].at").exists())
+                .andExpect(jsonPath("$[0].textVersion").value(nullValue()))
+                .andExpect(jsonPath("$[0].orderId").value(nullValue()))
+                .andExpect(jsonPath("$[0].eventName").value(nullValue()))
                 .andExpect(jsonPath("$[1].granted").value(false))
-                .andExpect(jsonPath("$[1].source").value("one_click"))
-                .andExpect(jsonPath("$[0].textVersion").value("2026-10-01"))
-                .andExpect(jsonPath("$[0].orderId").value("0f0f0f0f-0000-4000-8000-000000000001"))
-                .andExpect(jsonPath("$[1].textVersion").value(org.hamcrest.Matchers.nullValue()))
-                .andExpect(jsonPath("$[1].orderId").value(org.hamcrest.Matchers.nullValue()))
-                .andExpect(jsonPath("$[0].locale").value("fr"))
-                .andExpect(jsonPath("$[0].legacy").value(false))
-                .andExpect(jsonPath("$[1].locale").value(org.hamcrest.Matchers.nullValue()))
-                .andExpect(jsonPath("$[0].confirmationRequired").value(true))
-                .andExpect(jsonPath("$[0].confirmedAt").value("2025-02-01T10:05:00Z"))
-                .andExpect(jsonPath("$[0].eventId").value("0e0e0e0e-0000-4000-8000-000000000002"))
-                .andExpect(jsonPath("$[0].eventName").value("Night One"))
-                .andExpect(jsonPath("$[1].confirmationRequired").value(false))
-                .andExpect(jsonPath("$[1].confirmedAt").value(org.hamcrest.Matchers.nullValue()))
-                .andExpect(jsonPath("$[1].eventName").value(org.hamcrest.Matchers.nullValue()));
-    }
+                .andExpect(jsonPath("$[1].source").value("unsubscribe-link"));
 
-    @Test
-    @WithOrgA
-    void get_consent_history_cross_org_returns_404() throws Exception {
-        when(dsarService.consentHistory(eq(ORG_A), eq(MEMBER_B)))
-                .thenThrow(ApiException.notFound("Membership"));
-
-        mvc.perform(get("/api/v1/audience/members/" + MEMBER_B + "/consent-history"))
-                .andExpect(status().isNotFound());
-    }
-
-    @Test
-    @WithOrgA
-    void post_dsar_erase_returns_202_accepted() throws Exception {
-        doNothing().when(dsarService).requestErase(eq(ORG_A), eq(MEMBER_A), any());
-
-        mvc.perform(post("/api/v1/audience/members/" + MEMBER_A + "/erase"))
-                .andExpect(status().isAccepted());
-
-        verify(dsarService).requestErase(eq(ORG_A), eq(MEMBER_A), any());
-    }
-
-    @Test
-    @WithOrgA
-    void post_dsar_object_synchronous_returns_200() throws Exception {
-        doNothing().when(dsarService).object(eq(ORG_A), eq(MEMBER_A), any());
-
-        mvc.perform(post("/api/v1/audience/members/" + MEMBER_A + "/object"))
-                .andExpect(status().isOk());
-
-        verify(dsarService).object(eq(ORG_A), eq(MEMBER_A), any());
-    }
-
-    @Test
-    @WithOrgA
-    void post_dsar_rectify_calls_service_and_returns_member() throws Exception {
-        MemberDto dto = stubMember(MEMBER_A);
-        when(dsarService.rectify(eq(ORG_A), eq(MEMBER_A), any(), any(), any(), any())).thenReturn(null);
-        when(audienceService.getMember(ORG_A, MEMBER_A)).thenReturn(dto);
-
-        String body = om.writeValueAsString(Map.of(
-                "displayName", "New Name",
-                "city", "Munich",
-                "notes", "updated notes"
-        ));
-
-        mvc.perform(post("/api/v1/audience/members/" + MEMBER_A + "/rectify")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
+        mvc.perform(post("/api/v1/audience/members/" + member + "/export").with(auth(principalA)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.membershipId").value(MEMBER_A.toString()));
-    }
-
-    /**
-     * DSAR cross-org: org A accessing a DSAR on org B's member must return 404.
-     */
-    @Test
-    @WithOrgA
-    void post_dsar_access_cross_org_returns_404() throws Exception {
-        when(dsarService.access(eq(ORG_A), eq(MEMBER_B), any()))
-                .thenThrow(ApiException.notFound("Membership"));
-
-        mvc.perform(post("/api/v1/audience/members/" + MEMBER_B + "/access"))
-                .andExpect(status().isNotFound())
-                .andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
+                .andExpect(jsonPath("$.membershipId").value(member.toString()))
+                .andExpect(jsonPath("$.consentHistory.length()").value(2))
+                .andExpect(jsonPath("$.consentHistory[0].granted").value(true))
+                .andExpect(jsonPath("$.consentHistory[0].lawfulBasis").value("explicit"))
+                .andExpect(jsonPath("$.consentHistory[0].source").value("signup-form"))
+                .andExpect(jsonPath("$.consentHistory[0].channel").value("email"))
+                .andExpect(jsonPath("$.consentHistory[0].proofText").value("Ticked the box at signup"))
+                .andExpect(jsonPath("$.consentHistory[0].at").exists())
+                .andExpect(jsonPath("$.consentHistory[1].granted").value(false));
     }
 
     // ── Segments ──────────────────────────────────────────────────────────────
 
     @Test
-    @WithOrgA
-    void get_segments_returns_list() throws Exception {
-        when(segmentService.listSegments(ORG_A)).thenReturn(List.of());
-
-        mvc.perform(get("/api/v1/audience/segments"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.length()").value(0));
-    }
-
-    @Test
-    @WithOrgA
-    void post_segments_returns_201_with_dto() throws Exception {
-        com.imin.iminapi.audience.model.Segment seg = new com.imin.iminapi.audience.model.Segment();
-        seg.setId(UUID.randomUUID());
-        seg.setOrgId(ORG_A);
-        seg.setName("High LTV");
-        seg.setKind("dynamic");
-        seg.setCreatedAt(Instant.now());
-        seg.setUpdatedAt(Instant.now());
-
-        when(segmentService.createSegment(eq(ORG_A), eq("High LTV"), eq("dynamic"), isNull(), any()))
-                .thenReturn(seg);
-
-        String body = om.writeValueAsString(Map.of("name", "High LTV", "kind", "dynamic"));
-        mvc.perform(post("/api/v1/audience/segments")
+    void create_segment_blank_name_returns_400_field_error_and_saves_nothing() throws Exception {
+        // @NotBlank on CreateSegmentRequest rejects before the controller body runs. Was a NOT NULL DB violation → 500.
+        mvc.perform(post("/api/v1/audience/segments").with(auth(principalA))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.name").value("High LTV"))
-                .andExpect(jsonPath("$.kind").value("dynamic"));
-    }
-
-    @Test
-    @WithOrgA
-    void post_segments_blank_name_returns_400_field_error() throws Exception {
-        // @NotBlank on CreateSegmentRequest rejects before the controller body runs — the
-        // service is never called. Was a NOT NULL DB violation → 500.
-        String body = om.writeValueAsString(Map.of("name", "   ", "kind", "dynamic"));
-        mvc.perform(post("/api/v1/audience/segments")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
+                        .content(om.writeValueAsString(Map.of("name", "   ", "kind", "dynamic"))))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
                 .andExpect(jsonPath("$.error.fields.name").exists());
-        verify(segmentService, never()).createSegment(any(), any(), any(), any(), any());
+
+        assertThat(segments.findByOrgId(orgA)).isEmpty();
+    }
+
+    /** The dashboard sends a structured array; older callers a pre-serialized string. Both bind. */
+    @ParameterizedTest
+    @ValueSource(strings = {"object", "string"})
+    void create_segment_accepts_object_and_string_shaped_rules(String shape) throws Exception {
+        String rules = "[{\"field\":\"events\",\"operator\":\">=\",\"value\":\"3\"},"
+                + "{\"field\":\"spend_minor\",\"operator\":\">=\",\"value\":\"10000\"}]";
+        String body = shape.equals("object")
+                ? "{\"name\":\"Big Spenders\",\"rulesJson\":" + rules + "}"
+                : "{\"name\":\"Big Spenders\",\"rulesJson\":" + om.writeValueAsString(rules) + "}";
+
+        mvc.perform(post("/api/v1/audience/segments").with(auth(principalA))
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.name").value("Big Spenders"))
+                .andExpect(jsonPath("$.kind").value("dynamic"))
+                .andExpect(jsonPath("$.rules.length()").value(2));
+    }
+
+    /** Prebuilts used to be seeded only from tests, so a production org could list zero segments forever. */
+    @Test
+    void list_seeds_six_prebuilt_segments_and_is_idempotent() throws Exception {
+        // First list: org has never been seeded → the endpoint provisions the 6 live prebuilts (no Promoters).
+        mvc.perform(get("/api/v1/audience/segments").with(auth(principalA)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(6))
+                .andExpect(jsonPath("$[?(@.name == 'Promoters')]").isEmpty());
+
+        // Second list: no duplicate seeding.
+        mvc.perform(get("/api/v1/audience/segments").with(auth(principalA)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(6));
+
+        assertThat(segments.findByOrgId(orgA)).filteredOn(Segment::isPrebuilt).hasSize(6);
+    }
+
+    /** A retired prebuilt is hidden from the list, but a campaign may still point at it: it hands off by id. */
+    @Test
+    void segment_handoff_still_hands_off_a_retired_promoters_row() throws Exception {
+        UUID promoter = subscribed(orgA, fx.email("promoter"), "Promoter", principalA);
+        Membership m = memberships.findByIdAndOrgId(promoter, orgA).orElseThrow();
+        m.setNps((short) 9);
+        memberships.save(m);
+        Segment promoters = new Segment();
+        promoters.setOrgId(orgA);
+        promoters.setName("Promoters");
+        promoters.setKind("dynamic");
+        promoters.setPrebuilt(true);
+        promoters.setPrebuiltKey(PrebuiltSegment.PROMOTERS.key());
+        UUID segId = segments.save(promoters).getId();
+
+        mvc.perform(post("/api/v1/audience/segments/" + segId + "/handoff").with(auth(principalA)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.recipientCount").value(1))
+                .andExpect(jsonPath("$.selectedMembershipIds[0]").value(promoter.toString()));
+
+        mvc.perform(get("/api/v1/audience/segments").with(auth(principalA)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.id == '" + segId + "')]").isEmpty());
+    }
+
+    /** No body previews everyone; a structured groups body is canonicalised and evaluated, nothing is saved. */
+    @ParameterizedTest
+    @ValueSource(strings = {"no-body", "groups"})
+    void segment_preview_counts_unsaved_rules(String body) throws Exception {
+        UUID repeat = member(orgA, fx.email("p1"), "P1");
+        Membership m = memberships.findByIdAndOrgId(repeat, orgA).orElseThrow();
+        m.setEvents(2);
+        memberships.save(m);
+        member(orgA, fx.email("p2"), "P2");
+        member(orgB, fx.email("other"), "Other");
+
+        var req = post("/api/v1/audience/segments/preview").with(auth(principalA));
+        if (body.equals("groups")) {
+            req.contentType(MediaType.APPLICATION_JSON).content("{\"rulesJson\":{\"groups\":[{\"combinator\":\"and\",\"rules\":"
+                    + "[{\"field\":\"events\",\"operator\":\">=\",\"value\":\"2\"}]}]}}");
+        }
+        mvc.perform(req)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.matched").value(body.equals("groups") ? 1 : 2));
+
+        assertThat(segments.findByOrgId(orgA)).isEmpty();
     }
 
     @Test
-    @WithOrgA
-    void post_segments_unique_violation_maps_to_409_not_500() throws Exception {
-        // A DB unique_violation (SQLState 23505) surfacing from the service must become a clean
-        // 409, never a 500 (there was no DataIntegrityViolationException handler before).
-        when(segmentService.createSegment(any(), any(), any(), any(), any()))
-                .thenThrow(new org.springframework.dao.DataIntegrityViolationException(
-                        "duplicate key",
-                        new java.sql.SQLException("duplicate key value violates unique constraint", "23505")));
+    void segment_resolve_and_snapshot_csv_cover_only_its_own_members() throws Exception {
+        UUID inside = member(orgA, fx.email("inside"), "Snap Member");
+        Membership m = memberships.findByIdAndOrgId(inside, orgA).orElseThrow();
+        m.setEvents(2);
+        memberships.save(m);
+        String outsideEmail = fx.email("outside");
+        member(orgA, outsideEmail, "Not In Segment");
+        UUID segId = segmentService.createSegment(orgA, "Regulars", "dynamic",
+                "[{\"field\":\"events\",\"operator\":\">=\",\"value\":\"2\"}]", principalA).getId();
 
-        String body = om.writeValueAsString(Map.of("name", "Dup"));
-        mvc.perform(post("/api/v1/audience/segments")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.error.code").value("DUPLICATE"));
+        mvc.perform(get("/api/v1/audience/segments/" + segId + "/resolve").with(auth(principalA)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.matched").value(1))
+                .andExpect(jsonPath("$.mailable").value(0))
+                .andExpect(jsonPath("$.excluded").value(1));
+
+        String csv = mvc.perform(get("/api/v1/audience/segments/" + segId + "/snapshot")
+                        .with(auth(principalA)).accept("text/csv"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Content-Type", containsString("text/csv")))
+                .andExpect(header().string("Content-Disposition", containsString("segment-" + segId + ".csv")))
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(csv.lines().findFirst().orElse("")).isEqualTo(CSV_HEADER);
+        assertThat(csv).contains("Snap Member").doesNotContain(outsideEmail);
     }
 
     @Test
-    @WithOrgA
-    void post_segments_other_constraint_violation_maps_to_400_not_500() throws Exception {
-        when(segmentService.createSegment(any(), any(), any(), any(), any()))
-                .thenThrow(new org.springframework.dao.DataIntegrityViolationException("check constraint failed"));
+    void delete_own_segment_returns_204_and_removes_it() throws Exception {
+        UUID segId = segmentService.createSegment(orgA, "Short-lived", "dynamic", null, principalA).getId();
 
-        String body = om.writeValueAsString(Map.of("name", "Bad"));
-        mvc.perform(post("/api/v1/audience/segments")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"));
-    }
-
-    @Test
-    @WithOrgA
-    void get_segments_triggers_prebuilt_seeding() throws Exception {
-        when(segmentService.listSegments(ORG_A)).thenReturn(List.of());
-
-        mvc.perform(get("/api/v1/audience/segments"))
-                .andExpect(status().isOk());
-
-        // The list endpoint must lazily provision prebuilts for the org before reading.
-        verify(segmentService).ensurePrebuiltSegments(ORG_A);
-    }
-
-    @Test
-    @WithOrgA
-    void delete_segment_returns_204() throws Exception {
-        UUID segId = UUID.randomUUID();
-        doNothing().when(segmentService).deleteSegment(eq(ORG_A), eq(segId), any());
-
-        mvc.perform(delete("/api/v1/audience/segments/" + segId))
+        mvc.perform(delete("/api/v1/audience/segments/" + segId).with(auth(principalA)))
                 .andExpect(status().isNoContent());
 
-        verify(segmentService).deleteSegment(eq(ORG_A), eq(segId), any());
+        assertThat(segments.findByIdAndOrgId(segId, orgA)).isEmpty();
     }
 
-    // ── Suppression ───────────────────────────────────────────────────────────
+    // ── DSAR and suppression on the org's own member ──────────────────────────
+
+    @ParameterizedTest
+    @ValueSource(strings = {"access", "rectify", "erase", "object"})
+    void dsar_route_acts_on_the_orgs_own_member(String route) throws Exception {
+        UUID member = subscribed(orgA, fx.email("dsar"), "Old Name", principalA);
+        String path = "/api/v1/audience/members/" + member + "/" + route;
+
+        var req = post(path).with(auth(principalA));
+        if (route.equals("rectify")) {
+            req.contentType(MediaType.APPLICATION_JSON)
+                    .content(om.writeValueAsString(Map.of("displayName", "New Name", "city", "Munich", "notes", "n")));
+        }
+        var result = mvc.perform(req);
+
+        // The HTTP contract only; the DSAR effects are owned by AudienceDsarTest.
+        switch (route) {
+            case "access", "rectify" -> result.andExpect(status().isOk())
+                    .andExpect(jsonPath("$.membershipId").value(member.toString()));
+            case "erase" -> result.andExpect(status().isAccepted());
+            case "object" -> result.andExpect(status().isOk());
+            default -> throw new IllegalArgumentException(route);
+        }
+    }
 
     @Test
-    @WithOrgA
-    void get_suppression_returns_list() throws Exception {
-        // SuppressionRepository is wired directly in the controller, but we mock
-        // via the audienceService path - verify the suppression endpoint is accessible
-        // The controller calls suppressionRepo.findMarketingByOrg directly
-        // Since this is a MockMvc test, the real bean must be available or mocked
-        // We mock via @MockitoBean on services; the suppressionRepo is not mocked here,
-        // so we test via an integration approach on just the endpoint path
-        mvc.perform(get("/api/v1/audience/suppression"))
-                .andExpect(status().isOk()); // returns empty list from real H2
+    void suppression_list_shows_only_the_orgs_own_marketing_suppressions() throws Exception {
+        UUID mine = member(orgA, fx.email("supp-a"), "A");
+        UUID theirs = member(orgB, fx.email("supp-b"), "B");
+        suppressionService.addMarketing(orgA, mine, SuppressionEntry.REASON_MANUAL, principalA);
+        suppressionService.addMarketing(orgB, theirs, SuppressionEntry.REASON_MANUAL, principalB);
+
+        String body = mvc.perform(get("/api/v1/audience/suppression").with(auth(principalA)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(body).contains(mine.toString()).doesNotContain(theirs.toString());
     }
 
-    // ── Unauthenticated requests blocked ─────────────────────────────────────
+    // ── CSV export: GET /members?format=csv ───────────────────────────────────
 
     @Test
-    void unauthenticated_get_members_returns_403() throws Exception {
-        // No auth → Spring Security rejects before reaching the controller
-        mvc.perform(get("/api/v1/audience/members"))
-                .andExpect(status().is4xxClientError());
+    void members_csv_of_an_empty_org_is_the_pinned_header_without_open_or_click() throws Exception {
+        String body = mvc.perform(get("/api/v1/audience/members?format=csv").with(auth(principalA)).accept("text/csv"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Content-Type", containsString("text/csv")))
+                .andExpect(header().string("Content-Disposition", containsString("audience-members.csv")))
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(body).isEqualTo(CSV_HEADER + "\r\n");
     }
 
     @Test
-    void unauthenticated_post_handoff_returns_403() throws Exception {
-        mvc.perform(post("/api/v1/audience/handoff")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{}"))
-                .andExpect(status().is4xxClientError());
+    void members_csv_field_with_comma_and_quote_is_properly_quoted() throws Exception {
+        member(orgA, fx.email("tricky"), "Smith, \"DJ\" Joe");
+
+        String body = mvc.perform(get("/api/v1/audience/members?format=csv").with(auth(principalA)).accept("text/csv"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        // RFC4180: the name field must be wrapped in double-quotes and internal quotes doubled
+        assertThat(body.lines().findFirst().orElse("")).isEqualTo(CSV_HEADER);
+        assertThat(body).contains("\"Smith, \"\"DJ\"\" Joe\"");
     }
 
-    // ── M4: Architecture test — MembershipRepository has no unscoped finders ──
+    @Test
+    void members_csv_lifecycle_filter_exports_only_that_lifecycle() throws Exception {
+        String repeatEmail = fx.email("repeat");
+        String prospectEmail = fx.email("prospect");
+        UUID repeat = member(orgA, repeatEmail, "Repeat");
+        member(orgA, prospectEmail, "Prospect");
+        Membership m = memberships.findByIdAndOrgId(repeat, orgA).orElseThrow();
+        m.setLifecycle("repeat");
+        memberships.save(m);
 
+        String body = mvc.perform(get("/api/v1/audience/members?format=csv&lifecycle=repeat")
+                        .with(auth(principalA)).accept("text/csv"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(body).contains(repeatEmail).doesNotContain(prospectEmail);
+    }
+
+    // ── Tenant repositories expose no unscoped finders ───────────────────────
+
+    // Kept despite the reflection/source-scan rule: the only static guard against a cross-tenant finder or caller.
     /**
      * M4 invariant: MembershipRepository must NOT expose any method that loads
      * memberships without an orgId parameter. This is a structural assertion
@@ -785,18 +493,8 @@ class AudienceControllerWebTest {
      */
     @Test
     void m4_membership_repository_has_no_unscoped_finders() throws Exception {
-        // MembershipRepository extends Repository<T,ID>, not JpaRepository
-        // Verify it does NOT inherit the dangerous unscoped methods
+        // Not extending JpaRepository/CrudRepository is pinned by m4_tenant_repos_dont_expose_findAll.
         Class<?> repoClass = MembershipRepository.class;
-
-        // It must NOT extend JpaRepository or CrudRepository
-        assertThat(org.springframework.data.jpa.repository.JpaRepository.class.isAssignableFrom(repoClass))
-                .withFailMessage("MembershipRepository must not extend JpaRepository")
-                .isFalse();
-
-        assertThat(org.springframework.data.repository.CrudRepository.class.isAssignableFrom(repoClass))
-                .withFailMessage("MembershipRepository must not extend CrudRepository")
-                .isFalse();
 
         // Verify every declared method takes orgId (by name convention)
         // All read methods must have orgId or consume it through the findByIdsAndOrgId pattern
@@ -928,305 +626,48 @@ class AudienceControllerWebTest {
                 .isFalse();
     }
 
-    // ── Audit: ArgumentCaptor assertions via direct service calls ─────────────
-
-    /**
-     * Verifies the CORRECT AuditActions constant is passed for each governance mutation.
-     * We call the controller (via MockMvc) and then verify the downstream service was
-     * invoked with the right arguments.
-     *
-     * For audit constants specifically, since AuditLogger is mocked and
-     * the actual service beans are mocked too, we verify the controller
-     * correctly delegates to the right service method (which internally calls audit).
-     * The per-service ArgumentCaptor audit tests live in AudienceSendGateConsentSuppressionTest.
-     * Here we verify the correct service method is dispatched per endpoint.
-     */
+    // Kept despite the reflection rule: the only guard that tenant repos never inherit unscoped findAll/findById.
+    /** Tenant repositories must not extend JpaRepository/CrudRepository (findAll/findById/deleteAll). */
     @Test
-    @WithOrgA
-    void audit_handoff_service_called_with_org_a_principal() throws Exception {
-        when(sendGateService.handoff(eq(ORG_A), anyList(), any()))
-                .thenReturn(new HandoffResponse(0, List.of(), List.of(), "/campaigns"));
-
-        String body = om.writeValueAsString(Map.of(
-                "membershipIds", List.of(MEMBER_A.toString())
-        ));
-
-        mvc.perform(post("/api/v1/audience/handoff")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
-                .andExpect(status().isOk());
-
-        // Verify the handoff is called with ORG_A from auth context, NOT from body
-        ArgumentCaptor<UUID> orgCaptor = ArgumentCaptor.forClass(UUID.class);
-        verify(sendGateService).handoff(orgCaptor.capture(), anyList(), any());
-        assertThat(orgCaptor.getValue()).isEqualTo(ORG_A);
+    void m4_tenant_repos_dont_expose_findAll() {
+        // MembershipRepository, ConsentRecordRepository, SegmentRepository must NOT
+        // extend JpaRepository (which exposes findAll/findById/deleteAll).
+        // Verify via reflection that none of these interfaces extends JpaRepository.
+        assertThat(isJpaRepository(MembershipRepository.class))
+                .as("MembershipRepository must not extend JpaRepository").isFalse();
+        assertThat(isJpaRepository(com.imin.iminapi.audience.repository.ConsentRecordRepository.class))
+                .as("ConsentRecordRepository must not extend JpaRepository").isFalse();
+        assertThat(isJpaRepository(SegmentRepository.class))
+                .as("SegmentRepository must not extend JpaRepository").isFalse();
     }
 
-    @Test
-    @WithOrgA
-    void audit_consent_capture_service_dispatched_with_org_scoped_id() throws Exception {
-        String body = om.writeValueAsString(Map.of(
-                "membershipId", MEMBER_A.toString(),
-                "basis", "explicit",
-                "source", "double-opt-in",
-                "proofText", "link clicked"
-        ));
-
-        mvc.perform(post("/api/v1/audience/consent/capture")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
-                .andExpect(status().isOk());
-
-        // The principal's orgId must be passed, not a body orgId
-        ArgumentCaptor<UUID> orgCaptor = ArgumentCaptor.forClass(UUID.class);
-        verify(consentService).capture(orgCaptor.capture(), eq(MEMBER_A),
-                eq("explicit"), eq("double-opt-in"), eq("link clicked"), eq("email"), any());
-        assertThat(orgCaptor.getValue()).isEqualTo(ORG_A);
+    /** Transitive: an intermediate interface extending CrudRepository counts too. */
+    private boolean isJpaRepository(Class<?> iface) {
+        return org.springframework.data.jpa.repository.JpaRepository.class.isAssignableFrom(iface)
+                || org.springframework.data.repository.CrudRepository.class.isAssignableFrom(iface);
     }
 
-    @Test
-    @WithOrgA
-    void audit_segment_delete_service_dispatched_with_org_a() throws Exception {
-        UUID segId = UUID.randomUUID();
-        doNothing().when(segmentService).deleteSegment(any(), any(), any());
+    // ── Helpers ───────────────────────────────────────────────────────────────
 
-        mvc.perform(delete("/api/v1/audience/segments/" + segId))
-                .andExpect(status().isNoContent());
-
-        ArgumentCaptor<UUID> orgCaptor = ArgumentCaptor.forClass(UUID.class);
-        verify(segmentService).deleteSegment(orgCaptor.capture(), eq(segId), any());
-        assertThat(orgCaptor.getValue()).isEqualTo(ORG_A);
+    /** A projected member with no lawful basis yet. */
+    private UUID member(UUID orgId, String email, String name) {
+        orderProjector.upsertMembership(orgId, email, name);
+        Consumer c = consumers.findByNormalizedEmail(email).orElseThrow();
+        Membership m = memberships.findByOrgIdAndConsumerId(orgId, c.getConsumerId()).orElseThrow();
+        m.setDisplayName(name);
+        memberships.save(m);
+        return m.getMembershipId();
     }
 
-    @Test
-    @WithOrgA
-    void audit_dsar_erase_service_dispatched_with_org_a() throws Exception {
-        doNothing().when(dsarService).requestErase(any(), any(), any());
-
-        mvc.perform(post("/api/v1/audience/members/" + MEMBER_A + "/erase"))
-                .andExpect(status().isAccepted());
-
-        ArgumentCaptor<UUID> orgCaptor = ArgumentCaptor.forClass(UUID.class);
-        verify(dsarService).requestErase(orgCaptor.capture(), eq(MEMBER_A), any());
-        assertThat(orgCaptor.getValue()).isEqualTo(ORG_A);
+    /** A member with an explicit grant, so the send gate lets them through. */
+    private UUID subscribed(UUID orgId, String email, String name, AuthPrincipal p) {
+        UUID mid = member(orgId, email, name);
+        consentService.capture(orgId, mid, "explicit", "seed", "proof", p);
+        return mid;
     }
 
-    // ── Segment/handoff cross-org via path does not leak ─────────────────────
-
-    @Test
-    @WithOrgA
-    void segment_handoff_cross_org_segment_returns_404() throws Exception {
-        UUID foreignSegId = UUID.randomUUID();
-        when(segmentService.requireSegmentForOrg(ORG_A, foreignSegId))
-                .thenThrow(ApiException.notFound("Segment"));
-
-        mvc.perform(post("/api/v1/audience/segments/" + foreignSegId + "/handoff"))
-                .andExpect(status().isNotFound());
-        verify(sendGateService, never()).handoff(any(), any(), any());
-    }
-
-    @Test
-    @WithOrgA
-    void segment_handoff_still_hands_off_a_retired_promoters_row() throws Exception {
-        UUID segId = UUID.randomUUID();
-        Segment promoters = new Segment();
-        promoters.setId(segId);
-        promoters.setOrgId(ORG_A);
-        promoters.setName("Promoters");
-        promoters.setKind("dynamic");
-        promoters.setPrebuilt(true);
-        promoters.setPrebuiltKey(PrebuiltSegment.PROMOTERS.key());
-        Membership member = new Membership();
-        member.setMembershipId(MEMBER_A);
-        when(segmentService.requireSegmentForOrg(ORG_A, segId)).thenReturn(promoters);
-        when(segmentService.resolveMembers(ORG_A, promoters)).thenReturn(List.of(member));
-        when(sendGateService.handoff(eq(ORG_A), eq(List.of(MEMBER_A)), any()))
-                .thenReturn(new HandoffResponse(1, List.of(MEMBER_A.toString()), List.of(), "/campaigns"));
-
-        mvc.perform(post("/api/v1/audience/segments/" + segId + "/handoff"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.recipientCount").value(1));
-
-        verify(sendGateService).handoff(eq(ORG_A), eq(List.of(MEMBER_A)), any());
-        verify(segmentService, never()).listSegments(any());
-    }
-
-    // ── /segments/{id}/resolve ────────────────────────────────────────────────
-
-    @Test
-    @WithOrgA
-    void get_segment_resolve_returns_dto() throws Exception {
-        UUID segId = UUID.randomUUID();
-        when(segmentService.resolve(ORG_A, segId))
-                .thenReturn(new SegmentResolveDto(25, 20, 5, 45000L,
-                        java.util.Map.of("unsubscribed", 3, "legacy_unproven", 2)));
-
-        mvc.perform(get("/api/v1/audience/segments/" + segId + "/resolve"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.matched").value(25))
-                .andExpect(jsonPath("$.mailable").value(20))
-                .andExpect(jsonPath("$.excluded").value(5))
-                .andExpect(jsonPath("$.avgLtvMinor").value(45000))
-                .andExpect(jsonPath("$.exclusions.unsubscribed").value(3))
-                .andExpect(jsonPath("$.exclusions.legacy_unproven").value(2));
-    }
-
-    @Test
-    @WithOrgA
-    void post_segment_preview_passes_structured_groups_as_canonical_json() throws Exception {
-        when(segmentService.previewValidated(eq(ORG_A), anyString()))
-                .thenReturn(new SegmentResolveDto(4, 1, 3, 0L, java.util.Map.of("no_basis", 3)));
-
-        mvc.perform(post("/api/v1/audience/segments/preview")
-                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
-                        .content("{\"rulesJson\":{\"groups\":[{\"combinator\":\"not\",\"rules\":"
-                                + "[{\"field\":\"genre\",\"operator\":\"==\",\"value\":\"pop\"}]}]}}"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.matched").value(4))
-                .andExpect(jsonPath("$.exclusions.no_basis").value(3));
-
-        verify(segmentService).previewValidated(ORG_A,
-                "{\"groups\":[{\"combinator\":\"not\",\"rules\":[{\"field\":\"genre\",\"operator\":\"==\",\"value\":\"pop\"}]}]}");
-    }
-
-    @Test
-    @WithOrgA
-    void post_segment_preview_without_body_previews_everyone() throws Exception {
-        when(segmentService.previewValidated(ORG_A, null))
-                .thenReturn(new SegmentResolveDto(0, 0, 0, 0L, java.util.Map.of()));
-
-        mvc.perform(post("/api/v1/audience/segments/preview"))
-                .andExpect(status().isOk());
-
-        verify(segmentService).previewValidated(ORG_A, null);
-    }
-
-    // ── CSV export: GET /members?format=csv ───────────────────────────────────
-
-    @Test
-    @WithOrgA
-    void get_members_csv_returns_200_text_csv_with_header_and_member() throws Exception {
-        MemberDto dto = stubMember(MEMBER_A);
-        when(audienceService.exportMembersCsv(eq(ORG_A), isNull(), isNull()))
-                .thenReturn(List.of(dto));
-
-        String body = mvc.perform(get("/api/v1/audience/members?format=csv")
-                        .accept("text/csv"))
-                .andExpect(status().isOk())
-                .andExpect(header().string("Content-Type", org.hamcrest.Matchers.containsString("text/csv")))
-                .andExpect(header().string("Content-Disposition",
-                        org.hamcrest.Matchers.containsString("audience-members.csv")))
-                .andReturn().getResponse().getContentAsString();
-
-        // First line must be the header
-        String firstLine = body.lines().findFirst().orElse("");
-        assertThat(firstLine).isEqualTo("\"name\",\"email\",\"city\",\"lifecycle\",\"events\",\"attended\","
-                + "\"noShow\",\"orders\",\"spend\",\"recencyDays\",\"subscriptionStatus\","
-                + "\"lawfulBasis\",\"firstTouchSource\",\"tags\",\"nps\"");
-
-        // Member data must appear somewhere in the body
-        assertThat(body).contains("Test User");
-        assertThat(body).contains("test@example.com");
-    }
-
-    @Test
-    @WithOrgA
-    void get_members_csv_with_lifecycle_filter_passes_param_to_service() throws Exception {
-        when(audienceService.exportMembersCsv(eq(ORG_A), eq("repeat"), isNull()))
-                .thenReturn(List.of());
-
-        mvc.perform(get("/api/v1/audience/members?format=csv&lifecycle=repeat")
-                        .accept("text/csv"))
-                .andExpect(status().isOk());
-
-        verify(audienceService).exportMembersCsv(ORG_A, "repeat", null);
-    }
-
-    @Test
-    @WithOrgA
-    void get_members_csv_field_with_comma_and_quote_is_properly_quoted() throws Exception {
-        // Member with a name containing comma and a double-quote
-        MemberDto tricky = new MemberDto(
-                MEMBER_A.toString(), "Smith, \"DJ\" Joe", "tricky@example.com",
-                "Berlin", List.of(), 1, 1, 0, 1,
-                5000L, 5000L,
-                Instant.parse("2025-01-01T00:00:00Z"),
-                Instant.parse("2025-06-01T00:00:00Z"),
-                Instant.parse("2025-06-01T00:00:00Z"),
-                7, "organic", "explicit", "subscribed", null,
-                null, null, null,
-                List.of("tag1"), "", "repeat",
-                new MemberDto.RfmInfo(3, 2, 4),
-                null, null, null, null, null
-        );
-        when(audienceService.exportMembersCsv(eq(ORG_A), isNull(), isNull()))
-                .thenReturn(List.of(tricky));
-
-        String body = mvc.perform(get("/api/v1/audience/members?format=csv")
-                        .accept("text/csv"))
-                .andExpect(status().isOk())
-                .andReturn().getResponse().getContentAsString();
-
-        // RFC4180: the name field must be wrapped in double-quotes and internal quotes doubled
-        assertThat(body).contains("\"Smith, \"\"DJ\"\" Joe\"");
-    }
-
-    @Test
-    @WithOrgA
-    void get_members_csv_header_is_pinned_without_open_or_click() throws Exception {
-        when(audienceService.exportMembersCsv(eq(ORG_A), isNull(), isNull())).thenReturn(List.of());
-
-        String body = mvc.perform(get("/api/v1/audience/members?format=csv").accept("text/csv"))
-                .andExpect(status().isOk())
-                .andReturn().getResponse().getContentAsString();
-
-        assertThat(body).isEqualTo("\"name\",\"email\",\"city\",\"lifecycle\",\"events\",\"attended\","
-                + "\"noShow\",\"orders\",\"spend\",\"recencyDays\",\"subscriptionStatus\","
-                + "\"lawfulBasis\",\"firstTouchSource\",\"tags\",\"nps\"\r\n");
-    }
-
-    // ── CSV export: GET /segments/{id}/snapshot ───────────────────────────────
-
-    @Test
-    @WithOrgA
-    void get_segment_snapshot_csv_returns_text_csv() throws Exception {
-        UUID segId = UUID.randomUUID();
-        Segment seg = new Segment();
-        seg.setId(segId);
-        seg.setOrgId(ORG_A);
-        seg.setName("VIP");
-        seg.setKind("dynamic");
-        seg.setCreatedAt(Instant.now());
-        seg.setUpdatedAt(Instant.now());
-
-        MemberDto dto = stubMember(MEMBER_A);
-        when(segmentService.requireSegmentForOrg(ORG_A, segId)).thenReturn(seg);
-        when(segmentService.resolveMembers(eq(ORG_A), eq(seg))).thenReturn(List.of());
-        when(audienceService.toMemberDtos(eq(ORG_A), eq(List.of()))).thenReturn(List.of(dto));
-
-        String body = mvc.perform(get("/api/v1/audience/segments/" + segId + "/snapshot")
-                        .accept("text/csv"))
-                .andExpect(status().isOk())
-                .andExpect(header().string("Content-Type", org.hamcrest.Matchers.containsString("text/csv")))
-                .andExpect(header().string("Content-Disposition",
-                        org.hamcrest.Matchers.containsString("segment-" + segId + ".csv")))
-                .andReturn().getResponse().getContentAsString();
-
-        assertThat(body.lines().findFirst().orElse("")).contains("name");
-        assertThat(body).contains("Test User");
-    }
-
-    @Test
-    @WithOrgA
-    void get_segment_snapshot_csv_cross_org_returns_404() throws Exception {
-        UUID foreignSegId = UUID.randomUUID();
-        when(segmentService.requireSegmentForOrg(ORG_A, foreignSegId))
-                .thenThrow(ApiException.notFound("Segment"));
-
-        // Do NOT send Accept: text/csv — the global exception handler returns JSON,
-        // and Spring cannot negotiate a CSV error body, which would produce 406 instead of 404.
-        mvc.perform(get("/api/v1/audience/segments/" + foreignSegId + "/snapshot"))
-                .andExpect(status().isNotFound())
-                .andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
+    private static RequestPostProcessor auth(AuthPrincipal p) {
+        return authentication(new UsernamePasswordAuthenticationToken(p, null,
+                List.of(new SimpleGrantedAuthority("ROLE_" + p.role().name()))));
     }
 }

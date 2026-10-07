@@ -4,34 +4,35 @@ import com.imin.iminapi.audience.dto.SegmentResolveDto;
 import com.imin.iminapi.audience.model.*;
 import com.imin.iminapi.audience.repository.*;
 import com.imin.iminapi.audience.service.*;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.*;
 import com.imin.iminapi.repository.*;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
-import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.service.audit.AuditActions;
+import com.imin.iminapi.support.AuditRows;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.http.HttpStatus;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.jdbc.core.JdbcTemplate;
 
-import javax.sql.DataSource;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.*;
 
 /**
  * Segment tests:
- * - resolve(rules).size() == count(resolve) for each provisioned prebuilt segment
+ * - resolve(rules).size() == resolve DTO matched for each provisioned prebuilt segment
  * - each prebuilt predicate matches correctly
  * - static snapshot frozen while dynamic re-evaluates
  * - custom rule JSON evaluated correctly
  * - segment isolation: segments from orgA not visible to orgB
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class AudienceSegmentTest {
 
     @Autowired MembershipRepository membershipRepo;
@@ -40,10 +41,9 @@ class AudienceSegmentTest {
     @Autowired ConsentRecordRepository consentRepo;
     @Autowired AudienceOrderProjector orderProjector;
     @Autowired SegmentService segmentService;
-    @Autowired OrganizationRepository orgRepo;
-    @Autowired DataSource dataSource;
-
-    @MockitoBean AuditLogger auditLogger;
+    @Autowired JdbcTemplate jdbc;
+    @Autowired IminFixtures fx;
+    @Autowired AuditRows audit;
 
     private UUID orgA;
     private UUID orgB;
@@ -51,14 +51,21 @@ class AudienceSegmentTest {
 
     @BeforeEach
     void setUp() {
-        wipe();
-        orgA = org("SegOrgA").getId();
-        orgB = org("SegOrgB").getId();
+        orgA = fx.org().getId();
+        orgB = fx.org().getId();
         principalA = new AuthPrincipal(UUID.randomUUID(), orgA, UserRole.OWNER, UUID.randomUUID());
     }
 
+    /** Own memberships (consent rows and fan features cascade), own segments, then own orgs. */
     @AfterEach
-    void tearDown() { wipe(); }
+    void tearDown() {
+        try {
+            jdbc.update("delete from memberships where org_id in (?, ?)", orgA, orgB);
+            jdbc.update("delete from segments where org_id in (?, ?)", orgA, orgB);
+        } finally {
+            OrgRows.delete(jdbc, List.of(orgA, orgB));
+        }
+    }
 
     // ─────────────────────────────────────────────────────────────────────────
     // Prebuilt segment 1: Repeat (events >= 2)
@@ -70,17 +77,17 @@ class AudienceSegmentTest {
         Segment seg = findPrebuilt(orgA, "Repeat");
 
         // Member with 1 event — should NOT match
-        Membership m1 = seedMembership(orgA, "onetimer@s.com");
+        Membership m1 = seedMembership(orgA, fx.email("onetimer"));
         m1.setEvents(1);
         membershipRepo.save(m1);
 
         // Member with 2 events — should match
-        Membership m2 = seedMembership(orgA, "repeat@s.com");
+        Membership m2 = seedMembership(orgA, fx.email("repeat"));
         m2.setEvents(2);
         membershipRepo.save(m2);
 
         // Member with 5 events — should match
-        Membership m3 = seedMembership(orgA, "super@s.com");
+        Membership m3 = seedMembership(orgA, fx.email("super"));
         m3.setEvents(5);
         membershipRepo.save(m3);
 
@@ -88,25 +95,6 @@ class AudienceSegmentTest {
         assertThat(resolved).extracting(Membership::getMembershipId)
                 .containsExactlyInAnyOrder(m2.getMembershipId(), m3.getMembershipId());
         assertThat(resolved).doesNotContain(m1);
-    }
-
-    @Test
-    void prebuilt_repeat_resolve_count_equals_resolve_size() {
-        segmentService.ensurePrebuiltSegments(orgA);
-        Segment seg = findPrebuilt(orgA, "Repeat");
-
-        Membership m1 = seedMembership(orgA, "rep1@s.com");
-        m1.setEvents(3);
-        membershipRepo.save(m1);
-        Membership m2 = seedMembership(orgA, "rep2@s.com");
-        m2.setEvents(2);
-        membershipRepo.save(m2);
-
-        SegmentResolveDto dto = segmentService.resolve(orgA, seg.getId());
-        List<Membership> list = segmentService.resolveMembers(orgA, seg);
-
-        assertThat(dto.matched()).isEqualTo(list.size());
-        assertThat(dto.matched()).isEqualTo(2);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -119,19 +107,19 @@ class AudienceSegmentTest {
         Segment seg = findPrebuilt(orgA, "VIP");
 
         // Should match
-        Membership vip = seedMembership(orgA, "vip@s.com");
+        Membership vip = seedMembership(orgA, fx.email("vip"));
         vip.setSpendMinor(25000);
         vip.setEvents(4);
         membershipRepo.save(vip);
 
         // Spend ok but not enough events
-        Membership notVip1 = seedMembership(orgA, "notvip1@s.com");
+        Membership notVip1 = seedMembership(orgA, fx.email("notvip1"));
         notVip1.setSpendMinor(25000);
         notVip1.setEvents(3);
         membershipRepo.save(notVip1);
 
         // Events ok but not enough spend
-        Membership notVip2 = seedMembership(orgA, "notvip2@s.com");
+        Membership notVip2 = seedMembership(orgA, fx.email("notvip2"));
         notVip2.setSpendMinor(19999);
         notVip2.setEvents(5);
         membershipRepo.save(notVip2);
@@ -139,21 +127,6 @@ class AudienceSegmentTest {
         List<Membership> resolved = segmentService.resolveMembers(orgA, seg);
         assertThat(resolved).extracting(Membership::getMembershipId)
                 .containsExactly(vip.getMembershipId());
-    }
-
-    @Test
-    void prebuilt_vip_resolve_count_equals_resolve_size() {
-        segmentService.ensurePrebuiltSegments(orgA);
-        Segment seg = findPrebuilt(orgA, "VIP");
-
-        Membership v = seedMembership(orgA, "vip2@s.com");
-        v.setSpendMinor(20000);
-        v.setEvents(4);
-        membershipRepo.save(v);
-
-        SegmentResolveDto dto = segmentService.resolve(orgA, seg.getId());
-        List<Membership> list = segmentService.resolveMembers(orgA, seg);
-        assertThat(dto.matched()).isEqualTo(list.size());
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -166,19 +139,19 @@ class AudienceSegmentTest {
         Segment seg = findPrebuilt(orgA, "Lapsed");
 
         // Lapsed + subscribed → should match
-        Membership lapsed = seedMembership(orgA, "lapsed@s.com");
+        Membership lapsed = seedMembership(orgA, fx.email("lapsed"));
         lapsed.setRecencyDays(120);
         lapsed.setConsentStatus("subscribed");
         membershipRepo.save(lapsed);
 
         // Recent subscribed → should NOT match
-        Membership recent = seedMembership(orgA, "recent@s.com");
+        Membership recent = seedMembership(orgA, fx.email("recent"));
         recent.setRecencyDays(30);
         recent.setConsentStatus("subscribed");
         membershipRepo.save(recent);
 
         // Lapsed but unsubscribed → should NOT match
-        Membership unsubscribed = seedMembership(orgA, "unsub@s.com");
+        Membership unsubscribed = seedMembership(orgA, fx.email("unsub"));
         unsubscribed.setRecencyDays(120);
         unsubscribed.setConsentStatus("unsubscribed");
         membershipRepo.save(unsubscribed);
@@ -186,21 +159,6 @@ class AudienceSegmentTest {
         List<Membership> resolved = segmentService.resolveMembers(orgA, seg);
         assertThat(resolved).extracting(Membership::getMembershipId)
                 .containsExactly(lapsed.getMembershipId());
-    }
-
-    @Test
-    void prebuilt_lapsed_resolve_count_equals_resolve_size() {
-        segmentService.ensurePrebuiltSegments(orgA);
-        Segment seg = findPrebuilt(orgA, "Lapsed");
-
-        Membership l = seedMembership(orgA, "l1@s.com");
-        l.setRecencyDays(90);
-        l.setConsentStatus("subscribed");
-        membershipRepo.save(l);
-
-        SegmentResolveDto dto = segmentService.resolve(orgA, seg.getId());
-        List<Membership> list = segmentService.resolveMembers(orgA, seg);
-        assertThat(dto.matched()).isEqualTo(list.size());
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -212,35 +170,20 @@ class AudienceSegmentTest {
         segmentService.ensurePrebuiltSegments(orgA);
         Segment seg = findPrebuilt(orgA, "First-timers");
 
-        Membership first = seedMembership(orgA, "first@s.com");
+        Membership first = seedMembership(orgA, fx.email("first"));
         first.setEvents(1);
         membershipRepo.save(first);
 
-        Membership repeat = seedMembership(orgA, "repeat2@s.com");
+        Membership repeat = seedMembership(orgA, fx.email("repeat2"));
         repeat.setEvents(2);
         membershipRepo.save(repeat);
 
-        Membership prospect = seedMembership(orgA, "prosp@s.com");
+        Membership prospect = seedMembership(orgA, fx.email("prosp"));
         // events=0 by default
 
         List<Membership> resolved = segmentService.resolveMembers(orgA, seg);
         assertThat(resolved).extracting(Membership::getMembershipId)
                 .containsExactly(first.getMembershipId());
-    }
-
-    @Test
-    void prebuilt_firsttimers_resolve_count_equals_resolve_size() {
-        segmentService.ensurePrebuiltSegments(orgA);
-        Segment seg = findPrebuilt(orgA, "First-timers");
-
-        Membership m = seedMembership(orgA, "ft1@s.com");
-        m.setEvents(1);
-        membershipRepo.save(m);
-
-        SegmentResolveDto dto = segmentService.resolve(orgA, seg.getId());
-        List<Membership> list = segmentService.resolveMembers(orgA, seg);
-        assertThat(dto.matched()).isEqualTo(list.size());
-        assertThat(dto.matched()).isEqualTo(1);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -268,10 +211,10 @@ class AudienceSegmentTest {
         legacy.setRulesJson(PrebuiltSegment.PROMOTERS.rulesJson());
         legacy = segmentRepo.save(legacy);
 
-        Membership promoter = seedMembership(orgA, "prom@s.com");
+        Membership promoter = seedMembership(orgA, fx.email("prom"));
         promoter.setNps((short) 9);
         membershipRepo.save(promoter);
-        seedMembership(orgA, "nonps@s.com");
+        seedMembership(orgA, fx.email("nonps"));
 
         assertThat(segmentService.listSegments(orgA)).extracting(Segment::getId).doesNotContain(legacy.getId());
         assertThat(segmentService.listSegments(orgA)).hasSize(6);
@@ -327,11 +270,11 @@ class AudienceSegmentTest {
         segmentService.ensurePrebuiltSegments(orgA);
         Segment seg = findPrebuilt(orgA, "Bought-no-showed");
 
-        Membership noShow = seedMembership(orgA, "noshow@s.com");
+        Membership noShow = seedMembership(orgA, fx.email("noshow"));
         noShow.setNoShow(1);
         membershipRepo.save(noShow);
 
-        Membership attended = seedMembership(orgA, "attended@s.com");
+        Membership attended = seedMembership(orgA, fx.email("attended"));
         attended.setAttended(1);
         // noShow=0 by default
         membershipRepo.save(attended);
@@ -339,20 +282,6 @@ class AudienceSegmentTest {
         List<Membership> resolved = segmentService.resolveMembers(orgA, seg);
         assertThat(resolved).extracting(Membership::getMembershipId)
                 .containsExactly(noShow.getMembershipId());
-    }
-
-    @Test
-    void prebuilt_bought_no_showed_resolve_count_equals_resolve_size() {
-        segmentService.ensurePrebuiltSegments(orgA);
-        Segment seg = findPrebuilt(orgA, "Bought-no-showed");
-
-        Membership ns = seedMembership(orgA, "ns2@s.com");
-        ns.setNoShow(2);
-        membershipRepo.save(ns);
-
-        SegmentResolveDto dto = segmentService.resolve(orgA, seg.getId());
-        List<Membership> list = segmentService.resolveMembers(orgA, seg);
-        assertThat(dto.matched()).isEqualTo(list.size());
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -365,25 +294,25 @@ class AudienceSegmentTest {
         Segment seg = findPrebuilt(orgA, "Newest-30d");
 
         // Should match: recent, single-event
-        Membership newest = seedMembership(orgA, "newest@s.com");
+        Membership newest = seedMembership(orgA, fx.email("newest"));
         newest.setRecencyDays(15);
         newest.setEvents(1);
         membershipRepo.save(newest);
 
         // Should match: recency=30, events=0 (prospect who signed up recently)
-        Membership prospect = seedMembership(orgA, "newprospect@s.com");
+        Membership prospect = seedMembership(orgA, fx.email("newprospect"));
         prospect.setRecencyDays(30);
         prospect.setEvents(0);
         membershipRepo.save(prospect);
 
         // Should NOT match: too old
-        Membership old = seedMembership(orgA, "old@s.com");
+        Membership old = seedMembership(orgA, fx.email("old"));
         old.setRecencyDays(31);
         old.setEvents(1);
         membershipRepo.save(old);
 
         // Should NOT match: recent but repeat
-        Membership repeatRecent = seedMembership(orgA, "repeatrecent@s.com");
+        Membership repeatRecent = seedMembership(orgA, fx.email("repeatrecent"));
         repeatRecent.setRecencyDays(5);
         repeatRecent.setEvents(2);
         membershipRepo.save(repeatRecent);
@@ -393,20 +322,66 @@ class AudienceSegmentTest {
                 .containsExactlyInAnyOrder(newest.getMembershipId(), prospect.getMembershipId());
     }
 
-    @Test
-    void prebuilt_newest30d_resolve_count_equals_resolve_size() {
+    /**
+     * The resolve DTO's matched count (members the gate gave a verdict) equals the resolved list for every
+     * provisioned prebuilt; a NULL expected means the row pins the equality only.
+     */
+    @ParameterizedTest(name = "{0}")
+    @CsvSource(nullValues = "NULL", value = {
+            "Repeat,           2",
+            "VIP,              NULL",
+            "Lapsed,           NULL",
+            "First-timers,     1",
+            "Bought-no-showed, NULL",
+            "Newest-30d,       1"})
+    void prebuilt_resolve_count_equals_resolve_size(String prebuilt, Integer expected) {
         segmentService.ensurePrebuiltSegments(orgA);
-        Segment seg = findPrebuilt(orgA, "Newest-30d");
-
-        Membership m = seedMembership(orgA, "n2@s.com");
-        m.setRecencyDays(7);
-        m.setEvents(1);
-        membershipRepo.save(m);
+        Segment seg = findPrebuilt(orgA, prebuilt);
+        switch (prebuilt) {
+            case "Repeat" -> {
+                Membership m1 = seedMembership(orgA, fx.email("rep1"));
+                m1.setEvents(3);
+                membershipRepo.save(m1);
+                Membership m2 = seedMembership(orgA, fx.email("rep2"));
+                m2.setEvents(2);
+                membershipRepo.save(m2);
+            }
+            case "VIP" -> {
+                Membership v = seedMembership(orgA, fx.email("vip2"));
+                v.setSpendMinor(20000);
+                v.setEvents(4);
+                membershipRepo.save(v);
+            }
+            case "Lapsed" -> {
+                Membership l = seedMembership(orgA, fx.email("l1"));
+                l.setRecencyDays(90);
+                l.setConsentStatus("subscribed");
+                membershipRepo.save(l);
+            }
+            case "First-timers" -> {
+                Membership m = seedMembership(orgA, fx.email("ft1"));
+                m.setEvents(1);
+                membershipRepo.save(m);
+            }
+            case "Bought-no-showed" -> {
+                Membership ns = seedMembership(orgA, fx.email("ns2"));
+                ns.setNoShow(2);
+                membershipRepo.save(ns);
+            }
+            case "Newest-30d" -> {
+                Membership m = seedMembership(orgA, fx.email("n2"));
+                m.setRecencyDays(7);
+                m.setEvents(1);
+                membershipRepo.save(m);
+            }
+            default -> throw new IllegalArgumentException(prebuilt);
+        }
 
         SegmentResolveDto dto = segmentService.resolve(orgA, seg.getId());
         List<Membership> list = segmentService.resolveMembers(orgA, seg);
+
         assertThat(dto.matched()).isEqualTo(list.size());
-        assertThat(dto.matched()).isEqualTo(1);
+        if (expected != null) assertThat(dto.matched()).isEqualTo(expected);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -432,7 +407,7 @@ class AudienceSegmentTest {
         assertThat(reloaded.getSnapshotIds()).isNull();
 
         // Momentum's default target keeps re-evaluating.
-        Membership m = seedMembership(orgA, "afterrefusal@s.com");
+        Membership m = seedMembership(orgA, fx.email("afterrefusal"));
         m.setEvents(2);
         membershipRepo.save(m);
         assertThat(segmentService.resolveMembers(orgA, reloaded))
@@ -453,7 +428,7 @@ class AudienceSegmentTest {
         assertThat(snapped.getKind()).isEqualTo("static");
 
         // Add a repeat member AFTER snapshot
-        Membership m = seedMembership(orgA, "aftersnap@s.com");
+        Membership m = seedMembership(orgA, fx.email("aftersnap"));
         m.setEvents(2);
         membershipRepo.save(m);
 
@@ -479,7 +454,7 @@ class AudienceSegmentTest {
                         + "{\"field\":\"events\",\"operator\":\">=\",\"value\":\"4\"}]", principalA);
 
         // Add a VIP
-        Membership vip = seedMembership(orgA, "snapvip@s.com");
+        Membership vip = seedMembership(orgA, fx.email("snapvip"));
         vip.setSpendMinor(20000);
         vip.setEvents(4);
         membershipRepo.save(vip);
@@ -512,21 +487,22 @@ class AudienceSegmentTest {
         String rulesJson = "[{\"field\":\"events\",\"operator\":\">=\",\"value\":\"3\"}," +
                             "{\"field\":\"spend_minor\",\"operator\":\">=\",\"value\":\"10000\"}]";
         Segment custom = segmentService.createSegment(orgA, "Big Spenders", "dynamic", rulesJson, principalA);
+        audit.assertRecorded(orgA, AuditActions.SEGMENT_CREATED, "segment", custom.getId());
 
         // Matches both conditions
-        Membership both = seedMembership(orgA, "bigspend@s.com");
+        Membership both = seedMembership(orgA, fx.email("bigspend"));
         both.setEvents(5);
         both.setSpendMinor(15000);
         membershipRepo.save(both);
 
         // Enough events but not enough spend
-        Membership eventsOnly = seedMembership(orgA, "eventsonly@s.com");
+        Membership eventsOnly = seedMembership(orgA, fx.email("eventsonly"));
         eventsOnly.setEvents(5);
         eventsOnly.setSpendMinor(5000);
         membershipRepo.save(eventsOnly);
 
         // Enough spend but not enough events
-        Membership spendOnly = seedMembership(orgA, "spendonly@s.com");
+        Membership spendOnly = seedMembership(orgA, fx.email("spendonly"));
         spendOnly.setEvents(2);
         spendOnly.setSpendMinor(15000);
         membershipRepo.save(spendOnly);
@@ -541,10 +517,10 @@ class AudienceSegmentTest {
         String rulesJson = "[{\"field\":\"events\",\"operator\":\">=\",\"value\":\"2\"}]";
         Segment seg = segmentService.createSegment(orgA, "Repeaters", "dynamic", rulesJson, principalA);
 
-        Membership r1 = seedMembership(orgA, "cr1@s.com");
+        Membership r1 = seedMembership(orgA, fx.email("cr1"));
         r1.setEvents(2);
         membershipRepo.save(r1);
-        Membership r2 = seedMembership(orgA, "cr2@s.com");
+        Membership r2 = seedMembership(orgA, fx.email("cr2"));
         r2.setEvents(3);
         membershipRepo.save(r2);
 
@@ -575,7 +551,7 @@ class AudienceSegmentTest {
         impostor.setRulesJson("[{\"field\":\"events\",\"operator\":\">=\",\"value\":\"1\"}]");
         impostor = segmentRepo.save(impostor);
 
-        Membership modest = seedMembership(orgA, "modest@s.com");
+        Membership modest = seedMembership(orgA, fx.email("modest"));
         modest.setEvents(1);
         modest.setSpendMinor(500);
         membershipRepo.save(modest);
@@ -592,7 +568,7 @@ class AudienceSegmentTest {
         Segment vipSegment = findPrebuilt(orgA, "VIP");
         assertThat(vipSegment.getPrebuiltKey()).isEqualTo("VIP");
 
-        Membership modest = seedMembership(orgA, "modest2@s.com");
+        Membership modest = seedMembership(orgA, fx.email("modest2"));
         modest.setEvents(1);
         modest.setSpendMinor(500);
         membershipRepo.save(modest);
@@ -634,7 +610,7 @@ class AudienceSegmentTest {
      */
     @Test
     void a_segment_whose_rules_cannot_be_parsed_matches_nobody() {
-        Membership anyone = seedMembership(orgA, "unparseable@s.com");
+        Membership anyone = seedMembership(orgA, fx.email("unparseable"));
         anyone.setEvents(4);
         membershipRepo.save(anyone);
 
@@ -653,7 +629,7 @@ class AudienceSegmentTest {
     /** A blank rules_json still means "everyone" — that is documented, not a parse failure. */
     @Test
     void a_segment_with_no_rules_still_matches_everyone() {
-        Membership anyone = seedMembership(orgA, "norules@s.com");
+        Membership anyone = seedMembership(orgA, fx.email("norules"));
         membershipRepo.save(anyone);
 
         Segment all = segmentService.createSegment(orgA, "Everyone", "dynamic", null, principalA);
@@ -667,11 +643,11 @@ class AudienceSegmentTest {
     void live_count_agrees_with_resolved_size_for_every_segment_kind() {
         segmentService.ensurePrebuiltSegments(orgA);
 
-        Membership repeat = seedMembership(orgA, "lc-repeat@s.com");
+        Membership repeat = seedMembership(orgA, fx.email("lc-repeat"));
         repeat.setEvents(3);
         repeat.setSpendMinor(30000);
         membershipRepo.save(repeat);
-        Membership single = seedMembership(orgA, "lc-single@s.com");
+        Membership single = seedMembership(orgA, fx.email("lc-single"));
         single.setEvents(1);
         membershipRepo.save(single);
 
@@ -729,7 +705,7 @@ class AudienceSegmentTest {
         Segment seg = findPrebuilt(orgA, "Repeat");
 
         // Member with a proven consent (door QR, text version, recent)
-        Membership withConsent = seedMembership(orgA, "consented@s.com");
+        Membership withConsent = seedMembership(orgA, fx.email("consented"));
         withConsent.setEvents(3);
         withConsent.setConsentStatus("subscribed");
         withConsent.setConsentBasis("explicit");
@@ -743,7 +719,7 @@ class AudienceSegmentTest {
         consentRepo.save(proof);
 
         // Member without consent
-        Membership noConsent = seedMembership(orgA, "noconsent@s.com");
+        Membership noConsent = seedMembership(orgA, fx.email("noconsent"));
         noConsent.setEvents(2);
         // consentStatus='never' by default, consentBasis=null
         membershipRepo.save(noConsent);
@@ -780,33 +756,5 @@ class AudienceSegmentTest {
         m.setOrgId(orgId);
         m.setConsumerId(consumer.getConsumerId());
         return membershipRepo.save(m);
-    }
-
-    private Organization org(String name) {
-        Organization o = new Organization();
-        o.setName(name);
-        o.setSlug(name.toLowerCase() + "-" + UUID.randomUUID().toString().substring(0, 6));
-        o.setContactEmail(name + "@test.com");
-        o.setCountry("DE");
-        return orgRepo.save(o);
-    }
-
-    private void wipe() {
-        try (java.sql.Connection c = dataSource.getConnection();
-             java.sql.Statement s = c.createStatement()) {
-            s.execute("delete from suppression_entries");
-            s.execute("delete from consent_records");
-            s.execute("delete from fan_features");
-            s.execute("delete from segments");
-            s.execute("delete from memberships");
-            s.execute("delete from consumers");
-            s.execute("delete from tickets");
-            s.execute("delete from orders");
-            s.execute("delete from events");
-            s.execute("delete from users");
-            s.execute("delete from organizations");
-        } catch (Exception e) {
-            throw new RuntimeException("wipe() failed: " + e.getMessage(), e);
-        }
     }
 }

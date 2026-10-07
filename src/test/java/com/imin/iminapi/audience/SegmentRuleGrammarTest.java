@@ -16,23 +16,21 @@ import com.imin.iminapi.audience.service.SegmentService;
 import com.imin.iminapi.audienceplan.model.FanFeature;
 import com.imin.iminapi.audienceplan.repository.FanFeatureRepository;
 import com.imin.iminapi.audienceplan.service.ConsentGate;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.*;
 import com.imin.iminapi.repository.*;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
-import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
-import java.time.Instant;
+import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -41,8 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** The segment rule grammar: groups, the new fields, validation and ConsentGate exclusion reasons. */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class SegmentRuleGrammarTest {
 
     @Autowired SegmentService segmentService;
@@ -56,8 +53,7 @@ class SegmentRuleGrammarTest {
     @Autowired OrderRepository orderRepo;
     @Autowired TicketRepository ticketRepo;
     @Autowired JdbcTemplate jdbc;
-
-    @MockitoBean AuditLogger auditLogger;
+    @Autowired Clock clock;
 
     private UUID orgA;
     private UUID orgB;
@@ -268,60 +264,61 @@ class SegmentRuleGrammarTest {
         assertThat(s.getId()).isNotNull();
     }
 
-    @Test
-    void create_rejects_a_genre_outside_the_8_buckets() {
-        assertRejected(groups(group("and", rule("genre", "==", "techno"))), "genre must be one of the 8 genre buckets");
+    /** Every invalid rule set is a 400 naming the problem on {@code rulesJson}; nothing is saved. */
+    @ParameterizedTest(name = "{0}")
+    @CsvSource(delimiter = '|', value = {
+            "genre outside the 8 buckets      | genre must be one of the 8 genre buckets",
+            "unknown guest class              | guest_class must be one of",
+            "in on a legacy field             | unsupported operator 'in'",
+            "ordering on a set field          | unsupported operator '>='",
+            "empty in list                    | is missing a value",
+            "unknown combinator               | must be a JSON array",
+            "another org's event              | not yours",
+            "non-uuid event                   | needs an event id",
+            "11 groups                        | more than 10 groups",
+            "51 values                        | more than 50 values",
+            "group of 21 rules                | a group has more than 20 rules",
+            "201-character value              | has a value that is too long",
+            "201-character value in a list    | has a value that is too long",
+            "unknown field                    | uses an unknown field 'totally_unknown'"})
+    void create_rejects_an_invalid_rule_set(String name, String message) {
+        assertRejected(rejectedRules(name), message);
     }
 
     @Test
-    void create_rejects_an_unknown_guest_class() {
-        assertRejected(groups(group("and", rule("guest_class", "==", "vip"))), "guest_class must be one of");
-    }
-
-    @Test
-    void create_rejects_in_on_a_legacy_field_and_ordering_on_a_set_field() {
-        assertRejected("[{\"field\":\"events\",\"operator\":\"in\",\"value\":\"1,2\"}]", "unsupported operator 'in'");
-        assertRejected(groups(group("and", rule("genre", ">=", "pop"))), "unsupported operator '>='");
-    }
-
-    @Test
-    void create_rejects_an_empty_in_list_and_an_unknown_combinator() {
-        assertRejected(groups(group("and", rule("city", "in", " , "))), "is missing a value");
-        assertRejected("{\"groups\":[{\"combinator\":\"xor\",\"rules\":[]}]}", "must be a JSON array");
-    }
-
-    @Test
-    void create_rejects_another_orgs_event_and_a_non_uuid_event() {
-        UUID eventB = event(orgB);
-        assertRejected(groups(group("and", rule("attended_event", "==", eventB.toString()))), "not yours");
-        assertRejected(groups(group("and", rule("attended_event", "==", "last-friday"))), "needs an event id");
-    }
-
-    @Test
-    void create_rejects_too_many_groups_and_values() {
-        StringBuilder many = new StringBuilder("{\"groups\":[");
-        for (int i = 0; i < 11; i++) many.append(i == 0 ? "" : ",").append(group("and", rule("events", ">=", "1")));
-        assertRejected(many.append("]}").toString(), "more than 10 groups");
-        String values = String.join(",", java.util.stream.IntStream.range(0, 51).mapToObj(i -> "c" + i).toList());
-        assertRejected(groups(group("and", rule("city", "in", values))), "more than 50 values");
-    }
-
-    @Test
-    void create_rejects_a_group_of_21_rules_and_accepts_20() {
+    void create_accepts_20_rules_in_a_group_and_a_200_character_value() {
         String[] twenty = java.util.Collections.nCopies(20, rule("events", ">=", "1")).toArray(String[]::new);
-        String[] twentyOne = java.util.Collections.nCopies(21, rule("events", ">=", "1")).toArray(String[]::new);
 
         assertThat(segmentService.createSegment(orgA, "Twenty", "dynamic", groups(group("and", twenty)), principal).getId())
                 .isNotNull();
-        assertRejected(groups(group("and", twentyOne)), "a group has more than 20 rules");
-    }
-
-    @Test
-    void create_rejects_a_201_character_value_and_accepts_200() {
         assertThat(segmentService.createSegment(orgA, "Long city", "dynamic",
                 groups(group("and", rule("city", "==", "c".repeat(200)))), principal).getId()).isNotNull();
-        assertRejected(groups(group("and", rule("city", "==", "c".repeat(201)))), "has a value that is too long");
-        assertRejected(groups(group("and", rule("city", "in", "metz," + "c".repeat(201)))), "has a value that is too long");
+    }
+
+    private String rejectedRules(String name) {
+        return switch (name) {
+            case "genre outside the 8 buckets" -> groups(group("and", rule("genre", "==", "techno")));
+            case "unknown guest class" -> groups(group("and", rule("guest_class", "==", "vip")));
+            case "in on a legacy field" -> "[{\"field\":\"events\",\"operator\":\"in\",\"value\":\"1,2\"}]";
+            case "ordering on a set field" -> groups(group("and", rule("genre", ">=", "pop")));
+            case "empty in list" -> groups(group("and", rule("city", "in", " , ")));
+            case "unknown combinator" -> "{\"groups\":[{\"combinator\":\"xor\",\"rules\":[]}]}";
+            case "another org's event" -> groups(group("and", rule("attended_event", "==", event(orgB).toString())));
+            case "non-uuid event" -> groups(group("and", rule("attended_event", "==", "last-friday")));
+            case "11 groups" -> {
+                StringBuilder many = new StringBuilder("{\"groups\":[");
+                for (int i = 0; i < 11; i++) many.append(i == 0 ? "" : ",").append(group("and", rule("events", ">=", "1")));
+                yield many.append("]}").toString();
+            }
+            case "51 values" -> groups(group("and", rule("city", "in",
+                    String.join(",", java.util.stream.IntStream.range(0, 51).mapToObj(i -> "c" + i).toList()))));
+            case "group of 21 rules" -> groups(group("and",
+                    java.util.Collections.nCopies(21, rule("events", ">=", "1")).toArray(String[]::new)));
+            case "201-character value" -> groups(group("and", rule("city", "==", "c".repeat(201))));
+            case "201-character value in a list" -> groups(group("and", rule("city", "in", "metz," + "c".repeat(201))));
+            case "unknown field" -> "[{\"field\":\"totally_unknown\",\"operator\":\">=\",\"value\":\"3\"}]";
+            default -> throw new IllegalArgumentException(name);
+        };
     }
 
     @Test
@@ -542,7 +539,7 @@ class SegmentRuleGrammarTest {
         r.setLawfulBasis("explicit");
         r.setSource("door_qr");
         r.setTextVersion("door-v1");
-        r.setOccurredAt(Instant.now());
+        r.setOccurredAt(clock.instant());
         consentRepo.save(r);
     }
 
@@ -558,7 +555,7 @@ class SegmentRuleGrammarTest {
         e.setSlug("g-event-" + UUID.randomUUID().toString().substring(0, 12));
         e.setVisibility(EventVisibility.PUBLIC);
         e.setStatus(EventStatus.LIVE);
-        e.setStartsAt(Instant.now().plusSeconds(86400));
+        e.setStartsAt(clock.instant().plusSeconds(86400));
         e.setCreatedBy(owner.getId());
         e.setCurrency("EUR");
         return eventRepo.save(e).getId();

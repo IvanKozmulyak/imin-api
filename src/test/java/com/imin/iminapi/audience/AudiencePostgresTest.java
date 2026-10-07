@@ -8,27 +8,22 @@ import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.AudienceMetricsService;
 import com.imin.iminapi.audience.service.AudienceService;
-import com.imin.iminapi.config.TestRateLimitConfig;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
+import org.springframework.jdbc.core.JdbcTemplate;
 
-import javax.sql.DataSource;
-import java.sql.Connection;
-import java.sql.ResultSet;
-import java.sql.Statement;
+import java.sql.Timestamp;
+import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 
 // Note: MemberDto.membershipId() returns String (UUID.toString()), not UUID.
@@ -36,164 +31,125 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Postgres integration test for Audience read queries.
+ * Audience read queries on the shared Postgres. The paged member list runs through {@code MemberListQuery};
+ * the CSV export through {@code listByOrg}/{@code searchByOrg} (case D).
  *
- * <p>Runs against a real Postgres 17 container via Testcontainers.
- * Skips gracefully when Docker is absent ({@code @Testcontainers(disabledWithoutDocker=true)}).
- *
- * <p>The regression canary: before the fix, passing {@code search=null} into
- * the single-method {@code listByOrg} would bind the nullable String as {@code bytea}
- * on Postgres, causing {@code function lower(bytea) does not exist}. H2 silently
- * accepted the same query. These tests would have FAILED before the split into
- * {@code listByOrg} / {@code searchByOrg}.
+ * <p>The regression canary (case D): a nullable {@code search} bound into one query with {@code lower(:search)}
+ * became {@code bytea} on Postgres ({@code function lower(bytea) does not exist}); H2 accepted it, hence the split.
  */
-@Testcontainers(disabledWithoutDocker = true)
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class AudiencePostgresTest {
-
-    @Container
-    @ServiceConnection
-    static final PostgreSQLContainer<?> PG =
-            new PostgreSQLContainer<>("postgres:17-alpine");
-
-    /**
-     * Override the H2 settings baked into src/test/resources/application.yaml so the
-     * full Spring context boots against the Testcontainers Postgres, not H2.
-     * Also disable docker-compose integration (it is off in test yaml already, but
-     * belt-and-suspenders) and keep Flyway enabled so V47-V51 run on the real DB.
-     */
-    @DynamicPropertySource
-    static void overrideDataSource(DynamicPropertyRegistry r) {
-        r.add("spring.datasource.url",            PG::getJdbcUrl);
-        r.add("spring.datasource.username",        PG::getUsername);
-        r.add("spring.datasource.password",        PG::getPassword);
-        r.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
-        // Use "none" not "validate" — Hibernate trips on Postgres CHAR(n) vs varchar pedantry
-        // in the auth_sessions.token_hash column; Flyway already guarantees schema correctness.
-        r.add("spring.jpa.hibernate.ddl-auto",     () -> "none");
-        r.add("spring.jpa.properties.hibernate.dialect",
-              () -> "org.hibernate.dialect.PostgreSQLDialect");
-        r.add("spring.flyway.enabled",             () -> "true");
-        r.add("spring.docker.compose.enabled",     () -> "false");
-    }
-
-    // ── beans under test ──────────────────────────────────────────────────────
 
     @Autowired AudienceService        audienceService;
     @Autowired AudienceMetricsService metricsService;
     @Autowired MembershipRepository   membershipRepo;
     @Autowired ConsumerRepository     consumerRepo;
-    @Autowired DataSource             dataSource;
+    @Autowired JdbcTemplate           jdbc;
+    @Autowired IminFixtures           fx;
+    @Autowired Clock                  clock;
 
-    // ── fixture UUIDs ─────────────────────────────────────────────────────────
-
-    static final UUID ORG_A = UUID.fromString("aaaaaaaa-0000-0000-0000-000000000001");
-    static final UUID ORG_B = UUID.fromString("bbbbbbbb-0000-0000-0000-000000000002");
-
-    // ── setup / teardown ─────────────────────────────────────────────────────
+    // Audience tables have no FK to organizations: fresh ids per test keep every query own-org.
+    private UUID orgA;
+    private UUID orgB;
+    private String bobEmail;
+    private String danaEmail;
+    private Consumer bob;
 
     @BeforeEach
     void seedData() {
-        wipe();
+        orgA = UUID.randomUUID();
+        orgB = UUID.randomUUID();
+        bobEmail = fx.email("bob");
+        danaEmail = fx.email("dana");
+        Instant now = clock.instant();
         // Org A: 3 members
         // member-1: "Alice Dupont"  – lifecycle=prospect,  last_purchase=null
         // member-2: "Bob Marley"    – lifecycle=firsttime, last_purchase set
         // member-3: "Carlos Ruiz"   – lifecycle=repeat,    last_purchase set
         // Org B: 1 member (scoping canary)
-        seedMembership(ORG_A, "alice@a.com",  "Alice Dupont", "prospect",  null,
-                Instant.now().minus(3, ChronoUnit.HOURS));
-        seedMembership(ORG_A, "bob@a.com",    "Bob Marley",   "firsttime",
-                Instant.now().minus(2, ChronoUnit.DAYS),
-                Instant.now().minus(2, ChronoUnit.HOURS));
-        seedMembership(ORG_A, "carlos@a.com", "Carlos Ruiz",  "repeat",
-                Instant.now().minus(1, ChronoUnit.DAYS),
-                Instant.now().minus(1, ChronoUnit.HOURS));
+        seedMembership(orgA, fx.email("alice"), "Alice Dupont", "prospect", null,
+                now.minus(3, ChronoUnit.HOURS));
+        bob = seedMembership(orgA, bobEmail, "Bob Marley", "firsttime",
+                now.minus(2, ChronoUnit.DAYS),
+                now.minus(2, ChronoUnit.HOURS));
+        seedMembership(orgA, fx.email("carlos"), "Carlos Ruiz", "repeat",
+                now.minus(1, ChronoUnit.DAYS),
+                now.minus(1, ChronoUnit.HOURS));
         // Org B member – must never appear in org A queries
-        seedMembership(ORG_B, "dana@b.com",   "Dana Other",   "prospect", null,
-                Instant.now().minus(30, ChronoUnit.MINUTES));
+        seedMembership(orgB, danaEmail, "Dana Other", "prospect", null,
+                now.minus(30, ChronoUnit.MINUTES));
     }
 
     @AfterEach
     void cleanup() {
-        wipe();
+        jdbc.update("delete from memberships where org_id in (?, ?)", orgA, orgB);
     }
 
     // =========================================================================
-    // Sanity: we are talking to REAL Postgres, not H2
-    // =========================================================================
-
-    @Test
-    void sanity_connectedToPostgres() throws Exception {
-        try (Connection c = dataSource.getConnection();
-             Statement  s = c.createStatement();
-             ResultSet  r = s.executeQuery("select version()")) {
-            assertThat(r.next()).isTrue();
-            String version = r.getString(1);
-            assertThat(version).as("Should be Postgres, not H2").containsIgnoringCase("PostgreSQL");
-        }
-    }
-
-    // =========================================================================
-    // Case A – search=null, lifecycle=null → listByOrg branch, no lower(bytea) error
+    // Case A – paged list (MemberListQuery) with null search
     // =========================================================================
 
     @Test
     void caseA_listMembers_nullSearch_nullLifecycle_doesNotThrow() {
-        // This is the regression canary. Before the split, Hibernate bound
-        // null String as bytea in a single-method query that contained lower(:search),
-        // causing "function lower(bytea) does not exist" on Postgres.
-        MemberPage page = audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(null, 50, null, null, null, null, null, null));
+        // A null search and lifecycle must not reach SQL as an untyped bytea parameter.
+        MemberPage page = audienceService.listMembers(orgA, new AudienceService.MemberListRequest(null, 50, null, null, null, null, null, null));
         assertThat(page).isNotNull();
         assertThat(page.items()).hasSize(3);
     }
 
     @Test
     void caseA_listMembers_nullSearch_withLifecycle_doesNotThrow() {
-        // Lifecycle filter with null search – also listByOrg branch
-        MemberPage page = audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(null, 50, "firsttime", null, null, null, null, null));
+        // Lifecycle filter with null search
+        MemberPage page = audienceService.listMembers(orgA, new AudienceService.MemberListRequest(null, 50, "firsttime", null, null, null, null, null));
         assertThat(page.items()).hasSize(1);
         assertThat(page.items().get(0).name()).isEqualTo("Bob Marley");
     }
 
     // =========================================================================
-    // Case B – search set → searchByOrg branch, case-insensitive match
+    // Case B – search set on the paged list
     // =========================================================================
 
-    @Test
-    void caseB_listMembers_withSearch_returnsMatchingMember() {
-        // "alice" should match "Alice Dupont" case-insensitively via lower()/like
-        MemberPage page = audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(null, 50, null, "alice", null, null, null, null));
-        assertThat(page.items()).hasSize(1);
-        assertThat(page.items().get(0).name()).isEqualTo("Alice Dupont");
-    }
+    /**
+     * Name matches case-insensitively and in part; an email matches only exactly (ignoring case and
+     * surrounding space) and only for a member of this org.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {"name-lower", "name-upper", "name-part", "email-exact", "email-part",
+            "other-orgs-email", "no-match"})
+    void caseB_listMembers_withSearch(String row) {
+        String bobDomain = bobEmail.substring(bobEmail.indexOf('@') + 1);
+        String search;
+        List<String> expected;
+        switch (row) {
+            case "name-lower" -> { search = "alice"; expected = List.of("Alice Dupont"); }
+            case "name-upper" -> { search = "CARLOS"; expected = List.of("Carlos Ruiz"); }
+            case "name-part" -> { search = "bob m"; expected = List.of("Bob Marley"); }
+            case "email-exact" -> { search = "  " + mixedCase(bobEmail) + " "; expected = List.of("Bob Marley"); }
+            case "email-part" -> { search = bobDomain; expected = List.of(); }
+            case "other-orgs-email" -> { search = danaEmail; expected = List.of(); }
+            case "no-match" -> { search = "zzznomatch"; expected = List.of(); }
+            default -> throw new IllegalArgumentException(row);
+        }
 
-    @Test
-    void caseB_listMembers_withSearch_upperCase_matchesCaseInsensitively() {
-        MemberPage page = audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(null, 50, null, "CARLOS", null, null, null, null));
-        assertThat(page.items()).hasSize(1);
-        assertThat(page.items().get(0).name()).isEqualTo("Carlos Ruiz");
-    }
+        MemberPage page = audienceService.listMembers(orgA, new AudienceService.MemberListRequest(null, 50, null, search, null, null, null, null));
 
-    @Test
-    void caseB_listMembers_withExactEmail_matchesOnPostgres() {
-        MemberPage page = audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(null, 50, null, " Bob@A.com ", null, null, null, null));
-        assertThat(page.items()).extracting(MemberDto::name).containsExactly("Bob Marley");
-        assertThat(audienceService.exportMembersCsv(ORG_A, null, "BOB@a.com"))
-                .extracting(MemberDto::name).containsExactly("Bob Marley");
-    }
-
-    @Test
-    void caseB_listMembers_withAnotherOrgsEmail_returnsEmpty() {
-        MemberPage page = audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(null, 50, null, "dana@b.com", null, null, null, null));
-        assertThat(page.items()).isEmpty();
-    }
-
-    @Test
-    void caseB_listMembers_withSearch_noMatch_returnsEmpty() {
-        MemberPage page = audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(null, 50, null, "zzznomatch", null, null, null, null));
-        assertThat(page.items()).isEmpty();
+        assertThat(page.items()).extracting(MemberDto::name).containsExactlyElementsOf(expected);
         assertThat(page.nextCursor()).isNull();
+    }
+
+    /** The CSV export matches the exact email of this org's member only, even when the person is in another org too. */
+    @Test
+    void caseB_exportMembersCsv_matchesOnlyAnExactEmailOfThisOrg() {
+        Membership inB = new Membership();
+        inB.setOrgId(orgB);
+        inB.setConsumerId(bob.getConsumerId());
+        inB.setDisplayName("B Side");
+        membershipRepo.save(inB);
+
+        assertThat(audienceService.exportMembersCsv(orgA, null, " " + mixedCase(bobEmail)))
+                .extracting(MemberDto::name).containsExactly("Bob Marley");
+        assertThat(audienceService.exportMembersCsv(orgA, null, bobEmail.substring(bobEmail.indexOf('@') + 1)))
+                .isEmpty();
     }
 
     // =========================================================================
@@ -203,7 +159,7 @@ class AudiencePostgresTest {
     @Test
     void caseC_pagination_cursorRoundTrip_noOverlap() {
         // limit=1 → first page has 1 item and a nextCursor
-        MemberPage page1 = audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(null, 1, null, null, null, null, null, null));
+        MemberPage page1 = audienceService.listMembers(orgA, new AudienceService.MemberListRequest(null, 1, null, null, null, null, null, null));
         assertThat(page1.items()).hasSize(1);
         assertThat(page1.nextCursor()).as("Page 1 must produce a nextCursor").isNotNull();
 
@@ -211,13 +167,13 @@ class AudiencePostgresTest {
         String firstId = page1.items().get(0).membershipId(); // String in DTO
 
         // Page 2
-        MemberPage page2 = audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(cursor1, 1, null, null, null, null, null, null));
+        MemberPage page2 = audienceService.listMembers(orgA, new AudienceService.MemberListRequest(cursor1, 1, null, null, null, null, null, null));
         assertThat(page2.items()).hasSize(1);
         String secondId = page2.items().get(0).membershipId();
         assertThat(secondId).isNotEqualTo(firstId);
 
         // Page 3 (last: 3 members total, 1 per page)
-        MemberPage page3 = audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(page2.nextCursor(), 1, null, null, null, null, null, null));
+        MemberPage page3 = audienceService.listMembers(orgA, new AudienceService.MemberListRequest(page2.nextCursor(), 1, null, null, null, null, null, null));
         assertThat(page3.items()).hasSize(1);
         String thirdId = page3.items().get(0).membershipId();
         assertThat(thirdId).isNotIn(firstId, secondId);
@@ -230,12 +186,12 @@ class AudiencePostgresTest {
     void caseC_pagination_nullLastPurchaseDoesNotBreakSort() {
         // Alice has last_purchase=null; the sort key is (created_at DESC, membership_id DESC),
         // both non-null, so the null last_purchase must not cause an error in the cursor query.
-        MemberPage page1 = audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(null, 2, null, null, null, null, null, null));
+        MemberPage page1 = audienceService.listMembers(orgA, new AudienceService.MemberListRequest(null, 2, null, null, null, null, null, null));
         assertThat(page1.items()).hasSize(2);
         String cursor = page1.nextCursor();
         assertThat(cursor).isNotNull();
 
-        MemberPage page2 = audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(cursor, 2, null, null, null, null, null, null));
+        MemberPage page2 = audienceService.listMembers(orgA, new AudienceService.MemberListRequest(cursor, 2, null, null, null, null, null, null));
         assertThat(page2.items()).hasSize(1); // 3rd member
         // Combined: no duplicate IDs across pages
         List<String> allIds = page1.items().stream().map(MemberDto::membershipId).toList();
@@ -244,18 +200,18 @@ class AudiencePostgresTest {
     }
 
     // =========================================================================
-    // Case D – exportMembersCsv with null search/lifecycle → listByOrg branch
+    // Case D – exportMembersCsv: null search → listByOrg, search → searchByOrg (the lower(bytea) canary)
     // =========================================================================
 
     @Test
     void caseD_exportMembersCsv_nullSearchAndLifecycle_doesNotThrow() {
-        List<MemberDto> rows = audienceService.exportMembersCsv(ORG_A, null, null);
+        List<MemberDto> rows = audienceService.exportMembersCsv(orgA, null, null);
         assertThat(rows).hasSize(3);
     }
 
     @Test
     void caseD_exportMembersCsv_withSearch_filters() {
-        List<MemberDto> rows = audienceService.exportMembersCsv(ORG_A, null, "marley");
+        List<MemberDto> rows = audienceService.exportMembersCsv(orgA, null, "marley");
         assertThat(rows).hasSize(1);
         assertThat(rows.get(0).name()).isEqualTo("Bob Marley");
     }
@@ -266,14 +222,14 @@ class AudiencePostgresTest {
 
     @Test
     void caseE_tenantScoping_orgBMemberNotVisibleToOrgA() {
-        MemberPage page = audienceService.listMembers(ORG_A, new AudienceService.MemberListRequest(null, 50, null, null, null, null, null, null));
+        MemberPage page = audienceService.listMembers(orgA, new AudienceService.MemberListRequest(null, 50, null, null, null, null, null, null));
         List<String> names = page.items().stream().map(MemberDto::name).toList();
         assertThat(names).doesNotContain("Dana Other");
     }
 
     @Test
     void caseE_tenantScoping_orgAMembersNotVisibleToOrgB() {
-        MemberPage page = audienceService.listMembers(ORG_B, new AudienceService.MemberListRequest(null, 50, null, null, null, null, null, null));
+        MemberPage page = audienceService.listMembers(orgB, new AudienceService.MemberListRequest(null, 50, null, null, null, null, null, null));
         assertThat(page.items()).hasSize(1);
         assertThat(page.items().get(0).name()).isEqualTo("Dana Other");
     }
@@ -285,7 +241,7 @@ class AudiencePostgresTest {
     @Test
     void caseF_metricsCompute_doesNotThrow() {
         // Exercises all the count(*) queries + findCreatedSince against real Postgres
-        var metrics = metricsService.compute(ORG_A);
+        var metrics = metricsService.compute(orgA);
         assertThat(metrics.totalMembers()).isEqualTo(3);
         assertThat(metrics.prospects()).isEqualTo(1); // Alice
     }
@@ -293,155 +249,38 @@ class AudiencePostgresTest {
     @Test
     void caseF_segmentPredicates_runWithoutError() {
         // findRepeats, findVips, findLapsed, findFirstTimers — run on Postgres
-        assertThat(membershipRepo.findRepeats(ORG_A)).isNotNull();
-        assertThat(membershipRepo.findVips(ORG_A)).isNotNull();
-        assertThat(membershipRepo.findLapsed(ORG_A)).isNotNull();
-        assertThat(membershipRepo.findFirstTimers(ORG_A)).isNotNull();
+        assertThat(membershipRepo.findRepeats(orgA)).isNotNull();
+        assertThat(membershipRepo.findVips(orgA)).isNotNull();
+        assertThat(membershipRepo.findLapsed(orgA)).isNotNull();
+        assertThat(membershipRepo.findFirstTimers(orgA)).isNotNull();
         // Bob has lifecycle=firsttime
-        assertThat(membershipRepo.findFirstTimers(ORG_A))
+        assertThat(membershipRepo.findFirstTimers(orgA))
                 .extracting(Membership::getDisplayName)
                 .contains("Bob Marley");
     }
 
     @Test
     void caseF_countQueries_scopedCorrectly() {
-        assertThat(membershipRepo.countByOrgId(ORG_A)).isEqualTo(3);
-        assertThat(membershipRepo.countByOrgId(ORG_B)).isEqualTo(1);
+        assertThat(membershipRepo.countByOrgId(orgA)).isEqualTo(3);
+        assertThat(membershipRepo.countByOrgId(orgB)).isEqualTo(1);
         // Bob (events=1) + Carlos (events=2) are buyers; Alice is prospect (events=0)
-        assertThat(membershipRepo.countBuyersByOrgId(ORG_A)).isEqualTo(2);
-        assertThat(membershipRepo.countProspectsByOrgId(ORG_A)).isEqualTo(1); // Alice only
-    }
-
-    // =========================================================================
-    // Audience plan schema (V132/V133) on real Postgres
-    // =========================================================================
-
-    @Test
-    void audiencePlanSchema_consentColumnsAndFanFeatures_roundTrip() throws Exception {
-        UUID orderId = UUID.randomUUID();
-        UUID mid;
-        try (Connection c = dataSource.getConnection();
-             Statement s = c.createStatement();
-             ResultSet r = s.executeQuery(
-                     "SELECT membership_id, objected_profiling FROM memberships WHERE display_name = 'Alice Dupont'")) {
-            assertThat(r.next()).isTrue();
-            mid = r.getObject(1, UUID.class);
-            assertThat(r.getBoolean(2)).isFalse();
-        }
-
-        try (Connection c = dataSource.getConnection()) {
-            try (java.sql.PreparedStatement ps = c.prepareStatement(
-                    "INSERT INTO consent_records (id, membership_id, status, lawful_basis, source, text_version, order_id) "
-                            + "VALUES (?, ?, 'subscribed', 'explicit', 'checkout', 'checkout-named-v1', ?)")) {
-                ps.setObject(1, UUID.randomUUID());
-                ps.setObject(2, mid);
-                ps.setObject(3, orderId);
-                ps.executeUpdate();
-            }
-            try (java.sql.PreparedStatement ps = c.prepareStatement(
-                    "INSERT INTO fan_features (membership_id, org_id, taste, avg_group_size, logic_version) "
-                            + "VALUES (?, ?, '{\"pop\":1.0}', 1.667, 1)")) {
-                ps.setObject(1, mid);
-                ps.setObject(2, ORG_A);
-                ps.executeUpdate();
-            }
-            try (java.sql.PreparedStatement ps = c.prepareStatement(
-                    "SELECT text_version, order_id FROM consent_records WHERE membership_id = ?")) {
-                ps.setObject(1, mid);
-                try (ResultSet r = ps.executeQuery()) {
-                    assertThat(r.next()).isTrue();
-                    assertThat(r.getString(1)).isEqualTo("checkout-named-v1");
-                    assertThat(r.getObject(2, UUID.class)).isEqualTo(orderId);
-                }
-            }
-            try (java.sql.PreparedStatement ps = c.prepareStatement(
-                    "SELECT class, paid_orders, sends_30d, no_show_n, avg_group_size, taste FROM fan_features "
-                            + "WHERE org_id = ? AND class = 'none'")) {
-                ps.setObject(1, ORG_A);
-                try (ResultSet r = ps.executeQuery()) {
-                    assertThat(r.next()).isTrue();
-                    assertThat(r.getString(1)).isEqualTo("none");
-                    assertThat(r.getInt(2)).isZero();
-                    assertThat(r.getInt(3)).isZero();
-                    assertThat(r.getInt(4)).isZero();
-                    assertThat(r.getBigDecimal(5)).isEqualByComparingTo("1.667");
-                    assertThat(r.getString(6)).isEqualTo("{\"pop\":1.0}");
-                }
-            }
-            try (Statement s = c.createStatement();
-                 ResultSet r = s.executeQuery(
-                         "SELECT count(*) FROM pg_indexes WHERE indexname = 'ix_fan_features_org_class'")) {
-                assertThat(r.next()).isTrue();
-                assertThat(r.getInt(1)).isEqualTo(1);
-            }
-        }
-
-        // The FK cascade removes the feature row with its membership.
-        membershipRepo.deleteByIdAndOrgId(mid, ORG_A);
-        try (Connection c = dataSource.getConnection();
-             java.sql.PreparedStatement ps = c.prepareStatement(
-                     "SELECT count(*) FROM fan_features WHERE membership_id = ?")) {
-            ps.setObject(1, mid);
-            try (ResultSet r = ps.executeQuery()) {
-                assertThat(r.next()).isTrue();
-                assertThat(r.getInt(1)).isZero();
-            }
-        }
-    }
-
-    // =========================================================================
-    // Import provenance schema on real Postgres
-    // =========================================================================
-
-    @Autowired com.imin.iminapi.audienceplan.repository.AudienceImportRepository importRepo;
-    @Autowired com.imin.iminapi.audienceplan.repository.ImportRowProvenanceRepository provenanceRepo;
-
-    @Test
-    void importProvenanceSchema_roundTrips_andCascadesWithTheMembership() throws Exception {
-        UUID mid;
-        try (Connection c = dataSource.getConnection();
-             Statement s = c.createStatement();
-             ResultSet r = s.executeQuery(
-                     "SELECT membership_id FROM memberships WHERE display_name = 'Alice Dupont'")) {
-            assertThat(r.next()).isTrue();
-            mid = r.getObject(1, UUID.class);
-        }
-
-        var imp = new com.imin.iminapi.audienceplan.model.AudienceImport();
-        imp.setOrgId(ORG_A);
-        imp.setUploadedFileSha256("ab".repeat(32));
-        imp.setOriginalFileSha256("cd".repeat(32));
-        imp.setExportDate(java.time.LocalDate.parse("2026-09-01"));
-        imp.setRowsTotal(1);
-        imp.setRowsExplicit(1);
-        imp = importRepo.save(imp);
-
-        var p = new com.imin.iminapi.audienceplan.model.ImportRowProvenance();
-        p.setImportId(imp.getId());
-        p.setMembershipId(mid);
-        p.setRowNumber(2);
-        p.setExportDate(java.time.LocalDate.parse("2026-09-01"));
-        p.setEvents("x".repeat(3000));
-        p.setMarketingStatus("opted_in");
-        p.setProofRef("screenshot-1");
-        p.setAccepted(true);
-        provenanceRepo.save(p);
-
-        assertThat(provenanceRepo.existsByMembershipIdAndAcceptedTrue(mid)).isTrue();
-        assertThat(importRepo.findById(imp.getId()).orElseThrow().getOriginalFileSha256()).isEqualTo("cd".repeat(32));
-        assertThat(importRepo.findById(imp.getId()).orElseThrow().getExportDate())
-                .isEqualTo(java.time.LocalDate.parse("2026-09-01"));
-
-        membershipRepo.deleteByIdAndOrgId(mid, ORG_A);
-        assertThat(provenanceRepo.findByMembershipIdOrderByCreatedAtAsc(mid)).isEmpty();
+        assertThat(membershipRepo.countBuyersByOrgId(orgA)).isEqualTo(2);
+        assertThat(membershipRepo.countProspectsByOrgId(orgA)).isEqualTo(1); // Alice only
     }
 
     // =========================================================================
     // Helpers
     // =========================================================================
 
-    private void seedMembership(UUID orgId, String email, String displayName,
-                                 String lifecycle, Instant lastPurchase, Instant createdAt) {
+    /** The address as a person might type it: capitalised, domain upper-cased. */
+    private static String mixedCase(String address) {
+        int at = address.indexOf('@');
+        return Character.toUpperCase(address.charAt(0)) + address.substring(1, at)
+                + address.substring(at).toUpperCase(Locale.ROOT);
+    }
+
+    private Consumer seedMembership(UUID orgId, String email, String displayName,
+                                    String lifecycle, Instant lastPurchase, Instant createdAt) {
         Consumer c = new Consumer();
         c.setNormalizedEmail(email);
         c.setDisplayName(displayName);
@@ -456,37 +295,11 @@ class AudiencePostgresTest {
         // Set events to match lifecycle expectations
         if ("firsttime".equals(lifecycle)) m.setEvents(1);
         if ("repeat".equals(lifecycle))    m.setEvents(2);
-        // Override createdAt via reflection-free setter (it's a plain field with @PrePersist)
-        // We do this BEFORE save so the trigger sets it — but since we need spread-out
-        // created_at for keyset pagination tests, we update after save.
         membershipRepo.save(m);
 
-        // Update created_at directly via JDBC so pagination ordering is deterministic.
-        // Use java.sql.Timestamp (not Instant) — the PG JDBC driver can't infer the SQL
-        // type for Instant via setObject() without an explicit Types value.
-        try (Connection conn = dataSource.getConnection();
-             java.sql.PreparedStatement ps = conn.prepareStatement(
-                     "UPDATE memberships SET created_at = ? WHERE membership_id = ?")) {
-            ps.setTimestamp(1, java.sql.Timestamp.from(createdAt));
-            ps.setObject(2, m.getMembershipId());
-            ps.executeUpdate();
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to set created_at for " + displayName, e);
-        }
-    }
-
-    private void wipe() {
-        try (Connection c = dataSource.getConnection();
-             Statement  s = c.createStatement()) {
-            s.execute("DELETE FROM import_row_provenance");
-            s.execute("DELETE FROM audience_imports");
-            s.execute("DELETE FROM suppression_entries");
-            s.execute("DELETE FROM consent_records");
-            s.execute("DELETE FROM segments");
-            s.execute("DELETE FROM memberships");
-            s.execute("DELETE FROM consumers");
-        } catch (Exception e) {
-            throw new RuntimeException("wipe() failed: " + e.getMessage(), e);
-        }
+        // Spread created_at so keyset pagination ordering is deterministic.
+        jdbc.update("UPDATE memberships SET created_at = ? WHERE membership_id = ?",
+                Timestamp.from(createdAt), m.getMembershipId());
+        return c;
     }
 }
