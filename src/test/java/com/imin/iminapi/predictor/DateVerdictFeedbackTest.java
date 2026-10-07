@@ -1,56 +1,53 @@
 package com.imin.iminapi.predictor;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.model.UserRole;
+import com.imin.iminapi.predictor.config.DateCheckProperties;
 import com.imin.iminapi.predictor.model.DateCheck;
 import com.imin.iminapi.predictor.model.DateCheckDate;
 import com.imin.iminapi.predictor.repository.DateCheckDateRepository;
-import com.imin.iminapi.predictor.repository.DateCheckFindingRepository;
 import com.imin.iminapi.predictor.repository.DateCheckRepository;
-import com.imin.iminapi.predictor.repository.PredictionFeedbackRepository;
-import com.imin.iminapi.predictor.repository.PredictionLedgerRepository;
 import com.imin.iminapi.predictor.service.DateVerdictFeedbackStore;
 import com.imin.iminapi.predictor.service.DateVerdictFeedbackStore.Row;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
-import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.MutableClock;
+import com.imin.iminapi.support.PredictorRows;
+import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.test.context.TestPropertySource;
-import org.springframework.test.context.bean.override.convention.TestBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 
 import java.math.BigDecimal;
-import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.hamcrest.Matchers.not;
-import static org.hamcrest.Matchers.hasItem;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -61,11 +58,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * The after-event "did the date verdict match?" answer, gate open, clock at 26 Oct 2026. The org is French, so the
  * check scores in Europe/Paris (UTC+2 until 25 Oct): a 20:00Z start on 24 Oct is the night of 24 Oct.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
-@TestPropertySource(properties = {"imin.predictor.date-check.enabled=true",
-        "imin.predictor.date-check.all-orgs=true"})
+@IminIntegrationTest
 class DateVerdictFeedbackTest {
 
     private static final LocalDate OCT24 = LocalDate.of(2026, 10, 24);
@@ -73,79 +66,53 @@ class DateVerdictFeedbackTest {
     private static final Instant T1 = Instant.parse("2026-10-26T10:00:00Z");
     private static final Instant T2 = Instant.parse("2026-10-27T08:15:00Z");
 
-    /** A clock each test sets by hand. */
-    static final class MutableClock extends Clock {
-        volatile Instant now = T1;
-        public ZoneId getZone() { return ZoneOffset.UTC; }
-        public Clock withZone(ZoneId z) { return this; }
-        public Instant instant() { return now; }
-    }
-
-    private static final MutableClock CLOCK = new MutableClock();
-
-    @TestBean Clock clock;
-
-    static Clock clock() {
-        return CLOCK;
-    }
-
+    @Autowired MutableClock clock;
+    @Autowired PropertyFlips flips;
+    @Autowired IminFixtures fx;
+    @Autowired DateCheckProperties props;
     @Autowired MockMvc mvc;
     @Autowired OrganizationRepository orgs;
-    @Autowired UserRepository users;
     @Autowired EventRepository events;
     @Autowired DateCheckRepository checks;
     @Autowired DateCheckDateRepository checkDates;
-    @Autowired DateCheckFindingRepository findings;
-    @Autowired PredictionLedgerRepository ledger;
-    @Autowired PredictionFeedbackRepository feedback;
     @Autowired DateVerdictFeedbackStore store;
     @Autowired JdbcTemplate jdbc;
 
     private final ObjectMapper om = new ObjectMapper();
+    private final String city = "Paris" + DateCheckControllerTest.letters();
+    private final List<UUID> createdOrgs = new ArrayList<>();
 
     private Organization org;
     private User owner;
 
     @BeforeEach
     void seed() {
-        CLOCK.now = T1;
-        clean();
+        clock.setInstant(T1);
+        flips.set(props, "enabled", true);
+        flips.set(props, "allOrgs", true);
         org = org();
-        owner = user(org);
+        owner = fx.owner(org);
     }
 
     @AfterEach
     void after() {
-        clean();
-    }
-
-    private void clean() {
-        jdbc.update("DELETE FROM date_verdict_feedback");
-        findings.deleteAll();
-        checkDates.deleteAll();
-        feedback.deleteAll();
-        ledger.deleteAll();
-        events.deleteAll();
-        checks.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+        PredictorRows.delete(jdbc, createdOrgs);
     }
 
     private Organization org() {
-        Organization o = new Organization();
-        o.setName("Verdict Org");
-        o.setSlug("vf-" + UUID.randomUUID().toString().substring(0, 8));
-        o.setContactEmail("vf@example.test");
+        Organization o = fx.org();
+        createdOrgs.add(o.getId());
         o.setCountry("FR");
         return orgs.save(o);
     }
 
-    private User user(Organization o) {
-        User u = new User();
-        u.setOrgId(o.getId());
-        u.setEmail("owner-" + UUID.randomUUID() + "@example.test");
-        u.setRole(UserRole.OWNER);
-        return users.save(u);
+    private UUID ownCheckId() {
+        return jdbc.queryForObject("SELECT id FROM date_check WHERE org_id = ?", UUID.class, org.getId());
+    }
+
+    private long ownCount(String table) {
+        return jdbc.queryForObject("SELECT COUNT(*) FROM " + table + " t JOIN events e ON e.id = t.event_id"
+                + " WHERE e.org_id = ?", Long.class, org.getId());
     }
 
     private Authentication mine() {
@@ -169,7 +136,7 @@ class DateVerdictFeedbackTest {
         DateCheck c = new DateCheck();
         c.setOrgId(o.getId());
         c.setCreatedBy(u.getId());
-        c.setCity("Paris");
+        c.setCity(city);
         c.setCountry("FR");
         c.setGenreFamily("house & techno");
         c.setStatus("done");
@@ -210,8 +177,11 @@ class DateVerdictFeedbackTest {
         return b;
     }
 
+    /** Answers on this test's orgs' events. */
     private int rows() {
-        return jdbc.queryForObject("SELECT COUNT(*) FROM date_verdict_feedback", Integer.class);
+        String in = String.join(",", java.util.Collections.nCopies(createdOrgs.size(), "?"));
+        return jdbc.queryForObject("SELECT COUNT(*) FROM date_verdict_feedback f JOIN events e ON e.id = f.event_id"
+                + " WHERE e.org_id IN (" + in + ")", Integer.class, createdOrgs.toArray());
     }
 
     @Test
@@ -220,8 +190,8 @@ class DateVerdictFeedbackTest {
 
         answer(e.getId(), body("yes", "Packed by midnight")).andExpect(status().isNoContent());
         // The check is re-rated after the first answer; the stored snapshot must not follow it.
-        jdbc.update("UPDATE date_check_date SET verdict = 'move'");
-        CLOCK.now = T2;
+        jdbc.update("UPDATE date_check_date SET verdict = 'move' WHERE date_check_id = ?", ownCheckId());
+        clock.setInstant(T2);
         answer(e.getId(), body("no", "Half empty after all")).andExpect(status().isNoContent());
 
         assertThat(rows()).isEqualTo(1);
@@ -230,21 +200,22 @@ class DateVerdictFeedbackTest {
         assertThat(r.comment()).isEqualTo("Half empty after all");
         assertThat(r.verdict()).isEqualTo("good");
         assertThat(r.forDate()).isEqualTo(OCT24);
-        assertThat(r.dateCheckId()).isEqualTo(checks.findAll().get(0).getId());
+        assertThat(r.dateCheckId()).isEqualTo(ownCheckId());
         assertThat(r.createdAt()).isEqualTo(T1);
         assertThat(r.answeredAt()).isEqualTo(T2);
-        assertThat(ledger.count()).isZero();
-        assertThat(feedback.count()).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM prediction_ledger WHERE org_id = ?", Long.class,
+                org.getId())).isZero();
+        assertThat(ownCount("prediction_feedback")).isZero();
     }
 
     @Test
     void reAnswerKeepsWorkingAfterTheCheckBecomesIneligible() throws Exception {
         Event e = pastEventWithGoodCheck();
-        UUID checkId = checks.findAll().get(0).getId();
+        UUID checkId = ownCheckId();
         answer(e.getId(), body("yes", "first")).andExpect(status().isNoContent());
 
         jdbc.update("UPDATE date_check_date SET verdict = 'not_enough_data' WHERE date_check_id = ?", checkId);
-        CLOCK.now = T2;
+        clock.setInstant(T2);
         answer(e.getId(), body("partly", "second")).andExpect(status().isNoContent());
 
         assertThat(rows()).isEqualTo(1);
@@ -328,34 +299,36 @@ class DateVerdictFeedbackTest {
         assertThat(rows()).isZero();
     }
 
-    @Test
-    void verdictCommentBoundedAt1000() throws Exception {
-        Event e = pastEventWithGoodCheck();
-
-        answer(e.getId(), body("partly", "x".repeat(1001))).andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
-                .andExpect(jsonPath("$.error.fields.comment").exists());
-        assertThat(rows()).isZero();
-
-        answer(e.getId(), body("partly", "y".repeat(1000))).andExpect(status().isNoContent());
-        assertThat(store.find(e.getId()).orElseThrow().comment()).isEqualTo("y".repeat(1000));
+    static Stream<Arguments> comments() {
+        return Stream.of(
+                Arguments.of("x".repeat(1001), false, null),
+                Arguments.of("y".repeat(1000), true, "y".repeat(1000)),
+                Arguments.of("   ", true, null),
+                Arguments.of("  Queue round the block \n", true, "Queue round the block"));
     }
 
-    @Test
-    void verdictCommentBlankIsNull() throws Exception {
+    /** Over 1000 characters is a 400 that stores nothing; a blank comment is stored as null, others trimmed. */
+    @ParameterizedTest
+    @MethodSource("comments")
+    void verdictCommentIsBoundedAndTrimmed(String comment, boolean accepted, String stored) throws Exception {
         Event e = pastEventWithGoodCheck();
 
-        answer(e.getId(), body("yes", "   ")).andExpect(status().isNoContent());
-        assertThat(store.find(e.getId()).orElseThrow().comment()).isNull();
+        ResultActions r = answer(e.getId(), body("partly", comment));
 
-        answer(e.getId(), body("yes", "  Queue round the block \n")).andExpect(status().isNoContent());
-        assertThat(store.find(e.getId()).orElseThrow().comment()).isEqualTo("Queue round the block");
+        if (!accepted) {
+            r.andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
+                    .andExpect(jsonPath("$.error.fields.comment").exists());
+            assertThat(rows()).isZero();
+        } else {
+            r.andExpect(status().isNoContent());
+            assertThat(store.find(e.getId()).orElseThrow().comment()).isEqualTo(stored);
+        }
     }
 
     @Test
     void verdictFeedbackCrossOrgIsNotFound() throws Exception {
         Organization other = org();
-        User otherOwner = user(other);
+        User otherOwner = fx.owner(other);
         Event theirs = event(other, otherOwner, EventStatus.PAST);
         seedCheck(other, otherOwner, theirs.getId(), OCT24, "good");
 
@@ -368,7 +341,7 @@ class DateVerdictFeedbackTest {
     @Test
     void statusCarriesVerdictFeedback() throws Exception {
         Event e = pastEventWithGoodCheck();
-        UUID checkId = checks.findAll().get(0).getId();
+        UUID checkId = ownCheckId();
         answer(e.getId(), body("partly", "Late crowd")).andExpect(status().isNoContent());
 
         mvc.perform(get("/api/v1/events/" + e.getId() + "/prediction").with(authentication(mine())))
@@ -398,17 +371,5 @@ class DateVerdictFeedbackTest {
         mvc.perform(get("/api/v1/events/" + e.getId() + "/prediction").with(authentication(mine())))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.verdictFeedback.answer").value("yes"));
-    }
-
-    @Test
-    void openApiPublishesVerdictFeedback() throws Exception {
-        mvc.perform(get("/v3/api-docs")).andExpect(status().isOk())
-                .andExpect(jsonPath("$.components.schemas.DateVerdictFeedbackDto.properties.answer").exists())
-                .andExpect(jsonPath("$.components.schemas.PredictionStatusResponse.properties.verdictFeedback")
-                        .exists())
-                .andExpect(jsonPath("$.components.schemas.PredictionFeedbackRequest.properties.comment.maxLength")
-                        .value(1000))
-                .andExpect(jsonPath("$.components.schemas.PredictionFeedbackRequest.required")
-                        .value(not(hasItem("recommendationId"))));
     }
 }

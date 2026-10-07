@@ -2,7 +2,6 @@ package com.imin.iminapi.predictor;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.*;
 import com.imin.iminapi.predictor.dto.PredictionResult;
 import com.imin.iminapi.predictor.model.PredictionLedger;
@@ -12,15 +11,15 @@ import com.imin.iminapi.predictor.service.PredictorJson;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
-import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PredictorRows;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
@@ -28,6 +27,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -39,23 +39,24 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * The frozen re-forecast endpoint contract (BE of 86cav479j/86cav479m): GET status flow
- * (none → served result with a ledger stamp), the Stage 0 interim when no curve exists, and
- * org scoping (cross-org 404). Stage 1 pacing math is covered by {@link ReforecastServiceTest}.
+ * The frozen re-forecast endpoint contract: GET status flow (none, then a served result with a ledger stamp), the
+ * Stage 0 interim when no curve exists, and org scoping (cross-org 404). Stage 1 pacing math and the
+ * insufficient-data fallback are covered by {@link ReforecastServiceTest}.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class ReforecastControllerTest {
 
     @Autowired MockMvc mvc;
+    @Autowired IminFixtures fx;
+    @Autowired JdbcTemplate jdbc;
     @Autowired OrganizationRepository orgs;
-    @Autowired UserRepository users;
     @Autowired EventRepository events;
     @Autowired TicketTierRepository tiers;
     @Autowired PredictionLedgerRepository ledger;
 
     final ObjectMapper om = new ObjectMapper();
+
+    private final List<UUID> createdOrgs = new ArrayList<>();
 
     private Organization org;
     private User owner;
@@ -63,19 +64,11 @@ class ReforecastControllerTest {
 
     @BeforeEach
     void seed() {
-        clean();
-        org = new Organization();
-        org.setName("RF Org");
-        org.setSlug("rf-" + UUID.randomUUID().toString().substring(0, 8));
-        org.setContactEmail("p@example.test");
+        org = fx.org();
+        createdOrgs.add(org.getId());
         org.setCountry("NL");
         org = orgs.save(org);
-
-        owner = new User();
-        owner.setOrgId(org.getId());
-        owner.setEmail("owner-" + UUID.randomUUID() + "@example.test");
-        owner.setRole(UserRole.OWNER);
-        owner = users.save(owner);
+        owner = fx.owner(org);
 
         event = new Event();
         event.setOrgId(org.getId());
@@ -83,7 +76,7 @@ class ReforecastControllerTest {
         event.setName("RF Night");
         event.setSlug("ev-" + UUID.randomUUID().toString().substring(0, 8));
         event.setGenre("techno");
-        event.setVenueCity("Amsterdam");
+        event.setVenueCity("Amsterdam" + DateCheckControllerTest.letters());
         event.setVenueCountry("NL");
         event.setStatus(EventStatus.LIVE);
         event.setTimezone("Europe/Amsterdam");
@@ -99,14 +92,13 @@ class ReforecastControllerTest {
     }
 
     @AfterEach
-    void after() { clean(); }
+    void after() {
+        PredictorRows.delete(jdbc, createdOrgs);
+    }
 
-    private void clean() {
-        ledger.deleteAll();
-        tiers.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+    private long ownReforecastRows() {
+        return ledger.findByEventIdOrderByCreatedAtDesc(event.getId()).stream()
+                .filter(r -> r.getSurface() == PredictionSurface.REFORECAST).count();
     }
 
     private Authentication auth(User u, Organization o) {
@@ -126,6 +118,7 @@ class ReforecastControllerTest {
     void manualPostRunsStage0InterimFromPrePublishAndGetServesItWithLedgerStamp() throws Exception {
         seedPrePublish(120, 170); // no pacing curve exists → interim leans on this
         Authentication a = auth(owner, org);
+        long before = ownReforecastRows();
 
         MvcResult posted = mvc.perform(post("/api/v1/events/" + event.getId() + "/reforecast").with(authentication(a)))
                 .andExpect(status().isOk())
@@ -146,36 +139,20 @@ class ReforecastControllerTest {
                 .andExpect(jsonPath("$.ledger.id").isNotEmpty())
                 .andExpect(jsonPath("$.ledger.inputHash").isNotEmpty());
         // one reforecast row written by the manual recompute
-        assertThat(ledger.findAll().stream().filter(r -> r.getSurface() == PredictionSurface.REFORECAST).count())
-                .isEqualTo(1);
-    }
-
-    @Test
-    void insufficientDataWhenNoCurveAndNoPrePublish() throws Exception {
-        mvc.perform(post("/api/v1/events/" + event.getId() + "/reforecast").with(authentication(auth(owner, org))))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("insufficient_data"))
-                .andExpect(jsonPath("$.generatedAt").isNotEmpty());
+        assertThat(ownReforecastRows() - before).isEqualTo(1);
     }
 
     @Test
     void crossOrgIs404() throws Exception {
-        Organization other = new Organization();
-        other.setName("Other");
-        other.setSlug("other-" + UUID.randomUUID().toString().substring(0, 8));
-        other.setContactEmail("o@example.test");
-        other.setCountry("DE");
-        other = orgs.save(other);
-        User outsider = new User();
-        outsider.setOrgId(other.getId());
-        outsider.setEmail("out-" + UUID.randomUUID() + "@example.test");
-        outsider.setRole(UserRole.OWNER);
-        outsider = users.save(outsider);
+        Organization other = fx.org();
+        createdOrgs.add(other.getId());
+        User outsider = fx.owner(other);
 
         mvc.perform(get("/api/v1/events/" + event.getId() + "/reforecast").with(authentication(auth(outsider, other))))
                 .andExpect(status().isNotFound());
         mvc.perform(post("/api/v1/events/" + event.getId() + "/reforecast").with(authentication(auth(outsider, other))))
                 .andExpect(status().isNotFound());
+        assertThat(ownReforecastRows()).isZero();
     }
 
     private void seedPrePublish(int attLow, int attHigh) {

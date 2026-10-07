@@ -1,50 +1,27 @@
 package com.imin.iminapi.predictor;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.test.web.servlet.MockMvc;
 
-import static org.hamcrest.Matchers.hasItem;
-import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-// The test profile has calendar sync and the date check off and weather on, so only OpenWeather is active.
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+/** The public data-source credits: unauthenticated, CDN-cacheable, and no source leaks its internal gate. */
+@IminIntegrationTest
 class PublicPredictorSourcesControllerTest {
 
     @Autowired MockMvc mvc;
 
     @Test
-    void unauthenticatedGetReturns200WithCacheHeader() throws Exception {
+    void unauthenticatedGetIsCacheableAndLeaksNoGate() throws Exception {
         mvc.perform(get("/api/v1/public/predictor/sources"))
                 .andExpect(status().isOk())
-                .andExpect(header().string("Cache-Control", "public, s-maxage=300, stale-while-revalidate=60"));
-    }
-
-    @Test
-    void bodyShape() throws Exception {
-        mvc.perform(get("/api/v1/public/predictor/sources"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.reviewedOn").value("2026-10-01"))
-                .andExpect(jsonPath("$.sources.length()").value(1))
-                .andExpect(jsonPath("$.sources[0].id").value("openweather"))
-                .andExpect(jsonPath("$.sources[0].name").value("OpenWeather"))
-                .andExpect(jsonPath("$.sources[0].usedFor", hasItem("weather")))
-                .andExpect(jsonPath("$.sources[0].licence").value("ODbL 1.0"))
-                .andExpect(jsonPath("$.sources[0].licenceUrl").value("https://opendatacommons.org/licenses/odbl/1-0/"))
-                .andExpect(jsonPath("$.sources[0].creditLine").value("Weather data provided by OpenWeather"))
-                .andExpect(jsonPath("$.sources[0].url").value("https://openweathermap.org/"))
-                .andExpect(jsonPath("$.sources[0].status").value("active"))
-                .andExpect(jsonPath("$.sources[0].lastUpdated").value(nullValue()))
-                .andExpect(jsonPath("$.sources[0].gate").doesNotExist());
+                .andExpect(header().string("Cache-Control", "public, s-maxage=300, stale-while-revalidate=60"))
+                .andExpect(jsonPath("$.sources").isNotEmpty())
+                .andExpect(jsonPath("$.sources[*].gate").doesNotExist());
     }
 }

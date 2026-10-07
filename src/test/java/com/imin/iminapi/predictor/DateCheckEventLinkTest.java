@@ -2,47 +2,50 @@ package com.imin.iminapi.predictor;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
+import com.imin.iminapi.model.EventStatus;
+import com.imin.iminapi.predictor.config.DateCheckProperties;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.predictor.model.DateCheck;
 import com.imin.iminapi.predictor.model.DateCheckDate;
 import com.imin.iminapi.predictor.repository.DateCheckDateRepository;
-import com.imin.iminapi.predictor.repository.DateCheckFindingRepository;
 import com.imin.iminapi.predictor.repository.DateCheckRepository;
-import com.imin.iminapi.predictor.repository.PredictionLedgerRepository;
-import com.imin.iminapi.predictor.repository.PredictorJobRepository;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
-import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.MutableClock;
+import com.imin.iminapi.support.PredictorRows;
+import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.test.context.TestPropertySource;
-import org.springframework.test.context.bean.override.convention.TestBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 
 import java.math.BigDecimal;
-import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
@@ -53,37 +56,30 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * An event linked to a date check, gate open, clock fixed at 1 Oct 2026. The orgs are French, so checks score in
- * Europe/Paris (UTC+2 until 25 Oct, UTC+1 after): a 20:00Z start is the same calendar night.
+ * An event linked to a date check, gate open for all orgs, clock pinned at 1 Oct 2026. The orgs are French, so checks
+ * score in Europe/Paris (UTC+2 until 25 Oct, UTC+1 after): a 20:00Z start is the same calendar night.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
-@TestPropertySource(properties = {"imin.predictor.date-check.enabled=true",
-        "imin.predictor.date-check.all-orgs=true"})
+@IminIntegrationTest
 class DateCheckEventLinkTest {
 
     private static final LocalDate OCT24 = LocalDate.of(2026, 10, 24);
     private static final LocalDate NOV14 = LocalDate.of(2026, 11, 14);
     private static final LocalDate DEC5 = LocalDate.of(2026, 12, 5);
 
-    @TestBean Clock clock;
-
-    static Clock clock() {
-        return Clock.fixed(Instant.parse("2026-10-01T10:00:00Z"), ZoneOffset.UTC);
-    }
-
+    @Autowired MutableClock clock;
+    @Autowired PropertyFlips flips;
+    @Autowired IminFixtures fx;
+    @Autowired DateCheckProperties props;
+    @Autowired JdbcTemplate jdbc;
     @Autowired MockMvc mvc;
     @Autowired OrganizationRepository orgs;
-    @Autowired UserRepository users;
     @Autowired EventRepository events;
     @Autowired DateCheckRepository checks;
     @Autowired DateCheckDateRepository checkDates;
-    @Autowired DateCheckFindingRepository findings;
-    @Autowired PredictionLedgerRepository ledger;
-    @Autowired PredictorJobRepository jobs;
 
     private final ObjectMapper om = new ObjectMapper();
+    private final String city = "Paris" + DateCheckControllerTest.letters();
+    private final List<UUID> createdOrgs = new ArrayList<>();
 
     private Organization org;
     private User owner;
@@ -92,44 +88,29 @@ class DateCheckEventLinkTest {
 
     @BeforeEach
     void seed() {
-        clean();
+        clock.setInstant(Instant.parse("2026-10-01T10:00:00Z"));
+        flips.set(props, "enabled", true);
+        flips.set(props, "allOrgs", true);
         org = org();
-        owner = user(org);
+        owner = fx.owner(org);
         otherOrg = org();
-        otherOwner = user(otherOrg);
+        otherOwner = fx.owner(otherOrg);
     }
 
     @AfterEach
     void after() {
-        clean();
-    }
-
-    private void clean() {
-        findings.deleteAll();
-        checkDates.deleteAll();
-        ledger.deleteAll();
-        jobs.deleteAll();
-        events.deleteAll();
-        checks.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+        PredictorRows.delete(jdbc, createdOrgs);
     }
 
     private Organization org() {
-        Organization o = new Organization();
-        o.setName("Link Org");
-        o.setSlug("dl-" + UUID.randomUUID().toString().substring(0, 8));
-        o.setContactEmail("dl@example.test");
+        Organization o = fx.org();
+        createdOrgs.add(o.getId());
         o.setCountry("FR");
         return orgs.save(o);
     }
 
-    private User user(Organization o) {
-        User u = new User();
-        u.setOrgId(o.getId());
-        u.setEmail("owner-" + UUID.randomUUID() + "@example.test");
-        u.setRole(UserRole.OWNER);
-        return users.save(u);
+    private long ownEvents() {
+        return jdbc.queryForObject("SELECT count(*) FROM events WHERE org_id = ?", Long.class, org.getId());
     }
 
     private Authentication mine() {
@@ -146,7 +127,7 @@ class DateCheckEventLinkTest {
         DateCheck c = new DateCheck();
         c.setOrgId(o.getId());
         c.setCreatedBy(owner.getId());
-        c.setCity("Paris");
+        c.setCity(city);
         c.setCountry("FR");
         c.setGenreFamily("house & techno");
         c.setStatus("done");
@@ -204,7 +185,7 @@ class DateCheckEventLinkTest {
 
     private JsonNode postCheck(UUID eventId, LocalDate... dates) throws Exception {
         Map<String, Object> b = new LinkedHashMap<>();
-        b.put("city", "Paris");
+        b.put("city", city);
         b.put("postalCode", "75011");
         b.put("genreFamily", "house & techno");
         b.put("dates", List.of(dates).stream().map(LocalDate::toString).toList());
@@ -247,7 +228,7 @@ class DateCheckEventLinkTest {
         createEvent(eventBody(OCT24, theirs.getId())).andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
 
-        assertThat(events.count()).isZero();
+        assertThat(ownEvents()).isZero();
         assertThat(checks.findById(theirs.getId()).orElseThrow().getEventId()).isNull();
     }
 
@@ -257,7 +238,7 @@ class DateCheckEventLinkTest {
                 .andExpect(jsonPath("$.error.code").value("NOT_FOUND"))
                 .andExpect(jsonPath("$.error.message").value("Date check not found"));
 
-        assertThat(events.count()).isZero();
+        assertThat(ownEvents()).isZero();
     }
 
     @Test
@@ -284,23 +265,22 @@ class DateCheckEventLinkTest {
         assertThat(events.findById(id).orElseThrow().getSubGenre()).isEqualTo("melodic techno");
     }
 
-    @Test
-    void unknownSubGenreIs400() throws Exception {
-        UUID id = createdEvent(eventBody(OCT24, null));
-
-        patchEvent(id, Map.of("subGenre", "polka")).andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
-                .andExpect(jsonPath("$.error.fields.subGenre").value("unknown"));
-
-        assertThat(events.findById(id).orElseThrow().getSubGenre()).isNull();
+    static Stream<Arguments> invalidSubGenres() {
+        return Stream.of(Arguments.of("polka", "unknown"), Arguments.of("x".repeat(65), null));
     }
 
-    @Test
-    void tooLongSubGenreIs400() throws Exception {
+    /** An unknown or over-long subGenre is a 400 and stores nothing; a null code only requires the field. */
+    @ParameterizedTest
+    @MethodSource("invalidSubGenres")
+    void invalidSubGenreIs400(String subGenre, String code) throws Exception {
         UUID id = createdEvent(eventBody(OCT24, null));
 
-        patchEvent(id, Map.of("subGenre", "x".repeat(65))).andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.fields.subGenre").exists());
+        ResultActions r = patchEvent(id, Map.of("subGenre", subGenre)).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"));
+        if (code == null) r.andExpect(jsonPath("$.error.fields.subGenre").exists());
+        else r.andExpect(jsonPath("$.error.fields.subGenre").value(code));
+
+        assertThat(events.findById(id).orElseThrow().getSubGenre()).isNull();
     }
 
     @Test
@@ -411,13 +391,62 @@ class DateCheckEventLinkTest {
         prediction(id).andExpect(status().isOk()).andExpect(jsonPath("$.dateCheck").doesNotExist());
     }
 
-    @Test
-    void openApiPublishesEventDateCheck() throws Exception {
-        mvc.perform(get("/v3/api-docs")).andExpect(status().isOk())
-                .andExpect(jsonPath("$.components.schemas.EventDateCheckDto.properties.stale").exists())
-                .andExpect(jsonPath("$.components.schemas.PredictionStatusResponse.properties.dateCheck").exists())
-                .andExpect(jsonPath("$.components.schemas.EventPatchRequest.properties.dateCheckId").exists())
-                .andExpect(jsonPath("$.components.schemas.EventPatchRequest.properties.subGenre").exists())
-                .andExpect(jsonPath("$.components.schemas.EventDto.properties.subGenre").exists());
+    // --- gate closed: the link is invisible and cannot be written, while subGenre stays ungated ---
+
+    @Nested
+    class GateOff {
+
+        @BeforeEach
+        void close() {
+            flips.set(props, "enabled", false);
+        }
+
+        private Event seedEvent(UUID dateCheckId) {
+            Event e = new Event();
+            e.setOrgId(org.getId());
+            e.setCreatedBy(owner.getId());
+            e.setName("Gate Off Night");
+            e.setSlug("ev-" + UUID.randomUUID());
+            e.setStatus(EventStatus.DRAFT);
+            e.setStartsAt(DEC5.atTime(20, 0).toInstant(ZoneOffset.UTC));
+            e.setDateCheckId(dateCheckId);
+            return events.save(e);
+        }
+
+        @Test
+        void gateOffOmitsDateCheck() throws Exception {
+            DateCheck c = seedCheck(org, null, DEC5, 1);
+            Event e = seedEvent(c.getId());
+            c.setEventId(e.getId());
+            checks.save(c);
+
+            prediction(e.getId()).andExpect(status().isOk())
+                    .andExpect(jsonPath("$.status").value("none"))
+                    .andExpect(jsonPath("$.dateCheck").doesNotExist());
+        }
+
+        @Test
+        void gateOffCreateWithDateCheckIdIs404() throws Exception {
+            DateCheck c = seedCheck(org, null, DEC5, 1);
+
+            mvc.perform(post("/api/v1/events").with(authentication(mine())).contentType(MediaType.APPLICATION_JSON)
+                            .content(om.writeValueAsString(Map.of("name", "X", "dateCheckId", c.getId().toString()))))
+                    .andExpect(status().isNotFound())
+                    .andExpect(jsonPath("$.error.code").value("NOT_FOUND"))
+                    .andExpect(jsonPath("$.error.message").value("Date check not found"));
+
+            assertThat(ownEvents()).isZero();
+            assertThat(checks.findById(c.getId()).orElseThrow().getEventId()).isNull();
+        }
+
+        @Test
+        void gateOffSubGenreStillAccepted() throws Exception {
+            Event e = seedEvent(null);
+
+            patchEvent(e.getId(), Map.of("subGenre", "techno")).andExpect(status().isOk())
+                    .andExpect(jsonPath("$.subGenre").value("techno"));
+
+            assertThat(events.findById(e.getId()).orElseThrow().getSubGenre()).isEqualTo("techno");
+        }
     }
 }

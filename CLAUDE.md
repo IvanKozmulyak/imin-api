@@ -147,6 +147,7 @@ Today only `@IminIntegrationTest` exists (`SpringContextGuard.NAMED_CONTEXTS`). 
 - Lost races and slow storage: `PgFaults.skipUpdates(jdbc, table, column, id)` makes an UPDATE of that row affect 0 rows until closed (a concurrent writer won); `PausableMediaStorage.pauseNextPut()`/`pauseNextDelete()` holds the next media call open until you release it. No repository or storage spies.
 - Scheduled jobs: before calling a `@SchedulerLock` method directly, expire its row (`UPDATE shedlock SET lock_until = locked_at WHERE name = ?`); one context serves the whole run, so a lock taken by an earlier class would make your call a no-op.
 - Addresses are global: consumers, deliverability suppressions, sticky opt-outs and platform-wide erasure entries are keyed by email across orgs, so every address a test writes comes from `fx.email(tag)` or carries a UUID; a fixed address leaks into every later test that reuses it.
+- Predictor: rows are segment-keyed — give each test its own city ("Paris" + random letters) instead of wiping tables; a test that queues research calls `PredictorRows.delete(jdbc, orgIds)` in `@AfterEach` (the runner claims the 5 oldest due jobs of every org).
 
 ## Architecture
 

@@ -1,10 +1,9 @@
 package com.imin.iminapi.predictor;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.User;
-import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.predictor.model.DateCheck;
 import com.imin.iminapi.predictor.model.DateVerdictAnswer;
 import com.imin.iminapi.predictor.rules.DateResult;
@@ -12,28 +11,27 @@ import com.imin.iminapi.predictor.repository.DateCheckRepository;
 import com.imin.iminapi.predictor.service.DateVerdictFeedbackStore;
 import com.imin.iminapi.predictor.service.DateVerdictFeedbackStore.Row;
 import com.imin.iminapi.repository.EventRepository;
-import com.imin.iminapi.repository.OrganizationRepository;
-import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PredictorRows;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** The {@code date_verdict_feedback} table and its store, on H2 and on Postgres 17. */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
-abstract class DateVerdictFeedbackStoreScenarios {
+/** The {@code date_verdict_feedback} table and its store on Postgres: ON CONFLICT, CHECKs and FK actions. */
+@IminIntegrationTest
+class DateVerdictFeedbackStoreTest {
 
     private static final Instant T1 = Instant.parse("2026-10-26T10:00:00Z");
     private static final Instant T2 = Instant.parse("2026-10-27T09:30:00Z");
@@ -42,39 +40,23 @@ abstract class DateVerdictFeedbackStoreScenarios {
 
     @Autowired DateVerdictFeedbackStore store;
     @Autowired JdbcTemplate jdbc;
-    @Autowired OrganizationRepository orgs;
-    @Autowired UserRepository users;
+    @Autowired IminFixtures fx;
     @Autowired EventRepository events;
     @Autowired DateCheckRepository checks;
 
+    private Organization org;
     private Event event;
     private DateCheck check;
 
     @BeforeEach
     void seed() {
-        clean();
-        Organization o = new Organization();
-        o.setName("Verdict Store Org");
-        o.setSlug("vs-" + UUID.randomUUID().toString().substring(0, 8));
-        o.setContactEmail("vs@example.test");
-        o.setCountry("FR");
-        o = orgs.save(o);
-        User u = new User();
-        u.setOrgId(o.getId());
-        u.setEmail("owner-" + UUID.randomUUID() + "@example.test");
-        u.setRole(UserRole.OWNER);
-        u = users.save(u);
-        Event e = new Event();
-        e.setOrgId(o.getId());
-        e.setCreatedBy(u.getId());
-        e.setName("Verdict Night");
-        e.setSlug("ev-" + UUID.randomUUID().toString().substring(0, 8));
-        e.setStartsAt(Instant.parse("2026-10-24T20:00:00Z"));
-        event = events.save(e);
+        org = fx.org();
+        User u = fx.owner(org);
+        event = fx.event(org, u, EventStatus.PAST, Instant.parse("2026-10-24T20:00:00Z"));
         DateCheck c = new DateCheck();
-        c.setOrgId(o.getId());
+        c.setOrgId(org.getId());
         c.setCreatedBy(u.getId());
-        c.setCity("Paris");
+        c.setCity("Paris" + DateCheckControllerTest.letters());
         c.setCountry("FR");
         c.setGenreFamily("house & techno");
         c.setStatus("done");
@@ -85,19 +67,12 @@ abstract class DateVerdictFeedbackStoreScenarios {
 
     @AfterEach
     void after() {
-        clean();
-    }
-
-    private void clean() {
-        jdbc.update("DELETE FROM date_verdict_feedback");
-        checks.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+        PredictorRows.delete(jdbc, List.of(org.getId()));
     }
 
     private int rows() {
-        return jdbc.queryForObject("SELECT COUNT(*) FROM date_verdict_feedback", Integer.class);
+        return jdbc.queryForObject("SELECT COUNT(*) FROM date_verdict_feedback WHERE event_id = ?", Integer.class,
+                event.getId());
     }
 
     @Test
@@ -142,12 +117,12 @@ abstract class DateVerdictFeedbackStoreScenarios {
     void everyRatedVerdictFitsTheCheckConstraintAndNotEnoughDataDoesNot() {
         for (DateResult.Verdict v : DateResult.Verdict.values()) {
             if (v == DateResult.Verdict.NOT_ENOUGH_DATA) continue;
-            jdbc.update("DELETE FROM date_verdict_feedback");
+            jdbc.update("DELETE FROM date_verdict_feedback WHERE event_id = ?", event.getId());
             store.insertIfAbsent(UUID.randomUUID(), event.getId(), check.getId(), OCT24, v.dbValue(), "yes", null,
                     T1, T1);
             assertThat(store.find(event.getId()).orElseThrow().verdict()).isEqualTo(v.dbValue());
         }
-        jdbc.update("DELETE FROM date_verdict_feedback");
+        jdbc.update("DELETE FROM date_verdict_feedback WHERE event_id = ?", event.getId());
         assertThatThrownBy(() -> store.insertIfAbsent(UUID.randomUUID(), event.getId(), check.getId(), OCT24,
                 DateResult.Verdict.NOT_ENOUGH_DATA.dbValue(), "yes", null, T1, T1))
                 .isInstanceOf(DataIntegrityViolationException.class);

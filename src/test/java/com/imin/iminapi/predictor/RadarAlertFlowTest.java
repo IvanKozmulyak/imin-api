@@ -1,8 +1,5 @@
 package com.imin.iminapi.predictor;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
-import com.imin.iminapi.email.EmailService;
-import com.imin.iminapi.email.EmailServiceTestConfig;
 import com.imin.iminapi.email.RecordingEmailService;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
@@ -10,17 +7,11 @@ import com.imin.iminapi.model.Notification;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.model.UserRole;
+import com.imin.iminapi.predictor.config.DateCheckProperties;
 import com.imin.iminapi.predictor.model.ProjectionBand;
-import com.imin.iminapi.predictor.repository.DateCheckDateRepository;
-import com.imin.iminapi.predictor.repository.DateCheckFindingRepository;
-import com.imin.iminapi.predictor.repository.DateCheckRepository;
-import com.imin.iminapi.predictor.repository.PredictionLedgerRepository;
-import com.imin.iminapi.predictor.rules.Finding;
-import com.imin.iminapi.predictor.rules.QuestionBank;
-import com.imin.iminapi.predictor.rules.QuestionBank.Kind;
-import com.imin.iminapi.predictor.rules.RuleEngine;
+import com.imin.iminapi.predictor.model.ReferenceCalendarEntry;
+import com.imin.iminapi.predictor.repository.ReferenceCalendarEntryRepository;
 import com.imin.iminapi.predictor.service.PredictorAlertStore;
-import com.imin.iminapi.predictor.service.RadarAlertRule;
 import com.imin.iminapi.predictor.service.RadarJob;
 import com.imin.iminapi.predictor.service.RadarTimelineService;
 import com.imin.iminapi.security.AuthPrincipal;
@@ -28,50 +19,36 @@ import com.imin.iminapi.predictor.service.ReforecastAlertNotifier;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.NotificationRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
-import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.MutableClock;
+import com.imin.iminapi.support.PgFaults;
+import com.imin.iminapi.support.PredictorRows;
+import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.TestPropertySource;
-import org.springframework.test.context.bean.override.convention.TestBean;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.sql.Timestamp;
-import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.argThat;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 /**
- * The radar alert end to end: real store, notifier and templates, a mocked rule engine and the recording mail.
- * Clock fixed at 1 Oct 2026 10:00Z; a French org, so the 15 Oct night is 14 days out (milestone 14).
+ * The radar alert end to end: real engine, store, notifier and templates, and the recording mail. Clock pinned at
+ * 1 Oct 2026 10:00Z; a French org, so the 15 Oct night is 14 days out (milestone 14). The re-run worsens to risk 8:
+ * a seeded pont on the night (4.3, min(4, 3 x 3) = 4) and a 14-day lead under the 21-day minimum (10.1, 2 x 2 = 4).
  */
-@SpringBootTest
-@Import({TestRateLimitConfig.class, EmailServiceTestConfig.class})
-@TestPropertySource(properties = {"imin.predictor.date-check.enabled=true",
-        "imin.predictor.date-check.all-orgs=true",
-        "imin.predictor.date-check.radar-enabled=true"})
+@IminIntegrationTest
 class RadarAlertFlowTest {
 
     private static final Instant NOW = Instant.parse("2026-10-01T10:00:00Z");
@@ -80,78 +57,70 @@ class RadarAlertFlowTest {
     private static final Instant START = Instant.parse("2026-10-15T20:00:00Z");
     private static final Instant BEFORE_WINDOW = Instant.parse("2026-09-20T10:00:00Z");
 
-    @TestBean Clock clock;
-
-    static Clock clock() {
-        return Clock.fixed(NOW, ZoneOffset.UTC);
-    }
-
-    @MockitoBean RuleEngine engine;
-    @MockitoSpyBean ReforecastAlertNotifier notifier;
-
+    @Autowired MutableClock clock;
+    @Autowired PropertyFlips flips;
+    @Autowired DateCheckProperties props;
+    @Autowired IminFixtures fx;
     @Autowired RadarJob radarJob;
+    @Autowired ReforecastAlertNotifier notifier;
     @Autowired PredictorAlertStore store;
-    @Autowired QuestionBank bank;
     @Autowired OrganizationRepository orgs;
-    @Autowired UserRepository users;
     @Autowired EventRepository events;
-    @Autowired DateCheckRepository checks;
-    @Autowired DateCheckDateRepository checkDates;
-    @Autowired DateCheckFindingRepository findings;
-    @Autowired PredictionLedgerRepository ledger;
-    @MockitoSpyBean NotificationRepository notifications;
+    @Autowired NotificationRepository notifications;
+    @Autowired ReferenceCalendarEntryRepository calendar;
     @Autowired RadarTimelineService timeline;
-    @Autowired EmailService email;
+    @Autowired RecordingEmailService mail;
     @Autowired JdbcTemplate jdbc;
     @Autowired PlatformTransactionManager txManager;
 
-    private RecordingEmailService mail;
+    private final String city = "Paris" + DateCheckControllerTest.letters();
+    private final List<UUID> calendarRows = new ArrayList<>();
     private Organization org;
     private User owner;
 
     @BeforeEach
     void seed() {
-        mail = (RecordingEmailService) email;
-        clean();
-        Organization o = new Organization();
-        o.setName("Radar Alert Org");
-        o.setSlug("ra-" + UUID.randomUUID().toString().substring(0, 8));
-        o.setContactEmail("radar-team@example.test");
+        clock.setInstant(NOW);
+        flips.set(props, "enabled", true);
+        flips.set(props, "allOrgs", true);
+        flips.set(props, "radarEnabled", true);
+        Organization o = fx.org();
         o.setCountry("FR");
         org = orgs.save(o);
-        User u = new User();
-        u.setOrgId(org.getId());
-        u.setEmail("owner-" + UUID.randomUUID() + "@example.test");
-        u.setRole(UserRole.OWNER);
-        owner = users.save(u);
-        // 4.1 = 2 x 2 = 4 points, 4.3 = min(4, 3 x 3) = 4: risk 8 >= move_min_risk 7, both star ids checked.
-        when(engine.evaluate(any(), any())).thenReturn(List.of(
-                Finding.found(q("4.1"), Kind.RISK, 2, Map.of(), null),
-                Finding.found(q("4.3"), Kind.RISK, 3, Map.of(), null)));
+        owner = fx.owner(org);
+        cal("pont", NIGHT);
     }
 
     @AfterEach
     void after() {
-        clean();
+        try {
+            calendar.deleteAllById(calendarRows);
+        } finally {
+            PredictorRows.delete(jdbc, List.of(org.getId()));
+        }
     }
 
-    private void clean() {
-        jdbc.update("delete from predictor_alert");
-        jdbc.update("delete from notifications");
-        jdbc.update("update events set radar_muted = false");
-        findings.deleteAll();
-        checkDates.deleteAll();
-        ledger.deleteAll();
-        events.deleteAll();
-        jdbc.update("update date_check set radar_prev_id = null");
-        checks.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
-        if (mail != null) mail.clear();
+    /** A country-wide FR row; the whole year then counts as synced for that kind. */
+    private void cal(String kind, LocalDate day) {
+        ReferenceCalendarEntry e = new ReferenceCalendarEntry();
+        e.setCountry("FR");
+        e.setRegion("");
+        e.setCalendarDate(day);
+        e.setKind(kind);
+        e.setName("Radar " + kind + " " + city);
+        e.setSourceUrl("https://example.org/" + kind);
+        e.setSyncedAt(Instant.parse("2026-09-01T00:00:00Z"));
+        calendarRows.add(calendar.save(e).getId());
     }
 
-    private QuestionBank.Question q(String id) {
-        return bank.questions().stream().filter(x -> x.id().equals(id)).findFirst().orElseThrow();
+    /** Mail to this test's org contact. */
+    private List<RecordingEmailService.SentEmail> ownMail() {
+        return mail.sent().stream().filter(m -> org.getContactEmail().equals(m.to())).toList();
+    }
+
+    private int ownAlerts() {
+        return jdbc.queryForObject("select count(*) from predictor_alert where event_id in "
+                + "(select id from events where org_id = ?)", Integer.class, org.getId());
     }
 
     private Event liveEvent() {
@@ -171,8 +140,8 @@ class RadarAlertFlowTest {
         jdbc.update("""
                 insert into date_check (id, org_id, created_by, city, country, genre_family, status,
                     question_bank_version, assumptions_json, research, event_id, created_at, updated_at)
-                values (?, ?, ?, 'Paris', 'FR', 'house & techno', 'done', 'test', '[]', false, ?, ?, ?)""",
-                id, org.getId(), owner.getId(), eventId, Timestamp.from(BEFORE_WINDOW), Timestamp.from(BEFORE_WINDOW));
+                values (?, ?, ?, ?, 'FR', 'house & techno', 'done', 'test', '[]', false, ?, ?, ?)""",
+                id, org.getId(), owner.getId(), city, eventId, Timestamp.from(BEFORE_WINDOW), Timestamp.from(BEFORE_WINDOW));
         jdbc.update("""
                 insert into date_check_date (id, date_check_id, candidate_date, verdict, risk_score, opp_score,
                     coverage, rank_order)
@@ -214,10 +183,8 @@ class RadarAlertFlowTest {
                     "Thursday 15 October · Date risk 0/10 → 8/10. Open the Predictor tab to see what we found.");
             assertThat(n.getLink()).isEqualTo("/events/" + e.getId() + "/predictor");
         });
-        assertThat(mail.sent()).singleElement().satisfies(m -> {
-            assertThat(m.to()).isEqualTo("radar-team@example.test");
-            assertThat(m.subject()).isEqualTo("Radar Night: date check changed (Good → Move)");
-        });
+        assertThat(ownMail()).singleElement().satisfies(m ->
+                assertThat(m.subject()).isEqualTo("Radar Night: date check changed (Good → Move)"));
         Map<String, Object> claim = jdbc.queryForMap(
                 "select kind, alert_day, date_check_id from predictor_alert where event_id = ?", e.getId());
         assertThat(claim.get("kind")).isEqualTo("radar");
@@ -240,10 +207,9 @@ class RadarAlertFlowTest {
         assertThat(((Number) row.get("radar_prev_risk")).intValue()).isZero();
         assertThat(row.get("radar_verdict")).isEqualTo("move");
         assertThat(((Number) row.get("radar_risk")).intValue()).isEqualTo(8);
-        verify(notifier).notifyRadarWorsened(any());
-        assertThat(jdbc.queryForObject("select count(*) from predictor_alert", Integer.class)).isZero();
+        assertThat(ownAlerts()).isZero();
         assertThat(notificationsFor(owner.getId())).isEmpty();
-        assertThat(mail.sent()).isEmpty();
+        assertThat(ownMail()).isEmpty();
 
         // The muted radar run claimed nothing, so a band crossing the same day still alerts.
         bandCrossing(e);
@@ -255,15 +221,14 @@ class RadarAlertFlowTest {
     void failedInAppWriteRollsTheClaimBack() {
         Event e = liveEvent();
         baseline(e.getId(), NIGHT);
-        doThrow(new IllegalStateException("db down")).when(notifications)
-                .save(argThat((Notification n) -> n != null && "predictor.radar.worsened".equals(n.getKind())));
+        try (PgFaults.Fault inAppDown = PgFaults.failWrites(jdbc, "notifications", "user_id", owner.getId())) {
+            runJob();
+        }
 
-        runJob();
-
-        verify(notifier).notifyRadarWorsened(any());
-        assertThat(jdbc.queryForObject("select count(*) from predictor_alert", Integer.class)).isZero();
+        assertThat(radarRow(e.getId())).isNotNull();
+        assertThat(ownAlerts()).isZero();
         assertThat(notificationsFor(owner.getId())).isEmpty();
-        assertThat(mail.sent()).isEmpty();
+        assertThat(ownMail()).isEmpty();
         AuthPrincipal p = new AuthPrincipal(owner.getId(), org.getId(), UserRole.OWNER, UUID.randomUUID());
         assertThat(timeline.timeline(p, e.getId()).runs()).singleElement()
                 .satisfies(r -> assertThat(r.alert()).isEqualTo("none"));
@@ -285,29 +250,21 @@ class RadarAlertFlowTest {
 
         assertThat(radarRow(e.getId())).isNotNull();
         assertThat(notificationsFor(owner.getId())).isEmpty();
-        assertThat(mail.sent()).isEmpty();
-        assertThat(jdbc.queryForObject("select count(*) from predictor_alert", Integer.class)).isZero();
+        assertThat(ownMail()).isEmpty();
+        assertThat(ownAlerts()).isZero();
     }
 
     @Test
     void alertIsSentAfterTheRunCommits() {
         Event e = liveEvent();
         baseline(e.getId(), NIGHT);
-        AtomicBoolean inTx = new AtomicBoolean(true);
-        AtomicInteger committedRadarRows = new AtomicInteger(-1);
-        doAnswer(inv -> {
-            inTx.set(TransactionSynchronizationManager.isActualTransactionActive());
-            RadarAlertRule.Alert a = inv.getArgument(0);
-            committedRadarRows.set(jdbc.queryForObject(
-                    "select count(*) from date_check where origin = 'radar' and id = ?", Integer.class, a.runCheckId()));
-            return inv.callRealMethod();
-        }).when(notifier).notifyRadarWorsened(any());
 
         runJob();
 
-        verify(notifier).notifyRadarWorsened(any());
-        assertThat(inTx).isFalse();
-        assertThat(committedRadarRows).hasValue(1);
+        assertThat(ownMail()).hasSize(1);
+        int sent = mail.sent().indexOf(ownMail().get(0));
+        assertThat(mail.sentInTransaction(sent)).isFalse();
+        assertThat(radarRow(e.getId())).isNotNull();
     }
 
     @Test
@@ -340,7 +297,7 @@ class RadarAlertFlowTest {
         assertThat(radarRow(e.getId())).isNotNull();
         assertThat(notificationsFor(owner.getId())).singleElement()
                 .satisfies(n -> assertThat(n.getKind()).isEqualTo("predictor.trajectory.tracking_60_85"));
-        assertThat(mail.sent()).isEmpty();
+        assertThat(ownMail()).isEmpty();
     }
 
     @Test
@@ -353,6 +310,6 @@ class RadarAlertFlowTest {
 
         assertThat(notificationsFor(owner.getId())).singleElement()
                 .satisfies(n -> assertThat(n.getKind()).isEqualTo("predictor.radar.worsened"));
-        assertThat(mail.sent()).hasSize(1);
+        assertThat(ownMail()).hasSize(1);
     }
 }

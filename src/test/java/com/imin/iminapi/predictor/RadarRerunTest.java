@@ -2,12 +2,12 @@ package com.imin.iminapi.predictor;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.model.UserRole;
+import com.imin.iminapi.predictor.config.DateCheckProperties;
 import com.imin.iminapi.predictor.dto.AssumptionsPatch;
 import com.imin.iminapi.predictor.dto.DateCheckRequest;
 import com.imin.iminapi.predictor.model.DateCheck;
@@ -15,39 +15,37 @@ import com.imin.iminapi.predictor.model.DateCheckDate;
 import com.imin.iminapi.predictor.repository.DateCheckDateRepository;
 import com.imin.iminapi.predictor.repository.DateCheckFindingRepository;
 import com.imin.iminapi.predictor.repository.DateCheckRepository;
-import com.imin.iminapi.predictor.repository.PredictionLedgerRepository;
-import com.imin.iminapi.predictor.repository.PredictorJobRepository;
 import com.imin.iminapi.predictor.service.DateCheckService;
 import com.imin.iminapi.predictor.service.DateCheckService.RadarOutcome;
 import com.imin.iminapi.predictor.service.RadarJob;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
-import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.MutableClock;
+import com.imin.iminapi.support.PredictorRows;
+import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.test.context.TestPropertySource;
-import org.springframework.test.context.bean.override.convention.TestBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.sql.Timestamp;
-import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -59,15 +57,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * Radar re-runs with the gate open and the clock fixed at 1 Oct 2026 10:00Z. The org and checks are French, so
+ * Radar re-runs with the gate open and the clock pinned at 1 Oct 2026 10:00Z. The org and checks are French, so
  * nights resolve in Europe/Paris (UTC+2 until 25 Oct): the base event's night is 15 Oct, 14 days out, milestone 14.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
-@TestPropertySource(properties = {"imin.predictor.date-check.enabled=true",
-        "imin.predictor.date-check.all-orgs=true",
-        "imin.predictor.date-check.radar-enabled=true"})
+@IminIntegrationTest
 class RadarRerunTest {
 
     private static final Instant NOW = Instant.parse("2026-10-01T10:00:00Z");
@@ -76,77 +69,49 @@ class RadarRerunTest {
     /** Before the milestone-14 window opened on 1 Oct. */
     private static final Instant BEFORE_WINDOW = Instant.parse("2026-09-20T10:00:00Z");
 
-    /** This context's own clock; reset to NOW before each test, advanced by hours only where a test needs order. */
-    private static final MutableClock CLOCK = new MutableClock();
-
-    @TestBean Clock clock;
-
-    static Clock clock() {
-        return CLOCK;
-    }
-
-    static final class MutableClock extends Clock {
-        private volatile Instant now = NOW;
-
-        void set(Instant i) { now = i; }
-        @Override public java.time.ZoneId getZone() { return ZoneOffset.UTC; }
-        @Override public Clock withZone(java.time.ZoneId zone) { return Clock.fixed(now, zone); }
-        @Override public Instant instant() { return now; }
-    }
-
+    /** Pinned to NOW before each test, advanced by hours only where a test needs order. */
+    @Autowired MutableClock clock;
+    @Autowired PropertyFlips flips;
+    @Autowired DateCheckProperties props;
+    @Autowired IminFixtures fx;
     @Autowired MockMvc mvc;
     @Autowired DateCheckService service;
     @Autowired RadarJob radarJob;
     @Autowired OrganizationRepository orgs;
-    @Autowired UserRepository users;
     @Autowired EventRepository events;
     @Autowired DateCheckRepository checks;
     @Autowired DateCheckDateRepository checkDates;
     @Autowired DateCheckFindingRepository findings;
-    @Autowired PredictionLedgerRepository ledger;
-    @Autowired PredictorJobRepository jobs;
     @Autowired JdbcTemplate jdbc;
     @Autowired org.springframework.transaction.PlatformTransactionManager txManager;
     private org.springframework.transaction.support.TransactionTemplate tx;
 
     private final ObjectMapper om = new ObjectMapper();
+    private final String city = "Paris" + DateCheckControllerTest.letters();
 
     private Organization org;
     private User owner;
 
     @BeforeEach
     void seed() {
-        CLOCK.set(NOW);
+        clock.setInstant(NOW);
+        flips.set(props, "enabled", true);
+        flips.set(props, "allOrgs", true);
+        flips.set(props, "radarEnabled", true);
         tx = new org.springframework.transaction.support.TransactionTemplate(txManager);
-        clean();
-        Organization o = new Organization();
-        o.setName("Radar Org");
-        o.setSlug("rr-" + UUID.randomUUID().toString().substring(0, 8));
-        o.setContactEmail("rr@example.test");
+        Organization o = fx.org();
         o.setCountry("FR");
         org = orgs.save(o);
-        User u = new User();
-        u.setOrgId(org.getId());
-        u.setEmail("owner-" + UUID.randomUUID() + "@example.test");
-        u.setRole(UserRole.OWNER);
-        owner = users.save(u);
+        owner = fx.owner(org);
     }
 
     @AfterEach
     void after() {
-        clean();
+        PredictorRows.delete(jdbc, List.of(org.getId()));
     }
 
-    private void clean() {
-        findings.deleteAll();
-        checkDates.deleteAll();
-        ledger.deleteAll();
-        jobs.deleteAll();
-        events.deleteAll();
-        jdbc.update("update date_check set radar_prev_id = null");
-        checks.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+    private List<DateCheck> ownChecks() {
+        return checks.findAll().stream().filter(c -> org.getId().equals(c.getOrgId())).toList();
     }
 
     private AuthPrincipal principal() {
@@ -191,8 +156,8 @@ class RadarRerunTest {
         jdbc.update("""
                 insert into date_check (id, org_id, created_by, city, country, genre_family, status,
                     question_bank_version, assumptions_json, research, event_id, created_at, updated_at)
-                values (?, ?, ?, 'Paris', 'FR', 'house & techno', 'done', 'test', '[]', false, ?, ?, ?)""",
-                id, org.getId(), owner.getId(), eventId, Timestamp.from(createdAt), Timestamp.from(updatedAt));
+                values (?, ?, ?, ?, 'FR', 'house & techno', 'done', 'test', '[]', false, ?, ?, ?)""",
+                id, org.getId(), owner.getId(), city, eventId, Timestamp.from(createdAt), Timestamp.from(updatedAt));
         jdbc.update("""
                 insert into date_check_date (id, date_check_id, candidate_date, verdict, risk_score, opp_score,
                     coverage, rank_order)
@@ -227,7 +192,7 @@ class RadarRerunTest {
 
     /** An organizer check made through the service for the event, then dated {@code at} explicitly. */
     private UUID check(UUID eventId, Instant at, LocalDate... dates) {
-        DateCheckRequest req = new DateCheckRequest("Paris", "FR", "75011", eventId, "house & techno", "techno",
+        DateCheckRequest req = new DateCheckRequest(city, "FR", "75011", eventId, "house & techno", "techno",
                 List.of(dates), 300, 1500L, "club", 23, 5, List.of("DJ One", "DJ Two"),
                 List.of(new DateCheckRequest.KnownEventInput("Rival Night", NIGHT, "Rex", 2)),
                 List.of(25, 34), List.of("PT"), 14, false);
@@ -238,7 +203,7 @@ class RadarRerunTest {
     }
 
     private List<DateCheck> radarRows(UUID eventId) {
-        return checks.findAll().stream()
+        return ownChecks().stream()
                 .filter(c -> DateCheck.ORIGIN_RADAR.equals(c.getOrigin()) && eventId.equals(c.getEventId()))
                 .toList();
     }
@@ -264,7 +229,7 @@ class RadarRerunTest {
         assertThat(service.radarRerun(draft.getId()).outcome()).isEqualTo(RadarOutcome.NOT_DUE);
         assertThat(service.radarRerun(deleted.getId()).outcome()).isEqualTo(RadarOutcome.NOT_DUE);
         assertThat(service.radarRerun(noStart.getId()).outcome()).isEqualTo(RadarOutcome.NOT_DUE);
-        assertThat(checks.findAll()).noneMatch(c -> DateCheck.ORIGIN_RADAR.equals(c.getOrigin()));
+        assertThat(ownChecks()).noneMatch(c -> DateCheck.ORIGIN_RADAR.equals(c.getOrigin()));
     }
 
     @Test
@@ -272,7 +237,7 @@ class RadarRerunTest {
         Event e = event(EventStatus.LIVE, START);
 
         assertThat(service.radarRerun(e.getId()).outcome()).isEqualTo(RadarOutcome.NO_CHECK);
-        assertThat(checks.count()).isZero();
+        assertThat(ownChecks()).isEmpty();
     }
 
     @Test
@@ -328,7 +293,7 @@ class RadarRerunTest {
         assertThat(r.getEventId()).isEqualTo(e.getId());
         assertThat(r.getOrgId()).isEqualTo(org.getId());
         assertThat(r.getCreatedBy()).isEqualTo(owner.getId());
-        assertThat(r.getCity()).isEqualTo("Paris");
+        assertThat(r.getCity()).isEqualTo(city);
         assertThat(r.getCountry()).isEqualTo("FR");
         assertThat(r.getPostalCode()).isEqualTo("75011");
         assertThat(r.getGenreFamily()).isEqualTo("house & techno");
@@ -394,10 +359,10 @@ class RadarRerunTest {
         assertThat(service.radarRerun(e.getId()).outcome()).isEqualTo(RadarOutcome.RAN);
         UUID first = radarRows(e.getId()).get(0).getId();
         // Same Paris day, same milestone: only the run order moves on.
-        CLOCK.set(NOW.plus(Duration.ofHours(1)));
+        clock.setInstant(NOW.plus(Duration.ofHours(1)));
         move(e, Instant.parse("2026-10-14T20:00:00Z"));
         assertThat(service.radarRerun(e.getId()).outcome()).isEqualTo(RadarOutcome.RAN);
-        CLOCK.set(NOW.plus(Duration.ofHours(2)));
+        clock.setInstant(NOW.plus(Duration.ofHours(2)));
         move(e, START);
 
         // The first run still scores the night inside this milestone's window, so it is current and done.
@@ -482,29 +447,22 @@ class RadarRerunTest {
         assertCurrent(e, older);
     }
 
-    @Test
-    void equalUpdatedAtFallsBackToCreatedAt() throws Exception {
+    /**
+     * Equal updatedAt: the later createdAt wins although it is inserted first with the smaller id. Full tie: the id as
+     * a string wins (unreachable in practice, timestamps are microseconds); UUID.compareTo is signed and would not.
+     * The ids are fixed because the order is the point; each test deletes its org's checks.
+     */
+    @ParameterizedTest
+    @CsvSource({
+            "10000000-0000-4000-8000-000000000000, 2026-09-27T10:00:00Z, f0000000-0000-4000-8000-000000000000, 2026-09-26T10:00:00Z",
+            "f0000000-0000-4000-8000-000000000000, 2026-09-28T10:00:00Z, 10000000-0000-4000-8000-000000000000, 2026-09-28T10:00:00Z"})
+    void currentCheckTieBreaks(UUID winner, Instant winnerCreated, UUID loser, Instant loserCreated) throws Exception {
         Event e = event(EventStatus.LIVE, START);
         Instant scored = Instant.parse("2026-09-28T10:00:00Z");
-        // The winner is inserted first and has the smaller id, so neither order nor id can pick it.
-        UUID winner = UUID.fromString("10000000-0000-4000-8000-000000000000");
-        UUID loser = UUID.fromString("f0000000-0000-4000-8000-000000000000");
-        rawCheck(winner, e.getId(), Instant.parse("2026-09-27T10:00:00Z"), scored);
-        rawCheck(loser, e.getId(), Instant.parse("2026-09-26T10:00:00Z"), scored);
-
-        assertCurrent(e, winner);
-    }
-
-    @Test
-    void fullTieFallsBackToTheIdAsAString() throws Exception {
-        Event e = event(EventStatus.LIVE, START);
-        Instant at = Instant.parse("2026-09-28T10:00:00Z");
-        // Unreachable in practice (timestamps are microseconds); UUID.compareTo is signed and would pick the other.
-        UUID winner = UUID.fromString("f0000000-0000-4000-8000-000000000000");
-        UUID loser = UUID.fromString("10000000-0000-4000-8000-000000000000");
-        assertThat(winner.compareTo(loser)).isNegative();
-        rawCheck(winner, e.getId(), at, at);
-        rawCheck(loser, e.getId(), at, at);
+        // The full-tie row only proves the string order if UUID.compareTo would pick the other id.
+        if (winnerCreated.equals(loserCreated)) assertThat(winner.compareTo(loser)).isNegative();
+        rawCheck(winner, e.getId(), winnerCreated, scored);
+        rawCheck(loser, e.getId(), loserCreated, scored);
 
         assertCurrent(e, winner);
     }
@@ -586,11 +544,11 @@ class RadarRerunTest {
         softDelete(deleted);
         Event tooFar = event(EventStatus.LIVE, NOW.plus(Duration.ofDays(33)));
         Event live = event(EventStatus.LIVE, NOW.plus(Duration.ofDays(20)));
-        List<UUID> mine = List.of(past.getId(), draft.getId(), deleted.getId(), tooFar.getId(), live.getId());
 
         List<UUID> ids = events.findRadarCandidateIds(NOW, NOW.plus(Duration.ofDays(32)));
 
-        assertThat(ids.stream().filter(mine::contains).toList()).containsExactly(live.getId());
+        assertThat(ids).contains(live.getId())
+                .doesNotContain(past.getId(), draft.getId(), deleted.getId(), tooFar.getId());
     }
 
     // --- readers ---
@@ -709,5 +667,20 @@ class RadarRerunTest {
 
         assertThat(radarRows(e.getId())).singleElement()
                 .satisfies(r -> assertThat(r.getRadarMilestone()).isEqualTo((short) 14));
+    }
+
+    // --- gate closed ---
+
+    /** Date check and radar on, but the org is on no beta list: a due event is skipped and nothing is written. */
+    @Test
+    void closedGateIsSkipped() {
+        flips.set(props, "allOrgs", false);
+        flips.set(props, "betaOrgIds", Set.of());
+        Event e = event(EventStatus.LIVE, START);
+        UUID base = UUID.randomUUID();
+        rawCheck(base, e.getId(), BEFORE_WINDOW, BEFORE_WINDOW);
+
+        assertThat(service.radarRerun(e.getId()).outcome()).isEqualTo(RadarOutcome.GATE_CLOSED);
+        assertThat(ownChecks()).extracting(DateCheck::getId).containsExactly(base);
     }
 }

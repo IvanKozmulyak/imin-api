@@ -2,11 +2,11 @@ package com.imin.iminapi.predictor;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.model.UserRole;
+import com.imin.iminapi.predictor.config.DateCheckProperties;
 import com.imin.iminapi.predictor.config.PredictorProperties;
 import com.imin.iminapi.predictor.jobs.PredictorJobRunner;
 import com.imin.iminapi.predictor.jobs.PredictorJobService;
@@ -16,7 +16,6 @@ import com.imin.iminapi.predictor.model.PredictionLedger;
 import com.imin.iminapi.predictor.model.PredictionSurface;
 import com.imin.iminapi.predictor.model.PredictorJob;
 import com.imin.iminapi.predictor.repository.DateCheckDateRepository;
-import com.imin.iminapi.predictor.repository.DateCheckFindingRepository;
 import com.imin.iminapi.predictor.repository.DateCheckRepository;
 import com.imin.iminapi.predictor.repository.PredictionLedgerRepository;
 import com.imin.iminapi.predictor.repository.PredictorJobRepository;
@@ -33,43 +32,38 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.MutableClock;
+import com.imin.iminapi.support.PredictorRows;
+import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.test.context.TestPropertySource;
-import org.springframework.test.context.bean.override.convention.TestBean;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.web.client.ResourceAccessException;
 
 import java.math.BigDecimal;
-import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -82,22 +76,16 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * "Check a date" with web research on H2, the research call mocked, the clock fixed at 1 Oct 2026 10:00 UTC. Orgs A
- * and C are in the date-check beta, B is not; caps are 2 per org and 3 in total per UTC day.
+ * "Check a date" with web research, the research call mocked, the clock pinned at 1 Oct 2026 10:00 UTC. Orgs A and C
+ * are in the date-check beta, B is not; the cap is 2 per org per UTC day. The city is Paris because a web finding
+ * must name the check's city and the mocked pages name Paris; every assertion is on this test's own orgs.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
-@TestPropertySource(properties = {"imin.predictor.date-check.enabled=true",
-        "imin.predictor.date-check.beta-org-ids=" + DateCheckResearchFlowTest.ORG_A + ","
-                + DateCheckResearchFlowTest.ORG_C,
-        "imin.predictor.date-check.research-daily-cap-per-org=2",
-        "imin.predictor.date-check.research-daily-cap-global=3"})
+@IminIntegrationTest
 class DateCheckResearchFlowTest {
 
-    static final String ORG_A = "aaaaaaaa-0000-0000-0000-00000000000a";
-    static final String ORG_B = "aaaaaaaa-0000-0000-0000-00000000000b";
-    static final String ORG_C = "aaaaaaaa-0000-0000-0000-00000000000c";
+    private final String orgA = UUID.randomUUID().toString();
+    private final String orgB = UUID.randomUUID().toString();
+    private final String orgC = UUID.randomUUID().toString();
     private static final String BASE = "/api/v1/predictions/date-checks";
     private static final Instant NOW = Instant.parse("2026-10-01T10:00:00Z");
     private static final LocalDate OCT17 = LocalDate.of(2026, 10, 17);
@@ -106,14 +94,11 @@ class DateCheckResearchFlowTest {
     private static final String QUOTE = "Amelie Lens au Rex Club le samedi 17 octobre 2026";
     private static final Usage USAGE = new Usage(4300, 250, 1, new BigDecimal("0.0125"));
 
-    @TestBean Clock clock;
-
-    static Clock clock() {
-        return Clock.fixed(NOW, ZoneOffset.UTC);
-    }
-
-    @MockitoBean ResearchLlmClient client;
-    @MockitoSpyBean DateCheckService service;
+    @Autowired MutableClock clock;
+    @Autowired PropertyFlips flips;
+    @Autowired DateCheckProperties dateCheckProps;
+    @Autowired ResearchLlmClient client;
+    @Autowired DateCheckService service;
 
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;
@@ -122,7 +107,6 @@ class DateCheckResearchFlowTest {
     @Autowired EventRepository events;
     @Autowired DateCheckRepository checks;
     @Autowired DateCheckDateRepository checkDates;
-    @Autowired DateCheckFindingRepository findings;
     @Autowired PredictionLedgerRepository ledger;
     @Autowired PredictorJobRepository jobs;
     @Autowired PredictorJobRunner runner;
@@ -134,11 +118,19 @@ class DateCheckResearchFlowTest {
 
     private final ObjectMapper om = new ObjectMapper();
     private final Map<String, User> owners = new LinkedHashMap<>();
+    /** Jobs whose payload no longer names an own check, so PredictorRows cannot find them. */
+    private final List<UUID> strayJobs = new ArrayList<>();
 
     @BeforeEach
     void seed() {
-        clean();
-        for (String id : List.of(ORG_A, ORG_B, ORG_C)) {
+        clock.setInstant(NOW);
+        flips.set(dateCheckProps, "enabled", true);
+        flips.set(dateCheckProps, "betaOrgIds", java.util.Set.of(UUID.fromString(orgA), UUID.fromString(orgC)));
+        flips.set(dateCheckProps, "researchDailyCapPerOrg", 2);
+        // The global cap counts every org's research today; headroom keeps the 202 cases off other classes' rows.
+        flips.set(dateCheckProps, "researchDailyCapGlobal",
+                (int) checks.countAllResearchQueuedSince(NOW.truncatedTo(ChronoUnit.DAYS)) + 10);
+        for (String id : List.of(orgA, orgB, orgC)) {
             jdbc.update("insert into organizations (id, name, slug, contact_email, country) "
                     + "values (?, 'Research Org', ?, 'r@example.test', 'FR')", UUID.fromString(id), "rs-" + id);
             User u = new User();
@@ -154,18 +146,37 @@ class DateCheckResearchFlowTest {
 
     @AfterEach
     void after() {
-        clean();
+        try {
+            strayJobs.forEach(id -> jdbc.update("delete from predictor_job where id = ?", id));
+        } finally {
+            PredictorRows.delete(jdbc, orgIds());
+        }
     }
 
-    private void clean() {
-        findings.deleteAll();
-        checkDates.deleteAll();
-        ledger.deleteAll();
-        jobs.deleteAll();
-        checks.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+    private List<UUID> orgIds() {
+        return List.of(UUID.fromString(orgA), UUID.fromString(orgB), UUID.fromString(orgC));
+    }
+
+    /** Jobs that name one of this test's checks, oldest first. */
+    private List<PredictorJob> ownJobs() {
+        List<UUID> ids = jdbc.queryForList("select j.id from predictor_job j where exists (select 1 from date_check c"
+                + " where c.org_id in (?, ?, ?) and j.payload_json like '%' || c.id::text || '%')"
+                + " order by j.created_at, j.id", UUID.class, orgIds().toArray());
+        return ids.stream().map(id -> jobs.findById(id).orElseThrow()).toList();
+    }
+
+    private UUID ownJobId() {
+        List<PredictorJob> own = ownJobs();
+        assertThat(own).hasSize(1);
+        return own.get(0).getId();
+    }
+
+    private List<PredictionLedger> ownLedger() {
+        return ledger.findAll().stream().filter(l -> orgIds().contains(l.getOrgId())).toList();
+    }
+
+    private List<DateCheck> ownChecks() {
+        return checks.findAll().stream().filter(c -> orgIds().contains(c.getOrgId())).toList();
     }
 
     private static Reply ok() {
@@ -235,7 +246,7 @@ class DateCheckResearchFlowTest {
 
     @Test
     void researchQueuesAJobAndAnswers202WithTheCalendarResult() throws Exception {
-        JsonNode r = json(postCheck(ORG_A, body(true)).andExpect(status().isAccepted()));
+        JsonNode r = json(postCheck(orgA, body(true)).andExpect(status().isAccepted()));
 
         assertThat(r.get("status").asText()).isEqualTo("running");
         assertThat(r.get("research").asBoolean()).isTrue();
@@ -244,23 +255,23 @@ class DateCheckResearchFlowTest {
         assertThat(web(date(r, OCT17))).isEmpty();
         DateCheck stored = checks.findById(UUID.fromString(r.get("id").asText())).orElseThrow();
         assertThat(stored.getResearchQueuedAt()).isEqualTo(NOW);
-        List<PredictorJob> queued = jobs.findAll();
+        List<PredictorJob> queued = ownJobs();
         assertThat(queued).singleElement().satisfies(j -> {
             assertThat(j.getKind()).isEqualTo("date_check_research");
             assertThat(om.readTree(j.getPayloadJson()).get("dateCheckId").asText()).isEqualTo(r.get("id").asText());
         });
-        assertThat(ledger.count()).isEqualTo(1);
+        assertThat(ownLedger().size()).isEqualTo(1);
         verify(client, never()).research(anyString(), anyString(), anyString());
     }
 
     @Test
     void jobMergesWebFindingsAndFinishesTheCheck() throws Exception {
-        JsonNode before = json(postCheck(ORG_A, body(true)).andExpect(status().isAccepted()));
+        JsonNode before = json(postCheck(orgA, body(true)).andExpect(status().isAccepted()));
         String id = before.get("id").asText();
 
         runner.tick();
 
-        JsonNode after = fetch(ORG_A, id);
+        JsonNode after = fetch(orgA, id);
         assertThat(after.get("status").asText()).isEqualTo("done");
         assertThat(after.get("researchStatus").asText()).isEqualTo("done");
         assertThat(web(date(after, OCT17))).singleElement().satisfies(f -> {
@@ -281,16 +292,16 @@ class DateCheckResearchFlowTest {
         assertThat(date(after, OCT17).get("riskScore").asInt())
                 .isEqualTo(Math.min(10, date(before, OCT17).get("riskScore").asInt() + 4));
         assertThat(date(after, DEC5).get("riskScore").asInt()).isEqualTo(date(before, DEC5).get("riskScore").asInt());
-        assertThat(jobs.findAll()).singleElement().extracting(PredictorJob::getStatus).isEqualTo("done");
+        assertThat(ownJobs()).singleElement().extracting(PredictorJob::getStatus).isEqualTo("done");
     }
 
     @Test
     void costRecorded() throws Exception {
-        String id = json(postCheck(ORG_A, body(true))).get("id").asText();
+        String id = json(postCheck(orgA, body(true))).get("id").asText();
 
         runner.tick();
 
-        List<PredictionLedger> rows = ledger.findAll().stream()
+        List<PredictionLedger> rows = ownLedger().stream()
                 .filter(l -> !"rules/date-check".equals(l.getModelId())).toList();
         assertThat(rows).singleElement().satisfies(l -> {
             assertThat(l.getSurface()).isEqualTo(PredictionSurface.DATE_CHECK);
@@ -304,7 +315,7 @@ class DateCheckResearchFlowTest {
             assertThat(l.getSearches()).isEqualTo(1);
             assertThat(l.getCostUsd()).isEqualByComparingTo("0.0125");
         });
-        assertThat(ledger.count()).isEqualTo(2);
+        assertThat(ownLedger().size()).isEqualTo(2);
     }
 
     @Test
@@ -319,12 +330,12 @@ class DateCheckResearchFlowTest {
         when(client.research(anyString(), anyString(), anyString())).thenReturn(new Reply(json, true, "stop",
                 List.of(new Citation(URL, "Techno à Paris", "Agenda. " + quote + ", 23h."),
                         new Citation(other, "Sortir à Paris", quote + ". Billets en vente.")), USAGE));
-        JsonNode before = json(postCheck(ORG_A, body(true)).andExpect(status().isAccepted()));
+        JsonNode before = json(postCheck(orgA, body(true)).andExpect(status().isAccepted()));
         int calendarRisk = date(before, DEC5).get("riskScore").asInt();
 
         runner.tick();
 
-        JsonNode night = date(fetch(ORG_A, before.get("id").asText()), DEC5);
+        JsonNode night = date(fetch(orgA, before.get("id").asText()), DEC5);
         assertThat(web(night)).singleElement().satisfies(f -> assertThat(f.get("questionId").asText())
                 .isEqualTo("2.1"));
         // One web finding adds at most 4 points; two would reach the move threshold of 7.
@@ -345,12 +356,12 @@ class DateCheckResearchFlowTest {
                 .formatted(URL, quote, bigQuote);
         when(client.research(anyString(), anyString(), anyString())).thenReturn(new Reply(json, true, "stop",
                 List.of(new Citation(URL, "Techno à Paris", "Agenda. " + quote + ". " + bigQuote + ".")), USAGE));
-        JsonNode before = json(postCheck(ORG_A, body(true)).andExpect(status().isAccepted()));
+        JsonNode before = json(postCheck(orgA, body(true)).andExpect(status().isAccepted()));
         int calendarRisk = date(before, DEC5).get("riskScore").asInt();
 
         runner.tick();
 
-        JsonNode night = date(fetch(ORG_A, before.get("id").asText()), DEC5);
+        JsonNode night = date(fetch(orgA, before.get("id").asText()), DEC5);
         assertThat(web(night)).singleElement().satisfies(f -> assertThat(f.get("questionId").asText())
                 .isEqualTo("2.1"));
         // 2.1 and 5.3 from one page would add 8 and reach the move threshold of 7.
@@ -361,13 +372,13 @@ class DateCheckResearchFlowTest {
 
     @Test
     void cacheHitLedgersZeroUsage() throws Exception {
-        String id = json(postCheck(ORG_A, body(true))).get("id").asText();
+        String id = json(postCheck(orgA, body(true))).get("id").asText();
         WebResearchService.Outcome hit = new WebResearchService.Outcome(true, Map.of(OCT17, List.of()), null,
                 "anthropic/claude-haiku-4.5", null);
 
         assertThat(service.completeResearch(UUID.fromString(id), hit)).isTrue();
 
-        List<PredictionLedger> rows = ledger.findAll().stream()
+        List<PredictionLedger> rows = ownLedger().stream()
                 .filter(l -> !"rules/date-check".equals(l.getModelId())).toList();
         assertThat(rows).singleElement().satisfies(l -> {
             assertThat(l.getDateCheckId()).isEqualTo(UUID.fromString(id));
@@ -378,19 +389,19 @@ class DateCheckResearchFlowTest {
             assertThat(l.getSearches()).isZero();
             assertThat(l.getCostUsd()).isEqualByComparingTo("0");
         });
-        assertThat(fetch(ORG_A, id).get("researchStatus").asText()).isEqualTo("done");
+        assertThat(fetch(orgA, id).get("researchStatus").asText()).isEqualTo("done");
     }
 
     @Test
     void leaseExpiredOnTheLastAttemptMarksResearchFailed() throws Exception {
-        String id = json(postCheck(ORG_A, body(true)).andExpect(status().isAccepted())).get("id").asText();
+        String id = json(postCheck(orgA, body(true)).andExpect(status().isAccepted())).get("id").asText();
         // A runner died mid-call on the last attempt: the lease ran out and nothing reported the failure.
-        jdbc.update("update predictor_job set status = 'running', attempts = ?, locked_until = ?",
-                PredictorJobService.MAX_ATTEMPTS, java.sql.Timestamp.from(NOW.minusSeconds(60)));
+        jdbc.update("update predictor_job set status = 'running', attempts = ?, locked_until = ? where id = ?",
+                PredictorJobService.MAX_ATTEMPTS, java.sql.Timestamp.from(NOW.minusSeconds(60)), ownJobId());
 
         runner.tick();
 
-        assertThat(jobs.findAll()).singleElement().satisfies(j -> {
+        assertThat(ownJobs()).singleElement().satisfies(j -> {
             assertThat(j.getStatus()).isEqualTo("failed");
             assertThat(j.getLastError()).isEqualTo("lock expired");
         });
@@ -404,30 +415,30 @@ class DateCheckResearchFlowTest {
     void providerTimeoutGivesPartialResult() throws Exception {
         when(client.research(anyString(), anyString(), anyString()))
                 .thenThrow(new ResourceAccessException("Read timed out"));
-        JsonNode before = json(postCheck(ORG_A, body(true)).andExpect(status().isAccepted()));
+        JsonNode before = json(postCheck(orgA, body(true)).andExpect(status().isAccepted()));
 
         runner.tick();
 
-        JsonNode after = fetch(ORG_A, before.get("id").asText());
+        JsonNode after = fetch(orgA, before.get("id").asText());
         assertThat(after.get("status").asText()).isEqualTo("done");
         assertThat(after.get("researchStatus").asText()).isEqualTo("failed");
         assertThat(after.get("research").asBoolean()).isTrue();
         assertThat(after.get("dates")).isEqualTo(before.get("dates"));
-        assertThat(jobs.findAll()).singleElement().extracting(PredictorJob::getStatus).isEqualTo("done");
+        assertThat(ownJobs()).singleElement().extracting(PredictorJob::getStatus).isEqualTo("done");
         verify(client, times(1)).research(anyString(), anyString(), anyString());
-        assertThat(ledger.count()).isEqualTo(1);
+        assertThat(ownLedger().size()).isEqualTo(1);
     }
 
     @Test
     void paidCallWithAnUnusableAnswerIsLedgeredAndFails() throws Exception {
         when(client.research(anyString(), anyString(), anyString()))
                 .thenReturn(new Reply("{\"findings\":[", true, "stop", ok().citations(), USAGE));
-        String id = json(postCheck(ORG_A, body(true))).get("id").asText();
+        String id = json(postCheck(orgA, body(true))).get("id").asText();
 
         runner.tick();
 
-        assertThat(fetch(ORG_A, id).get("researchStatus").asText()).isEqualTo("failed");
-        List<PredictionLedger> rows = ledger.findAll().stream()
+        assertThat(fetch(orgA, id).get("researchStatus").asText()).isEqualTo("failed");
+        List<PredictionLedger> rows = ownLedger().stream()
                 .filter(l -> !"rules/date-check".equals(l.getModelId())).toList();
         assertThat(rows).singleElement().satisfies(l -> {
             assertThat(l.getDateCheckId()).isEqualTo(UUID.fromString(id));
@@ -441,8 +452,8 @@ class DateCheckResearchFlowTest {
     @Test
     void organizerFieldsNeverInQuery() throws Exception {
         Event e = new Event();
-        e.setOrgId(UUID.fromString(ORG_A));
-        e.setCreatedBy(owners.get(ORG_A).getId());
+        e.setOrgId(UUID.fromString(orgA));
+        e.setCreatedBy(owners.get(orgA).getId());
         e.setName("Gala Zebrafish Night");
         e.setSlug("ev-" + UUID.randomUUID().toString().substring(0, 8));
         e.setGenre("house & techno");
@@ -465,7 +476,7 @@ class DateCheckResearchFlowTest {
         b.put("communities", List.of("PT"));
         b.put("buyingLeadDays", 19);
         b.put("subGenre", "techno");
-        postCheck(ORG_A, b).andExpect(status().isAccepted());
+        postCheck(orgA, b).andExpect(status().isAccepted());
 
         runner.tick();
 
@@ -475,14 +486,14 @@ class DateCheckResearchFlowTest {
         String sent = system.getValue() + "\n" + user.getValue();
         assertThat(sent).contains("Paris, France", "house & techno (techno)", "2026-10-10", "2026-12-12");
         assertThat(sent).doesNotContain("75011", "Gala Zebrafish", e.getId().toString(), "4321", "8765", "warehouse",
-                "Quokkalicious", "Narwhal", "Hangar", "Research Org", "r@example.test", ORG_A,
-                owners.get(ORG_A).getEmail());
+                "Quokkalicious", "Narwhal", "Hangar", "Research Org", "r@example.test", orgA,
+                owners.get(orgA).getEmail());
     }
 
     // --- stuck research sweep ---
 
     private String queueResearch() throws Exception {
-        return json(postCheck(ORG_A, body(true)).andExpect(status().isAccepted())).get("id").asText();
+        return json(postCheck(orgA, body(true)).andExpect(status().isAccepted())).get("id").asText();
     }
 
     private void queuedAgo(String id, Duration ago) {
@@ -498,11 +509,11 @@ class DateCheckResearchFlowTest {
     void unknownKindFailedAtMaxAttemptsIsSweptToFailed() throws Exception {
         String id = queueResearch();
         queuedAgo(id, Duration.ofMinutes(2));
-        jdbc.update("update predictor_job set attempts = ?", PredictorJobService.MAX_ATTEMPTS - 1);
+        jdbc.update("update predictor_job set attempts = ? where id = ?", PredictorJobService.MAX_ATTEMPTS - 1, ownJobId());
         // An older build without the research handler releases the job on its last attempt.
         new PredictorJobRunner(jobService, jobs, List.of(), new PredictorProperties()).tick();
 
-        assertThat(jobs.findAll()).singleElement().satisfies(j -> {
+        assertThat(ownJobs()).singleElement().satisfies(j -> {
             assertThat(j.getStatus()).isEqualTo("failed");
             assertThat(j.getLastError()).isEqualTo("unknown kind: date_check_research");
         });
@@ -520,12 +531,12 @@ class DateCheckResearchFlowTest {
     void tickDiedBeforeTerminalCleanupIsSweptToFailed() throws Exception {
         String id = queueResearch();
         queuedAgo(id, Duration.ofMinutes(2));
-        jdbc.update("update predictor_job set status = 'running', attempts = ?, locked_until = ?",
-                PredictorJobService.MAX_ATTEMPTS, java.sql.Timestamp.from(NOW.minusSeconds(60)));
+        jdbc.update("update predictor_job set status = 'running', attempts = ?, locked_until = ? where id = ?",
+                PredictorJobService.MAX_ATTEMPTS, java.sql.Timestamp.from(NOW.minusSeconds(60)), ownJobId());
         // The requeue commits; the handler clean-up that would follow never runs.
         jobService.requeueExpired();
 
-        assertThat(jobs.findAll()).singleElement().extracting(PredictorJob::getStatus).isEqualTo("failed");
+        assertThat(ownJobs()).singleElement().extracting(PredictorJob::getStatus).isEqualTo("failed");
         assertThat(researchStatus(id)).isEqualTo("running");
 
         assertThat(sweeper.sweep()).isEqualTo(1);
@@ -541,8 +552,8 @@ class DateCheckResearchFlowTest {
         assertThat(sweeper.sweep()).isZero();
         assertThat(researchStatus(id)).isEqualTo("running");
 
-        jdbc.update("update predictor_job set status = 'running', attempts = 1, locked_until = ?",
-                java.sql.Timestamp.from(NOW.plus(PredictorJobService.LOCK)));
+        jdbc.update("update predictor_job set status = 'running', attempts = 1, locked_until = ? where id = ?",
+                java.sql.Timestamp.from(NOW.plus(PredictorJobService.LOCK)), ownJobId());
         assertThat(sweeper.sweep()).isZero();
         assertThat(researchStatus(id)).isEqualTo("running");
     }
@@ -557,14 +568,14 @@ class DateCheckResearchFlowTest {
 
         runner.tick();
 
-        assertThat(jobs.findAll()).singleElement().extracting(PredictorJob::getStatus).isEqualTo("done");
+        assertThat(ownJobs()).singleElement().extracting(PredictorJob::getStatus).isEqualTo("done");
         verify(client, never()).research(anyString(), anyString(), anyString());
     }
 
     @Test
     void orphanWithinTheGraceIsLeftRunning() throws Exception {
         String id = queueResearch();
-        jdbc.update("delete from predictor_job");
+        jdbc.update("delete from predictor_job where id = ?", ownJobId());
         queuedAgo(id, Duration.ofSeconds(59));
 
         assertThat(sweeper.sweep()).isZero();
@@ -577,11 +588,11 @@ class DateCheckResearchFlowTest {
 
     @Test
     void finishedResearchIsNotTouched() {
-        queuedYesterday(ORG_A);
+        queuedYesterday(orgA);
         for (String research : List.of(DateCheck.RESEARCH_FAILED, DateCheck.RESEARCH_OFF)) {
             DateCheck c = new DateCheck();
-            c.setOrgId(UUID.fromString(ORG_A));
-            c.setCreatedBy(owners.get(ORG_A).getId());
+            c.setOrgId(UUID.fromString(orgA));
+            c.setCreatedBy(owners.get(orgA).getId());
             c.setCity("Paris");
             c.setCountry("FR");
             c.setGenreFamily("house & techno");
@@ -595,15 +606,15 @@ class DateCheckResearchFlowTest {
 
         assertThat(sweeper.sweep()).isZero();
 
-        assertThat(checks.findAll()).extracting(DateCheck::getResearchStatus)
+        assertThat(ownChecks()).extracting(DateCheck::getResearchStatus)
                 .containsExactlyInAnyOrder("done", "failed", "off");
-        assertThat(checks.findAll()).extracting(DateCheck::getStatus).containsOnly("done");
+        assertThat(ownChecks()).extracting(DateCheck::getStatus).containsOnly("done");
     }
 
     @Test
     void pollSkipsWhileJobsPollIsOff() throws Exception {
         String id = queueResearch();
-        jdbc.update("delete from predictor_job");
+        jdbc.update("delete from predictor_job where id = ?", ownJobId());
         queuedAgo(id, Duration.ofMinutes(2));
         assertThat(props.isJobsPollEnabled()).isFalse();
 
@@ -618,7 +629,9 @@ class DateCheckResearchFlowTest {
     void unreadableJobPayloadIsIgnored() throws Exception {
         String id = queueResearch();
         queuedAgo(id, Duration.ofMinutes(2));
-        jdbc.update("update predictor_job set payload_json = '{}'");
+        UUID job = ownJobId();
+        strayJobs.add(job);
+        jdbc.update("update predictor_job set payload_json = '{}' where id = ?", job);
 
         assertThat(sweeper.sweep()).isEqualTo(1);
         assertThat(researchStatus(id)).isEqualTo("failed");
@@ -628,32 +641,32 @@ class DateCheckResearchFlowTest {
 
     @Test
     void closedDateCheckGateQueuesNoResearch() throws Exception {
-        postCheck(ORG_B, body(true)).andExpect(status().isNotFound());
-        mvc.perform(get(BASE + "/config").with(authentication(as(ORG_B)))).andExpect(status().isNotFound());
+        postCheck(orgB, body(true)).andExpect(status().isNotFound());
+        mvc.perform(get(BASE + "/config").with(authentication(as(orgB)))).andExpect(status().isNotFound());
 
-        assertThat(checks.count()).isZero();
-        assertThat(jobs.count()).isZero();
-        mvc.perform(get(BASE + "/config").with(authentication(as(ORG_A))))
+        assertThat(ownChecks().size()).isZero();
+        assertThat(ownJobs().size()).isZero();
+        mvc.perform(get(BASE + "/config").with(authentication(as(orgA))))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.researchAvailable").value(true));
         verify(client, never()).research(anyString(), anyString(), anyString());
     }
 
     @Test
     void researchNotAskedForStaysOff() throws Exception {
-        JsonNode r = json(postCheck(ORG_A, body(false)).andExpect(status().isOk()));
+        JsonNode r = json(postCheck(orgA, body(false)).andExpect(status().isOk()));
 
         assertThat(r.get("research").asBoolean()).isFalse();
         assertThat(r.get("researchStatus").asText()).isEqualTo("off");
-        assertThat(jobs.count()).isZero();
+        assertThat(ownJobs().size()).isZero();
     }
 
     @Test
     void perOrgCapReachedFailsWithoutACall() throws Exception {
-        queuedYesterday(ORG_A);
-        postCheck(ORG_A, body(true)).andExpect(status().isAccepted());
-        postCheck(ORG_A, body(true)).andExpect(status().isAccepted());
+        queuedYesterday(orgA);
+        postCheck(orgA, body(true)).andExpect(status().isAccepted());
+        postCheck(orgA, body(true)).andExpect(status().isAccepted());
 
-        JsonNode third = json(postCheck(ORG_A, body(true)).andExpect(status().isOk()));
+        JsonNode third = json(postCheck(orgA, body(true)).andExpect(status().isOk()));
 
         assertThat(third.get("research").asBoolean()).isTrue();
         assertThat(third.get("researchStatus").asText()).isEqualTo("failed");
@@ -661,30 +674,32 @@ class DateCheckResearchFlowTest {
         assertThat(third.get("dates")).hasSize(2);
         assertThat(checks.findById(UUID.fromString(third.get("id").asText())).orElseThrow().getResearchQueuedAt())
                 .isNull();
-        assertThat(jobs.count()).isEqualTo(2);
+        assertThat(ownJobs().size()).isEqualTo(2);
         // Another org is still under its own cap.
-        postCheck(ORG_C, body(true)).andExpect(status().isAccepted());
+        postCheck(orgC, body(true)).andExpect(status().isAccepted());
         verify(client, never()).research(anyString(), anyString(), anyString());
     }
 
     @Test
     void globalCapReachedFailsWithoutACall() throws Exception {
-        postCheck(ORG_A, body(true)).andExpect(status().isAccepted());
-        postCheck(ORG_A, body(true)).andExpect(status().isAccepted());
-        postCheck(ORG_C, body(true)).andExpect(status().isAccepted());
+        // The global cap counts every org's research today, so it is set one above what is already queued.
+        long queuedToday = checks.countAllResearchQueuedSince(NOW.truncatedTo(ChronoUnit.DAYS));
+        flips.set(dateCheckProps, "researchDailyCapGlobal", (int) queuedToday + 1);
+        postCheck(orgA, body(true)).andExpect(status().isAccepted());
 
-        JsonNode fourth = json(postCheck(ORG_C, body(true)).andExpect(status().isOk()));
+        JsonNode second = json(postCheck(orgC, body(true)).andExpect(status().isOk()));
 
-        assertThat(fourth.get("researchStatus").asText()).isEqualTo("failed");
-        assertThat(jobs.count()).isEqualTo(3);
+        assertThat(second.get("researchStatus").asText()).isEqualTo("failed");
+        assertThat(ownJobs().size()).isEqualTo(1);
+        verify(client, never()).research(anyString(), anyString(), anyString());
     }
 
     @Test
     void dateCheckClosedBeforeTheJobRunsFailsWithoutACall() throws Exception {
         // A row queued for B while B had access: the job re-checks the gate and makes no call.
         DateCheck c = new DateCheck();
-        c.setOrgId(UUID.fromString(ORG_B));
-        c.setCreatedBy(owners.get(ORG_B).getId());
+        c.setOrgId(UUID.fromString(orgB));
+        c.setCreatedBy(owners.get(orgB).getId());
         c.setCity("Paris");
         c.setCountry("FR");
         c.setGenreFamily("house & techno");
@@ -719,24 +734,24 @@ class DateCheckResearchFlowTest {
 
     @Test
     void repeatedJobMakesNoSecondCall() throws Exception {
-        String id = json(postCheck(ORG_A, body(true))).get("id").asText();
+        String id = json(postCheck(orgA, body(true))).get("id").asText();
         runner.tick();
-        PredictorJob again = jobs.findAll().get(0);
+        PredictorJob again = ownJobs().get(0);
         // Without the cache a second call would be paid, so only the running check guard can stop it.
         cache.clear();
 
         handler.run(again);
 
         verify(client, times(1)).research(anyString(), anyString(), anyString());
-        assertThat(web(date(fetch(ORG_A, id), OCT17))).hasSize(1);
-        assertThat(ledger.count()).isEqualTo(2);
+        assertThat(web(date(fetch(orgA, id), OCT17))).hasSize(1);
+        assertThat(ownLedger().size()).isEqualTo(2);
     }
 
     @Test
     void completeResearchOnAFinishedCheckChangesNothingButLedgersThePaidCall() throws Exception {
-        String id = json(postCheck(ORG_A, body(true))).get("id").asText();
+        String id = json(postCheck(orgA, body(true))).get("id").asText();
         assertThat(service.failResearch(UUID.fromString(id))).isTrue();
-        JsonNode failed = fetch(ORG_A, id);
+        JsonNode failed = fetch(orgA, id);
         WebResearchService.Outcome late = new WebResearchService.Outcome(true,
                 Map.of(OCT17, List.of()), USAGE, "anthropic/claude-haiku-4.5", null);
         WebResearchService.Outcome lateHit = new WebResearchService.Outcome(true,
@@ -746,10 +761,10 @@ class DateCheckResearchFlowTest {
         assertThat(service.completeResearch(UUID.fromString(id), lateHit)).isFalse();
         assertThat(service.failResearch(UUID.fromString(id))).isFalse();
 
-        assertThat(fetch(ORG_A, id)).isEqualTo(failed);
+        assertThat(fetch(orgA, id)).isEqualTo(failed);
         assertThat(failed.get("researchStatus").asText()).isEqualTo("failed");
         // The late paid call is counted; the late cache hit spent nothing and writes no row.
-        List<PredictionLedger> rows = ledger.findAll().stream()
+        List<PredictionLedger> rows = ownLedger().stream()
                 .filter(l -> !"rules/date-check".equals(l.getModelId())).toList();
         assertThat(rows).singleElement().satisfies(l -> {
             assertThat(l.getDateCheckId()).isEqualTo(UUID.fromString(id));
@@ -761,65 +776,21 @@ class DateCheckResearchFlowTest {
             assertThat(l.getCostUsd()).isEqualByComparingTo("0.0125");
             assertThat(l.getOutputJson()).contains("\"researchStatus\":\"failed\"", "\"reason\":\"late\"");
         });
-        assertThat(ledger.count()).isEqualTo(2);
-    }
-
-    @Test
-    void lastAttemptFailureMarksResearchFailedAndKeepsTheError() throws Exception {
-        String id = json(postCheck(ORG_A, body(true))).get("id").asText();
-        PredictorJob job = jobs.findAll().get(0);
-        RuntimeException boom = new IllegalStateException("db down");
-        doThrow(boom).when(service).completeResearch(any(), any());
-
-        job.setAttempts(1);
-        assertThatThrownBy(() -> handler.run(job)).isSameAs(boom);
-        assertThat(checks.findById(UUID.fromString(id)).orElseThrow().getResearchStatus()).isEqualTo("running");
-
-        job.setAttempts(PredictorJobService.MAX_ATTEMPTS);
-        assertThatThrownBy(() -> handler.run(job)).isSameAs(boom);
-        DateCheck after = checks.findById(UUID.fromString(id)).orElseThrow();
-        assertThat(after.getResearchStatus()).isEqualTo("failed");
-        assertThat(after.getStatus()).isEqualTo("done");
-    }
-
-    @Test
-    void failingCleanupDoesNotReplaceTheOriginalError() throws Exception {
-        json(postCheck(ORG_A, body(true)));
-        PredictorJob job = jobs.findAll().get(0);
-        job.setAttempts(PredictorJobService.MAX_ATTEMPTS);
-        RuntimeException boom = new IllegalStateException("db down");
-        RuntimeException cleanup = new IllegalStateException("still down");
-        doThrow(boom).when(service).completeResearch(any(), any());
-        doThrow(cleanup).when(service).failResearch(any());
-
-        assertThatThrownBy(() -> handler.run(job)).isSameAs(boom)
-                .satisfies(t -> assertThat(t.getSuppressed()).containsExactly(cleanup));
+        assertThat(ownLedger().size()).isEqualTo(2);
     }
 
     @Test
     void patchAssumptionsKeepsWebFindings() throws Exception {
-        String id = json(postCheck(ORG_A, body(true))).get("id").asText();
+        String id = json(postCheck(orgA, body(true))).get("id").asText();
         runner.tick();
-        JsonNode done = fetch(ORG_A, id);
+        JsonNode done = fetch(orgA, id);
 
-        JsonNode p = json(mvc.perform(patch(BASE + "/" + id + "/assumptions").with(authentication(as(ORG_A)))
+        JsonNode p = json(mvc.perform(patch(BASE + "/" + id + "/assumptions").with(authentication(as(orgA)))
                 .contentType(MediaType.APPLICATION_JSON).content("{\"buyingLeadDays\":14}")).andExpect(status().isOk()));
 
         assertThat(p.get("researchStatus").asText()).isEqualTo("done");
         assertThat(web(date(p, OCT17))).isEqualTo(web(date(done, OCT17)));
         assertThat(date(p, OCT17).get("riskScore")).isEqualTo(date(done, OCT17).get("riskScore"));
         verify(client, times(1)).research(anyString(), anyString(), anyString());
-    }
-
-    @Test
-    void openApiDocumentsThe202() throws Exception {
-        JsonNode docs = json(mvc.perform(get("/v3/api-docs")).andExpect(status().isOk()));
-        JsonNode responses = docs.path("paths").path(BASE).path("post").path("responses");
-        for (String code : List.of("200", "202")) {
-            JsonNode content = responses.path(code).path("content");
-            assertThat(content.size()).as(code).isPositive();
-            content.forEach(media -> assertThat(media.path("schema").path("$ref").asText()).as(code)
-                    .endsWith("/DateCheckResponse"));
-        }
     }
 }

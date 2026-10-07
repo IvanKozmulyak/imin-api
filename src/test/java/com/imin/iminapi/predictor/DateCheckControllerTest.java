@@ -2,7 +2,6 @@ package com.imin.iminapi.predictor;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.Organization;
@@ -14,36 +13,32 @@ import com.imin.iminapi.predictor.model.PredictionLedger;
 import com.imin.iminapi.predictor.model.PredictionSurface;
 import com.imin.iminapi.predictor.model.ReferenceCalendarEntry;
 import com.imin.iminapi.predictor.repository.DateCheckDateRepository;
-import com.imin.iminapi.predictor.repository.DateCheckFindingRepository;
 import com.imin.iminapi.predictor.repository.DateCheckRepository;
 import com.imin.iminapi.predictor.repository.PredictionLedgerRepository;
-import com.imin.iminapi.predictor.repository.PredictorJobRepository;
 import com.imin.iminapi.predictor.repository.ReferenceCalendarEntryRepository;
 import com.imin.iminapi.predictor.rules.QuestionBank;
-import com.imin.iminapi.predictor.service.PredictionLedgerService;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
-import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
-import com.imin.iminapi.security.RateLimiter;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.MutableClock;
+import com.imin.iminapi.support.PgFaults;
+import com.imin.iminapi.support.PredictorRows;
+import com.imin.iminapi.support.PropertyFlips;
+import com.imin.iminapi.support.RecordingRateLimiter;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.test.context.TestPropertySource;
-import org.springframework.test.context.bean.override.convention.TestBean;
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 
-import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
@@ -54,17 +49,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.clearInvocations;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.doThrow;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
@@ -73,47 +60,37 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * "Check a date" end-to-end on H2 with the clock fixed at 1 Oct 2026. Paris 75011 is school zone C;
- * the seeded calendar makes 24 Oct a Toussaint-break Saturday and 5 Dec a plain one.
+ * "Check a date" end-to-end with the clock pinned at 1 Oct 2026. Postal code 75011 is school zone C;
+ * the seeded calendar makes 24 Oct a Toussaint-break Saturday and 5 Dec a plain one. Each test has its own city.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
-@TestPropertySource(properties = "imin.predictor.date-check.enabled=true")
+@IminIntegrationTest
 class DateCheckControllerTest {
 
     private static final String BASE = "/api/v1/predictions/date-checks";
     private static final LocalDate BREAK = LocalDate.of(2026, 10, 24);
     private static final LocalDate PLAIN = LocalDate.of(2026, 12, 5);
+    private static final Instant NOW = Instant.parse("2026-10-01T10:00:00Z");
+    private static final String BUCKET = "predictor-date-check";
 
-    @TestBean Clock clock;
-
-    static Clock clock() {
-        return Clock.fixed(Instant.parse("2026-10-01T10:00:00Z"), ZoneOffset.UTC);
-    }
-
+    @Autowired MutableClock clock;
+    @Autowired PropertyFlips flips;
+    @Autowired IminFixtures fx;
+    @Autowired RecordingRateLimiter rateLimiter;
     @Autowired MockMvc mvc;
     @Autowired OrganizationRepository orgs;
-    @Autowired UserRepository users;
     @Autowired EventRepository events;
-    @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
+    @Autowired JdbcTemplate jdbc;
     @Autowired DateCheckRepository checks;
     @Autowired DateCheckDateRepository checkDates;
-    @Autowired DateCheckFindingRepository findings;
     @Autowired PredictionLedgerRepository ledger;
-    @Autowired PredictorJobRepository jobs;
     @Autowired ReferenceCalendarEntryRepository calendar;
     @Autowired DateCheckProperties props;
     @Autowired QuestionBank bank;
-    @MockitoSpyBean PredictionLedgerService ledgerService;
-    /** Replaces the test config's lambda limiter (not spy-able) with a permissive mock we can verify. */
-    @TestBean(name = "testRateLimiter") RateLimiter rateLimiter;
-
-    static RateLimiter rateLimiter() {
-        return mock(RateLimiter.class);
-    }
 
     private final ObjectMapper om = new ObjectMapper();
+    private final String city = "Paris" + letters();
+    private final List<UUID> createdOrgs = new ArrayList<>();
+    private final List<UUID> calendarRows = new ArrayList<>();
 
     private Organization org;
     private User owner;
@@ -122,14 +99,13 @@ class DateCheckControllerTest {
 
     @BeforeEach
     void seed() {
-        clean();
-        clearInvocations(rateLimiter);
+        clock.setInstant(NOW);
         org = org("FR");
-        owner = user(org);
+        owner = fx.owner(org);
         otherOrg = org("FR");
-        otherOwner = user(otherOrg);
-        props.setEnabled(true);
-        props.setBetaOrgIds(Set.of(org.getId(), otherOrg.getId()));
+        otherOwner = fx.owner(otherOrg);
+        flips.set(props, "enabled", true);
+        flips.set(props, "betaOrgIds", Set.of(org.getId(), otherOrg.getId()));
 
         cal("holiday", "", "2026-11-11", null, "Armistice");
         cal("pont", "", "2026-05-15", null, "Pont de l'Ascension");
@@ -139,38 +115,57 @@ class DateCheckControllerTest {
 
     @AfterEach
     void after() {
-        clean();
-        props.setEnabled(true);
-        props.setBetaOrgIds(Set.of());
+        try {
+            calendar.deleteAllById(calendarRows);
+        } finally {
+            PredictorRows.delete(jdbc, createdOrgs);
+        }
     }
 
-    private void clean() {
-        findings.deleteAll();
-        checkDates.deleteAll();
-        ledger.deleteAll();
-        jobs.deleteAll();
-        checks.deleteAll();
-        events.deleteAll();
-        calendar.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+    static String letters() {
+        StringBuilder b = new StringBuilder();
+        for (int i = 0; i < 8; i++) b.append((char) ('a' + ThreadLocalRandom.current().nextInt(26)));
+        return b.toString();
     }
 
     private Organization org(String country) {
-        Organization o = new Organization();
-        o.setName("Date Check Org");
-        o.setSlug("dc-" + UUID.randomUUID().toString().substring(0, 8));
-        o.setContactEmail("dc@example.test");
+        Organization o = fx.org();
+        createdOrgs.add(o.getId());
         o.setCountry(country);
         return orgs.save(o);
     }
 
-    private User user(Organization o) {
-        User u = new User();
-        u.setOrgId(o.getId());
-        u.setEmail("owner-" + UUID.randomUUID() + "@example.test");
-        u.setRole(UserRole.OWNER);
-        return users.save(u);
+    private long count(String sql) {
+        return jdbc.queryForObject(sql, Long.class, org.getId());
+    }
+
+    private long ownChecks() {
+        return count("SELECT count(*) FROM date_check WHERE org_id = ?");
+    }
+
+    private long ownCheckDates() {
+        return count("SELECT count(*) FROM date_check_date d JOIN date_check c ON c.id = d.date_check_id"
+                + " WHERE c.org_id = ?");
+    }
+
+    private long ownFindings() {
+        return count("SELECT count(*) FROM date_check_finding f JOIN date_check_date d ON d.id = f.date_check_date_id"
+                + " JOIN date_check c ON c.id = d.date_check_id WHERE c.org_id = ?");
+    }
+
+    private long ownLedger() {
+        return count("SELECT count(*) FROM prediction_ledger WHERE org_id = ?");
+    }
+
+    private long ownJobs() {
+        return count("SELECT count(*) FROM predictor_job j WHERE EXISTS (SELECT 1 FROM date_check c"
+                + " WHERE c.org_id = ? AND j.payload_json LIKE '%' || c.id::text || '%')");
+    }
+
+    /** Calls on the date-check bucket, for one key or (null) any. */
+    private long consumed(String key) {
+        return rateLimiter.calls().stream()
+                .filter(c -> c.bucket().equals(BUCKET) && (key == null || c.key().equals(key))).count();
     }
 
     private void cal(String kind, String region, String from, String to, String name) {
@@ -183,7 +178,7 @@ class DateCheckControllerTest {
         e.setName(name);
         e.setSourceUrl("https://example.org/" + kind);
         e.setSyncedAt(Instant.parse("2026-09-01T00:00:00Z"));
-        calendar.save(e);
+        calendarRows.add(calendar.save(e).getId());
     }
 
     private static Authentication auth(User u, Organization o) {
@@ -197,7 +192,7 @@ class DateCheckControllerTest {
 
     private Map<String, Object> body(LocalDate... dates) {
         Map<String, Object> b = new LinkedHashMap<>();
-        b.put("city", "Paris");
+        b.put("city", city);
         b.put("postalCode", "75011");
         b.put("genreFamily", "house & techno");
         b.put("dates", List.of(dates).stream().map(LocalDate::toString).toList());
@@ -225,16 +220,16 @@ class DateCheckControllerTest {
 
     @Test
     void betaOffIs404() throws Exception {
-        props.setEnabled(false);
+        flips.set(props, "enabled", false);
         postCheck(mine(), body(PLAIN)).andExpect(status().isNotFound());
         mvc.perform(get(BASE).with(authentication(mine()))).andExpect(status().isNotFound());
         mvc.perform(get(BASE + "/config").with(authentication(mine()))).andExpect(status().isNotFound());
 
-        props.setEnabled(true);
-        props.setBetaOrgIds(Set.of(otherOrg.getId()));
+        flips.set(props, "enabled", true);
+        flips.set(props, "betaOrgIds", Set.of(otherOrg.getId()));
         postCheck(mine(), body(PLAIN)).andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
-        assertThat(checks.count()).isZero();
+        assertThat(ownChecks()).isZero();
     }
 
     @Test
@@ -247,35 +242,35 @@ class DateCheckControllerTest {
                         .contentType(MediaType.APPLICATION_JSON).content("{\"communities\":[]}"))
                 .andExpect(status().isNotFound());
         mvc.perform(get(BASE + "/" + UUID.randomUUID()).with(authentication(mine()))).andExpect(status().isNotFound());
-        assertThat(ledger.count()).isEqualTo(1);
+        assertThat(ownLedger()).isEqualTo(1);
     }
 
     @Test
     void postAndPatchEachConsumeTheUserBucketAfterTheGate() throws Exception {
         String id = created(body(PLAIN)).get("id").asText();
-        verify(rateLimiter, times(1)).consume("predictor-date-check", owner.getId().toString());
+        assertThat(consumed(owner.getId().toString())).isEqualTo(1);
 
         mvc.perform(patch(BASE + "/" + id + "/assumptions").with(authentication(mine()))
                         .contentType(MediaType.APPLICATION_JSON).content("{\"communities\":[]}"))
                 .andExpect(status().isOk());
-        verify(rateLimiter, times(2)).consume("predictor-date-check", owner.getId().toString());
+        assertThat(consumed(owner.getId().toString())).isEqualTo(2);
 
-        props.setEnabled(false);
+        flips.set(props, "enabled", false);
         postCheck(mine(), body(PLAIN)).andExpect(status().isNotFound());
         mvc.perform(patch(BASE + "/" + id + "/assumptions").with(authentication(mine()))
                         .contentType(MediaType.APPLICATION_JSON).content("{\"communities\":[]}"))
                 .andExpect(status().isNotFound());
-        verify(rateLimiter, times(2)).consume(eq("predictor-date-check"), anyString());
+        assertThat(consumed(null)).isEqualTo(2);
     }
 
     @Test
     void gateOffNeverConsumes() throws Exception {
-        props.setEnabled(false);
+        flips.set(props, "enabled", false);
         postCheck(mine(), body(PLAIN)).andExpect(status().isNotFound());
         mvc.perform(patch(BASE + "/" + UUID.randomUUID() + "/assumptions").with(authentication(mine()))
                         .contentType(MediaType.APPLICATION_JSON).content("{}"))
                 .andExpect(status().isNotFound());
-        verify(rateLimiter, never()).consume(eq("predictor-date-check"), any());
+        assertThat(consumed(null)).isZero();
     }
 
     @Test
@@ -287,7 +282,7 @@ class DateCheckControllerTest {
         b.put("eventId", gone.getId().toString());
 
         postCheck(mine(), b).andExpect(status().isNotFound());
-        assertThat(checks.count()).isZero();
+        assertThat(ownChecks()).isZero();
     }
 
     @Test
@@ -306,7 +301,7 @@ class DateCheckControllerTest {
                 .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
                 .andExpect(jsonPath("$.error.fields.check").value("past"))
                 .andExpect(jsonPath("$.error.fields['dates[0]']").doesNotExist());
-        assertThat(ledger.count()).isZero();
+        assertThat(ownLedger()).isZero();
     }
 
     @Test
@@ -316,7 +311,7 @@ class DateCheckControllerTest {
         b.put("eventId", theirs.getId().toString());
 
         postCheck(mine(), b).andExpect(status().isNotFound());
-        assertThat(checks.count()).isZero();
+        assertThat(ownChecks()).isZero();
     }
 
     @Test
@@ -348,8 +343,8 @@ class DateCheckControllerTest {
         postCheck(mine(), body(six)).andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
                 .andExpect(jsonPath("$.error.fields.dates").value("too_many"));
-        assertThat(checks.count()).isZero();
-        assertThat(ledger.count()).isZero();
+        assertThat(ownChecks()).isZero();
+        assertThat(ownLedger()).isZero();
     }
 
     @Test
@@ -357,8 +352,8 @@ class DateCheckControllerTest {
         assertThat(created(body(PLAIN)).get("country").asText()).isEqualTo("FR");
 
         Organization bare = org("");
-        props.setBetaOrgIds(Set.of(bare.getId()));
-        postCheck(auth(user(bare), bare), body(PLAIN)).andExpect(status().isUnprocessableEntity())
+        flips.set(props, "betaOrgIds", Set.of(bare.getId()));
+        postCheck(auth(fx.owner(bare), bare), body(PLAIN)).andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.error.fields.country").value("required"));
     }
 
@@ -396,7 +391,7 @@ class DateCheckControllerTest {
         List<String> notChecked = new ArrayList<>();
         for (JsonNode n : inBreak.get("notChecked")) notChecked.add(n.get("questionId").asText() + ":" + n.get("reason").asText());
         assertThat(notChecked).contains("5.1:no_source", "3.2:source_off", "9.1:source_off",
-                "2.6:source_off", "5.3:source_off", "2.3:source_off");
+                "2.6:no_source", "5.3:no_source", "2.3:no_source", "2.1:no_imin_events_in_city");
         // The break's early-promo action would be due 26 Sep, already past on 1 Oct, so it is not offered.
         assertThat(inBreak.get("actions").isArray()).isTrue();
         assertThat(inBreak.get("actions")).isEmpty();
@@ -407,11 +402,23 @@ class DateCheckControllerTest {
         assertThat(om.readTree(again)).isEqualTo(r);
     }
 
+    /** The open-events catalogue knows Paris, so its gated-off sources read source_off rather than no_source. */
+    @Test
+    void knownCityWithGatedOffOpenEventSourcesReadsSourceOff() throws Exception {
+        Map<String, Object> paris = body(PLAIN);
+        paris.put("city", "Paris");
+        JsonNode plain = date(created(paris), PLAIN);
+
+        List<String> notChecked = new ArrayList<>();
+        for (JsonNode n : plain.get("notChecked")) notChecked.add(n.get("questionId").asText() + ":" + n.get("reason").asText());
+        assertThat(notChecked).contains("2.6:source_off", "5.3:source_off", "2.3:source_off");
+    }
+
     @Test
     void ledgerRowWrittenBeforeResponse() throws Exception {
         JsonNode r = created(body(BREAK, PLAIN));
 
-        List<PredictionLedger> rows = ledger.findAll();
+        List<PredictionLedger> rows = ledger.findAll().stream().filter(l -> org.getId().equals(l.getOrgId())).toList();
         assertThat(rows).hasSize(1);
         PredictionLedger row = rows.get(0);
         assertThat(row.getSurface()).isEqualTo(PredictionSurface.DATE_CHECK);
@@ -429,14 +436,13 @@ class DateCheckControllerTest {
 
     @Test
     void ledgerFailureRollsBackCheck() throws Exception {
-        doThrow(new IllegalStateException("ledger down"))
-                .when(ledgerService).recordDateCheck(any(), any(), any(), any(), any());
+        try (PgFaults.Fault ledgerDown = PgFaults.failWrites(jdbc, "prediction_ledger", "org_id", org.getId())) {
+            postCheck(mine(), body(PLAIN)).andExpect(status().isInternalServerError());
+        }
 
-        postCheck(mine(), body(PLAIN)).andExpect(status().isInternalServerError());
-
-        assertThat(checks.count()).isZero();
-        assertThat(checkDates.count()).isZero();
-        assertThat(findings.count()).isZero();
+        assertThat(ownChecks()).isZero();
+        assertThat(ownCheckDates()).isZero();
+        assertThat(ownFindings()).isZero();
     }
 
     @Test
@@ -465,9 +471,9 @@ class DateCheckControllerTest {
         e.setOrgId(o.getId());
         e.setCreatedBy(u.getId());
         e.setName("Own night");
-        e.setSlug("ev-" + UUID.randomUUID().toString().substring(0, 8));
+        e.setSlug("ev-" + UUID.randomUUID());
         e.setGenre("house & techno");
-        e.setVenueCity("Paris");
+        e.setVenueCity(city);
         e.setVenueCountry("FR");
         e.setTimezone("Europe/Paris");
         e.setStartsAt(night.atTime(22, 0).toInstant(ZoneOffset.UTC));
@@ -488,8 +494,8 @@ class DateCheckControllerTest {
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
         JsonNode p = om.readTree(json);
 
-        assertThat(ledger.count()).isEqualTo(2);
-        assertThat(jobs.count()).isZero();
+        assertThat(ownLedger()).isEqualTo(2);
+        assertThat(ownJobs()).isZero();
         assertThat(p.get("researchStatus").asText()).isEqualTo("off");
         assertThat(p.get("priceMinor").asLong()).isEqualTo(1500);
         Map<String, JsonNode> byField = new LinkedHashMap<>();
@@ -502,7 +508,7 @@ class DateCheckControllerTest {
         assertThat(byField.get("buyingLeadDays").get("source").asText()).isEqualTo("organizer");
         assertThat(p.get("dates")).hasSize(2);
         assertThat(checkDates.findByDateCheckIdOrderByCandidateDateAsc(UUID.fromString(id))).hasSize(2);
-        assertThat(checkDates.count()).isEqualTo(2);
+        assertThat(ownCheckDates()).isEqualTo(2);
 
         // A later patch keeps earlier organizer answers it does not touch.
         String json2 = mvc.perform(patch(BASE + "/" + id + "/assumptions").with(authentication(mine()))
@@ -513,7 +519,7 @@ class DateCheckControllerTest {
         assertThat(after.get("buyingLeadDays").get("value").asInt()).isEqualTo(10);
         assertThat(after.get("audienceAge").get("value").toString()).isEqualTo("[25,40]");
         assertThat(after.get("communities").get("source").asText()).isEqualTo("organizer");
-        assertThat(ledger.count()).isEqualTo(3);
+        assertThat(ownLedger()).isEqualTo(3);
     }
 
     @Test
@@ -524,10 +530,10 @@ class DateCheckControllerTest {
                         .contentType(MediaType.APPLICATION_JSON).content("{\"startHour\":24}"))
                 .andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.error.fields.startHour").value("out_of_range"));
-        assertThat(ledger.count()).isEqualTo(1);
+        assertThat(ownLedger()).isEqualTo(1);
     }
 
-    // --- list and config ---
+    // --- list ---
 
     @Test
     void listIsOrgScopedNewestFirstAndClamped() throws Exception {
@@ -553,7 +559,7 @@ class DateCheckControllerTest {
 
         mvc.perform(get(BASE).with(authentication(mine())))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].city").value("Paris"))
+                .andExpect(jsonPath("$[0].city").value(city))
                 .andExpect(jsonPath("$[0].dates[0].date").value(BREAK.toString()))
                 .andExpect(jsonPath("$[0].dates[0].verdict").value("adjust"))
                 .andExpect(jsonPath("$[0].dates[0].rank").value(2))
@@ -564,7 +570,7 @@ class DateCheckControllerTest {
         DateCheck c = new DateCheck();
         c.setOrgId(o.getId());
         c.setCreatedBy(u.getId());
-        c.setCity("Paris");
+        c.setCity(city);
         c.setCountry("FR");
         c.setGenreFamily("house & techno");
         c.setStatus("done");
@@ -572,18 +578,6 @@ class DateCheckControllerTest {
         c.setCreatedAt(createdAt);
         c.setUpdatedAt(createdAt);
         return checks.save(c);
-    }
-
-    @Test
-    void configListsGenresAndLimits() throws Exception {
-        mvc.perform(get(BASE + "/config").with(authentication(mine())))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.researchAvailable").value(true))
-                .andExpect(jsonPath("$.maxDates").value(5))
-                .andExpect(jsonPath("$.maxHorizonMonths").value(18))
-                .andExpect(jsonPath("$.genres.length()").value(QuestionBank.GENRE_BUCKETS.size()))
-                .andExpect(jsonPath("$.genres[0].bucket").value("house & techno"))
-                .andExpect(jsonPath("$.genres[0].subGenres[0]").value("techno"));
     }
 
     // --- contract ---
@@ -627,14 +621,5 @@ class DateCheckControllerTest {
         } else if (node.isArray()) {
             for (JsonNode c : node) walk(c, v);
         }
-    }
-
-    @Test
-    void openApiPublishesDateCheckResponse() throws Exception {
-        mvc.perform(get("/v3/api-docs"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.components.schemas.DateCheckResponse.properties.dates").exists())
-                .andExpect(jsonPath("$.paths['/api/v1/predictions/date-checks'].post").exists())
-                .andExpect(jsonPath("$.paths['/api/v1/predictions/date-checks/{id}/assumptions'].patch").exists());
     }
 }

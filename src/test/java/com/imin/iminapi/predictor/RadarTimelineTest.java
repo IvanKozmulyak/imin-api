@@ -2,49 +2,44 @@ package com.imin.iminapi.predictor;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.model.UserRole;
+import com.imin.iminapi.predictor.config.DateCheckProperties;
 import com.imin.iminapi.predictor.dto.AssumptionsPatch;
 import com.imin.iminapi.predictor.dto.DateCheckRequest;
 import com.imin.iminapi.predictor.model.DateCheck;
-import com.imin.iminapi.predictor.repository.DateCheckDateRepository;
-import com.imin.iminapi.predictor.repository.DateCheckFindingRepository;
 import com.imin.iminapi.predictor.repository.DateCheckRepository;
-import com.imin.iminapi.predictor.repository.PredictionLedgerRepository;
 import com.imin.iminapi.predictor.service.DateCheckService;
 import com.imin.iminapi.predictor.service.DateCheckService.RadarOutcome;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
-import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.MutableClock;
+import com.imin.iminapi.support.PredictorRows;
+import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.test.context.TestPropertySource;
-import org.springframework.test.context.bean.override.convention.TestBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
 import java.sql.Timestamp;
-import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -57,15 +52,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * The Radar timeline and per-event mute with the gate and Radar on. Clock fixed at 1 Oct 2026 10:00Z; a French org,
- * so the 15 Oct night is 14 days out (milestone 14).
+ * The Radar timeline and per-event mute with the gate and Radar on, unless a test closes one. Clock pinned at
+ * 1 Oct 2026 10:00Z; a French org, so the 15 Oct night is 14 days out (milestone 14).
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
-@TestPropertySource(properties = {"imin.predictor.date-check.enabled=true",
-        "imin.predictor.date-check.all-orgs=true",
-        "imin.predictor.date-check.radar-enabled=true"})
+@IminIntegrationTest
 class RadarTimelineTest {
 
     private static final Instant NOW = Instant.parse("2026-10-01T10:00:00Z");
@@ -73,68 +63,48 @@ class RadarTimelineTest {
     private static final Instant START = Instant.parse("2026-10-15T20:00:00Z");
     private static final Instant BEFORE_WINDOW = Instant.parse("2026-09-20T10:00:00Z");
 
-    @TestBean Clock clock;
-
-    static Clock clock() {
-        return Clock.fixed(NOW, ZoneOffset.UTC);
-    }
-
+    @Autowired MutableClock clock;
+    @Autowired PropertyFlips flips;
+    @Autowired DateCheckProperties props;
+    @Autowired IminFixtures fx;
     @Autowired MockMvc mvc;
     @Autowired DateCheckService service;
     @Autowired OrganizationRepository orgs;
-    @Autowired UserRepository users;
     @Autowired EventRepository events;
     @Autowired DateCheckRepository checks;
-    @Autowired DateCheckDateRepository checkDates;
-    @Autowired DateCheckFindingRepository findings;
-    @Autowired PredictionLedgerRepository ledger;
     @Autowired JdbcTemplate jdbc;
 
     private final ObjectMapper om = new ObjectMapper();
+    private final String city = "Paris" + DateCheckControllerTest.letters();
+    private final List<UUID> createdOrgs = new ArrayList<>();
 
     private Organization org;
     private User owner;
 
     @BeforeEach
     void seed() {
-        clean();
-        org = org("Radar Timeline Org");
-        owner = user(org);
+        clock.setInstant(NOW);
+        flips.set(props, "enabled", true);
+        flips.set(props, "allOrgs", true);
+        flips.set(props, "radarEnabled", true);
+        org = org();
+        owner = fx.owner(org);
     }
 
     @AfterEach
     void after() {
-        clean();
+        PredictorRows.delete(jdbc, createdOrgs);
     }
 
-    private void clean() {
-        jdbc.update("delete from predictor_alert");
-        jdbc.update("update events set radar_muted = false");
-        findings.deleteAll();
-        checkDates.deleteAll();
-        ledger.deleteAll();
-        events.deleteAll();
-        jdbc.update("update date_check set radar_prev_id = null");
-        checks.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
-    }
-
-    private Organization org(String name) {
-        Organization o = new Organization();
-        o.setName(name);
-        o.setSlug("rt-" + UUID.randomUUID().toString().substring(0, 8));
-        o.setContactEmail("rt@example.test");
+    private Organization org() {
+        Organization o = fx.org();
+        createdOrgs.add(o.getId());
         o.setCountry("FR");
         return orgs.save(o);
     }
 
     private User user(Organization o) {
-        User u = new User();
-        u.setOrgId(o.getId());
-        u.setEmail("owner-" + UUID.randomUUID() + "@example.test");
-        u.setRole(UserRole.OWNER);
-        return users.save(u);
+        return fx.owner(o);
     }
 
     private AuthPrincipal principal() {
@@ -169,9 +139,9 @@ class RadarTimelineTest {
                 insert into date_check (id, org_id, created_by, city, country, genre_family, status,
                     question_bank_version, assumptions_json, research, event_id, created_at, updated_at, origin,
                     radar_milestone, radar_night, radar_prev_verdict, radar_prev_risk, radar_verdict, radar_risk)
-                values (?, ?, ?, 'Paris', 'FR', 'house & techno', 'done', 'test', '[]', false, ?, ?, ?, ?,
+                values (?, ?, ?, ?, 'FR', 'house & techno', 'done', 'test', '[]', false, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?, ?)""",
-                id, orgId, owner.getId(), eventId, Timestamp.from(createdAt), Timestamp.from(createdAt), origin,
+                id, orgId, owner.getId(), city, eventId, Timestamp.from(createdAt), Timestamp.from(createdAt), origin,
                 radar ? milestone : null, radar ? NIGHT : null, prevVerdict, prevRisk, verdict, risk);
         return id;
     }
@@ -214,7 +184,7 @@ class RadarTimelineTest {
 
     @Test
     void otherOrgEventIs404() throws Exception {
-        Organization other = org("Other Org");
+        Organization other = org();
         Event theirs = event(other, user(other));
 
         mvc.perform(get("/api/v1/events/" + theirs.getId() + "/prediction/radar").with(authentication(mine())))
@@ -243,7 +213,7 @@ class RadarTimelineTest {
     void runsNewestFirstOnlyThisEventsRadarRows() throws Exception {
         Event e = event();
         Event sibling = event();
-        Organization other = org("Other Org");
+        Organization other = org();
         Event theirs = event(other, user(other));
         UUID older = radarRun(e.getId(), Instant.parse("2026-09-15T05:50:00Z"), 30, "good", 1, "adjust", 4);
         UUID newer = radarRun(e.getId(), Instant.parse("2026-10-01T03:50:00Z"), 14, "adjust", 4, "move", 7);
@@ -305,7 +275,7 @@ class RadarTimelineTest {
     @Test
     void timelineKeepsRunTimeVerdicts() throws Exception {
         Event e = event();
-        DateCheckRequest req = new DateCheckRequest("Paris", "FR", "75011", e.getId(), "house & techno", "techno",
+        DateCheckRequest req = new DateCheckRequest(city, "FR", "75011", e.getId(), "house & techno", "techno",
                 List.of(NIGHT), 300, 1500L, "club", 23, 5, List.of("DJ One"), List.of(), List.of(25, 34),
                 List.of("PT"), 14, false);
         UUID baseline = service.create(principal(), req).id();
@@ -356,6 +326,7 @@ class RadarTimelineTest {
     @Test
     void muteWithoutValueIs400() throws Exception {
         Event e = event();
+        mvc.perform(putMute(e.getId(), "{\"muted\":true}")).andExpect(status().isOk());
 
         mvc.perform(putMute(e.getId(), "{}"))
                 .andExpect(status().isBadRequest())
@@ -364,7 +335,8 @@ class RadarTimelineTest {
         mvc.perform(putMute(e.getId(), null))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.fields.muted").value("required"));
-        assertThat(mutedInDb(e.getId())).isFalse();
+        // A missing value is refused, never read as unmute.
+        assertThat(mutedInDb(e.getId())).isTrue();
     }
 
     @Test
@@ -395,20 +367,36 @@ class RadarTimelineTest {
         assertThat(mutedInDb(f.getId())).isTrue();
     }
 
-    // --- contract ---
+    // --- gate closed, Radar off ---
 
+    /** Date check and Radar on, but the org is on no beta list: the org's own event is the gate's 404. */
     @Test
-    void openApiPublishesRadarTimeline() throws Exception {
-        mvc.perform(get("/v3/api-docs")).andExpect(status().isOk())
-                .andExpect(jsonPath("$.paths['/api/v1/events/{eventId}/prediction/radar'].get").exists())
-                .andExpect(jsonPath("$.paths['/api/v1/events/{eventId}/prediction/radar/mute'].put").exists())
-                .andExpect(jsonPath("$.components.schemas.RadarTimelineResponse.properties.radarOn").exists())
-                .andExpect(jsonPath("$.components.schemas.RadarTimelineResponse.properties.muted").exists())
-                .andExpect(jsonPath("$.components.schemas.RadarTimelineResponse.properties.runs").exists())
-                .andExpect(jsonPath("$.components.schemas.RadarRunDto.properties.alert.enum")
-                        .value(contains("sent", "none")))
-                .andExpect(jsonPath("$.components.schemas.RadarRunDto.properties.verdictAfter.enum")
-                        .value(contains("good", "adjust", "move", "not_enough_data")))
-                .andExpect(jsonPath("$.components.schemas.RadarMuteRequest.properties.muted").exists());
+    void closedGateIs404AndPutWritesNothing() throws Exception {
+        flips.set(props, "allOrgs", false);
+        flips.set(props, "betaOrgIds", Set.of());
+        Event e = event();
+
+        mvc.perform(get("/api/v1/events/" + e.getId() + "/prediction/radar").with(authentication(mine())))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.message").value("Date check not found"));
+        mvc.perform(putMute(e.getId(), "{\"muted\":true}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.message").value("Date check not found"));
+        assertThat(mutedInDb(e.getId())).isFalse();
+    }
+
+    /** Date check on for every org, Radar off: the timeline says so and still lists past runs. */
+    @Test
+    void radarOffIsReportedAndRunsStillListed() throws Exception {
+        flips.set(props, "radarEnabled", false);
+        Event e = event();
+        UUID run = radarRun(e.getId(), Instant.parse("2026-10-01T03:50:00Z"), 14, "good", 1, "adjust", 4);
+
+        mvc.perform(get("/api/v1/events/" + e.getId() + "/prediction/radar").with(authentication(mine())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.radarOn").value(false))
+                .andExpect(jsonPath("$.muted").value(false))
+                .andExpect(jsonPath("$.runs.length()").value(1))
+                .andExpect(jsonPath("$.runs[0].dateCheckId").value(run.toString()));
     }
 }
