@@ -1,34 +1,33 @@
 package com.imin.iminapi.refund;
 
-import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
+
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class RefundStatusTest {
 
-    @Test
-    void maps_known_stripe_statuses() {
-        assertThat(RefundStatus.fromStripe("pending")).isEqualTo(RefundStatus.PENDING);
-        assertThat(RefundStatus.fromStripe("succeeded")).isEqualTo(RefundStatus.SUCCEEDED);
-        assertThat(RefundStatus.fromStripe("failed")).isEqualTo(RefundStatus.FAILED);
-        assertThat(RefundStatus.fromStripe("canceled")).isEqualTo(RefundStatus.CANCELED);
+    /** An unknown or new transient Stripe status stays PENDING: reading it as terminal would close a refund early. */
+    @ParameterizedTest(name = "{0} -> {1}")
+    @CsvSource(nullValues = "NULL", value = {
+            "NULL, PENDING",
+            "pending, PENDING",
+            "succeeded, SUCCEEDED",
+            "failed, FAILED",
+            "canceled, CANCELED",
+            "requires_action, PENDING",
+            "something_new, PENDING"})
+    void fromStripe_mapsKnownStatuses_andDefaultsTheRestToPending(String stripe, RefundStatus expected) {
+        assertThat(RefundStatus.fromStripe(stripe)).isEqualTo(expected);
     }
 
-    @Test
-    void null_and_unknown_default_to_pending() {
-        // We'd rather wait for an authoritative succeeded/failed than misclassify a new
-        // transient Stripe status as terminal.
-        assertThat(RefundStatus.fromStripe(null)).isEqualTo(RefundStatus.PENDING);
-        assertThat(RefundStatus.fromStripe("requires_action")).isEqualTo(RefundStatus.PENDING);
-        assertThat(RefundStatus.fromStripe("something_new")).isEqualTo(RefundStatus.PENDING);
-    }
-
-    @Test
-    void terminal_flag_is_only_succeeded_failed_canceled() {
-        assertThat(RefundStatus.SUCCEEDED.isTerminal()).isTrue();
-        assertThat(RefundStatus.FAILED.isTerminal()).isTrue();
-        assertThat(RefundStatus.CANCELED.isTerminal()).isTrue();
-        assertThat(RefundStatus.PENDING.isTerminal()).isFalse();
-        assertThat(RefundStatus.REQUESTED.isTerminal()).isFalse();
+    @ParameterizedTest
+    @EnumSource(RefundStatus.class)
+    void isTerminal_onlyForSucceededFailedCanceled(RefundStatus status) {
+        assertThat(status.isTerminal())
+                .isEqualTo(Set.of(RefundStatus.SUCCEEDED, RefundStatus.FAILED, RefundStatus.CANCELED).contains(status));
     }
 }

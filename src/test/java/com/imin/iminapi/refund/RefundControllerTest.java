@@ -1,165 +1,184 @@
 package com.imin.iminapi.refund;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.imin.iminapi.config.TestRateLimitConfig;
-import com.imin.iminapi.model.UserRole;
-import com.imin.iminapi.security.ApiException;
+import com.imin.iminapi.model.Event;
+import com.imin.iminapi.model.EventStatus;
+import com.imin.iminapi.model.Order;
+import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.model.Ticket;
+import com.imin.iminapi.model.User;
 import com.imin.iminapi.security.AuthPrincipal;
-import com.imin.iminapi.security.ErrorCode;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
+import com.stripe.StripeClient;
+import com.stripe.net.RequestOptions;
+import com.stripe.param.RefundCreateParams;
+import com.stripe.service.RefundService;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.security.test.context.support.WithSecurityContext;
-import org.springframework.security.test.context.support.WithSecurityContextFactory;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
+import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
+import java.time.Clock;
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+/** The organizer refund endpoint over the real RefundService; only Stripe is faked. */
+@IminIntegrationTest
 class RefundControllerTest {
 
     @Autowired MockMvc mvc;
+    @Autowired IminFixtures fx;
+    @Autowired JdbcTemplate jdbc;
+    @Autowired StripeClient stripeClient;
+    @Autowired RefundRepository refunds;
+    @Autowired Clock clock;
     final ObjectMapper om = new ObjectMapper();
 
-    @MockitoBean RefundService refundService;
-    @MockitoBean RefundTicketRepository refundTicketRepository;
+    private final List<UUID> orgIds = new ArrayList<>();
+    private AuthPrincipal principal;
+    private Event event;
+    private Order order;
+    private Ticket ticket;
 
-    static final UUID ORG = UUID.fromString("00000000-0000-0000-0000-000000000001");
-    static final UUID USER = UUID.fromString("00000000-0000-0000-0000-000000000002");
-    static final UUID ORDER = UUID.fromString("00000000-0000-0000-0000-000000000003");
-    static final UUID TICKET = UUID.fromString("00000000-0000-0000-0000-000000000004");
-    static final UUID REFUND = UUID.fromString("00000000-0000-0000-0000-000000000005");
+    @BeforeEach
+    void setUp() {
+        Organization org = fx.org();
+        orgIds.add(org.getId());
+        User owner = fx.owner(org);
+        principal = fx.principal(owner);
+        event = fx.event(org, owner, EventStatus.LIVE, clock.instant().plus(Duration.ofDays(30)));
+        order = paidOrder(event);
+        ticket = fx.ticket(order, Ticket.STATE_ISSUED);
+    }
 
-    @Retention(RetentionPolicy.RUNTIME)
-    @WithSecurityContext(factory = StubFactory.class)
-    public @interface WithStubOrganizer {}
-
-    public static class StubFactory implements WithSecurityContextFactory<WithStubOrganizer> {
-        @Override public org.springframework.security.core.context.SecurityContext createSecurityContext(WithStubOrganizer ann) {
-            AuthPrincipal p = new AuthPrincipal(USER, ORG, UserRole.OWNER, UUID.randomUUID());
-            var auth = new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
-                p, null, List.of(new SimpleGrantedAuthority("ROLE_OWNER")));
-            var ctx = org.springframework.security.core.context.SecurityContextHolder.createEmptyContext();
-            ctx.setAuthentication(auth);
-            return ctx;
-        }
+    @AfterEach
+    void cleanUp() {
+        OrgRows.delete(jdbc, orgIds);
     }
 
     @Test
-    @WithStubOrganizer
-    void missing_idempotency_key_returns_400() throws Exception {
-        when(refundService.createRefund(eq(ORDER), any(), eq(null), any(), any()))
-            .thenThrow(new ApiException(HttpStatus.BAD_REQUEST, ErrorCode.MISSING_IDEMPOTENCY_KEY,
-                "Idempotency-Key header is required"));
+    void missingIdempotencyKey_is400() throws Exception {
+        mvc.perform(refund(order, body(List.of(ticket.getId()), "other")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("MISSING_IDEMPOTENCY_KEY"));
+    }
 
-        mvc.perform(post("/api/v1/orders/{id}/refund", ORDER)
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(om.writeValueAsString(Map.of(
-                    "ticketIds", List.of(TICKET.toString()),
-                    "reason", "other"))))
-            .andExpect(status().isBadRequest())
-            .andExpect(jsonPath("$.error.code").value("MISSING_IDEMPOTENCY_KEY"));
+    /** 404, not 403: another org's order must not even be confirmed to exist, and no money moves. */
+    @Test
+    void anotherOrgsOrder_is404_andStripeIsUntouched() throws Exception {
+        Organization other = fx.org();
+        orgIds.add(other.getId());
+        User otherOwner = fx.owner(other);
+        Order theirs = paidOrder(fx.event(other, otherOwner, EventStatus.LIVE,
+                clock.instant().plus(Duration.ofDays(30))));
+        Ticket theirTicket = fx.ticket(theirs, Ticket.STATE_ISSUED);
+
+        mvc.perform(refund(theirs, body(List.of(theirTicket.getId()), "other")).header("Idempotency-Key", "k"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
+
+        verifyNoInteractions(stripeClient);
     }
 
     @Test
-    @WithStubOrganizer
-    void cross_org_returns_404() throws Exception {
-        when(refundService.createRefund(eq(ORDER), any(), eq("k"), any(), any()))
-            .thenThrow(ApiException.notFound("Order"));
-
-        mvc.perform(post("/api/v1/orders/{id}/refund", ORDER)
-                .header("Idempotency-Key", "k")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(om.writeValueAsString(Map.of(
-                    "ticketIds", List.of(TICKET.toString()),
-                    "reason", "other"))))
-            .andExpect(status().isNotFound())
-            .andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
+    void emptyTicketIds_is400() throws Exception {
+        mvc.perform(refund(order, body(List.of(), "other")).header("Idempotency-Key", "k"))
+                .andExpect(status().isBadRequest());
     }
 
-    @Test
-    @WithStubOrganizer
-    void happy_path_returns_202_with_refund_response() throws Exception {
-        Refund r = new Refund();
-        r.setId(REFUND);
-        r.setOrderId(ORDER);
-        r.setStripeRefundId("re_1");
-        r.setAmountMinor(5000);
-        r.setCurrency("eur");
-        r.setApplicationFeeRefundMinor(300);
-        r.setStatus(RefundStatus.PENDING);
-        r.setReason(RefundReason.REQUESTED_BY_CUSTOMER);
-        when(refundService.createRefund(eq(ORDER), any(), eq("k"), any(), any())).thenReturn(r);
-        when(refundTicketRepository.findTicketIdsByRefundId(REFUND)).thenReturn(List.of(TICKET));
+    /** The FE sends the lowercase wire form; the constant name is accepted too. */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"REQUESTED_BY_CUSTOMER", "requested_by_customer"})
+    void anyReasonCasing_is202_andStoresARefundWithThatReason(String reason) throws Exception {
+        RefundService stripeRefunds = mock(RefundService.class);
+        when(stripeClient.refunds()).thenReturn(stripeRefunds);
+        com.stripe.model.Refund stripeRefund = new com.stripe.model.Refund();
+        stripeRefund.setId("re_" + UUID.randomUUID().toString().replace("-", ""));
+        stripeRefund.setCharge("ch_" + UUID.randomUUID().toString().replace("-", ""));
+        stripeRefund.setStatus("pending");
+        when(stripeRefunds.create(any(RefundCreateParams.class), any(RequestOptions.class))).thenReturn(stripeRefund);
 
-        mvc.perform(post("/api/v1/orders/{id}/refund", ORDER)
-                .header("Idempotency-Key", "k")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(om.writeValueAsString(Map.of(
-                    "ticketIds", List.of(TICKET.toString()),
-                    "reason", "requested_by_customer"))))   // lowercase wire format
-            .andExpect(status().isAccepted())
-            .andExpect(jsonPath("$.id").value(REFUND.toString()))
-            .andExpect(jsonPath("$.status").value("pending"))
-            .andExpect(jsonPath("$.amountMinor").value(5000))
-            .andExpect(jsonPath("$.applicationFeeRefundMinor").value(300))
-            .andExpect(jsonPath("$.reason").value("requested_by_customer"))
-            .andExpect(jsonPath("$.ticketIds[0]").value(TICKET.toString()));
+        String clientKey = "k-" + UUID.randomUUID();
+        // Order total 1500 for one 1500 ticket; fee share round(75 x 1500 / 1500) = 75.
+        String id = om.readTree(mvc.perform(refund(order, body(List.of(ticket.getId()), reason))
+                                .header("Idempotency-Key", clientKey))
+                        .andExpect(status().isAccepted())
+                        .andExpect(jsonPath("$.status").value("pending"))
+                        .andExpect(jsonPath("$.amountMinor").value(1500))
+                        .andExpect(jsonPath("$.applicationFeeRefundMinor").value(75))
+                        .andExpect(jsonPath("$.reason").value("requested_by_customer"))
+                        .andExpect(jsonPath("$.ticketIds[0]").value(ticket.getId().toString()))
+                        .andReturn().getResponse().getContentAsString())
+                .get("id").asText();
+
+        Refund stored = refunds.findById(UUID.fromString(id)).orElseThrow();
+        assertThat(stored.getOrderId()).isEqualTo(order.getId());
+        assertThat(stored.getReason()).isEqualTo(RefundReason.REQUESTED_BY_CUSTOMER);
+        assertThat(stored.getStripeRefundId()).isEqualTo(stripeRefund.getId());
+        assertThat(stored.getStatus()).isEqualTo(RefundStatus.PENDING);
+
+        // What reached Stripe: the order's payment, the full amount, transfer reversed with the fee share.
+        ArgumentCaptor<RefundCreateParams> params = ArgumentCaptor.forClass(RefundCreateParams.class);
+        ArgumentCaptor<RequestOptions> options = ArgumentCaptor.forClass(RequestOptions.class);
+        verify(stripeRefunds).create(params.capture(), options.capture());
+        assertThat(params.getValue().getPaymentIntent()).isEqualTo(jdbc.queryForObject(
+                "SELECT stripe_payment_intent_id FROM orders WHERE id = ?", String.class, order.getId()));
+        assertThat(params.getValue().getAmount()).isEqualTo(1500L);
+        assertThat(params.getValue().getReverseTransfer()).isTrue();
+        assertThat(params.getValue().getRefundApplicationFee()).isTrue();
+        assertThat(params.getValue().getReason()).isEqualTo(RefundCreateParams.Reason.REQUESTED_BY_CUSTOMER);
+        assertThat(options.getValue().getIdempotencyKey()).isEqualTo(com.imin.iminapi.refund.RefundService
+                .stripeIdempotencyKey(order.getId(), clientKey, List.of(ticket.getId()), 1500L, ""));
     }
 
-    @Test
-    @WithStubOrganizer
-    void accepts_lowercase_reason_from_frontend() throws Exception {
-        // Contract: FE sends RefundReason as the lowercase wire format (matching
-        // the response). Backend must accept it via @JsonCreator on the enum.
-        Refund r = new Refund();
-        r.setId(REFUND);
-        r.setOrderId(ORDER);
-        r.setStatus(RefundStatus.PENDING);
-        r.setReason(RefundReason.DUPLICATE);
-        r.setCurrency("eur");
-        when(refundService.createRefund(eq(ORDER), any(), eq("k"),
-            any(), eq(RefundReason.DUPLICATE))).thenReturn(r);
-        when(refundTicketRepository.findTicketIdsByRefundId(REFUND)).thenReturn(List.of(TICKET));
-
-        mvc.perform(post("/api/v1/orders/{id}/refund", ORDER)
-                .header("Idempotency-Key", "k")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(om.writeValueAsString(Map.of(
-                    "ticketIds", List.of(TICKET.toString()),
-                    "reason", "duplicate"))))   // ← lowercase, as the FE sends
-            .andExpect(status().isAccepted())
-            .andExpect(jsonPath("$.reason").value("duplicate"));
+    private Order paidOrder(Event e) {
+        Order o = fx.order(e, fx.email("buyer"));
+        jdbc.update("UPDATE orders SET stripe_payment_intent_id = ?, application_fee_minor = 75 WHERE id = ?",
+                "pi_" + UUID.randomUUID().toString().replace("-", ""), o.getId());
+        return o;
     }
 
-    @Test
-    @WithStubOrganizer
-    void empty_ticket_ids_returns_400_from_bean_validation() throws Exception {
-        mvc.perform(post("/api/v1/orders/{id}/refund", ORDER)
-                .header("Idempotency-Key", "k")
+    private String body(List<UUID> ticketIds, String reason) throws Exception {
+        return om.writeValueAsString(Map.of(
+                "ticketIds", ticketIds.stream().map(UUID::toString).toList(),
+                "reason", reason));
+    }
+
+    private MockHttpServletRequestBuilder refund(Order o, String body) {
+        return post("/api/v1/orders/{id}/refund", o.getId())
+                .with(auth(principal))
                 .contentType(MediaType.APPLICATION_JSON)
-                .content(om.writeValueAsString(Map.of(
-                    "ticketIds", List.of(),
-                    "reason", "other"))))
-            .andExpect(status().isBadRequest());
+                .content(body);
+    }
+
+    private static RequestPostProcessor auth(AuthPrincipal p) {
+        return authentication(new UsernamePasswordAuthenticationToken(p, null,
+                List.of(new SimpleGrantedAuthority("ROLE_" + p.role().name()))));
     }
 }

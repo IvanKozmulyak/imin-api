@@ -141,13 +141,6 @@ com.imin.iminapi.controller.publicapi.QuoteControllerTest
 com.imin.iminapi.controller.publicapi.SmsConsentControllerTest
 com.imin.iminapi.controller.publicapi.WalletContractTest
 com.imin.iminapi.controller.reference.ReferenceControllerTest
-com.imin.iminapi.dispute.DisputeAttributionSweeperTest
-com.imin.iminapi.dispute.DisputeRecoveryColumnsTest
-com.imin.iminapi.dispute.DisputeRecoveryQueriesPostgresTest
-com.imin.iminapi.dispute.DisputeRepositoryWithholdingTest
-com.imin.iminapi.dispute.DisputeWithholdingH2Test
-com.imin.iminapi.dispute.DisputeWithholdingPostgresTest
-com.imin.iminapi.dispute.DisputeWithholdingScenarios
 com.imin.iminapi.marketing.AdsConsentWriteTest
 com.imin.iminapi.marketing.AudiencePlanCampaignPatchLockTest
 com.imin.iminapi.marketing.AudiencePlanLegalIdentityGuardTest
@@ -269,11 +262,6 @@ com.imin.iminapi.predictor.rules.RuleQueriesPostgresTest
 com.imin.iminapi.predictor.sources.openevents.OpenEventsWriterTest
 com.imin.iminapi.predictor.sources.wikimedia.WikimediaPageviewsWriterTest
 com.imin.iminapi.push.DropAlertFanOutTest
-com.imin.iminapi.refund.PublicRefundRequestControllerTest
-com.imin.iminapi.refund.RefundControllerTest
-com.imin.iminapi.refund.RefundPlatformFundedTest
-com.imin.iminapi.refund.RefundRequestControllerTest
-com.imin.iminapi.refund.RefundRequestReferencePersistenceTest
 com.imin.iminapi.repository.DashboardPulseQueriesTest
 com.imin.iminapi.repository.EventRepositorySoftDeleteDraftTest
 com.imin.iminapi.repository.FunnelEventRepositoryTest

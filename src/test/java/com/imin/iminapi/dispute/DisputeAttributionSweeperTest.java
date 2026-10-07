@@ -1,101 +1,67 @@
 package com.imin.iminapi.dispute;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
-import com.imin.iminapi.model.EventVisibility;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.model.User;
-import com.imin.iminapi.model.UserRole;
-import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
-import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketRepository;
-import com.imin.iminapi.repository.UserRepository;
-import com.stripe.StripeClient;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
 
 /**
  * The backstop half of the dispute-before-order race: a dispute ingested with no order attaches
  * on the next sweep, whatever order the two webhooks were delivered in and even when the
- * checkout call site never ran (a dispute whose charge was unreadable at ingest).
+ * checkout call site never ran (a dispute whose charge was unreadable at ingest). The sweep reads every
+ * org's rows, so each test asserts on its own ids; that pass 2 skips pass 1's rows is a unit test.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class DisputeAttributionSweeperTest {
 
     @Autowired DisputeAttributionSweeper sweeper;
     @Autowired DisputeRepository disputes;
     @Autowired OrderRepository orders;
     @Autowired TicketRepository tickets;
-    @Autowired EventRepository events;
-    @Autowired OrganizationRepository orgs;
-    @Autowired UserRepository users;
-    @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
-
-    /** Spied, not stubbed: the passes must really run — this only counts which rows pass 2 got. */
-    @MockitoSpyBean DisputeIngestService ingest;
-
-    @MockitoBean StripeClient stripeClient;
+    @Autowired IminFixtures fx;
+    @Autowired JdbcTemplate jdbc;
 
     /** The sweep lock is rewound here before each tick; a real acquisition must move it past. */
     private static final Instant LOCK_REWOUND_TO = Instant.parse("2020-01-01T00:00:00Z");
 
+    private final List<UUID> orgIds = new ArrayList<>();
+    private final String run = UUID.randomUUID().toString().replace("-", "").substring(0, 12);
     private Organization org;
     private Event event;
 
     @BeforeEach
     void setUp() {
-        wipe();
         releaseSweepLock();
-
-        org = new Organization();
-        org.setName("Sweep Org");
-        org.setSlug("sweep-org-" + UUID.randomUUID().toString().substring(0, 8));
-        org.setContactEmail("sweep@example.com");
-        org.setCountry("DE");
-        org = orgs.save(org);
-
-        User owner = new User();
-        owner.setEmail("sweep-owner-" + UUID.randomUUID() + "@example.com");
-        owner.setOrgId(org.getId());
-        owner.setRole(UserRole.OWNER);
-        owner = users.save(owner);
-
-        event = new Event();
-        event.setOrgId(org.getId());
-        event.setName("Sweep Night");
-        event.setSlug("sweep-event-" + UUID.randomUUID().toString().substring(0, 8));
-        event.setVisibility(EventVisibility.PUBLIC);
-        event.setStatus(EventStatus.LIVE);
-        event.setCurrency("EUR");
-        event.setCreatedBy(owner.getId());
-        event = events.save(event);
+        org = fx.org();
+        orgIds.add(org.getId());
+        User owner = fx.owner(org);
+        event = fx.event(org, owner, EventStatus.LIVE, null);
     }
 
     @AfterEach
     void tearDown() {
-        wipe();
+        OrgRows.delete(jdbc, orgIds);
     }
 
     @Test
@@ -134,12 +100,8 @@ class DisputeAttributionSweeperTest {
      */
     @Test
     void theSweepStampsTheOrgFromTheOrder() {
-        Organization guessed = new Organization();
-        guessed.setName("Guessed Org");
-        guessed.setSlug("guessed-org-" + UUID.randomUUID().toString().substring(0, 8));
-        guessed.setContactEmail("guessed@example.com");
-        guessed.setCountry("DE");
-        guessed = orgs.save(guessed);
+        Organization guessed = fx.org();
+        orgIds.add(guessed.getId());
 
         Order order = order("pi_sweep_org", false);
         Dispute orphan = orphan("du_sweep_org", "pi_sweep_org", Instant.now(), DisputeStatus.OPEN);
@@ -181,6 +143,7 @@ class DisputeAttributionSweeperTest {
         sweeper.sweep();
 
         assertThat(disputes.findById(orphan.getId()).orElseThrow().getOrderId()).isNull();
+        assertThat(sweepLockStamped()).as("the tick ran, so the absence means something").isTrue();
     }
 
     /** A dispute whose charge was unreadable has no PI id — no query can match it to an order. */
@@ -192,6 +155,7 @@ class DisputeAttributionSweeperTest {
         sweeper.sweep();
 
         assertThat(disputes.findById(orphan.getId()).orElseThrow().getOrderId()).isNull();
+        assertThat(sweepLockStamped()).as("the tick ran, so the absence means something").isTrue();
     }
 
     /**
@@ -221,6 +185,7 @@ class DisputeAttributionSweeperTest {
 
         assertThat(tickets.findById(t.getId()).orElseThrow().getState())
                 .isEqualTo(Ticket.STATE_ISSUED);
+        assertThat(sweepLockStamped()).as("the tick ran, so the absence means something").isTrue();
     }
 
     /** Same bound as pass 1: past the window a row needs a human, not another five-minute retry. */
@@ -235,24 +200,22 @@ class DisputeAttributionSweeperTest {
 
         assertThat(tickets.findById(t.getId()).orElseThrow().getState())
                 .isEqualTo(Ticket.STATE_ISSUED);
+        assertThat(sweepLockStamped()).as("the tick ran, so the absence means something").isTrue();
     }
 
     /**
-     * Both halves of one tick, on two different orders: the orphan attaches and is revoked by
-     * pass 1, the already-attributed row is revoked by pass 2, and pass 1's row is revoked
-     * exactly once — pass 2 is handed the ids pass 1 attached rather than inferring them from
-     * whatever the persistence context has flushed.
+     * Both halves of one tick, on two different orders: the orphan attaches and is revoked by pass 1,
+     * the already-attributed row is revoked by pass 2.
      */
     @Test
-    void bothPassesConvergeInOneTickAndPassOnesRowIsRevokedOnce() {
+    void bothPassesConvergeInOneTick() {
         Order attachedLate = order("pi_sweep_mix_a", false);
         Ticket ticketA = ticket(attachedLate);
         Dispute orphanA = orphan("du_sweep_mix_a", "pi_sweep_mix_a", Instant.now(), DisputeStatus.OPEN);
 
         Order alreadyAttributed = order("pi_sweep_mix_b", false);
         Ticket ticketB = ticket(alreadyAttributed);
-        Dispute attributedB = attributed("du_sweep_mix_b", alreadyAttributed, Instant.now(),
-                DisputeStatus.OPEN);
+        attributed("du_sweep_mix_b", alreadyAttributed, Instant.now(), DisputeStatus.OPEN);
 
         sweeper.sweep();
 
@@ -262,22 +225,18 @@ class DisputeAttributionSweeperTest {
                 .isEqualTo(Ticket.STATE_REVOKED);
         assertThat(tickets.findById(ticketB.getId()).orElseThrow().getState())
                 .isEqualTo(Ticket.STATE_REVOKED);
-
-        ArgumentCaptor<Dispute> passTwo = ArgumentCaptor.forClass(Dispute.class);
-        verify(ingest, times(1)).revokeAttributed(passTwo.capture(), any());
-        assertThat(passTwo.getValue().getId())
-                .as("pass 1 already revoked the orphan; pass 2 must act only on the other order")
-                .isEqualTo(attributedB.getId());
+        assertThat(sweepLockStamped()).isTrue();
     }
 
     // ── fixtures ─────────────────────────────────────────────────────────────
 
     private Order order(String paymentIntentId, boolean testMode) {
+        paymentIntentId = paymentIntentId + "_" + run;
         Order o = new Order();
         o.setToken("tok_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24));
         o.setEventId(event.getId());
         o.setOrgId(org.getId());
-        o.setEmail("buyer@example.com");
+        o.setEmail(fx.email("buyer"));
         o.setTotalMinor(1500);
         o.setCurrency("eur");
         o.setPaymentMethod("stripe");
@@ -301,16 +260,22 @@ class DisputeAttributionSweeperTest {
     /** A dispute that already carries its order — what pass 1 can never see. */
     private Dispute attributed(String disputeId, Order order, Instant createdAt,
                                DisputeStatus status) {
-        Dispute d = orphan(disputeId, order.getStripePaymentIntentId(), createdAt, status);
+        Dispute d = orphanRow(disputeId, order.getStripePaymentIntentId(), createdAt, status);
         d.setOrderId(order.getId());
         d.setEventId(order.getEventId());
         return disputes.save(d);
     }
 
+    /** Ids are suffixed per test, like {@link #order}: both are uniquely indexed in the shared database. */
     private Dispute orphan(String disputeId, String paymentIntentId, Instant createdAt,
                            DisputeStatus status) {
+        return orphanRow(disputeId, paymentIntentId == null ? null : paymentIntentId + "_" + run, createdAt, status);
+    }
+
+    private Dispute orphanRow(String disputeId, String paymentIntentId, Instant createdAt,
+                              DisputeStatus status) {
         Dispute d = new Dispute();
-        d.setStripeDisputeId(disputeId);
+        d.setStripeDisputeId(disputeId + "_" + run);
         d.setOrgId(org.getId());
         d.setStripePaymentIntentId(paymentIntentId);
         d.setAmountMinor(1500);
@@ -319,15 +284,6 @@ class DisputeAttributionSweeperTest {
         d.setCreatedAt(createdAt);
         d.setOpenedAt(createdAt);
         return disputes.save(d);
-    }
-
-    private void wipe() {
-        disputes.deleteAll();
-        tickets.deleteAll();
-        orders.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
     }
 
     /**

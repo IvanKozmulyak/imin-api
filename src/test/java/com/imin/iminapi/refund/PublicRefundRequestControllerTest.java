@@ -2,145 +2,177 @@ package com.imin.iminapi.refund;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.imin.iminapi.config.TestRateLimitConfig;
-import com.imin.iminapi.refund.dto.PublicRefundFormResponse;
-import com.imin.iminapi.refund.dto.PublicRefundSubmitRequest;
-import com.imin.iminapi.refund.dto.PublicRefundSubmitResponse;
+import com.imin.iminapi.email.RecordingEmailService;
+import com.imin.iminapi.model.Event;
+import com.imin.iminapi.model.EventStatus;
+import com.imin.iminapi.model.Order;
+import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.model.Ticket;
+import com.imin.iminapi.model.User;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
+import com.imin.iminapi.util.Times;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
-import java.time.Instant;
+import java.time.Clock;
+import java.time.Duration;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+/** The public refund-request surface over the real service: no enumeration, and allow-listed keys only. */
+@IminIntegrationTest
 class PublicRefundRequestControllerTest {
 
     @Autowired MockMvc mvc;
+    @Autowired IminFixtures fx;
+    @Autowired JdbcTemplate jdbc;
+    @Autowired RecordingEmailService mail;
+    @Autowired RefundRequestTokenRepository tokens;
+    @Autowired RefundRequestRepository requests;
+    @Autowired Clock clock;
     final ObjectMapper json = new ObjectMapper();
 
-    @MockitoBean RefundRequestService service;
+    private UUID orgId;
+    private Order order;
+    private String buyer;
 
-    @Test
-    void post_link_always_returns_200_and_calls_service() throws Exception {
-        mvc.perform(post("/api/v1/public/refund-requests")
+    @BeforeEach
+    void setUp() {
+        Organization org = fx.org();
+        orgId = org.getId();
+        User owner = fx.owner(org);
+        Event event = fx.event(org, owner, EventStatus.LIVE, clock.instant().plus(Duration.ofDays(30)));
+        buyer = fx.email("buyer");
+        order = fx.order(event, buyer);
+        jdbc.update("UPDATE orders SET stripe_payment_intent_id = ? WHERE id = ?",
+                "pi_" + UUID.randomUUID().toString().replace("-", ""), order.getId());
+        fx.ticket(order, Ticket.STATE_ISSUED);
+    }
+
+    @AfterEach
+    void cleanUp() {
+        OrgRows.delete(jdbc, List.of(orgId));
+    }
+
+    /** The answer is the same 200 whatever is asked, so a probe cannot tell which addresses bought. */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"known order email", "unknown email", "empty body"})
+    void linkRequest_isAlways200_andMailsOnlyAKnownBuyer(String kind) throws Exception {
+        String unknown = fx.email("nobody");
+        MockHttpServletRequestBuilder req = post("/api/v1/public/refund-requests")
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"email\":\"buyer@example.com\"}"))
-            .andExpect(status().isOk())
-            .andExpect(jsonPath("$.ok").value(true));
-        verify(service).requestLink(anyString(), anyString());
+                // A fresh client address per call: the per-IP hourly cap must not be what keeps a mail back.
+                .with(r -> { r.setRemoteAddr(randomIp()); return r; });
+        switch (kind) {
+            case "known order email" -> req.content("{\"email\":\"" + buyer + "\"}");
+            case "unknown email" -> req.content("{\"email\":\"" + unknown + "\"}");
+            default -> { }
+        }
+
+        mvc.perform(req)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.ok").value(true));
+
+        assertThat(mailsTo(buyer)).isEqualTo("known order email".equals(kind) ? 1 : 0);
+        assertThat(mailsTo(unknown)).isZero();
+    }
+
+    // Both by-token routes are PUBLIC: the token travels by email and ends up in a URL, so a widened DTO
+    // leaks to whoever holds the link. A failure here means a field was added — check it is safe, then the list.
+
+    @Test
+    void submit_withARealToken_is201_withOnlyAllowListedKeys() throws Exception {
+        String raw = token();
+
+        MvcResult result = mvc.perform(post("/api/v1/public/refund-requests/by-token/{t}", raw)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"cant_attend\",\"explanation\":\"Can't make it.\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.status").value("pending"))
+                .andReturn();
+
+        JsonNode root = json.readTree(result.getResponse().getContentAsString());
+        assertThat(fieldNames(root))
+                .as("PublicRefundSubmitResponse keys leaked or missing")
+                .isEqualTo(Set.of("id", "reference", "status", "submittedAt"));
+        // The buyer receipt quotes the reference, not the UUID.
+        RefundRequest stored = requests.findById(UUID.fromString(root.get("id").asText())).orElseThrow();
+        assertThat(stored.getOrderId()).isEqualTo(order.getId());
+        assertThat(root.get("reference").asText()).isEqualTo(stored.getReference())
+                .matches(RefundReferenceGenerator.SHAPE);
     }
 
     @Test
-    void post_link_with_empty_body_returns_200() throws Exception {
-        mvc.perform(post("/api/v1/public/refund-requests")
-                .contentType(MediaType.APPLICATION_JSON))
-            .andExpect(status().isOk());
+    void form_hasOnlyAllowListedKeys() throws Exception {
+        fx.ticket(order, Ticket.STATE_REDEEMED);
+        fx.ticket(order, Ticket.STATE_REDEEMED);
+
+        MvcResult result = mvc.perform(get("/api/v1/public/refund-requests/by-token/{t}", token()))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode root = json.readTree(result.getResponse().getContentAsString());
+        assertThat(fieldNames(root))
+                .as("PublicRefundFormResponse keys leaked or missing")
+                .isEqualTo(Set.of("orderId", "event", "tickets", "nonRefundableTicketCount",
+                        "estimatedRefundMinor", "currency", "reasons", "openRequestReference"));
+        // imin-public gates its banner on `nonRefundableTicketCount ?? 0`: absent or null reads as "none excluded".
+        assertThat(root.get("nonRefundableTicketCount").isNumber())
+                .as("nonRefundableTicketCount must serialise as a JSON number")
+                .isTrue();
+        assertThat(root.get("nonRefundableTicketCount").asInt()).isEqualTo(2);
+        assertThat(fieldNames(root.get("event")))
+                .as("PublicRefundFormResponse.EventSummary keys leaked or missing")
+                .isEqualTo(Set.of("name", "startsAt", "timezone", "venueName", "currency"));
+        assertThat(fieldNames(root.get("tickets").get(0)))
+                .as("PublicRefundFormResponse.TicketLine keys leaked or missing")
+                .isEqualTo(Set.of("id", "tierName", "faceMinor"));
     }
 
-    @Test
-    void submit_returns_201_on_success() throws Exception {
-        PublicRefundSubmitResponse resp = new PublicRefundSubmitResponse(
-            UUID.randomUUID(), "REQ-8K2M-26", "pending", Instant.now());
-        when(service.submitByToken(anyString(), any())).thenReturn(resp);
-
-        String body = json.writeValueAsString(new PublicRefundSubmitRequest(
-            RefundRequestReason.CANT_ATTEND, "Can't make it.", null));
-        mvc.perform(post("/api/v1/public/refund-requests/by-token/t1")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(body))
-            .andExpect(status().isCreated())
-            .andExpect(jsonPath("$.status").value("pending"))
-            // The buyer receipt quotes this, not the UUID.
-            .andExpect(jsonPath("$.reference").value("REQ-8K2M-26"));
+    /** A live, unconsumed link token for this test's order; returns the raw token the email would carry. */
+    private String token() {
+        String raw = "rt-" + UUID.randomUUID();
+        RefundRequestToken t = new RefundRequestToken();
+        t.setTokenHash(RefundRequestService.sha256Hex(raw));
+        t.setOrderId(order.getId());
+        t.setEmailNormalized(buyer);
+        t.setExpiresAt(Times.nowMicros().plus(Duration.ofHours(1)));
+        tokens.save(t);
+        return raw;
     }
 
-    // -- allow-listed response keys -------------------------------------------------------
-    //
-    // Both of these routes are PUBLIC. They are token-gated rather than anonymous, but the
-    // token arrives by email and ends up in a URL, so the blast radius of an accidentally
-    // widened DTO is the same as on /public/events and /public/orders — which is why those
-    // have had key-set guardrails and these have not. If one of these fails, you added a
-    // field to a public refund DTO: verify it is safe to expose to whoever holds the link,
-    // then update the allowlist.
+    private long mailsTo(String to) {
+        return mail.sent().stream().filter(m -> to.equals(m.to())).count();
+    }
+
+    private static String randomIp() {
+        ThreadLocalRandom r = ThreadLocalRandom.current();
+        return "10." + r.nextInt(256) + "." + r.nextInt(256) + "." + r.nextInt(1, 255);
+    }
 
     private static Set<String> fieldNames(JsonNode node) {
         Set<String> names = new HashSet<>();
         node.fieldNames().forEachRemaining(names::add);
         return names;
-    }
-
-    @Test
-    void submit_responseHasOnlyAllowListedKeys() throws Exception {
-        when(service.submitByToken(anyString(), any())).thenReturn(new PublicRefundSubmitResponse(
-            UUID.randomUUID(), "REQ-8K2M-26", "pending", Instant.parse("2026-08-11T10:00:00Z")));
-
-        String body = json.writeValueAsString(new PublicRefundSubmitRequest(
-            RefundRequestReason.CANT_ATTEND, "Can't make it.", null));
-        MvcResult result = mvc.perform(post("/api/v1/public/refund-requests/by-token/t1")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(body))
-            .andExpect(status().isCreated())
-            .andReturn();
-
-        assertThat(fieldNames(json.readTree(result.getResponse().getContentAsString())))
-            .as("PublicRefundSubmitResponse keys leaked or missing")
-            .isEqualTo(Set.of("id", "reference", "status", "submittedAt"));
-    }
-
-    @Test
-    void form_responseHasOnlyAllowListedKeys() throws Exception {
-        when(service.lookupByToken(anyString())).thenReturn(new PublicRefundFormResponse(
-            UUID.randomUUID(),
-            new PublicRefundFormResponse.EventSummary(
-                "Great Event", Instant.parse("2026-09-01T20:00:00Z"), "Europe/Berlin",
-                "Berghain", "EUR"),
-            List.of(new PublicRefundFormResponse.TicketLine(UUID.randomUUID(), "GA", 2500)),
-            2, 2500, "EUR", PublicRefundFormResponse.defaultReasons(), "REQ-8K2M-26"));
-
-        MvcResult result = mvc.perform(get("/api/v1/public/refund-requests/by-token/t1"))
-            .andExpect(status().isOk())
-            .andReturn();
-
-        JsonNode root = json.readTree(result.getResponse().getContentAsString());
-        assertThat(fieldNames(root))
-            .as("PublicRefundFormResponse keys leaked or missing")
-            .isEqualTo(Set.of("orderId", "event", "tickets", "nonRefundableTicketCount",
-                "estimatedRefundMinor", "currency", "reasons", "openRequestReference"));
-        // The count must reach the wire as a number the FE can compare against zero.
-        // imin-public gates its amber banner on `nonRefundableTicketCount ?? 0`, so a
-        // field that serialises as absent or null is indistinguishable from "nothing
-        // excluded" and the banner stays invisible — which is the bug this fixes.
-        assertThat(root.get("nonRefundableTicketCount").isNumber())
-            .as("nonRefundableTicketCount must serialise as a JSON number")
-            .isTrue();
-        assertThat(root.get("nonRefundableTicketCount").asInt()).isEqualTo(2);
-        assertThat(fieldNames(root.get("event")))
-            .as("PublicRefundFormResponse.EventSummary keys leaked or missing")
-            .isEqualTo(Set.of("name", "startsAt", "timezone", "venueName", "currency"));
-        assertThat(fieldNames(root.get("tickets").get(0)))
-            .as("PublicRefundFormResponse.TicketLine keys leaked or missing")
-            .isEqualTo(Set.of("id", "tierName", "faceMinor"));
     }
 }

@@ -1,6 +1,5 @@
 package com.imin.iminapi.dispute;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.Order;
@@ -11,20 +10,14 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
 import com.imin.iminapi.util.Times;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.transaction.support.TransactionTemplate;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -34,31 +27,14 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** The V172 recovery queries and bulk updates on Postgres 17, where H2 is lenient. */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
-@Testcontainers(disabledWithoutDocker = true)
+/** The V172 recovery queries and bulk updates on Postgres 17, where H2 is lenient. Org-wide reads assert own ids. */
+@IminIntegrationTest
 class DisputeRecoveryQueriesPostgresTest {
-
-    @Container
-    @ServiceConnection
-    static final PostgreSQLContainer<?> PG = new PostgreSQLContainer<>("postgres:17-alpine");
-
-    @DynamicPropertySource
-    static void overrideDataSource(DynamicPropertyRegistry r) {
-        r.add("spring.datasource.url", PG::getJdbcUrl);
-        r.add("spring.datasource.username", PG::getUsername);
-        r.add("spring.datasource.password", PG::getPassword);
-        r.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
-        r.add("spring.jpa.hibernate.ddl-auto", () -> "none");
-        r.add("spring.jpa.properties.hibernate.dialect", () -> "org.hibernate.dialect.PostgreSQLDialect");
-        r.add("spring.flyway.enabled", () -> "true");
-        r.add("spring.docker.compose.enabled", () -> "false");
-    }
 
     private static final List<DisputeStatus> BACK = List.of(DisputeStatus.WON, DisputeStatus.WITHDRAWN_REINSTATED);
 
     @Autowired DisputeRepository disputes;
+    @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
     @Autowired OrganizationRepository orgs;
     @Autowired UserRepository users;
     @Autowired EventRepository events;
@@ -67,11 +43,6 @@ class DisputeRecoveryQueriesPostgresTest {
     @Autowired TransactionTemplate tx;
 
     private final List<UUID> orgIds = new ArrayList<>();
-    private final List<UUID> userIds = new ArrayList<>();
-    private final List<UUID> eventIds = new ArrayList<>();
-    private final List<UUID> orderIds = new ArrayList<>();
-    private final List<UUID> disputeIds = new ArrayList<>();
-    private final List<UUID> refundIds = new ArrayList<>();
 
     private Organization org;
     private Event event;
@@ -84,12 +55,7 @@ class DisputeRecoveryQueriesPostgresTest {
 
     @AfterEach
     void tearDown() {
-        disputes.deleteAllById(disputeIds);
-        refunds.deleteAllById(refundIds);
-        orders.deleteAllById(orderIds);
-        events.deleteAllById(eventIds);
-        users.deleteAllById(userIds);
-        orgs.deleteAllById(orgIds);
+        OrgRows.delete(jdbc, orgIds);
     }
 
     @Test
@@ -298,7 +264,6 @@ class DisputeRecoveryQueriesPostgresTest {
         u.setEmail("u-" + UUID.randomUUID() + "@test.example");
         u.setRole(UserRole.OWNER);
         UUID userId = users.save(u).getId();
-        userIds.add(userId);
         Event e = new Event();
         e.setOrgId(o.getId());
         e.setName("E");
@@ -307,7 +272,6 @@ class DisputeRecoveryQueriesPostgresTest {
         e.setCurrency("EUR");
         e.setCreatedBy(userId);
         e = events.save(e);
-        eventIds.add(e.getId());
         return e;
     }
 
@@ -331,7 +295,6 @@ class DisputeRecoveryQueriesPostgresTest {
         o.setSettlementGrossMinor(settledGross);
         o.setSettlementFeeMinor(settledFee);
         o = orders.save(o);
-        orderIds.add(o.getId());
         return o;
     }
 
@@ -350,7 +313,7 @@ class DisputeRecoveryQueriesPostgresTest {
         r.setReason(com.imin.iminapi.refund.RefundReason.OTHER);
         r.setStatus(status);
         r.setIdempotencyKey("idem-" + UUID.randomUUID());
-        refundIds.add(refunds.save(r).getId());
+        refunds.save(r);
     }
 
     private Dispute dispute(Order o, DisputeStatus status, boolean testMode, Instant createdAt, long amount) {
@@ -367,7 +330,6 @@ class DisputeRecoveryQueriesPostgresTest {
         d.setTestMode(testMode);
         d.setCreatedAt(createdAt);
         d = disputes.save(d);
-        disputeIds.add(d.getId());
         return d;
     }
 }

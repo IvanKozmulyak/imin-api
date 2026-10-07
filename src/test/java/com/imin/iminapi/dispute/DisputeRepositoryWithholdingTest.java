@@ -2,26 +2,24 @@ package com.imin.iminapi.dispute;
 
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
-import com.imin.iminapi.model.EventVisibility;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.model.User;
-import com.imin.iminapi.model.UserRole;
-import com.imin.iminapi.repository.EventRepository;
-import com.imin.iminapi.repository.OrderRepository;
-import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketRepository;
-import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
-import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -31,56 +29,33 @@ import static org.assertj.core.api.Assertions.assertThat;
  * a derived {@code … StatusIn} query over a converter-mapped enum — the status is stored in its
  * lowercase wire form, so a mapping that regressed to the constant name would match nothing and
  * silently let a charged-back order be refunded. Mocks cannot see that; this executes the query.
+ * The sweep finder reads every org, so its assertions name this test's own dispute.
  */
-@DataJpaTest
-@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
+@IminIntegrationTest
 class DisputeRepositoryWithholdingTest {
 
     @Autowired DisputeRepository disputes;
-    @Autowired OrderRepository orders;
     @Autowired TicketRepository tickets;
-    @Autowired EventRepository events;
-    @Autowired OrganizationRepository orgs;
-    @Autowired UserRepository users;
+    @Autowired IminFixtures fx;
+    @Autowired JdbcTemplate jdbc;
 
     private Organization org;
     private Event event;
 
     @BeforeEach
     void setUp() {
-        org = new Organization();
-        org.setName("Dispute Org");
-        org.setSlug("dispute-org-" + UUID.randomUUID().toString().substring(0, 8));
-        org.setContactEmail("disputes@test.example");
-        org.setCountry("DE");
-        org = orgs.save(org);
+        org = fx.org();
+        User owner = fx.owner(org);
+        event = fx.event(org, owner, EventStatus.LIVE, null);
+    }
 
-        User owner = new User();
-        owner.setEmail("owner-" + UUID.randomUUID() + "@example.com");
-        owner.setOrgId(org.getId());
-        owner.setRole(UserRole.OWNER);
-        owner = users.save(owner);
-
-        Event e = new Event();
-        e.setOrgId(org.getId());
-        e.setName("Chargeback Night");
-        e.setSlug("chargeback-night-" + UUID.randomUUID().toString().substring(0, 8));
-        e.setVisibility(EventVisibility.PUBLIC);
-        e.setStatus(EventStatus.LIVE);
-        e.setCreatedBy(owner.getId());
-        event = events.save(e);
+    @AfterEach
+    void cleanUp() {
+        OrgRows.delete(jdbc, List.of(org.getId()));
     }
 
     private Order newOrder() {
-        Order o = new Order();
-        o.setToken(UUID.randomUUID().toString().replace("-", ""));
-        o.setEventId(event.getId());
-        o.setOrgId(org.getId());
-        o.setEmail("buyer@example.com");
-        o.setTotalMinor(1149);
-        o.setCurrency("eur");
-        o.setPaymentMethod("stripe");
-        return orders.save(o);
+        return fx.order(event, fx.email("buyer"));
     }
 
     private Ticket newTicket(Order o, String state) {
@@ -97,7 +72,7 @@ class DisputeRepositoryWithholdingTest {
 
     private Dispute newDispute(Order o, DisputeStatus status) {
         Dispute d = new Dispute();
-        d.setStripeDisputeId("du_" + UUID.randomUUID().toString().substring(0, 12));
+        d.setStripeDisputeId("du_" + UUID.randomUUID().toString().replace("-", ""));
         d.setOrgId(org.getId());
         d.setEventId(event.getId());
         d.setOrderId(o.getId());
@@ -138,12 +113,11 @@ class DisputeRepositoryWithholdingTest {
     void finds_an_attributed_withholding_dispute_whose_tickets_are_still_live() {
         Order o = newOrder();
         newTicket(o, "pre");
-        newDispute(o, DisputeStatus.OPEN);
+        Dispute d = newDispute(o, DisputeStatus.OPEN);
 
-        assertThat(disputes.findAttributedWithLiveTickets(DisputeWithholding.STATUSES,
-                Instant.now().minus(3, ChronoUnit.DAYS), PageRequest.of(0, 200)))
+        assertThat(attributedWithLiveTickets())
                 .as("a legacy pre-state ticket is scannable and must converge like an issued one")
-                .hasSize(1);
+                .contains(d.getId());
     }
 
     /** The converged case: the sweep's second pass must do no work at all on it. */
@@ -152,23 +126,20 @@ class DisputeRepositoryWithholdingTest {
         Order o = newOrder();
         newTicket(o, Ticket.STATE_REVOKED);
         newTicket(o, Ticket.STATE_REFUNDED);
-        newDispute(o, DisputeStatus.OPEN);
+        Dispute d = newDispute(o, DisputeStatus.OPEN);
 
-        assertThat(disputes.findAttributedWithLiveTickets(DisputeWithholding.STATUSES,
-                Instant.now().minus(3, ChronoUnit.DAYS), PageRequest.of(0, 200)))
-                .isEmpty();
+        assertThat(attributedWithLiveTickets()).doesNotContain(d.getId());
     }
 
     @Test
     void skips_a_won_attributed_dispute() {
         Order o = newOrder();
         newTicket(o, Ticket.STATE_ISSUED);
-        newDispute(o, DisputeStatus.WON);
+        Dispute d = newDispute(o, DisputeStatus.WON);
 
-        assertThat(disputes.findAttributedWithLiveTickets(DisputeWithholding.STATUSES,
-                Instant.now().minus(3, ChronoUnit.DAYS), PageRequest.of(0, 200)))
+        assertThat(attributedWithLiveTickets())
                 .as("a win gave the money back — nothing to revoke")
-                .isEmpty();
+                .doesNotContain(d.getId());
     }
 
     @Test
@@ -202,5 +173,12 @@ class DisputeRepositoryWithholdingTest {
         Order o = newOrder();
 
         assertThat(disputes.hasOpenOrLostByOrderId(o.getId())).isFalse();
+    }
+
+    /** The finder's ids over a page large enough for every test's rows in the shared database. */
+    private List<UUID> attributedWithLiveTickets() {
+        return disputes.findAttributedWithLiveTickets(DisputeWithholding.STATUSES,
+                        Instant.now().minus(3, ChronoUnit.DAYS), PageRequest.of(0, 10_000))
+                .stream().map(Dispute::getId).toList();
     }
 }

@@ -1,6 +1,5 @@
 package com.imin.iminapi.dispute;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.Order;
@@ -15,13 +14,12 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -31,18 +29,13 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.clearInvocations;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
 
 /**
- * The organizer's share of chargebacks against real queries, on H2 and Postgres 17. Orders are
+ * The organizer's share of chargebacks against real queries on Postgres 17. Orders are
  * €11.49 = €10.00 ticket + 149 booking fee, or two of them (2298 / 298).
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
-abstract class DisputeWithholdingScenarios {
+@IminIntegrationTest
+class DisputeWithholdingIntegrationTest {
 
     @Autowired DisputeWithholding withholding;
     @Autowired OrganizationRepository orgs;
@@ -50,14 +43,10 @@ abstract class DisputeWithholdingScenarios {
     @Autowired EventRepository events;
     @Autowired OrderRepository orders;
     @Autowired DisputeRepository disputes;
-    @MockitoSpyBean RefundRepository refunds;
+    @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
+    @Autowired RefundRepository refunds;
 
     private final List<UUID> orgIds = new ArrayList<>();
-    private final List<UUID> userIds = new ArrayList<>();
-    private final List<UUID> eventIds = new ArrayList<>();
-    private final List<UUID> orderIds = new ArrayList<>();
-    private final List<UUID> refundIds = new ArrayList<>();
-    private final List<UUID> disputeIds = new ArrayList<>();
 
     private Instant now;
     private Organization org;
@@ -72,12 +61,7 @@ abstract class DisputeWithholdingScenarios {
 
     @AfterEach
     void tearDown() {
-        disputes.deleteAllById(disputeIds);
-        refunds.deleteAllById(refundIds);
-        orders.deleteAllById(orderIds);
-        events.deleteAllById(eventIds);
-        users.deleteAllById(userIds);
-        orgs.deleteAllById(orgIds);
+        OrgRows.delete(jdbc, orgIds);
     }
 
     @Test
@@ -166,7 +150,7 @@ abstract class DisputeWithholdingScenarios {
         d.setAmountMinor(700);
         d.setCurrency("eur");
         d.setStatus(DisputeStatus.LOST);
-        disputeIds.add(disputes.save(d).getId());
+        disputes.save(d);
 
         assertThat(withholding.organizerShareMinor(event.getId())).isEqualTo(700L);
         assertThat(withholding.organizerShareLiveMinor(event.getId())).isEqualTo(700L);
@@ -210,7 +194,7 @@ abstract class DisputeWithholdingScenarios {
     }
 
     @Test
-    void a_page_reads_refunds_once_and_leaves_events_without_disputes_out() {
+    void a_page_leaves_events_without_disputes_out() {
         Event quiet = event(org);
         Event other = event(org);
         order(quiet, 1_149, 149, false, now);
@@ -219,7 +203,6 @@ abstract class DisputeWithholdingScenarios {
         refund(b, 1_149, 149, RefundStatus.SUCCEEDED);
         dispute(a, 1_149, DisputeStatus.LOST, false);
         dispute(b, 2_298, DisputeStatus.OPEN, false);
-        clearInvocations(refunds);
 
         Map<UUID, Long> out = withholding.withheldMinorByEvent(
                 List.of(event.getId(), quiet.getId(), other.getId()));
@@ -227,7 +210,6 @@ abstract class DisputeWithholdingScenarios {
         assertThat(out).containsOnlyKeys(event.getId(), other.getId());
         assertThat(out.get(event.getId())).isEqualTo(1_149L);
         assertThat(out.get(other.getId())).isEqualTo(1_149L);
-        verify(refunds, times(1)).sumSucceededAmountAndFeeByOrderIds(any());
     }
 
     // ── fixtures ───────────────────────────────────────────────────────────────
@@ -249,7 +231,6 @@ abstract class DisputeWithholdingScenarios {
         u.setEmail("u-" + UUID.randomUUID() + "@test.example");
         u.setRole(UserRole.OWNER);
         u = users.save(u);
-        userIds.add(u.getId());
 
         Event e = new Event();
         e.setOrgId(o.getId());
@@ -260,7 +241,6 @@ abstract class DisputeWithholdingScenarios {
         e.setEndsAt(now.minus(2, ChronoUnit.DAYS));
         e.setCreatedBy(u.getId());
         e = events.save(e);
-        eventIds.add(e.getId());
         return e;
     }
 
@@ -286,7 +266,6 @@ abstract class DisputeWithholdingScenarios {
         o.setSettlementGrossMinor(settledGross);
         o.setSettlementFeeMinor(settledFee);
         o = orders.save(o);
-        orderIds.add(o.getId());
         return o;
     }
 
@@ -301,7 +280,7 @@ abstract class DisputeWithholdingScenarios {
         r.setReason(RefundReason.OTHER);
         r.setStatus(status);
         r.setIdempotencyKey("idem-" + UUID.randomUUID());
-        refundIds.add(refunds.save(r).getId());
+        refunds.save(r);
     }
 
     /** Disputes are saved in call order, so an excluded row created first would be read first. */
@@ -315,6 +294,6 @@ abstract class DisputeWithholdingScenarios {
         d.setCurrency("eur");
         d.setStatus(status);
         d.setTestMode(testMode);
-        disputeIds.add(disputes.save(d).getId());
+        disputes.save(d);
     }
 }

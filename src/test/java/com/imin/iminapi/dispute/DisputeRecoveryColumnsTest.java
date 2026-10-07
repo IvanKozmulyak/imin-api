@@ -1,6 +1,5 @@
 package com.imin.iminapi.dispute;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.Order;
@@ -12,20 +11,22 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
-import com.imin.iminapi.stripe.SettlementIngestService;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
 import com.imin.iminapi.util.Times;
-import com.stripe.model.Charge;
+import com.stripe.StripeClient;
+import com.stripe.net.ApiRequest;
 import com.stripe.net.ApiResource;
+import com.stripe.net.StripeResponseGetter;
+import com.stripe.service.ChargeService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.lang.reflect.Type;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -35,15 +36,14 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
  * The V172 recovery columns against the other writer of a {@code disputes} row: dispute ingest's
  * full-entity save, in both orders, plus the conditional bulk updates that are their only writer.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class DisputeRecoveryColumnsTest {
 
     @Autowired DisputeIngestService ingest;
@@ -55,21 +55,18 @@ class DisputeRecoveryColumnsTest {
     @Autowired OrderRepository orders;
     @Autowired TransactionTemplate tx;
     @Autowired JdbcTemplate jdbc;
-
-    @MockitoBean SettlementIngestService settlementIngest;
+    @Autowired StripeClient stripeClient;
 
     private final List<UUID> orgIds = new ArrayList<>();
-    private final List<UUID> userIds = new ArrayList<>();
-    private final List<UUID> eventIds = new ArrayList<>();
-    private final List<UUID> orderIds = new ArrayList<>();
-    private final List<UUID> disputeIds = new ArrayList<>();
 
     private Order order;
     private String pi;
+    private String chargeId;
 
     @BeforeEach
     void setUp() {
         pi = "pi_" + UUID.randomUUID().toString().replace("-", "").substring(0, 20);
+        chargeId = "ch_" + UUID.randomUUID().toString().replace("-", "").substring(0, 20);
         Organization o = new Organization();
         o.setName("Org");
         o.setSlug("org-" + UUID.randomUUID().toString().substring(0, 8));
@@ -81,7 +78,7 @@ class DisputeRecoveryColumnsTest {
         u.setOrgId(o.getId());
         u.setEmail("u-" + UUID.randomUUID() + "@test.example");
         u.setRole(UserRole.OWNER);
-        userIds.add(users.save(u).getId());
+        u = users.save(u);
         Event e = new Event();
         e.setOrgId(o.getId());
         e.setName("E");
@@ -90,7 +87,6 @@ class DisputeRecoveryColumnsTest {
         e.setCurrency("EUR");
         e.setCreatedBy(u.getId());
         e = events.save(e);
-        eventIds.add(e.getId());
         order = new Order();
         order.setToken(UUID.randomUUID().toString().replace("-", ""));
         order.setEventId(e.getId());
@@ -102,21 +98,13 @@ class DisputeRecoveryColumnsTest {
         order.setPaymentMethod("card");
         order.setStripePaymentIntentId(pi);
         order = orders.save(order);
-        orderIds.add(order.getId());
 
-        Charge charge = ApiResource.GSON.fromJson("""
-                { "id": "ch_1", "object": "charge", "payment_intent": "%s" }
-                """.formatted(pi), Charge.class);
-        when(settlementIngest.resolveDisputedCharge(any(), any(), anyString())).thenReturn(charge);
+        stubChargeRetrieve();
     }
 
     @AfterEach
     void tearDown() {
-        disputes.deleteAllById(disputeIds);
-        orders.deleteAllById(orderIds);
-        events.deleteAllById(eventIds);
-        users.deleteAllById(userIds);
-        orgs.deleteAllById(orgIds);
+        OrgRows.delete(jdbc, orgIds);
     }
 
     @Test
@@ -185,12 +173,11 @@ class DisputeRecoveryColumnsTest {
         d.setOrgId(order.getOrgId());
         d.setEventId(order.getEventId());
         d.setOrderId(order.getId());
-        d.setStripeChargeId("ch_1");
+        d.setStripeChargeId(chargeId);
         d.setAmountMinor(1_149);
         d.setCurrency("eur");
         d.setStatus(DisputeStatus.LOST);
         d = disputes.save(d);
-        disputeIds.add(d.getId());
         return d;
     }
 
@@ -198,9 +185,22 @@ class DisputeRecoveryColumnsTest {
     private void deliverLostAgain(Dispute d) {
         com.stripe.model.Dispute du = ApiResource.GSON.fromJson("""
                 { "id": "%s", "object": "dispute", "amount": 1149, "currency": "eur",
-                  "status": "lost", "charge": "ch_1" }
-                """.formatted(d.getStripeDisputeId()), com.stripe.model.Dispute.class);
+                  "status": "lost", "charge": "%s" }
+                """.formatted(d.getStripeDisputeId(), chargeId), com.stripe.model.Dispute.class);
         ingest.ingest(du, "acct_1", "charge.dispute.closed", Instant.now().truncatedTo(ChronoUnit.MICROS));
+    }
+
+    /** The real ingest reads the disputed charge from Stripe; this answers it with the order's PaymentIntent. */
+    private void stubChargeRetrieve() {
+        StripeResponseGetter rg = mock(StripeResponseGetter.class);
+        try {
+            when(rg.request(any(ApiRequest.class), any(Type.class))).thenAnswer(inv -> ApiResource.GSON.fromJson("""
+                    { "id": "%s", "object": "charge", "payment_intent": "%s" }
+                    """.formatted(chargeId, pi), com.stripe.model.Charge.class));
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+        when(stripeClient.charges()).thenReturn(new ChargeService(rg));
     }
 
     private Map<String, Object> columns(Dispute d) {

@@ -2,21 +2,19 @@ package com.imin.iminapi.refund;
 
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
-import com.imin.iminapi.model.EventVisibility;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.User;
-import com.imin.iminapi.model.UserRole;
-import com.imin.iminapi.repository.EventRepository;
-import com.imin.iminapi.repository.OrderRepository;
-import com.imin.iminapi.repository.OrganizationRepository;
-import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
-import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
+import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -26,54 +24,31 @@ import static org.assertj.core.api.Assertions.assertThat;
  * initiating user is now nullable (a Stripe-Dashboard refund has no imin actor), and the open
  * org-level debt lists only SUCCEEDED, platform-funded, not-yet-recovered rows.
  */
-@DataJpaTest
-@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
+@IminIntegrationTest
 class RefundPlatformFundedTest {
 
     @Autowired RefundRepository refunds;
-    @Autowired OrderRepository orders;
-    @Autowired EventRepository events;
-    @Autowired OrganizationRepository orgs;
-    @Autowired UserRepository users;
+    @Autowired IminFixtures fx;
+    @Autowired JdbcTemplate jdbc;
 
     Organization org;
     Event event;
 
     @BeforeEach
     void setUp() {
-        org = new Organization();
-        org.setName("Debt Org");
-        org.setSlug("org-" + UUID.randomUUID().toString().substring(0, 8));
-        org.setContactEmail("org@example.com");
-        org.setCountry("DE");
-        org = orgs.save(org);
+        org = fx.org();
+        User owner = fx.owner(org);
+        event = fx.event(org, owner, EventStatus.LIVE, null);
+    }
 
-        User owner = new User();
-        owner.setEmail("owner-" + UUID.randomUUID() + "@example.com");
-        owner.setOrgId(org.getId());
-        owner.setRole(UserRole.OWNER);
-        owner = users.save(owner);
-
-        Event e = new Event();
-        e.setOrgId(org.getId());
-        e.setName("Great Event");
-        e.setSlug("event-" + UUID.randomUUID().toString().substring(0, 8));
-        e.setVisibility(EventVisibility.PUBLIC);
-        e.setStatus(EventStatus.LIVE);
-        e.setCreatedBy(owner.getId());
-        event = events.save(e);
+    /** Unrecovered platform-funded rows make the org "owing" to the payout sweep, so they never outlive the test. */
+    @AfterEach
+    void cleanUp() {
+        OrgRows.delete(jdbc, List.of(org.getId()));
     }
 
     private Order order() {
-        Order o = new Order();
-        o.setToken(UUID.randomUUID().toString());
-        o.setEventId(event.getId());
-        o.setOrgId(org.getId());
-        o.setEmail("buyer@example.com");
-        o.setTotalMinor(5000);
-        o.setCurrency("eur");
-        o.setPaymentMethod("stripe");
-        return orders.save(o);
+        return fx.order(event, fx.email("buyer"));
     }
 
     private Refund refund(long amountMinor, RefundStatus status, boolean platformFunded) {
