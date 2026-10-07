@@ -4,7 +4,6 @@ import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.email.DnsRecordStatus;
 import com.imin.iminapi.marketing.email.ResendDomainsClient;
 import com.imin.iminapi.marketing.email.SendingDomainDns;
@@ -21,18 +20,18 @@ import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.support.CampaignRows;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.time.Instant;
@@ -48,19 +47,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * Integration coverage for GET /api/v1/marketing/channels. Real H2 data across TWO orgs,
+ * Integration coverage for GET /api/v1/marketing/channels. Real data across TWO orgs,
  * driven through MockMvc as org A. Asserts that the guardrail numbers are REAL (they match
  * the enforcing config/constants and the org's actual send + complaint rows), that org
  * scoping holds (org B's sends/complaints/opt-ins never leak into A's numbers), and that a
  * complaint-paused org reports paused.
- *
- * <p>Follows the {@code MarketingHubControllerTest} pattern — generated ids + the
- * {@code authentication()} post-processor (same principal shape the production
- * {@code BearerTokenAuthFilter} produces), so no fixed-id merge hazard.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class MarketingChannelsControllerTest {
 
     @Autowired MockMvc mvc;
@@ -73,13 +66,11 @@ class MarketingChannelsControllerTest {
     @Autowired ProviderEventRepository providerEvents;
     @Autowired JdbcTemplate jdbc;
     @Autowired com.imin.iminapi.marketing.email.MarketingEmailProperties emailProps;
+    @Autowired PropertyFlips flips;
+    @Autowired IminFixtures fx;
 
-    /**
-     * Mocked so the channels read never hits the real Resend domains API. Default: absent DNS
-     * (the honest degrade), which the base test asserts renders as no {@code email.dns}. One test
-     * re-stubs it to assert a present DNS snapshot is surfaced.
-     */
-    @MockitoBean ResendDomainsClient domainsClient;
+    /** The shared fake: absent DNS by default (the honest degrade); one test stubs a present snapshot. */
+    @Autowired ResendDomainsClient domainsClient;
 
     private UUID orgA;
     private UUID orgB;
@@ -95,7 +86,7 @@ class MarketingChannelsControllerTest {
         orgB = newOrg("chan-b");
 
         User owner = new User();
-        owner.setEmail("owner-" + UUID.randomUUID() + "@example.com");
+        owner.setEmail(fx.email("owner"));
         owner.setOrgId(orgA);
         owner.setRole(UserRole.OWNER);
         UUID ownerId = users.save(owner).getId();
@@ -120,10 +111,10 @@ class MarketingChannelsControllerTest {
         providerEvent(cA.getId(), ProviderEvent.TYPE_COMPLAINED);
 
         // 2 SMS opt-ins with a phone (+1 opted-in without a phone → not counted).
-        newMembership(orgA, "+353871234567", "subscribed");
-        newMembership(orgA, "+353871234568", "subscribed");
+        newMembership(orgA, phone(), "subscribed");
+        newMembership(orgA, phone(), "subscribed");
         newMembership(orgA, null, "subscribed");
-        newMembership(orgA, "+353871234569", "never");   // has phone, no consent → not counted
+        newMembership(orgA, phone(), "never");   // has phone, no consent → not counted
 
         // ---- org B (MUST NOT leak into A's numbers) ----
         Campaign cB = newCampaign(orgB);
@@ -131,7 +122,7 @@ class MarketingChannelsControllerTest {
         newRecipient(cB.getId(), "sent", hoursAgo(2));
         providerEvent(cB.getId(), ProviderEvent.TYPE_DELIVERED);
         providerEvent(cB.getId(), ProviderEvent.TYPE_COMPLAINED);
-        newMembership(orgB, "+353870000000", "subscribed");
+        newMembership(orgB, phone(), "subscribed");
     }
 
     @AfterEach
@@ -202,22 +193,15 @@ class MarketingChannelsControllerTest {
 
     @Test
     void fromHeaderIsTheOrgsOwnFromViaImin() throws Exception {
-        String savedAddress = emailProps.getFromAddress();
-        String savedName = emailProps.getFromName();
-        emailProps.setFromAddress("contact@imin.support");
-        emailProps.setFromName("Alex");
-        try {
-            String orgName = orgs.findById(orgA).orElseThrow().getName();
-            mvc.perform(get("/api/v1/marketing/channels").with(authentication(authA)))
-                    .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.email.fromAddress").value("contact@imin.support"))
-                    .andExpect(jsonPath("$.email.fromName").value("Alex"))
-                    .andExpect(jsonPath("$.email.fromHeader")
-                            .value("\"" + orgName + " via IMIN\" <contact@imin.support>"));
-        } finally {
-            emailProps.setFromAddress(savedAddress);
-            emailProps.setFromName(savedName);
-        }
+        flips.set(emailProps, "fromAddress", "contact@imin.support");
+        flips.set(emailProps, "fromName", "Alex");
+        String orgName = orgs.findById(orgA).orElseThrow().getName();
+        mvc.perform(get("/api/v1/marketing/channels").with(authentication(authA)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.email.fromAddress").value("contact@imin.support"))
+                .andExpect(jsonPath("$.email.fromName").value("Alex"))
+                .andExpect(jsonPath("$.email.fromHeader")
+                        .value("\"" + orgName + " via IMIN\" <contact@imin.support>"));
     }
 
     @Test
@@ -262,7 +246,7 @@ class MarketingChannelsControllerTest {
     @Test
     void otherOrgSeesOnlyItsOwnNumbers() throws Exception {
         User ownerB = new User();
-        ownerB.setEmail("owner-" + UUID.randomUUID() + "@example.com");
+        ownerB.setEmail(fx.email("owner"));
         ownerB.setOrgId(orgB);
         ownerB.setRole(UserRole.OWNER);
         UUID ownerBId = users.save(ownerB).getId();
@@ -289,13 +273,15 @@ class MarketingChannelsControllerTest {
     private static Instant hoursAgo(long h) { return Instant.now().minusSeconds(h * 3_600L); }
     private static Instant daysAgo(long d) { return Instant.now().minusSeconds(d * 86_400L); }
 
-    private UUID newOrg(String slugPrefix) {
-        Organization o = new Organization();
-        o.setName(slugPrefix);
-        o.setSlug(slugPrefix + "-" + UUID.randomUUID().toString().substring(0, 8));
-        o.setContactEmail("hello-" + UUID.randomUUID() + "@test.example");
+    private UUID newOrg(String name) {
+        Organization o = fx.org();
+        o.setName(name);
         o.setCountry("IE");
         return orgs.save(o).getId();
+    }
+
+    private static String phone() {
+        return "+35387" + (1_000_000 + (int) (Math.random() * 8_999_999));
     }
 
     private Campaign newCampaign(UUID orgId) {
@@ -317,7 +303,7 @@ class MarketingChannelsControllerTest {
         CampaignRecipient r = new CampaignRecipient();
         r.setId(UUID.randomUUID());
         r.setCampaignId(campaignId);
-        r.setEmail("rcpt-" + UUID.randomUUID() + "@example.com");
+        r.setEmail(fx.email("rcpt"));
         r.setStatus(status);
         r.setLastEventAt(lastEventAt);
         recipients.save(r);
@@ -336,7 +322,7 @@ class MarketingChannelsControllerTest {
 
     private void newMembership(UUID orgId, String phone, String smsStatus) {
         Consumer c = new Consumer();
-        c.setNormalizedEmail("chan-" + UUID.randomUUID() + "@example.com");
+        c.setNormalizedEmail(fx.email("chan"));
         c = consumers.save(c);
         createdConsumers.add(c.getConsumerId());
         Membership m = new Membership();
@@ -350,23 +336,9 @@ class MarketingChannelsControllerTest {
         memberships.save(m);
     }
 
-    /**
-     * Remove ONLY this test's own rows, child-first, scoped to one org id.
-     * memberships/consumers/campaigns extend the bare {@code Repository<>} marker (no
-     * {@code deleteAll()}), so they are cleared via JdbcTemplate — the delete-by-SQL approach
-     * the sibling marketing tests use.
-     *
-     * <p>Deliberately org-scoped rather than a blanket {@code delete from <table>}: every org
-     * id here is freshly generated per run, so a global wipe buys this test no isolation it
-     * does not already have, while a global {@code delete from users} trips the
-     * {@code events.created_by} FK against rows other suites leave behind.
-     */
+    /** Removes only this test's own rows, child-first, scoped to one org id. */
     private void wipeOrg(UUID orgId) {
-        jdbc.update("delete from provider_events where campaign_id in "
-                + "(select id from campaigns where org_id = ?)", orgId);
-        jdbc.update("delete from campaign_recipients where campaign_id in "
-                + "(select id from campaigns where org_id = ?)", orgId);
-        jdbc.update("delete from campaigns where org_id = ?", orgId);
+        CampaignRows.delete(jdbc, List.of(orgId));
         jdbc.update("delete from memberships where org_id = ?", orgId);
         jdbc.update("delete from users where org_id = ?", orgId);
         jdbc.update("delete from organizations where id = ?", orgId);

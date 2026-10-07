@@ -1,6 +1,5 @@
 package com.imin.iminapi.marketing;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.dto.CampaignRequests.PatchCampaignRequest;
 import com.imin.iminapi.marketing.dto.PatchableUuid;
 import com.imin.iminapi.marketing.model.Campaign;
@@ -10,13 +9,10 @@ import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
-import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpStatus;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -25,13 +21,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
 
 /** An audience-plan draft keeps its segment and event through the composer PATCH; it can still be deleted. */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class AudiencePlanCampaignPatchLockTest {
 
     @Autowired CampaignService service;
     @Autowired CampaignRepository campaigns;
-    @MockitoBean AuditLogger audit;
 
     private final UUID orgId = UUID.randomUUID();
     private final UUID segmentId = UUID.randomUUID();

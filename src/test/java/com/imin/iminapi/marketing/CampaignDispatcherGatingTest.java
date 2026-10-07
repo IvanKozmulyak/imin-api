@@ -1,75 +1,67 @@
 package com.imin.iminapi.marketing;
 
 import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.marketing.send.CampaignDispatcher;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.support.CampaignRows;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Task 11 — the dispatcher's claim decision (spec §2.5 step 4, §7): due-scheduled,
- * retryable-failed, and stale-`sending` reclaim MINUS complaint-paused orgs and orgs
- * inside email quiet hours. Tests the unit-testable claim method directly rather than
- * the @Scheduled tick.
+ * The dispatcher's claim decision (spec §2.5 step 4, §7): due-scheduled, retryable-failed, and stale-`sending`
+ * reclaim MINUS complaint-paused orgs and orgs inside email quiet hours; the claim method, not the tick.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class CampaignDispatcherGatingTest {
+
+    // A fixed non-quiet instant (12:00 UTC) for UTC orgs, and one inside their 22:00–09:00 quiet window.
+    private static final Instant AWAKE = Instant.parse("2026-07-14T12:00:00Z");
+    private static final Instant QUIET = Instant.parse("2026-07-14T03:00:00Z");
+    // The claim is global, LIMIT 10: rows this old sort ahead of other tests' dated campaigns. The defence
+    // against leftovers is the CampaignRows cleanup rule, not this order: NULLS FIRST puts null-scheduled ones first.
+    private static final Instant ANCIENT = AWAKE.minus(3650, ChronoUnit.DAYS);
 
     @Autowired CampaignDispatcher dispatcher;
     @Autowired CampaignRepository campaigns;
     @Autowired OrganizationRepository orgs;
     @Autowired JdbcTemplate jdbc;
     @Autowired AudiencePlanProperties planProps;
+    @Autowired PropertyFlips flips;
+    @Autowired IminFixtures fx;
 
-    // The claim query is non-org-scoped with a LIMIT — other suite tests leave due/failed/
-    // sending campaigns behind that would crowd out (or falsely include) this test's seeds.
-    // Start each test from an empty campaign set so claim membership is deterministic.
-    @BeforeEach
-    void clearCampaigns() {
-        jdbc.update("delete from campaign_recipients");
-        jdbc.update("delete from campaigns");
-    }
+    private final List<UUID> orgIds = new ArrayList<>();
 
     @AfterEach
-    void restoreSendsSwitch() {
-        planProps.setSendsEnabled(false);
+    void deleteOwnCampaigns() {
+        CampaignRows.delete(jdbc, orgIds);
     }
 
     private Organization org(String tz, boolean paused) {
-        // Canonical org-create pattern (AudienceSendGateConsentSuppressionTest.org()):
-        // name + slug (UNIQUE) + contact_email + country are NOT NULL with no default;
-        // id is @GeneratedValue, do not set it.
-        Organization o = new Organization();
-        o.setName("Disp Org");
-        o.setSlug("disp-" + UUID.randomUUID().toString().substring(0, 6));
-        o.setContactEmail("disp@test.com");
-        o.setCountry("DE");
+        Organization o = fx.org();
         o.setTimezone(tz);
         if (paused) o.setMarketingPausedAt(Instant.now());
-        return orgs.save(o);
+        o = orgs.save(o);
+        orgIds.add(o.getId());
+        return o;
     }
 
-    // `attempts` is a settable short and `updatedAt` is a plain settable Instant column
-    // (Campaign has NO @PrePersist/@UpdateTimestamp), so setUpdatedAt(...) takes effect
-    // on save and the stale-sending reclaim seed ages the row correctly. created_at is
-    // NOT NULL with no JPA-applied default, so it must be set explicitly.
+    // Campaign has no @PrePersist/@UpdateTimestamp, so setUpdatedAt ages the stale-sending seed as written.
     private Campaign campaign(UUID orgId, String status, int attempts, Instant scheduledAt, Instant updatedAt) {
         Campaign c = new Campaign();
         c.setId(UUID.randomUUID());
@@ -88,74 +80,64 @@ class CampaignDispatcherGatingTest {
 
     @Test
     void pausedOrgIsNotClaimed() {
-        Organization o = org("Europe/Kyiv", true);
-        Campaign c = campaign(o.getId(), "scheduled", 0,
-            Instant.now().minus(1, ChronoUnit.MINUTES), Instant.now());
-        List<UUID> claimed = dispatcher.claimDueCampaignIds(Instant.now());
-        assertThat(claimed).doesNotContain(c.getId());
+        Campaign paused = campaign(org("UTC", true).getId(), "scheduled", 0, ANCIENT, AWAKE);
+        Campaign control = campaign(org("UTC", false).getId(), "scheduled", 0, ANCIENT, AWAKE);
+
+        assertThat(dispatcher.claimDueCampaignIds(AWAKE))
+                .contains(control.getId())
+                .doesNotContain(paused.getId());
     }
 
     @Test
     void quietHoursOrgIsNotClaimed() {
-        // Anchor a fixed instant that is inside the org-local 22:00–09:00 email quiet
-        // window regardless of the machine's own zone: 03:00 UTC in a UTC org.
-        Organization o = org("UTC", false);
-        Instant quietNow = Instant.parse("2026-07-14T03:00:00Z");
-        Campaign c = campaign(o.getId(), "scheduled", 0,
-            quietNow.minus(1, ChronoUnit.MINUTES), quietNow);
-        List<UUID> claimed = dispatcher.claimDueCampaignIds(quietNow);
-        assertThat(claimed).doesNotContain(c.getId());
-    }
+        // 03:00 UTC is quiet in a UTC org and midday in Tokyo.
+        Campaign quiet = campaign(org("UTC", false).getId(), "scheduled", 0, ANCIENT, QUIET);
+        Campaign control = campaign(org("Asia/Tokyo", false).getId(), "scheduled", 0, ANCIENT, QUIET);
 
-    // A fixed non-quiet instant (12:00 UTC) used with UTC orgs so the reclaim/retry
-    // assertions don't flap when the test happens to run during the machine's local
-    // wall-clock quiet window.
-    private static final Instant AWAKE = Instant.parse("2026-07-14T12:00:00Z");
+        assertThat(dispatcher.claimDueCampaignIds(QUIET))
+                .contains(control.getId())
+                .doesNotContain(quiet.getId());
+    }
 
     @Test
     void staleSendingCampaignIsReclaimed() {
         Organization o = org("UTC", false);
-        Campaign c = campaign(o.getId(), "sending", 1,
-            AWAKE.minus(30, ChronoUnit.MINUTES),
+        Campaign c = campaign(o.getId(), "sending", 1, ANCIENT,
             AWAKE.minus(10, ChronoUnit.MINUTES)); // updated_at stale > 5 min
-        List<UUID> claimed = dispatcher.claimDueCampaignIds(AWAKE);
-        assertThat(claimed).contains(c.getId());
+        assertThat(dispatcher.claimDueCampaignIds(AWAKE)).contains(c.getId());
     }
 
     @Test
     void failedCampaignAtMaxAttemptsIsNotRetried() {
         Organization o = org("UTC", false);
-        Campaign c = campaign(o.getId(), "failed", 3,
-            AWAKE.minus(1, ChronoUnit.MINUTES), AWAKE);
-        List<UUID> claimed = dispatcher.claimDueCampaignIds(AWAKE);
-        assertThat(claimed).doesNotContain(c.getId());
+        Campaign exhausted = campaign(o.getId(), "failed", 3, ANCIENT, AWAKE);
+        Campaign lastTry = campaign(o.getId(), "failed", 2, ANCIENT, AWAKE);
+
+        assertThat(dispatcher.claimDueCampaignIds(AWAKE))
+                .contains(lastTry.getId())
+                .doesNotContain(exhausted.getId());
     }
 
     @Test
     void failedCampaignUnderMaxAttemptsIsRetried() {
         Organization o = org("UTC", false);
-        Campaign c = campaign(o.getId(), "failed", 1,
-            AWAKE.minus(1, ChronoUnit.MINUTES), AWAKE);
-        List<UUID> claimed = dispatcher.claimDueCampaignIds(AWAKE);
-        assertThat(claimed).contains(c.getId());
+        Campaign c = campaign(o.getId(), "failed", 1, ANCIENT, AWAKE);
+        assertThat(dispatcher.claimDueCampaignIds(AWAKE)).contains(c.getId());
     }
 
     @Test
     void audiencePlanArmStillWaitsOutQuietHoursWithSendsOn() {
-        planProps.setSendsEnabled(true);
+        flips.set(planProps, "sendsEnabled", true);
         Organization o = org("UTC", false);
-        // The claim query also requires legal identity for an audience_plan campaign;
-        // set it so this test isolates the quiet-hours behaviour it actually targets.
+        // The claim query also requires legal identity for an audience_plan campaign.
         o.setLegalName("Disp SAS");
-        o.setLegalContact("legal@disp.test");
+        o.setLegalContact(fx.email("legal"));
         o = orgs.save(o);
-        Instant quietNow = Instant.parse("2026-07-14T03:00:00Z");
-        Campaign arm = campaign(o.getId(), "scheduled", 0,
-            quietNow.minus(1, ChronoUnit.MINUTES), quietNow);
+        Campaign arm = campaign(o.getId(), "scheduled", 0, ANCIENT, QUIET);
         arm.setOrigin("audience_plan");
         campaigns.save(arm);
 
-        assertThat(dispatcher.claimDueCampaignIds(quietNow)).doesNotContain(arm.getId());
+        assertThat(dispatcher.claimDueCampaignIds(QUIET)).doesNotContain(arm.getId());
         assertThat(dispatcher.claimDueCampaignIds(AWAKE)).contains(arm.getId());
     }
 }

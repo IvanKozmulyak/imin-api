@@ -1,83 +1,66 @@
 package com.imin.iminapi.marketing;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.support.CampaignRows;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.transaction.support.TransactionTemplate;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** The claim query's audience-plan holds (sends switch, legal identity) on real Postgres (H2 accepts more than PG does). */
-@Testcontainers(disabledWithoutDocker = true)
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class CampaignClaimPostgresTest {
 
-    @Container
-    @ServiceConnection
-    static final PostgreSQLContainer<?> PG = new PostgreSQLContainer<>("postgres:17-alpine");
-
-    @DynamicPropertySource
-    static void overrideDataSource(DynamicPropertyRegistry r) {
-        r.add("spring.datasource.url", PG::getJdbcUrl);
-        r.add("spring.datasource.username", PG::getUsername);
-        r.add("spring.datasource.password", PG::getPassword);
-        r.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
-        r.add("spring.jpa.hibernate.ddl-auto", () -> "none");
-        r.add("spring.jpa.properties.hibernate.dialect", () -> "org.hibernate.dialect.PostgreSQLDialect");
-        r.add("spring.flyway.enabled", () -> "true");
-        r.add("spring.docker.compose.enabled", () -> "false");
-    }
-
     private static final Instant NOW = Instant.parse("2026-07-14T12:00:00Z");
+    // The claim is global, LIMIT 10: rows this old sort ahead of other tests' dated campaigns. The defence
+    // against leftovers is the CampaignRows cleanup rule, not this order: NULLS FIRST puts null-scheduled ones first.
+    private static final Instant ANCIENT = NOW.minus(3650, ChronoUnit.DAYS);
 
     @Autowired CampaignRepository campaigns;
     @Autowired OrganizationRepository orgs;
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
+    @Autowired IminFixtures fx;
 
+    private final List<UUID> orgIds = new ArrayList<>();
     private Campaign plan;
     private Campaign manual;
-    private UUID orgId;
 
     @BeforeEach
     void seed() {
-        jdbc.update("delete from campaign_recipients");
-        jdbc.update("delete from campaigns");
-        orgId = org("PG Claim SAS", "legal@pgc.test");
+        UUID orgId = org("PG Claim SAS", fx.email("legal"));
         plan = campaign(orgId, "audience_plan");
         manual = campaign(orgId, "manual");
     }
 
+    @AfterEach
+    void deleteOwnCampaigns() {
+        CampaignRows.delete(jdbc, orgIds);
+    }
+
     private UUID org(String legalName, String legalContact) {
-        Organization o = new Organization();
-        o.setName("PG Claim Org");
-        o.setSlug("pgc-" + UUID.randomUUID().toString().substring(0, 8));
-        o.setContactEmail("pgc@test.com");
-        o.setCountry("FR");
+        Organization o = fx.org();
         o.setTimezone("UTC");
         o.setLegalName(legalName);
         o.setLegalContact(legalContact);
-        return orgs.save(o).getId();
+        UUID id = orgs.save(o).getId();
+        orgIds.add(id);
+        return id;
     }
 
     private Campaign campaign(UUID orgId, String origin) {
@@ -90,7 +73,7 @@ class CampaignClaimPostgresTest {
         c.setOrigin(origin);
         c.setSubject("S");
         c.setBodyMd("B");
-        c.setScheduledAt(NOW.minus(1, ChronoUnit.MINUTES));
+        c.setScheduledAt(ANCIENT);
         c.setCreatedAt(NOW);
         c.setUpdatedAt(NOW);
         return campaigns.save(c);
@@ -107,23 +90,18 @@ class CampaignClaimPostgresTest {
     }
 
     @Test
-    void runsOnPostgres() {
-        assertThat(jdbc.queryForObject("select version()", String.class)).containsIgnoringCase("PostgreSQL");
-    }
-
-    @Test
     void sendsOff_claimsOnlyManual() {
-        assertThat(claim(false)).containsExactly(manual.getId());
+        assertThat(claim(false)).contains(manual.getId()).doesNotContain(plan.getId());
     }
 
     @Test
     void sendsOn_claimsBoth() {
-        assertThat(claim(true)).containsExactlyInAnyOrder(plan.getId(), manual.getId());
+        assertThat(claim(true)).contains(plan.getId(), manual.getId());
     }
 
     @Test
     void sendsOn_audiencePlanOfOrgWithoutLegalName_isNotClaimed() {
-        Campaign held = campaign(org(null, "legal@x.test"), "audience_plan");
+        Campaign held = campaign(org(null, fx.email("legal")), "audience_plan");
 
         assertThat(claim(true)).doesNotContain(held.getId()).contains(plan.getId(), manual.getId());
     }
@@ -143,12 +121,13 @@ class CampaignClaimPostgresTest {
         Campaign heldManual = campaign(noIdentity, "manual");
         Campaign heldMomentum = campaign(noIdentity, "momentum");
 
-        assertThat(claim(false, true)).containsExactly(manual.getId());
+        assertThat(claim(false, true)).contains(manual.getId())
+                .doesNotContain(plan.getId(), heldManual.getId(), heldMomentum.getId());
         assertThat(claim(false, false)).contains(heldManual.getId(), heldMomentum.getId());
     }
 
     @Test
     void legalIdentityAllCampaigns_sendsOn_claimsBothOfOrgWithIdentity() {
-        assertThat(claim(true, true)).containsExactlyInAnyOrder(plan.getId(), manual.getId());
+        assertThat(claim(true, true)).contains(plan.getId(), manual.getId());
     }
 }

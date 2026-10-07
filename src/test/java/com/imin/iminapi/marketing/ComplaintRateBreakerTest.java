@@ -3,28 +3,41 @@ package com.imin.iminapi.marketing;
 import com.imin.iminapi.marketing.model.ProviderEvent;
 import com.imin.iminapi.marketing.repository.ProviderEventRepository;
 import com.imin.iminapi.marketing.service.ComplaintRateBreaker;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
+import java.util.LinkedHashSet;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class ComplaintRateBreakerTest {
 
     @Autowired ComplaintRateBreaker breaker;
     @Autowired ProviderEventRepository providerEvents;
     @Autowired OrganizationRepository orgs;
+    @Autowired IminFixtures fx;
+    @Autowired JdbcTemplate jdbc;
+
+    private final Set<UUID> campaignIds = new LinkedHashSet<>();
+
+    @AfterEach
+    void deleteOwnProviderEvents() {
+        // Thousands of rows per test; the payload-retention sweep and every count would otherwise walk them.
+        for (UUID id : campaignIds) jdbc.update("delete from provider_events where campaign_id = ?", id);
+    }
 
     private void event(UUID campaignId, String type) {
+        campaignIds.add(campaignId);
         ProviderEvent e = new ProviderEvent();
         e.setId(UUID.randomUUID());
         e.setProvider("resend");
@@ -36,17 +49,7 @@ class ComplaintRateBreakerTest {
     }
 
     private Organization seedOrg() {
-        // organizations.contact_email VARCHAR(320) NOT NULL and country VARCHAR(2)
-        // NOT NULL have no DB/entity default (V5__auth_and_org.sql:3-5;
-        // Organization.java defaults only timezone/plan/currency), and slug is
-        // NOT NULL + UNIQUE (V15__organization_slug.sql). Set all three exactly like
-        // the canonical helper AudienceSendGateConsentSuppressionTest.org():531-537.
-        // id is @GeneratedValue — do not set it.
-        Organization o = new Organization();
-        o.setName("Breaker Test Org");
-        o.setSlug("breaker-" + UUID.randomUUID().toString().substring(0, 6));
-        o.setContactEmail("breaker@test.com");
-        o.setCountry("DE");
+        Organization o = fx.org();
         o.setTimezone("Europe/Kyiv");
         return orgs.save(o);
     }

@@ -11,24 +11,30 @@ import com.imin.iminapi.audience.service.MembershipProjector;
 import com.imin.iminapi.service.ticket.TicketsIssuedEvent;
 import com.imin.iminapi.audience.service.SendGateService;
 import com.imin.iminapi.audienceplan.config.FanFeatureExecutors;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.support.AsyncDrain;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
 import com.imin.iminapi.model.*;
 import com.imin.iminapi.repository.*;
 import com.imin.iminapi.service.event.FreeCheckoutService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 
-import javax.sql.DataSource;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Executor;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -39,9 +45,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * proof that makes the membership SendGate-sendable.
  *
  * <p>A tick with the sentence the buyer read is {@code explicit}; without it nothing is recorded.
+ * The free path also persists {@code orders.ads_consent}, without which the CAPI outbox never fires.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class MarketingOptInWriteTest {
 
     @Autowired FreeCheckoutService freeCheckout;
@@ -49,19 +55,19 @@ class MarketingOptInWriteTest {
     @Autowired ConsentService consentService;
     @Autowired SendGateService sendGate;
     @Autowired OrderRepository orders;
-    @Autowired TicketRepository tickets;
     @Autowired TicketTierRepository tiers;
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
     @Autowired AudiencePlanLogic planLogic;
-    @Autowired UserRepository users;
     @Autowired MembershipRepository memberships;
     @Autowired ConsumerRepository consumers;
     @Autowired ConsentRecordRepository consentRecords;
     @Autowired MembershipProjector membershipProjector;
-    @Autowired DataSource dataSource;
+    @Autowired JdbcTemplate jdbc;
+    @Autowired IminFixtures fx;
     @Autowired @Qualifier("taskExecutor") Executor asyncExecutor;
     @Autowired @Qualifier(FanFeatureExecutors.LIVE) Executor fanFeatureExecutor;
+    @Autowired @Qualifier("ticketEmailExecutor") Executor ticketEmailExecutor;
 
     private static final String PROOF = "Email me about similar events. Unsubscribe anytime.";
 
@@ -71,21 +77,12 @@ class MarketingOptInWriteTest {
 
     @BeforeEach
     void setUp() {
-        cleanUp();
-
-        Organization org = new Organization();
+        Organization org = fx.org();
+        // The consent-label rows below name this org.
         org.setName("OptIn Org");
-        org.setSlug("optin-org-" + UUID.randomUUID().toString().substring(0, 8));
-        org.setContactEmail("optin@example.com");
-        org.setCountry("DE");
         org = orgs.save(org);
         orgId = org.getId();
-
-        User owner = new User();
-        owner.setEmail("optin-owner-" + UUID.randomUUID() + "@example.com");
-        owner.setOrgId(orgId);
-        owner.setRole(UserRole.OWNER);
-        owner = users.save(owner);
+        User owner = fx.owner(org);
 
         event = new Event();
         event.setOrgId(orgId);
@@ -111,32 +108,23 @@ class MarketingOptInWriteTest {
 
     @AfterEach
     void tearDown() {
-        cleanUp();
-    }
-
-    private void cleanUp() {
-        // The AFTER_COMMIT async projectors can still be writing membership rows; finish them before deleting.
+        // The AFTER_COMMIT async projectors and ticket email can still be reading the order; finish them first.
         drainAsync();
-        // Audience rows use marker repositories without deleteAll — JDBC teardown (audience convention).
-        try (var c = dataSource.getConnection(); var s = c.createStatement()) {
-            s.execute("delete from consent_records");
-            s.execute("delete from memberships");
-            s.execute("delete from consumers");
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-        tickets.deleteAll();
-        orders.deleteAll();
-        tiers.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+        OrgRows.delete(jdbc, List.of(orgId));
     }
 
     private void drainAsync() {
         AsyncDrain.drain(asyncExecutor);
         // The membership commit on that pool queues a fan-feature recompute on its own pool.
         AsyncDrain.drain(fanFeatureExecutor);
+        AsyncDrain.drain(ticketEmailExecutor);
+    }
+
+    // Consumers are keyed by email across orgs, so each test's addresses are unique.
+    private final java.util.Map<String, String> addresses = new java.util.HashMap<>();
+
+    private String addr(String tag) {
+        return addresses.computeIfAbsent(tag, fx::email);
     }
 
     private com.imin.iminapi.audience.model.Membership membershipFor(String email) {
@@ -147,97 +135,71 @@ class MarketingOptInWriteTest {
     @Test
     void freeCheckout_persistsMarketingOptInFlag() {
         Order created = freeCheckout.issueFreeOrder(
-                event, freeTier, 1, "optin-buyer@example.com", null, false,
+                event, freeTier, 1, addr("optin-buyer"), null, false,
                 /* marketingOptIn */ true, CheckoutAttribution.NONE, null);
         Order persisted = orders.findByToken(created.getToken()).orElseThrow();
         assertThat(persisted.isMarketingOptIn()).isTrue();
     }
 
     /**
-     * V62: the free path stamps the landing utm_* + anon_id inline (it never round-trips
-     * through Stripe metadata — the paid path's read-back is covered in
-     * PaidCheckoutServiceTest).
+     * V62: the free path stamps the landing utm_* + anon_id inline (the paid read-back is PaidCheckoutServiceTest's).
+     * Untagged stays null, never empty; buyer input is untrusted: blank collapses to null, over-long is capped.
      */
-    @Test
-    void freeCheckout_persistsUtmAttribution() {
-        String campaignId = UUID.randomUUID().toString();
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("attributions")
+    void freeCheckout_persistsUtmAttribution(String label, CheckoutAttribution in, String source, String medium,
+                                             String campaign, String anonId) {
         Order created = freeCheckout.issueFreeOrder(
-                event, freeTier, 1, "utm-buyer@example.com", null, false, true,
-                new CheckoutAttribution("imin", "email", campaignId, "anon-free-1"), null);
+                event, freeTier, 1, fx.email("utm"), null, false, true, in, null);
 
         Order persisted = orders.findByToken(created.getToken()).orElseThrow();
-        assertThat(persisted.getUtmSource()).isEqualTo("imin");
-        assertThat(persisted.getUtmMedium()).isEqualTo("email");
-        assertThat(persisted.getUtmCampaign()).isEqualTo(campaignId);
-        assertThat(persisted.getAnonId()).isEqualTo("anon-free-1");
+        assertThat(persisted.getUtmSource()).isEqualTo(source);
+        assertThat(persisted.getUtmMedium()).isEqualTo(medium);
+        assertThat(persisted.getUtmCampaign()).isEqualTo(campaign);
+        assertThat(persisted.getAnonId()).isEqualTo(anonId);
+    }
+
+    static Stream<Arguments> attributions() {
+        String campaignId = "8b0f3c1e-2a7d-4c55-9e3a-6f1d2b4c8a90";
+        return Stream.of(
+                Arguments.of("tagged", new CheckoutAttribution("imin", "email", campaignId, "anon-free-1"),
+                        "imin", "email", campaignId, "anon-free-1"),
+                Arguments.of("organic", CheckoutAttribution.NONE, null, null, null, null),
+                Arguments.of("hostile", new CheckoutAttribution("   ", "  email  ", "x".repeat(500), "y".repeat(200)),
+                        null, "email", "x".repeat(128), "y".repeat(64)));
     }
 
     /**
-     * W1.G/V78: the free path writes the Order inline, so it is the only place the
-     * buyer's language can be stamped. Normalized at the write site so a caller that
-     * skipped normalization can't put junk in the column.
+     * W1.G/V78: the free path is the only place the buyer's language is stamped, normalized at the write site.
+     * Unsupported or absent ⇒ null, i.e. "no preference" ⇒ English emails.
      */
-    @Test
-    void freeCheckout_persistsBuyerLocale_normalized() {
+    @ParameterizedTest(name = "[{0}] -> {1}")
+    @CsvSource(nullValues = "NULL", value = {"'  ES  ', es", "klingon, NULL", "NULL, NULL"})
+    void freeCheckout_persistsBuyerLocale_normalized(String locale, String expected) {
         Order created = freeCheckout.issueFreeOrder(
-                event, freeTier, 1, "locale-buyer@example.com", null, false, true,
-                CheckoutAttribution.NONE, "  ES  ");
+                event, freeTier, 1, fx.email("locale"), null, false, true,
+                CheckoutAttribution.NONE, locale);
 
-        assertThat(orders.findByToken(created.getToken()).orElseThrow().getBuyerLocale())
-                .isEqualTo("es");
+        assertThat(orders.findByToken(created.getToken()).orElseThrow().getBuyerLocale()).isEqualTo(expected);
     }
 
-    /** Unsupported/absent language ⇒ null, i.e. "no preference" ⇒ English emails. */
-    @Test
-    void freeCheckout_leavesBuyerLocaleNull_whenUnsupportedOrAbsent() {
-        Order junk = freeCheckout.issueFreeOrder(
-                event, freeTier, 1, "junk-locale@example.com", null, false, true,
-                CheckoutAttribution.NONE, "klingon");
-        Order none = freeCheckout.issueFreeOrder(
-                event, freeTier, 1, "no-locale@example.com", null, false, true,
+    /** V60: the ads-consent flag from the buyer's cookie state is persisted; DEFAULT false holds when absent. */
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void freeCheckout_persistsAdsConsentFlag(boolean adsConsent) {
+        Order created = freeCheckout.issueFreeOrder(
+                event, freeTier, 1, fx.email("ads"), null, adsConsent, /* marketingOptIn */ false,
                 CheckoutAttribution.NONE, null);
 
-        assertThat(orders.findByToken(junk.getToken()).orElseThrow().getBuyerLocale()).isNull();
-        assertThat(orders.findByToken(none.getToken()).orElseThrow().getBuyerLocale()).isNull();
-    }
-
-    /** Untagged (organic) free order → null columns, never empty strings. */
-    @Test
-    void freeCheckout_withNoAttribution_leavesUtmNull() {
-        Order created = freeCheckout.issueFreeOrder(
-                event, freeTier, 1, "organic@example.com", null, false, true,
-                CheckoutAttribution.NONE, null);
-
-        Order persisted = orders.findByToken(created.getToken()).orElseThrow();
-        assertThat(persisted.getUtmSource()).isNull();
-        assertThat(persisted.getUtmCampaign()).isNull();
-        assertThat(persisted.getAnonId()).isNull();
-    }
-
-    /**
-     * Buyer-supplied attribution is untrusted: blank collapses to null (so it can't
-     * masquerade as a real tag) and over-long values are capped to the column widths
-     * rather than failing the order insert.
-     */
-    @Test
-    void freeCheckout_normalizesHostileAttributionInput() {
-        Order created = freeCheckout.issueFreeOrder(
-                event, freeTier, 1, "hostile@example.com", null, false, true,
-                new CheckoutAttribution("   ", "  email  ", "x".repeat(500), "y".repeat(200)), null);
-
-        Order persisted = orders.findByToken(created.getToken()).orElseThrow();
-        assertThat(persisted.getUtmSource()).isNull();            // blank → null
-        assertThat(persisted.getUtmMedium()).isEqualTo("email");  // trimmed
-        assertThat(persisted.getUtmCampaign()).hasSize(128);      // capped to column width
-        assertThat(persisted.getAnonId()).hasSize(64);
+        assertThat(orders.findByToken(created.getToken()).orElseThrow().isAdsConsent()).isEqualTo(adsConsent);
     }
 
     @Test
     void projector_withoutOptIn_leavesConsentUntouched() {
-        projector.upsertMembership(orgId, "no-optin@example.com", "no-optin@example.com",
+        projector.upsertMembership(orgId, addr("no-optin"), addr("no-optin"),
                 null, false, false, null);
 
-        var m = membershipFor("no-optin@example.com");
+        var m = membershipFor(addr("no-optin"));
         assertThat(m.getConsentStatus()).isNotEqualTo("subscribed");
         assertThat(m.getConsentBasis()).isNull();
     }
@@ -249,21 +211,21 @@ class MarketingOptInWriteTest {
     @Test
     void projector_neverResubscribesAnUnsubscribedMember_evenWithCheckoutOptIn() {
         // Seed a member and unsubscribe them.
-        projector.upsertMembership(orgId, "gone@example.com", "gone@example.com",
+        projector.upsertMembership(orgId, addr("gone"), addr("gone"),
                 null, false, true, null, PROOF);
-        var m = membershipFor("gone@example.com");
+        var m = membershipFor(addr("gone"));
         consentService.unsubscribe(orgId, m.getMembershipId(), "user-request",
                 ConsentOrigin.DATA_SUBJECT, null);
-        assertThat(membershipFor("gone@example.com").getConsentStatus()).isEqualTo("unsubscribed");
+        assertThat(membershipFor(addr("gone")).getConsentStatus()).isEqualTo("unsubscribed");
         long proofsAfterUnsub = consentRecords
                 .findByMembershipId(m.getMembershipId()).size();
 
         // They buy again and tick the box, with the proof sentence.
-        projector.upsertMembership(orgId, "gone@example.com", "gone@example.com",
+        projector.upsertMembership(orgId, addr("gone"), addr("gone"),
                 null, false, /* emailOptIn */ true, UUID.randomUUID(), PROOF);
 
         // Still unsubscribed, still no lawful basis, and no new consent proof was written.
-        var after = membershipFor("gone@example.com");
+        var after = membershipFor(addr("gone"));
         assertThat(after.getConsentStatus()).isEqualTo("unsubscribed");
         assertThat(after.getConsentBasis()).isNull();
         assertThat(consentRecords.findByMembershipId(m.getMembershipId()))
@@ -278,10 +240,10 @@ class MarketingOptInWriteTest {
     /** A checkout opt-in with proof is an explicit basis, which the email Send Gate admits. */
     @Test
     void checkoutOptIn_passesTheEmailSendGate() {
-        projector.upsertMembership(orgId, "sendable@example.com", "sendable@example.com",
+        projector.upsertMembership(orgId, addr("sendable"), addr("sendable"),
                 null, false, true, null, PROOF);
 
-        var m = membershipFor("sendable@example.com");
+        var m = membershipFor(addr("sendable"));
         assertThat(m.getConsentBasis()).isEqualTo("explicit");
 
         var gate = sendGate.evaluate(orgId, List.of(m.getMembershipId()));
@@ -292,10 +254,10 @@ class MarketingOptInWriteTest {
     /** ...but it is EMAIL-only: the SMS side lives on separate sms_consent_* columns. */
     @Test
     void checkoutEmailOptIn_doesNotMakeTheMemberSmsSendable() {
-        projector.upsertMembership(orgId, "email-only@example.com", "email-only@example.com",
+        projector.upsertMembership(orgId, addr("email-only"), addr("email-only"),
                 null, false, /* emailOptIn */ true, null, PROOF);
 
-        var m = membershipFor("email-only@example.com");
+        var m = membershipFor(addr("email-only"));
         // Email side: subscribed on an explicit basis.
         assertThat(m.getConsentBasis()).isEqualTo("explicit");
         // SMS side: completely untouched — never subscribed, no basis, no phone.
@@ -312,10 +274,10 @@ class MarketingOptInWriteTest {
      */
     @Test
     void smsOptIn_stillRecordsExplicitBasis_notSoftOptIn() {
-        projector.upsertMembership(orgId, "sms@example.com", "sms@example.com",
-                "+380671234567", /* smsOptIn */ true, false, null);
+        projector.upsertMembership(orgId, addr("sms"), addr("sms"),
+                "+38067" + (1_000_000 + (int) (Math.random() * 8_999_999)), /* smsOptIn */ true, false, null);
 
-        var m = membershipFor("sms@example.com");
+        var m = membershipFor(addr("sms"));
         assertThat(m.getSmsConsentStatus()).isEqualTo("subscribed");
         assertThat(m.getSmsConsentBasis()).isEqualTo("explicit");
         // Email side stays untouched by an SMS-only opt-in.
@@ -327,10 +289,10 @@ class MarketingOptInWriteTest {
     void projector_withOptInAndProofText_recordsExplicitConsentWithVerbatimSentence() {
         UUID orderId = UUID.randomUUID();
         String sentence = "Email me about similar events. Unsubscribe anytime.";
-        projector.upsertMembership(orgId, "proof-buyer@example.com", "proof-buyer@example.com",
+        projector.upsertMembership(orgId, addr("proof-buyer"), addr("proof-buyer"),
                 null, false, true, orderId, sentence);
 
-        var m = membershipFor("proof-buyer@example.com");
+        var m = membershipFor(addr("proof-buyer"));
         assertThat(m.getConsentStatus()).isEqualTo("subscribed");
         assertThat(m.getConsentBasis()).isEqualTo("explicit");
 
@@ -354,17 +316,15 @@ class MarketingOptInWriteTest {
     @Test
     void projector_withOptInProofAndTextVersion_recordsTheVersion() {
         UUID orderId = UUID.randomUUID();
-        projector.upsertMembership(orgId, "versioned@example.com", "versioned@example.com",
+        projector.upsertMembership(orgId, addr("versioned"), addr("versioned"),
                 null, false, true, orderId, "Email me about Arty Farty's events.", "checkout-org-named-2026-09");
 
-        var records = consentRecords.findByMembershipId(membershipFor("versioned@example.com").getMembershipId());
+        var records = consentRecords.findByMembershipId(membershipFor(addr("versioned")).getMembershipId());
         assertThat(records).hasSize(1);
         assertThat(records.get(0).getTextVersion()).isEqualTo("checkout-org-named-2026-09");
         assertThat(records.get(0).getOrderId()).isEqualTo(orderId);
         assertThat(records.get(0).getLawfulBasis()).isEqualTo("explicit");
     }
-
-    private static final String SHIPPED_VERSION = "checkout-org-named-2026-09";
 
     /** Free checkout with this label and version, projected synchronously; returns the recorded versions. */
     private List<String> projectedVersions(String email, String label, String version) {
@@ -382,40 +342,29 @@ class MarketingOptInWriteTest {
         return records.stream().map(r -> r.getTextVersion()).toList();
     }
 
-    /** Free checkout → order column → projected consent record: a listed version naming the org survives. */
-    @Test
-    void freeOrder_listedVersionAndLabelNamingTheOrg_keepsTheVersion() {
-        assertThat(projectedVersions("named@example.com", "Email me about events by OptIn Org.", SHIPPED_VERSION))
-                .containsOnly(SHIPPED_VERSION);
-    }
-
-    /** Case and compatibility forms fold on both sides, so full-width upper case still names the org. */
-    @Test
-    void freeOrder_labelNamingTheOrgInAnotherForm_keepsTheVersion() {
-        assertThat(projectedVersions("folded@example.com", "Email me about events by \uFF2F\uFF30\uFF34\uFF29\uFF2E \uFF2F\uFF32\uFF27.", SHIPPED_VERSION))
-                .containsOnly(SHIPPED_VERSION);
-    }
-
-    /** A listed version whose sentence does not contain the org's name is a client claim only. */
-    @Test
-    void freeOrder_labelMissingTheOrgName_dropsTheVersion() {
-        assertThat(projectedVersions("unnamed@example.com", "Email me about events by Arty Farty.", SHIPPED_VERSION))
-                .containsOnly((String) null);
-    }
-
-    @Test
-    void freeOrder_versionNotOnTheAllowlist_dropsTheVersion() {
-        assertThat(projectedVersions("unlisted@example.com", "Email me about events by OptIn Org.", "checkout-other-v1"))
-                .containsOnly((String) null);
+    /**
+     * Free checkout → order column → projected consent record. A listed version survives only when the sentence
+     * names the org (case and compatibility forms fold on both sides); otherwise it is a client claim and dropped.
+     */
+    @ParameterizedTest(name = "{0}")
+    @CsvSource(nullValues = "NULL", value = {
+            "named,    Email me about events by OptIn Org.,           checkout-org-named-2026-09, checkout-org-named-2026-09",
+            "folded,   Email me about events by \uFF2F\uFF30\uFF34\uFF29\uFF2E \uFF2F\uFF32\uFF27., checkout-org-named-2026-09, checkout-org-named-2026-09",
+            "unnamed,  Email me about events by Arty Farty.,          checkout-org-named-2026-09, NULL",
+            "unlisted, Email me about events by OptIn Org.,           checkout-other-v1,          NULL",
+    })
+    void freeOrder_textVersionSurvivesOnlyWhenListedAndNamingTheOrg(String tag, String label, String version,
+                                                                    String expected) {
+        assertThat(projectedVersions(fx.email(tag), label, version)).containsOnly(expected);
     }
 
     /** An opt-in flag with no proof sentence is not evidence of consent: nothing is recorded. */
     @Test
     void projector_withOptInButNoProofText_recordsNoConsent() {
-        projector.upsertMembership(orgId, "no-proof@example.com", "no-proof@example.com",
+        projector.upsertMembership(orgId, addr("no-proof"), addr("no-proof"),
                 null, false, true, UUID.randomUUID());
 
-        var m = membershipFor("no-proof@example.com");
+        var m = membershipFor(addr("no-proof"));
         assertThat(m.getConsentStatus()).isNotEqualTo("subscribed");
         assertThat(m.getConsentBasis()).isNull();
         assertThat(consentRecords.findByMembershipId(m.getMembershipId())).isEmpty();
@@ -424,10 +373,10 @@ class MarketingOptInWriteTest {
     /** A whitespace-only proof sentence is no proof either. */
     @Test
     void projector_withOptInButBlankProofText_recordsNoConsent() {
-        projector.upsertMembership(orgId, "blank-proof@example.com", "blank-proof@example.com",
+        projector.upsertMembership(orgId, addr("blank-proof"), addr("blank-proof"),
                 null, false, true, UUID.randomUUID(), "   ");
 
-        var m = membershipFor("blank-proof@example.com");
+        var m = membershipFor(addr("blank-proof"));
         assertThat(m.getConsentStatus()).isNotEqualTo("subscribed");
         assertThat(m.getConsentBasis()).isNull();
         assertThat(consentRecords.findByMembershipId(m.getMembershipId())).isEmpty();
@@ -437,7 +386,7 @@ class MarketingOptInWriteTest {
     @Test
     void freeOrderWithOptIn_neverYieldsSoftOptIn() {
         Order order = freeCheckout.issueFreeOrder(
-                event, freeTier, 1, "free-optin@example.com", null, false, true,
+                event, freeTier, 1, addr("free-optin"), null, false, true,
                 CheckoutAttribution.NONE, null, null,
                 new CheckoutConsent(true, "Email me about similar events. Unsubscribe anytime."));
 
@@ -445,7 +394,7 @@ class MarketingOptInWriteTest {
         new AudienceOrderProjector(orders, consumers, memberships, membershipProjector, consentService, e -> { }, orgs, planLogic)
                 .onTicketsIssued(new TicketsIssuedEvent(order.getId()));
 
-        var m = membershipFor("free-optin@example.com");
+        var m = membershipFor(addr("free-optin"));
         assertThat(m.getConsentBasis()).isEqualTo("explicit");
         assertThat(consentRecords.findByMembershipId(m.getMembershipId()))
                 .noneMatch(r -> "soft_opt_in".equals(r.getLawfulBasis()));

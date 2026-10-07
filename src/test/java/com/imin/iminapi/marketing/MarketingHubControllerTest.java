@@ -4,7 +4,6 @@ import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.MomentumSuggestion;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
@@ -21,13 +20,13 @@ import com.imin.iminapi.repository.FunnelEventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
@@ -44,22 +43,16 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * Integration coverage for GET /api/v1/marketing/hub-metrics. Real H2 data across TWO orgs,
- * driven through MockMvc as org A. Asserts the DTO shape AND org scoping: org B's members /
- * suggestions / on-sale events / SMS opt-ins / campaigns never leak into A's counts.
- *
- * <p>Follows the {@code CrossOrgScopingTest} pattern — generated ids + the
- * {@code authentication()} MockMvc post-processor (same principal shape the production
- * {@code BearerTokenAuthFilter} produces), so no fixed-id merge hazard.
+ * GET /api/v1/marketing/hub-metrics over real data in TWO orgs, driven through MockMvc as org A: the DTO
+ * values AND org scoping — org B's members, suggestions, on-sale events, SMS opt-ins and campaigns never leak.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class MarketingHubControllerTest {
 
     @Autowired MockMvc mvc;
     @Autowired OrganizationRepository orgs;
     @Autowired UserRepository users;
+    @Autowired IminFixtures fx;
     @Autowired ConsumerRepository consumers;
     @Autowired MembershipRepository memberships;
     @Autowired MomentumSuggestionRepository suggestions;
@@ -74,13 +67,11 @@ class MarketingHubControllerTest {
 
     @BeforeEach
     void seed() {
-        wipe();
-
         orgA = newOrg("hub-a");
         orgB = newOrg("hub-b");
 
         User owner = new User();
-        owner.setEmail("owner-" + UUID.randomUUID() + "@example.com");
+        owner.setEmail(fx.email("owner"));
         owner.setOrgId(orgA);
         owner.setRole(UserRole.OWNER);
         UUID ownerId = users.save(owner).getId();
@@ -93,7 +84,7 @@ class MarketingHubControllerTest {
         // 3 subscribed+explicit memberships (all sendable) + 1 no-basis (excluded) → total 4.
         newMembership(orgA, "subscribed", "explicit", null, "never");
         newMembership(orgA, "subscribed", "explicit", null, "never");
-        newMembership(orgA, "subscribed", "explicit", "+353871234567", "subscribed"); // sendable + sms
+        newMembership(orgA, "subscribed", "explicit", phone(), "subscribed"); // sendable + sms
         newMembership(orgA, "subscribed", null, null, "never");                        // no lawful basis → excluded
 
         // 2 live 'suggested' Momentum suggestions (+1 non-suggested).
@@ -111,7 +102,7 @@ class MarketingHubControllerTest {
         beacon(eventA, FunnelEvent.STAGE_CHECKOUT_START, "anonOld", old.getId().toString());
 
         // ---- org B data (MUST NOT leak into A's counts) ----
-        newMembership(orgB, "subscribed", "explicit", "+353870000000", "subscribed");
+        newMembership(orgB, "subscribed", "explicit", phone(), "subscribed");
         newMembership(orgB, "subscribed", "explicit", null, "never");
         UUID eventB = newOnSaleEvent(orgB, ownerId);
         newSuggestion(orgB, eventB, "launch_push", "suggested");
@@ -120,7 +111,25 @@ class MarketingHubControllerTest {
     }
 
     @AfterEach
-    void tearDown() { wipe(); }
+    void tearDown() {
+        // Momentum evaluates every live on-sale event and expires every live suggestion: remove ours.
+        List<RuntimeException> failures = new java.util.ArrayList<>();
+        for (UUID org : List.of(orgA, orgB)) {
+            try {
+                jdbc.update("delete from momentum_suggestions where org_id = ?", org);
+            } catch (RuntimeException e) {
+                failures.add(e);
+            }
+        }
+        try {
+            OrgRows.delete(jdbc, List.of(orgA, orgB));
+        } catch (RuntimeException e) {
+            failures.add(e);
+        }
+        if (failures.isEmpty()) return;
+        failures.subList(1, failures.size()).forEach(failures.get(0)::addSuppressed);
+        throw failures.get(0);
+    }
 
     @Test
     void returnsRealOrgScopedMetrics() throws Exception {
@@ -149,19 +158,21 @@ class MarketingHubControllerTest {
 
     // ---- fixtures ----
 
-    private UUID newOrg(String slugPrefix) {
-        Organization o = new Organization();
-        o.setName(slugPrefix);
-        o.setSlug(slugPrefix + "-" + UUID.randomUUID().toString().substring(0, 8));
-        o.setContactEmail("hello-" + UUID.randomUUID() + "@test.example");
+    private UUID newOrg(String name) {
+        Organization o = fx.org();
+        o.setName(name);
         o.setCountry("IE");
         return orgs.save(o).getId();
+    }
+
+    private static String phone() {
+        return "+35387" + (1_000_000 + (int) (Math.random() * 8_999_999));
     }
 
     private void newMembership(UUID orgId, String consentStatus, String consentBasis,
                                String phone, String smsStatus) {
         Consumer c = new Consumer();
-        c.setNormalizedEmail("hub-" + UUID.randomUUID() + "@example.com");
+        c.setNormalizedEmail(fx.email("hub"));
         c = consumers.save(c);
         Membership m = new Membership();
         m.setOrgId(orgId);
@@ -222,21 +233,5 @@ class MarketingHubControllerTest {
         fe.setAnonId(anon);
         fe.setUtmCampaign(utmCampaign);
         funnel.save(fe);
-    }
-
-    /**
-     * Reset the tables this test touches, child rows first. memberships/consumers/campaigns
-     * extend the bare {@code Repository<>} marker (no {@code deleteAll()}), so they are cleared
-     * via JdbcTemplate — the same delete-by-SQL approach the sibling dispatcher tests use.
-     */
-    private void wipe() {
-        jdbc.update("delete from event_funnel_events");
-        jdbc.update("delete from momentum_suggestions");
-        jdbc.update("delete from campaigns");
-        jdbc.update("delete from memberships");
-        jdbc.update("delete from consumers");
-        jdbc.update("delete from events");
-        jdbc.update("delete from users");
-        jdbc.update("delete from organizations");
     }
 }

@@ -1,7 +1,6 @@
 package com.imin.iminapi.marketing;
 
 import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.dto.CampaignDto;
 import com.imin.iminapi.marketing.dto.CampaignRequests.PatchCampaignRequest;
 import com.imin.iminapi.marketing.model.Campaign;
@@ -9,42 +8,41 @@ import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.marketing.send.CampaignDispatcher;
 import com.imin.iminapi.marketing.service.CampaignService;
 import com.imin.iminapi.model.Organization;
-import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.service.audit.AuditActions;
-import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.support.AuditRows;
+import com.imin.iminapi.support.CampaignRows;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
 
 /** The audience-plan sends switch on every path that can make a campaign send. */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class AudiencePlanSendsKillSwitchTest {
 
     // A non-quiet instant for a UTC org, so the dispatcher's quiet-hours skip never interferes.
     private static final Instant AWAKE = Instant.parse("2026-07-14T12:00:00Z");
+    // The claim is global, LIMIT 10: rows this old sort ahead of other tests' dated campaigns. The defence
+    // against leftovers is the CampaignRows cleanup rule, not this order: NULLS FIRST puts null-scheduled ones first.
+    private static final Instant ANCIENT = AWAKE.minus(3650, ChronoUnit.DAYS);
 
     @Autowired CampaignService service;
     @Autowired CampaignDispatcher dispatcher;
@@ -52,35 +50,31 @@ class AudiencePlanSendsKillSwitchTest {
     @Autowired OrganizationRepository orgs;
     @Autowired AudiencePlanProperties props;
     @Autowired JdbcTemplate jdbc;
-    @MockitoBean AuditLogger audit;
+    @Autowired IminFixtures fx;
+    @Autowired AuditRows audit;
+    @Autowired PropertyFlips flips;
 
     private Organization org;
+    private final List<UUID> orgIds = new ArrayList<>();
 
     @BeforeEach
     void setUp() {
-        // The claim query is global with a LIMIT: start from no campaigns so membership is deterministic.
-        jdbc.update("delete from campaign_recipients");
-        jdbc.update("delete from campaigns");
-        Organization o = new Organization();
-        o.setName("Kill Switch Org");
-        o.setSlug("ks-" + UUID.randomUUID().toString().substring(0, 8));
-        o.setContactEmail("ks@test.com");
-        o.setCountry("FR");
+        Organization o = fx.org();
         o.setTimezone("UTC");
         // Legal identity present so only the sends switch decides here.
         o.setLegalName("Kill Switch SAS");
-        o.setLegalContact("legal@ks.test");
+        o.setLegalContact(fx.email("legal"));
         org = orgs.save(o);
-        props.setSendsEnabled(false);
+        orgIds.add(org.getId());
     }
 
     @AfterEach
-    void restore() {
-        props.setSendsEnabled(false);
+    void deleteOwnCampaigns() {
+        CampaignRows.delete(jdbc, orgIds);
     }
 
     private AuthPrincipal owner() {
-        return new AuthPrincipal(UUID.randomUUID(), org.getId(), UserRole.OWNER, UUID.randomUUID());
+        return fx.principal(fx.owner(org));
     }
 
     private Campaign campaign(String origin, String status, Instant scheduledAt) {
@@ -121,7 +115,7 @@ class AudiencePlanSendsKillSwitchTest {
 
         assertSendsDisabled(t);
         assertThat(status(c)).isEqualTo("draft");
-        verify(audit, never()).record(any(), eq(AuditActions.CAMPAIGN_SENT), anyString(), any(), anyString());
+        assertThat(audit.forOrg(org.getId())).noneMatch(r -> c.getId().equals(r.getTargetId()));
     }
 
     @Test
@@ -161,18 +155,18 @@ class AudiencePlanSendsKillSwitchTest {
 
     @Test
     void flagOn_sendSchedulesNormally() {
-        props.setSendsEnabled(true);
+        flips.set(props, "sendsEnabled", true);
         Campaign c = campaign("audience_plan", "draft", null);
 
         service.send(c.getId(), owner(), "idem-" + UUID.randomUUID(), null);
 
         assertThat(status(c)).isEqualTo("scheduled");
-        verify(audit).record(any(), eq(AuditActions.CAMPAIGN_SENT), eq("campaign"), eq(c.getId()), anyString());
+        audit.assertRecorded(org.getId(), AuditActions.CAMPAIGN_SENT, "campaign", c.getId());
     }
 
     @Test
     void flagOn_retryRequeuesNormally() {
-        props.setSendsEnabled(true);
+        flips.set(props, "sendsEnabled", true);
         Campaign c = campaign("audience_plan", "failed", AWAKE);
 
         service.retry(owner(), c.getId());
@@ -203,9 +197,9 @@ class AudiencePlanSendsKillSwitchTest {
 
     @Test
     void flagOff_dispatcherHoldsDueAudiencePlanCampaigns_butClaimsManual() {
-        Campaign scheduled = campaign("audience_plan", "scheduled", AWAKE.minus(1, ChronoUnit.MINUTES));
-        Campaign failed = campaign("audience_plan", "failed", AWAKE.minus(1, ChronoUnit.MINUTES));
-        Campaign manual = campaign("manual", "scheduled", AWAKE.minus(1, ChronoUnit.MINUTES));
+        Campaign scheduled = campaign("audience_plan", "scheduled", ANCIENT);
+        Campaign failed = campaign("audience_plan", "failed", ANCIENT);
+        Campaign manual = campaign("manual", "scheduled", ANCIENT);
 
         assertThat(dispatcher.claimDueCampaignIds(AWAKE))
                 .contains(manual.getId())
@@ -214,29 +208,32 @@ class AudiencePlanSendsKillSwitchTest {
 
     @Test
     void flagOff_staleSendingAudiencePlanCampaignIsNotReclaimed() {
-        Campaign stale = campaign("audience_plan", "sending", AWAKE.minus(30, ChronoUnit.MINUTES));
+        Campaign stale = campaign("audience_plan", "sending", ANCIENT);
         stale.setUpdatedAt(AWAKE.minus(10, ChronoUnit.MINUTES));
         campaigns.save(stale);
 
         assertThat(dispatcher.claimDueCampaignIds(AWAKE)).doesNotContain(stale.getId());
-        props.setSendsEnabled(true);
+        flips.set(props, "sendsEnabled", true);
         assertThat(dispatcher.claimDueCampaignIds(AWAKE)).contains(stale.getId());
     }
 
     @Test
     void flagOff_heldAudiencePlanCampaignsDoNotCrowdOutTheClaimLimit() {
+        List<UUID> held = new ArrayList<>();
         for (int i = 0; i < 10; i++) {
-            campaign("audience_plan", "scheduled", AWAKE.minus(10, ChronoUnit.MINUTES));
+            held.add(campaign("audience_plan", "scheduled", ANCIENT.minus(1, ChronoUnit.MINUTES)).getId());
         }
-        Campaign manual = campaign("manual", "scheduled", AWAKE.minus(1, ChronoUnit.MINUTES));
+        Campaign manual = campaign("manual", "scheduled", ANCIENT);
 
-        assertThat(dispatcher.claimDueCampaignIds(AWAKE)).containsExactly(manual.getId());
+        assertThat(dispatcher.claimDueCampaignIds(AWAKE))
+                .contains(manual.getId())
+                .doesNotContainAnyElementsOf(held);
     }
 
     @Test
     void flagOn_dispatcherClaimsDueAudiencePlanCampaign() {
-        props.setSendsEnabled(true);
-        Campaign scheduled = campaign("audience_plan", "scheduled", AWAKE.minus(1, ChronoUnit.MINUTES));
+        flips.set(props, "sendsEnabled", true);
+        Campaign scheduled = campaign("audience_plan", "scheduled", ANCIENT);
 
         assertThat(dispatcher.claimDueCampaignIds(AWAKE)).contains(scheduled.getId());
     }

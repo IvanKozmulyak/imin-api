@@ -149,6 +149,7 @@ Today only `@IminIntegrationTest` exists (`SpringContextGuard.NAMED_CONTEXTS`). 
 - Addresses are global: consumers, deliverability suppressions, sticky opt-outs and platform-wide erasure entries are keyed by email across orgs, so every address a test writes comes from `fx.email(tag)` or carries a UUID; a fixed address leaks into every later test that reuses it.
 - Predictor: rows are segment-keyed — give each test its own city ("Paris" + random letters) instead of wiping tables; a test that queues research calls `PredictorRows.delete(jdbc, orgIds)` in `@AfterEach` (the runner claims the 5 oldest due jobs of every org).
 - Audience-plan jobs read every org (`RetentionJob`, `OutcomeCollector`, `PlanRefreshJob.run`, `PortraitRefreshJob`): build the job by hand with a local `AudiencePlanProperties` whose `betaOrgIds` lists your orgs, or flip the shared one, so another class's leftovers never enter its counts.
+- Campaigns: the dispatcher claims due, retryable-failed and stale-sending campaigns of every org, ten at a time (`CampaignRepository.claimDue`). A test that leaves a campaign `scheduled`, `sending` or `failed` deletes its orgs' campaigns with `CampaignRows.delete(jdbc, orgIds)` in `@AfterEach`, and claim assertions name their own ids (`contains`/`doesNotContain`), never `isEmpty`/`containsExactly`.
 
 ## Architecture
 

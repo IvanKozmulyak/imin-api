@@ -1,70 +1,73 @@
 package com.imin.iminapi.marketing;
 
 import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.marketing.service.CampaignService;
 import com.imin.iminapi.model.Organization;
-import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
-import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.support.CampaignRows;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpStatus;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
 
 /** Audience-plan campaigns need the org's legal name and contact; manual and Momentum ones only with the all-campaigns flag. */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class AudiencePlanLegalIdentityGuardTest {
 
     @Autowired CampaignService service;
     @Autowired CampaignRepository campaigns;
     @Autowired OrganizationRepository orgs;
     @Autowired AudiencePlanProperties props;
-    @MockitoBean AuditLogger audit;
+    @Autowired PropertyFlips flips;
+    @Autowired IminFixtures fx;
+    @Autowired JdbcTemplate jdbc;
+
+    private final List<UUID> orgIds = new ArrayList<>();
 
     @BeforeEach
     void sendsOn() {
         // The sends switch answers first; turn it on so the legal-identity guard is what decides.
-        props.setSendsEnabled(true);
+        flips.set(props, "sendsEnabled", true);
     }
 
     @AfterEach
-    void restore() {
-        props.setSendsEnabled(false);
-        props.setLegalIdentityAllCampaigns(false);
+    void deleteOwnCampaigns() {
+        CampaignRows.delete(jdbc, orgIds);
     }
 
     private Organization org(String legalName, String legalContact) {
-        Organization o = new Organization();
-        o.setName("Guard Org");
-        o.setSlug("lg-" + UUID.randomUUID().toString().substring(0, 8));
-        o.setContactEmail("lg@test.com");
-        o.setCountry("FR");
+        Organization o = fx.org();
         o.setTimezone("UTC");
         o.setLegalName(legalName);
         o.setLegalContact(legalContact);
-        return orgs.save(o);
+        o = orgs.save(o);
+        orgIds.add(o.getId());
+        return o;
     }
 
-    private static AuthPrincipal owner(Organization org) {
-        return new AuthPrincipal(UUID.randomUUID(), org.getId(), UserRole.OWNER, UUID.randomUUID());
+    private AuthPrincipal owner(Organization org) {
+        return fx.principal(fx.owner(org));
     }
 
     private Campaign campaign(Organization org, String origin, String status) {
@@ -96,58 +99,38 @@ class AudiencePlanLegalIdentityGuardTest {
         });
     }
 
-    @Test
-    void audiencePlan_withoutLegalName_sendNow_409_staysDraft() {
-        Organization o = org(null, "legal@guard.test");
-        Campaign c = campaign(o, "audience_plan", "draft");
+    /** Every API entry to the send state machine × every way the identity can be missing. */
+    @ParameterizedTest(name = "{0} with legalName={1} legalContact={2}")
+    @CsvSource(nullValues = "NULL", value = {
+            "sendNow,  NULL,      legal",
+            "schedule, NULL,      legal",
+            "sendNow,  Guard SAS, NULL",
+            "sendNow,  '  ',      legal",
+            "retry,    NULL,      NULL",
+    })
+    void audiencePlan_withoutLegalIdentity_409_stateKept(String action, String legalName, String contact) {
+        Organization o = org(legalName, contact == null ? null : fx.email(contact));
+        Campaign c = campaign(o, "audience_plan", "retry".equals(action) ? "failed" : "draft");
 
-        assertLegalIdentityMissing(catchThrowable(
-                () -> service.send(c.getId(), owner(o), "idem-" + UUID.randomUUID(), null)));
-        assertThat(status(c)).isEqualTo("draft");
-    }
-
-    @Test
-    void audiencePlan_withoutLegalName_schedule_409_staysDraft() {
-        Organization o = org(null, "legal@guard.test");
-        Campaign c = campaign(o, "audience_plan", "draft");
-
-        assertLegalIdentityMissing(catchThrowable(() -> service.send(c.getId(), owner(o),
-                "idem-" + UUID.randomUUID(), Instant.now().plus(2, ChronoUnit.DAYS))));
+        assertLegalIdentityMissing(catchThrowable(() -> act(action, o, c)));
         Campaign after = campaigns.findById(c.getId()).orElseThrow();
-        assertThat(after.getStatus()).isEqualTo("draft");
+        assertThat(after.getStatus()).isEqualTo("retry".equals(action) ? "failed" : "draft");
         assertThat(after.getScheduledAt()).isNull();
     }
 
-    @Test
-    void audiencePlan_withoutLegalContact_sendNow_409() {
-        Organization o = org("Guard SAS", null);
-        Campaign c = campaign(o, "audience_plan", "draft");
-
-        assertLegalIdentityMissing(catchThrowable(
-                () -> service.send(c.getId(), owner(o), "idem-" + UUID.randomUUID(), null)));
-    }
-
-    @Test
-    void audiencePlan_withBlankLegalName_sendNow_409() {
-        Organization o = org("  ", "legal@guard.test");
-        Campaign c = campaign(o, "audience_plan", "draft");
-
-        assertLegalIdentityMissing(catchThrowable(
-                () -> service.send(c.getId(), owner(o), "idem-" + UUID.randomUUID(), null)));
-    }
-
-    @Test
-    void audiencePlan_withoutLegalIdentity_retry_409_staysFailed() {
-        Organization o = org(null, null);
-        Campaign c = campaign(o, "audience_plan", "failed");
-
-        assertLegalIdentityMissing(catchThrowable(() -> service.retry(owner(o), c.getId())));
-        assertThat(status(c)).isEqualTo("failed");
+    private void act(String action, Organization o, Campaign c) {
+        switch (action) {
+            case "sendNow" -> service.send(c.getId(), owner(o), "idem-" + UUID.randomUUID(), null);
+            case "schedule" -> service.send(c.getId(), owner(o), "idem-" + UUID.randomUUID(),
+                    Instant.now().plus(2, ChronoUnit.DAYS));
+            case "retry" -> service.retry(owner(o), c.getId());
+            default -> throw new IllegalArgumentException(action);
+        }
     }
 
     @Test
     void audiencePlan_withLegalIdentity_schedulesAndRetries() {
-        Organization o = org("Guard SAS", "legal@guard.test");
+        Organization o = org("Guard SAS", fx.email("legal"));
         Campaign draft = campaign(o, "audience_plan", "draft");
         Campaign failed = campaign(o, "audience_plan", "failed");
 
@@ -176,8 +159,8 @@ class AudiencePlanLegalIdentityGuardTest {
 
     @Test
     void allCampaignsFlag_manualAndMomentumWithoutIdentity_sendScheduleRetry_409_stateKept() {
-        props.setLegalIdentityAllCampaigns(true);
-        Organization o = org(null, "legal@guard.test");
+        flips.set(props, "legalIdentityAllCampaigns", true);
+        Organization o = org(null, fx.email("legal"));
         Campaign manual = campaign(o, "manual", "draft");
         Campaign momentum = campaign(o, "momentum", "draft");
         Campaign failedManual = campaign(o, "manual", "failed");
@@ -196,8 +179,8 @@ class AudiencePlanLegalIdentityGuardTest {
 
     @Test
     void allCampaignsFlag_manualWithIdentity_schedulesAndRetries() {
-        props.setLegalIdentityAllCampaigns(true);
-        Organization o = org("Guard SAS", "legal@guard.test");
+        flips.set(props, "legalIdentityAllCampaigns", true);
+        Organization o = org("Guard SAS", fx.email("legal"));
         Campaign manual = campaign(o, "manual", "draft");
         Campaign failedMomentum = campaign(o, "momentum", "failed");
 
