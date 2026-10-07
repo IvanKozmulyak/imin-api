@@ -1,36 +1,32 @@
 package com.imin.iminapi.security;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.imin.iminapi.config.TestRateLimitConfig;
-import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
-import com.imin.iminapi.model.EventVisibility;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.User;
 import com.imin.iminapi.model.UserRole;
-import com.imin.iminapi.repository.EventRepository;
-import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
-import com.imin.iminapi.stripe.StripeConnectService;
-import com.imin.iminapi.stripe.StripeProductService;
-import org.junit.jupiter.api.AfterEach;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.jayway.jsonpath.JsonPath;
+import com.stripe.StripeClient;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -50,19 +46,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * org, so there is nothing to hide, and the dashboard needs to be able to say
  * why.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class WithinOrgRoleGateTest {
 
     @Autowired MockMvc mvc;
-    @Autowired OrganizationRepository orgs;
+    @Autowired IminFixtures fx;
     @Autowired UserRepository users;
-    @Autowired EventRepository events;
-
-    /** Stripe is mocked — the role gate must fire before any Stripe call. */
-    @org.springframework.test.context.bean.override.mockito.MockitoBean StripeConnectService stripeConnectService;
-    @org.springframework.test.context.bean.override.mockito.MockitoBean StripeProductService stripeProductService;
+    @Autowired StripeClient stripeClient;
 
     private final ObjectMapper om = new ObjectMapper();
 
@@ -76,48 +66,25 @@ class WithinOrgRoleGateTest {
 
     @BeforeEach
     void seed() {
-        Organization o = new Organization();
-        o.setName("Role Org");
-        o.setSlug("role-org-" + UUID.randomUUID().toString().substring(0, 8));
-        o.setContactEmail("owner@example.test");
-        o.setCountry("DE");
-        orgId = orgs.save(o).getId();
+        Organization o = fx.org();
+        orgId = o.getId();
 
-        User owner = new User();
-        owner.setOrgId(orgId);
-        owner.setEmail("owner-" + UUID.randomUUID() + "@example.test");
-        owner.setRole(UserRole.OWNER);
-        ownerId = users.save(owner).getId();
+        User owner = fx.owner(o);
+        ownerId = owner.getId();
 
         User member = new User();
         member.setOrgId(orgId);
-        member.setEmail("member-" + UUID.randomUUID() + "@example.test");
+        member.setEmail(fx.email("member"));
         member.setRole(UserRole.MEMBER);
         memberId = users.save(member).getId();
 
-        Event e = new Event();
-        e.setOrgId(orgId);
-        e.setCreatedBy(ownerId);
-        e.setName("Role gate event");
-        e.setSlug("role-gate-" + UUID.randomUUID().toString().substring(0, 8));
-        e.setVisibility(EventVisibility.PUBLIC);
-        e.setStatus(EventStatus.DRAFT);
-        e.setCurrency("EUR");
-        eventId = events.save(e).getId();
+        eventId = fx.event(o, owner, EventStatus.DRAFT, null).getId();
 
         asMember = new UsernamePasswordAuthenticationToken(
                 new AuthPrincipal(memberId, orgId, UserRole.MEMBER, UUID.randomUUID()),
                 null, List.of(new SimpleGrantedAuthority("ROLE_MEMBER")));
         asOwner = new UsernamePasswordAuthenticationToken(
-                new AuthPrincipal(ownerId, orgId, UserRole.OWNER, UUID.randomUUID()),
-                null, List.of(new SimpleGrantedAuthority("ROLE_OWNER")));
-    }
-
-    @AfterEach
-    void clear() {
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+                fx.principal(owner), null, List.of(new SimpleGrantedAuthority("ROLE_OWNER")));
     }
 
     private void expectForbidden(MockHttpServletRequestBuilder request) throws Exception {
@@ -157,9 +124,14 @@ class WithinOrgRoleGateTest {
                 .content(om.writeValueAsString(Map.of("contactEmail", "attacker@example.test"))));
     }
 
+    /** The org has no account, so without the gate connect would create one at Stripe; checked before the status. */
     @Test
     void member_cannot_connect_a_payout_account() throws Exception {
-        expectForbidden(post("/api/v1/payouts/connect"));
+        MvcResult result = mvc.perform(post("/api/v1/payouts/connect").with(authentication(asMember))).andReturn();
+        verifyNoInteractions(stripeClient);
+        assertThat(result.getResponse().getStatus()).isEqualTo(403);
+        assertThat(JsonPath.<String>read(result.getResponse().getContentAsString(), "$.error.code"))
+                .isEqualTo("FORBIDDEN");
     }
 
     /** The same MEMBER keeps the read half of the dashboard — the gate is not a blanket lockout. */

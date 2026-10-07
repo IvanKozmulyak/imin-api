@@ -1,49 +1,39 @@
 package com.imin.iminapi.security;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
-import com.imin.iminapi.model.EventVisibility;
 import com.imin.iminapi.model.MediaKind;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.PromoCode;
-import com.imin.iminapi.model.TicketTier;
 import com.imin.iminapi.model.User;
-import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.PromoCodeRepository;
-import com.imin.iminapi.repository.TicketTierRepository;
-import com.imin.iminapi.repository.UserRepository;
-import com.imin.iminapi.stripe.StripeConnectService;
-import com.imin.iminapi.stripe.StripeProductService;
-import org.junit.jupiter.api.AfterEach;
+import com.imin.iminapi.stripe.StripeProperties;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.jayway.jsonpath.JsonPath;
+import com.stripe.StripeClient;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.test.web.servlet.request.MockMultipartHttpServletRequestBuilder;
 
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -62,28 +52,25 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * envelope (no "forbidden", "wrong organization", "permission" phrasing — those would
  * reveal that the resource exists somewhere).
  *
- * <p>This test uses the full Spring context (real {@code EventService},
- * {@code TicketTierService}, {@code PromoCodeService}, {@code MediaUploadService},
- * {@code TeamService}, {@code OrgService}, {@code AuditQueryService}, {@code DashboardService}),
- * with only Stripe + storage external integrations mocked. The authentication path is
+ * <p>This test uses the shared integration context: every service is real, including
+ * {@code StripeConnectService}; only the {@code StripeClient} boundary is faked. Org B holds a
+ * same-mode Stripe account, so without the gate the Connect probes would reach Stripe; they assert
+ * it was never called. The authentication path is
  * replaced by directly populating the {@code SecurityContextHolder} with the org-A
  * principal — same shape the production {@link BearerTokenAuthFilter} would produce.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class CrossOrgScopingTest {
 
     @Autowired MockMvc mvc;
-    @Autowired OrganizationRepository orgs;
-    @Autowired UserRepository users;
+    @Autowired IminFixtures fx;
     @Autowired EventRepository events;
-    @Autowired TicketTierRepository tiers;
     @Autowired PromoCodeRepository promos;
+    @Autowired OrganizationRepository orgs;
+    @Autowired StripeProperties stripeProps;
 
-    /** Stripe is mocked — the audit only cares that org-tenancy gates the call BEFORE Stripe runs. */
-    @MockitoBean StripeConnectService stripeConnectService;
-    @MockitoBean StripeProductService stripeProductService;
+    /** The tenancy gate must fire before any call reaches Stripe. */
+    @Autowired StripeClient stripeClient;
 
     private final ObjectMapper om = new ObjectMapper();
 
@@ -102,51 +89,24 @@ class CrossOrgScopingTest {
 
     @BeforeEach
     void seed() {
-        // Two distinct orgs, each with one OWNER user and one event with one tier + one promo.
-        Organization a = new Organization();
-        a.setName("Org A");
-        a.setSlug("org-a-" + UUID.randomUUID().toString().substring(0, 8));
-        a.setContactEmail("a@example.test");
-        a.setCountry("DE");
-        a = orgs.save(a);
+        // Two distinct orgs, each with one OWNER user; org B also has one event with one tier + one promo.
+        Organization a = fx.org();
         orgA = a.getId();
-
-        Organization b = new Organization();
-        b.setName("Org B");
-        b.setSlug("org-b-" + UUID.randomUUID().toString().substring(0, 8));
-        b.setContactEmail("b@example.test");
-        b.setCountry("DE");
+        Organization b = fx.org();
+        // A same-mode account with a never-synced mirror: status, session and link would all call Stripe.
+        b.setStripeAccountId("acct_" + UUID.randomUUID().toString().replace("-", ""));
+        b.setStripeLivemode(stripeProps.isLiveKey());
         b = orgs.save(b);
         orgB = b.getId();
 
-        User uA = new User();
-        uA.setOrgId(orgA);
-        uA.setEmail("alice-" + UUID.randomUUID() + "@example.test");
-        uA.setRole(UserRole.OWNER);
-        userA = users.save(uA).getId();
+        User uA = fx.owner(a);
+        userA = uA.getId();
+        User uB = fx.owner(b);
+        userB = uB.getId();
 
-        User uB = new User();
-        uB.setOrgId(orgB);
-        uB.setEmail("bob-" + UUID.randomUUID() + "@example.test");
-        uB.setRole(UserRole.OWNER);
-        userB = users.save(uB).getId();
-
-        Event eB = new Event();
-        eB.setOrgId(orgB);
-        eB.setCreatedBy(userB);
-        eB.setName("Org B's secret event");
-        eB.setSlug("org-b-event-" + UUID.randomUUID().toString().substring(0, 8));
-        eB.setVisibility(EventVisibility.PUBLIC);
-        eB.setStatus(EventStatus.DRAFT);
-        eB.setCurrency("EUR");
-        eventInB = events.save(eB).getId();
-
-        TicketTier tB = new TicketTier();
-        tB.setEventId(eventInB);
-        tB.setName("GA");
-        tB.setPriceMinor(1500);
-        tB.setQuantity(100);
-        tierInB = tiers.save(tB).getId();
+        Event eB = fx.event(b, uB, EventStatus.DRAFT, null);
+        eventInB = eB.getId();
+        tierInB = fx.tier(eB, 1500, 100).getId();
 
         PromoCode pB = new PromoCode();
         pB.setEventId(eventInB);
@@ -159,19 +119,8 @@ class CrossOrgScopingTest {
         // SecurityMockMvcRequestPostProcessors.authentication() — the established way
         // to bind a custom principal in MockMvc (BearerTokenAuthFilter sets the same
         // shape in production).
-        AuthPrincipal pA = new AuthPrincipal(userA, orgA, UserRole.OWNER, UUID.randomUUID());
         authA = new UsernamePasswordAuthenticationToken(
-                pA, null, List.of(new SimpleGrantedAuthority("ROLE_OWNER")));
-    }
-
-    @AfterEach
-    void clear() {
-        // Tear down in FK order so successive tests in the suite get a clean slate.
-        promos.deleteAll();
-        tiers.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+                fx.principal(uA), null, List.of(new SimpleGrantedAuthority("ROLE_OWNER")));
     }
 
     /**
@@ -188,6 +137,26 @@ class CrossOrgScopingTest {
                 .andExpect(jsonPath("$.error.code").value("NOT_FOUND"))
                 .andReturn();
         String body = result.getResponse().getContentAsString().toLowerCase();
+        assertThat(body)
+                .as("leak-safe 404 body must not contain forbidden/wrong-org/permission phrasing: %s", body)
+                .doesNotContain("forbidden")
+                .doesNotContain("wrong organization")
+                .doesNotContain("permission")
+                .doesNotContain("access denied");
+    }
+
+    /** The Stripe check runs first, so a missing gate fails on the Stripe call itself, not only on the status. */
+    private void expectLeakSafeNotFoundWithoutStripe(MockHttpServletRequestBuilder request) throws Exception {
+        MvcResult result = mvc.perform(request.with(authentication(authA))).andReturn();
+        verifyNoInteractions(stripeClient);
+        assertThat(result.getResponse().getStatus()).isEqualTo(404);
+        assertLeakSafeBody(result);
+    }
+
+    private static void assertLeakSafeBody(MvcResult result) throws Exception {
+        String raw = result.getResponse().getContentAsString();
+        assertThat(JsonPath.<String>read(raw, "$.error.code")).isEqualTo("NOT_FOUND");
+        String body = raw.toLowerCase();
         assertThat(body)
                 .as("leak-safe 404 body must not contain forbidden/wrong-org/permission phrasing: %s", body)
                 .doesNotContain("forbidden")
@@ -324,55 +293,29 @@ class CrossOrgScopingTest {
 
     @Test
     void getStripeStatusForOtherOrg_returns404() throws Exception {
-        // We don't stub stripeConnectService — the gate must fire before any Stripe call.
         // The path-id /orgs/{orgId}/… is the riskiest pattern; if the handler trusts the
         // path id over the principal, this test will fail loudly.
-        when(stripeConnectService.getStatus(any(), any())).thenAnswer(inv -> {
-            UUID requestedOrgId = inv.getArgument(1);
-            AuthPrincipal p = inv.getArgument(0);
-            // Replicate the production gate. If the controller ever forgets to forward the
-            // principal-derived org id and instead passes the path id straight through, this
-            // mock STILL refuses to leak — but the real production code (StripeConnectService)
-            // does the comparison itself, so this mock just mirrors it.
-            if (!requestedOrgId.equals(p.orgId())) throw ApiException.notFound("Organization");
-            return new StripeConnectService.StatusResult(null,
-                    com.imin.iminapi.stripe.StripeConnectState.NOT_STARTED,
-                    false, false, java.util.List.of(), java.util.List.of(), null);
-        });
-        expectLeakSafeNotFound(get("/api/v1/orgs/" + orgB + "/stripe/status"));
+        expectLeakSafeNotFoundWithoutStripe(get("/api/v1/orgs/" + orgB + "/stripe/status"));
     }
 
     @Test
     void connectStripeForOtherOrg_returns404() throws Exception {
-        when(stripeConnectService.getOrCreateAccount(any(), any())).thenAnswer(inv -> {
-            UUID requestedOrgId = inv.getArgument(1);
-            AuthPrincipal p = inv.getArgument(0);
-            if (!requestedOrgId.equals(p.orgId())) throw ApiException.notFound("Organization");
-            return new StripeConnectService.ConnectResult("acct_test", true);
-        });
-        expectLeakSafeNotFound(post("/api/v1/orgs/" + orgB + "/stripe/connect"));
+        // With no account on file, connect would create one at Stripe.
+        Organization b = orgs.findById(orgB).orElseThrow();
+        b.setStripeAccountId(null);
+        b.setStripeLivemode(null);
+        orgs.save(b);
+        expectLeakSafeNotFoundWithoutStripe(post("/api/v1/orgs/" + orgB + "/stripe/connect"));
     }
 
     @Test
     void accountSessionForOtherOrg_returns404() throws Exception {
-        when(stripeConnectService.createAccountSession(any(), any())).thenAnswer(inv -> {
-            UUID requestedOrgId = inv.getArgument(1);
-            AuthPrincipal p = inv.getArgument(0);
-            if (!requestedOrgId.equals(p.orgId())) throw ApiException.notFound("Organization");
-            return "cs_test_secret";
-        });
-        expectLeakSafeNotFound(post("/api/v1/orgs/" + orgB + "/stripe/account-session"));
+        expectLeakSafeNotFoundWithoutStripe(post("/api/v1/orgs/" + orgB + "/stripe/account-session"));
     }
 
     @Test
     void onboardingLinkForOtherOrg_returns404() throws Exception {
-        when(stripeConnectService.createOnboardingLink(any(), any(), any(), any())).thenAnswer(inv -> {
-            UUID requestedOrgId = inv.getArgument(1);
-            AuthPrincipal p = inv.getArgument(0);
-            if (!requestedOrgId.equals(p.orgId())) throw ApiException.notFound("Organization");
-            return "https://stripe/test";
-        });
-        expectLeakSafeNotFound(post("/api/v1/orgs/" + orgB + "/stripe/onboarding-link")
+        expectLeakSafeNotFoundWithoutStripe(post("/api/v1/orgs/" + orgB + "/stripe/onboarding-link")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{}"));
     }
@@ -423,7 +366,6 @@ class CrossOrgScopingTest {
 
     @Test
     void getDashboard_returnsOnlyOwnOrg_neverLeaksOrgBEventId() throws Exception {
-        // Stripe status mock — the dashboard doesn't hit Stripe directly, but bean must exist.
         MvcResult result = mvc.perform(get("/api/v1/dashboard").with(authentication(authA)))
                 .andExpect(status().isOk())
                 .andReturn();

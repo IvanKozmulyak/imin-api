@@ -4,9 +4,14 @@ import com.imin.iminapi.security.ApiException;
 import com.nimbusds.jwt.JWTClaimsSet;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -41,30 +46,22 @@ class AppleNativeIdentityServiceTest {
         service.setVerifierForTest(jwt);
     }
 
-    @Test
-    void booleanTrueIsVerified() {
-        stub(Map.of("sub", "apple-1", "email", "a@b.test", "email_verified", true));
-        assertThat(service.verify("tok", null).emailVerified()).isTrue();
+    /** Apple emits the string form on some tokens; no claim means no assertion, never assume true. */
+    @ParameterizedTest(name = "email_verified={0} -> {1}")
+    @MethodSource("verifiedClaims")
+    void theVerifiedClaimIsReadNeverAssumed(Object claim, boolean expected) {
+        Map<String, Object> claims = new HashMap<>(Map.of("sub", "apple-1", "email", "a@b.test"));
+        if (claim != null) claims.put("email_verified", claim);
+        stub(claims);
+        assertThat(service.verify("tok", null).emailVerified()).isEqualTo(expected);
     }
 
-    /** Apple emits the string form on some tokens. Both must be accepted. */
-    @Test
-    void stringTrueIsAlsoVerified() {
-        stub(Map.of("sub", "apple-2", "email", "a@b.test", "email_verified", "true"));
-        assertThat(service.verify("tok", null).emailVerified()).isTrue();
-    }
-
-    @Test
-    void booleanFalseIsNotVerified() {
-        stub(Map.of("sub", "apple-3", "email", "a@b.test", "email_verified", false));
-        assertThat(service.verify("tok", null).emailVerified()).isFalse();
-    }
-
-    /** No claim means no assertion — never assume true. */
-    @Test
-    void absentClaimIsNotVerified() {
-        stub(Map.of("sub", "apple-4", "email", "a@b.test"));
-        assertThat(service.verify("tok", null).emailVerified()).isFalse();
+    static Stream<Arguments> verifiedClaims() {
+        return Stream.of(
+                Arguments.of(true, true),
+                Arguments.of("true", true),
+                Arguments.of(false, false),
+                Arguments.of(null, false));
     }
 
     @Test
@@ -100,15 +97,12 @@ class AppleNativeIdentityServiceTest {
         assertThat(service.verify("tok", null).displayName()).isNull();
     }
 
-    @Test
-    void blankAudienceDisablesTheProvider() {
-        OAuthProperties blank = new OAuthProperties();
-        assertThat(new AppleNativeIdentityService(blank).enabled()).isFalse();
-    }
-
-    @Test
-    void aConfiguredAudienceEnablesTheProvider() {
-        assertThat(service.enabled()).isTrue();
+    @ParameterizedTest(name = "nativeAudience={0} -> enabled={1}")
+    @CsvSource({"'', false", "wtf.imin.fan, true"})
+    void theAudienceDecidesWhetherTheProviderIsEnabled(String audience, boolean expected) {
+        OAuthProperties props = new OAuthProperties();
+        props.getApple().setNativeAudience(audience);
+        assertThat(new AppleNativeIdentityService(props).enabled()).isEqualTo(expected);
     }
 
     private void stub(Map<String, Object> claims) {

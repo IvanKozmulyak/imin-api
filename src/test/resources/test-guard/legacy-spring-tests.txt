@@ -268,10 +268,6 @@ com.imin.iminapi.repository.FunnelEventRepositoryTest
 com.imin.iminapi.repository.OrganizationRepositoryLockTest
 com.imin.iminapi.repository.SeedDemoEventsSqlPostgresTest
 com.imin.iminapi.repository.TicketAggregateQueryTest
-com.imin.iminapi.security.CrossOrgScopingTest
-com.imin.iminapi.security.GlobalExceptionHandlerTest
-com.imin.iminapi.security.SecurityPerimeterTest
-com.imin.iminapi.security.WithinOrgRoleGateTest
 com.imin.iminapi.service.ai.AiQuotaConcurrencyTest
 com.imin.iminapi.service.ai.AiQuotaServiceTest
 com.imin.iminapi.service.ai.ConceptStudioFailurePersistenceTest

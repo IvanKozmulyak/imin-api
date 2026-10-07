@@ -2,45 +2,26 @@ package com.imin.iminapi.security;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.Map;
 
-import com.imin.iminapi.repository.AuthSessionRepository;
-import com.imin.iminapi.repository.UserRepository;
-import com.imin.iminapi.security.TokenService;
-import com.imin.iminapi.service.gate.GateAuthService;
-import org.springframework.boot.security.saml2.autoconfigure.Saml2RelyingPartyAutoConfiguration;
-import org.springframework.security.test.context.support.WithMockUser;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
-
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-@WebMvcTest(controllers = GlobalExceptionHandlerTest.DummyController.class,
-        excludeAutoConfiguration = Saml2RelyingPartyAutoConfiguration.class)
-// BuyerConfig supplies BuyerProperties: @WebMvcTest slices instantiate Filter
-// beans, and the buyer filters are Filters, so their dependencies have to be
-// resolvable here exactly as BearerTokenAuthFilter's already are.
-@Import({GlobalExceptionHandler.class, GlobalExceptionHandlerTest.DummyController.class,
-        com.imin.iminapi.buyer.BuyerConfig.class})
+/** The advice alone over a dummy controller: every error leaves in the single {@code $.error} envelope. */
 class GlobalExceptionHandlerTest {
 
-    @Autowired MockMvc mvc;
+    final MockMvc mvc = MockMvcBuilders.standaloneSetup(new DummyController())
+            .setControllerAdvice(new GlobalExceptionHandler())
+            .build();
     final ObjectMapper om = new ObjectMapper();
-    @MockitoBean AuthSessionRepository authSessionRepository;
-    @MockitoBean UserRepository userRepository;
-    @MockitoBean TokenService tokenService;
-    @MockitoBean GateAuthService gateAuthService;
-    @MockitoBean com.imin.iminapi.buyer.repository.BuyerSessionRepository buyerSessionRepository;
 
     @RestController
     @RequestMapping("/__test")
@@ -60,30 +41,30 @@ class GlobalExceptionHandlerTest {
         @GetMapping("/param")
         String param(@RequestParam String q) { return q; }
 
+        @PostMapping("/too-big")
+        String tooBig() { throw new MaxUploadSizeExceededException(2L * 1024 * 1024); }
+
         record Body(@jakarta.validation.constraints.NotBlank String name) {}
     }
 
     @Test
-    @WithMockUser
     void apiException_returns_envelope() throws Exception {
-        mvc.perform(get("/__test/notfound").with(csrf()))
+        mvc.perform(get("/__test/notfound"))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.error.code").value("NOT_FOUND"))
                 .andExpect(jsonPath("$.error.message").value("Event not found"));
     }
 
     @Test
-    @WithMockUser
     void response_status_403_maps_to_FORBIDDEN() throws Exception {
-        mvc.perform(get("/__test/forbidden").with(csrf()))
+        mvc.perform(get("/__test/forbidden"))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.error.code").value("FORBIDDEN"));
     }
 
     @Test
-    @WithMockUser
     void validation_error_returns_field_invalid_with_fields() throws Exception {
-        mvc.perform(post("/__test/validate").with(csrf())
+        mvc.perform(post("/__test/validate")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(om.writeValueAsString(Map.of("name", ""))))
                 .andExpect(status().isBadRequest())
@@ -100,17 +81,15 @@ class GlobalExceptionHandlerTest {
     // spurious log.error("Unhandled exception") for what is an ordinary client mistake.
 
     @Test
-    @WithMockUser
     void wrong_verb_returns_405_in_the_envelope() throws Exception {
-        mvc.perform(get("/__test/validate").with(csrf()))
+        mvc.perform(get("/__test/validate"))
                 .andExpect(status().isMethodNotAllowed())
                 .andExpect(jsonPath("$.error.code").value("INVALID_REQUEST"));
     }
 
     @Test
-    @WithMockUser
     void wrong_content_type_returns_415_in_the_envelope() throws Exception {
-        mvc.perform(post("/__test/validate").with(csrf())
+        mvc.perform(post("/__test/validate")
                         .contentType(MediaType.TEXT_PLAIN)
                         .content("name=ada"))
                 .andExpect(status().isUnsupportedMediaType())
@@ -118,20 +97,26 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
-    @WithMockUser
     void missing_multipart_part_returns_400_naming_the_part() throws Exception {
-        mvc.perform(multipart("/__test/upload").with(csrf()))
+        mvc.perform(multipart("/__test/upload"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
                 .andExpect(jsonPath("$.error.fields.file").exists());
     }
 
     @Test
-    @WithMockUser
     void missing_required_query_param_returns_400_naming_the_param() throws Exception {
-        mvc.perform(get("/__test/param").with(csrf()))
+        mvc.perform(get("/__test/param"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
                 .andExpect(jsonPath("$.error.fields.q").exists());
+    }
+
+    @Test
+    void max_upload_size_maps_to_413_with_envelope() throws Exception {
+        mvc.perform(post("/__test/too-big"))
+                .andExpect(status().isPayloadTooLarge())
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
+                .andExpect(jsonPath("$.error.fields.file").exists());
     }
 }
