@@ -1,11 +1,11 @@
 package com.imin.iminapi.predictor.calendar;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.predictor.repository.ReferenceCalendarEntryRepository;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.transaction.annotation.Transactional;
@@ -20,8 +20,7 @@ import static org.springframework.test.web.client.match.MockRestRequestMatchers.
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withServerError;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 @Transactional
 class OpenHolidaysSyncTest {
 
@@ -195,31 +194,19 @@ class OpenHolidaysSyncTest {
         });
     }
 
-    @Test
-    void upstream500KeepsPreviousRows() {
-        fetch("LU", CalendarFixtures.text("openholidays-LU-2026.json")).forEach(writer::replace);
+    /** Rows: an upstream 500, an empty array and a non-array body; the writer keeps prior rows (its own test). */
+    @ParameterizedTest
+    @ValueSource(strings = {"500", "[]", "{\"error\":\"rate limited\"}"})
+    void failedAnswerGivesNoBatch(String answer) {
         server.reset();
-        server.expect(requestTo(OpenHolidaysSync.url("LU", 2026))).andRespond(withServerError());
+        server.expect(requestTo(OpenHolidaysSync.url("LU", 2026))).andRespond(answer.equals("500")
+                ? withServerError() : withSuccess(answer, MediaType.APPLICATION_JSON));
 
         List<CalendarSource.Batch> batches =
                 new OpenHolidaysSync(builder.build(), CalendarFixtures.props(0), List.of("LU")).fetch(TODAY);
 
         server.verify();
         assertThat(batches).isEmpty();
-        assertThat(service.on(LocalDate.of(2026, 11, 1), new CalendarPlace("LU", null, null))).hasSize(1);
-    }
-
-    @Test
-    void emptyArrayKeepsPreviousRows() {
-        fetch("LU", CalendarFixtures.text("openholidays-LU-2026.json")).forEach(writer::replace);
-
-        assertThat(fetch("LU", "[]")).isEmpty();
-        assertThat(service.on(LocalDate.of(2026, 11, 1), new CalendarPlace("LU", null, null))).hasSize(1);
-    }
-
-    @Test
-    void nonArrayBodyGivesNoBatch() {
-        assertThat(fetch("LU", "{\"error\":\"rate limited\"}")).isEmpty();
     }
 
     @Test

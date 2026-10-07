@@ -1,22 +1,24 @@
 package com.imin.iminapi.predictor.calendar;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.predictor.model.ReferenceCalendarEntry;
 import com.imin.iminapi.predictor.repository.ReferenceCalendarEntryRepository;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.tuple;
 
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 @Transactional
 class ReferenceCalendarServiceTest {
 
@@ -25,6 +27,7 @@ class ReferenceCalendarServiceTest {
 
     @Autowired ReferenceCalendarEntryRepository repository;
     @Autowired ReferenceCalendarService service;
+    @Autowired JdbcTemplate jdbc;
 
     private void store(String region, String date, String end, String kind, String name) {
         ReferenceCalendarEntry e = new ReferenceCalendarEntry();
@@ -107,39 +110,41 @@ class ReferenceCalendarServiceTest {
                 .satisfies(h -> assertThat(h.approximate()).isTrue());
     }
 
-    @Test
-    void latestReturnsNewestFixtureDate() {
-        store("", "2026-10-10", null, "fixture", "FL1|20:45|525|1045|Lorient – Paris FC");
-        store("", "2027-05-09", null, "fixture", "FL1|20:45|523|524|Olympique Lyon – PSG");
-        store("", "2027-12-25", null, "holiday", "Noël");
+    /**
+     * latest() is the newest covered day of a country's kind (a range counts its end date); lastSynced() is the
+     * newest write. Other kinds and countries never answer. The queried scopes' committed rows are hidden in
+     * this test's rolled-back transaction, so only the seeded rows count.
+     */
+    @ParameterizedTest(name = "{0}")
+    @CsvSource(value = {
+            "newest fixture date;   fixture:2026-10-10 fixture:2027-05-09 holiday:2027-12-25; latest;     FR; fixture; 2027-05-09",
+            "newest holiday date;   fixture:2026-10-10 fixture:2027-05-09 holiday:2027-12-25; latest;     FR; holiday; 2027-12-25",
+            "range counts its end;  fixture:2027-05-09 fixture:2027-05-21..2027-05-23;       latest;     FR; fixture; 2027-05-23",
+            "no fixture rows;       holiday:2027-12-25;                                       latest;     FR; fixture; NULL",
+            "no rows in country;    holiday:2027-12-25;                                       latest;     NL; holiday; NULL",
+            "newest write;          fixture:2027-05-09;                                       lastSynced; FR; fixture; NOW",
+            "no write of the kind;  fixture:2027-05-09;                                       lastSynced; FR; dst;     NULL",
+            "no write in country;   fixture:2027-05-09;                                       lastSynced; NL; fixture; NULL"},
+            delimiter = ';', nullValues = "NULL")
+    void latestAndLastSyncedReadOnlyTheirScope(String name, String seed, String method, String country, String kind,
+                                               String expected) {
+        for (String c : List.of("FR", "NL")) {
+            jdbc.update("DELETE FROM reference_calendar WHERE country = ? AND kind IN ('fixture', 'holiday', 'dst')", c);
+        }
+        Instant before = Instant.now().minusSeconds(5);
+        int n = 0;
+        for (String row : seed.split(" ")) {
+            String[] kindAndDates = row.split(":");
+            String[] dates = kindAndDates[1].split("\\.\\.");
+            store("", dates[0], dates.length > 1 ? dates[1] : null, kindAndDates[0], "row " + n++);
+        }
 
-        assertThat(service.latest("FR", "fixture")).contains(LocalDate.of(2027, 5, 9));
-        assertThat(service.latest("FR", "holiday")).contains(LocalDate.of(2027, 12, 25));
-    }
-
-    @Test
-    void latestCountsARangesEndDate() {
-        store("", "2027-05-09", null, "fixture", "FL1|20:45|523|524|Olympique Lyon – PSG");
-        store("", "2027-05-21", "2027-05-23", "fixture", "FL1|TBC|511|524|Toulouse – PSG");
-
-        assertThat(service.latest("FR", "fixture")).contains(LocalDate.of(2027, 5, 23));
-    }
-
-    @Test
-    void lastSyncedIsTheNewestWriteOfTheKind() {
-        java.time.Instant before = java.time.Instant.now().minusSeconds(5);
-        store("", "2027-05-09", null, "fixture", "FL1|20:45|523|524|Olympique Lyon – PSG");
-
-        assertThat(service.lastSynced("FR", "fixture")).hasValueSatisfying(t -> assertThat(t).isAfter(before));
-        assertThat(service.lastSynced("FR", "dst")).isEmpty();
-        assertThat(service.lastSynced("NL", "fixture")).isEmpty();
-    }
-
-    @Test
-    void latestEmptyWhenNoRows() {
-        store("", "2027-12-25", null, "holiday", "Noël");
-
-        assertThat(service.latest("FR", "fixture")).isEmpty();
-        assertThat(service.latest("NL", "holiday")).isEmpty();
+        if (method.equals("latest")) {
+            assertThat(service.latest(country, kind)).isEqualTo(Optional.ofNullable(expected).map(LocalDate::parse));
+        } else if (expected == null) {
+            assertThat(service.lastSynced(country, kind)).isEmpty();
+        } else {
+            assertThat(service.lastSynced(country, kind)).hasValueSatisfying(t -> assertThat(t).isAfter(before));
+        }
     }
 }

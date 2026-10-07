@@ -1,19 +1,20 @@
 package com.imin.iminapi.predictor;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.predictor.model.EventOutcome;
 import com.imin.iminapi.predictor.model.PredictionLedger;
 import com.imin.iminapi.predictor.model.PredictionSurface;
 import com.imin.iminapi.predictor.repository.EventOutcomeRepository;
 import com.imin.iminapi.predictor.repository.PredictionLedgerRepository;
-import org.junit.jupiter.api.BeforeEach;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PredictorRows;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -36,18 +37,29 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>Oldest-first is the order that drains: the rows that have been waiting longest are the ones
  * most likely to be due, and a deterministic tiebreaker on the id keeps the page stable across
  * ticks when the sort key ties.
+ *
+ * <p>The scans read every org's rows, so each test reads one page wide enough for all of them and asserts
+ * the order of its own rows within it.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class PredictorPagedScanOrderTest {
+
+    private static final PageRequest ALL = PageRequest.of(0, 10_000);
 
     @Autowired EventOutcomeRepository outcomes;
     @Autowired PredictionLedgerRepository ledger;
+    @Autowired JdbcTemplate jdbc;
 
-    @BeforeEach
-    void wipe() {
-        outcomes.deleteAll();
-        ledger.deleteAll();
+    private final List<UUID> orgIds = new ArrayList<>();
+
+    @AfterEach
+    void tearDown() {
+        PredictorRows.delete(jdbc, orgIds);
+    }
+
+    private static <T> List<T> wholePage(List<T> page) {
+        assertThat(page).hasSizeLessThan(ALL.getPageSize());
+        return page;
     }
 
     @Test
@@ -59,11 +71,11 @@ class PredictorPagedScanOrderTest {
         EventOutcome oldest = outcome(Instant.parse("2026-01-01T00:00:00Z"));
         outcomes.saveAll(List.of(newest, middle, oldest));
 
-        List<EventOutcome> page = outcomes.findByFinalizedAtIsNullOrderByFrozenAtAscEventIdAsc(
-                PageRequest.of(0, 2));
+        List<UUID> mine = List.of(newest.getEventId(), middle.getEventId(), oldest.getEventId());
+        List<EventOutcome> page = wholePage(outcomes.findByFinalizedAtIsNullOrderByFrozenAtAscEventIdAsc(ALL));
 
-        assertThat(page).extracting(EventOutcome::getEventId)
-                .containsExactly(oldest.getEventId(), middle.getEventId());
+        assertThat(page).extracting(EventOutcome::getEventId).filteredOn(mine::contains)
+                .containsExactly(oldest.getEventId(), middle.getEventId(), newest.getEventId());
     }
 
     @Test
@@ -72,11 +84,11 @@ class PredictorPagedScanOrderTest {
         PredictionLedger middle = ledger.save(render(Instant.parse("2026-02-01T00:00:00Z")));
         PredictionLedger oldest = ledger.save(render(Instant.parse("2026-01-01T00:00:00Z")));
 
-        List<PredictionLedger> page = ledger.findByOutcomeJoinedAtIsNullOrderByCreatedAtAscIdAsc(
-                PageRequest.of(0, 2));
+        List<UUID> mine = List.of(newest.getId(), middle.getId(), oldest.getId());
+        List<PredictionLedger> page = wholePage(ledger.findByOutcomeJoinedAtIsNullOrderByCreatedAtAscIdAsc(ALL));
 
-        assertThat(page).extracting(PredictionLedger::getId)
-                .containsExactly(oldest.getId(), middle.getId());
+        assertThat(page).extracting(PredictionLedger::getId).filteredOn(mine::contains)
+                .containsExactly(oldest.getId(), middle.getId(), newest.getId());
     }
 
     @Test
@@ -91,11 +103,13 @@ class PredictorPagedScanOrderTest {
         dateCheckRender.setEventId(null);
         dateCheckRender.setSurface(PredictionSurface.DATE_CHECK);
         dateCheckRender.setDateCheckId(UUID.randomUUID());
-        ledger.save(dateCheckRender);
+        dateCheckRender = ledger.save(dateCheckRender);
 
-        List<PredictionLedger> page = ledger.findJoinable(PageRequest.of(0, 10));
+        List<UUID> mine = List.of(eventRender.getId(), dateCheckRender.getId());
+        List<PredictionLedger> page = wholePage(ledger.findJoinable(ALL));
 
-        assertThat(page).extracting(PredictionLedger::getId).containsExactly(eventRender.getId());
+        assertThat(page).extracting(PredictionLedger::getId).filteredOn(mine::contains)
+                .containsExactly(eventRender.getId());
     }
 
     @Test
@@ -111,25 +125,33 @@ class PredictorPagedScanOrderTest {
         dateCheckRender.setEventId(finalized.getEventId());
         dateCheckRender.setSurface(PredictionSurface.DATE_CHECK);
         dateCheckRender.setDateCheckId(UUID.randomUUID());
-        ledger.save(dateCheckRender);
+        dateCheckRender = ledger.save(dateCheckRender);
 
-        List<PredictionLedger> page = ledger.findJoinable(PageRequest.of(0, 10));
+        List<UUID> mine = List.of(eventRender.getId(), dateCheckRender.getId());
+        List<PredictionLedger> page = wholePage(ledger.findJoinable(ALL));
 
-        assertThat(page).extracting(PredictionLedger::getId).containsExactly(eventRender.getId());
+        assertThat(page).extracting(PredictionLedger::getId).filteredOn(mine::contains)
+                .containsExactly(eventRender.getId());
     }
 
-    private static EventOutcome outcome(Instant frozenAt) {
+    private EventOutcome outcome(Instant frozenAt) {
         EventOutcome o = new EventOutcome();
         o.setEventId(UUID.randomUUID());
-        o.setOrgId(UUID.randomUUID());
+        o.setOrgId(orgId());
         o.setFrozenAt(frozenAt);
         return o;
     }
 
-    private static PredictionLedger render(Instant createdAt) {
+    private UUID orgId() {
+        UUID id = UUID.randomUUID();
+        orgIds.add(id);
+        return id;
+    }
+
+    private PredictionLedger render(Instant createdAt) {
         PredictionLedger l = new PredictionLedger();
         l.setEventId(UUID.randomUUID());
-        l.setOrgId(UUID.randomUUID());
+        l.setOrgId(orgId());
         l.setSurface(PredictionSurface.PRE_PUBLISH);
         l.setStage((short) 0);
         l.setModelId("test-model");

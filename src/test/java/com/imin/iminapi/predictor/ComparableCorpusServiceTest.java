@@ -1,6 +1,5 @@
 package com.imin.iminapi.predictor;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.*;
 import com.imin.iminapi.predictor.model.CapacityBand;
 import com.imin.iminapi.predictor.model.EventOutcome;
@@ -11,64 +10,58 @@ import com.imin.iminapi.predictor.service.ComparableCorpusService;
 import com.imin.iminapi.predictor.service.ComparableCorpusService.ComparableCorpus;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
-import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PredictorRows;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Task 4 (comparable corpus) — relaxation ladder order, &lt;5 cluster suppression, privacy
- * rounding, and the own-events exemption. Spec §6.4, gate item 5.
+ * rounding, and the own-events exemption. Spec §6.4, gate item 5. The relaxed rungs match on country, so each
+ * test also gets its own genre family: no other test's outcomes fall into its segment at any rung.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class ComparableCorpusServiceTest {
 
     @Autowired ComparableCorpusService corpus;
     @Autowired EventOutcomeRepository outcomes;
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
-    @Autowired UserRepository users;
+    @Autowired IminFixtures fx;
+    @Autowired JdbcTemplate jdbc;
 
-    private static final String GENRE = "House & Techno";
+    private final String city = "Amsterdam" + DateCheckControllerTest.letters();
+    private final String otherCity = "Rotterdam" + DateCheckControllerTest.letters();
+    private final String genre = "House & Techno " + DateCheckControllerTest.letters();
     private static final CapacityBand BAND = CapacityBand.B301_800;
 
     private Organization ownOrg;
     private User owner;
+    private final List<UUID> orgIds = new ArrayList<>();
 
     @BeforeEach
     void setUp() {
-        wipe();
-        ownOrg = new Organization();
-        ownOrg.setName("Own Org");
-        ownOrg.setSlug("own-" + UUID.randomUUID().toString().substring(0, 8));
-        ownOrg.setContactEmail("own@test.example");
-        ownOrg.setCountry("NL");
-        ownOrg = orgs.save(ownOrg);
-
-        owner = new User();
-        owner.setEmail("owner-" + UUID.randomUUID() + "@example.com");
-        owner.setOrgId(ownOrg.getId());
-        owner.setRole(UserRole.OWNER);
-        owner = users.save(owner);
+        Organization o = fx.org();
+        o.setCountry("NL");
+        ownOrg = orgs.save(o);
+        orgIds.add(ownOrg.getId());
+        owner = fx.owner(ownOrg);
     }
 
     @AfterEach
-    void tearDown() { wipe(); }
-
-    private void wipe() {
-        outcomes.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+    void tearDown() {
+        PredictorRows.delete(jdbc, orgIds);
     }
 
     private EventOutcome base(UUID orgId, UUID eventId, String city, String country,
@@ -78,7 +71,7 @@ class ComparableCorpusServiceTest {
         o.setOrgId(orgId);
         o.setCity(city);
         o.setCountry(country);
-        o.setGenreFamily(GENRE);
+        o.setGenreFamily(genre);
         o.setCapacityBand(BAND);
         o.setSeason(season);
         o.setAttendance(attendance);
@@ -91,7 +84,9 @@ class ComparableCorpusServiceTest {
     }
 
     private void foreign(String city, String country, Season season, int attendance, long revenue, boolean sellOut) {
-        outcomes.save(base(UUID.randomUUID(), UUID.randomUUID(), city, country, season, attendance, revenue, sellOut));
+        UUID foreignOrg = UUID.randomUUID();
+        orgIds.add(foreignOrg);
+        outcomes.save(base(foreignOrg, UUID.randomUUID(), city, country, season, attendance, revenue, sellOut));
     }
 
     private UUID own(String city, String country, Season season, int attendance, long revenue, boolean sellOut) {
@@ -111,12 +106,12 @@ class ComparableCorpusServiceTest {
     @Test
     void exactCitySegment_aggregatesForeign_roundsPrivacy_andExemptsOwn() {
         // 6 foreign in the exact city segment (Amsterdam, NL, WINTER): attendance 297, revenue 52340.
-        for (int i = 0; i < 6; i++) foreign("Amsterdam", "NL", Season.WINTER, 297, 52_340L, i < 3);
+        for (int i = 0; i < 6; i++) foreign(city, "NL", Season.WINTER, 297, 52_340L, i < 3);
         // 2 own events in the same segment — must be returned by name with EXACT figures.
-        own("Amsterdam", "NL", Season.WINTER, 297, 52_340L, true);
-        own("Amsterdam", "NL", Season.WINTER, 297, 52_340L, false);
+        own(city, "NL", Season.WINTER, 297, 52_340L, true);
+        own(city, "NL", Season.WINTER, 297, 52_340L, false);
 
-        ComparableCorpus c = corpus.retrieve(ownOrg.getId(), "Amsterdam", "NL", GENRE, BAND, Season.WINTER);
+        ComparableCorpus c = corpus.retrieve(ownOrg.getId(), city, "NL", genre, BAND, Season.WINTER);
 
         assertThat(c.appliedRelaxation()).isEqualTo(RelaxationLevel.NONE); // 8 >= 5, no relaxation
         assertThat(c.densityTotal()).isEqualTo(8);
@@ -144,9 +139,9 @@ class ComparableCorpusServiceTest {
     @Test
     void relaxesCityToCountry_whenCityClusterSparse() {
         // nothing in Amsterdam; 6 foreign elsewhere in NL, same genre/band/season
-        for (int i = 0; i < 6; i++) foreign("Rotterdam", "NL", Season.WINTER, 400, 80_000L, false);
+        for (int i = 0; i < 6; i++) foreign(otherCity, "NL", Season.WINTER, 400, 80_000L, false);
 
-        ComparableCorpus c = corpus.retrieve(ownOrg.getId(), "Amsterdam", "NL", GENRE, BAND, Season.WINTER);
+        ComparableCorpus c = corpus.retrieve(ownOrg.getId(), city, "NL", genre, BAND, Season.WINTER);
 
         assertThat(c.appliedRelaxation()).isEqualTo(RelaxationLevel.CITY_TO_COUNTRY);
         assertThat(c.foreignCount()).isEqualTo(6);
@@ -156,9 +151,9 @@ class ComparableCorpusServiceTest {
     @Test
     void dropsSeasonLast_whenSeasonMismatch() {
         // 6 foreign in NL but a DIFFERENT season — only reachable after season is dropped
-        for (int i = 0; i < 6; i++) foreign("Rotterdam", "NL", Season.SUMMER, 350, 70_000L, false);
+        for (int i = 0; i < 6; i++) foreign(otherCity, "NL", Season.SUMMER, 350, 70_000L, false);
 
-        ComparableCorpus c = corpus.retrieve(ownOrg.getId(), "Amsterdam", "NL", GENRE, BAND, Season.WINTER);
+        ComparableCorpus c = corpus.retrieve(ownOrg.getId(), city, "NL", genre, BAND, Season.WINTER);
 
         assertThat(c.appliedRelaxation()).isEqualTo(RelaxationLevel.DROP_SEASON);
         assertThat(c.foreignCount()).isEqualTo(6);
@@ -168,9 +163,9 @@ class ComparableCorpusServiceTest {
     @Test
     void suppressesForeignAggregate_whenClusterUnderFive() {
         // 4 foreign in the exact segment — every relaxation level still returns only these 4
-        for (int i = 0; i < 4; i++) foreign("Amsterdam", "NL", Season.WINTER, 300, 60_000L, true);
+        for (int i = 0; i < 4; i++) foreign(city, "NL", Season.WINTER, 300, 60_000L, true);
 
-        ComparableCorpus c = corpus.retrieve(ownOrg.getId(), "Amsterdam", "NL", GENRE, BAND, Season.WINTER);
+        ComparableCorpus c = corpus.retrieve(ownOrg.getId(), city, "NL", genre, BAND, Season.WINTER);
 
         assertThat(c.foreignCount()).isEqualTo(4);
         assertThat(c.hasBenchmark()).isFalse();          // no cluster under 5

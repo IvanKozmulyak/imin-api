@@ -153,16 +153,23 @@ class OrganizerPayoutNotifierTest {
         verify(email).send(anyString(), anyString(), anyString(), anyString());
     }
 
-    @Test
-    void blockedWithNoContactEmailStaysInAppOnly() {
-        Organization noInbox = org();
-        noInbox.setContactEmail("  ");
-        when(orgs.findById(ORG_ID)).thenReturn(Optional.of(noInbox));
+    /** Rows: the org has a blank contact email; the org row is gone. Either way in-app only, no mail, no throw. */
+    @ParameterizedTest
+    @ValueSource(strings = {"blank contact email", "org missing"})
+    void blockedWithNoContactEmailStaysInAppOnly(String scenario) {
+        if (scenario.equals("org missing")) {
+            when(orgs.findById(ORG_ID)).thenReturn(Optional.empty());
+        } else {
+            Organization noInbox = org();
+            noInbox.setContactEmail("  ");
+            when(orgs.findById(ORG_ID)).thenReturn(Optional.of(noInbox));
+        }
 
-        notifier.notifyBlocked(RUN_ID);
+        assertThatCode(() -> notifier.notifyBlocked(RUN_ID)).doesNotThrowAnyException();
 
         verify(notifications).save(any(Notification.class));
-        verify(email, never()).send(anyString(), anyString(), anyString(), anyString());
+        // any(), not anyString(): with no org the address would be null
+        verify(email, never()).send(any(), any(), any(), any());
     }
 
     @Test

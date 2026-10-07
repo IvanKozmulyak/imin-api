@@ -1,13 +1,11 @@
 package com.imin.iminapi.predictor.calendar;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.predictor.model.ReferenceCalendarEntry;
 import com.imin.iminapi.predictor.repository.ReferenceCalendarEntryRepository;
 import jakarta.persistence.EntityManager;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.transaction.annotation.Transactional;
@@ -31,14 +29,14 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 /** One transaction per test; writers are built by hand so each run can have its own clock. */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 @Transactional
 class ReferenceCalendarWriterTest {
 
     private static final Instant T1 = Instant.parse("2026-09-27T02:30:00Z");
     private static final Instant T2 = Instant.parse("2026-10-04T02:30:00Z");
     private static final String URL = "https://example.test/holidays/2027.json";
+    private static final String OTHER_URL = "https://other.test";
     private static final LocalDate FROM = LocalDate.of(2027, 1, 1);
     private static final LocalDate TO = LocalDate.of(2027, 12, 31);
 
@@ -57,10 +55,13 @@ class ReferenceCalendarWriterTest {
         return new CalendarSource.Batch(URL, Set.of("holiday", "pont"), FROM, TO, List.of(rows));
     }
 
+    /** The rows under the source URLs this class writes; the table is shared reference data. */
     private List<ReferenceCalendarEntry> stored() {
         em.flush();
         em.clear();
-        return repository.findAll().stream().sorted(Comparator.comparing(ReferenceCalendarEntry::getCalendarDate)).toList();
+        Set<String> own = Set.of(URL, OTHER_URL, FrenchHolidaySyncTest.METRO_URL, FrenchHolidaySyncTest.AM_URL);
+        return repository.findAll().stream().filter(e -> own.contains(e.getSourceUrl()))
+                .sorted(Comparator.comparing(ReferenceCalendarEntry::getCalendarDate)).toList();
     }
 
     private static Map<String, UUID> ids(List<ReferenceCalendarEntry> rows) {
@@ -138,10 +139,10 @@ class ReferenceCalendarWriterTest {
 
     @Test
     void otherScopesUntouched() {
-        CalendarRow otherSource = new CalendarRow("FR", "", LocalDate.of(2027, 3, 1), null, "holiday", "other", "https://other.test");
+        CalendarRow otherSource = new CalendarRow("FR", "", LocalDate.of(2027, 3, 1), null, "holiday", "other", OTHER_URL);
         CalendarRow otherKind = new CalendarRow("FR", "", LocalDate.of(2027, 3, 2), null, "dst", "dst_forward", URL);
         CalendarRow otherYear = new CalendarRow("FR", "", LocalDate.of(2028, 1, 1), null, "holiday", "1er janvier", URL);
-        writer(T1).replace(new CalendarSource.Batch("https://other.test", Set.of("holiday"), FROM, TO, List.of(otherSource)));
+        writer(T1).replace(new CalendarSource.Batch(OTHER_URL, Set.of("holiday"), FROM, TO, List.of(otherSource)));
         writer(T1).replace(new CalendarSource.Batch(URL, Set.of("dst"), FROM, TO, List.of(otherKind)));
         writer(T1).replace(new CalendarSource.Batch(URL, Set.of("holiday"), LocalDate.of(2028, 1, 1),
                 LocalDate.of(2028, 12, 31), List.of(otherYear)));

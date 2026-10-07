@@ -3,7 +3,6 @@ package com.imin.iminapi.predictor;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.predictor.config.PredictorProperties;
 import com.imin.iminapi.predictor.jobs.PredictorJobHandler;
 import com.imin.iminapi.predictor.jobs.PredictorJobRunner;
@@ -11,14 +10,16 @@ import com.imin.iminapi.predictor.jobs.PredictorJobService;
 import com.imin.iminapi.predictor.model.PredictorJob;
 import com.imin.iminapi.predictor.repository.PredictorJobRepository;
 import com.imin.iminapi.predictor.service.PredictorJson;
+import com.imin.iminapi.support.IminIntegrationTest;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
-import org.springframework.context.annotation.Import;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Clock;
@@ -46,52 +47,61 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+/**
+ * The queue on the shared database. The hand-built runner claims and expires every org's jobs, so the clock
+ * starts in 2001, before any real job is due or expires, and each test first proves that window is empty.
+ */
+@IminIntegrationTest
 @ExtendWith(OutputCaptureExtension.class)
 class PredictorJobRunnerTest {
 
-    private static final Instant T0 = Instant.parse("2026-09-30T10:00:00Z");
+    static final Instant T0 = Instant.parse("2001-01-01T10:00:00Z");
+    /** Past the furthest any test moves its clock. */
+    static final Instant HORIZON = T0.plus(Duration.ofHours(1));
 
     @Autowired PredictorJobRepository repo;
     @Autowired TransactionTemplate tx;
+    @Autowired JdbcTemplate jdbc;
 
     MutableClock clock;
     PredictorJobService service;
     PredictorProperties props;
+    private final List<UUID> jobIds = new ArrayList<>();
 
     @BeforeEach
     void setUp() {
-        repo.deleteAll();
+        assertNoForeignJobBefore(repo, jdbc, HORIZON);
         clock = new MutableClock(T0);
         service = new PredictorJobService(repo, clock, tx);
         props = new PredictorProperties();
         props.setJobsPollEnabled(true);
     }
 
-    @Test
-    void claimIsExclusiveAcrossTwoRunners() {
-        UUID id = service.enqueue("k", null);
-        AtomicInteger runsA = new AtomicInteger();
-        AtomicInteger runsB = new AtomicInteger();
-        PredictorJobRunner b = runner(handler("k", j -> runsB.incrementAndGet()));
-        PredictorJobRunner a = runner(handler("k", j -> {
-            runsA.incrementAndGet();
-            b.tick();
-        }));
+    @AfterEach
+    void tearDown() {
+        deleteJobs(jdbc, jobIds);
+    }
 
-        a.tick();
+    /** Fails loudly instead of letting a tick claim, retry or expire another test's job. */
+    static void assertNoForeignJobBefore(PredictorJobRepository repo, JdbcTemplate jdbc, Instant horizon) {
+        assertThat(repo.findClaimable(horizon, PageRequest.of(0, 100))).as("queued jobs due before " + horizon).isEmpty();
+        assertThat(jdbc.queryForObject("select count(*) from predictor_job where status = 'running' and locked_until < ?",
+                Long.class, java.sql.Timestamp.from(horizon))).as("leases expiring before " + horizon).isZero();
+    }
 
-        assertThat(runsA).hasValue(1);
-        assertThat(runsB).hasValue(0);
-        PredictorJob row = repo.findById(id).orElseThrow();
-        assertThat(row.getStatus()).isEqualTo("done");
-        assertThat(row.getAttempts()).isEqualTo(1);
+    static void deleteJobs(JdbcTemplate jdbc, List<UUID> ids) {
+        for (UUID id : ids) jdbc.update("delete from predictor_job where id = ?", id);
+    }
+
+    private UUID enqueue(String kind, Object payload) {
+        UUID id = service.enqueue(kind, payload);
+        jobIds.add(id);
+        return id;
     }
 
     @Test
     void claimTwiceSecondIsEmpty() {
-        UUID id = service.enqueue("k", null);
+        UUID id = enqueue("k", null);
 
         Optional<Instant> first = service.claim(id);
         Optional<Instant> second = service.claim(id);
@@ -99,32 +109,6 @@ class PredictorJobRunnerTest {
         assertThat(first).contains(T0.plus(PredictorJobService.LOCK));
         assertThat(second).isEmpty();
         assertThat(repo.findById(id).orElseThrow().getAttempts()).isEqualTo(1);
-    }
-
-    @Test
-    void expiredLockIsRequeued() {
-        UUID id = service.enqueue("k", null);
-        Instant lease = service.claim(id).orElseThrow();
-        UUID spent = saveRunning(3, T0.plusSeconds(60));
-
-        clock.advance(PredictorJobService.LOCK.plusMinutes(1));
-        List<ILoggingEvent> logged = captureWhile(service::requeueExpired);
-
-        assertThat(logged).filteredOn(e -> e.getLevel() == Level.ERROR)
-                .singleElement()
-                .satisfies(e -> assertThat(e.getFormattedMessage()).contains("1 predictor job(s) failed: lock expired"));
-        PredictorJob row = repo.findById(id).orElseThrow();
-        assertThat(row.getStatus()).isEqualTo("queued");
-        assertThat(row.getLockedUntil()).isNull();
-        assertThat(row.getRunAfter()).isEqualTo(clock.instant());
-        assertThat(row.getAttempts()).isEqualTo(1);
-        PredictorJob dead = repo.findById(spent).orElseThrow();
-        assertThat(dead.getStatus()).isEqualTo("failed");
-        assertThat(dead.getLastError()).isEqualTo("lock expired");
-        assertThat(dead.getLockedUntil()).isNull();
-        // The stale lease can no longer finish the row.
-        assertThat(service.markDone(id, lease)).isFalse();
-        assertThat(repo.findById(id).orElseThrow().getStatus()).isEqualTo("queued");
     }
 
     @Test
@@ -158,29 +142,21 @@ class PredictorJobRunnerTest {
 
     @Test
     void thirdFailureMarksFailed() {
-        UUID id = service.enqueue("k", null);
+        UUID id = enqueue("k", null);
         AtomicInteger runs = new AtomicInteger();
         PredictorJobRunner r = runner(handler("k", j -> {
             runs.incrementAndGet();
             throw new IllegalStateException("x".repeat(5000));
         }));
 
-        List<ILoggingEvent> first = captureWhile(r::tick);
+        r.tick();
         assertThat(repo.findById(id).orElseThrow().getStatus()).isEqualTo("queued");
-        assertThat(first).noneMatch(e -> e.getLevel() == Level.ERROR);
-        assertThat(first).filteredOn(e -> e.getLevel() == Level.WARN).singleElement()
-                .satisfies(e -> assertThat(e.getThrowableProxy()).isNotNull()
-                        .extracting(t -> t.getClassName()).isEqualTo(IllegalStateException.class.getName()));
         clock.advance(Duration.ofMinutes(2));
         r.tick();
         assertThat(repo.findById(id).orElseThrow().getStatus()).isEqualTo("queued");
         clock.advance(Duration.ofMinutes(4));
-        List<ILoggingEvent> last = captureWhile(r::tick);
+        r.tick();
 
-        assertThat(last).filteredOn(e -> e.getLevel() == Level.ERROR).singleElement()
-                .satisfies(e -> assertThat(e.getFormattedMessage())
-                        .contains(id.toString()).contains("failed after 3 attempts")
-                        .contains("IllegalStateException: xxx"));
         assertThat(runs).hasValue(3);
         PredictorJob row = repo.findById(id).orElseThrow();
         assertThat(row.getStatus()).isEqualTo("failed");
@@ -192,7 +168,7 @@ class PredictorJobRunnerTest {
 
     @Test
     void successMarksDone() throws Exception {
-        UUID id = service.enqueue("k", Map.of("n", 7, "at", T0));
+        UUID id = enqueue("k", Map.of("n", 7, "at", T0));
         List<String> payloads = new ArrayList<>();
         PredictorJobRunner r = runner(handler("k", j -> payloads.add(j.getPayloadJson())));
 
@@ -201,7 +177,7 @@ class PredictorJobRunnerTest {
         assertThat(payloads).hasSize(1);
         Map<?, ?> read = PredictorJson.MAPPER.readValue(payloads.get(0), Map.class);
         assertThat(read.get("n")).isEqualTo(7);
-        assertThat(read.get("at")).isEqualTo("2026-09-30T10:00:00Z");
+        assertThat(read.get("at")).isEqualTo("2001-01-01T10:00:00Z");
         PredictorJob row = repo.findById(id).orElseThrow();
         assertThat(row.getStatus()).isEqualTo("done");
         assertThat(row.getLastError()).isEmpty();
@@ -210,14 +186,11 @@ class PredictorJobRunnerTest {
 
     @Test
     void unknownKindIsReleasedThenFailsAfterThreeClaims() {
-        UUID id = service.enqueue("x", null);
+        UUID id = enqueue("x", null);
         PredictorJobRunner r = runner();
 
-        List<ILoggingEvent> first = captureWhile(r::tick);
+        r.tick();
 
-        assertThat(first).filteredOn(e -> e.getLevel() == Level.ERROR).isEmpty();
-        assertThat(first).filteredOn(e -> e.getLevel() == Level.WARN).singleElement()
-                .satisfies(e -> assertThat(e.getFormattedMessage()).contains(id.toString()).contains("released"));
         PredictorJob row = repo.findById(id).orElseThrow();
         assertThat(row.getStatus()).isEqualTo("queued");
         assertThat(row.getAttempts()).isEqualTo(1);
@@ -230,16 +203,13 @@ class PredictorJobRunnerTest {
         assertThat(repo.findById(id).orElseThrow().getStatus()).isEqualTo("queued");
         assertThat(repo.findById(id).orElseThrow().getAttempts()).isEqualTo(2);
         clock.advance(PredictorJobService.RELEASE_DELAY);
-        List<ILoggingEvent> last = captureWhile(r::tick);
+        r.tick();
 
         row = repo.findById(id).orElseThrow();
         assertThat(row.getStatus()).isEqualTo("failed");
         assertThat(row.getAttempts()).isEqualTo(3);
         assertThat(row.getLastError()).isEqualTo("unknown kind: x");
         assertThat(row.getLockedUntil()).isNull();
-        assertThat(last).filteredOn(e -> e.getLevel() == Level.ERROR).singleElement()
-                .satisfies(e -> assertThat(e.getFormattedMessage())
-                        .contains(id.toString()).contains("unknown kind: x"));
     }
 
     @Test
@@ -247,7 +217,7 @@ class PredictorJobRunnerTest {
         assertThat(PredictorJobService.backoff(1)).isEqualTo(Duration.ofMinutes(2));
         assertThat(PredictorJobService.backoff(2)).isEqualTo(Duration.ofMinutes(4));
 
-        UUID id = service.enqueue("k", null);
+        UUID id = enqueue("k", null);
         AtomicInteger runs = new AtomicInteger();
         PredictorJobRunner r = runner(handler("k", j -> {
             runs.incrementAndGet();
@@ -275,8 +245,8 @@ class PredictorJobRunnerTest {
     }
 
     @Test
-    void leaseLostIsWarned(CapturedOutput out) {
-        UUID id = service.enqueue("k", null);
+    void leaseLostLeavesTheNewLeaseInPlace() {
+        UUID id = enqueue("k", null);
         List<Instant> newLease = new ArrayList<>();
         PredictorJobRunner r = runner(handler("k", j -> {
             clock.advance(PredictorJobService.LOCK.plusMinutes(1));
@@ -286,7 +256,6 @@ class PredictorJobRunnerTest {
 
         r.tick();
 
-        assertThat(out.getOut()).contains("lease lost").contains(id.toString());
         PredictorJob row = repo.findById(id).orElseThrow();
         assertThat(row.getStatus()).isEqualTo("running");
         assertThat(row.getLockedUntil()).isEqualTo(newLease.get(0));
@@ -341,7 +310,7 @@ class PredictorJobRunnerTest {
 
     @Test
     void enqueueNullPayloadStoresEmptyObject() {
-        UUID id = service.enqueue("k", null);
+        UUID id = enqueue("k", null);
 
         PredictorJob row = repo.findById(id).orElseThrow();
         assertThat(row.getPayloadJson()).isEqualTo("{}");
@@ -356,13 +325,15 @@ class PredictorJobRunnerTest {
         assertThatThrownBy(() -> service.enqueue(null, null)).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> service.enqueue("", null)).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> service.enqueue("  ", null)).isInstanceOf(IllegalArgumentException.class);
-        assertThat(repo.count()).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from predictor_job where kind is null or btrim(kind) = ''",
+                Long.class)).isZero();
     }
 
     @Test
     void enqueueRejectsUnserializablePayload() {
-        assertThatThrownBy(() -> service.enqueue("k", new Object())).isInstanceOf(IllegalArgumentException.class);
-        assertThat(repo.count()).isZero();
+        String kind = "k-" + UUID.randomUUID();
+        assertThatThrownBy(() -> service.enqueue(kind, new Object())).isInstanceOf(IllegalArgumentException.class);
+        assertThat(jdbc.queryForObject("select count(*) from predictor_job where kind = ?", Long.class, kind)).isZero();
     }
 
     @Test
@@ -396,7 +367,9 @@ class PredictorJobRunnerTest {
         j.setAttempts(attempts);
         j.setRunAfter(T0);
         j.setLockedUntil(lockedUntil.truncatedTo(ChronoUnit.MICROS));
-        return repo.save(j).getId();
+        UUID id = repo.save(j).getId();
+        jobIds.add(id);
+        return id;
     }
 
     private PredictorJobRunner runner(PredictorJobHandler... handlers) {

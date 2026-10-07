@@ -1,87 +1,97 @@
 package com.imin.iminapi.predictor.rules;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.EventVisibility;
 import com.imin.iminapi.model.Organization;
-import com.imin.iminapi.model.User;
-import com.imin.iminapi.model.UserRole;
+import com.imin.iminapi.predictor.repository.GenreWeekCountRepository;
+import com.imin.iminapi.predictor.repository.OpenEventOccurrenceRepository;
+import com.imin.iminapi.predictor.rules.QuestionBank.Question;
+import com.imin.iminapi.predictor.rules.QuestionBank.SourceKind;
+import com.imin.iminapi.predictor.sources.DataSourceCatalog;
+import com.imin.iminapi.predictor.sources.SourceGates;
+import com.imin.iminapi.predictor.sources.openevents.OpenEventCities;
+import com.imin.iminapi.predictor.sources.openevents.OpenEventSource;
+import com.imin.iminapi.predictor.sources.openevents.OpenEventsWriter;
+import com.imin.iminapi.predictor.sources.openevents.OpenEventsWriter.Row;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
-import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PredictorRows;
+import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
-/** The rule engine's event queries on real Postgres 17, where a bad bind type fails and H2 does not. */
-@Testcontainers(disabledWithoutDocker = true)
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+/**
+ * The rule engine's queries on Postgres, where a bad bind type fails and H2 does not. Event cities carry
+ * random letters, so other tests' events never fall into them.
+ */
+@IminIntegrationTest
 class RuleQueriesPostgresTest {
 
-    @Container
-    @ServiceConnection
-    static final PostgreSQLContainer<?> PG = new PostgreSQLContainer<>("postgres:17-alpine");
-
-    @DynamicPropertySource
-    static void overrideDataSource(DynamicPropertyRegistry r) {
-        r.add("spring.datasource.url", PG::getJdbcUrl);
-        r.add("spring.datasource.username", PG::getUsername);
-        r.add("spring.datasource.password", PG::getPassword);
-        r.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
-        r.add("spring.jpa.hibernate.ddl-auto", () -> "none");
-        r.add("spring.jpa.properties.hibernate.dialect", () -> "org.hibernate.dialect.PostgreSQLDialect");
-        r.add("spring.flyway.enabled", () -> "true");
-        r.add("spring.docker.compose.enabled", () -> "false");
-    }
-
     private static final Instant NIGHT = Instant.parse("2026-11-14T22:00:00Z");
+    private static final String HOUSE = "house & techno";
+    private static final String LO = "Licence Ouverte 2.0";
+    private static final LocalDate TODAY = LocalDate.of(2026, 9, 30);
+    private static final LocalDate THU = LocalDate.of(2026, 10, 8);
+    private static final Instant SYNCED = Instant.parse("2026-09-28T03:45:00Z");
 
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
-    @Autowired UserRepository users;
+    @Autowired IminFixtures fx;
+    @Autowired JdbcTemplate jdbc;
+    @Autowired OpenEventsWriter writer;
+    @Autowired GenreWeekCountRepository counts;
+    @Autowired OpenEventOccurrenceRepository occurrences;
+    @Autowired QuestionBank bank;
+    @Autowired OpenEventCities cities;
+    @Autowired List<OpenEventSource> sources;
+    @Autowired DataSourceCatalog catalog;
+    @Autowired EntityManager em;
+
+    private final String paris = "Paris" + letters();
+    private final String parisKey = paris.toLowerCase(Locale.ROOT);
 
     private UUID orgId;
     private UUID userId;
 
     @BeforeEach
     void setUp() {
-        wipe();
-        Organization o = new Organization();
-        o.setName("Org");
-        o.setSlug("org-" + UUID.randomUUID().toString().substring(0, 8));
-        o.setContactEmail("h@test.example");
+        Organization o = fx.org();
         o.setCountry("FR");
         orgId = orgs.save(o).getId();
-        User u = new User();
-        u.setEmail("o-" + UUID.randomUUID() + "@example.com");
-        u.setOrgId(orgId);
-        u.setRole(UserRole.OWNER);
-        userId = users.save(u).getId();
+        userId = fx.owner(o).getId();
     }
 
     @AfterEach
-    void tearDown() { wipe(); }
+    void tearDown() {
+        PredictorRows.delete(jdbc, List.of(orgId));
+    }
 
-    private void wipe() {
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+    private static String letters() {
+        StringBuilder b = new StringBuilder();
+        for (int i = 0; i < 8; i++) b.append((char) ('a' + ThreadLocalRandom.current().nextInt(26)));
+        return b.toString();
     }
 
     private Event ev(String city, EventStatus status) {
@@ -100,34 +110,82 @@ class RuleQueriesPostgresTest {
 
     @Test
     void cityAndOrgQueriesRunOnPostgres() {
-        Event live = ev("Paris", EventStatus.LIVE);
-        Event draft = ev("Paris", EventStatus.DRAFT);
-        ev("Paris", EventStatus.CANCELLED);
-        ev("Lyon", EventStatus.LIVE);
-        Event hidden = ev("Paris", EventStatus.LIVE);
+        Event live = ev(paris, EventStatus.LIVE);
+        Event draft = ev(paris, EventStatus.DRAFT);
+        ev(paris, EventStatus.CANCELLED);
+        ev("Lyon" + letters(), EventStatus.LIVE);
+        Event hidden = ev(paris, EventStatus.LIVE);
         hidden.setVisibility(EventVisibility.PRIVATE);
         events.save(hidden);
         Instant from = NIGHT.minusSeconds(3600);
         Instant to = NIGHT.plusSeconds(3600);
 
-        assertThat(events.findCityEventsBetween("paris", from, to)).extracting(Event::getId).containsExactly(live.getId());
-        assertThat(events.findOrgEventsInCityBetween(orgId, "paris", from, to)).extracting(Event::getId)
+        assertThat(events.findCityEventsBetween(parisKey, from, to)).extracting(Event::getId).containsExactly(live.getId());
+        assertThat(events.findOrgEventsInCityBetween(orgId, parisKey, from, to)).extracting(Event::getId)
                 .containsExactlyInAnyOrder(live.getId(), draft.getId(), hidden.getId());
-        assertThat(events.existsPublishedInCitySince("paris", from)).isTrue();
-        assertThat(events.existsPublishedInCitySince("marseille", from)).isFalse();
-        assertThat(events.existsPublishedInCitySince("paris", to)).isFalse();
+        assertThat(events.existsPublishedInCitySince(parisKey, from)).isTrue();
+        assertThat(events.existsPublishedInCitySince("marseille" + letters(), from)).isFalse();
+        assertThat(events.existsPublishedInCitySince(parisKey, to)).isFalse();
     }
 
     @Test
     void existsPublishedIgnoresCancelledAndPrivate() {
-        ev("Paris", EventStatus.CANCELLED);
-        Event hidden = ev("Paris", EventStatus.LIVE);
+        ev(paris, EventStatus.CANCELLED);
+        Event hidden = ev(paris, EventStatus.LIVE);
         hidden.setVisibility(EventVisibility.PRIVATE);
         events.save(hidden);
         Instant since = NIGHT.minusSeconds(3600);
 
-        assertThat(events.existsPublishedInCitySince("paris", since)).isFalse();
-        ev("Paris", EventStatus.PAST);
-        assertThat(events.existsPublishedInCitySince("paris", since)).isTrue();
+        assertThat(events.existsPublishedInCitySince(parisKey, since)).isFalse();
+        ev(paris, EventStatus.PAST);
+        assertThat(events.existsPublishedInCitySince(parisKey, since)).isTrue();
+    }
+
+    private static Row row(String id, LocalDate night, String title, Set<String> genres, boolean community) {
+        return new Row(id, night, title, "https://openagenda.com/fr/ville-de-lille/events/" + id, genres, community, LO, null);
+    }
+
+    /**
+     * The evaluator over rows the writer stored, through the real derived queries. Lille must be a configured
+     * city, so the test runs in its own rolled-back transaction and hides other Lille rows inside it.
+     */
+    @Test
+    @Transactional
+    void answersFromStoredRows() {
+        jdbc.update("DELETE FROM open_event_occurrence WHERE city_key = 'lille'");
+        jdbc.update("DELETE FROM genre_week_count WHERE city_key = 'lille'");
+        List<Row> rows = new ArrayList<>();
+        // one house night in each of the 12 past weeks, then a busy candidate week with a weekly series
+        for (int w = 12; w >= 1; w--) {
+            rows.add(row("past" + w, LocalDate.of(2026, 9, 29).minusWeeks(w), "One-off " + w, Set.of(HOUSE), false));
+        }
+        for (LocalDate n : List.of(LocalDate.of(2026, 9, 10), LocalDate.of(2026, 9, 17), LocalDate.of(2026, 9, 24))) {
+            rows.add(row("weekly-" + n, n, "Techno Thursday", Set.of(HOUSE), false));
+        }
+        for (int i = 0; i < 4; i++) rows.add(row("busy" + i, THU, "Rave " + i, Set.of(HOUSE), false));
+        rows.add(row("carnaval", THU.plusDays(1), "Carnaval de Lille", Set.of(), true));
+        writer.replaceFuture("openagenda", "lille", LocalDate.of(2026, 3, 1), rows, SYNCED);
+        List<LocalDate> weeks = new ArrayList<>();
+        for (LocalDate m = LocalDate.of(2026, 7, 6); !m.isAfter(LocalDate.of(2026, 10, 5)); m = m.plusWeeks(1)) weeks.add(m);
+        writer.recount("lille", weeks, Map.of("openagenda", LO), SYNCED);
+        em.flush();
+        em.clear();
+
+        SourceGates gates = mock(SourceGates.class);
+        when(gates.isOn(anyString())).thenReturn(true);
+        OpenEventsEvaluator evaluator = new OpenEventsEvaluator(bank, cities, sources, counts, occurrences, gates, catalog);
+        DateCheckInput in = new DateCheckInput("Lille", "FR", "59000", null, null, HOUSE, null, 300, 2000L, "club",
+                23, 5, List.of(), null, UUID.randomUUID(), TODAY, null, null, null, null);
+        List<Question> qs = bank.questions().stream()
+                .filter(q -> q.source() == SourceKind.STRUCTURED && evaluator.questionIds().contains(q.id())).toList();
+
+        List<Finding> out = evaluator.evaluateAll(qs, in, THU);
+
+        assertThat(out).extracting(Finding::questionId).containsExactly("2.6", "5.3", "2.3");
+        assertThat(out).allSatisfy(f -> assertThat(f.status()).isEqualTo(Finding.Status.FOUND));
+        // nine past weeks of 1 and three of 2 (the weekly series) make a norm of 1; four raves in the week of 10-05
+        assertThat(out.get(0).facts()).containsEntry("weekStart", "2026-10-05").containsEntry("count", 4);
+        assertThat(out.get(1).facts()).containsEntry("name", "Carnaval de Lille").containsEntry("date", "2026-10-09");
+        assertThat(out.get(2).facts()).containsEntry("name", "Techno Thursday").containsEntry("pattern", "weekly");
     }
 }

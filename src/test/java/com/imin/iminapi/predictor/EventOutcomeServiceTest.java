@@ -2,7 +2,6 @@ package com.imin.iminapi.predictor;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.*;
 import com.imin.iminapi.predictor.model.AttendanceSource;
 import com.imin.iminapi.predictor.model.CapacityBand;
@@ -12,12 +11,13 @@ import com.imin.iminapi.predictor.repository.EventOutcomeRepository;
 import com.imin.iminapi.predictor.service.EventOutcomeService;
 import com.imin.iminapi.predictor.service.PredictorSegmentKeys;
 import com.imin.iminapi.repository.*;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PredictorRows;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.data.domain.PageRequest;
 
 import java.time.Instant;
@@ -30,10 +30,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Task 1 (event outcome record) — publish-freeze snapshot correctness and the
- * finalize job's scans-vs-sales attendance fallback (spec §6.1).
+ * finalize job's scans-vs-sales attendance fallback (spec §6.1). Each test has its own city and org.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class EventOutcomeServiceTest {
 
     @Autowired EventOutcomeService service;
@@ -41,12 +40,12 @@ class EventOutcomeServiceTest {
     @Autowired EventRepository events;
     @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
     @Autowired OrganizationRepository orgs;
-    @Autowired UserRepository users;
     @Autowired TicketTierRepository tiers;
     @Autowired PromoCodeRepository promos;
     @Autowired TicketRepository tickets;
     @Autowired OrderRepository orders;
     @Autowired FunnelEventRepository funnel;
+    @Autowired IminFixtures fx;
     private final ObjectMapper json = new ObjectMapper();
 
     private Organization org;
@@ -55,38 +54,25 @@ class EventOutcomeServiceTest {
     private static final Instant PUBLISHED = Instant.parse("2026-02-01T10:00:00Z");
     private static final Instant STARTS = Instant.parse("2026-02-15T20:00:00Z"); // winter
     private static final ZoneId ZONE = ZoneId.of("Europe/Amsterdam");
+    private final String city = "Amsterdam" + DateCheckControllerTest.letters();
+    private final String cityKey = city.toLowerCase(java.util.Locale.ROOT);
 
     @BeforeEach
     void setUp() {
-        wipe();
         org = new Organization();
         org.setName("Test Org");
-        org.setSlug("org-" + UUID.randomUUID().toString().substring(0, 8));
-        org.setContactEmail("hello@test.example");
+        org.setSlug("org-" + UUID.randomUUID());
+        org.setContactEmail(fx.email("org"));
         org.setCountry("NL");
         org.setCreatedAt(Instant.parse("2026-01-01T00:00:00Z"));
         org = orgs.save(org);
 
-        owner = new User();
-        owner.setEmail("owner-" + UUID.randomUUID() + "@example.com");
-        owner.setOrgId(org.getId());
-        owner.setRole(UserRole.OWNER);
-        owner = users.save(owner);
+        owner = fx.owner(org);
     }
 
     @AfterEach
-    void tearDown() { wipe(); }
-
-    private void wipe() {
-        outcomes.deleteAll();
-        tickets.deleteAll();
-        orders.deleteAll();
-        funnel.deleteAll();
-        promos.deleteAll();
-        tiers.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+    void tearDown() {
+        PredictorRows.delete(jdbc, List.of(org.getId()));
     }
 
     private Event liveEvent() {
@@ -97,7 +83,7 @@ class EventOutcomeServiceTest {
         e.setVisibility(EventVisibility.PUBLIC);
         e.setStatus(EventStatus.LIVE);
         e.setGenre("House & Techno");
-        e.setVenueCity("Amsterdam");
+        e.setVenueCity(city);
         e.setVenueCountry("NL");
         e.setTimezone("Europe/Amsterdam");
         e.setStartsAt(STARTS);
@@ -171,7 +157,7 @@ class EventOutcomeServiceTest {
         assertThat(o.getOrgId()).isEqualTo(org.getId());
         // MERGE keys, not display spellings (predictor-edge-3) — these two columns are matched
         // by equality in the corpus segment queries.
-        assertThat(o.getCity()).isEqualTo("amsterdam");
+        assertThat(o.getCity()).isEqualTo(cityKey);
         assertThat(o.getCountry()).isEqualTo("NL");
         assertThat(o.getGenreFamily()).isEqualTo("house & techno");
         assertThat(o.getCapacity()).isEqualTo(100);
@@ -205,7 +191,8 @@ class EventOutcomeServiceTest {
 
         // a re-freeze is idempotent (same key, one row)
         service.freezeOnPublish(e);
-        assertThat(outcomes.findAll()).hasSize(1);
+        assertThat(jdbc.queryForObject("select count(*) from event_outcomes where org_id = ?", Long.class,
+                org.getId())).isEqualTo(1L);
 
         // tierId sanity (avoids unused-var warning; the id is captured in soldPerTier later)
         assertThat(a.getId()).isNotNull();
@@ -326,13 +313,13 @@ class EventOutcomeServiceTest {
     void freeze_mergesCaseVariantsIntoOneSegment() {
         Event lower = liveEvent();
         lower.setGenre("techno");
-        lower.setVenueCity("Amsterdam");
+        lower.setVenueCity(city);
         events.save(lower);
         tier(lower.getId(), "GA", 2000, 120, 0);
 
         Event upper = liveEvent();
         upper.setGenre(" TECHNO ");
-        upper.setVenueCity("AMSTERDAM");
+        upper.setVenueCity(city.toUpperCase(java.util.Locale.ROOT));
         events.save(upper);
         tier(upper.getId(), "GA", 2000, 120, 0);
 
@@ -342,12 +329,12 @@ class EventOutcomeServiceTest {
         EventOutcome a = outcomes.findById(lower.getId()).orElseThrow();
         EventOutcome b = outcomes.findById(upper.getId()).orElseThrow();
         assertThat(a.getGenreFamily()).isEqualTo("techno").isEqualTo(b.getGenreFamily());
-        assertThat(a.getCity()).isEqualTo("amsterdam").isEqualTo(b.getCity());
+        assertThat(a.getCity()).isEqualTo(cityKey).isEqualTo(b.getCity());
 
         // …and one segment query returns both once they are finalized.
         service.finalize(a, lower, Instant.now());
         service.finalize(b, upper, Instant.now());
-        assertThat(outcomes.findFinalizedByCitySegment("amsterdam", "techno",
+        assertThat(outcomes.findFinalizedByCitySegment(cityKey, "techno",
                 CapacityBand.B101_300, Season.WINTER))
                 .extracting(EventOutcome::getEventId)
                 .containsExactlyInAnyOrder(lower.getId(), upper.getId());
@@ -401,9 +388,13 @@ class EventOutcomeServiceTest {
         cancelled.setStatus(EventStatus.CANCELLED);
         events.save(cancelled);
 
-        List<EventOutcome> page = outcomes.findDueForFinalize(cutoff, PageRequest.of(0, 50));
+        // Other tests' unfinalized outcomes are due too: a page wide enough for all, read for own ids.
+        List<UUID> mine = List.of(due.getId(), deleted.getId(), cancelled.getId());
+        List<EventOutcome> page = outcomes.findDueForFinalize(cutoff, PageRequest.of(0, 10_000));
 
-        assertThat(page).extracting(EventOutcome::getEventId).containsExactly(due.getId());
+        assertThat(page).hasSizeLessThan(10_000);
+        assertThat(page).extracting(EventOutcome::getEventId).filteredOn(mine::contains)
+                .containsExactly(due.getId());
     }
 
     /**

@@ -1,17 +1,18 @@
 package com.imin.iminapi.predictor;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.*;
 import com.imin.iminapi.predictor.model.EventSalesDaily;
 import com.imin.iminapi.predictor.repository.EventSalesDailyRepository;
 import com.imin.iminapi.predictor.service.SalesTrajectoryService;
 import com.imin.iminapi.repository.*;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PredictorRows;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
 import java.time.LocalDate;
@@ -24,17 +25,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Task 2 (sales trajectory) — materialization correctness, backfill idempotency, and the
  * normalized read (% of final vs days-to-event). Spec §6.2.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class SalesTrajectoryServiceTest {
 
     @Autowired SalesTrajectoryService service;
     @Autowired EventSalesDailyRepository daily;
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
-    @Autowired UserRepository users;
     @Autowired TicketRepository tickets;
     @Autowired OrderRepository orders;
+    @Autowired IminFixtures fx;
+    @Autowired JdbcTemplate jdbc;
 
     private Organization org;
     private User owner;
@@ -48,19 +49,10 @@ class SalesTrajectoryServiceTest {
 
     @BeforeEach
     void setUp() {
-        wipe();
-        org = new Organization();
-        org.setName("Org");
-        org.setSlug("org-" + UUID.randomUUID().toString().substring(0, 8));
-        org.setContactEmail("h@test.example");
+        org = fx.org();
         org.setCountry("NL");
         org = orgs.save(org);
-
-        owner = new User();
-        owner.setEmail("o-" + UUID.randomUUID() + "@example.com");
-        owner.setOrgId(org.getId());
-        owner.setRole(UserRole.OWNER);
-        owner = users.save(owner);
+        owner = fx.owner(org);
 
         Event e = new Event();
         e.setOrgId(org.getId());
@@ -78,7 +70,7 @@ class SalesTrajectoryServiceTest {
         o.setToken(UUID.randomUUID().toString().replace("-", ""));
         o.setEventId(event.getId());
         o.setOrgId(org.getId());
-        o.setEmail("buyer@example.com");
+        o.setEmail(fx.email("buyer"));
         o.setTotalMinor(1000);
         o.setCurrency("EUR");
         o.setPaymentMethod("free");
@@ -97,15 +89,8 @@ class SalesTrajectoryServiceTest {
     }
 
     @AfterEach
-    void tearDown() { wipe(); }
-
-    private void wipe() {
-        daily.deleteAll();
-        tickets.deleteAll();
-        orders.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+    void tearDown() {
+        PredictorRows.delete(jdbc, List.of(org.getId()));
     }
 
     private void sold(UUID tierId, String at, int n) {
@@ -175,7 +160,7 @@ class SalesTrajectoryServiceTest {
         service.materialize(event.getId());
         assertThat(daily.findByEventIdOrderBySalesDateAscTierIdAsc(event.getId())).isNotEmpty();
 
-        tickets.deleteAll(); // all sales gone
+        jdbc.update("DELETE FROM tickets WHERE event_id = ?", event.getId()); // all sales gone
         service.materialize(event.getId());
         assertThat(daily.findByEventIdOrderBySalesDateAscTierIdAsc(event.getId())).isEmpty();
     }

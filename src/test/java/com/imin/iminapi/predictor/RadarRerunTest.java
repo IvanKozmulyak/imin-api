@@ -669,6 +669,28 @@ class RadarRerunTest {
                 .satisfies(r -> assertThat(r.getRadarMilestone()).isEqualTo((short) 14));
     }
 
+    /** While another instance holds the daily lock, the bean's run is a no-op; once it lapses the run goes ahead. */
+    @Test
+    void scheduledBeanRunSkipsWhileAnotherInstanceHoldsTheLock() {
+        Event e = event(EventStatus.LIVE, START);
+        check(e.getId(), BEFORE_WINDOW, NIGHT);
+        jdbc.update("""
+                insert into shedlock (name, lock_until, locked_at, locked_by)
+                values ('predictor_radar_daily', now() + interval '1 hour', now(), 'other-instance')
+                on conflict (name) do update set lock_until = excluded.lock_until, locked_at = excluded.locked_at,
+                    locked_by = excluded.locked_by""");
+        try {
+            radarJob.run();
+            assertThat(radarRows(e.getId())).isEmpty();
+        } finally {
+            jdbc.update("update shedlock set lock_until = locked_at where name = 'predictor_radar_daily'");
+        }
+
+        radarJob.run();
+
+        assertThat(radarRows(e.getId())).hasSize(1);
+    }
+
     // --- gate closed ---
 
     /** Date check and radar on, but the org is on no beta list: a due event is skipped and nothing is written. */

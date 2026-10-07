@@ -1,56 +1,38 @@
 package com.imin.iminapi.predictor.rules;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.EventVisibility;
 import com.imin.iminapi.model.Organization;
-import com.imin.iminapi.model.User;
-import com.imin.iminapi.model.UserRole;
-import com.imin.iminapi.predictor.model.CapacityBand;
-import com.imin.iminapi.predictor.model.RelaxationLevel;
-import com.imin.iminapi.predictor.model.Season;
 import com.imin.iminapi.predictor.rules.Finding.Status;
 import com.imin.iminapi.predictor.rules.QuestionBank.Kind;
 import com.imin.iminapi.predictor.rules.QuestionBank.SourceKind;
-import com.imin.iminapi.predictor.service.ComparableCorpusService;
-import com.imin.iminapi.predictor.service.ComparableCorpusService.ComparableCorpus;
-import com.imin.iminapi.predictor.service.ComparableCorpusService.ForeignAggregate;
-import com.imin.iminapi.predictor.service.ComparableCorpusService.OwnEvent;
-import com.imin.iminapi.predictor.service.PacingCurveService;
-import com.imin.iminapi.predictor.service.PacingCurveService.CurveMatch;
-import com.imin.iminapi.predictor.service.PacingEngine.Curve;
-import com.imin.iminapi.predictor.service.PacingEngine.CurvePoint;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
-import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PredictorRows;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
 import java.time.LocalDate;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 
-import static com.imin.iminapi.predictor.rules.RuleFixtures.TODAY;
 import static com.imin.iminapi.predictor.rules.RuleFixtures.in;
 import static com.imin.iminapi.predictor.rules.RuleFixtures.q;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
-import static org.mockito.Mockito.when;
 
-/** Internal rules against real event rows (H2); the corpus and curve services are stubbed for 2.9 and 10.2. */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+/**
+ * Internal rules 2.1, 2.2 and 2.7 against real event rows; 2.9 and 10.2 are {@link InternalEvaluatorComparablesTest}.
+ * Each test has its own cities, so other tests' events never share its night.
+ */
+@IminIntegrationTest
 class InternalEvaluatorTest {
 
     /** Saturday 14 Nov 2026; Paris is UTC+1. */
@@ -59,9 +41,11 @@ class InternalEvaluatorTest {
     @Autowired InternalEvaluator evaluator;
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
-    @Autowired UserRepository users;
-    @MockitoBean ComparableCorpusService corpus;
-    @MockitoBean PacingCurveService curves;
+    @Autowired IminFixtures fx;
+    @Autowired JdbcTemplate jdbc;
+
+    private final String paris = "Paris" + letters();
+    private final String lyon = "Lyon" + letters();
 
     private UUID ownOrg;
     private UUID otherOrg;
@@ -69,32 +53,32 @@ class InternalEvaluatorTest {
 
     @BeforeEach
     void setUp() {
-        wipe();
-        ownOrg = org("Own");
-        otherOrg = org("Other");
-        User u = new User();
-        u.setEmail("o-" + UUID.randomUUID() + "@example.com");
-        u.setOrgId(ownOrg);
-        u.setRole(UserRole.OWNER);
-        userId = users.save(u).getId();
+        Organization own = org();
+        ownOrg = own.getId();
+        otherOrg = org().getId();
+        userId = fx.owner(own).getId();
     }
 
     @AfterEach
-    void tearDown() { wipe(); }
-
-    private void wipe() {
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+    void tearDown() {
+        PredictorRows.delete(jdbc, List.of(ownOrg, otherOrg));
     }
 
-    private UUID org(String name) {
-        Organization o = new Organization();
-        o.setName(name);
-        o.setSlug(name.toLowerCase() + "-" + UUID.randomUUID().toString().substring(0, 8));
-        o.setContactEmail("h@test.example");
+    private static String letters() {
+        StringBuilder b = new StringBuilder();
+        for (int i = 0; i < 8; i++) b.append((char) ('a' + ThreadLocalRandom.current().nextInt(26)));
+        return b.toString();
+    }
+
+    private Organization org() {
+        Organization o = fx.org();
         o.setCountry("FR");
-        return orgs.save(o).getId();
+        return orgs.save(o);
+    }
+
+    /** The own org's input in this test's Paris. */
+    private RuleFixtures.In mine() {
+        return in().org(ownOrg).city(paris, "FR", "75011");
     }
 
     private Event ev(UUID org, String city, String genre, String startsAt, EventStatus status) {
@@ -113,15 +97,15 @@ class InternalEvaluatorTest {
     }
 
     private Event other(String startsAt) {
-        return ev(otherOrg, "Paris", "House & Techno", startsAt, EventStatus.LIVE);
+        return ev(otherOrg, paris, "House & Techno", startsAt, EventStatus.LIVE);
     }
 
     private Event own(String startsAt, EventStatus status) {
-        return ev(ownOrg, "Paris", "House & Techno", startsAt, status);
+        return ev(ownOrg, paris, "House & Techno", startsAt, status);
     }
 
     private DateCheckInput paris() {
-        return in().org(ownOrg).build();
+        return mine().build();
     }
 
     private Finding eval(String id, DateCheckInput in) {
@@ -168,14 +152,14 @@ class InternalEvaluatorTest {
 
         e.setSubGenre("Techno");
         events.save(e);
-        DateCheckInput techno = in().org(ownOrg).genre("house & techno", "techno").build();
+        DateCheckInput techno = mine().genre("house & techno", "techno").build();
         assertThat(eval("2.2", techno).strength()).isEqualTo(3);
     }
 
     @Test
     void otherGenreClear() {
-        ev(otherOrg, "Paris", "Pop", "2026-11-14T22:00:00Z", EventStatus.LIVE);
-        ev(otherOrg, "Lyon", "House & Techno", "2026-11-14T22:00:00Z", EventStatus.LIVE);
+        ev(otherOrg, paris, "Pop", "2026-11-14T22:00:00Z", EventStatus.LIVE);
+        ev(otherOrg, lyon, "House & Techno", "2026-11-14T22:00:00Z", EventStatus.LIVE);
 
         assertThat(eval("2.1", paris()).status()).isEqualTo(Status.CLEAR);
     }
@@ -190,8 +174,8 @@ class InternalEvaluatorTest {
     @Test
     void cancelledAndDraftIgnored() {
         own("2026-11-14T22:00:00Z", EventStatus.LIVE); // the city has a public listing
-        ev(otherOrg, "Paris", "House & Techno", "2026-11-14T22:00:00Z", EventStatus.CANCELLED);
-        ev(otherOrg, "Paris", "House & Techno", "2026-11-14T22:00:00Z", EventStatus.DRAFT);
+        ev(otherOrg, paris, "House & Techno", "2026-11-14T22:00:00Z", EventStatus.CANCELLED);
+        ev(otherOrg, paris, "House & Techno", "2026-11-14T22:00:00Z", EventStatus.DRAFT);
 
         assertThat(eval("2.1", paris()).status()).isEqualTo(Status.CLEAR);
     }
@@ -208,7 +192,7 @@ class InternalEvaluatorTest {
 
     @Test
     void cityWithOnlyCancelledOrPrivateEventsNotChecked() {
-        ev(otherOrg, "Paris", "House & Techno", "2026-11-14T22:00:00Z", EventStatus.CANCELLED);
+        ev(otherOrg, paris, "House & Techno", "2026-11-14T22:00:00Z", EventStatus.CANCELLED);
         Event hidden = other("2026-11-14T22:00:00Z");
         hidden.setVisibility(EventVisibility.PRIVATE);
         events.save(hidden);
@@ -218,7 +202,7 @@ class InternalEvaluatorTest {
 
     @Test
     void blankCityNotProvided() {
-        DateCheckInput blank = in().org(ownOrg).city("  ", "FR", null).build();
+        DateCheckInput blank = mine().city("  ", "FR", null).build();
 
         Finding night = eval("2.1", blank);
         Finding week = eval("2.2", blank);
@@ -236,7 +220,7 @@ class InternalEvaluatorTest {
 
         assertThat(f.status()).isEqualTo(Status.NOT_CHECKED);
         assertThat(f.facts()).containsEntry("reason", "no_imin_events_in_city");
-        assertThat(eval("2.2", in().org(ownOrg).city("Lyon", "FR", "69001").build()).facts())
+        assertThat(eval("2.2", mine().city(lyon, "FR", "69001").build()).facts())
                 .containsEntry("reason", "no_imin_events_in_city");
     }
 
@@ -244,7 +228,7 @@ class InternalEvaluatorTest {
     void noGenreNotChecked() {
         other("2026-11-14T22:00:00Z");
 
-        Finding f = eval("2.1", in().org(ownOrg).genre(null, null).build());
+        Finding f = eval("2.1", mine().genre(null, null).build());
 
         assertThat(f.status()).isEqualTo(Status.NOT_CHECKED);
         assertThat(f.facts()).containsEntry("reason", "not_provided");
@@ -272,7 +256,7 @@ class InternalEvaluatorTest {
         Event shared = own("2026-11-20T22:00:00Z", EventStatus.DRAFT);
         shared.setDescription("Headliner: Amelie Lens, with residents.");
         events.save(shared);
-        DateCheckInput in = in().org(ownOrg).lineup("amelie lens", "DJ", "Ben").build();
+        DateCheckInput in = mine().lineup("amelie lens", "DJ", "Ben").build();
 
         Finding f = eval("2.7", in);
 
@@ -296,7 +280,7 @@ class InternalEvaluatorTest {
     void ownEventsBlankCityNotProvided() {
         own("2026-11-14T22:00:00Z", EventStatus.LIVE);
 
-        Finding f = eval("2.7", in().org(ownOrg).city("", "FR", null).build());
+        Finding f = eval("2.7", mine().city("", "FR", null).build());
 
         assertThat(f.status()).isEqualTo(Status.NOT_CHECKED);
         assertThat(f.facts()).containsEntry("reason", "not_provided");
@@ -307,10 +291,10 @@ class InternalEvaluatorTest {
         Event self = own("2026-11-14T22:00:00Z", EventStatus.DRAFT);
 
         assertThat(eval("2.7", paris()).status()).isEqualTo(Status.FOUND);
-        assertThat(eval("2.7", in().org(ownOrg).excludeEvent(self.getId()).build()).status())
+        assertThat(eval("2.7", mine().excludeEvent(self.getId()).build()).status())
                 .isEqualTo(Status.CLEAR);
         Event other = own("2026-11-20T22:00:00Z", EventStatus.LIVE);
-        Finding f = eval("2.7", in().org(ownOrg).excludeEvent(self.getId()).build());
+        Finding f = eval("2.7", mine().excludeEvent(self.getId()).build());
         assertThat(f.status()).isEqualTo(Status.FOUND);
         assertThat(f.facts()).containsEntry("name", other.getName());
     }
@@ -320,117 +304,5 @@ class InternalEvaluatorTest {
         own("2026-11-14T22:00:00Z", EventStatus.CANCELLED);
 
         assertThat(eval("2.7", paris()).status()).isEqualTo(Status.CLEAR);
-    }
-
-    // --- 2.9 ---
-
-    private void corpusReturns(int own, int ownSellOuts, ForeignAggregate foreign) {
-        List<OwnEvent> ownEvents = new ArrayList<>();
-        for (int i = 0; i < own; i++) {
-            ownEvents.add(new OwnEvent(UUID.randomUUID(), "Own " + i, 200, 100_000L, i < ownSellOuts, 200, 200,
-                    Instant.parse("2025-11-14T22:00:00Z")));
-        }
-        int foreignCount = foreign == null ? 0 : foreign.count();
-        when(corpus.retrieve(any(), any(), any(), any(), any(), any())).thenReturn(new ComparableCorpus(
-                RelaxationLevel.NONE, own + foreignCount, own, foreignCount, ownEvents, foreign));
-    }
-
-    private static ForeignAggregate foreign(int count, double rate) {
-        return new ForeignAggregate(count, 200, 200, 100_000L, rate);
-    }
-
-    @Test
-    void comparablesSellOutOpportunity() {
-        corpusReturns(2, 1, foreign(5, 0.4));
-
-        Finding f = eval("2.9", paris());
-
-        assertThat(f.status()).isEqualTo(Status.FOUND);
-        assertThat(f.kind()).isEqualTo(Kind.OPPORTUNITY);
-        assertThat(f.strength()).isEqualTo(2);
-        assertThat(f.facts()).containsEntry("sellOutRate", 0.45).containsEntry("n", 7)
-                .containsEntry("relaxation", "NONE");
-        verify(corpus).retrieve(ownOrg, "paris", "FR", "house & techno", CapacityBand.B101_300,
-                Season.AUTUMN);
-    }
-
-    @Test
-    void lowSellOutRisk() {
-        corpusReturns(0, 0, foreign(10, 0.0));
-
-        Finding f = eval("2.9", paris());
-
-        assertThat(f.kind()).isEqualTo(Kind.RISK);
-        assertThat(f.strength()).isEqualTo(2);
-    }
-
-    @Test
-    void middleClear() {
-        corpusReturns(0, 0, foreign(10, 0.2));
-
-        assertThat(eval("2.9", paris()).status()).isEqualTo(Status.CLEAR);
-    }
-
-    @Test
-    void nullCapacityNotChecked() {
-        Finding f = eval("2.9", in().org(ownOrg).capacity(null).build());
-
-        assertThat(f.status()).isEqualTo(Status.NOT_CHECKED);
-        assertThat(f.facts()).containsEntry("reason", "not_provided");
-        assertThat(eval("10.2", in().org(ownOrg).capacity(null).build()).facts()).containsEntry("reason", "not_provided");
-        verifyNoInteractions(corpus, curves);
-    }
-
-    @Test
-    void underMinEventsNotChecked() {
-        corpusReturns(4, 4, null); // foreign cluster suppressed for privacy: only own events count
-
-        Finding f = eval("2.9", paris());
-
-        assertThat(f.status()).isEqualTo(Status.NOT_CHECKED);
-        assertThat(f.facts()).containsEntry("reason", "no_data");
-    }
-
-    // --- 10.2 ---
-
-    private void curveReturns(CurvePoint... points) {
-        when(curves.lookup(any(), any(), any(), any(), any())).thenReturn(
-                Optional.of(new CurveMatch(RelaxationLevel.NONE, new Curve(12, List.of(points)))));
-    }
-
-    @Test
-    void noCurveNotChecked() {
-        when(curves.lookup(any(), any(), any(), any(), any())).thenReturn(Optional.empty());
-
-        Finding f = eval("10.2", paris());
-
-        assertThat(f.status()).isEqualTo(Status.NOT_CHECKED);
-        assertThat(f.facts()).containsEntry("reason", "no_data");
-    }
-
-    @Test
-    void shortLeadMissesBuyersRisk() {
-        // lead is 45 days: the first point at or beyond it is daysOut 50
-        curveReturns(new CurvePoint(60, 0.2, 0.1, 0.3), new CurvePoint(50, 0.3, 0.2, 0.4),
-                new CurvePoint(30, 0.6, 0.5, 0.7));
-
-        Finding f = eval("10.2", paris());
-
-        assertThat(f.status()).isEqualTo(Status.FOUND);
-        assertThat(f.strength()).isEqualTo(2);
-        assertThat(f.facts()).containsEntry("leadDays", 45L).containsEntry("soldShareBefore", 0.3);
-        verify(curves).lookup("paris", "FR", "house & techno", CapacityBand.B101_300, Season.AUTUMN);
-
-        curveReturns(new CurvePoint(50, 0.55, 0.4, 0.6));
-        assertThat(eval("10.2", paris()).strength()).isEqualTo(3);
-    }
-
-    @Test
-    void longLeadClear() {
-        curveReturns(new CurvePoint(40, 0.3, 0.2, 0.4));
-        assertThat(eval("10.2", paris()).status()).isEqualTo(Status.CLEAR); // no point as far out as 45 days
-
-        curveReturns(new CurvePoint(50, 0.2, 0.1, 0.3));
-        assertThat(eval("10.2", paris()).status()).isEqualTo(Status.CLEAR);
     }
 }
