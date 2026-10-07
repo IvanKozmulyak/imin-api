@@ -16,7 +16,6 @@ import com.imin.iminapi.audienceplan.model.ImportRowProvenance;
 import com.imin.iminapi.audienceplan.repository.AudienceImportRepository;
 import com.imin.iminapi.audienceplan.repository.FanFeatureRepository;
 import com.imin.iminapi.audienceplan.repository.ImportRowProvenanceRepository;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.EventVisibility;
@@ -30,19 +29,17 @@ import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.UserRepository;
-import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.PlatformTransactionManager;
 
 import java.sql.Timestamp;
@@ -55,19 +52,19 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 
 /**
- * RetentionJob against the real ConsentGate query. Run on H2 ({@link RetentionJobTest}) and Postgres
- * ({@link RetentionJobPostgresTest}). The clock sits in 2040 so rows other tests leave behind are never fresh.
+ * RetentionJob against the real ConsentGate query on Postgres. The clock sits in 2040, so every leftover
+ * member in the shared database looks expired: the hand-built job only sees this test's orgs.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 @ExtendWith(OutputCaptureExtension.class)
-abstract class RetentionJobScenarios {
+class RetentionJobIntegrationTest {
 
     static final Instant NOW = Instant.parse("2040-03-15T10:00:00Z");
     static final ZoneId PARIS = ZoneId.of("Europe/Paris");
@@ -92,15 +89,16 @@ abstract class RetentionJobScenarios {
     @Autowired OrderRepository orderRepo;
     @Autowired TicketRepository ticketRepo;
     @Autowired JdbcTemplate jdbc;
-    @MockitoBean AuditLogger auditLogger;
-    // Live recomputes run on the real clock; the calculator's retention rule has its own tests.
-    @MockitoBean FanFeatureProjector projector;
+    @Autowired AudiencePlanProperties planProps;
+    @Autowired PropertyFlips flips;
 
     UUID orgA;
     private final List<UUID> orgs = new ArrayList<>();
 
     @BeforeEach
     void setUp() {
+        // Live recomputes run on the real clock and would rewrite the 2040 fixtures; they skip orgs off the list.
+        flips.set(planProps, "betaOrgIds", Set.of(UUID.randomUUID()));
         orgA = org("Europe/Paris");
     }
 
@@ -486,9 +484,10 @@ abstract class RetentionJobScenarios {
                 txManager, clock, mock(ObjectProvider.class));
     }
 
-    static AudiencePlanProperties props(boolean retentionEnabled) {
+    AudiencePlanProperties props(boolean retentionEnabled) {
         AudiencePlanProperties p = new AudiencePlanProperties();
         p.setRetentionJobEnabled(retentionEnabled);
+        p.setBetaOrgIds(Set.copyOf(orgs));
         return p;
     }
 

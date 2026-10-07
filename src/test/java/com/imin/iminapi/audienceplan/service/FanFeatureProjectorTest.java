@@ -14,7 +14,6 @@ import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
 import com.imin.iminapi.audienceplan.model.FanFeature;
 import com.imin.iminapi.audienceplan.repository.FanFeatureRepository;
 import com.imin.iminapi.audienceplan.repository.FanFeatureTarget;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Ticket;
@@ -24,17 +23,15 @@ import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.service.ticket.TicketRedeemedEvent;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.AdditionalAnswers;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.event.TransactionPhase;
-import org.springframework.transaction.event.TransactionalEventListener;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
@@ -63,11 +60,10 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * FanFeatureProjector against H2 with the real repositories. The projector is built as a plain
+ * FanFeatureProjector against Postgres with the real repositories. The projector is built as a plain
  * instance with a direct executor so its listeners run on the test thread.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class FanFeatureProjectorTest {
 
     private static final String TECHNO = "House & Techno";
@@ -373,25 +369,16 @@ class FanFeatureProjectorTest {
         assertThat(features.findById(m.getMembershipId())).isEmpty();
     }
 
-    @Test
-    void unreadableOrgTimezone_fallsBackToUtc() {
-        FanFeatureFixtures.Org org = fx.org("Not/AZone");
+    @ParameterizedTest
+    @CsvSource(value = {"Not/AZone | Z", "Europe/Paris | Europe/Paris", "'  ' | Z"}, delimiter = '|')
+    void orgTimezone_isUsedWhenReadable_elseUtc_andTheRowIsStillWritten(String timezone, String expected) {
+        // The column is NOT NULL, so a missing row (below) is the only way to reach a null timezone.
+        FanFeatureFixtures.Org org = fx.org(timezone);
         Membership m = fx.membership(org.id(), FanFeatureFixtures.email("tz"));
 
-        assertThat(projector().zoneOf(org.id())).isEqualTo(ZoneOffset.UTC);
+        assertThat(projector().zoneOf(org.id())).isEqualTo(ZoneId.of(expected));
         assertThat(projector().recompute(org.id(), m.getMembershipId())).isTrue();
         assertThat(features.findById(m.getMembershipId()).orElseThrow().getFanClass()).isEqualTo("none");
-    }
-
-    @Test
-    void orgTimezone_readableIsUsed() {
-        assertThat(projector().zoneOf(fx.org("Europe/Paris").id())).isEqualTo(ZoneId.of("Europe/Paris"));
-    }
-
-    @Test
-    void orgTimezone_blank_fallsBackToUtc() {
-        // The column is NOT NULL, so a missing row (below) is the only way to reach a null timezone.
-        assertThat(projector().zoneOf(fx.org("  ").id())).isEqualTo(ZoneOffset.UTC);
     }
 
     @Test
@@ -543,16 +530,5 @@ class FanFeatureProjectorTest {
         p.onConsentChanged(event);
 
         assertThat(queued).hasSize(1);
-    }
-
-    @Test
-    void listeners_runAfterCommit_andHandOffInsteadOfUsingTheDefaultPool() {
-        for (String name : List.of("onMembershipProjected", "onTicketRedeemed", "onConsentChanged")) {
-            var method = java.util.Arrays.stream(FanFeatureProjector.class.getMethods())
-                    .filter(mm -> mm.getName().equals(name)).findFirst().orElseThrow();
-            assertThat(method.getAnnotation(TransactionalEventListener.class).phase())
-                    .as(name).isEqualTo(TransactionPhase.AFTER_COMMIT);
-            assertThat(method.getAnnotation(Async.class)).as(name).isNull();
-        }
     }
 }

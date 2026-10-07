@@ -20,8 +20,8 @@ import com.imin.iminapi.audienceplan.model.ImportRowProvenance;
 import com.imin.iminapi.audienceplan.repository.AudienceImportRepository;
 import com.imin.iminapi.audienceplan.repository.FanFeatureRepository;
 import com.imin.iminapi.audienceplan.repository.ImportRowProvenanceRepository;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.support.AsyncDrain;
+import com.imin.iminapi.support.IminIntegrationTest;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.EventVisibility;
@@ -36,20 +36,20 @@ import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
-import com.imin.iminapi.service.audit.AuditLogger;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.NullSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.AdditionalAnswers;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -64,6 +64,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Executor;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -73,12 +74,10 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 /**
- * ConsentGate clauses, one test per clause. Run on H2 ({@link ConsentGateTest}) and on
- * Postgres 17 ({@link ConsentGatePostgresTest}) because the gate is one native query.
+ * ConsentGate clauses, one row per clause, on the shared Postgres because the gate is one native query.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
-abstract class ConsentGateScenarios {
+@IminIntegrationTest
+class ConsentGateIntegrationTest {
 
     /** Paris date 2026-09-27; cutoff date = 2026-09-27 − 1095 days = 2023-09-28. */
     static final Instant NOW = Instant.parse("2026-09-27T10:00:00Z");
@@ -109,7 +108,6 @@ abstract class ConsentGateScenarios {
     @Autowired TicketRepository ticketRepo;
     @Autowired JdbcTemplate jdbc;
     @Autowired @Qualifier(FanFeatureExecutors.LIVE) Executor fanFeatureExecutor;
-    @MockitoBean AuditLogger auditLogger;
 
     UUID orgA;
     UUID orgB;
@@ -155,123 +153,78 @@ abstract class ConsentGateScenarios {
 
     // ── explicit: organizer_import_row ─────────────────────────────────────
 
-    @Test
-    void importRow_withAcceptedProvenance_isMailable() {
-        UUID mid = member(orgA);
-        consent(mid, "explicit", "organizer_import_row", "2026-09-27", null, RECENT);
-        provenance(orgA, mid, true, LocalDate.parse("2026-08-01"));
-
-        assertMailable(gate(), orgA, mid);
+    /** Builds one member's consent state for a param row. */
+    interface Setup {
+        void apply(ConsentGateIntegrationTest t, UUID mid);
     }
 
-    @Test
-    void importRow_withoutProvenance_isLegacyUnproven() {
-        UUID mid = member(orgA);
-        consent(mid, "explicit", "organizer_import_row", "2026-09-27", null, RECENT);
-        contact(mid, RECENT);
-
-        assertReason(gate(), orgA, mid, ConsentGate.LEGACY_UNPROVEN);
+    static Stream<Arguments> importedConsent() {
+        return Stream.of(
+                Arguments.of("import row with accepted provenance", (Setup) (t, mid) -> {
+                    t.consent(mid, "explicit", "organizer_import_row", "2026-09-27", null, RECENT);
+                    t.provenance(t.orgA, mid, true, LocalDate.parse("2026-08-01"));
+                }, null),
+                Arguments.of("import row without provenance", (Setup) (t, mid) -> {
+                    t.consent(mid, "explicit", "organizer_import_row", "2026-09-27", null, RECENT);
+                    t.contact(mid, RECENT);
+                }, ConsentGate.LEGACY_UNPROVEN),
+                Arguments.of("import row with only rejected provenance", (Setup) (t, mid) -> {
+                    t.consent(mid, "explicit", "organizer_import_row", "2026-09-27", null, RECENT);
+                    t.provenance(t.orgA, mid, false, LocalDate.parse("2026-08-01"));
+                }, ConsentGate.LEGACY_UNPROVEN),
+                Arguments.of("import row typed by the organizer without a text version", (Setup) (t, mid) -> {
+                    t.provenance(t.orgA, mid, true, LocalDate.parse("2026-08-01"));
+                    t.consentService.capture(t.orgA, mid, "explicit", "organizer_import_row", "typed", t.organizerA);
+                }, ConsentGate.LEGACY_UNPROVEN),
+                Arguments.of("legacy bulk organizer import", (Setup) (t, mid) -> {
+                    t.consent(mid, "explicit", "organizer_import", null, null, RECENT);
+                    t.contact(mid, RECENT);
+                }, ConsentGate.LEGACY_UNPROVEN));
     }
 
-    @Test
-    void importRow_withOnlyRejectedProvenance_isLegacyUnproven() {
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("importedConsent")
+    void importedConsent_isMailableOnlyWithAcceptedProvenanceAndAVersion(String name, Setup setup, String reason) {
         UUID mid = member(orgA);
-        consent(mid, "explicit", "organizer_import_row", "2026-09-27", null, RECENT);
-        provenance(orgA, mid, false, LocalDate.parse("2026-08-01"));
+        setup.apply(this, mid);
 
-        assertReason(gate(), orgA, mid, ConsentGate.LEGACY_UNPROVEN);
-    }
-
-    @Test
-    void importRow_typedByOrganizerWithoutTextVersion_isLegacyEvenWithProvenance() {
-        UUID mid = member(orgA);
-        provenance(orgA, mid, true, LocalDate.parse("2026-08-01"));
-        consentService.capture(orgA, mid, "explicit", "organizer_import_row", "typed", organizerA);
-
-        assertReason(gate(), orgA, mid, ConsentGate.LEGACY_UNPROVEN);
-    }
-
-    @Test
-    void legacyBulkOrganizerImport_isLegacyUnproven() {
-        UUID mid = member(orgA);
-        consent(mid, "explicit", "organizer_import", null, null, RECENT);
-        contact(mid, RECENT);
-
-        assertReason(gate(), orgA, mid, ConsentGate.LEGACY_UNPROVEN);
+        assertVerdict(gate(), orgA, mid, reason);
     }
 
     // ── explicit: checkout ─────────────────────────────────────────────────
 
-    @Test
-    void checkout_withAllowlistedVersion_isMailable() {
+    @ParameterizedTest
+    @NullSource
+    @ValueSource(strings = {NAMED_VERSION, "checkout-unnamed-v0"})
+    void checkout_isMailableOnlyWithAnAllowlistedVersion(String version) {
         UUID mid = member(orgA);
-        consent(mid, "explicit", "checkout", NAMED_VERSION, UUID.randomUUID(), RECENT);
+        consent(mid, "explicit", "checkout", version, UUID.randomUUID(), RECENT);
+        String reason = NAMED_VERSION.equals(version) ? null : ConsentGate.LEGACY_UNPROVEN;
+        if (reason != null) contact(mid, RECENT);
 
-        assertMailable(gate(), orgA, mid);
+        assertVerdict(gate(), orgA, mid, reason);
     }
 
-    @Test
-    void checkout_withNullVersion_isLegacyUnproven() {
+    @ParameterizedTest
+    @NullSource
+    @ValueSource(strings = {SHIPPED_LABEL_VERSION, NAMED_VERSION})
+    void checkout_underShippedLogic_isMailableOnlyWithTheShippedLabelVersion(String version) {
         UUID mid = member(orgA);
-        consent(mid, "explicit", "checkout", null, UUID.randomUUID(), RECENT);
-        contact(mid, RECENT);
-
-        assertReason(gate(), orgA, mid, ConsentGate.LEGACY_UNPROVEN);
-    }
-
-    @Test
-    void checkout_withNonAllowlistedVersion_isLegacyUnproven() {
-        UUID mid = member(orgA);
-        consent(mid, "explicit", "checkout", "checkout-unnamed-v0", UUID.randomUUID(), RECENT);
-        contact(mid, RECENT);
-
-        assertReason(gate(), orgA, mid, ConsentGate.LEGACY_UNPROVEN);
-    }
-
-    @Test
-    void checkout_withShippedLabelVersion_isMailableUnderShippedLogic() {
-        UUID mid = member(orgA);
-        consent(mid, "explicit", "checkout", SHIPPED_LABEL_VERSION, UUID.randomUUID(), RECENT);
+        consent(mid, "explicit", "checkout", version, UUID.randomUUID(), RECENT);
+        String reason = SHIPPED_LABEL_VERSION.equals(version) ? null : ConsentGate.LEGACY_UNPROVEN;
+        if (reason != null) contact(mid, RECENT);
 
         ConsentGate shipped = new ConsentGate(fanRepo, orgRepo, shippedLogic, props(false), clock());
-        assertMailable(shipped, orgA, mid);
-    }
-
-    @Test
-    void checkout_withNullVersion_isLegacyUnprovenUnderShippedLogic() {
-        UUID mid = member(orgA);
-        consent(mid, "explicit", "checkout", null, UUID.randomUUID(), RECENT);
-        contact(mid, RECENT);
-
-        ConsentGate shipped = new ConsentGate(fanRepo, orgRepo, shippedLogic, props(false), clock());
-        assertReason(shipped, orgA, mid, ConsentGate.LEGACY_UNPROVEN);
-    }
-
-    @Test
-    void checkout_withTestOnlyVersion_isLegacyUnprovenUnderShippedLogic() {
-        UUID mid = member(orgA);
-        consent(mid, "explicit", "checkout", NAMED_VERSION, UUID.randomUUID(), RECENT);
-        contact(mid, RECENT);
-
-        ConsentGate shipped = new ConsentGate(fanRepo, orgRepo, shippedLogic, props(false), clock());
-        assertReason(shipped, orgA, mid, ConsentGate.LEGACY_UNPROVEN);
+        assertVerdict(shipped, orgA, mid, reason);
     }
 
     // ── explicit: organizer-typed and other sources ────────────────────────
 
-    @Test
-    void organizerTypedCapture_isLegacyUnproven() {
+    @ParameterizedTest
+    @CsvSource({"met at the bar, Said yes in person", "checkout, Claimed checkout"})
+    void organizerTypedCapture_isLegacyUnproven_whateverTheSource(String source, String proof) {
         UUID mid = member(orgA);
-        consentService.capture(orgA, mid, "explicit", "met at the bar", "Said yes in person", organizerA);
-        contact(mid, RECENT);
-
-        assertReason(gate(), orgA, mid, ConsentGate.LEGACY_UNPROVEN);
-    }
-
-    @Test
-    void organizerTypedCapture_usingTheCheckoutSource_isLegacyUnproven() {
-        UUID mid = member(orgA);
-        consentService.capture(orgA, mid, "explicit", "checkout", "Claimed checkout", organizerA);
+        consentService.capture(orgA, mid, "explicit", source, proof, organizerA);
         contact(mid, RECENT);
 
         assertReason(gate(), orgA, mid, ConsentGate.LEGACY_UNPROVEN);
@@ -417,46 +370,25 @@ abstract class ConsentGateScenarios {
         assertMailable(gate(true), orgA, mid);
     }
 
-    @Test
-    void softOptIn_flagOn_freeOrder_isLegacyUnproven() {
-        UUID mid = member(orgA);
-        consent(mid, "soft_opt_in", "checkout", null, paidOrder(orgA, "free", 0, false, Ticket.STATE_ISSUED), RECENT);
-        contact(mid, RECENT);
-
-        assertReason(gate(true), orgA, mid, ConsentGate.LEGACY_UNPROVEN);
+    static Stream<Arguments> softOptInWithoutAQualifyingOrder() {
+        return Stream.of(
+                Arguments.of("free order", (Setup) (t, mid) -> t.consent(mid, "soft_opt_in", "checkout", null,
+                        t.paidOrder(t.orgA, "free", 0, false, Ticket.STATE_ISSUED), RECENT)),
+                Arguments.of("test-mode order", (Setup) (t, mid) -> t.consent(mid, "soft_opt_in", "checkout", null,
+                        t.paidOrder(t.orgA, "stripe", 1500, true, Ticket.STATE_ISSUED), RECENT)),
+                Arguments.of("fully refunded order", (Setup) (t, mid) -> t.consent(mid, "soft_opt_in", "checkout", null,
+                        t.paidOrder(t.orgA, "stripe", 1500, false, Ticket.STATE_REFUNDED), RECENT)),
+                Arguments.of("legacy row without an order id", (Setup) (t, mid) -> t.consent(mid, "soft_opt_in",
+                        "checkout", null, null, RECENT)),
+                Arguments.of("order of another org", (Setup) (t, mid) -> t.consent(mid, "soft_opt_in", "checkout", null,
+                        t.paidOrder(t.orgB, "stripe", 1500, false, Ticket.STATE_ISSUED), RECENT)));
     }
 
-    @Test
-    void softOptIn_flagOn_testModeOrder_isLegacyUnproven() {
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("softOptInWithoutAQualifyingOrder")
+    void softOptIn_flagOn_withoutAPaidOrderOfThisOrg_isLegacyUnproven(String name, Setup setup) {
         UUID mid = member(orgA);
-        consent(mid, "soft_opt_in", "checkout", null, paidOrder(orgA, "stripe", 1500, true, Ticket.STATE_ISSUED), RECENT);
-        contact(mid, RECENT);
-
-        assertReason(gate(true), orgA, mid, ConsentGate.LEGACY_UNPROVEN);
-    }
-
-    @Test
-    void softOptIn_flagOn_fullyRefundedOrder_isLegacyUnproven() {
-        UUID mid = member(orgA);
-        consent(mid, "soft_opt_in", "checkout", null, paidOrder(orgA, "stripe", 1500, false, Ticket.STATE_REFUNDED), RECENT);
-        contact(mid, RECENT);
-
-        assertReason(gate(true), orgA, mid, ConsentGate.LEGACY_UNPROVEN);
-    }
-
-    @Test
-    void softOptIn_flagOn_legacyRowWithoutOrderId_isLegacyUnproven() {
-        UUID mid = member(orgA);
-        consent(mid, "soft_opt_in", "checkout", null, null, RECENT);
-        contact(mid, RECENT);
-
-        assertReason(gate(true), orgA, mid, ConsentGate.LEGACY_UNPROVEN);
-    }
-
-    @Test
-    void softOptIn_flagOn_orderOfAnotherOrg_isLegacyUnproven() {
-        UUID mid = member(orgA);
-        consent(mid, "soft_opt_in", "checkout", null, paidOrder(orgB, "stripe", 1500, false, Ticket.STATE_ISSUED), RECENT);
+        setup.apply(this, mid);
         contact(mid, RECENT);
 
         assertReason(gate(true), orgA, mid, ConsentGate.LEGACY_UNPROVEN);
@@ -475,97 +407,63 @@ abstract class ConsentGateScenarios {
 
     // ── status, suppression, objection ─────────────────────────────────────
 
-    @Test
-    void unsubscribed_isExcluded() {
-        UUID mid = member(orgA);
-        consent(mid, "explicit", "checkout", NAMED_VERSION, null, RECENT);
-        setConsentStatus(mid, "unsubscribed");
-
-        assertReason(gate(), orgA, mid, ConsentGate.UNSUBSCRIBED);
+    static Stream<Arguments> exclusions() {
+        return Stream.of(
+                Arguments.of("unsubscribed", (Setup) (t, mid) -> t.setConsentStatus(mid, "unsubscribed"),
+                        ConsentGate.UNSUBSCRIBED),
+                Arguments.of("sticky opt-out while subscribed", (Setup) (t, mid) -> t.optOutRepo.save(
+                        MarketingOptOut.of(t.emailOf(mid), t.orgA, "email", "one_click")), ConsentGate.UNSUBSCRIBED),
+                Arguments.of("marketing suppressed", (Setup) (t, mid) -> t.suppressionService.addMarketing(t.orgA, mid,
+                        SuppressionEntry.REASON_MANUAL, t.organizerA), ConsentGate.SUPPRESSED),
+                Arguments.of("deliverability suppressed", (Setup) (t, mid) -> t.suppressionService.addDeliverability(
+                        t.emailOf(mid), SuppressionEntry.REASON_HARD_BOUNCE), ConsentGate.SUPPRESSED),
+                Arguments.of("erase pending", (Setup) (t, mid) -> t.jdbc.update(
+                        "update memberships set status = 'erase_pending' where membership_id = ?", mid),
+                        ConsentGate.ERASE_PENDING),
+                Arguments.of("blank email", (Setup) (t, mid) -> t.jdbc.update(
+                        "update consumers set normalized_email = '' where consumer_id = "
+                                + "(select consumer_id from memberships where membership_id = ?)", mid),
+                        ConsentGate.NO_EMAIL),
+                Arguments.of("objected to profiling", (Setup) (t, mid) -> t.jdbc.update(
+                        "update memberships set objected_profiling = TRUE where membership_id = ?", mid),
+                        ConsentGate.OBJECTED));
     }
 
-    @Test
-    void stickyOptOut_isUnsubscribed_evenWhileSubscribed() {
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("exclusions")
+    void provenMember_isExcludedWithItsReason(String name, Setup exclude, String reason) {
         UUID mid = member(orgA);
         consent(mid, "explicit", "checkout", NAMED_VERSION, null, RECENT);
-        optOutRepo.save(MarketingOptOut.of(emailOf(mid), orgA, "email", "one_click"));
+        exclude.apply(this, mid);
 
-        assertReason(gate(), orgA, mid, ConsentGate.UNSUBSCRIBED);
-    }
-
-    @Test
-    void marketingSuppressed_isSuppressed() {
-        UUID mid = member(orgA);
-        consent(mid, "explicit", "checkout", NAMED_VERSION, null, RECENT);
-        suppressionService.addMarketing(orgA, mid, SuppressionEntry.REASON_MANUAL, organizerA);
-
-        assertReason(gate(), orgA, mid, ConsentGate.SUPPRESSED);
-    }
-
-    @Test
-    void deliverabilitySuppressed_isSuppressed() {
-        UUID mid = member(orgA);
-        consent(mid, "explicit", "checkout", NAMED_VERSION, null, RECENT);
-        suppressionService.addDeliverability(emailOf(mid), SuppressionEntry.REASON_HARD_BOUNCE);
-
-        assertReason(gate(), orgA, mid, ConsentGate.SUPPRESSED);
-    }
-
-    @Test
-    void erasePending_isExcluded() {
-        UUID mid = member(orgA);
-        consent(mid, "explicit", "checkout", NAMED_VERSION, null, RECENT);
-        jdbc.update("update memberships set status = 'erase_pending' where membership_id = ?", mid);
-
-        assertReason(gate(), orgA, mid, ConsentGate.ERASE_PENDING);
-    }
-
-    @Test
-    void blankEmail_isNoEmail() {
-        UUID mid = member(orgA);
-        consent(mid, "explicit", "checkout", NAMED_VERSION, null, RECENT);
-        jdbc.update("update consumers set normalized_email = '' where consumer_id = "
-                + "(select consumer_id from memberships where membership_id = ?)", mid);
-
-        assertReason(gate(), orgA, mid, ConsentGate.NO_EMAIL);
-    }
-
-    @Test
-    void objectedProfiling_isObjected() {
-        UUID mid = member(orgA);
-        consent(mid, "explicit", "checkout", NAMED_VERSION, null, RECENT);
-        jdbc.update("update memberships set objected_profiling = TRUE where membership_id = ?", mid);
-
-        assertReason(gate(), orgA, mid, ConsentGate.OBJECTED);
+        assertReason(gate(), orgA, mid, reason);
     }
 
     // ── 3-year rule (org timezone) ─────────────────────────────────────────
 
-    @Test
-    void lastContact1095DaysAgo_isMailable() {
-        UUID mid = member(orgA);
-        consent(mid, "explicit", "door_qr", "door-v1", null, Instant.parse("2020-01-01T12:00:00Z"));
-        contact(mid, CUTOFF_DATE.atTime(12, 0).toInstant(ZoneOffset.UTC));
-
-        assertMailable(gate(), orgA, mid);
+    static Stream<Arguments> retentionBoundary() {
+        return Stream.of(
+                Arguments.of("last contact 1095 days ago", (Setup) (t, mid) -> {
+                    t.consent(mid, "explicit", "door_qr", "door-v1", null, Instant.parse("2020-01-01T12:00:00Z"));
+                    t.contact(mid, CUTOFF_DATE.atTime(12, 0).toInstant(ZoneOffset.UTC));
+                }, null),
+                Arguments.of("last contact 1096 days ago", (Setup) (t, mid) -> {
+                    t.consent(mid, "explicit", "door_qr", "door-v1", null, Instant.parse("2020-01-01T12:00:00Z"));
+                    t.contact(mid, CUTOFF_DATE.minusDays(1).atTime(12, 0).toInstant(ZoneOffset.UTC));
+                }, ConsentGate.RETENTION_3Y),
+                Arguments.of("no last contact", (Setup) (t, mid) -> {
+                    t.consent(mid, "explicit", "organizer_import_row", "2026-09-27", null, RECENT);
+                    t.provenance(t.orgA, mid, true, null);
+                }, ConsentGate.RETENTION_3Y));
     }
 
-    @Test
-    void lastContact1096DaysAgo_isRetention3y() {
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("retentionBoundary")
+    void lastContact_withinThreeYearsInTheOrgsCalendar_isMailable(String name, Setup setup, String reason) {
         UUID mid = member(orgA);
-        consent(mid, "explicit", "door_qr", "door-v1", null, Instant.parse("2020-01-01T12:00:00Z"));
-        contact(mid, CUTOFF_DATE.minusDays(1).atTime(12, 0).toInstant(ZoneOffset.UTC));
+        setup.apply(this, mid);
 
-        assertReason(gate(), orgA, mid, ConsentGate.RETENTION_3Y);
-    }
-
-    @Test
-    void nullLastContact_isRetention3y() {
-        UUID mid = member(orgA);
-        consent(mid, "explicit", "organizer_import_row", "2026-09-27", null, RECENT);
-        provenance(orgA, mid, true, null);
-
-        assertReason(gate(), orgA, mid, ConsentGate.RETENTION_3Y);
+        assertVerdict(gate(), orgA, mid, reason);
     }
 
     @Test
@@ -820,6 +718,12 @@ abstract class ConsentGateScenarios {
         assertThat(gate.mailableMembershipIds(orgId)).contains(mid);
     }
 
+    /** {@code reason == null} means mailable. */
+    static void assertVerdict(ConsentGate gate, UUID orgId, UUID mid, String reason) {
+        if (reason == null) assertMailable(gate, orgId, mid);
+        else assertReason(gate, orgId, mid, reason);
+    }
+
     static void assertReason(ConsentGate gate, UUID orgId, UUID mid, String reason) {
         assertThat(gate.reasons(orgId, List.of(mid))).containsEntry(mid, Optional.of(reason));
         assertThat(gate.canMarket(orgId, mid)).isFalse();
@@ -946,7 +850,7 @@ abstract class ConsentGateScenarios {
         o.setToken("gate-" + UUID.randomUUID());
         o.setEventId(e.getId());
         o.setOrgId(orgId);
-        o.setEmail("buyer@example.com");
+        o.setEmail("gate-buyer-" + UUID.randomUUID() + "@example.com");
         o.setTotalMinor(totalMinor);
         o.setCurrency("EUR");
         o.setPaymentMethod(paymentMethod);

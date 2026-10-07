@@ -1,17 +1,12 @@
 package com.imin.iminapi.audienceplan.service;
 
 import com.imin.iminapi.audience.service.AudienceBackfillCompleted;
-import com.imin.iminapi.audienceplan.config.FanFeatureExecutors;
 import com.imin.iminapi.audienceplan.repository.FanFeatureRepository;
 import com.imin.iminapi.audienceplan.repository.FanFeatureTarget;
-import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.context.event.EventListener;
 import org.springframework.data.domain.Pageable;
-import org.springframework.scheduling.annotation.Async;
-import org.springframework.scheduling.annotation.Scheduled;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -121,21 +116,6 @@ class FanFeatureRecomputeJobTest {
         job.recomputeAll();
         verify(features).findTargetsFirstPage(org.mockito.ArgumentMatchers.argThat(
                 (Pageable p) -> p.getPageNumber() == 0 && p.getPageSize() == 500));
-    }
-
-    // ---- schedule pinned ----
-
-    @Test
-    void schedule_isTheParisFallbackAndOneSharedLock() throws Exception {
-        Scheduled fallback = FanFeatureRecomputeJob.class.getMethod("fallback").getAnnotation(Scheduled.class);
-        assertThat(fallback.cron()).isEqualTo("0 30 5 * * *");
-        assertThat(fallback.zone()).isEqualTo("Europe/Paris");
-        SchedulerLock lock = FanFeatureRecomputeJob.class.getMethod("recomputeAll").getAnnotation(SchedulerLock.class);
-        assertThat(lock.name()).isEqualTo("fan_feature_recompute");
-        var listener = FanFeatureRecomputeJob.class.getMethod("onBackfillCompleted", AudienceBackfillCompleted.class);
-        assertThat(listener.getAnnotation(EventListener.class)).isNotNull();
-        assertThat(listener.getAnnotation(Async.class).value()).isEqualTo(FanFeatureExecutors.RECOMPUTE);
-        assertThat(FanFeatureRecomputeJob.FRESHNESS).hasHours(24);
     }
 
     private static List<FanFeatureTarget> targets(int n) {

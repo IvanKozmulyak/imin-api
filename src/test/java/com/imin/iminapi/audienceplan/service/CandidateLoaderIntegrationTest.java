@@ -18,7 +18,6 @@ import com.imin.iminapi.audienceplan.engine.ResponseModel;
 import com.imin.iminapi.audienceplan.engine.ResponseModel.Fit;
 import com.imin.iminapi.audienceplan.model.FanFeature;
 import com.imin.iminapi.audienceplan.repository.FanFeatureRepository;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.service.MarketingGuardProperties;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
@@ -33,15 +32,12 @@ import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.UserRepository;
-import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.sql.Timestamp;
 import java.time.Clock;
@@ -58,12 +54,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * CandidateLoader's SQL inputs, one test per branch. Run on H2 ({@link CandidateLoaderTest}) and on
- * Postgres 17 ({@link CandidateLoaderPostgresTest}) because the inputs are native queries.
+ * CandidateLoader's SQL inputs, one test per branch, on the shared Postgres because the inputs are native queries.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
-abstract class CandidateLoaderScenarios {
+@IminIntegrationTest
+class CandidateLoaderIntegrationTest {
 
     static final Instant NOW = Instant.parse("2026-09-27T10:00:00Z");
     static final Instant RECENT = NOW.minus(10, ChronoUnit.DAYS);
@@ -80,7 +74,6 @@ abstract class CandidateLoaderScenarios {
     @Autowired OrderRepository orderRepo;
     @Autowired TicketRepository ticketRepo;
     @Autowired JdbcTemplate jdbc;
-    @MockitoBean AuditLogger auditLogger;
 
     UUID orgA;
     UUID orgB;
@@ -350,7 +343,7 @@ abstract class CandidateLoaderScenarios {
     }
 
     CandidateLoader loader(int floorHours) {
-        AudiencePlanLogic logic = ConsentGateScenarios.withNamedVersions(shippedLogic, Set.of(NAMED_VERSION));
+        AudiencePlanLogic logic = ConsentGateIntegrationTest.withNamedVersions(shippedLogic, Set.of(NAMED_VERSION));
         Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
         ConsentGate gate = new ConsentGate(fanRepo, orgRepo, logic, new AudiencePlanProperties(), clock);
         MarketingGuardProperties guard = new MarketingGuardProperties();

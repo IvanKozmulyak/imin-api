@@ -5,6 +5,8 @@ import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.ConsentOrigin;
 import com.imin.iminapi.audience.service.ConsentService;
+import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
+import com.imin.iminapi.audienceplan.config.FanFeatureExecutors;
 import com.imin.iminapi.audienceplan.model.FanFeature;
 import com.imin.iminapi.audienceplan.repository.FanFeatureRepository;
 import com.imin.iminapi.audienceplan.repository.FanFeatureTarget;
@@ -16,10 +18,14 @@ import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.AsyncDrain;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -36,16 +42,18 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 
 /**
- * The nightly recompute's queries and a full pass, run once on H2 and once on Postgres
- * (H2 in PostgreSQL mode has accepted queries that Postgres rejects before).
+ * The nightly recompute's queries and a full pass on Postgres. The database is shared,
+ * so every assertion is on this test's own orgs and memberships, or a delta.
  */
-abstract class FanFeatureRecomputeQueriesContract {
+@IminIntegrationTest
+class FanFeatureRecomputeQueriesTest {
 
     @Autowired FanFeatureRepository features;
     @Autowired FanFeatureProjector projector;
@@ -60,17 +68,14 @@ abstract class FanFeatureRecomputeQueriesContract {
     @Autowired Clock clock;
     @Autowired JdbcTemplate jdbc;
     @Autowired PlatformTransactionManager txManager;
+    @Autowired AudiencePlanProperties planProps;
+    @Autowired PropertyFlips flips;
+    @Autowired @Qualifier(FanFeatureExecutors.LIVE) Executor liveExecutor;
 
     FanFeatureFixtures fx;
 
     @BeforeEach
-    void wipeAudience() {
-        jdbc.execute("DELETE FROM fan_features");
-        jdbc.execute("DELETE FROM suppression_entries");
-        jdbc.execute("DELETE FROM consent_records");
-        jdbc.execute("DELETE FROM segments");
-        jdbc.execute("DELETE FROM memberships");
-        jdbc.execute("DELETE FROM consumers");
+    void setUp() {
         fx = new FanFeatureFixtures(orgs, users, events, orders, tickets, consumers, memberships);
     }
 
@@ -88,28 +93,49 @@ abstract class FanFeatureRecomputeQueriesContract {
     void targets_keysetPagesCoverEveryLiveMembershipOnce() {
         FanFeatureFixtures.Org a = fx.org("UTC");
         FanFeatureFixtures.Org b = fx.org("UTC");
-        Set<UUID> live = new HashSet<>();
-        for (int i = 0; i < 3; i++) live.add(fx.membership(a.id(), FanFeatureFixtures.email("a" + i)).getMembershipId());
-        for (int i = 0; i < 2; i++) live.add(fx.membership(b.id(), FanFeatureFixtures.email("b" + i)).getMembershipId());
+        List<Membership> made = new ArrayList<>();
+        for (int i = 0; i < 3; i++) made.add(fx.membership(a.id(), FanFeatureFixtures.email("a" + i)));
+        for (int i = 0; i < 2; i++) made.add(fx.membership(b.id(), FanFeatureFixtures.email("b" + i)));
         Membership erasing = fx.membership(a.id(), FanFeatureFixtures.email("erasing"));
         erasing.setStatus("erase_pending");
         memberships.save(erasing);
+        made.add(erasing);
         Membership objector = fx.membership(b.id(), FanFeatureFixtures.email("objector"));
         objector.setObjectedProfiling(true);
         memberships.save(objector);
-        live.add(objector.getMembershipId());
-
-        List<FanFeatureTarget> seen = new ArrayList<>();
-        List<FanFeatureTarget> page = features.findTargetsFirstPage(PageRequest.of(0, 2));
-        while (!page.isEmpty()) {
-            assertThat(page).hasSizeLessThanOrEqualTo(2);
-            seen.addAll(page);
-            page = features.findTargetsAfter(page.get(page.size() - 1).membershipId(), PageRequest.of(0, 2));
+        made.add(objector);
+        // The database is shared: pin this test's ids into one narrow key range and page through only that range.
+        String prefix = UUID.randomUUID().toString().substring(0, 24);
+        UUID start = UUID.fromString(prefix + "000000000000");
+        UUID end = UUID.fromString(prefix + "0000000000ff");
+        Set<UUID> live = new HashSet<>();
+        UUID objectorId = null;
+        for (int i = 0; i < made.size(); i++) {
+            UUID pinned = UUID.fromString(prefix + String.format("%012x", i + 1));
+            jdbc.update("update memberships set membership_id = ? where membership_id = ?", pinned,
+                    made.get(i).getMembershipId());
+            if (made.get(i) != erasing) live.add(pinned);
+            if (made.get(i) == objector) objectorId = pinned;
         }
 
-        assertThat(seen).extracting(FanFeatureTarget::membershipId).doesNotHaveDuplicates()
+        List<FanFeatureTarget> seen = new ArrayList<>();
+        List<FanFeatureTarget> page = features.findTargetsAfter(start, PageRequest.of(0, 2));
+        int pages = 0;
+        // Hex strings sort like Postgres uuids (unsigned bytes); UUID.compareTo is signed.
+        while (!page.isEmpty() && page.get(0).membershipId().toString().compareTo(end.toString()) <= 0) {
+            assertThat(page).hasSizeLessThanOrEqualTo(2);
+            seen.addAll(page);
+            pages++;
+            page = features.findTargetsAfter(page.get(page.size() - 1).membershipId(), PageRequest.of(0, 2));
+        }
+        List<FanFeatureTarget> mine = seen.stream()
+                .filter(t -> t.membershipId().toString().startsWith(prefix)).toList();
+
+        assertThat(pages).isGreaterThan(1);
+        assertThat(mine).extracting(FanFeatureTarget::membershipId).doesNotHaveDuplicates()
                 .containsExactlyInAnyOrderElementsOf(live);
-        assertThat(seen).filteredOn(t -> t.membershipId().equals(objector.getMembershipId()))
+        UUID objectorPinned = objectorId;
+        assertThat(mine).filteredOn(t -> t.membershipId().equals(objectorPinned))
                 .singleElement().satisfies(t -> {
                     assertThat(t.orgId()).isEqualTo(b.id());
                     assertThat(t.objectedProfiling()).isTrue();
@@ -156,6 +182,7 @@ abstract class FanFeatureRecomputeQueriesContract {
         Membership erasing = fx.membership(other.id(), FanFeatureFixtures.email("erasing"));
         erasing.setStatus("erase_pending");
         memberships.save(erasing);
+        flips.set(planProps, "betaOrgIds", Set.of(paris.id(), other.id()));
 
         unlockedJob().recomputeAll();
 
@@ -175,20 +202,29 @@ abstract class FanFeatureRecomputeQueriesContract {
     @Test
     void countStale_countsMissingAndOldRows_notErasePending() {
         FanFeatureFixtures.Org a = fx.org("UTC");
+        // Only this org is recomputed and other classes' live writes are drained: the count moves by own rows.
+        flips.set(planProps, "betaOrgIds", Set.of(a.id()));
+        AsyncDrain.drain(liveExecutor);
+        Instant cutoff = Instant.now().minus(FanFeatureRecomputeJob.FRESHNESS);
+        long base = features.countStale(cutoff);
         Membership fresh = fx.membership(a.id(), FanFeatureFixtures.email("fresh"));
         Membership old = fx.membership(a.id(), FanFeatureFixtures.email("old"));
         Membership erasing = fx.membership(a.id(), FanFeatureFixtures.email("erasing"));
         erasing.setStatus("erase_pending");
         memberships.save(erasing);
-        Instant cutoff = Instant.now().minus(FanFeatureRecomputeJob.FRESHNESS);
-        assertThat(features.countStale(cutoff)).isEqualTo(2);
+        assertThat(features.countStale(cutoff)).isEqualTo(base + 2);
 
         unlockedJob().recomputeAll();
-        assertThat(features.countStale(cutoff)).isZero();
+        AsyncDrain.drain(liveExecutor);
+        long c = features.countStale(cutoff);
+        assertThat(c).isEqualTo(base);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM fan_features WHERE membership_id IN (?, ?) "
+                + "AND updated_at >= ?", Integer.class, fresh.getMembershipId(), old.getMembershipId(),
+                Timestamp.from(cutoff))).isEqualTo(2);
 
         jdbc.update("UPDATE fan_features SET updated_at = ? WHERE membership_id = ?",
                 Timestamp.from(daysAgo(2)), old.getMembershipId());
-        assertThat(features.countStale(cutoff)).isEqualTo(1);
+        assertThat(features.countStale(cutoff)).isEqualTo(c + 1);
         assertThat(features.findById(fresh.getMembershipId())).isPresent();
     }
 

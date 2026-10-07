@@ -26,7 +26,6 @@ import com.imin.iminapi.audienceplan.model.ImportRowProvenance;
 import com.imin.iminapi.audienceplan.repository.AudienceImportRepository;
 import com.imin.iminapi.audienceplan.repository.FanFeatureRepository;
 import com.imin.iminapi.audienceplan.repository.ImportRowProvenanceRepository;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
@@ -42,18 +41,17 @@ import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.ApiException;
-import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.nio.charset.StandardCharsets;
 import java.sql.Timestamp;
@@ -68,6 +66,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -75,12 +75,10 @@ import static org.assertj.core.api.Assertions.within;
 
 /**
  * The Audience read model: member list filters and sorts, member fields, metrics and the consent trail.
- * Run on H2 ({@link AudienceReadModelTest}) and Postgres 17 ({@link AudienceReadModelPostgresTest}):
- * the list and the ConsentGate subquery are native SQL.
+ * The list and the ConsentGate subquery are native SQL, so this runs on the shared Postgres.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
-abstract class AudienceReadModelScenarios {
+@IminIntegrationTest
+class AudienceReadModelIntegrationTest {
 
     static final Instant NOW = Instant.parse("2026-09-27T10:00:00Z");
     static final Instant RECENT = NOW.minus(10, ChronoUnit.DAYS);
@@ -104,7 +102,6 @@ abstract class AudienceReadModelScenarios {
     @Autowired MemberListQuery memberListQuery;
     @Autowired DsarService dsarService;
     @Autowired JdbcTemplate jdbc;
-    @MockitoBean AuditLogger auditLogger;
 
     UUID orgA;
     UUID orgB;
@@ -196,20 +193,33 @@ abstract class AudienceReadModelScenarios {
         assertThat(allPages("events", 2)).containsExactly(five, three, one);
     }
 
-    @Test
-    void sort_unknown_isBadRequest() {
-        assertThatThrownBy(() -> service(true).listMembers(orgA, request(null, "name", null, null, null)))
-                .isInstanceOfSatisfying(ApiException.class, e -> assertThat(e.status()).isEqualTo(HttpStatus.BAD_REQUEST));
+    static Stream<Arguments> badListRequests() {
+        return Stream.of(
+                Arguments.of("unknown sort", (Function<AudienceReadModelIntegrationTest, MemberListRequest>)
+                        t -> request(null, "name", null, null, null)),
+                Arguments.of("cursor from another sort", (Function<AudienceReadModelIntegrationTest, MemberListRequest>)
+                        t -> {
+                            t.member(t.orgA);
+                            t.member(t.orgA);
+                            String spendCursor = t.service(true)
+                                    .listMembers(t.orgA, request(null, "spend_minor", null, null, null, 1)).nextCursor();
+                            assertThat(spendCursor).isNotNull();
+                            return request(spendCursor, "events", null, null, null, 1);
+                        }),
+                Arguments.of("unknown guest class", (Function<AudienceReadModelIntegrationTest, MemberListRequest>)
+                        t -> request(null, null, "vip", null, null)),
+                Arguments.of("genre outside the eight buckets",
+                        (Function<AudienceReadModelIntegrationTest, MemberListRequest>)
+                                t -> request(null, null, null, "techno", null)));
     }
 
-    @Test
-    void cursor_fromAnotherSort_isBadRequest() {
-        member(orgA);
-        member(orgA);
-        String spendCursor = service(true).listMembers(orgA, request(null, "spend_minor", null, null, null, 1)).nextCursor();
-        assertThat(spendCursor).isNotNull();
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("badListRequests")
+    void listMembers_rejectsAnInvalidRequest_withBadRequest(String name,
+            Function<AudienceReadModelIntegrationTest, MemberListRequest> build) {
+        MemberListRequest req = build.apply(this);
 
-        assertThatThrownBy(() -> service(true).listMembers(orgA, request(spendCursor, "events", null, null, null, 1)))
+        assertThatThrownBy(() -> service(true).listMembers(orgA, req))
                 .isInstanceOfSatisfying(ApiException.class, e -> assertThat(e.status()).isEqualTo(HttpStatus.BAD_REQUEST));
     }
 
@@ -272,12 +282,6 @@ abstract class AudienceReadModelScenarios {
     }
 
     @Test
-    void guestClass_unknown_isBadRequest() {
-        assertThatThrownBy(() -> service(true).listMembers(orgA, request(null, null, "vip", null, null)))
-                .isInstanceOfSatisfying(ApiException.class, e -> assertThat(e.status()).isEqualTo(HttpStatus.BAD_REQUEST));
-    }
-
-    @Test
     void genre_filter_returnsMembersWhoseTasteHasTheBucket() {
         UUID house = member(orgA);
         UUID popOnly = member(orgA);
@@ -286,12 +290,6 @@ abstract class AudienceReadModelScenarios {
         features(popOnly, "repeat", 2, "{\"pop\":1.0}");
 
         assertThat(ids(service(true).listMembers(orgA, request(null, null, null, HOUSE, null)))).containsExactly(house);
-    }
-
-    @Test
-    void genre_outsideTheEightBuckets_isBadRequest() {
-        assertThatThrownBy(() -> service(true).listMembers(orgA, request(null, null, null, "techno", null)))
-                .isInstanceOfSatisfying(ApiException.class, e -> assertThat(e.status()).isEqualTo(HttpStatus.BAD_REQUEST));
     }
 
     @Test
@@ -833,7 +831,7 @@ abstract class AudienceReadModelScenarios {
         o.setToken("rm-" + UUID.randomUUID());
         o.setEventId(eventId);
         o.setOrgId(orgId);
-        o.setEmail("buyer@example.com");
+        o.setEmail("rm-buyer-" + UUID.randomUUID() + "@example.com");
         o.setTotalMinor(totalMinor);
         o.setCurrency("EUR");
         o.setPaymentMethod(paymentMethod);

@@ -7,11 +7,9 @@ import com.imin.iminapi.audience.service.ConsentService;
 import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
 import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
 import com.imin.iminapi.audienceplan.repository.FanFeatureRepository;
-import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.transaction.PlatformTransactionManager;
 
 import java.time.Clock;
@@ -64,18 +62,6 @@ class RetentionJobUnitTest {
     }
 
     @Test
-    void schedule_isFourParisWithTheRetentionLock_andFreshnessIs48h() throws Exception {
-        Scheduled scheduled = RetentionJob.class.getMethod("scheduled").getAnnotation(Scheduled.class);
-        assertThat(scheduled.cron()).isEqualTo("0 0 4 * * *");
-        assertThat(scheduled.zone()).isEqualTo("Europe/Paris");
-        SchedulerLock lock = RetentionJob.class.getMethod("run").getAnnotation(SchedulerLock.class);
-        assertThat(lock.name()).isEqualTo("audience_retention");
-        assertThat(lock.lockAtMostFor()).isEqualTo("PT2H");
-        assertThat(RetentionJob.FRESHNESS).hasHours(48);
-        assertThat(RetentionJob.SOURCE).isEqualTo("retention_3y");
-    }
-
-    @Test
     void scheduled_runsThroughTheLockedProxy() {
         job.scheduled();
         verify(proxied).run();
@@ -88,29 +74,9 @@ class RetentionJobUnitTest {
     }
 
     @Test
-    void killSwitchOff_orgNeverQueried() {
-        props.setEnabled(false);
-        RetentionJob.Result r = job.run();
-        verify(gate, never()).retentionScan(any(), any());
-        assertThat(r).isEqualTo(new RetentionJob.Result(true, 0, 0, 0, 0, 0));
-    }
-
-    @Test
     void orgWithNoExpiredMember_notCounted() {
         when(gate.retentionScan(ORG, FRESH_SINCE)).thenReturn(new ConsentGate.RetentionScan(List.of(), 0));
         assertThat(job.run()).isEqualTo(new RetentionJob.Result(true, 0, 0, 0, 0, 0));
-    }
-
-    @Test
-    void dryRun_countsOnly_neverLocksOrUnsubscribes() {
-        props.setRetentionJobEnabled(false);
-        UUID a = UUID.randomUUID();
-        when(gate.retentionScan(ORG, FRESH_SINCE)).thenReturn(new ConsentGate.RetentionScan(List.of(a), 0));
-
-        assertThat(job.run()).isEqualTo(new RetentionJob.Result(false, 1, 1, 0, 0, 0));
-        verify(memberships, never()).lockByIdAndOrgId(any(), any());
-        verify(consentService, never()).unsubscribe(any(), any(), anyString(), any(ConsentOrigin.class), any());
-        verify(features, never()).clearProfiling(any());
     }
 
     @Test

@@ -1,17 +1,19 @@
 package com.imin.iminapi.audienceplan.service;
 
+import com.imin.iminapi.audience.model.ConsentRecord;
 import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.model.Segment;
+import com.imin.iminapi.audience.repository.ConsentRecordRepository;
 import com.imin.iminapi.audience.repository.SegmentRepository;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
+import com.imin.iminapi.audienceplan.config.AudiencePlanLogic;
 import com.imin.iminapi.audienceplan.config.AudiencePlanProperties;
 import com.imin.iminapi.audienceplan.model.AudienceAssignment;
 import com.imin.iminapi.audienceplan.model.AudienceExperiment;
 import com.imin.iminapi.audienceplan.repository.AudienceAssignmentRepository;
 import com.imin.iminapi.audienceplan.repository.AudienceExperimentRepository;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.model.CampaignRecipient;
 import com.imin.iminapi.marketing.repository.CampaignRecipientRepository;
@@ -19,36 +21,32 @@ import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.IminIntegrationTest;
 import com.imin.iminapi.support.OrderFixtures;
-import org.junit.jupiter.api.AfterEach;
+import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyCollection;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
-/** One test per skip reason and per no-op branch of the send-time guard. */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
-// Rolled back per test: committed experiments at a fixed date leak into OutcomeCollector runs.
+/** One test per skip reason and per no-op branch of the send-time guard, over the real ConsentGate. */
+@IminIntegrationTest
+// Rolled back per test: committed experiments at a fixed date would reach the global outcome collector.
 @Transactional
 class SendPathGuardTest {
 
@@ -56,13 +54,16 @@ class SendPathGuardTest {
 
     @Autowired SendPathGuard guard;
     @Autowired CampaignRepository campaigns;
-    @MockitoSpyBean CampaignRecipientRepository recipients;
+    @Autowired CampaignRecipientRepository recipients;
     @Autowired MembershipRepository memberships;
     @Autowired ConsumerRepository consumers;
+    @Autowired ConsentRecordRepository consents;
     @Autowired AudienceExperimentRepository experiments;
-    @MockitoSpyBean AudienceAssignmentRepository assignments;
-    @MockitoBean ConsentGate consentGate;
+    @Autowired AudienceAssignmentRepository assignments;
     @Autowired AudiencePlanProperties props;
+    @Autowired AudiencePlanLogic logic;
+    @Autowired PropertyFlips flips;
+    @Autowired Clock clock;
     @Autowired OrganizationRepository orgRepo;
     @Autowired UserRepository userRepo;
     @Autowired EventRepository eventRepo;
@@ -83,21 +84,60 @@ class SendPathGuardTest {
         return OrderFixtures.event(orgRepo, userRepo, eventRepo, "Guard", NOW.plus(7, ChronoUnit.DAYS));
     }
 
-    @AfterEach
-    void resetFlag() {
-        props.setConsentGateAllCampaigns(false);
+    /** Subscribed with no consent record: the gate excludes it. */
+    private UUID member() {
+        return member(orgId);
     }
 
-    private UUID member() {
+    private UUID member(UUID org) {
         Consumer cn = new Consumer();
         cn.setNormalizedEmail("guard-" + UUID.randomUUID() + "@example.com");
         cn = consumers.save(cn);
         Membership m = new Membership();
-        m.setOrgId(orgId);
+        m.setOrgId(org);
         m.setConsumerId(cn.getConsumerId());
         m.setConsentStatus("subscribed");
         m.setConsentBasis("explicit");
         return memberships.save(m).getMembershipId();
+    }
+
+    /** Checkout consent under the shipped organizer-named text, ten days before the gate's clock: mailable. */
+    private UUID provenMember() {
+        UUID mid = member();
+        ConsentRecord r = new ConsentRecord();
+        r.setMembershipId(mid);
+        r.setStatus("subscribed");
+        r.setLawfulBasis("explicit");
+        r.setSource("checkout");
+        r.setProofText("proof");
+        r.setTextVersion(logic.logic().legal().organizerNamedTextVersions().iterator().next());
+        r.setOccurredAt(clock.instant().minus(10, ChronoUnit.DAYS));
+        consents.save(r);
+        return mid;
+    }
+
+    private UUID objectedMember() {
+        UUID mid = provenMember();
+        Membership m = memberships.findByIdAndOrgId(mid, orgId).orElseThrow();
+        m.setObjectedProfiling(true);
+        memberships.save(m);
+        return mid;
+    }
+
+    /** A membership of another org: the gate returns no verdict for it. */
+    private UUID unknownMember() {
+        return member(realEvent().getOrgId());
+    }
+
+    enum Kind { PROVEN, UNPROVEN, OBJECTED, UNKNOWN }
+
+    private UUID member(Kind kind) {
+        return switch (kind) {
+            case PROVEN -> provenMember();
+            case UNPROVEN -> member();
+            case OBJECTED -> objectedMember();
+            case UNKNOWN -> unknownMember();
+        };
     }
 
     private Campaign campaign(UUID event, String origin) {
@@ -142,7 +182,7 @@ class SendPathGuardTest {
         r.setId(UUID.randomUUID());
         r.setCampaignId(prior.getId());
         r.setMembershipId(membershipId);
-        r.setEmail("x@example.com");
+        r.setEmail("guard-r-" + UUID.randomUUID() + "@example.com");
         r.setStatus(status);
         r.setLastEventAt(at);
         recipients.save(r);
@@ -307,18 +347,6 @@ class SendPathGuardTest {
         for (int i = 0; i < 4; i++) sent(eventId, m, "sent", NOW.minus(i + 1, ChronoUnit.DAYS));
 
         assertThat(guard.skipReasons(campaign(null, "manual"), List.of(m), NOW)).isEmpty();
-        verify(consentGate, never()).reasons(any(), anyCollection());
-    }
-
-    @Test
-    void campaignWithoutAnEventNeverQueriesAssignmentsOrRecipients() {
-        UUID m = member();
-
-        guard.skipReasons(campaign(null, "manual"), List.of(m), NOW);
-
-        verify(assignments, never()).findHeldOut(any(), any(), any());
-        verify(recipients, never()).countEventSendsByMembership(any(), any(), any());
-        verify(recipients, never()).countRecentSendsByMembership(any(), any());
     }
 
     @Test
@@ -334,38 +362,61 @@ class SendPathGuardTest {
         assertThat(out).containsExactly(Map.entry(held, SendPathGuard.EXPERIMENT_HOLDOUT));
     }
 
-    @Test
-    void manualEventCampaignNeverAsksConsentGate() {
-        UUID m = member();
-
-        guard.skipReasons(campaign(eventId, "manual"), List.of(m), NOW);
-
-        verify(consentGate, never()).reasons(any(), anyCollection());
+    static Stream<Arguments> consentGateRows() {
+        return Stream.of(
+                // origin, about the event, segment origin, consent-gate-all-campaigns, member, skipped by the gate
+                Arguments.of("manual", true, null, false, Kind.UNPROVEN, false),
+                Arguments.of("momentum", false, Segment.ORIGIN_MOMENTUM, false, Kind.OBJECTED, true),
+                Arguments.of("momentum", false, Segment.ORIGIN_ORGANIZER, false, Kind.UNPROVEN, false),
+                Arguments.of("audience_plan", true, null, false, Kind.UNPROVEN, true),
+                Arguments.of("audience_plan", true, null, false, Kind.PROVEN, false),
+                Arguments.of("audience_plan", true, null, false, Kind.UNKNOWN, true),
+                Arguments.of("audience_plan", false, null, false, Kind.UNPROVEN, true),
+                Arguments.of("manual", false, null, false, Kind.UNPROVEN, false),
+                Arguments.of("manual", true, null, true, Kind.UNPROVEN, true),
+                Arguments.of("manual", false, null, true, Kind.UNPROVEN, true),
+                Arguments.of("manual", false, null, true, Kind.PROVEN, false),
+                Arguments.of("manual", false, null, true, Kind.UNKNOWN, true),
+                Arguments.of("momentum", true, null, true, Kind.UNPROVEN, true),
+                Arguments.of("audience_plan", true, null, true, Kind.UNPROVEN, true));
     }
 
-    @Test
-    void momentumCampaignOnAMomentumSegmentSkipsAMemberConsentGateExcludes() {
-        UUID legacy = member();
-        when(consentGate.reasons(any(), anyCollection()))
-                .thenReturn(Map.of(legacy, Optional.of(ConsentGate.OBJECTED)));
-        Campaign c = campaign(null, "momentum");
-        c.setSegmentId(segment(Segment.ORIGIN_MOMENTUM));
-        c = campaigns.save(c);
+    @ParameterizedTest(name = "{0} event={1} segment={2} allCampaigns={3} {4} -> skipped={5}")
+    @MethodSource("consentGateRows")
+    void consentGate_appliesByOriginSegmentAndFlag(String origin, boolean aboutEvent, String segmentOrigin,
+                                                   boolean allCampaigns, Kind kind, boolean skipped) {
+        flips.set(props, "consentGateAllCampaigns", allCampaigns);
+        UUID m = member(kind);
+        Campaign c = campaign(aboutEvent ? eventId : null, origin);
+        if (segmentOrigin != null) {
+            c.setSegmentId(segment(segmentOrigin));
+            c = campaigns.save(c);
+        }
 
-        assertThat(guard.skipReasons(c, List.of(legacy), NOW))
-                .containsExactly(Map.entry(legacy, SendPathGuard.CONSENT_GATE));
-        verify(consentGate).reasons(orgId, List.of(legacy));
+        Map<UUID, String> out = guard.skipReasons(c, List.of(m), NOW);
+
+        if (skipped) assertThat(out).containsExactly(Map.entry(m, SendPathGuard.CONSENT_GATE));
+        else assertThat(out).isEmpty();
     }
 
-    @Test
-    void momentumCampaignOnAnOrganizerSegmentNeverAsksConsentGate() {
+    @ParameterizedTest
+    @CsvSource({"audience_plan, false", "manual, true"})
+    void capsWinOverConsentGate(String origin, boolean allCampaigns) {
+        flips.set(props, "consentGateAllCampaigns", allCampaigns);
         UUID m = member();
-        Campaign c = campaign(null, "momentum");
-        c.setSegmentId(segment(Segment.ORIGIN_ORGANIZER));
-        c = campaigns.save(c);
+        sent(eventId, m, "sent", NOW.minus(1, ChronoUnit.DAYS));
+        sent(eventId, m, "sent", NOW.minus(2, ChronoUnit.DAYS));
 
-        assertThat(guard.skipReasons(c, List.of(m), NOW)).isEmpty();
-        verify(consentGate, never()).reasons(any(), anyCollection());
+        assertThat(guard.skipReasons(campaign(eventId, origin), List.of(m), NOW))
+                .containsExactly(Map.entry(m, SendPathGuard.EVENT_CAP));
+    }
+
+    @ParameterizedTest
+    @CsvSource({"audience_plan, true, false", "manual, false, true"})
+    void noIdsMeansNoSkips(String origin, boolean aboutEvent, boolean allCampaigns) {
+        flips.set(props, "consentGateAllCampaigns", allCampaigns);
+
+        assertThat(guard.skipReasons(campaign(aboutEvent ? eventId : null, origin), List.of(), NOW)).isEmpty();
     }
 
     private UUID segment(String origin) {
@@ -377,158 +428,5 @@ class SendPathGuardTest {
         s.setCreatedAt(NOW);
         s.setUpdatedAt(NOW);
         return segments.save(s).getId();
-    }
-
-    @Test
-    void planCampaignSkipsAMemberConsentGateExcludes() {
-        UUID legacy = member();
-        when(consentGate.reasons(any(), anyCollection()))
-                .thenReturn(Map.of(legacy, Optional.of(ConsentGate.LEGACY_UNPROVEN)));
-
-        Map<UUID, String> out = guard.skipReasons(campaign(eventId, "audience_plan"), List.of(legacy), NOW);
-
-        assertThat(out).containsExactly(Map.entry(legacy, SendPathGuard.CONSENT_GATE));
-        verify(consentGate).reasons(orgId, List.of(legacy));
-    }
-
-    @Test
-    void planCampaignKeepsAMemberConsentGateAdmits() {
-        UUID ok = member();
-        when(consentGate.reasons(any(), anyCollection())).thenReturn(Map.of(ok, Optional.empty()));
-
-        assertThat(guard.skipReasons(campaign(eventId, "audience_plan"), List.of(ok), NOW)).isEmpty();
-    }
-
-    @Test
-    void planCampaignSkipsAMemberConsentGateDoesNotKnow() {
-        UUID unknown = member();
-        when(consentGate.reasons(any(), anyCollection())).thenReturn(Map.of());
-
-        assertThat(guard.skipReasons(campaign(eventId, "audience_plan"), List.of(unknown), NOW))
-                .containsExactly(Map.entry(unknown, SendPathGuard.CONSENT_GATE));
-    }
-
-    @Test
-    void planCampaignWithoutAnEventStillAsksConsentGate() {
-        UUID legacy = member();
-        when(consentGate.reasons(any(), anyCollection()))
-                .thenReturn(Map.of(legacy, Optional.of(ConsentGate.NO_BASIS)));
-
-        assertThat(guard.skipReasons(campaign(null, "audience_plan"), List.of(legacy), NOW))
-                .containsExactly(Map.entry(legacy, SendPathGuard.CONSENT_GATE));
-    }
-
-    @Test
-    void capsWinOverConsentGate() {
-        UUID m = member();
-        sent(eventId, m, "sent", NOW.minus(1, ChronoUnit.DAYS));
-        sent(eventId, m, "sent", NOW.minus(2, ChronoUnit.DAYS));
-        when(consentGate.reasons(any(), anyCollection()))
-                .thenReturn(Map.of(m, Optional.of(ConsentGate.NO_BASIS)));
-
-        assertThat(guard.skipReasons(campaign(eventId, "audience_plan"), List.of(m), NOW))
-                .containsExactly(Map.entry(m, SendPathGuard.EVENT_CAP));
-    }
-
-    @Test
-    void noIdsMeansNoSkips() {
-        assertThat(guard.skipReasons(campaign(eventId, "audience_plan"), List.of(), NOW)).isEmpty();
-        verify(consentGate, never()).reasons(any(), anyCollection());
-    }
-
-    @Test
-    void flagOffManualCampaignWithoutAnEventReachesAnUnprovenMember() {
-        UUID legacy = member();
-        when(consentGate.reasons(any(), anyCollection()))
-                .thenReturn(Map.of(legacy, Optional.of(ConsentGate.LEGACY_UNPROVEN)));
-
-        assertThat(guard.skipReasons(campaign(null, "manual"), List.of(legacy), NOW)).isEmpty();
-        verify(consentGate, never()).reasons(any(), anyCollection());
-    }
-
-    @Test
-    void flagOnManualCampaignSkipsAnUnprovenMember() {
-        props.setConsentGateAllCampaigns(true);
-        UUID legacy = member();
-        when(consentGate.reasons(any(), anyCollection()))
-                .thenReturn(Map.of(legacy, Optional.of(ConsentGate.LEGACY_UNPROVEN)));
-
-        assertThat(guard.skipReasons(campaign(eventId, "manual"), List.of(legacy), NOW))
-                .containsExactly(Map.entry(legacy, SendPathGuard.CONSENT_GATE));
-        verify(consentGate).reasons(orgId, List.of(legacy));
-    }
-
-    @Test
-    void flagOnManualCampaignWithoutAnEventStillAsksConsentGate() {
-        props.setConsentGateAllCampaigns(true);
-        UUID legacy = member();
-        when(consentGate.reasons(any(), anyCollection()))
-                .thenReturn(Map.of(legacy, Optional.of(ConsentGate.LEGACY_UNPROVEN)));
-
-        assertThat(guard.skipReasons(campaign(null, "manual"), List.of(legacy), NOW))
-                .containsExactly(Map.entry(legacy, SendPathGuard.CONSENT_GATE));
-        verify(assignments, never()).findHeldOut(any(), any(), any());
-    }
-
-    @Test
-    void flagOnManualCampaignKeepsAMemberConsentGateAdmits() {
-        props.setConsentGateAllCampaigns(true);
-        UUID ok = member();
-        when(consentGate.reasons(any(), anyCollection())).thenReturn(Map.of(ok, Optional.empty()));
-
-        assertThat(guard.skipReasons(campaign(null, "manual"), List.of(ok), NOW)).isEmpty();
-    }
-
-    @Test
-    void flagOnManualCampaignSkipsAMemberConsentGateDoesNotKnow() {
-        props.setConsentGateAllCampaigns(true);
-        UUID unknown = member();
-        when(consentGate.reasons(any(), anyCollection())).thenReturn(Map.of());
-
-        assertThat(guard.skipReasons(campaign(null, "manual"), List.of(unknown), NOW))
-                .containsExactly(Map.entry(unknown, SendPathGuard.CONSENT_GATE));
-    }
-
-    @Test
-    void flagOnMomentumDraftIsGated() {
-        props.setConsentGateAllCampaigns(true);
-        UUID legacy = member();
-        when(consentGate.reasons(any(), anyCollection()))
-                .thenReturn(Map.of(legacy, Optional.of(ConsentGate.NO_BASIS)));
-
-        assertThat(guard.skipReasons(campaign(eventId, "momentum"), List.of(legacy), NOW))
-                .containsExactly(Map.entry(legacy, SendPathGuard.CONSENT_GATE));
-    }
-
-    @Test
-    void flagOnPlanCampaignIsStillGated() {
-        props.setConsentGateAllCampaigns(true);
-        UUID legacy = member();
-        when(consentGate.reasons(any(), anyCollection()))
-                .thenReturn(Map.of(legacy, Optional.of(ConsentGate.LEGACY_UNPROVEN)));
-
-        assertThat(guard.skipReasons(campaign(eventId, "audience_plan"), List.of(legacy), NOW))
-                .containsExactly(Map.entry(legacy, SendPathGuard.CONSENT_GATE));
-    }
-
-    @Test
-    void flagOnCapsStillWinOverConsentGate() {
-        props.setConsentGateAllCampaigns(true);
-        UUID m = member();
-        sent(eventId, m, "sent", NOW.minus(1, ChronoUnit.DAYS));
-        sent(eventId, m, "sent", NOW.minus(2, ChronoUnit.DAYS));
-        when(consentGate.reasons(any(), anyCollection()))
-                .thenReturn(Map.of(m, Optional.of(ConsentGate.NO_BASIS)));
-
-        assertThat(guard.skipReasons(campaign(eventId, "manual"), List.of(m), NOW))
-                .containsExactly(Map.entry(m, SendPathGuard.EVENT_CAP));
-    }
-
-    @Test
-    void flagOnNoIdsMeansNoSkips() {
-        props.setConsentGateAllCampaigns(true);
-
-        assertThat(guard.skipReasons(campaign(null, "manual"), List.of(), NOW)).isEmpty();
-        verify(consentGate, never()).reasons(any(), anyCollection());
     }
 }

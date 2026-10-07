@@ -8,20 +8,14 @@ import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.SendGateService;
 import com.imin.iminapi.audienceplan.service.ConsentGate;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -37,27 +31,9 @@ import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** The ops pre-flip SQL runs on a migrated Postgres, and query 1 agrees with SendGate and ConsentGate. */
-@Testcontainers(disabledWithoutDocker = true)
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+/** The ops pre-flip SQL runs on the migrated Postgres, and query 1 agrees with SendGate and ConsentGate. */
+@IminIntegrationTest
 class PreFlipCountsSqlPostgresTest {
-
-    @Container
-    @ServiceConnection
-    static final PostgreSQLContainer<?> PG = new PostgreSQLContainer<>("postgres:17-alpine");
-
-    @DynamicPropertySource
-    static void overrideDataSource(DynamicPropertyRegistry r) {
-        r.add("spring.datasource.url", PG::getJdbcUrl);
-        r.add("spring.datasource.username", PG::getUsername);
-        r.add("spring.datasource.password", PG::getPassword);
-        r.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
-        r.add("spring.jpa.hibernate.ddl-auto", () -> "none");
-        r.add("spring.jpa.properties.hibernate.dialect", () -> "org.hibernate.dialect.PostgreSQLDialect");
-        r.add("spring.flyway.enabled", () -> "true");
-        r.add("spring.docker.compose.enabled", () -> "false");
-    }
 
     static final String NAMED_VERSION = "checkout-org-named-2026-09";
 
@@ -68,6 +44,20 @@ class PreFlipCountsSqlPostgresTest {
     @Autowired ConsentRecordRepository consentRecords;
     @Autowired SendGateService sendGate;
     @Autowired ConsentGate consentGate;
+
+    private final List<UUID> orgIds = new ArrayList<>();
+
+    @AfterEach
+    void tearDown() {
+        for (UUID org : orgIds) {
+            List<UUID> consumerIds = jdbc.queryForList("select consumer_id from memberships where org_id = ?",
+                    UUID.class, org);
+            jdbc.update("delete from memberships where org_id = ?", org);
+            for (UUID c : consumerIds) jdbc.update("delete from consumers where consumer_id = ?", c);
+        }
+        OrgRows.delete(jdbc, orgIds);
+        orgIds.clear();
+    }
 
     private static List<String> sqlBlocks() throws Exception {
         String doc = Files.readString(Path.of("docs/ops/pre-flip-counts.md"));
@@ -84,7 +74,9 @@ class PreFlipCountsSqlPostgresTest {
         o.setContactEmail("pf@test.com");
         o.setCountry("FR");
         o.setTimezone("Europe/Paris");
-        return orgs.save(o).getId();
+        UUID id = orgs.save(o).getId();
+        orgIds.add(id);
+        return id;
     }
 
     private Membership member(UUID orgId, String consentStatus) {
