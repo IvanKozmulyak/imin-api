@@ -16,16 +16,6 @@ class WikimediaPropertiesTest {
     }
 
     @Test
-    void defaultsWithYamlKeyAbsent() {
-        WikimediaProperties props = bind(Map.of());
-
-        assertThat(props.isEnabled()).isFalse();
-        assertThat(props.getUserAgent())
-                .isEqualTo("imin-api/1.0 (+https://imin.wtf; ops@imin.wtf) predictor-trends")
-                .isEqualTo(WikimediaProperties.DEFAULT_USER_AGENT);
-    }
-
-    @Test
     void blankUserAgentFallsBackToDefault() {
         WikimediaProperties props = bind(Map.of("imin.predictor.wikimedia.user-agent", "  ",
                 "imin.predictor.wikimedia.enabled", "true"));

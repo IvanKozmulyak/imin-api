@@ -22,7 +22,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/** Stage 0 scorer (task 86cav474p): one structured call, model-id fallback, honest prompt content. */
+/** Stage 0 scorer: one structured call, model-id fallback, honest prompt content. */
 class Stage0ScorerTest {
 
     private final ChatClient chat = mock(ChatClient.class, RETURNS_DEEP_STUBS);

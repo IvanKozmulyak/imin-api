@@ -5,6 +5,9 @@ import com.imin.iminapi.predictor.sources.openevents.OpenEventCities.City;
 import com.imin.iminapi.predictor.sources.openevents.OpenEventSource.Fetch;
 import com.imin.iminapi.predictor.sources.openevents.OpenEventSource.RawEvent;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -20,6 +23,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -156,23 +160,45 @@ class QueFaireAParisClientTest {
         assertThat(fetchOne(record(noZip)).events()).hasSize(1);
     }
 
-    @Test
-    void occurrencesSplitIntoNights() {
-        Fetch f = fetchOne(record(Map.of("occurrences", "\""
-                + "2026-10-03T20:00:00+02:00_2026-10-03T23:00:00+02:00;"
-                + "2026-10-04T01:30:00+02:00_2026-10-04T04:00:00+02:00;"
-                + "2026-10-10T20:00:00+02:00_2026-10-10T23:00:00+02:00\"")));
-
-        // 01:30 on the 4th belongs to the night of the 3rd, which is kept once
-        assertThat(f.events().get(0).nights()).containsExactly(LocalDate.of(2026, 10, 3), LocalDate.of(2026, 10, 10));
+    private static Map<String, String> occurrencesOnly(String occurrences) {
+        Map<String, String> m = new LinkedHashMap<>();
+        m.put("occurrences", occurrences);
+        return m;
     }
 
-    @Test
-    void occurrenceOffsetIsIgnoredWallClockIsParis() {
-        // upstream labels every occurrence +02:00, winter ones too: 06:30 here is Paris wall time, not 05:30 CET
-        Fetch f = fetchOne(record(Map.of("occurrences", "\"2026-12-12T06:30:00+02:00_2026-12-12T09:00:00+02:00\"")));
+    /** How upstream's occurrences (or the start/end fallback) split into Paris nights. */
+    static Stream<Arguments> nightSplits() {
+        Map<String, String> dayOnly = without("occurrences");
+        dayOnly.put("date_start", "\"2026-10-09T00:00:00+00:00\"");
+        dayOnly.put("date_end", "\"2026-10-09T23:59:59+00:00\"");
+        return Stream.of(
+                // 01:30 on the 4th belongs to the night of the 3rd, which is kept once
+                Arguments.of("occurrences split into nights", occurrencesOnly("\""
+                                + "2026-10-03T20:00:00+02:00_2026-10-03T23:00:00+02:00;"
+                                + "2026-10-04T01:30:00+02:00_2026-10-04T04:00:00+02:00;"
+                                + "2026-10-10T20:00:00+02:00_2026-10-10T23:00:00+02:00\""),
+                        List.of(LocalDate.of(2026, 10, 3), LocalDate.of(2026, 10, 10))),
+                // upstream labels every occurrence +02:00, winter ones too: 06:30 is Paris wall time, not 05:30 CET
+                Arguments.of("offset ignored, wall clock is Paris",
+                        occurrencesOnly("\"2026-12-12T06:30:00+02:00_2026-12-12T09:00:00+02:00\""),
+                        List.of(LocalDate.of(2026, 12, 12))),
+                // upstream writes 23:00 -> 01:30 with both on the begin date
+                Arguments.of("overnight end on the begin date rolls to next day", occurrencesOnly("\""
+                                + "2026-10-06T23:00:00+02:00_2026-10-06T01:30:00+02:00;"
+                                + "2026-11-16T14:00:00+02:00_2026-11-16T00:00:00+02:00\""),
+                        List.of(LocalDate.of(2026, 10, 6), LocalDate.of(2026, 11, 16))),
+                // 00:00-23:59 is a date, not the small hours of the night before
+                Arguments.of("date-only occurrence keeps its date",
+                        occurrencesOnly("\"2026-11-11T00:00:00+02:00_2026-11-11T23:59:00+02:00\""),
+                        List.of(LocalDate.of(2026, 11, 11))),
+                // 00:00–23:59:59 is a date with no time, not an event starting at midnight of the night before
+                Arguments.of("day-only fallback keeps its date", dayOnly, List.of(LocalDate.of(2026, 10, 9))));
+    }
 
-        assertThat(f.events().get(0).nights()).containsExactly(LocalDate.of(2026, 12, 12));
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("nightSplits")
+    void nightSplit(String name, Map<String, String> overrides, List<LocalDate> nights) {
+        assertThat(fetchOne(record(overrides)).events().get(0).nights()).containsExactlyElementsOf(nights);
     }
 
     @Test
@@ -181,16 +207,6 @@ class QueFaireAParisClientTest {
         server.reset();
         // an end a day or more before the begin is not the overnight quirk below
         dropped(Map.of("occurrences", "\"2026-10-03T20:00:00+02:00_2026-10-02T22:00:00+02:00\""), "timings");
-    }
-
-    @Test
-    void overnightEndWrittenOnTheBeginDateRollsToNextDay() {
-        // upstream writes 23:00 -> 01:30 with both on the begin date (84 such occurrences on 2026-10-01)
-        Fetch f = fetchOne(record(Map.of("occurrences", "\""
-                + "2026-10-06T23:00:00+02:00_2026-10-06T01:30:00+02:00;"
-                + "2026-11-16T14:00:00+02:00_2026-11-16T00:00:00+02:00\"")));
-
-        assertThat(f.events().get(0).nights()).containsExactly(LocalDate.of(2026, 10, 6), LocalDate.of(2026, 11, 16));
     }
 
     @Test
@@ -211,16 +227,6 @@ class QueFaireAParisClientTest {
         dropped(missing, "timings");
     }
 
-    @Test
-    void dayOnlyFallbackKeepsItsDate() {
-        // 00:00–23:59:59 is a date with no time, not an event starting at midnight of the night before
-        Map<String, String> m = without("occurrences");
-        m.put("date_start", "\"2026-10-09T00:00:00+00:00\"");
-        m.put("date_end", "\"2026-10-09T23:59:59+00:00\"");
-
-        assertThat(fetchOne(record(m)).events().get(0).nights()).containsExactly(LocalDate.of(2026, 10, 9));
-    }
-
     /** Occurrences in upstream's shape: Paris wall time, always labelled +02:00. */
     private static String occurrences(List<LocalDate> days, String begin, String end) {
         List<String> out = new ArrayList<>();
@@ -234,54 +240,44 @@ class QueFaireAParisClientTest {
         return out;
     }
 
-    @Test
-    void dailyRunWithTwoNightsInWindowDropped() {
-        dropped(Map.of("occurrences", occurrences(days(LocalDate.of(2026, 8, 24), 30, 1), "10:00", "18:00")), "run");
-    }
-
-    @Test
-    void weekendFestivalKept() {
-        Fetch f = fetchOne(record(Map.of("occurrences", occurrences(days(LocalDate.of(2026, 10, 9), 3, 1), "20:00", "23:00"))));
-
-        assertThat(f.events().get(0).nights())
-                .containsExactly(LocalDate.of(2026, 10, 9), LocalDate.of(2026, 10, 10), LocalDate.of(2026, 10, 11));
-    }
-
-    @Test
-    void weeklyThursdayKept() {
-        Fetch f = fetchOne(record(Map.of("occurrences", occurrences(days(LocalDate.of(2026, 10, 1), 10, 7), "20:00", "23:00"))));
-
-        assertThat(f.events().get(0).nights()).hasSize(10);
-    }
-
-    @Test
-    void fourNightsInSevenDropped() {
-        dropped(Map.of("occurrences", occurrences(days(LocalDate.of(2026, 10, 6), 4, 1), "20:00", "23:00")), "run");
-    }
-
-    @Test
-    void twiceWeeklyResidencyKept() {
+    private static List<LocalDate> twiceWeekly() {
         List<LocalDate> d = new ArrayList<>(days(LocalDate.of(2026, 9, 25), 18, 7));
         d.addAll(days(LocalDate.of(2026, 9, 26), 18, 7));
         d.sort(null);
-
-        assertThat(fetchOne(record(Map.of("occurrences", occurrences(d, "22:00", "23:30")))).events().get(0).nights())
-                .hasSize(36);
+        return d;
     }
 
-    @Test
-    void threeTimesAWeekDropped() {
+    private static List<LocalDate> mondayWednesdayFriday() {
         List<LocalDate> d = new ArrayList<>();
         for (LocalDate mon : days(LocalDate.of(2026, 9, 21), 8, 7)) d.addAll(List.of(mon, mon.plusDays(2), mon.plusDays(4)));
-        dropped(Map.of("occurrences", occurrences(d, "20:00", "23:00")), "run");
+        return d;
     }
 
-    @Test
-    void dateOnlyOccurrenceKeepsItsDate() {
-        // 75 occurrences on 2026-10-01 are 00:00-23:59: a date, not the small hours of the night before
-        Fetch f = fetchOne(record(Map.of("occurrences", "\"2026-11-11T00:00:00+02:00_2026-11-11T23:59:00+02:00\"")));
+    /** The density rule shared by every open-event source; {@code null} nights means dropped as a run. */
+    static Stream<Arguments> densities() {
+        return Stream.of(
+                Arguments.of("daily run with two nights in the window", days(LocalDate.of(2026, 8, 24), 30, 1),
+                        "10:00", "18:00", null),
+                Arguments.of("weekend festival", days(LocalDate.of(2026, 10, 9), 3, 1), "20:00", "23:00",
+                        List.of(LocalDate.of(2026, 10, 9), LocalDate.of(2026, 10, 10), LocalDate.of(2026, 10, 11))),
+                Arguments.of("weekly thursday", days(LocalDate.of(2026, 10, 1), 10, 7), "20:00", "23:00",
+                        days(LocalDate.of(2026, 10, 1), 10, 7)),
+                Arguments.of("four nights in seven", days(LocalDate.of(2026, 10, 6), 4, 1), "20:00", "23:00", null),
+                Arguments.of("twice-weekly residency", twiceWeekly(), "22:00", "23:30", twiceWeekly()),
+                // never 4 in 7 days, but 13 inside 30
+                Arguments.of("three times a week", mondayWednesdayFriday(), "20:00", "23:00", null));
+    }
 
-        assertThat(f.events().get(0).nights()).containsExactly(LocalDate.of(2026, 11, 11));
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("densities")
+    void density(String name, List<LocalDate> days, String begin, String end, List<LocalDate> nights) {
+        if (nights == null) {
+            dropped(Map.of("occurrences", occurrences(days, begin, end)), "run");
+            return;
+        }
+        Fetch f = fetchOne(record(Map.of("occurrences", occurrences(days, begin, end))));
+
+        assertThat(f.events().get(0).nights()).containsExactlyElementsOf(nights);
     }
 
     @Test

@@ -5,12 +5,16 @@ import com.imin.iminapi.predictor.rules.QuestionBank.Question;
 import com.imin.iminapi.predictor.rules.QuestionBankLoader;
 import com.imin.iminapi.predictor.sources.wikimedia.WikimediaArticles.Article;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.core.io.DefaultResourceLoader;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.util.Optional;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -71,81 +75,52 @@ class WikimediaArticlesTest {
         assertThat(a.language("NL")).isEmpty();
     }
 
-    @Test
-    void duplicateKeyRejected() {
-        rejected(VALID.replace("house: { fr: House music }", "house: { fr: House music }\n      house: { fr: X }"),
-                "duplicate");
+    static Stream<Arguments> invalidFiles() {
+        String overlong = "a".repeat(WikimediaArticles.MAX_TITLE - 1) + " b";
+        return Stream.of(
+                Arguments.of("duplicate key",
+                        VALID.replace("house: { fr: House music }", "house: { fr: House music }\n      house: { fr: X }"),
+                        new String[] {"duplicate"}),
+                Arguments.of("unknown root key", VALID + "extra: 1\n", new String[] {"unknown key 'extra'"}),
+                Arguments.of("unknown bucket key", VALID.replace("    article: { fr: Pop (musique), de: Popmusik }",
+                        "    articles: { fr: Pop (musique) }"), new String[] {"pop", "unknown key 'articles'"}),
+                Arguments.of("unknown sub-genre key",
+                        VALID.replace("techno: { fr: Techno, de: Techno }", "techno: { fr: Techno, title: Techno }"),
+                        new String[] {"techno", "unknown key 'title'"}),
+                Arguments.of("unknown bucket", VALID.replace("\"pop\":", "\"polka\":"), new String[] {"unknown bucket 'polka'"}),
+                Arguments.of("sub-genre not in profile", VALID.replace("k-pop: { fr: K-pop }", "techno: { fr: Techno }"),
+                        new String[] {"pop", "techno"}),
+                Arguments.of("title language not configured",
+                        VALID.replace("k-pop: { fr: K-pop }", "k-pop: { fr: K-pop, es: K-pop }"),
+                        new String[] {"k-pop", "es", "not configured"}),
+                Arguments.of("unsupported language",
+                        VALID.replace("languages: { FR: fr, DE: de }", "languages: { FR: fr, DE: de, IT: it }"),
+                        new String[] {"languages", "it"}),
+                Arguments.of("bad country code",
+                        VALID.replace("languages: { FR: fr, DE: de }", "languages: { FR: fr, de: de }"),
+                        new String[] {"languages", "de"}),
+                Arguments.of("blank title", VALID.replace("k-pop: { fr: K-pop }", "k-pop: { fr: \"  \" }"),
+                        new String[] {"k-pop", "blank"}),
+                Arguments.of("overlong title", VALID.replace("k-pop: { fr: K-pop }", "k-pop: { fr: " + overlong + " }"),
+                        new String[] {"k-pop", "255"}),
+                Arguments.of("missing version", VALID.replace("version: 1\n", ""), new String[] {"version"}),
+                Arguments.of("zero version", VALID.replace("version: 1", "version: 0"), new String[] {"version"}),
+                Arguments.of("bad verified_on", VALID.replace("verified_on: 2026-10-01", "verified_on: soon"),
+                        new String[] {"verified_on"}));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("invalidFiles")
+    void invalidFileRejected(String name, String yaml, String[] parts) {
+        rejected(yaml, parts);
     }
 
     @Test
-    void unknownRootKeyRejected() {
-        rejected(VALID + "extra: 1\n", "unknown key 'extra'");
-    }
-
-    @Test
-    void unknownBucketKeyRejected() {
-        rejected(VALID.replace("    article: { fr: Pop (musique), de: Popmusik }",
-                "    articles: { fr: Pop (musique) }"), "pop", "unknown key 'articles'");
-    }
-
-    @Test
-    void unknownSubGenreKeyLevelRejected() {
-        rejected(VALID.replace("techno: { fr: Techno, de: Techno }", "techno: { fr: Techno, title: Techno }"),
-                "techno", "unknown key 'title'");
-    }
-
-    @Test
-    void unknownBucketRejected() {
-        rejected(VALID.replace("\"pop\":", "\"polka\":"), "unknown bucket 'polka'");
-    }
-
-    @Test
-    void subGenreNotInProfileRejected() {
-        rejected(VALID.replace("k-pop: { fr: K-pop }", "techno: { fr: Techno }"), "pop", "techno");
-    }
-
-    @Test
-    void titleLanguageNotConfiguredRejected() {
-        rejected(VALID.replace("k-pop: { fr: K-pop }", "k-pop: { fr: K-pop, es: K-pop }"),
-                "k-pop", "es", "not configured");
-    }
-
-    @Test
-    void unsupportedLanguageRejected() {
-        rejected(VALID.replace("languages: { FR: fr, DE: de }", "languages: { FR: fr, DE: de, IT: it }"),
-                "languages", "it");
-    }
-
-    @Test
-    void badCountryCodeRejected() {
-        rejected(VALID.replace("languages: { FR: fr, DE: de }", "languages: { FR: fr, de: de }"),
-                "languages", "de");
-    }
-
-    @Test
-    void blankTitleRejected() {
-        rejected(VALID.replace("k-pop: { fr: K-pop }", "k-pop: { fr: \"  \" }"), "k-pop", "blank");
-    }
-
-    @Test
-    void overlongTitleRejected() {
-        String longTitle = "a".repeat(WikimediaArticles.MAX_TITLE - 1) + " b";
-        rejected(VALID.replace("k-pop: { fr: K-pop }", "k-pop: { fr: " + longTitle + " }"), "k-pop", "255");
+    void titleOfExactly255AfterUnderscoringLoads() {
         // exactly 255 after space -> underscore still loads
         String edge = "a".repeat(WikimediaArticles.MAX_TITLE - 2) + " b";
         assertThat(parse(VALID.replace("k-pop: { fr: K-pop }", "k-pop: { fr: " + edge + " }"))
                 .lookup("FR", "pop", "k-pop")).map(Article::title).contains("a".repeat(253) + "_b");
-    }
-
-    @Test
-    void missingVersionRejected() {
-        rejected(VALID.replace("version: 1\n", ""), "version");
-        rejected(VALID.replace("version: 1", "version: 0"), "version");
-    }
-
-    @Test
-    void badVerifiedOnRejected() {
-        rejected(VALID.replace("verified_on: 2026-10-01", "verified_on: soon"), "verified_on");
     }
 
     @Test

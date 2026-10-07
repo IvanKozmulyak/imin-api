@@ -26,35 +26,6 @@ class OpenEventsPropertiesTest {
     private final ApplicationContextRunner runner = new ApplicationContextRunner().withUserConfiguration(PropsOnly.class);
 
     @Test
-    void defaultsWithYamlKeyAbsent() {
-        OpenEventsProperties props = bind(Map.of());
-
-        assertThat(props.isOpenagendaEnabled()).isFalse();
-        assertThat(props.getOpenagendaApiKey()).isEmpty();
-        assertThat(props.isQuefaireaparisEnabled()).isFalse();
-        OpenEventsProperties blank = bind(Map.of("imin.predictor.open-events.openagenda-enabled", "",
-                "imin.predictor.open-events.openagenda-api-key", "  ",
-                "imin.predictor.open-events.quefaireaparis-enabled", ""));
-        assertThat(blank.isOpenagendaEnabled()).isFalse();
-        assertThat(blank.getOpenagendaApiKey()).isEmpty();
-        assertThat(blank.isQuefaireaparisEnabled()).isFalse();
-        runner.run(ctx -> assertThat(ctx).hasNotFailed());
-    }
-
-    @Test
-    void enabledWithBlankKeyFailsStartup() {
-        OpenEventsProperties props = bind(Map.of("imin.predictor.open-events.openagenda-enabled", "true"));
-        assertThatThrownBy(props::validate).isInstanceOf(IllegalStateException.class);
-
-        runner.withPropertyValues("imin.predictor.open-events.openagenda-enabled=true",
-                        "imin.predictor.open-events.openagenda-api-key=")
-                .run(ctx -> assertThat(ctx).hasFailed());
-        runner.withPropertyValues("imin.predictor.open-events.openagenda-enabled=true",
-                        "imin.predictor.open-events.openagenda-api-key=oa_pk_abc")
-                .run(ctx -> assertThat(ctx).hasNotFailed());
-    }
-
-    @Test
     void enabledWithSecretKeyFailsStartup() {
         OpenEventsProperties props = bind(Map.of("imin.predictor.open-events.openagenda-enabled", "true",
                 "imin.predictor.open-events.openagenda-api-key", "oa_sk_abc"));

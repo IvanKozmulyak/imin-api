@@ -29,6 +29,9 @@ import com.imin.iminapi.security.RateLimiter;
 import com.imin.iminapi.service.ai.AiQuotaService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.time.Instant;
 import java.time.LocalDate;
@@ -37,6 +40,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -104,7 +108,7 @@ class PredictionRequestServiceTest {
                 UUID.randomUUID(), benchmark(), snap.sha256()));
     }
 
-    private PredictionResult benchmark() {
+    private static PredictionResult benchmark() {
         return new PredictionResult("pre_publish", 0, "C", null, null, null,
                 List.of(), List.of(), null, true, "m", "1.0.0", Instant.now());
     }
@@ -201,62 +205,36 @@ class PredictionRequestServiceTest {
         when(ledgerRepo.findByEventIdOrderByCreatedAtDesc(eventId)).thenReturn(List.of(row));
     }
 
-    @Test
-    void pendingCarriesDateCheck() {
-        EventDateCheckDto dto = stubDateCheck();
-        PredictionRequestService held = new PredictionRequestService(
-                events, ledgerRepo, ledgerService, pipeline, recommendations, reforecastTrigger,
-                quota, limiter, r -> { }, dateChecks, verdictFeedback);
-        held.trigger(principal, eventId);
-
-        PredictionStatusResponse r = held.status(principal, eventId);
-
-        assertThat(r.status()).isEqualTo(PredictionStatusResponse.STATUS_PENDING);
-        assertThat(r.dateCheck()).isSameAs(dto);
+    static Stream<Arguments> statusReturnSites() throws Exception {
+        String ready = PredictorJson.MAPPER.writeValueAsString(new PredictionResult("pre_publish", 0, "C", null,
+                null, null, List.of(), List.of(), null, false, "m", "1.1.0", Instant.now()));
+        return Stream.of(
+                Arguments.of("pending", null, true, PredictionStatusResponse.STATUS_PENDING, null),
+                Arguments.of("ready", ready, false, PredictionStatusResponse.STATUS_READY, null),
+                Arguments.of("benchmarkOnly", PredictorJson.MAPPER.writeValueAsString(benchmark()), false,
+                        PredictionStatusResponse.STATUS_FAILED_BENCHMARK_ONLY, null),
+                Arguments.of("unparseable", "not json", false, PredictionStatusResponse.STATUS_NONE, "h"),
+                Arguments.of("none", null, false, PredictionStatusResponse.STATUS_NONE, null));
     }
 
-    @Test
-    void readyCarriesDateCheck() throws Exception {
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("statusReturnSites")
+    void everyStatusCarriesDateCheck(String name, String latestOutputJson, boolean runInFlight,
+                                     String expectedStatus, String expectedInputHash) {
         EventDateCheckDto dto = stubDateCheck();
-        stubLatestRow(PredictorJson.MAPPER.writeValueAsString(new PredictionResult("pre_publish", 0, "C", null,
-                null, null, List.of(), List.of(), null, false, "m", "1.1.0", Instant.now())));
+        if (latestOutputJson != null) stubLatestRow(latestOutputJson);
+        PredictionRequestService service = sut;
+        if (runInFlight) {
+            // an executor that never runs keeps the triggered run pending
+            service = new PredictionRequestService(events, ledgerRepo, ledgerService, pipeline, recommendations,
+                    reforecastTrigger, quota, limiter, r -> { }, dateChecks, verdictFeedback);
+            service.trigger(principal, eventId);
+        }
 
-        PredictionStatusResponse r = sut.status(principal, eventId);
+        PredictionStatusResponse r = service.status(principal, eventId);
 
-        assertThat(r.status()).isEqualTo(PredictionStatusResponse.STATUS_READY);
-        assertThat(r.dateCheck()).isSameAs(dto);
-    }
-
-    @Test
-    void benchmarkOnlyCarriesDateCheck() throws Exception {
-        EventDateCheckDto dto = stubDateCheck();
-        stubLatestRow(PredictorJson.MAPPER.writeValueAsString(benchmark()));
-
-        PredictionStatusResponse r = sut.status(principal, eventId);
-
-        assertThat(r.status()).isEqualTo(PredictionStatusResponse.STATUS_FAILED_BENCHMARK_ONLY);
-        assertThat(r.dateCheck()).isSameAs(dto);
-    }
-
-    @Test
-    void unparseableCarriesDateCheck() {
-        EventDateCheckDto dto = stubDateCheck();
-        stubLatestRow("not json");
-
-        PredictionStatusResponse r = sut.status(principal, eventId);
-
-        assertThat(r.status()).isEqualTo(PredictionStatusResponse.STATUS_NONE);
-        assertThat(r.inputHash()).isEqualTo("h");
-        assertThat(r.dateCheck()).isSameAs(dto);
-    }
-
-    @Test
-    void noneCarriesDateCheck() {
-        EventDateCheckDto dto = stubDateCheck();
-
-        PredictionStatusResponse r = sut.status(principal, eventId);
-
-        assertThat(r.status()).isEqualTo(PredictionStatusResponse.STATUS_NONE);
+        assertThat(r.status()).isEqualTo(expectedStatus);
+        if (expectedInputHash != null) assertThat(r.inputHash()).isEqualTo(expectedInputHash);
         assertThat(r.dateCheck()).isSameAs(dto);
     }
 

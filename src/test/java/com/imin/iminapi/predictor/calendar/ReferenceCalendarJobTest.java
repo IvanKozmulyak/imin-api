@@ -2,6 +2,8 @@ package com.imin.iminapi.predictor.calendar;
 
 import com.imin.iminapi.predictor.repository.ReferenceCalendarEntryRepository;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.ObjectProvider;
 
 import java.time.Clock;
@@ -118,34 +120,30 @@ class ReferenceCalendarJobTest {
         verify(a, never()).fetch(any());
     }
 
-    @Test
-    void startupExecutorRejectionIsSwallowed() {
-        when(repository.count()).thenReturn(0L);
-
-        job(r -> { throw new RejectedExecutionException("full"); }).onStartup();
-
-        verify(self, never()).getObject();
-        verify(a, never()).fetch(any());
-    }
-
-    @Test
-    void startupRunFailureIsSwallowed() {
-        when(repository.count()).thenReturn(0L);
-        ReferenceCalendarJob job = job();
-        when(self.getObject()).thenThrow(new IllegalStateException("no proxy"));
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"executor rejects", "run fails", "count fails"})
+    void startupFailureIsSwallowed(String failure) {
+        ReferenceCalendarJob job;
+        switch (failure) {
+            case "executor rejects" -> {
+                when(repository.count()).thenReturn(0L);
+                job = job(r -> { throw new RejectedExecutionException("full"); });
+            }
+            case "run fails" -> {
+                when(repository.count()).thenReturn(0L);
+                job = job();
+                when(self.getObject()).thenThrow(new IllegalStateException("no proxy"));
+            }
+            default -> {
+                when(repository.count()).thenThrow(new IllegalStateException("db down"));
+                job = job();
+            }
+        }
 
         job.onStartup();
 
-        verify(self).getObject();
-        verify(a, never()).fetch(any());
-    }
-
-    @Test
-    void startupFailureIsSwallowed() {
-        when(repository.count()).thenThrow(new IllegalStateException("db down"));
-
-        job().onStartup();
-
+        if (failure.equals("executor rejects")) verify(self, never()).getObject();
+        if (failure.equals("run fails")) verify(self).getObject();
         verify(a, never()).fetch(any());
     }
 

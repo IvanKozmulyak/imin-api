@@ -11,7 +11,9 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.imin.iminapi.predictor.calendar.FootballFixturesSync.FixtureName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
@@ -24,6 +26,7 @@ import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.tuple;
@@ -205,13 +208,6 @@ class FootballFixturesSyncTest {
         assertThat(batches.get(1).from()).isEqualTo(saturday);
     }
 
-    @Test
-    void timedMatchHasNoRange() {
-        CalendarRow row = fetch(only("FL1", LORIENT_PARIS_FC), emptyCl()).get(0).rows().get(0);
-
-        assertThat(row.endDate()).isNull();
-    }
-
     @ParameterizedTest
     @ValueSource(strings = {"IN_PLAY", "PAUSED", "EXTRA_TIME", "PENALTY_SHOOTOUT", "FINISHED"})
     void playedStatusKeptWithKickoff(String status) {
@@ -220,28 +216,34 @@ class FootballFixturesSyncTest {
         assertThat(names(fetch(fl1, emptyCl()), FL1)).containsExactly("FL1|20:45|525|1045|Lorient – Paris FC");
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {"POSTPONED", "SUSPENDED", "CANCELLED", "AWARDED", "FOO"})
-    void excludedStatusSkipped(String status) {
-        String fl1 = only("FL1", LORIENT_PARIS_FC, m -> m.put("status", status));
-
-        assertThat(names(fetch(fl1, emptyCl()), FL1)).isEmpty();
+    /** Edits to one recorded match that make the sync skip it. */
+    static Stream<Arguments> skippedMatches() {
+        List<Arguments> rows = new ArrayList<>();
+        for (String status : List.of("POSTPONED", "SUSPENDED", "CANCELLED", "AWARDED", "FOO")) {
+            rows.add(Arguments.of("FL1 status " + status, false,
+                    (Consumer<ObjectNode>) m -> m.put("status", status)));
+        }
+        for (String stage : List.of("RELEGATION", "FOO")) {
+            rows.add(Arguments.of("FL1 stage " + stage, false, (Consumer<ObjectNode>) m -> m.put("stage", stage)));
+        }
+        for (String stage : List.of("QUALIFICATION_ROUND_3", "PRELIMINARY_ROUND", "FOO")) {
+            rows.add(Arguments.of("CL stage " + stage, true, (Consumer<ObjectNode>) m -> m.put("stage", stage)));
+        }
+        rows.add(Arguments.of("competition code mismatch", false,
+                (Consumer<ObjectNode>) m -> ((ObjectNode) m.path("competition")).put("code", "FL2")));
+        rows.add(Arguments.of("TBD team", true, (Consumer<ObjectNode>) m -> ((ObjectNode) m.path("awayTeam")).putNull("id")));
+        rows.add(Arguments.of("unparseable utcDate", false, (Consumer<ObjectNode>) m -> m.put("utcDate", "soon")));
+        return rows.stream();
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {"RELEGATION", "FOO"})
-    void fl1StageOtherThanRegularSeasonSkipped(String stage) {
-        String fl1 = only("FL1", LORIENT_PARIS_FC, m -> m.put("stage", stage));
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("skippedMatches")
+    void matchSkipped(String name, boolean champions, Consumer<ObjectNode> edit) {
+        List<CalendarSource.Batch> batches = champions
+                ? fetch(recorded("FL1").toString(), only("CL", PSG_BARCA, edit))
+                : fetch(only("FL1", LORIENT_PARIS_FC, edit), emptyCl());
 
-        assertThat(names(fetch(fl1, emptyCl()), FL1)).isEmpty();
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"QUALIFICATION_ROUND_3", "PRELIMINARY_ROUND", "FOO"})
-    void clQualificationOrUnknownStageSkipped(String stage) {
-        String cl = only("CL", PSG_BARCA, m -> m.put("stage", stage));
-
-        assertThat(names(fetch(recorded("FL1").toString(), cl), CL)).isEmpty();
+        assertThat(names(batches, champions ? CL : FL1)).isEmpty();
     }
 
     @ParameterizedTest
@@ -250,27 +252,6 @@ class FootballFixturesSyncTest {
         String cl = only("CL", PSG_BARCA, m -> m.put("stage", stage));
 
         assertThat(names(fetch(recorded("FL1").toString(), cl), CL)).containsExactly("CL|21:00|524|81|PSG – Barça");
-    }
-
-    @Test
-    void competitionCodeMismatchSkipped() {
-        String fl1 = only("FL1", LORIENT_PARIS_FC, m -> ((ObjectNode) m.path("competition")).put("code", "FL2"));
-
-        assertThat(names(fetch(fl1, emptyCl()), FL1)).isEmpty();
-    }
-
-    @Test
-    void tbdTeamSkipped() {
-        String cl = only("CL", PSG_BARCA, m -> ((ObjectNode) m.path("awayTeam")).putNull("id"));
-
-        assertThat(names(fetch(recorded("FL1").toString(), cl), CL)).isEmpty();
-    }
-
-    @Test
-    void unparseableUtcDateSkipped() {
-        String fl1 = only("FL1", LORIENT_PARIS_FC, m -> m.put("utcDate", "soon"));
-
-        assertThat(names(fetch(fl1, emptyCl()), FL1)).isEmpty();
     }
 
     @Test
@@ -328,18 +309,17 @@ class FootballFixturesSyncTest {
     }
 
     @Test
-    void clFailureAfterEmptyFl1LogsError() {
-        // judged against the planned work: nothing stored from either competition is a total failure
+    void clFailureAfterEmptyFl1ReturnsOnlyTheEmptyFl1Batch() {
+        // FL1 answered with nothing to keep and CL failed: no CL batch, the FL1 window still comes back empty
         respond(FL1, only("FL1", LORIENT_PARIS_FC, m -> m.put("status", "POSTPONED")));
         server.expect(requestTo(CL)).andRespond(withServerError());
 
-        List<ILoggingEvent> logs = capture(() -> sync().fetch(TODAY));
+        List<CalendarSource.Batch> batches = sync().fetch(TODAY);
 
         server.verify();
-        assertThat(logs).anySatisfy(e -> {
-            assertThat(e.getLevel()).isEqualTo(Level.ERROR);
-            assertThat(e.getThrowableProxy()).isNotNull();
-        });
+        assertThat(batches).extracting(CalendarSource.Batch::sourceUrl, CalendarSource.Batch::from, CalendarSource.Batch::to)
+                .containsExactly(tuple(FL1, TODAY, TODAY.plusDays(400)));
+        assertThat(batches.get(0).rows()).isEmpty();
     }
 
     @Test
@@ -424,5 +404,4 @@ class FootballFixturesSyncTest {
         assertThat(tbc).isEqualTo("CL|TBC|524|81|A|B – C");
         assertThat(FixtureName.parse(tbc)).isEqualTo(new FixtureName("CL", null, 524, 81, "A|B – C"));
     }
-
 }

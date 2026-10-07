@@ -9,6 +9,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
@@ -178,28 +180,20 @@ class OpenWeatherClientTest {
         server.verify();
     }
 
-    @Test
-    void geocodeEmptyIsNotFound() {
+    /** A geocode answer that yields no point; {@code null} body means a 500. */
+    @ParameterizedTest(name = "{0} -> {3}")
+    @CsvSource(delimiter = '|', nullValues = "null", value = {
+            "empty answer | Nowhere | [] | NOT_FOUND",
+            "country mismatch | Paris | [{\"name\":\"Paris\",\"lat\":33.66,\"lon\":-95.55,\"country\":\"US\"}] | NOT_FOUND",
+            "server error | Lille | null | FAILED",
+            "out-of-range coordinates | Lille | [{\"name\":\"Lille\",\"lat\":95.0,\"lon\":3.06,\"country\":\"FR\"}] | FAILED"})
+    void geocodeWithoutAPoint(String name, String city, String body, GeocodeStatus expected) {
         server.expect(requestTo(startsWith(BASE + "/geo/1.0/direct?")))
-                .andRespond(withSuccess("[]", MediaType.APPLICATION_JSON));
+                .andRespond(body == null ? withServerError() : withSuccess(body, MediaType.APPLICATION_JSON));
 
-        assertThat(client("k").geocode("Nowhere", "FR")).isEqualTo(GeocodeResult.NOT_FOUND);
-    }
+        GeocodeResult r = client("k").geocode(city, "FR");
 
-    @Test
-    void geocodeCountryMismatchIsNotFound() {
-        server.expect(requestTo(startsWith(BASE + "/geo/1.0/direct?")))
-                .andRespond(withSuccess("[{\"name\":\"Paris\",\"lat\":33.66,\"lon\":-95.55,\"country\":\"US\"}]",
-                        MediaType.APPLICATION_JSON));
-
-        assertThat(client("k").geocode("Paris", "FR")).isEqualTo(GeocodeResult.NOT_FOUND);
-    }
-
-    @Test
-    void geocode500IsFailed() {
-        server.expect(requestTo(startsWith(BASE + "/geo/1.0/direct?"))).andRespond(withServerError());
-
-        assertThat(client("k").geocode("Lille", "FR")).isEqualTo(GeocodeResult.FAILED);
+        assertThat(r).isEqualTo(expected == GeocodeStatus.NOT_FOUND ? GeocodeResult.NOT_FOUND : GeocodeResult.FAILED);
     }
 
     @Test
@@ -234,15 +228,6 @@ class OpenWeatherClientTest {
         assertThat(client(LEAK_KEY).forecast(48.86, 2.35)).isEmpty();
 
         assertThat(output).contains("HTTP 429").doesNotContain(LEAK_KEY).doesNotContain("appid");
-    }
-
-    @Test
-    void geocodeOutOfRangeCoordinatesIsFailed() {
-        server.expect(requestTo(startsWith(BASE + "/geo/1.0/direct?")))
-                .andRespond(withSuccess("[{\"name\":\"Lille\",\"lat\":95.0,\"lon\":3.06,\"country\":\"FR\"}]",
-                        MediaType.APPLICATION_JSON));
-
-        assertThat(client("k").geocode("Lille", "FR")).isEqualTo(GeocodeResult.FAILED);
     }
 
     @Test

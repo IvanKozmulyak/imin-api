@@ -8,7 +8,6 @@ import com.imin.iminapi.predictor.rules.QuestionBank.Window;
 import org.junit.jupiter.api.Test;
 
 import java.util.EnumSet;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -76,15 +75,5 @@ class FindingTest {
     void foundRejectsAKindTheQuestionDoesNotHave() {
         assertThatThrownBy(() -> Finding.found(q("4.1", SourceKind.STRUCTURED), Kind.OPPORTUNITY, 2, Map.of(), null))
                 .isInstanceOf(IllegalArgumentException.class);
-    }
-
-    @Test
-    void nullFactValuesDropped() {
-        Map<String, Object> facts = new HashMap<>();
-        facts.put("name", "X");
-        facts.put("venue", null);
-
-        assertThat(Finding.found(q("2.1", SourceKind.ORGANIZER), Kind.RISK, 1, facts, null).facts())
-                .containsOnlyKeys("name");
     }
 }

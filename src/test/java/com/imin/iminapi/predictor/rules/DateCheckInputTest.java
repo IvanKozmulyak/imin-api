@@ -21,28 +21,13 @@ class DateCheckInputTest {
     }
 
     @Test
-    void countryUpperCasedAndZoneResolved() {
+    void zoneResolvedFromTheNormalisedCountryElseUtc() {
         DateCheckInput in = input(" fr ", null, null, null);
 
         assertThat(in.country()).isEqualTo("FR");
         assertThat(in.zone()).isEqualTo(ZoneId.of("Europe/Paris"));
         assertThat(in.cityKey()).isEqualTo("metz");
-    }
-
-    @Test
-    void unmappedCountryUsesUtc() {
         assertThat(input("ZZ", null, null, null).zone()).isEqualTo(ZoneOffset.UTC);
-    }
-
-    @Test
-    void nullLineupBecomesEmptyButNullListsStayNull() {
-        DateCheckInput in = input("FR", null, null, null);
-
-        assertThat(in.lineup()).isEmpty();
-        assertThat(in.knownEvents()).isNull();
-        assertThat(in.communities()).isNull();
-        assertThat(input("FR", null, List.of(), List.of()).knownEvents()).isEmpty();
-        assertThat(input("FR", null, List.of(), List.of()).communities()).isEmpty();
     }
 
     @Test

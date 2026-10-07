@@ -3,12 +3,16 @@ package com.imin.iminapi.predictor.sources.openevents;
 import com.imin.iminapi.predictor.rules.QuestionBank;
 import com.imin.iminapi.predictor.sources.openevents.GenreMatcher.Match;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.core.io.DefaultResourceLoader;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -66,40 +70,31 @@ class GenreMatcherTest {
         assertThat(shipped.match("Défilé des allumoirs", List.of()).community()).isTrue();
     }
 
-    @Test
-    void bucketsMustEqualBankBuckets() {
-        rejects(VALID.replace("  \"jazz & acoustic\": [jazz, jazz manouche, techno]\n", ""), "jazz & acoustic");
-        rejects(VALID.replace("exclude_phrases:", "  \"polka\": [polka]\nexclude_phrases:"), "polka");
+    static Stream<Arguments> invalidFiles() {
+        String house = "[techno, house, deep house]";
+        return Stream.of(
+                Arguments.of("bucket missing", VALID.replace("  \"jazz & acoustic\": [jazz, jazz manouche, techno]\n", ""),
+                        "jazz & acoustic"),
+                Arguments.of("bucket not in the bank",
+                        VALID.replace("exclude_phrases:", "  \"polka\": [polka]\nexclude_phrases:"), "polka"),
+                Arguments.of("duplicate key",
+                        VALID.replace("exclude_phrases:", "  \"house & techno\": [rave]\nexclude_phrases:"), "invalid YAML"),
+                Arguments.of("unknown root key", VALID + "stop_words: [the]\n", "unknown key 'stop_words'"),
+                Arguments.of("non-ASCII keyword", VALID.replace(house, "[techno, house, фанк]"), "ASCII"),
+                Arguments.of("uppercase keyword", VALID.replace(house, "[techno, House]"), "lowercase"),
+                Arguments.of("keyword too short", VALID.replace(house, "[techno, h]"), "2-64"),
+                Arguments.of("keyword too long", VALID.replace(house, "[techno, \"" + "a".repeat(65) + "\"]"), "2-64"),
+                Arguments.of("duplicate keyword", VALID.replace(house, "[techno, house, techno]"), "duplicate"),
+                Arguments.of("duplicate local event",
+                        VALID.replace("[carnaval, fete de la musique, braderie]", "[carnaval, carnaval]"), "duplicate"),
+                Arguments.of("missing version", VALID.replace("version: 1\n", ""), "version"),
+                Arguments.of("zero version", VALID.replace("version: 1", "version: 0"), "version"));
     }
 
-    @Test
-    void duplicateKeyRejected() {
-        rejects(VALID.replace("exclude_phrases:", "  \"house & techno\": [rave]\nexclude_phrases:"), "invalid YAML");
-    }
-
-    @Test
-    void unknownRootKeyRejected() {
-        rejects(VALID + "stop_words: [the]\n", "unknown key 'stop_words'");
-    }
-
-    @Test
-    void nonAsciiKeywordRejected() {
-        rejects(VALID.replace("[techno, house, deep house]", "[techno, house, фанк]"), "ASCII");
-        rejects(VALID.replace("[techno, house, deep house]", "[techno, House]"), "lowercase");
-        rejects(VALID.replace("[techno, house, deep house]", "[techno, h]"), "2-64");
-        rejects(VALID.replace("[techno, house, deep house]", "[techno, \"" + "a".repeat(65) + "\"]"), "2-64");
-    }
-
-    @Test
-    void duplicateKeywordInListRejected() {
-        rejects(VALID.replace("[techno, house, deep house]", "[techno, house, techno]"), "duplicate");
-        rejects(VALID.replace("[carnaval, fete de la musique, braderie]", "[carnaval, carnaval]"), "duplicate");
-    }
-
-    @Test
-    void missingOrBadVersionRejected() {
-        rejects(VALID.replace("version: 1\n", ""), "version");
-        rejects(VALID.replace("version: 1", "version: 0"), "version");
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("invalidFiles")
+    void invalidFileRejected(String name, String yaml, String fragment) {
+        rejects(yaml, fragment);
     }
 
     @Test

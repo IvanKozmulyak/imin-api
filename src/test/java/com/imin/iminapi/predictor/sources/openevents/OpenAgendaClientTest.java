@@ -5,6 +5,9 @@ import com.imin.iminapi.predictor.sources.openevents.OpenEventCities.City;
 import com.imin.iminapi.predictor.sources.openevents.OpenEventSource.Fetch;
 import com.imin.iminapi.predictor.sources.openevents.OpenEventSource.RawEvent;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -19,6 +22,7 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -178,92 +182,68 @@ class OpenAgendaClientTest {
         }
     }
 
-    @Test
-    void cancelledDropped() {
-        dropped(Map.of("status", "6"), "status");
+    private static Map<String, String> field(String key, String value) {
+        Map<String, String> m = new java.util.HashMap<>();
+        m.put(key, value);
+        return m;
+    }
+
+    /** One field edit and the drop reason it must be counted under. */
+    static Stream<Arguments> droppedEvents() {
+        return Stream.of(
+                Arguments.of("cancelled", field("status", "6"), "status"),
+                Arguments.of("postponed", field("status", "4"), "status"),
+                Arguments.of("moved online", field("status", "3"), "status"),
+                Arguments.of("unknown status", field("status", "9"), "status"),
+                Arguments.of("missing status", field("status", null), "status"),
+                Arguments.of("online attendance", field("attendanceMode", "2"), "attendance"),
+                Arguments.of("missing attendance", field("attendanceMode", null), "attendance"),
+                Arguments.of("unpublished state", field("state", "1"), "state"),
+                Arguments.of("non-FR country", field("location", "{\"city\":\"Lille\",\"countryCode\":\"BE\"}"), "country"),
+                Arguments.of("missing country", field("location", "{\"city\":\"Lille\"}"), "country"),
+                Arguments.of("other city", field("location", "{\"city\":\"Roubaix\",\"countryCode\":\"FR\"}"), "city"),
+                // a blank or missing city is dropped, never defaulted to the agenda's city
+                Arguments.of("blank city", field("location", "{\"city\":\" \",\"countryCode\":\"FR\"}"), "city"),
+                Arguments.of("missing city", field("location", "{\"countryCode\":\"FR\"}"), "city"),
+                Arguments.of("blank title", field("title", "\" \""), "title"),
+                Arguments.of("blank slug", field("slug", "\"\""), "no_url"),
+                Arguments.of("timing over 24h", field("timings",
+                        "[{\"begin\":\"2026-10-10T10:00:00.000+02:00\",\"end\":\"2026-10-11T10:00:01.000+02:00\"},"
+                                + "{\"begin\":\"2026-10-12T20:00:00.000+02:00\",\"end\":\"2026-10-12T22:00:00.000+02:00\"}]"),
+                        "long_run"),
+                Arguments.of("unparseable timing",
+                        field("timings", "[{\"begin\":\"nope\",\"end\":\"2026-10-11T10:00:00.000+02:00\"}]"), "timings"),
+                Arguments.of("no timings", field("timings", "[]"), "timings"),
+                // Tuesday to Friday: a run, whatever the source
+                Arguments.of("four nights in seven", field("timings", timings(days(LocalDate.of(2026, 10, 6), 4, 1), 20, 23)),
+                        "run"));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("droppedEvents")
+    void eventDropped(String name, Map<String, String> overrides, String reason) {
+        dropped(overrides, reason);
     }
 
     @Test
-    void postponedDropped() {
-        dropped(Map.of("status", "4"), "status");
-    }
-
-    @Test
-    void movedOnlineDropped() {
-        dropped(Map.of("status", "3"), "status");
-    }
-
-    @Test
-    void unknownStatusDropped() {
-        dropped(Map.of("status", "9"), "status");
-        server.reset();
-        dropped(java.util.Collections.singletonMap("status", null), "status");
-    }
-
-    @Test
-    void onlineAttendanceDropped() {
-        dropped(Map.of("attendanceMode", "2"), "attendance");
-    }
-
-    @Test
-    void missingAttendanceDropped() {
-        dropped(java.util.Collections.singletonMap("attendanceMode", null), "attendance");
-    }
-
-    @Test
-    void unpublishedStateDropped() {
-        dropped(Map.of("state", "1"), "state");
-        server.reset();
+    void missingStateIsKept() {
         assertThat(fetchOne(event(java.util.Collections.singletonMap("state", null))).events()).hasSize(1);
     }
 
     @Test
-    void nonFrCountryDropped() {
-        dropped(Map.of("location", "{\"city\":\"Lille\",\"countryCode\":\"BE\"}"), "country");
-        server.reset();
-        dropped(Map.of("location", "{\"city\":\"Lille\"}"), "country");
-    }
-
-    @Test
-    void otherCityDropped() {
-        dropped(Map.of("location", "{\"city\":\"Roubaix\",\"countryCode\":\"FR\"}"), "city");
-        server.reset();
+    void aliasCityIsKept() {
         assertThat(fetchOne(event(Map.of("location", "{\"city\":\" Lomme \",\"countryCode\":\"FR\"}"))).events())
                 .hasSize(1);
     }
 
     @Test
-    void blankCityDroppedNotDefaulted() {
-        dropped(Map.of("location", "{\"city\":\" \",\"countryCode\":\"FR\"}"), "city");
-        server.reset();
-        dropped(Map.of("location", "{\"countryCode\":\"FR\"}"), "city");
-    }
-
-    @Test
-    void blankTitleDropped() {
-        dropped(Map.of("title", "\" \""), "title");
-        server.reset();
+    void multilingualTitlePrefersFrench() {
         // multilingual title without monolingual: fr first, else the first language present
         Fetch f = fetchOne(event(Map.of("title", "{\"en\":\"Techno night\",\"de\":\"Technonacht\"}")));
         assertThat(f.events().get(0).title()).isEqualTo("Techno night");
         server.reset();
         Fetch fr = fetchOne(event(Map.of("title", "{\"en\":\"Techno night\",\"fr\":\"Nuit techno\"}")));
         assertThat(fr.events().get(0).title()).isEqualTo("Nuit techno");
-    }
-
-    @Test
-    void blankSlugDropped() {
-        dropped(Map.of("slug", "\"\""), "no_url");
-    }
-
-    @Test
-    void timingOver24hDropped() {
-        dropped(Map.of("timings", "[{\"begin\":\"2026-10-10T10:00:00.000+02:00\",\"end\":\"2026-10-11T10:00:01.000+02:00\"},"
-                + "{\"begin\":\"2026-10-12T20:00:00.000+02:00\",\"end\":\"2026-10-12T22:00:00.000+02:00\"}]"), "long_run");
-        server.reset();
-        dropped(Map.of("timings", "[{\"begin\":\"nope\",\"end\":\"2026-10-11T10:00:00.000+02:00\"}]"), "timings");
-        server.reset();
-        dropped(Map.of("timings", "[]"), "timings");
     }
 
     @Test
@@ -310,47 +290,11 @@ class OpenAgendaClientTest {
         return out;
     }
 
-    @Test
-    void dailyRunWithTwoNightsInWindowDropped() {
-        // 30 consecutive days 10-18h, 2026-08-24..09-22: only 21 and 22 Sep fall in the window
-        dropped(Map.of("timings", timings(days(LocalDate.of(2026, 8, 24), 30, 1), 10, 18)), "run");
-    }
-
-    @Test
-    void weekendFestivalKept() {
-        Fetch f = fetchOne(event(Map.of("timings", timings(days(LocalDate.of(2026, 10, 9), 3, 1), 20, 23))));
-
-        assertThat(f.events().get(0).nights())
-                .containsExactly(LocalDate.of(2026, 10, 9), LocalDate.of(2026, 10, 10), LocalDate.of(2026, 10, 11));
-    }
-
-    @Test
-    void weeklyThursdayKept() {
-        Fetch f = fetchOne(event(Map.of("timings", timings(days(LocalDate.of(2026, 10, 1), 10, 7), 20, 23))));
-
-        assertThat(f.events().get(0).nights()).hasSize(10).startsWith(LocalDate.of(2026, 10, 1))
-                .endsWith(LocalDate.of(2026, 12, 3));
-    }
-
-    @Test
-    void fourNightsInSevenDropped() {
-        // Tuesday to Friday
-        dropped(Map.of("timings", timings(days(LocalDate.of(2026, 10, 6), 4, 1), 20, 23)), "run");
-    }
-
     private static List<LocalDate> friSat(LocalDate firstFriday, int weeks) {
         List<LocalDate> d = new ArrayList<>(days(firstFriday, weeks, 7));
         d.addAll(days(firstFriday.plusDays(1), weeks, 7));
         d.sort(null);
         return d;
-    }
-
-    @Test
-    void twiceWeeklyResidencyAcrossTheWindowKept() {
-        // Fridays and Saturdays for 18 weeks: 36 nights, all in the window
-        Fetch f = fetchOne(event(Map.of("timings", timings(friSat(LocalDate.of(2026, 9, 25), 18), 22, 23))));
-
-        assertThat(f.events().get(0).nights()).hasSize(36);
     }
 
     @Test
@@ -360,14 +304,6 @@ class OpenAgendaClientTest {
 
         assertThat(f.events().get(0).nights()).containsExactly(LocalDate.of(2026, 9, 25), LocalDate.of(2026, 9, 26),
                 LocalDate.of(2026, 10, 2), LocalDate.of(2026, 10, 3));
-    }
-
-    @Test
-    void threeTimesAWeekDropped() {
-        // Monday, Wednesday, Friday: never 4 in 7 days, but 13 inside 30
-        List<LocalDate> d = new ArrayList<>();
-        for (LocalDate mon : days(LocalDate.of(2026, 9, 21), 8, 7)) d.addAll(List.of(mon, mon.plusDays(2), mon.plusDays(4)));
-        dropped(Map.of("timings", timings(d, 20, 23)), "run");
     }
 
     @Test

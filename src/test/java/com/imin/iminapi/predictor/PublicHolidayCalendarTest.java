@@ -16,33 +16,9 @@ class PublicHolidayCalendarTest {
     private static final LocalDate GOOD_FRIDAY_2027 = LocalDate.of(2027, 3, 26);
 
     @Test
-    void metzGoodFriday2027IsHoliday() {
-        assertThat(PublicHolidayCalendar.near("FR", "FR-57", GOOD_FRIDAY_2027, 0))
-                .containsExactly(new Holiday(GOOD_FRIDAY_2027, "Vendredi saint"));
-    }
-
-    @Test
-    void otherRegionalRowsExist() {
-        LocalDate goodFriday2026 = LocalDate.of(2026, 4, 3);
-        LocalDate stEtienne2027 = LocalDate.of(2027, 12, 26);
-        assertThat(PublicHolidayCalendar.near("FR", "FR-67", goodFriday2026, 0))
-                .containsExactly(new Holiday(goodFriday2026, "Vendredi saint"));
-        assertThat(PublicHolidayCalendar.near("FR", "FR-68", stEtienne2027, 0))
-                .containsExactly(new Holiday(stEtienne2027, "Saint-Étienne"));
-    }
-
-    @Test
     void parisGoodFriday2027IsNotHoliday() {
         assertThat(PublicHolidayCalendar.regionOf("FR", "75001", "Paris")).isNull();
         assertThat(PublicHolidayCalendar.near("FR", null, GOOD_FRIDAY_2027, 0)).isEmpty();
-    }
-
-    @Test
-    void strasbourgBoxingDay2026IsHoliday() {
-        assertThat(PublicHolidayCalendar.regionOf("FR", "67000", "Strasbourg")).isEqualTo("FR-67");
-        LocalDate d = LocalDate.of(2026, 12, 26);
-        assertThat(PublicHolidayCalendar.near("FR", "FR-67", d, 0))
-                .containsExactly(new Holiday(d, "Saint-Étienne"));
     }
 
     @Test
@@ -75,43 +51,22 @@ class PublicHolidayCalendarTest {
         assertThat(PublicHolidayCalendar.near("FR", "FR-57", LocalDate.of(2028, 4, 14), 0)).isEmpty();
     }
 
-    @ParameterizedTest
-    @CsvSource({
-            "57000, Metz, FR-57",
-            "67000, Strasbourg, FR-67",
-            "68100, Mulhouse, FR-68",
-            "' 57 000 ', Metz, FR-57",
+    // Metz by postcode is owned by CalendarRegionsTest.metzPostcode; these are the branches it does not reach.
+    @ParameterizedTest(name = "{0} {1} {2} -> {3}")
+    @CsvSource(nullValues = "null", value = {
+            "FR, 67000, Strasbourg, FR-67",
+            "FR, 68100, Mulhouse, FR-68",
+            "FR, ' 57 000 ', Metz, FR-57",
+            "FR, 75011, Metz, null",
+            "FR, '', ' METZ ', FR-57",
+            "FR, null, Colmar, FR-68",
+            "FR, F-57000, Metz, FR-57",
+            "FR, '', Lyon, null",
+            "FR, null, null, null",
+            "DE, 67000, Strasbourg, null",
+            "null, 57000, Metz, null",
     })
-    void postcodeResolvesDepartment(String postcode, String city, String region) {
-        assertThat(PublicHolidayCalendar.regionOf("FR", postcode, city)).isEqualTo(region);
-    }
-
-    @Test
-    void postcodeOutsideAlsaceMoselleWinsOverCity() {
-        assertThat(PublicHolidayCalendar.regionOf("FR", "75011", "Metz")).isNull();
-    }
-
-    @Test
-    void blankOrMalformedPostcodeFallsBackToCity() {
-        assertThat(PublicHolidayCalendar.regionOf("FR", "", " METZ ")).isEqualTo("FR-57");
-        assertThat(PublicHolidayCalendar.regionOf("FR", null, "Colmar")).isEqualTo("FR-68");
-        assertThat(PublicHolidayCalendar.regionOf("FR", "F-57000", "Metz")).isEqualTo("FR-57");
-    }
-
-    @Test
-    void unknownCityWithoutPostcodeHasNoRegion() {
-        assertThat(PublicHolidayCalendar.regionOf("FR", "", "Lyon")).isNull();
-        assertThat(PublicHolidayCalendar.regionOf("FR", null, null)).isNull();
-    }
-
-    @Test
-    void nonFrenchCountryHasNoRegion() {
-        assertThat(PublicHolidayCalendar.regionOf("DE", "67000", "Strasbourg")).isNull();
-        assertThat(PublicHolidayCalendar.regionOf(null, "57000", "Metz")).isNull();
-    }
-
-    @Test
-    void existingThreeArgNearIsUnchanged() {
-        assertThat(PublicHolidayCalendar.near("FR", GOOD_FRIDAY_2027, 0)).isEmpty();
+    void regionOfResolvesAlsaceMoselleDepartment(String country, String postcode, String city, String region) {
+        assertThat(PublicHolidayCalendar.regionOf(country, postcode, city)).isEqualTo(region);
     }
 }

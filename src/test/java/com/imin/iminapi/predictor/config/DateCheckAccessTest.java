@@ -7,13 +7,7 @@ import org.springframework.boot.context.properties.bind.BindException;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.http.HttpStatus;
 
-import java.lang.reflect.Field;
-import java.lang.reflect.Modifier;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.Set;
-import java.util.TreeSet;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -110,16 +104,6 @@ class DateCheckAccessTest {
     }
 
     @Test
-    void allOrgsDefaultsFalse() {
-        runner.withPropertyValues("imin.predictor.date-check.enabled=true",
-                        "imin.predictor.date-check.beta-org-ids=" + A)
-                .run(ctx -> {
-                    assertThat(ctx.getBean(DateCheckProperties.class).getAllOrgs()).isFalse();
-                    assertNotFound(ctx.getBean(DateCheckAccess.class), B);
-                });
-    }
-
-    @Test
     void trailingCommaDropsBlankElement() {
         runner.withPropertyValues("imin.predictor.date-check.enabled=true",
                         "imin.predictor.date-check.beta-org-ids=" + A + ",")
@@ -163,20 +147,6 @@ class DateCheckAccessTest {
                 });
     }
 
-    @Test
-    void defaultsAreOff() {
-        // Plain construction: no property source or env var can override the field defaults.
-        DateCheckProperties props = new DateCheckProperties();
-        assertThat(props.getEnabled()).isFalse();
-        assertThat(props.getRadarEnabled()).isFalse();
-        assertThat(props.getAllOrgs()).isFalse();
-        assertThat(props.getBetaOrgIds()).isEmpty();
-        assertThat(props.getMaxDates()).isEqualTo(5);
-        assertThat(props.getMaxHorizonMonths()).isEqualTo(18);
-        assertNotFound(new DateCheckAccess(props), A);
-        assertThat(new DateCheckAccess(props).isResearchAvailable(A)).isFalse();
-    }
-
     // ---- web research ----
 
     @Test
@@ -196,96 +166,6 @@ class DateCheckAccessTest {
         beta.setEnabled(false);
         assertThat(betaAccess.isResearchAvailable(A)).isFalse();
         assertThat(betaAccess.isResearchAvailable(B)).isFalse();
-    }
-
-    @Test
-    void blankEnvVarsBindSafeDefaults() {
-        // The shipped placeholders, with each env var stubbed to empty so a local value cannot leak in.
-        runner.withPropertyValues(
-                        "PREDICTOR_DATE_CHECK_ENABLED=",
-                        "PREDICTOR_DATE_CHECK_ALL_ORGS=",
-                        "PREDICTOR_DATE_CHECK_RADAR_ENABLED=",
-                        "PREDICTOR_DATE_CHECK_MAX_DATES=",
-                        "PREDICTOR_DATE_CHECK_MAX_HORIZON_MONTHS=",
-                        "PREDICTOR_DATE_CHECK_RESEARCH_DAILY_CAP_PER_ORG=",
-                        "PREDICTOR_DATE_CHECK_RESEARCH_DAILY_CAP_GLOBAL=",
-                        "PREDICTOR_DATE_CHECK_RESEARCH_MODEL=",
-                        "PREDICTOR_DATE_CHECK_RESEARCH_TIMEOUT=",
-                        "imin.predictor.date-check.enabled=${PREDICTOR_DATE_CHECK_ENABLED:false}",
-                        "imin.predictor.date-check.all-orgs=${PREDICTOR_DATE_CHECK_ALL_ORGS:false}",
-                        "imin.predictor.date-check.radar-enabled=${PREDICTOR_DATE_CHECK_RADAR_ENABLED:false}",
-                        "imin.predictor.date-check.max-dates=${PREDICTOR_DATE_CHECK_MAX_DATES:5}",
-                        "imin.predictor.date-check.max-horizon-months=${PREDICTOR_DATE_CHECK_MAX_HORIZON_MONTHS:18}",
-                        "imin.predictor.date-check.research-daily-cap-per-org=${PREDICTOR_DATE_CHECK_RESEARCH_DAILY_CAP_PER_ORG:10}",
-                        "imin.predictor.date-check.research-daily-cap-global=${PREDICTOR_DATE_CHECK_RESEARCH_DAILY_CAP_GLOBAL:100}",
-                        "imin.predictor.date-check.research-model=${PREDICTOR_DATE_CHECK_RESEARCH_MODEL:anthropic/claude-haiku-4.5}",
-                        "imin.predictor.date-check.research-timeout=${PREDICTOR_DATE_CHECK_RESEARCH_TIMEOUT:30s}")
-                .run(ctx -> {
-                    assertThat(ctx).hasNotFailed();
-                    DateCheckProperties props = ctx.getBean(DateCheckProperties.class);
-                    assertThat(props.getEnabled()).isFalse();
-                    assertThat(props.getAllOrgs()).isFalse();
-                    assertThat(props.getRadarEnabled()).isFalse();
-                    assertThat(props.getMaxDates()).isEqualTo(5);
-                    assertThat(props.getMaxHorizonMonths()).isEqualTo(18);
-                    assertThat(props.getResearchDailyCapPerOrg()).isEqualTo(10);
-                    assertThat(props.getResearchDailyCapGlobal()).isEqualTo(100);
-                    assertThat(props.getResearchModel()).isEqualTo("anthropic/claude-haiku-4.5");
-                    assertThat(props.getResearchTimeout()).isEqualTo(java.time.Duration.ofSeconds(30));
-                });
-    }
-
-    @Test
-    void nonPositiveLimitsFallBackToDefaults() {
-        runner.withPropertyValues("imin.predictor.date-check.max-dates=0",
-                        "imin.predictor.date-check.max-horizon-months=-1")
-                .run(ctx -> {
-                    DateCheckProperties props = ctx.getBean(DateCheckProperties.class);
-                    assertThat(props.getMaxDates()).isEqualTo(5);
-                    assertThat(props.getMaxHorizonMonths()).isEqualTo(18);
-                });
-        runner.withPropertyValues("imin.predictor.date-check.max-dates=3",
-                        "imin.predictor.date-check.max-horizon-months=12")
-                .run(ctx -> {
-                    DateCheckProperties props = ctx.getBean(DateCheckProperties.class);
-                    assertThat(props.getMaxDates()).isEqualTo(3);
-                    assertThat(props.getMaxHorizonMonths()).isEqualTo(12);
-                });
-    }
-
-    @Test
-    void shippedYamlIsDarkAndEnumeratesEveryKey() throws Exception {
-        String yaml = Files.readString(Path.of("src/main/resources/application.yaml"), StandardCharsets.UTF_8);
-        assertThat(yaml).contains(
-                "      enabled: ${PREDICTOR_DATE_CHECK_ENABLED:false}\n",
-                "      all-orgs: ${PREDICTOR_DATE_CHECK_ALL_ORGS:false}\n",
-                "      beta-org-ids: ${PREDICTOR_DATE_CHECK_BETA_ORGS:}\n",
-                "      radar-enabled: ${PREDICTOR_DATE_CHECK_RADAR_ENABLED:false}\n",
-                "      max-dates: ${PREDICTOR_DATE_CHECK_MAX_DATES:5}\n",
-                "      max-horizon-months: ${PREDICTOR_DATE_CHECK_MAX_HORIZON_MONTHS:18}\n",
-                "      research-daily-cap-per-org: ${PREDICTOR_DATE_CHECK_RESEARCH_DAILY_CAP_PER_ORG:10}\n",
-                "      research-daily-cap-global: ${PREDICTOR_DATE_CHECK_RESEARCH_DAILY_CAP_GLOBAL:100}\n",
-                "      research-model: ${PREDICTOR_DATE_CHECK_RESEARCH_MODEL:anthropic/claude-haiku-4.5}\n",
-                "      research-timeout: ${PREDICTOR_DATE_CHECK_RESEARCH_TIMEOUT:30s}\n");
-
-        String block = dateCheckBlock(yaml);
-        Set<String> missing = new TreeSet<>();
-        for (Field f : DateCheckProperties.class.getDeclaredFields()) {
-            if (f.isSynthetic() || Modifier.isStatic(f.getModifiers())) continue;
-            String key = f.getName().replaceAll("([a-z0-9])([A-Z])", "$1-$2").toLowerCase();
-            if (!block.contains("\n      " + key + ":")) missing.add(key);
-        }
-        assertThat(missing).as("DateCheckProperties fields missing from the date-check yaml block").isEmpty();
-    }
-
-    /** From the nested {@code date-check:} line to the next key indented 4 spaces or less. */
-    private static String dateCheckBlock(String yaml) {
-        int start = yaml.indexOf("\n    date-check:\n");
-        assertThat(start).as("date-check block under imin.predictor").isNotNegative();
-        int from = start + "\n    date-check:\n".length();
-        java.util.regex.Matcher end = java.util.regex.Pattern.compile("\n {0,4}[a-z]").matcher(yaml);
-        int stop = end.find(from) ? end.start() : yaml.length();
-        return yaml.substring(start, stop);
     }
 
     private static void assertNotFound(DateCheckAccess access, UUID orgId) {

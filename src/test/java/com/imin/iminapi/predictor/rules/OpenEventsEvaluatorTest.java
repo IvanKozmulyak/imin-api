@@ -15,6 +15,9 @@ import com.imin.iminapi.predictor.sources.openevents.OpenEventCities.City;
 import com.imin.iminapi.predictor.sources.openevents.OpenEventSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.core.io.DefaultResourceLoader;
 
 import java.io.ByteArrayInputStream;
@@ -29,6 +32,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Stream;
 
 import static com.imin.iminapi.predictor.rules.RuleFixtures.BANK;
 import static com.imin.iminapi.predictor.rules.RuleFixtures.TODAY;
@@ -316,71 +320,42 @@ class OpenEventsEvaluatorTest {
         assertThat(f.url()).isNull();
     }
 
-    @Test
-    void veryBusyWeekIsStrength2() {
-        busyHistory();
-        week(d("2026-10-05"), 8);
+    private static int[] flat(int n) {
+        int[] v = new int[12];
+        java.util.Arrays.fill(v, n);
+        return v;
+    }
+
+    private static final int[] BUSY = {2, 2, 3, 3, 3, 3, 4, 4, 4, 5, 5, 6};
+
+    /** The candidate week's count against a 12-week norm; {@code null} expectations are not asserted. */
+    static Stream<Arguments> candidateWeeks() {
+        return Stream.of(
+                Arguments.of("very busy week", BUSY, 8, Finding.Status.FOUND, 2, null),
+                Arguments.of("whole norm stays whole", flat(4), 8, Finding.Status.FOUND, 2, 4L),
+                Arguments.of("below ratio", BUSY, 5, Finding.Status.CLEAR, null, null),
+                Arguments.of("zero norm under min excess", flat(0), 1, Finding.Status.CLEAR, null, null),
+                Arguments.of("zero norm at min excess", flat(0), 2, Finding.Status.FOUND, 1, 0L),
+                Arguments.of("zero norm with double excess", flat(0), 4, Finding.Status.FOUND, 2, null),
+                // 15 is 1.5 x 10 but under 2 x 10, though 5 above the norm clears 2 x min_excess
+                Arguments.of("ratio on top of excess, busy", flat(10), 15, Finding.Status.FOUND, 1, null),
+                // 13 is under 1.5 x 10, though 3 above the norm clears min_excess
+                Arguments.of("ratio on top of excess, under ratio", flat(10), 13, Finding.Status.CLEAR, null, null));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("candidateWeeks")
+    void candidateWeekAgainstNorm(String name, int[] norm, int count, Finding.Status status, Integer strength,
+                                  Long normFact) {
+        history(norm);
+        week(d("2026-10-05"), count);
 
         Finding f = one(q26, lille(), SAT);
 
-        assertThat(f.strength()).isEqualTo(2);
-        assertThat(f.facts()).containsEntry("count", 8);
-    }
-
-    @Test
-    void wholeNormStaysWhole() {
-        history(4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4);
-        week(d("2026-10-05"), 8);
-
-        Finding f = one(q26, lille(), SAT);
-
-        assertThat(f.strength()).isEqualTo(2);
-        assertThat(f.facts()).containsEntry("norm", 4L);
-    }
-
-    @Test
-    void belowRatioIsClear() {
-        busyHistory();
-        week(d("2026-10-05"), 5);
-
-        assertThat(one(q26, lille(), SAT).status()).isEqualTo(Finding.Status.CLEAR);
-    }
-
-    @Test
-    void zeroNormNeedsMinExcess() {
-        history(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-        week(d("2026-10-05"), 1);
-        assertThat(one(q26, lille(), SAT).status()).isEqualTo(Finding.Status.CLEAR);
-
-        weekRows.removeIf(c -> c.getWeekStart().equals(d("2026-10-05")));
-        week(d("2026-10-05"), 2);
-        Finding f = one(q26, lille(), SAT);
-        assertThat(f.status()).isEqualTo(Finding.Status.FOUND);
-        assertThat(f.strength()).isEqualTo(1);
-        assertThat(f.facts()).containsEntry("norm", 0L);
-    }
-
-    @Test
-    void ratioAppliesOnTopOfExcess() {
-        history(10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10);
-        // 15 is 1.5 x 10 but under 2 x 10, though 5 above the norm clears 2 x min_excess
-        week(d("2026-10-05"), 15);
-        Finding busy = one(q26, lille(), SAT);
-        assertThat(busy.status()).isEqualTo(Finding.Status.FOUND);
-        assertThat(busy.strength()).isEqualTo(1);
-
-        // 13 is under 1.5 x 10, though 3 above the norm clears min_excess
-        weekRows.removeIf(c -> c.getWeekStart().equals(d("2026-10-05")));
-        week(d("2026-10-05"), 13);
-        assertThat(one(q26, lille(), SAT).status()).isEqualTo(Finding.Status.CLEAR);
-    }
-
-    @Test
-    void zeroNormWithDoubleExcessIsStrength2() {
-        history(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-        week(d("2026-10-05"), 4);
-
-        assertThat(one(q26, lille(), SAT).strength()).isEqualTo(2);
+        assertThat(f.status()).isEqualTo(status);
+        if (status == Finding.Status.FOUND) assertThat(f.facts()).containsEntry("count", count);
+        if (strength != null) assertThat(f.strength()).isEqualTo(strength);
+        if (normFact != null) assertThat(f.facts()).containsEntry("norm", normFact);
     }
 
     @Test
@@ -428,18 +403,32 @@ class OpenEventsEvaluatorTest {
         assertThat(f.url()).isEqualTo(carnival.getUrl());
     }
 
-    @Test
-    void communityNextNightIsStrength1() {
-        row("openagenda", SAT.plusDays(1), "Braderie", true);
-        Finding next = one(q53, lille(), SAT);
-        assertThat(next.strength()).isEqualTo(1);
-        assertThat(next.facts()).containsEntry("date", "2026-10-11");
+    /** One community (or non-community) row {@code offset} nights from the date. */
+    private record Night(int offset, String title, boolean community) { }
 
-        rows.clear();
-        row("openagenda", SAT.minusDays(1), "Braderie", true);
-        Finding before = one(q53, lille(), SAT);
-        assertThat(before.strength()).isEqualTo(1);
-        assertThat(before.facts()).containsEntry("date", "2026-10-09");
+    static Stream<Arguments> communityNights() {
+        return Stream.of(
+                Arguments.of("next night", List.of(new Night(1, "Braderie", true)), Finding.Status.FOUND, 1, "2026-10-11"),
+                Arguments.of("night before", List.of(new Night(-1, "Braderie", true)), Finding.Status.FOUND, 1, "2026-10-09"),
+                Arguments.of("two nights away", List.of(new Night(2, "Braderie", true), new Night(-2, "Carnaval", true)),
+                        Finding.Status.CLEAR, null, null),
+                Arguments.of("non-community row ignored", List.of(new Night(0, "Techno party", false)),
+                        Finding.Status.CLEAR, null, null));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("communityNights")
+    void communityNearTheDate(String name, List<Night> nights, Finding.Status status, Integer strength, String date) {
+        for (Night n : nights) {
+            if (n.community()) row("openagenda", SAT.plusDays(n.offset()), n.title(), true);
+            else row("openagenda", SAT.plusDays(n.offset()), n.title(), false, HOUSE);
+        }
+
+        Finding f = one(q53, lille(), SAT);
+
+        assertThat(f.status()).isEqualTo(status);
+        if (strength != null) assertThat(f.strength()).isEqualTo(strength);
+        if (date != null) assertThat(f.facts()).containsEntry("date", date);
     }
 
     @Test
@@ -448,21 +437,6 @@ class OpenEventsEvaluatorTest {
         row("openagenda", SAT, "Zzz carnaval", true);
 
         assertThat(one(q53, lille(), SAT).facts()).containsEntry("name", "Zzz carnaval").containsEntry("count", 2);
-    }
-
-    @Test
-    void communityTwoNightsAwayIsClear() {
-        row("openagenda", SAT.plusDays(2), "Braderie", true);
-        row("openagenda", SAT.minusDays(2), "Carnaval", true);
-
-        assertThat(one(q53, lille(), SAT).status()).isEqualTo(Finding.Status.CLEAR);
-    }
-
-    @Test
-    void nonCommunityRowIgnored() {
-        row("openagenda", SAT, "Techno party", false, HOUSE);
-
-        assertThat(one(q53, lille(), SAT).status()).isEqualTo(Finding.Status.CLEAR);
     }
 
     @Test
@@ -556,15 +530,6 @@ class OpenEventsEvaluatorTest {
     }
 
     @Test
-    void weeklySeriesSkippingTheDateIsClear() {
-        busyHistory();
-        party("Techno Thursday", d("2026-09-10"), d("2026-09-17"), d("2026-09-24"), d("2026-10-01"),
-                d("2026-10-15"), d("2026-10-22"));
-
-        assertThat(one(q23, lille(), THU).status()).isEqualTo(Finding.Status.CLEAR);
-    }
-
-    @Test
     void monthlySeriesSkippingTheDateIsClear() {
         busyHistory();
         party("Second Saturday", d("2026-07-11"), d("2026-08-08"), d("2026-09-12"), d("2026-11-14"));
@@ -574,6 +539,41 @@ class OpenEventsEvaluatorTest {
         Finding f = one(q23, lille(), SAT);
         assertThat(f.strength()).isEqualTo(2);
         assertThat(f.facts()).containsEntry("pattern", "monthly_nth").containsEntry("lastDate", "2026-09-12");
+    }
+
+    /** House nights that do not make a series predicting the date. */
+    static Stream<Arguments> notASeries() {
+        return Stream.of(
+                Arguments.of("weekly series skipping the date", "Techno Thursday",
+                        List.of("2026-09-10", "2026-09-17", "2026-09-24", "2026-10-01", "2026-10-15", "2026-10-22"), THU),
+                Arguments.of("two weekly occurrences", "Techno Thursday", List.of("2026-09-17", "2026-09-24"), THU),
+                Arguments.of("two monthly occurrences", "Second Saturday", List.of("2026-08-08", "2026-09-12"), SAT),
+                Arguments.of("other weekday", "Techno Wednesday", List.of("2026-09-09", "2026-09-16", "2026-09-23"), THU),
+                Arguments.of("other ordinals", "Some Saturday", List.of("2026-07-04", "2026-08-08", "2026-09-19"), SAT),
+                // a last-Friday series does not predict the fourth Friday 10-23, which is not the last
+                Arguments.of("last-of-month on a non-last date", "Last Friday",
+                        List.of("2026-07-31", "2026-08-28", "2026-09-25"), d("2026-10-23")),
+                // fourth Fridays that were not the last do not predict the last Friday 10-30
+                Arguments.of("non-last nights on a last date", "Fourth Friday",
+                        List.of("2026-07-24", "2026-08-21", "2026-09-18"), d("2026-10-30")),
+                Arguments.of("every other week", "Fortnightly", List.of("2026-08-27", "2026-09-10", "2026-09-24"), THU),
+                // second Thursdays of Jul, Aug, Sep, plus a fourth Thursday in July
+                Arguments.of("two nights in one month", "Thursday Club",
+                        List.of("2026-07-09", "2026-07-23", "2026-08-13", "2026-09-10"), THU),
+                // last Thursdays of Jun, Jul, Aug, then 09-03 a week later: one night per month, but weekly-shaped
+                Arguments.of("seven days apart across months", "Thursday Club",
+                        List.of("2026-06-25", "2026-07-30", "2026-08-27", "2026-09-03"), d("2026-10-29")),
+                Arguments.of("series only after the date", "Autumn Thursday",
+                        List.of("2026-10-15", "2026-10-22", "2026-10-29"), THU));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("notASeries")
+    void notASeriesIsClear(String name, String title, List<String> nights, LocalDate date) {
+        busyHistory();
+        party(title, nights.stream().map(LocalDate::parse).toArray(LocalDate[]::new));
+
+        assertThat(one(q23, lille(), date).status()).isEqualTo(Finding.Status.CLEAR);
     }
 
     @Test
@@ -591,54 +591,6 @@ class OpenEventsEvaluatorTest {
     }
 
     @Test
-    void twoOccurrencesIsClear() {
-        busyHistory();
-        party("Techno Thursday", d("2026-09-17"), d("2026-09-24"));
-        assertThat(one(q23, lille(), THU).status()).isEqualTo(Finding.Status.CLEAR);
-
-        rows.clear();
-        party("Second Saturday", d("2026-08-08"), d("2026-09-12"));
-        assertThat(one(q23, lille(), SAT).status()).isEqualTo(Finding.Status.CLEAR);
-    }
-
-    @Test
-    void otherWeekdayIgnored() {
-        busyHistory();
-        party("Techno Wednesday", d("2026-09-09"), d("2026-09-16"), d("2026-09-23"));
-
-        assertThat(one(q23, lille(), THU).status()).isEqualTo(Finding.Status.CLEAR);
-    }
-
-    @Test
-    void otherOrdinalsIgnored() {
-        busyHistory();
-        party("Some Saturday", d("2026-07-04"), d("2026-08-08"), d("2026-09-19"));
-
-        assertThat(one(q23, lille(), SAT).status()).isEqualTo(Finding.Status.CLEAR);
-    }
-
-    @Test
-    void lastOfMonthNeedsBothDateAndNightsLast() {
-        busyHistory();
-        // a last-Friday series does not predict the fourth Friday 10-23, which is not the last
-        party("Last Friday", d("2026-07-31"), d("2026-08-28"), d("2026-09-25"));
-        assertThat(one(q23, lille(), d("2026-10-23")).status()).isEqualTo(Finding.Status.CLEAR);
-
-        // fourth Fridays that were not the last do not predict the last Friday 10-30
-        rows.clear();
-        party("Fourth Friday", d("2026-07-24"), d("2026-08-21"), d("2026-09-18"));
-        assertThat(one(q23, lille(), d("2026-10-30")).status()).isEqualTo(Finding.Status.CLEAR);
-    }
-
-    @Test
-    void everyOtherWeekIsNotWeekly() {
-        busyHistory();
-        party("Fortnightly", d("2026-08-27"), d("2026-09-10"), d("2026-09-24"));
-
-        assertThat(one(q23, lille(), THU).status()).isEqualTo(Finding.Status.CLEAR);
-    }
-
-    @Test
     void staleSeriesBeyondGapIsClear() {
         busyHistory();
         party("Summer Thursday", d("2026-08-06"), d("2026-08-13"), d("2026-08-20"));
@@ -647,32 +599,6 @@ class OpenEventsEvaluatorTest {
         // 28 days before the date is still within the gap
         party("Summer Thursday", d("2026-08-27"), d("2026-09-03"), d("2026-09-10"));
         assertThat(one(q23, lille(), THU).facts()).containsEntry("lastDate", "2026-09-10").containsEntry("count", 6);
-    }
-
-    @Test
-    void twoNightsInOneMonthIsNotMonthly() {
-        busyHistory();
-        // second Thursdays of Jul, Aug, Sep, plus a fourth Thursday in July
-        party("Thursday Club", d("2026-07-09"), d("2026-07-23"), d("2026-08-13"), d("2026-09-10"));
-
-        assertThat(one(q23, lille(), THU).status()).isEqualTo(Finding.Status.CLEAR);
-    }
-
-    @Test
-    void sevenDaysApartAcrossMonthsIsNotMonthly() {
-        busyHistory();
-        // last Thursdays of Jun, Jul, Aug, then 09-03 a week later: one night per month, but weekly-shaped
-        party("Thursday Club", d("2026-06-25"), d("2026-07-30"), d("2026-08-27"), d("2026-09-03"));
-
-        assertThat(one(q23, lille(), d("2026-10-29")).status()).isEqualTo(Finding.Status.CLEAR);
-    }
-
-    @Test
-    void seriesOnlyAfterTheDateIsClear() {
-        busyHistory();
-        party("Autumn Thursday", d("2026-10-15"), d("2026-10-22"), d("2026-10-29"));
-
-        assertThat(one(q23, lille(), THU).status()).isEqualTo(Finding.Status.CLEAR);
     }
 
     @Test
@@ -752,61 +678,67 @@ class OpenEventsEvaluatorTest {
         assertThat(evaluator().questionIds()).containsExactlyInAnyOrder("2.6", "5.3", "2.3");
     }
 
-    @Test
-    void unknownParamFailsBoot() throws IOException {
-        QuestionBank bank = bankWith(PARAMS_2_6, PARAMS_2_6.replace(" }", ", foo: 1 }"));
+    private static final String PARAMS_2_3 =
+            "params: { min_occurrences: 3, weekly_max_gap_days: 28, monthly_max_gap_days: 70, max_ahead_days: 90 }";
+
+    /** Bank edits (find, replace pairs) that must fail boot, and the message fragments they name. */
+    static Stream<Arguments> badBanks() {
+        return Stream.of(
+                Arguments.of("unknown param", new String[] {PARAMS_2_6, PARAMS_2_6.replace(" }", ", foo: 1 }")},
+                        List.of("2.6", "params.foo")),
+                Arguments.of("max ahead over lookahead",
+                        new String[] {"params: { max_ahead_days: 60 }", "params: { max_ahead_days: 121 }"},
+                        List.of("5.3", "params.max_ahead_days")),
+                Arguments.of("busy_ratio low", new String[] {PARAMS_2_6, PARAMS_2_6.replace("busy_ratio: 1.5", "busy_ratio: 1")},
+                        List.of("params.busy_ratio")),
+                Arguments.of("busy_ratio high", new String[] {PARAMS_2_6, PARAMS_2_6.replace("busy_ratio: 1.5", "busy_ratio: 5.5")},
+                        List.of("params.busy_ratio")),
+                Arguments.of("strong_ratio low",
+                        new String[] {PARAMS_2_6, PARAMS_2_6.replace("strong_ratio: 2.0", "strong_ratio: 1.4")},
+                        List.of("params.strong_ratio")),
+                Arguments.of("strong_ratio high",
+                        new String[] {PARAMS_2_6, PARAMS_2_6.replace("strong_ratio: 2.0", "strong_ratio: 10.5")},
+                        List.of("params.strong_ratio")),
+                Arguments.of("min_excess fractional",
+                        new String[] {PARAMS_2_6, PARAMS_2_6.replace("min_excess: 2", "min_excess: 1.5")},
+                        List.of("params.min_excess")),
+                Arguments.of("min_excess high", new String[] {PARAMS_2_6, PARAMS_2_6.replace("min_excess: 2", "min_excess: 21")},
+                        List.of("params.min_excess")),
+                Arguments.of("min_occurrences low",
+                        new String[] {PARAMS_2_3, PARAMS_2_3.replace("min_occurrences: 3", "min_occurrences: 1")},
+                        List.of("params.min_occurrences")),
+                Arguments.of("weekly_max_gap_days low",
+                        new String[] {PARAMS_2_3, PARAMS_2_3.replace("weekly_max_gap_days: 28", "weekly_max_gap_days: 6")},
+                        List.of("params.weekly_max_gap_days")),
+                Arguments.of("monthly_max_gap_days high",
+                        new String[] {PARAMS_2_3, PARAMS_2_3.replace("monthly_max_gap_days: 70", "monthly_max_gap_days: 121")},
+                        List.of("params.monthly_max_gap_days")),
+                Arguments.of("max_ahead_days zero",
+                        new String[] {PARAMS_2_3, PARAMS_2_3.replace("max_ahead_days: 90", "max_ahead_days: 0")},
+                        List.of("params.max_ahead_days")),
+                Arguments.of("missing param",
+                        new String[] {PARAMS_2_6, "params: { busy_ratio: 1.5, strong_ratio: 2.0, max_ahead_days: 28 }"},
+                        List.of("min_excess")),
+                Arguments.of("question missing from bank", new String[] {
+                                "  - id: \"5.3\"\n    family: communities\n", "  - id: \"5.4\"\n    family: communities\n",
+                                "template: predictor.q.5_3", "template: predictor.q.5_4"},
+                        List.of("5.3", "not in the bank")));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("badBanks")
+    void badBankFailsBoot(String name, String[] findThenReplace, List<String> fragments) throws IOException {
+        QuestionBank bank = bankWith(findThenReplace);
 
         assertThatThrownBy(() -> build(bank)).isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("2.6").hasMessageContaining("params.foo");
+                .satisfies(e -> fragments.forEach(f -> assertThat(e).hasMessageContaining(f)));
     }
 
     @Test
-    void maxAheadOverLookaheadFailsBoot() throws IOException {
-        QuestionBank bank = bankWith("params: { max_ahead_days: 60 }", "params: { max_ahead_days: 121 }");
-
-        assertThatThrownBy(() -> build(bank)).isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("5.3").hasMessageContaining("params.max_ahead_days");
+    void inclusiveParamEdgesLoad() throws IOException {
         build(bankWith("params: { max_ahead_days: 60 }", "params: { max_ahead_days: 120 }"));
-    }
-
-    @Test
-    void paramOutOfBoundsFailsBoot() throws IOException {
-        String p23 = "params: { min_occurrences: 3, weekly_max_gap_days: 28, monthly_max_gap_days: 70, max_ahead_days: 90 }";
-        Map<String, String[]> bad = Map.of(
-                "busy_ratio", new String[] {PARAMS_2_6, PARAMS_2_6.replace("busy_ratio: 1.5", "busy_ratio: 1")},
-                "busy_ratio ", new String[] {PARAMS_2_6, PARAMS_2_6.replace("busy_ratio: 1.5", "busy_ratio: 5.5")},
-                "strong_ratio", new String[] {PARAMS_2_6, PARAMS_2_6.replace("strong_ratio: 2.0", "strong_ratio: 1.4")},
-                "strong_ratio ", new String[] {PARAMS_2_6, PARAMS_2_6.replace("strong_ratio: 2.0", "strong_ratio: 10.5")},
-                "min_excess", new String[] {PARAMS_2_6, PARAMS_2_6.replace("min_excess: 2", "min_excess: 1.5")},
-                "min_excess ", new String[] {PARAMS_2_6, PARAMS_2_6.replace("min_excess: 2", "min_excess: 21")},
-                "min_occurrences", new String[] {p23, p23.replace("min_occurrences: 3", "min_occurrences: 1")},
-                "weekly_max_gap_days", new String[] {p23, p23.replace("weekly_max_gap_days: 28", "weekly_max_gap_days: 6")},
-                "monthly_max_gap_days", new String[] {p23, p23.replace("monthly_max_gap_days: 70", "monthly_max_gap_days: 121")},
-                "max_ahead_days", new String[] {p23, p23.replace("max_ahead_days: 90", "max_ahead_days: 0")});
-        for (Map.Entry<String, String[]> e : bad.entrySet()) {
-            QuestionBank bank = bankWith(e.getValue()[0], e.getValue()[1]);
-            assertThatThrownBy(() -> build(bank)).as(e.getKey()).isInstanceOf(IllegalStateException.class)
-                    .hasMessageContaining("params." + e.getKey().strip());
-        }
-        // inclusive edges load
         build(bankWith(PARAMS_2_6, PARAMS_2_6.replace("busy_ratio: 1.5", "busy_ratio: 2.0")));
-        build(bankWith(p23, p23.replace("min_occurrences: 3", "min_occurrences: 10")));
-    }
-
-    @Test
-    void missingParamFailsBoot() throws IOException {
-        QuestionBank bank = bankWith(PARAMS_2_6, "params: { busy_ratio: 1.5, strong_ratio: 2.0, max_ahead_days: 28 }");
-
-        assertThatThrownBy(() -> build(bank)).isInstanceOf(IllegalStateException.class).hasMessageContaining("min_excess");
-    }
-
-    @Test
-    void questionMissingFromBankFailsBoot() throws IOException {
-        QuestionBank bank = bankWith("  - id: \"5.3\"\n    family: communities\n", "  - id: \"5.3\"\n    family: communities\n"
-                .replace("5.3", "5.4"), "template: predictor.q.5_3", "template: predictor.q.5_4");
-
-        assertThatThrownBy(() -> build(bank)).isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("5.3").hasMessageContaining("not in the bank");
+        build(bankWith(PARAMS_2_3, PARAMS_2_3.replace("min_occurrences: 3", "min_occurrences: 10")));
     }
 
     @Test

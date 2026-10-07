@@ -8,6 +8,7 @@ import com.imin.iminapi.predictor.model.PredictorSegmentStatus;
 import com.imin.iminapi.predictor.repository.EventOutcomeRepository;
 import com.imin.iminapi.predictor.repository.PredictionLedgerRepository;
 import com.imin.iminapi.predictor.repository.PredictorSegmentStatusRepository;
+import com.imin.iminapi.predictor.service.CalibrationViewService;
 import com.imin.iminapi.predictor.service.PredictionLedgerService;
 import com.imin.iminapi.predictor.service.PredictionScoringJob;
 import org.junit.jupiter.api.Test;
@@ -24,6 +25,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.*;
 
 /**
@@ -175,5 +177,34 @@ class PredictionScoringJobTest {
         verify(segments, times(1)).save(saved.capture());
         assertThat(saved.getValue().getSegmentKey())
                 .isEqualTo(PredictorSegmentStatus.key("electronic", CapacityBand.values()[0]));
+    }
+
+    // CalibrationViewService has its own null-event guard; the date-check render must not reach findById.
+    @Test
+    void calibrationRenderSkipsJoinedRowWithoutEvent() {
+        PredictionLedgerRepository ledger = mock(PredictionLedgerRepository.class);
+        EventOutcomeRepository outcomes = mock(EventOutcomeRepository.class);
+        PredictorSegmentStatusRepository segments = mock(PredictorSegmentStatusRepository.class);
+
+        UUID eventId = UUID.randomUUID();
+        PredictionLedger dateCheckRender = render(UUID.randomUUID(), null);
+        dateCheckRender.setSurface(PredictionSurface.DATE_CHECK);
+        dateCheckRender.setOutcomeJoinedAt(now);
+        dateCheckRender.setOutputJson("{}");
+        PredictionLedger eventRender = render(UUID.randomUUID(), eventId);
+        eventRender.setSurface(PredictionSurface.PRE_PUBLISH);
+        eventRender.setOutcomeJoinedAt(now);
+        eventRender.setOutputJson("{}");
+        when(ledger.findAll()).thenReturn(List.of(dateCheckRender, eventRender));
+        when(outcomes.findById(isNull())).thenThrow(new IllegalArgumentException("The given id must not be null"));
+        EventOutcome o = new EventOutcome();
+        o.setEventId(eventId);
+        when(outcomes.findById(eventId)).thenReturn(Optional.of(o));
+        when(segments.findAll()).thenReturn(List.of());
+
+        String html = new CalibrationViewService(ledger, outcomes, segments).render();
+
+        verify(outcomes, never()).findById(isNull());
+        assertThat(html).contains("renders: 2").contains("outcome-joined: 1").contains("scored (parseable + outcome): 1");
     }
 }

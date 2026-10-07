@@ -2,11 +2,15 @@ package com.imin.iminapi.predictor.sources.openevents;
 
 import com.imin.iminapi.predictor.sources.openevents.OpenEventCities.City;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.core.io.DefaultResourceLoader;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -87,85 +91,44 @@ class OpenEventCitiesTest {
         assertThat(cities.verifiedOn()).isEqualTo(LocalDate.of(2026, 10, 1));
     }
 
-    @Test
-    void duplicateKeyRejected() {
-        rejects(VALID + "  lille:\n    country: FR\n    aliases: [x]\n    quefaireaparis: false\n", "invalid YAML");
+    static Stream<Arguments> invalidFiles() {
+        return Stream.of(
+                Arguments.of("duplicate key",
+                        VALID + "  lille:\n    country: FR\n    aliases: [x]\n    quefaireaparis: false\n", "invalid YAML"),
+                Arguments.of("unknown root key", VALID.replace("version: 1", "version: 1\nextra: 1"), "unknown key 'extra'"),
+                Arguments.of("unknown city key",
+                        VALID.replace("    aliases: [paris]", "    aliases: [paris]\n    region: IDF"), "unknown key 'region'"),
+                Arguments.of("unknown agenda key",
+                        VALID.replace("name: \"Ville de Lille\",", "name: \"Ville de Lille\", official: true,"),
+                        "unknown key 'official'"),
+                Arguments.of("non-FR country",
+                        VALID.replace("    country: FR\n    aliases: [paris]", "    country: BE\n    aliases: [paris]"), "country"),
+                Arguments.of("licence outside the table check",
+                        VALID.replace("\"Licence Ouverte 2.0\"", "\"CC-BY\""), "licence"),
+                // ODbL is in the table CHECK but no OpenAgenda agenda is credited under it
+                Arguments.of("ODbL agenda", VALID.replace("\"Licence Ouverte 2.0\"", "\"ODbL 1.0\""), "licence"),
+                Arguments.of("duplicate uid", VALID.replace("    openagenda: []", "    openagenda:\n"
+                        + "      - { uid: 57621068, slug: other, name: Other, licence: \"Licence Ouverte 2.0\" }"), "uid"),
+                Arguments.of("alias in two cities", VALID.replace("aliases: [paris]", "aliases: [paris, lomme]"), "alias"),
+                Arguments.of("quefaireaparis outside Paris", VALID.replace("    aliases: [lille, lomme]",
+                        "    aliases: [lille, lomme]\n    quefaireaparis: true"), "quefaireaparis"),
+                Arguments.of("city without source", VALID.replace("    quefaireaparis: true\n", ""), "no source"),
+                Arguments.of("overlong city key", VALID.replace("  paris:\n", "  " + "a".repeat(101) + ":\n")
+                        .replace("quefaireaparis: true", "quefaireaparis: false"), "longer than 100"),
+                Arguments.of("missing version", VALID.replace("version: 1\n", ""), "version"),
+                Arguments.of("zero version", VALID.replace("version: 1", "version: 0"), "version"),
+                Arguments.of("unnormalised key", VALID.replace("  lille:\n", "  Lille:\n"), "normalised"),
+                Arguments.of("unnormalised alias", VALID.replace("aliases: [lille, lomme]", "aliases: [Lille]"), "normalised"),
+                Arguments.of("no aliases", VALID.replace("aliases: [lille, lomme]", "aliases: []"), "aliases"),
+                Arguments.of("negative uid", VALID.replace("uid: 57621068", "uid: -3"), "uid"),
+                Arguments.of("blank slug", VALID.replace("slug: ville-de-lille", "slug: \" \""), "slug"),
+                Arguments.of("bad verified_on", VALID.replace("verified_on: 2026-10-01", "verified_on: \"soon\""),
+                        "verified_on"));
     }
 
-    @Test
-    void unknownRootKeyRejected() {
-        rejects(VALID.replace("version: 1", "version: 1\nextra: 1"), "unknown key 'extra'");
-    }
-
-    @Test
-    void unknownCityKeyRejected() {
-        rejects(VALID.replace("    aliases: [paris]", "    aliases: [paris]\n    region: IDF"), "unknown key 'region'");
-    }
-
-    @Test
-    void unknownAgendaKeyRejected() {
-        rejects(VALID.replace("name: \"Ville de Lille\",", "name: \"Ville de Lille\", official: true,"),
-                "unknown key 'official'");
-    }
-
-    @Test
-    void nonFrCountryRejected() {
-        rejects(VALID.replace("    country: FR\n    aliases: [paris]", "    country: BE\n    aliases: [paris]"), "country");
-    }
-
-    @Test
-    void licenceOutsideCheckRejected() {
-        rejects(VALID.replace("\"Licence Ouverte 2.0\"", "\"CC-BY\""), "licence");
-        // ODbL is in the table CHECK but no OpenAgenda agenda is credited under it.
-        rejects(VALID.replace("\"Licence Ouverte 2.0\"", "\"ODbL 1.0\""), "licence");
-    }
-
-    @Test
-    void duplicateUidRejected() {
-        rejects(VALID.replace("    openagenda: []", "    openagenda:\n"
-                + "      - { uid: 57621068, slug: other, name: Other, licence: \"Licence Ouverte 2.0\" }"), "uid");
-    }
-
-    @Test
-    void aliasInTwoCitiesRejected() {
-        rejects(VALID.replace("aliases: [paris]", "aliases: [paris, lomme]"), "alias");
-    }
-
-    @Test
-    void quefaireOutsideParisRejected() {
-        rejects(VALID.replace("    aliases: [lille, lomme]", "    aliases: [lille, lomme]\n    quefaireaparis: true"),
-                "quefaireaparis");
-    }
-
-    @Test
-    void cityWithoutSourceRejected() {
-        rejects(VALID.replace("    quefaireaparis: true\n", ""), "no source");
-    }
-
-    @Test
-    void overlongCityKeyRejected() {
-        String key = "a".repeat(101);
-        rejects(VALID.replace("  paris:\n", "  " + key + ":\n").replace("quefaireaparis: true", "quefaireaparis: false"),
-                "longer than 100");
-    }
-
-    @Test
-    void missingVersionRejected() {
-        rejects(VALID.replace("version: 1\n", ""), "version");
-        rejects(VALID.replace("version: 1", "version: 0"), "version");
-    }
-
-    @Test
-    void unnormalisedKeyOrAliasRejected() {
-        rejects(VALID.replace("  lille:\n", "  Lille:\n"), "normalised");
-        rejects(VALID.replace("aliases: [lille, lomme]", "aliases: [Lille]"), "normalised");
-        rejects(VALID.replace("aliases: [lille, lomme]", "aliases: []"), "aliases");
-    }
-
-    @Test
-    void badUidSlugOrDateRejected() {
-        rejects(VALID.replace("uid: 57621068", "uid: -3"), "uid");
-        rejects(VALID.replace("slug: ville-de-lille", "slug: \" \""), "slug");
-        rejects(VALID.replace("verified_on: 2026-10-01", "verified_on: \"soon\""), "verified_on");
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("invalidFiles")
+    void invalidFileRejected(String name, String yaml, String fragment) {
+        rejects(yaml, fragment);
     }
 }

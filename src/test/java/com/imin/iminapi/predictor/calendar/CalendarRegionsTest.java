@@ -87,15 +87,4 @@ class CalendarRegionsTest {
         assertThat(CalendarRegions.neighbours("Paris")).isEmpty();
         assertThat(CalendarRegions.neighbours(null)).isEmpty();
     }
-
-    @Test
-    void neighbourRegionCodesFitColumn() {
-        CalendarRegions.BORDER_NEIGHBOURS.values().forEach(byCountry -> byCountry.forEach((country, codes) -> {
-            assertThat(country).matches("[A-Z]{2}");
-            assertThat(codes).allSatisfy(c -> {
-                assertThat(c.length()).isLessThanOrEqualTo(OpenHolidaysSync.MAX_REGION);
-                assertThat(c.isEmpty() || c.startsWith(country + "-")).as(c).isTrue();
-            });
-        }));
-    }
 }

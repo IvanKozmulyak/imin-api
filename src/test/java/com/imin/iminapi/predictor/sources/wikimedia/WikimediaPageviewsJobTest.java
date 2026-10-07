@@ -13,6 +13,8 @@ import com.imin.iminapi.predictor.sources.wikimedia.WikimediaPageviewsClient.Res
 import com.imin.iminapi.predictor.sources.wikimedia.WikimediaPageviewsClient.WikimediaRateLimitedException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.core.io.DefaultResourceLoader;
@@ -192,47 +194,37 @@ class WikimediaPageviewsJobTest {
         assertThat(logs.list).anyMatch(e -> e.getLevel() == Level.WARN && e.getFormattedMessage().contains("Techno"));
     }
 
-    @Test
-    void startupSeedsOnlyWhenEmpty() {
+    // The startup seed runs only when the table is empty, and never lets a failure escape boot.
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"empty", "rows exist", "executor rejects", "run fails"})
+    void startupSeed(String scenario) {
         when(client.fetch(anyString(), anyString(), any(), any())).thenReturn(months(1));
-        when(repository.count()).thenReturn(0L);
-
-        job().onStartup();
-
-        verify(self).getObject();
-        verify(client).fetch("fr.wikipedia", "Techno", FROM, TO);
-    }
-
-    @Test
-    void startupSkipsWhenRowsExist() {
-        when(repository.count()).thenReturn(26L);
-
-        job().onStartup();
-
-        verify(repository).count();
-        verify(self, never()).getObject();
-        verify(client, never()).fetch(anyString(), anyString(), any(), any());
-    }
-
-    @Test
-    void startupExecutorRejectionIsSwallowed() {
-        when(repository.count()).thenReturn(0L);
-
-        job(NOW, r -> { throw new RejectedExecutionException("full"); }).onStartup();
-
-        verify(repository).count();
-        verify(self, never()).getObject();
-    }
-
-    @Test
-    void startupRunFailureIsSwallowed() {
-        when(repository.count()).thenReturn(0L);
-        WikimediaPageviewsJob job = job();
-        when(self.getObject()).thenThrow(new IllegalStateException("no proxy"));
+        when(repository.count()).thenReturn(scenario.equals("rows exist") ? 26L : 0L);
+        WikimediaPageviewsJob job = scenario.equals("executor rejects")
+                ? job(NOW, r -> { throw new RejectedExecutionException("full"); })
+                : job();
+        if (scenario.equals("run fails")) when(self.getObject()).thenThrow(new IllegalStateException("no proxy"));
 
         job.onStartup();
 
-        verify(self).getObject();
-        verify(client, never()).fetch(anyString(), anyString(), any(), any());
+        switch (scenario) {
+            case "empty" -> {
+                verify(self).getObject();
+                verify(client).fetch("fr.wikipedia", "Techno", FROM, TO);
+            }
+            case "rows exist" -> {
+                verify(repository).count();
+                verify(self, never()).getObject();
+                verify(client, never()).fetch(anyString(), anyString(), any(), any());
+            }
+            case "executor rejects" -> {
+                verify(repository).count();
+                verify(self, never()).getObject();
+            }
+            default -> {
+                verify(self).getObject();
+                verify(client, never()).fetch(anyString(), anyString(), any(), any());
+            }
+        }
     }
 }

@@ -3,6 +3,8 @@ package com.imin.iminapi.predictor.sources.openweather;
 import com.imin.iminapi.predictor.service.WeatherService.Weather;
 import com.imin.iminapi.predictor.sources.openweather.OpenWeatherDay.Step;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import java.time.Instant;
 import java.time.LocalDate;
@@ -63,27 +65,24 @@ class OpenWeatherDayTest {
         assertThat(OpenWeatherDay.of(steps, PARIS, JUNE_5)).isNull();
     }
 
-    @Test
-    void stepMissingPopNullsOnlyPrecip() {
-        Double[] pops = boxed(POPS);
-        pops[3] = null;
+    /** A missing pop or temp nulls only its own field; both missing everywhere leaves nothing to show. */
+    @ParameterizedTest(name = "pop missing at {0}, temp missing at {1}")
+    @CsvSource(nullValues = "null", value = {"3, -1, null, 21.6", "-1, 0, 62, null", "all, all, null, null"})
+    void partialNulls(String popMissing, String tempMissing, Integer pop, Double temp) {
+        Double[] pops = missing(boxed(POPS), popMissing);
+        Double[] temps = missing(boxed(TEMPS), tempMissing);
 
-        assertThat(OpenWeatherDay.of(eight(JUNE_5_START, pops, boxed(TEMPS)), PARIS, JUNE_5))
-                .isEqualTo(new Weather(null, 21.6));
+        Weather w = OpenWeatherDay.of(eight(JUNE_5_START, pops, temps), PARIS, JUNE_5);
+
+        if (pop == null && temp == null) assertThat(w).isNull();
+        else assertThat(w).isEqualTo(new Weather(pop, temp));
     }
 
-    @Test
-    void stepMissingTempNullsOnlyTemp() {
-        Double[] temps = boxed(TEMPS);
-        temps[0] = null;
-
-        assertThat(OpenWeatherDay.of(eight(JUNE_5_START, boxed(POPS), temps), PARIS, JUNE_5))
-                .isEqualTo(new Weather(62, null));
-    }
-
-    @Test
-    void allStepsMissingBothIsNull() {
-        assertThat(OpenWeatherDay.of(eight(JUNE_5_START, new Double[8], new Double[8]), PARIS, JUNE_5)).isNull();
+    private static Double[] missing(Double[] values, String at) {
+        if (at.equals("all")) return new Double[values.length];
+        int i = Integer.parseInt(at);
+        if (i >= 0) values[i] = null;
+        return values;
     }
 
     @Test

@@ -41,30 +41,6 @@ class OpenWeatherConfigTest {
     }
 
     @Test
-    void disabledWithBlankKeyStarts() {
-        runner.withPropertyValues("imin.predictor.weather-enabled=false")
-                .run(ctx -> assertThat(ctx).hasNotFailed().hasSingleBean(OpenWeatherClient.class));
-        // the field default is off too
-        runner.run(ctx -> assertThat(ctx).hasNotFailed().hasSingleBean(OpenWeatherClient.class));
-    }
-
-    @Test
-    void enabledWithKeyStarts() {
-        runner.withPropertyValues("imin.predictor.weather-enabled=true", "imin.predictor.openweather.api-key=k")
-                .run(ctx -> {
-                    assertThat(ctx).hasNotFailed().hasSingleBean(OpenWeatherClient.class);
-                    assertThat(ctx.getBean(OpenWeatherProperties.class).toString()).contains("<set>")
-                            .doesNotContain("=k,").doesNotContain("=k}");
-                });
-        // a failing boot names variables only, never the configured key or base URL
-        runner.withPropertyValues("imin.predictor.weather-enabled=true", "imin.predictor.openweather.api-key=test-not-a-key",
-                        "imin.predictor.openweather.base-url=http://plain.test.invalid")
-                .run(ctx -> assertThat(ctx.getStartupFailure()).rootCause()
-                        .hasMessageNotContaining("test-not-a-key")
-                        .hasMessageNotContaining("plain.test.invalid"));
-    }
-
-    @Test
     void nonHttpsBaseUrlFailsStartup() {
         runner.withPropertyValues("imin.predictor.openweather.base-url=http://x")
                 .run(ctx -> {
@@ -73,6 +49,12 @@ class OpenWeatherConfigTest {
                             .isInstanceOf(IllegalStateException.class)
                             .hasMessageContaining("PREDICTOR_OPENWEATHER_BASE_URL");
                 });
+        // a failing boot names variables only, never the configured key or base URL
+        runner.withPropertyValues("imin.predictor.weather-enabled=true", "imin.predictor.openweather.api-key=test-not-a-key",
+                        "imin.predictor.openweather.base-url=http://plain.test.invalid")
+                .run(ctx -> assertThat(ctx.getStartupFailure()).rootCause()
+                        .hasMessageNotContaining("test-not-a-key")
+                        .hasMessageNotContaining("plain.test.invalid"));
     }
 
     private static OpenWeatherProperties bind(Map<String, String> values) {

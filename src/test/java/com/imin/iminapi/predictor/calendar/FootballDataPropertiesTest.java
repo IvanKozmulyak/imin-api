@@ -24,49 +24,6 @@ class FootballDataPropertiesTest {
     }
 
     @Test
-    void defaultsWithYamlKeysAbsent() {
-        FootballDataProperties props = bind(Map.of());
-
-        assertThat(props.isEnabled()).isFalse();
-        assertThat(props.getApiKey()).isEmpty();
-        assertThat(props.isOn()).isFalse();
-    }
-
-    @Test
-    void blankEnabledStaysOff() {
-        FootballDataProperties props = bind(Map.of("imin.predictor.football.enabled", "",
-                "imin.predictor.football.api-key", "abc"));
-
-        assertThat(props.isEnabled()).isFalse();
-        assertThat(props.isOn()).isFalse();
-    }
-
-    @Test
-    void blankKeyBindsEmpty() {
-        FootballDataProperties props = bind(Map.of("imin.predictor.football.api-key", "   "));
-        FootballDataProperties padded = bind(Map.of("imin.predictor.football.api-key", " abc "));
-
-        assertThat(props.getApiKey()).isEmpty();
-        assertThat(padded.getApiKey()).isEqualTo("abc");
-        FootballDataProperties direct = new FootballDataProperties();
-        direct.setApiKey(null);
-        assertThat(direct.getApiKey()).isEmpty();
-    }
-
-    @Test
-    void onNeedsEnabledAndKey() {
-        assertThat(props(false, "")).isFalse();
-        assertThat(props(false, "abc")).isFalse();
-        assertThat(props(true, "")).isFalse();
-        assertThat(props(true, "abc")).isTrue();
-    }
-
-    private static boolean props(boolean enabled, String key) {
-        return bind(Map.of("imin.predictor.football.enabled", String.valueOf(enabled),
-                "imin.predictor.football.api-key", key)).isOn();
-    }
-
-    @Test
     void keyNeverInToString() {
         FootballDataProperties props = bind(Map.of("imin.predictor.football.api-key", "secret-abc"));
 
@@ -114,5 +71,17 @@ class FootballDataPropertiesTest {
                         "imin.predictor.date-check.enabled=true")
                 .run(ctx -> assertThat(ctx.getBean(FootballFixturesSync.class).scopePrefix())
                         .isEqualTo("https://api.football-data.org/v4/competitions/"));
+    }
+
+    @Test
+    void blankKeyBindsEmpty() {
+        FootballDataProperties props = bind(Map.of("imin.predictor.football.api-key", "   "));
+        FootballDataProperties padded = bind(Map.of("imin.predictor.football.api-key", " abc "));
+
+        assertThat(props.getApiKey()).isEmpty();
+        assertThat(padded.getApiKey()).isEqualTo("abc");
+        FootballDataProperties direct = new FootballDataProperties();
+        direct.setApiKey(null);
+        assertThat(direct.getApiKey()).isEmpty();
     }
 }

@@ -13,6 +13,9 @@ import com.imin.iminapi.predictor.sources.openevents.OpenEventCities;
 import com.imin.iminapi.predictor.sources.openevents.OpenEventsProperties;
 import com.imin.iminapi.predictor.sources.wikimedia.WikimediaProperties;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.core.io.DefaultResourceLoader;
 
 import java.io.ByteArrayInputStream;
@@ -25,6 +28,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -409,92 +413,44 @@ class DataSourceCatalogTest {
         assertThat(parse(VALID).active(NO_DATES)).extracting(PublicDataSource::id).containsExactly("one");
     }
 
-    @Test
-    void nonHttpsSyncPrefixFailsLoad() {
-        assertThatThrownBy(() -> parse(VALID.replace("    gate: weather", "    syncPrefix: http://one.example/\n    gate: weather")))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("one").hasMessageContaining("syncPrefix");
-    }
-
-    @Test
-    void unknownSyncSourceFailsLoad() {
-        assertThatThrownBy(() -> parse(VALID.replace("    gate: weather", "    syncSource: tides\n    gate: weather")))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("one").hasMessageContaining("syncSource");
-    }
-
-    @Test
-    void syncPrefixWithSyncSourceFailsLoad() {
-        assertThatThrownBy(() -> parse(VALID.replace("    gate: weather",
-                "    syncPrefix: https://one.example/\n    syncSource: openagenda\n    gate: weather")))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("one").hasMessageContaining("mutually exclusive");
-    }
-
-    @Test
-    void blankSyncSourceFailsLoad() {
-        assertThatThrownBy(() -> parse(VALID.replace("    gate: weather", "    syncSource: \"  \"\n    gate: weather")))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("one").hasMessageContaining("syncSource");
-    }
-
-    @Test
-    void unknownGateFailsLoad() {
-        assertThatThrownBy(() -> parse(VALID.replace("gate: weather", "gate: tides")))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("one").hasMessageContaining("gate");
-    }
-
-    @Test
-    void blankRequiredFieldFailsLoad() {
-        assertThatThrownBy(() -> parse(VALID.replace("creditLine: Data by One", "creditLine: \"  \"")))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("one").hasMessageContaining("creditLine");
-    }
-
-    @Test
-    void missingRequiredFieldFailsLoad() {
-        assertThatThrownBy(() -> parse(VALID.replace("    licence: CC BY 4.0\n", "")))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("one").hasMessageContaining("licence");
-    }
-
-    @Test
-    void nonHttpsUrlFailsLoad() {
-        assertThatThrownBy(() -> parse(VALID.replace("url: https://one.example/", "url: http://one.example/")))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("one").hasMessageContaining("url");
-        assertThatThrownBy(() -> parse(VALID.replace("licenceUrl: https://", "licenceUrl: ftp://")))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("one").hasMessageContaining("licenceUrl");
-    }
-
-    @Test
-    void duplicateIdFailsLoad() {
+    static Stream<Arguments> invalidFiles() {
         String second = VALID.substring(VALID.indexOf("  - id: one"));
-        assertThatThrownBy(() -> parse(VALID + second))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("one").hasMessageContaining("duplicate");
+        return Stream.of(
+                Arguments.of("nonHttpsSyncPrefix",
+                        VALID.replace("    gate: weather", "    syncPrefix: http://one.example/\n    gate: weather"),
+                        List.of("one", "syncPrefix")),
+                Arguments.of("unknownSyncSource",
+                        VALID.replace("    gate: weather", "    syncSource: tides\n    gate: weather"),
+                        List.of("one", "syncSource")),
+                Arguments.of("syncPrefixWithSyncSource", VALID.replace("    gate: weather",
+                                "    syncPrefix: https://one.example/\n    syncSource: openagenda\n    gate: weather"),
+                        List.of("one", "mutually exclusive")),
+                Arguments.of("blankSyncSource",
+                        VALID.replace("    gate: weather", "    syncSource: \"  \"\n    gate: weather"),
+                        List.of("one", "syncSource")),
+                Arguments.of("unknownGate", VALID.replace("gate: weather", "gate: tides"), List.of("one", "gate")),
+                Arguments.of("blankRequiredField", VALID.replace("creditLine: Data by One", "creditLine: \"  \""),
+                        List.of("one", "creditLine")),
+                Arguments.of("missingRequiredField", VALID.replace("    licence: CC BY 4.0\n", ""),
+                        List.of("one", "licence")),
+                Arguments.of("nonHttpsUrl", VALID.replace("url: https://one.example/", "url: http://one.example/"),
+                        List.of("one", "url")),
+                Arguments.of("nonHttpsLicenceUrl", VALID.replace("licenceUrl: https://", "licenceUrl: ftp://"),
+                        List.of("one", "licenceUrl")),
+                Arguments.of("duplicateId", VALID + second, List.of("one", "duplicate")),
+                Arguments.of("unknownUsedFor", VALID.replace("usedFor: [weather]", "usedFor: [weather, tides]"),
+                        List.of("one", "tides")),
+                Arguments.of("emptyUsedFor", VALID.replace("usedFor: [weather]", "usedFor: []"),
+                        List.of("one", "usedFor")),
+                Arguments.of("missingReviewedOn", VALID.replace("reviewedOn: 2026-09-30\n", ""),
+                        List.of("reviewedOn")));
     }
 
-    @Test
-    void unknownUsedForFailsLoad() {
-        assertThatThrownBy(() -> parse(VALID.replace("usedFor: [weather]", "usedFor: [weather, tides]")))
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("invalidFiles")
+    void invalidFileFailsLoad(String name, String yaml, List<String> fragments) {
+        assertThatThrownBy(() -> parse(yaml))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("one").hasMessageContaining("tides");
-    }
-
-    @Test
-    void emptyUsedForFailsLoad() {
-        assertThatThrownBy(() -> parse(VALID.replace("usedFor: [weather]", "usedFor: []")))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("one").hasMessageContaining("usedFor");
-    }
-
-    @Test
-    void missingReviewedOnFailsLoad() {
-        assertThatThrownBy(() -> parse(VALID.replace("reviewedOn: 2026-09-30\n", "")))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("reviewedOn");
+                .satisfies(e -> fragments.forEach(f -> assertThat(e).hasMessageContaining(f)));
     }
 }

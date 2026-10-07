@@ -4,6 +4,9 @@ import com.imin.iminapi.predictor.sources.wikimedia.WikimediaPageviewsClient.Mon
 import com.imin.iminapi.predictor.sources.wikimedia.WikimediaPageviewsClient.Result;
 import com.imin.iminapi.predictor.sources.wikimedia.WikimediaPageviewsClient.WikimediaRateLimitedException;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -14,6 +17,7 @@ import java.net.URI;
 import java.time.YearMonth;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -161,56 +165,31 @@ class WikimediaPageviewsClientTest {
         server.verify();
     }
 
-    @Test
-    void otherAgentItemDropped() {
-        List<MonthViews> out = fetch(body(item("2025090100", 5),
-                item(PROJECT, ARTICLE, "monthly", "all-access", "spider", "2025100100", "900")));
-
-        assertThat(out).containsExactly(mv(2025, 9, 5));
+    /** Items next to a valid September item that must not become a month. */
+    static Stream<Arguments> droppedItems() {
+        return Stream.of(
+                Arguments.of("other agent", List.of(item(PROJECT, ARTICLE, "monthly", "all-access", "spider", "2025100100", "900"))),
+                Arguments.of("other access", List.of(item(PROJECT, ARTICLE, "monthly", "mobile-web", "user", "2025100100", "900"))),
+                Arguments.of("other granularity", List.of(item(PROJECT, ARTICLE, "daily", "all-access", "user", "2025100100", "900"))),
+                Arguments.of("other article or project", List.of(
+                        item(PROJECT, "House_music", "monthly", "all-access", "user", "2025100100", "900"),
+                        item("de.wikipedia", ARTICLE, "monthly", "all-access", "user", "2025100100", "900"))),
+                Arguments.of("negative, missing or non-integer views", List.of(
+                        item(PROJECT, ARTICLE, "monthly", "all-access", "user", "2025100100", "-3"),
+                        item(PROJECT, ARTICLE, "monthly", "all-access", "user", "2025100100", null),
+                        item(PROJECT, ARTICLE, "monthly", "all-access", "user", "2025100100", "\"12\""),
+                        item(PROJECT, ARTICLE, "monthly", "all-access", "user", "2025100100", "1.5"))),
+                Arguments.of("timestamp not the first of a month in range",
+                        List.of(item("2025101500", 900), item("20251001", 900), item("2027010100", 900))));
     }
 
-    @Test
-    void otherAccessItemDropped() {
-        List<MonthViews> out = fetch(body(item("2025090100", 5),
-                item(PROJECT, ARTICLE, "monthly", "mobile-web", "user", "2025100100", "900")));
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("droppedItems")
+    void itemDropped(String name, List<String> extra) {
+        List<String> items = new ArrayList<>(List.of(item("2025090100", 5)));
+        items.addAll(extra);
 
-        assertThat(out).containsExactly(mv(2025, 9, 5));
-    }
-
-    @Test
-    void otherGranularityItemDropped() {
-        List<MonthViews> out = fetch(body(item("2025090100", 5),
-                item(PROJECT, ARTICLE, "daily", "all-access", "user", "2025100100", "900")));
-
-        assertThat(out).containsExactly(mv(2025, 9, 5));
-    }
-
-    @Test
-    void otherArticleOrProjectItemDropped() {
-        List<MonthViews> out = fetch(body(item("2025090100", 5),
-                item(PROJECT, "House_music", "monthly", "all-access", "user", "2025100100", "900"),
-                item("de.wikipedia", ARTICLE, "monthly", "all-access", "user", "2025100100", "900")));
-
-        assertThat(out).containsExactly(mv(2025, 9, 5));
-    }
-
-    @Test
-    void negativeOrMissingViewsDropped() {
-        List<MonthViews> out = fetch(body(item("2025090100", 5),
-                item(PROJECT, ARTICLE, "monthly", "all-access", "user", "2025100100", "-3"),
-                item(PROJECT, ARTICLE, "monthly", "all-access", "user", "2025100100", null),
-                item(PROJECT, ARTICLE, "monthly", "all-access", "user", "2025100100", "\"12\""),
-                item(PROJECT, ARTICLE, "monthly", "all-access", "user", "2025100100", "1.5")));
-
-        assertThat(out).containsExactly(mv(2025, 9, 5));
-    }
-
-    @Test
-    void timestampNotFirstOfMonthDropped() {
-        List<MonthViews> out = fetch(body(item("2025090100", 5), item("2025101500", 900), item("20251001", 900),
-                item("2027010100", 900)));
-
-        assertThat(out).containsExactly(mv(2025, 9, 5));
+        assertThat(fetch(body(items.toArray(String[]::new)))).containsExactly(mv(2025, 9, 5));
     }
 
     @Test

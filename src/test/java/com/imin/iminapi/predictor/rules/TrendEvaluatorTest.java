@@ -8,6 +8,9 @@ import com.imin.iminapi.predictor.rules.QuestionBank.SourceKind;
 import com.imin.iminapi.predictor.sources.SourceGates;
 import com.imin.iminapi.predictor.sources.wikimedia.WikimediaArticles;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -17,6 +20,7 @@ import java.time.LocalDate;
 import java.time.YearMonth;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Stream;
 
 import static com.imin.iminapi.predictor.rules.RuleFixtures.BANK;
 import static com.imin.iminapi.predictor.rules.RuleFixtures.in;
@@ -143,16 +147,6 @@ class TrendEvaluatorTest {
     }
 
     @Test
-    void noRowsNotChecked() {
-        when(repository.findTop24ByProjectAndArticleOrderByViewMonthDesc("fr.wikipedia", "Techno")).thenReturn(List.of());
-
-        Finding f = evaluate("house & techno", "techno");
-
-        assertThat(f.facts()).containsEntry("reason", "not_synced");
-        verify(repository).findTop24ByProjectAndArticleOrderByViewMonthDesc("fr.wikipedia", "Techno");
-    }
-
-    @Test
     void gapInTwelveMonthsNotChecked() {
         stored("fr.wikipedia", "Techno", LATEST, series(100, 10));
         List<WikimediaPageviewMonth> rows = new ArrayList<>(
@@ -161,30 +155,13 @@ class TrendEvaluatorTest {
         when(repository.findTop24ByProjectAndArticleOrderByViewMonthDesc("fr.wikipedia", "Techno")).thenReturn(rows);
 
         assertThat(evaluate("house & techno", "techno").facts()).containsEntry("reason", "not_synced");
-
-        // eleven months only
-        stored("fr.wikipedia", "Techno", LATEST, 100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200);
-        assertThat(evaluate("house & techno", "techno").facts()).containsEntry("reason", "not_synced");
     }
 
     @Test
-    void staleLatestMonthNotChecked() {
-        stored("fr.wikipedia", "Techno", YearMonth.of(2026, 7), series(100, 10));
-
-        assertThat(evaluate("house & techno", "techno").facts()).containsEntry("reason", "stale");
-
+    void latestMonthAtMaxAgeIsFresh() {
         // 2026-08 is exactly max_age_months (2) back from October and still fresh
         stored("fr.wikipedia", "Techno", YearMonth.of(2026, 8), series(100, 10));
         assertThat(evaluate("house & techno", "techno").status()).isEqualTo(Finding.Status.FOUND);
-    }
-
-    @Test
-    void lowVolumeNotChecked() {
-        long[] fifty = new long[12];
-        java.util.Arrays.fill(fifty, 50);
-        stored("fr.wikipedia", "Techno", LATEST, fifty);
-
-        assertThat(evaluate("house & techno", "techno").facts()).containsEntry("reason", "low_volume");
     }
 
     @Test
@@ -252,36 +229,47 @@ class TrendEvaluatorTest {
         assertThat(falling.kind()).isEqualTo(Kind.RISK);
     }
 
-    @Test
-    void unknownParamKeyFailsConstruction() throws IOException {
-        QuestionBank bank = bankWithParams(
-                "params: { rising_min: 0.25, falling_min: 0.25, min_mean_views: 100, max_age_months: 2, rising_mn: 1 }");
-
-        assertThatThrownBy(() -> new TrendEvaluator(bank, articles(ARTICLES_YAML), repository, gates))
-                .isInstanceOf(IllegalStateException.class).hasMessageContaining("rising_mn");
+    static Stream<Arguments> storedSeriesNotChecked() {
+        return Stream.of(
+                Arguments.of("no rows", LATEST, new long[0], "not_synced"),
+                Arguments.of("eleven months only", LATEST,
+                        new long[] {100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200}, "not_synced"),
+                Arguments.of("latest month older than max age", YearMonth.of(2026, 7), series(100, 10), "stale"),
+                Arguments.of("low volume", LATEST, new long[] {50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50}, "low_volume"));
     }
 
-    @Test
-    void missingParamFailsConstruction() throws IOException {
-        QuestionBank bank = bankWithParams("params: { rising_min: 0.25, falling_min: 0.25, min_mean_views: 100 }");
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("storedSeriesNotChecked")
+    void storedSeriesNotChecked(String name, YearMonth latest, long[] views, String reason) {
+        stored("fr.wikipedia", "Techno", latest, views);
 
-        assertThatThrownBy(() -> new TrendEvaluator(bank, articles(ARTICLES_YAML), repository, gates))
-                .isInstanceOf(IllegalStateException.class).hasMessageContaining("max_age_months");
+        Finding f = evaluate("house & techno", "techno");
+
+        assertThat(f.status()).isEqualTo(Finding.Status.NOT_CHECKED);
+        assertThat(f.facts()).containsEntry("reason", reason);
+        verify(repository).findTop24ByProjectAndArticleOrderByViewMonthDesc("fr.wikipedia", "Techno");
     }
 
-    @Test
-    void paramOutOfBoundsFailsConstruction() throws IOException {
-        for (String bad : List.of(
-                "params: { rising_min: 0, falling_min: 0.25, min_mean_views: 100, max_age_months: 2 }",
-                "params: { rising_min: 5.5, falling_min: 0.25, min_mean_views: 100, max_age_months: 2 }",
-                "params: { rising_min: 0.25, falling_min: 1.5, min_mean_views: 100, max_age_months: 2 }",
-                "params: { rising_min: 0.25, falling_min: 0.25, min_mean_views: 0, max_age_months: 2 }",
-                "params: { rising_min: 0.25, falling_min: 0.25, min_mean_views: 100, max_age_months: 13 }",
-                "params: { rising_min: 0.25, falling_min: 0.25, min_mean_views: 100, max_age_months: 0 }")) {
-            QuestionBank bank = bankWithParams(bad);
-            assertThatThrownBy(() -> new TrendEvaluator(bank, articles(ARTICLES_YAML), repository, gates))
-                    .as(bad).isInstanceOf(IllegalStateException.class).hasMessageContaining("9.1");
-        }
+    static Stream<Arguments> badParams() {
+        return Stream.of(
+                Arguments.of("params: { rising_min: 0.25, falling_min: 0.25, min_mean_views: 100, max_age_months: 2, rising_mn: 1 }",
+                        "rising_mn"),
+                Arguments.of("params: { rising_min: 0.25, falling_min: 0.25, min_mean_views: 100 }", "max_age_months"),
+                Arguments.of("params: { rising_min: 0, falling_min: 0.25, min_mean_views: 100, max_age_months: 2 }", "9.1"),
+                Arguments.of("params: { rising_min: 5.5, falling_min: 0.25, min_mean_views: 100, max_age_months: 2 }", "9.1"),
+                Arguments.of("params: { rising_min: 0.25, falling_min: 1.5, min_mean_views: 100, max_age_months: 2 }", "9.1"),
+                Arguments.of("params: { rising_min: 0.25, falling_min: 0.25, min_mean_views: 0, max_age_months: 2 }", "9.1"),
+                Arguments.of("params: { rising_min: 0.25, falling_min: 0.25, min_mean_views: 100, max_age_months: 13 }", "9.1"),
+                Arguments.of("params: { rising_min: 0.25, falling_min: 0.25, min_mean_views: 100, max_age_months: 0 }", "9.1"));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("badParams")
+    void badParamsFailConstruction(String params, String fragment) throws IOException {
+        QuestionBank bank = bankWithParams(params);
+
+        assertThatThrownBy(() -> new TrendEvaluator(bank, articles(ARTICLES_YAML), repository, gates))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining(fragment);
     }
 
     @Test

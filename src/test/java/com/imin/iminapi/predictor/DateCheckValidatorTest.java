@@ -10,6 +10,9 @@ import com.imin.iminapi.predictor.service.DateCheckValidator;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.ErrorCode;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.core.io.DefaultResourceLoader;
 import org.springframework.http.HttpStatus;
 
@@ -22,6 +25,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -68,31 +72,57 @@ class DateCheckValidatorTest {
         assertThat(r.today()).isEqualTo(PARIS_TODAY);
     }
 
-    @Test
-    void emptyDatesRequired() {
-        assertThat(fields(paris())).containsEntry("dates", "required");
-        assertThat(fields(req("Paris", "FR", "house & techno", null, null))).containsEntry("dates", "required");
+    private static DateCheckRequest full(Integer capacity, Long priceMinor, Integer startHour, Integer endHour,
+                                         List<String> lineup, List<KnownEventInput> known, List<String> communities) {
+        return new DateCheckRequest("Paris", "FR", null, null, "house & techno", null,
+                List.of(PARIS_TODAY.plusDays(3)), capacity, priceMinor, null, startHour, endHour, lineup, known,
+                null, communities, null, null);
     }
 
-    @Test
-    void nullDateInListRequired() {
-        assertThat(fields(req("Paris", "FR", "house & techno", null,
-                Collections.singletonList(null)))).containsEntry("dates[0]", "required");
-    }
-
-    @Test
-    void sixDatesAre422() {
+    static Stream<Arguments> oneRuleRejections() {
+        List<LocalDate> three = List.of(PARIS_TODAY.plusDays(3));
         List<LocalDate> six = new ArrayList<>();
         for (int i = 1; i <= 6; i++) six.add(PARIS_TODAY.plusDays(i));
-
-        assertThat(fields(req("Paris", "FR", "house & techno", null, six))).containsEntry("dates", "too_many");
+        List<String> lineup = new ArrayList<>();
+        for (int i = 0; i < 21; i++) lineup.add("dj" + i);
+        LocalDate d = PARIS_TODAY.plusDays(5);
+        return Stream.of(
+                Arguments.of("emptyDates", paris(), Map.of("dates", "required"), false),
+                Arguments.of("nullDates", req("Paris", "FR", "house & techno", null, null), Map.of("dates", "required"), false),
+                Arguments.of("nullDateInList", req("Paris", "FR", "house & techno", null, Collections.singletonList(null)),
+                        Map.of("dates[0]", "required"), false),
+                Arguments.of("sixDates", req("Paris", "FR", "house & techno", null, six), Map.of("dates", "too_many"), false),
+                Arguments.of("duplicateDates", paris(d, d), Map.of("dates", "duplicate"), false),
+                Arguments.of("capacityAndPriceZero", full(0, 0L, null, null, null, null, null),
+                        Map.of("capacity", "must_be_positive", "priceMinor", "must_be_positive"), false),
+                Arguments.of("blankCity", req("  ", "FR", "house & techno", null, three), Map.of("city", "required"), false),
+                Arguments.of("cityTooLong", req("x".repeat(101), "FR", "house & techno", null, three),
+                        Map.of("city", "too_long"), false),
+                Arguments.of("unknownGenre", req("Paris", "FR", "polka", null, three), Map.of("genreFamily", "unknown"), false),
+                Arguments.of("missingGenre", req("Paris", "FR", null, null, three), Map.of("genreFamily", "required"), false),
+                Arguments.of("subGenreNotInBucketList", req("Paris", "FR", "house & techno", "dubstep", three),
+                        Map.of("subGenre", "unknown"), false),
+                Arguments.of("hourOutOfRange", full(null, null, 24, -1, null, null, null),
+                        Map.of("startHour", "out_of_range", "endHour", "out_of_range"), false),
+                Arguments.of("lineupOverTwenty", full(null, null, null, null, lineup, null, null),
+                        Map.of("lineup", "too_many"), false),
+                Arguments.of("communityNotACountryCode", full(null, null, null, null, null, null, List.of("ng", "Nigeria")),
+                        Map.of("communities[1]", "unknown"), true),
+                Arguments.of("nullKnownEvent", full(null, null, null, null, null, Collections.singletonList(null), null),
+                        Map.of("knownEvents[0]", "required"), true),
+                Arguments.of("noCountryAnywhere", req("Paris", null, "house & techno", null, three),
+                        Map.of("country", "required"), false),
+                Arguments.of("countryNotACode", req("Paris", "France", "house & techno", null, three),
+                        Map.of("country", "unknown"), false));
     }
 
-    @Test
-    void duplicateDatesAre422() {
-        LocalDate d = PARIS_TODAY.plusDays(5);
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("oneRuleRejections")
+    void oneRuleRejectionIs422(String name, DateCheckRequest r, Map<String, String> expected, boolean only) {
+        Map<String, String> fields = fields(r);
 
-        assertThat(fields(paris(d, d))).containsEntry("dates", "duplicate");
+        assertThat(fields).containsAllEntriesOf(expected);
+        if (only) assertThat(fields).containsOnlyKeys(expected.keySet());
     }
 
     @Test
@@ -108,36 +138,6 @@ class DateCheckValidatorTest {
         validator.validate(paris(edge), null);
         assertThat(fields(paris(PARIS_TODAY.plusDays(1), edge.plusDays(1))))
                 .containsEntry("dates[1]", "beyond_horizon");
-    }
-
-    @Test
-    void capacityZeroIs422() {
-        DateCheckRequest r = new DateCheckRequest("Paris", "FR", null, null, "house & techno", null,
-                List.of(PARIS_TODAY.plusDays(3)), 0, 0L, null, null, null, null, null, null, null, null, null);
-
-        assertThat(fields(r)).containsEntry("capacity", "must_be_positive").containsEntry("priceMinor", "must_be_positive");
-    }
-
-    @Test
-    void blankCityRequired() {
-        assertThat(fields(req("  ", "FR", "house & techno", null, List.of(PARIS_TODAY.plusDays(3)))))
-                .containsEntry("city", "required");
-        assertThat(fields(req("x".repeat(101), "FR", "house & techno", null, List.of(PARIS_TODAY.plusDays(3)))))
-                .containsEntry("city", "too_long");
-    }
-
-    @Test
-    void unknownGenre() {
-        assertThat(fields(req("Paris", "FR", "polka", null, List.of(PARIS_TODAY.plusDays(3)))))
-                .containsEntry("genreFamily", "unknown");
-        assertThat(fields(req("Paris", "FR", null, null, List.of(PARIS_TODAY.plusDays(3)))))
-                .containsEntry("genreFamily", "required");
-    }
-
-    @Test
-    void subGenreNotInBucketList() {
-        assertThat(fields(req("Paris", "FR", "house & techno", "dubstep", List.of(PARIS_TODAY.plusDays(3)))))
-                .containsEntry("subGenre", "unknown");
     }
 
     @Test
@@ -157,24 +157,6 @@ class DateCheckValidatorTest {
                 .containsEntry("knownEvents[1].name", "required")
                 .containsEntry("knownEvents[1].date", "required")
                 .containsEntry("knownEvents[1].strength", "out_of_range");
-    }
-
-    @Test
-    void hourOutOfRange() {
-        DateCheckRequest r = new DateCheckRequest("Paris", "FR", null, null, "house & techno", null,
-                List.of(PARIS_TODAY.plusDays(3)), null, null, null, 24, -1, null, null, null, null, null, null);
-
-        assertThat(fields(r)).containsEntry("startHour", "out_of_range").containsEntry("endHour", "out_of_range");
-    }
-
-    @Test
-    void lineupOverTwentyTooMany() {
-        List<String> lineup = new ArrayList<>();
-        for (int i = 0; i < 21; i++) lineup.add("dj" + i);
-        DateCheckRequest r = new DateCheckRequest("Paris", "FR", null, null, "house & techno", null,
-                List.of(PARIS_TODAY.plusDays(3)), null, null, null, null, null, lineup, null, null, null, null, null);
-
-        assertThat(fields(r)).containsEntry("lineup", "too_many");
     }
 
     @Test
@@ -202,24 +184,6 @@ class DateCheckValidatorTest {
     }
 
     @Test
-    void communityNotACountryCodeUnknown() {
-        DateCheckRequest r = new DateCheckRequest("Paris", "FR", null, null, "house & techno", null,
-                List.of(PARIS_TODAY.plusDays(3)), null, null, null, null, null, null, null,
-                null, List.of("ng", "Nigeria"), null, null);
-
-        assertThat(fields(r)).containsOnlyKeys("communities[1]").containsEntry("communities[1]", "unknown");
-    }
-
-    @Test
-    void nullKnownEventRequired() {
-        DateCheckRequest r = new DateCheckRequest("Paris", "FR", null, null, "house & techno", null,
-                List.of(PARIS_TODAY.plusDays(3)), null, null, null, null, null, null,
-                Collections.singletonList(null), null, null, null, null);
-
-        assertThat(fields(r)).containsOnlyKeys("knownEvents[0]").containsEntry("knownEvents[0]", "required");
-    }
-
-    @Test
     void unmappedCountryUsesUtcToday() {
         assertThat(validator.today("ZZ")).isEqualTo(LocalDate.of(2026, 11, 16));
         assertThat(validator.today("FR")).isEqualTo(PARIS_TODAY);
@@ -236,14 +200,6 @@ class DateCheckValidatorTest {
         assertThat(validator.validate(
                 req("Paris", " fr ", "house & techno", null, List.of(PARIS_TODAY.plusDays(3))), "NL").country())
                 .isEqualTo("FR");
-    }
-
-    @Test
-    void noCountryAnywhereIs422() {
-        assertThat(fields(req("Paris", null, "house & techno", null, List.of(PARIS_TODAY.plusDays(3))), null))
-                .containsEntry("country", "required");
-        assertThat(fields(req("Paris", "France", "house & techno", null, List.of(PARIS_TODAY.plusDays(3))), null))
-                .containsEntry("country", "unknown");
     }
 
     @Test

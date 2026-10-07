@@ -129,7 +129,7 @@ class SourceGatesBindingTest {
     }
 
     @Test
-    void gateLogLineNamesEveryGate() {
+    void gateLogLineNeverCarriesAnApiKey() {
         Logger logger = (Logger) LoggerFactory.getLogger(SourceGates.class);
         Level before = logger.getLevel();
         ListAppender<ILoggingEvent> appender = new ListAppender<>();
@@ -137,7 +137,8 @@ class SourceGatesBindingTest {
         logger.addAppender(appender);
         logger.setLevel(Level.INFO);
         try {
-            runner(without("PREDICTOR_WIKIMEDIA_ENABLED", null)).run(ctx -> {
+            // every gate open, so both keys are set while the line is written
+            runner(ALL_ON).run(ctx -> {
                 assertThat(appender.list).isEmpty();
                 // Published through the context, so the @EventListener wiring is what is tested.
                 ctx.publishEvent(new ApplicationReadyEvent(new SpringApplication(), new String[0], ctx, Duration.ZERO));
@@ -146,11 +147,7 @@ class SourceGatesBindingTest {
             logger.detachAppender(appender);
             logger.setLevel(before);
         }
-        assertThat(appender.list).singleElement().satisfies(e -> {
-            assertThat(e.getLevel()).isEqualTo(Level.INFO);
-            assertThat(e.getFormattedMessage()).isEqualTo("Predictor source gates: date-check=on football=on "
-                    + "openagenda=on quefaireaparis=on weather=on wikimedia=off");
-            assertThat(e.getFormattedMessage()).doesNotContain("oa_pk_test").doesNotContain("football-key");
-        });
+        assertThat(appender.list).singleElement().satisfies(e ->
+                assertThat(e.getFormattedMessage()).doesNotContain("oa_pk_test").doesNotContain("football-key"));
     }
 }

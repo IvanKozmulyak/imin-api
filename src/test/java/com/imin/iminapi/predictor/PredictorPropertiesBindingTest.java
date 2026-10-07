@@ -1,5 +1,6 @@
 package com.imin.iminapi.predictor;
 
+import com.imin.iminapi.predictor.config.DateCheckProperties;
 import com.imin.iminapi.predictor.config.PredictorProperties;
 import org.junit.jupiter.api.Test;
 
@@ -81,6 +82,28 @@ class PredictorPropertiesBindingTest {
                 .as("PredictorProperties names these environment variables but application.yaml "
                         + "binds no placeholder for them — reading the javadoc would mislead an operator.")
                 .isEmpty();
+    }
+
+    @Test
+    void date_check_block_ships_dark_and_binds_every_field_to_a_PREDICTOR_DATE_CHECK_variable() throws IOException {
+        String yaml = Files.readString(Path.of("src/main/resources/application.yaml"), StandardCharsets.UTF_8);
+        int start = yaml.indexOf("\n    date-check:\n");
+        assertThat(start).as("application.yaml has no imin.predictor.date-check block").isGreaterThan(0);
+        Matcher next = Pattern.compile("\n {0,4}[a-z]").matcher(yaml);
+        int end = next.find(start + "\n    date-check:\n".length()) ? next.start() : yaml.length();
+        String block = yaml.substring(start, end);
+
+        assertThat(block).contains(
+                "\n      enabled: ${PREDICTOR_DATE_CHECK_ENABLED:false}\n",
+                "\n      all-orgs: ${PREDICTOR_DATE_CHECK_ALL_ORGS:false}\n",
+                "\n      research-daily-cap-per-org: ${PREDICTOR_DATE_CHECK_RESEARCH_DAILY_CAP_PER_ORG:10}\n",
+                "\n      research-daily-cap-global: ${PREDICTOR_DATE_CHECK_RESEARCH_DAILY_CAP_GLOBAL:100}\n");
+        Set<String> unbound = new TreeSet<>();
+        for (Field f : DateCheckProperties.class.getDeclaredFields()) {
+            if (f.isSynthetic() || Modifier.isStatic(f.getModifiers())) continue;
+            if (!block.contains("\n      " + kebab(f.getName()) + ": ${PREDICTOR_DATE_CHECK_")) unbound.add(kebab(f.getName()));
+        }
+        assertThat(unbound).as("DateCheckProperties fields without a PREDICTOR_DATE_CHECK_* placeholder").isEmpty();
     }
 
     /** The {@code imin.predictor} block of application.yaml, up to the next same-level key. */

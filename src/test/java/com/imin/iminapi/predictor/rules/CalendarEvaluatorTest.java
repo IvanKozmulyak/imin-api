@@ -13,11 +13,16 @@ import com.imin.iminapi.predictor.rules.QuestionBank.SourceKind;
 import com.imin.iminapi.predictor.sources.SourceGates;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Consumer;
+import java.util.stream.Stream;
 
 import static com.imin.iminapi.predictor.rules.RuleFixtures.BANK;
 import static com.imin.iminapi.predictor.rules.RuleFixtures.in;
@@ -108,7 +113,10 @@ class CalendarEvaluatorTest {
         coversAll("FR");
         hits(holiday("2026-11-11", "Armistice", ""));
 
-        assertThat(paris("4.1", "2026-11-11").strength()).isEqualTo(3);
+        Finding f = paris("4.1", "2026-11-11");
+
+        assertThat(f.strength()).isEqualTo(3);
+        assertThat(f.facts()).containsEntry("date", "2026-11-11").doesNotContainKey("endDate");
     }
 
     @Test
@@ -117,31 +125,6 @@ class CalendarEvaluatorTest {
         hits(holiday("2026-12-26", "Saint-Étienne", "FR-57"));
 
         assertThat(eval("4.1", in().city("Metz", "FR", "57000").build(), "2026-12-24").status()).isEqualTo(Status.CLEAR);
-    }
-
-    @Test
-    void weekCrossingIntoAnUncoveredYearNotChecked() {
-        when(cal.covers(eq("FR"), anyString(), any())).thenAnswer(a -> a.<LocalDate>getArgument(2).getYear() == 2027);
-        hits();
-
-        Finding holidays = paris("4.1", "2027-12-30");
-        Finding ramadan = paris("5.2", "2027-12-30");
-        Finding sameYear = paris("4.1", "2027-12-20");
-
-        assertThat(holidays.status()).isEqualTo(Status.NOT_CHECKED);
-        assertThat(holidays.facts()).containsEntry("reason", "no_data");
-        assertThat(ramadan.status()).isEqualTo(Status.NOT_CHECKED);
-        assertThat(sameYear.status()).isEqualTo(Status.CLEAR);
-    }
-
-    @Test
-    void noCoverageNotChecked() {
-        hits();
-
-        Finding f = paris("4.1", "2028-05-01");
-
-        assertThat(f.status()).isEqualTo(Status.NOT_CHECKED);
-        assertThat(f.facts()).containsEntry("reason", "no_data");
     }
 
     @Test
@@ -201,16 +184,6 @@ class CalendarEvaluatorTest {
         assertThat(friday.kind()).isEqualTo(Kind.RISK);
     }
 
-    @Test
-    void eveCrossingIntoAnUncoveredYearNotChecked() {
-        hits();
-
-        coversOnly(Set.of("holiday"), Set.of(2028));
-        assertNoData(paris("4.2", "2028-12-31"));
-        coversOnly(Set.of("holiday"), Set.of(2028, 2029));
-        assertThat(paris("4.2", "2028-12-31").status()).isEqualTo(Status.CLEAR);
-    }
-
     // --- 4.3 ---
 
     @Test
@@ -223,17 +196,6 @@ class CalendarEvaluatorTest {
         assertThat(eve.status()).isEqualTo(Status.FOUND);
         assertThat(eve.strength()).isEqualTo(2);
         assertThat(paris("4.3", "2026-07-10").status()).isEqualTo(Status.CLEAR);
-    }
-
-    @Test
-    void noPontCoverageNotChecked() {
-        when(cal.covers(eq("FR"), eq("holiday"), any())).thenReturn(true);
-        hits(hit("pont", "2026-07-13", null, "pont:Fête nationale", ""));
-
-        Finding f = paris("4.3", "2026-07-13");
-
-        assertThat(f.status()).isEqualTo(Status.NOT_CHECKED);
-        assertThat(f.facts()).containsEntry("reason", "no_data");
     }
 
     @Test
@@ -255,16 +217,6 @@ class CalendarEvaluatorTest {
         assertNoData(eval("4.3", metz, "2028-07-14"));
         coversOnly(Set.of("pont", "holiday"), Set.of(2028));
         assertThat(eval("4.3", metz, "2028-07-14").status()).isEqualTo(Status.FOUND);
-    }
-
-    @Test
-    void pontCrossingIntoAnUncoveredYearNotChecked() {
-        hits();
-
-        coversOnly(Set.of("pont", "holiday"), Set.of(2028));
-        assertNoData(paris("4.3", "2028-12-31"));
-        coversOnly(Set.of("pont", "holiday"), Set.of(2028, 2029));
-        assertThat(paris("4.3", "2028-12-31").status()).isEqualTo(Status.CLEAR);
     }
 
     // --- 4.4 ---
@@ -291,17 +243,6 @@ class CalendarEvaluatorTest {
         hits(holiday("2027-03-26", "Vendredi saint", "FR-57"));
 
         assertThat(paris("4.4", "2027-03-26").status()).isEqualTo(Status.CLEAR);
-    }
-
-    @Test
-    void regionalWindowCrossingBackIntoAnUncoveredYearNotChecked() {
-        hits();
-        DateCheckInput metz = in().city("Metz", "FR", "57000").build();
-
-        coversOnly(Set.of("holiday"), Set.of(2029));
-        assertNoData(eval("4.4", metz, "2029-01-01"));
-        coversOnly(Set.of("holiday"), Set.of(2028, 2029));
-        assertThat(eval("4.4", metz, "2029-01-01").status()).isEqualTo(Status.CLEAR);
     }
 
     // --- 4.7 ---
@@ -340,7 +281,8 @@ class CalendarEvaluatorTest {
 
         assertThat(f.status()).isEqualTo(Status.FOUND);
         assertThat(f.strength()).isEqualTo(2);
-        assertThat(f.facts()).containsEntry("name", "ramadan").containsEntry("approximate", true);
+        assertThat(f.facts()).containsEntry("name", "ramadan").containsEntry("approximate", true)
+                .containsEntry("endDate", "2027-03-09");
         hits(hit("hijri", "2027-03-10", null, "eid_al_fitr", ""));
         assertThat(paris("5.2", "2027-03-12").status()).isEqualTo(Status.CLEAR);
     }
@@ -356,7 +298,7 @@ class CalendarEvaluatorTest {
 
         assertThat(f.status()).isEqualTo(Status.FOUND);
         assertThat(f.strength()).isEqualTo(3);
-        assertThat(f.facts()).containsEntry("date", "2026-10-17");
+        assertThat(f.facts()).containsEntry("date", "2026-10-17").containsEntry("endDate", "2026-11-01");
         assertThat(paris("7.1", "2026-11-06").strength()).isEqualTo(2);
     }
 
@@ -368,45 +310,87 @@ class CalendarEvaluatorTest {
         assertThat(paris("7.1", "2026-10-24").status()).isEqualTo(Status.CLEAR);
     }
 
-    @Test
-    void schoolWeekCrossingIntoAnUncoveredYearNotChecked() {
-        hits();
+    // --- not checked: a window reaching into a year without rows, a missing source, or a gate off ---
 
-        coversOnly(Set.of("school"), Set.of(2028));
-        assertNoData(paris("7.1", "2028-12-28"));
-        coversOnly(Set.of("school"), Set.of(2028, 2029));
-        assertThat(paris("7.1", "2028-12-28").status()).isEqualTo(Status.CLEAR);
+    private static DateCheckInput place(String city, String country, String postcode) {
+        return in().city(city, country, postcode).build();
     }
 
-    @Test
-    void uaCityHasNoSchoolDataSoNotChecked() {
-        coversAll("UA");
+    /** {@code kinds} null: every kind is covered in {@code years}. */
+    static Stream<Arguments> windowsCrossingCoverage() {
+        DateCheckInput paris = in().build();
+        DateCheckInput metz = place("Metz", "FR", "57000");
+        return Stream.of(
+                Arguments.of("4.1", paris, null, Set.of(2027), "2027-12-30", Status.NOT_CHECKED, "no_data"),
+                Arguments.of("5.2", paris, null, Set.of(2027), "2027-12-30", Status.NOT_CHECKED, null),
+                Arguments.of("4.1", paris, null, Set.of(2027), "2027-12-20", Status.CLEAR, null),
+                Arguments.of("4.2", paris, Set.of("holiday"), Set.of(2028), "2028-12-31", Status.NOT_CHECKED, "no_data"),
+                Arguments.of("4.2", paris, Set.of("holiday"), Set.of(2028, 2029), "2028-12-31", Status.CLEAR, null),
+                Arguments.of("4.3", paris, Set.of("pont", "holiday"), Set.of(2028), "2028-12-31", Status.NOT_CHECKED, "no_data"),
+                Arguments.of("4.3", paris, Set.of("pont", "holiday"), Set.of(2028, 2029), "2028-12-31", Status.CLEAR, null),
+                Arguments.of("4.4", metz, Set.of("holiday"), Set.of(2029), "2029-01-01", Status.NOT_CHECKED, "no_data"),
+                Arguments.of("4.4", metz, Set.of("holiday"), Set.of(2028, 2029), "2029-01-01", Status.CLEAR, null),
+                Arguments.of("7.1", paris, Set.of("school"), Set.of(2028), "2028-12-28", Status.NOT_CHECKED, "no_data"),
+                Arguments.of("7.1", paris, Set.of("school"), Set.of(2028, 2029), "2028-12-28", Status.CLEAR, null));
+    }
+
+    @ParameterizedTest(name = "{0} on {4}, covered {2} in {3} -> {5}")
+    @MethodSource("windowsCrossingCoverage")
+    void windowCrossingIntoAnUncoveredYearNotChecked(String id, DateCheckInput in, Set<String> kinds,
+                                                     Set<Integer> years, String date, Status status, String reason) {
+        when(cal.covers(eq("FR"), anyString(), any())).thenAnswer(a ->
+                (kinds == null || kinds.contains(a.<String>getArgument(1)))
+                        && years.contains(a.<LocalDate>getArgument(2).getYear()));
         hits();
 
-        Finding f = eval("7.1", in().city("Kyiv", "UA", null).build(), "2026-10-24");
+        Finding f = eval(id, in, date);
+
+        assertThat(f.status()).isEqualTo(status);
+        if (reason != null) assertThat(f.facts()).containsEntry("reason", reason);
+    }
+
+    static Stream<Arguments> notChecked() {
+        DateCheckInput paris = in().build();
+        DateCheckInput metz = place("Metz", "FR", "57000");
+        Consumer<CalendarEvaluatorTest> none = t -> { };
+        return Stream.of(
+                Arguments.of("noCoverage", "4.1", paris, "2028-05-01",
+                        (Consumer<CalendarEvaluatorTest>) t -> t.hits(), "no_data", false),
+                Arguments.of("noPontCoverage", "4.3", paris, "2026-07-13", (Consumer<CalendarEvaluatorTest>) t -> {
+                    when(t.cal.covers(eq("FR"), eq("holiday"), any())).thenReturn(true);
+                    t.hits(hit("pont", "2026-07-13", null, "pont:Fête nationale", ""));
+                }, "no_data", false),
+                Arguments.of("uaCityHasNoSchoolData", "7.1", place("Kyiv", "UA", null), "2026-10-24",
+                        (Consumer<CalendarEvaluatorTest>) t -> {
+                            t.coversAll("UA");
+                            t.hits();
+                        }, "no_data", false),
+                Arguments.of("corsicaHasNoSchoolZone", "7.1", place("Ajaccio", "FR", "20000"), "2026-10-24",
+                        (Consumer<CalendarEvaluatorTest>) t -> {
+                            t.coversAll("FR");
+                            t.hits(hit("school", "2026-10-17", "2026-11-01", "Vacances de la Toussaint", "FR-ZB"));
+                        }, null, false),
+                Arguments.of("noSourceYet", "5.1", metz, "2026-10-24", none, "no_source", true),
+                Arguments.of("noSourceYet", "10.3", metz, "2026-10-24", none, "no_source", true),
+                Arguments.of("nonFrFootball", "3.2", place("Amsterdam", "NL", null), "2026-10-24", none,
+                        "no_source", true),
+                Arguments.of("footballGateOff", "3.2", paris, "2026-10-24",
+                        (Consumer<CalendarEvaluatorTest>) t -> when(t.gates.isOn("football")).thenReturn(false),
+                        "source_off", true),
+                Arguments.of("cityWithoutNeighbours", "4.5", paris, "2026-10-31", none, "no_source", true));
+    }
+
+    @ParameterizedTest(name = "{0} ({1})")
+    @MethodSource("notChecked")
+    void notCheckedWithReason(String name, String id, DateCheckInput in, String date,
+                              Consumer<CalendarEvaluatorTest> setup, String reason, boolean calendarUntouched) {
+        setup.accept(this);
+
+        Finding f = eval(id, in, date);
 
         assertThat(f.status()).isEqualTo(Status.NOT_CHECKED);
-        assertThat(f.facts()).containsEntry("reason", "no_data");
-    }
-
-    @Test
-    void corsicaNoZoneNotChecked() {
-        coversAll("FR");
-        hits(hit("school", "2026-10-17", "2026-11-01", "Vacances de la Toussaint", "FR-ZB"));
-
-        assertThat(eval("7.1", in().city("Ajaccio", "FR", "20000").build(), "2026-10-24").status())
-                .isEqualTo(Status.NOT_CHECKED);
-    }
-
-    @Test
-    void m14bQuestionsNotCheckedWithReason() {
-        assertThat(CalendarEvaluator.NO_SOURCE_YET).containsExactlyInAnyOrder("5.1", "10.3");
-        for (String id : List.of("5.1", "10.3")) {
-            Finding f = eval(id, in().city("Metz", "FR", "57000").build(), "2026-10-24");
-            assertThat(f.status()).as(id).isEqualTo(Status.NOT_CHECKED);
-            assertThat(f.facts()).as(id).containsEntry("reason", "no_source");
-        }
-        verifyNoInteractions(cal);
+        if (reason != null) assertThat(f.facts()).containsEntry("reason", reason);
+        if (calendarUntouched) verifyNoInteractions(cal);
     }
 
     // --- 3.2 ---
@@ -448,26 +432,6 @@ class CalendarEvaluatorTest {
     }
 
     @Test
-    void nonFrFootballIsNoSource() {
-        Finding f = eval("3.2", in().city("Amsterdam", "NL", null).build(), "2026-10-24");
-
-        assertThat(f.status()).isEqualTo(Status.NOT_CHECKED);
-        assertThat(f.facts()).containsEntry("reason", "no_source");
-        verifyNoInteractions(cal);
-    }
-
-    @Test
-    void footballGateOffIsSourceOff() {
-        when(gates.isOn("football")).thenReturn(false);
-
-        Finding f = paris("3.2", "2026-10-24");
-
-        assertThat(f.status()).isEqualTo(Status.NOT_CHECKED);
-        assertThat(f.facts()).containsEntry("reason", "source_off");
-        verifyNoInteractions(cal);
-    }
-
-    @Test
     void dateBeyondLatestFixtureIsNoData() {
         fixtures("2027-05-29", fixture("2027-06-05", PSG_AWAY_21));
         assertNoData(football("Paris", 20, null, "2027-06-05"));
@@ -493,11 +457,42 @@ class CalendarEvaluatorTest {
         assertThat(fresh.status()).isEqualTo(Status.FOUND);
     }
 
-    @Test
-    void otherClubsLeagueMatchIsClear() {
-        fixtures("2027-05-29", fixture("2026-10-30", "FL1|21:05|521|546|Lille – RC Lens"));
+    /** One fixture night, by the event's start/end hours; {@code null} expectations are not asserted. */
+    static Stream<Arguments> fixtureNights() {
+        return Stream.of(
+                Arguments.of("other clubs' league match", List.of(fixture("2026-10-30", "FL1|21:05|521|546|Lille – RC Lens")),
+                        20, null, "2026-10-30", Status.CLEAR, null),
+                Arguments.of("afternoon match", List.of(fixture("2026-10-24", "FL1|15:00|516|524|Marseille – PSG")),
+                        23, 5, "2026-10-24", Status.CLEAR, null),
+                Arguments.of("match after the event ends", List.of(fixture("2026-10-24", PSG_AWAY_21)),
+                        14, 20, "2026-10-24", Status.CLEAR, null),
+                // 22 → 21 reads as ending before it starts; the event is taken to run to 06:00
+                Arguments.of("end before start runs to night end",
+                        List.of(fixture("2026-10-24", "FL1|23:00|516|524|Marseille – PSG")), 22, 21, "2026-10-24", null, Kind.RISK),
+                // end 07:00 is after the 06:00 rollover, so the event runs to 06:00 and a 05:00 match overlaps
+                Arguments.of("end after rollover is truncated to six",
+                        List.of(fixture("2026-10-24", "FL1|05:00|516|524|Marseille – PSG")), 3, 7, "2026-10-24", null, Kind.RISK),
+                Arguments.of("null start hour is a risk", List.of(fixture("2026-10-24", "FL1|15:00|516|524|Marseille – PSG")),
+                        null, null, "2026-10-24", Status.FOUND, Kind.RISK),
+                Arguments.of("start after midnight counts as next day", List.of(fixture("2026-10-24", PSG_AWAY_21)),
+                        0, 5, "2026-10-24", null, Kind.OPPORTUNITY),
+                Arguments.of("late kickoff after midnight overlaps a night event",
+                        List.of(fixture("2026-10-24", "FL1|00:30|516|524|Marseille – PSG")), 23, 5, "2026-10-24", null, Kind.RISK),
+                Arguments.of("no fixture on the date",
+                        List.of(fixture("2026-10-25", PSG_AWAY_21), hit("holiday", "2026-10-24", null, "x", "")),
+                        20, null, "2026-10-24", Status.CLEAR, null));
+    }
 
-        assertThat(football("Paris", 20, null, "2026-10-30").status()).isEqualTo(Status.CLEAR);
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("fixtureNights")
+    void fixtureNight(String name, List<CalendarHit> hits, Integer startHour, Integer endHour, String date,
+                      Status status, Kind kind) {
+        fixtures("2027-05-29", hits.toArray(CalendarHit[]::new));
+
+        Finding f = football("Paris", startHour, endHour, date);
+
+        if (status != null) assertThat(f.status()).isEqualTo(status);
+        if (kind != null) assertThat(f.kind()).isEqualTo(kind);
     }
 
     @Test
@@ -526,20 +521,6 @@ class CalendarEvaluatorTest {
         assertThat(f.strength()).isEqualTo(2);
         assertThat(f.facts()).containsEntry("kickoff", "21:00").containsEntry("count", 1);
         assertThat(actionKey(f, "2026-10-24")).isEqualTo("predictor.a.match_screening");
-    }
-
-    @Test
-    void afternoonMatchIsClear() {
-        fixtures("2027-05-29", fixture("2026-10-24", "FL1|15:00|516|524|Marseille – PSG"));
-
-        assertThat(football("Paris", 23, 5, "2026-10-24").status()).isEqualTo(Status.CLEAR);
-    }
-
-    @Test
-    void matchAfterEventEndIsClear() {
-        fixtures("2027-05-29", fixture("2026-10-24", PSG_AWAY_21));
-
-        assertThat(football("Paris", 14, 20, "2026-10-24").status()).isEqualTo(Status.CLEAR);
     }
 
     @Test
@@ -575,54 +556,12 @@ class CalendarEvaluatorTest {
     }
 
     @Test
-    void endBeforeStartRunsToNightEnd() {
-        // 22 → 21 reads as the event ending before it starts; the event is taken to run to 06:00
-        fixtures("2027-05-29", fixture("2026-10-24", "FL1|23:00|516|524|Marseille – PSG"));
-
-        assertThat(football("Paris", 22, 21, "2026-10-24").kind()).isEqualTo(Kind.RISK);
-    }
-
-    @Test
-    void endAfterRolloverIsTruncatedToSixAm() {
-        // start 03, end 07: 07:00 is after the 06:00 rollover, so the event runs to 06:00 and a 05:00 match overlaps
-        fixtures("2027-05-29", fixture("2026-10-24", "FL1|05:00|516|524|Marseille – PSG"));
-
-        assertThat(football("Paris", 3, 7, "2026-10-24").kind()).isEqualTo(Kind.RISK);
-    }
-
-    @Test
     void unparseableFixtureNameSkipped() {
         fixtures("2027-05-29", fixture("2026-10-24", "garbage"), fixture("2026-10-24", "FL1|xx:yy|516|524|Marseille – PSG"));
         assertThat(football("Paris", 20, null, "2026-10-24").status()).isEqualTo(Status.CLEAR);
 
         fixtures("2027-05-29", fixture("2026-10-24", "garbage"), fixture("2026-10-24", PSG_AWAY_21));
         assertThat(football("Paris", 20, null, "2026-10-24").facts()).containsEntry("count", 1);
-    }
-
-    @Test
-    void nullStartHourIsRisk() {
-        fixtures("2027-05-29", fixture("2026-10-24", "FL1|15:00|516|524|Marseille – PSG"));
-
-        Finding f = football("Paris", null, null, "2026-10-24");
-
-        assertThat(f.status()).isEqualTo(Status.FOUND);
-        assertThat(f.kind()).isEqualTo(Kind.RISK);
-    }
-
-    @Test
-    void startAfterMidnightCountsAsNextDay() {
-        fixtures("2027-05-29", fixture("2026-10-24", PSG_AWAY_21));
-
-        Finding f = football("Paris", 0, 5, "2026-10-24");
-
-        assertThat(f.kind()).isEqualTo(Kind.OPPORTUNITY);
-    }
-
-    @Test
-    void lateKickoffAfterMidnightOverlapsANightEvent() {
-        fixtures("2027-05-29", fixture("2026-10-24", "FL1|00:30|516|524|Marseille – PSG"));
-
-        assertThat(football("Paris", 23, 5, "2026-10-24").kind()).isEqualTo(Kind.RISK);
     }
 
     @Test
@@ -660,13 +599,6 @@ class CalendarEvaluatorTest {
         assertThat(f.strength()).isEqualTo(3);
         assertThat(f.facts()).containsEntry("competition", "CL").containsEntry("name", "RC Lens – Barça")
                 .containsEntry("count", 2);
-    }
-
-    @Test
-    void noFixtureOnDateIsClear() {
-        fixtures("2027-05-29", fixture("2026-10-25", PSG_AWAY_21), hit("holiday", "2026-10-24", null, "x", ""));
-
-        assertThat(football("Paris", 20, null, "2026-10-24").status()).isEqualTo(Status.CLEAR);
     }
 
     // --- 4.5 ---
@@ -807,41 +739,7 @@ class CalendarEvaluatorTest {
         assertThat(metz("2026-12-30").status()).isEqualTo(Status.CLEAR);
     }
 
-    @Test
-    void cityWithoutNeighboursIsNoSource() {
-        Finding f = eval("4.5", in().build(), "2026-10-31");
-
-        assertThat(f.status()).isEqualTo(Status.NOT_CHECKED);
-        assertThat(f.facts()).containsEntry("reason", "no_source");
-        verifyNoInteractions(cal);
-    }
-
     // --- endDate ---
-
-    @Test
-    void schoolFindingCarriesEndDate() {
-        coversAll("FR");
-        hits(hit("school", "2026-10-17", "2026-11-01", "Vacances de la Toussaint", "FR-ZC"));
-
-        assertThat(paris("7.1", "2026-10-24").facts()).containsEntry("date", "2026-10-17")
-                .containsEntry("endDate", "2026-11-01");
-    }
-
-    @Test
-    void ramadanFindingCarriesEndDate() {
-        coversAll("FR");
-        hits(hit("hijri", "2027-02-08", "2027-03-09", "ramadan", ""));
-
-        assertThat(paris("5.2", "2027-02-20").facts()).containsEntry("endDate", "2027-03-09");
-    }
-
-    @Test
-    void singleDayHolidayHasNoEndDate() {
-        coversAll("FR");
-        hits(holiday("2026-11-11", "Armistice", ""));
-
-        assertThat(paris("4.1", "2026-11-11").facts()).containsEntry("date", "2026-11-11").doesNotContainKey("endDate");
-    }
 
     @Test
     void sameFactHitsAllFiveCandidateDatesOnce() {

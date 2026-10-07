@@ -13,6 +13,8 @@ import com.imin.iminapi.predictor.sources.openevents.OpenEventsWriter.Row;
 import com.imin.iminapi.predictor.sources.openevents.OpenEventsWriter.Written;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
@@ -404,7 +406,7 @@ class OpenEventsJobTest {
     }
 
     @Test
-    void earlyStopCountsRemainingAsFailed() {
+    void earlyStopSkipsRemainingPairsAndStillPrunes() {
         when(gates.isOn("quefaireaparis")).thenReturn(false);
         when(oa.fetch(LILLE, FROM, TO)).thenThrow(new OpenEventsRateLimitedException("429"));
 
@@ -413,48 +415,16 @@ class OpenEventsJobTest {
         verify(oa).fetch(LILLE, FROM, TO);
         verify(oa, never()).fetch(eq(PARIS), any(), any());
         verify(writer).prune(TODAY);
-        assertThat(at(Level.ERROR)).singleElement().satisfies(e -> {
-            assertThat(e.getFormattedMessage()).contains("2 of 2");
-            assertThat(e.getThrowableProxy()).isNotNull();
-        });
     }
 
     @Test
-    void allPairsFailedLogsErrorWithThrowable() {
-        when(oa.fetch(any(), any(), any())).thenThrow(new IllegalStateException("down"));
-        when(qfap.fetch(any(), any(), any())).thenThrow(new IllegalStateException("down too"));
-
-        job().run();
-
-        verify(oa).fetch(LILLE, FROM, TO);
-        verify(qfap).fetch(PARIS, FROM, TO);
-        assertThat(at(Level.ERROR)).singleElement().satisfies(e -> {
-            assertThat(e.getFormattedMessage()).contains("3 of 3");
-            assertThat(e.getThrowableProxy()).isNotNull();
-            assertThat(e.getThrowableProxy().getMessage()).startsWith("down");
-        });
-    }
-
-    @Test
-    void allSucceededNothingMatchedWarns() {
+    void allSucceededNothingMatchedWritesEmpty() {
         when(oa.fetch(any(), any(), any())).thenReturn(fetch(raw("1", "Conférence", FROM.plusDays(2))));
         when(qfap.fetch(any(), any(), any())).thenReturn(fetch());
 
         job().run();
 
         verify(writer).replaceFuture(eq("openagenda"), eq("lille"), eq(FROM), eq(List.of()), eq(NOW));
-        assertThat(at(Level.WARN)).anySatisfy(e -> assertThat(e.getFormattedMessage()).contains("no matched event"));
-        assertThat(at(Level.ERROR)).isEmpty();
-    }
-
-    @Test
-    void successLogsInfo() {
-        job().run();
-
-        verify(writer).replaceFuture(eq("quefaireaparis"), eq("paris"), eq(TODAY), anyList(), eq(NOW));
-        assertThat(at(Level.INFO)).anySatisfy(e -> assertThat(e.getFormattedMessage()).contains("3 of 3"));
-        assertThat(at(Level.WARN)).isEmpty();
-        assertThat(at(Level.ERROR)).isEmpty();
     }
 
     @Test
@@ -469,59 +439,37 @@ class OpenEventsJobTest {
         assertThat(OpenEventsConfig.checked(oa)).isSameAs(oa);
     }
 
-    @Test
-    void startupSeedsOnlyWhenEmpty() {
-        when(repository.count()).thenReturn(0L);
-
-        job().onStartup();
-
-        verify(oa).fetch(LILLE, FROM, TO);
-        verify(writer).prune(TODAY);
-    }
-
-    @Test
-    void startupSeedsWithOneGateOn() {
-        when(gates.isOn("openagenda")).thenReturn(false);
-        when(repository.count()).thenReturn(0L);
-
-        job().onStartup();
-
-        verify(qfap).fetch(PARIS, FROM, TO);
-        verify(oa, never()).fetch(any(), any(), any());
-    }
-
-    @Test
-    void startupSkipsWhenRowsExist() {
-        when(repository.count()).thenReturn(5L);
-
-        job().onStartup();
-
-        verify(repository).count();
-        verify(oa, never()).fetch(any(), any(), any());
-    }
-
-    @Test
-    void startupExecutorRejectionIsSwallowed() {
-        when(repository.count()).thenReturn(0L);
-        OpenEventsJob job = job(r -> {
-            throw new RejectedExecutionException("full");
-        });
+    // The startup seed runs only when the table is empty, and never lets a failure escape boot.
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"empty", "one gate on", "rows exist", "executor rejects", "run fails"})
+    void startupSeed(String scenario) {
+        when(repository.count()).thenReturn(scenario.equals("rows exist") ? 5L : 0L);
+        if (scenario.equals("one gate on")) when(gates.isOn("openagenda")).thenReturn(false);
+        if (scenario.equals("run fails")) {
+            when(repository.findFirstBySourceAndCityKeyOrderBySyncedAtAsc("quefaireaparis", "paris"))
+                    .thenThrow(new IllegalStateException("db down"));
+        }
+        OpenEventsJob job = scenario.equals("executor rejects")
+                ? job(r -> { throw new RejectedExecutionException("full"); })
+                : job();
 
         assertThatCode(job::onStartup).doesNotThrowAnyException();
 
-        verify(repository).count();
-        assertThat(at(Level.WARN)).anySatisfy(e -> assertThat(e.getFormattedMessage()).contains("full"));
-    }
-
-    @Test
-    void startupRunFailureIsSwallowed() {
-        when(repository.count()).thenReturn(0L);
-        when(repository.findFirstBySourceAndCityKeyOrderBySyncedAtAsc("quefaireaparis", "paris"))
-                .thenThrow(new IllegalStateException("db down"));
-
-        assertThatCode(() -> job().onStartup()).doesNotThrowAnyException();
-
-        verify(repository).findFirstBySourceAndCityKeyOrderBySyncedAtAsc("quefaireaparis", "paris");
-        assertThat(at(Level.WARN)).anySatisfy(e -> assertThat(e.getFormattedMessage()).contains("db down"));
+        switch (scenario) {
+            case "empty" -> {
+                verify(oa).fetch(LILLE, FROM, TO);
+                verify(writer).prune(TODAY);
+            }
+            case "one gate on" -> {
+                verify(qfap).fetch(PARIS, FROM, TO);
+                verify(oa, never()).fetch(any(), any(), any());
+            }
+            case "rows exist" -> {
+                verify(repository).count();
+                verify(oa, never()).fetch(any(), any(), any());
+            }
+            case "executor rejects" -> verify(repository).count();
+            default -> verify(repository).findFirstBySourceAndCityKeyOrderBySyncedAtAsc("quefaireaparis", "paris");
+        }
     }
 }

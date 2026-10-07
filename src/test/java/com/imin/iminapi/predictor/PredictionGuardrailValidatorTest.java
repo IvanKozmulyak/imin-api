@@ -6,25 +6,29 @@ import com.imin.iminapi.predictor.service.Stage0Scorer;
 import com.imin.iminapi.predictor.service.Stage0Scorer.RecCandidate;
 import com.imin.iminapi.predictor.service.Stage0Scorer.Stage0Output;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.function.Predicate;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Adversarial fixtures for the guardrail validator (task 86cav475g) — each fixture is an
- * output shape a HALLUCINATING model could plausibly emit; the deterministic validator must
- * reject every one. Unvalidated numbers never reach a screen.
+ * Adversarial fixtures for the guardrail validator: each is an output shape a hallucinating model
+ * could plausibly emit, and the deterministic validator must reject every one.
  */
 class PredictionGuardrailValidatorTest {
 
+    private static final Instant NOW = Instant.parse("2026-06-01T12:00:00Z");
     private final PredictionGuardrailValidator sut = new PredictionGuardrailValidator();
-    private final Instant now = Instant.parse("2026-06-01T12:00:00Z");
 
     /** capacity 250, tier prices 1500–2400 minor. */
-    private PredictionGuardrailValidator.Context ctx() {
-        return new PredictionGuardrailValidator.Context(250, 1500, 2400, now);
+    private static PredictionGuardrailValidator.Context ctx() {
+        return new PredictionGuardrailValidator.Context(250, 1500, 2400, NOW);
     }
 
     private static PredictionResult.Factor factor(String text, String direction, String evidence) {
@@ -39,7 +43,7 @@ class PredictionGuardrailValidatorTest {
     }
 
     /** A coherent, honest output — must pass. */
-    private Stage0Output valid() {
+    private static Stage0Output valid() {
         return new Stage0Output(
                 new Stage0Scorer.RawBand(35, 60),
                 new Stage0Scorer.RawRange(120, 210),
@@ -48,29 +52,28 @@ class PredictionGuardrailValidatorTest {
                 List.of());
     }
 
-    /**
-     * predictor-edge-12: the id is persisted verbatim into prediction_feedback (VARCHAR(128)) on
-     * a dismissal, so a sentence-length id served a recommendation whose Dismiss button could
-     * only 400. The prompt asks for a short slug; this is the rule that enforces it and feeds it
-     * back to the model on the retry.
-     */
-    @Test
-    void overLongRecommendationIdRejected() {
-        Stage0Output out = new Stage0Output(new Stage0Scorer.RawBand(35, 60),
-                new Stage0Scorer.RawRange(120, 210), null, goodFactors(),
-                List.of(new RecCandidate("z".repeat(129), "Lower Early Bird",
-                        "priced above the comparable band", "HIGH", "tier_edit", null, null, null)));
+    private static Stage0Output withRecs(RecCandidate... recs) {
+        return new Stage0Output(new Stage0Scorer.RawBand(35, 60),
+                new Stage0Scorer.RawRange(120, 210), null, goodFactors(), List.of(recs));
+    }
 
-        assertThat(sut.validate(out, ctx())).anyMatch(e -> e.contains("short stable slug"));
+    private static Stage0Output withFactors(PredictionResult.Factor first) {
+        return new Stage0Output(new Stage0Scorer.RawBand(35, 60), new Stage0Scorer.RawRange(120, 210), null,
+                List.of(first, factor("Saturday date", "supporting", "comparable stat"),
+                        factor("New organizer", "opposing", "no completed events")), List.of());
+    }
+
+    private static Predicate<String> has(String text) {
+        return e -> e.contains(text);
+    }
+
+    private static Predicate<String> rule(String id) {
+        return e -> e.startsWith(id);
     }
 
     /**
-     * predictor-edge-13: the raw carriers used to have primitive components, so an LLM answering
-     * {@code "attendanceRange": {}} (or a single missing number) bound to 0 rather than null.
-     * The whole-object presence rules saw a non-null record and every bound passes at zero, so
-     * the output validated, was assembled benchmarkOnly=false and served as `ready`: a 0–0%
-     * sell-out band and a 0–0 attendance range presented as a real forecast. The absence must
-     * route through the retry to benchmark-only, exactly as a missing whole object does.
+     * A raw carrier with a missing number used to bind to 0, so an empty estimate validated and was
+     * served as a real 0–0 forecast; the absence must route through the retry to benchmark-only.
      */
     @Test
     void emptyEstimateObjectsAreRejectedNotReadAsZero() {
@@ -84,16 +87,6 @@ class PredictionGuardrailValidatorTest {
                 .anyMatch(e -> e.contains("selloutBand.highPct is required"))
                 .anyMatch(e -> e.contains("attendanceRange.low is required"))
                 .anyMatch(e -> e.contains("attendanceRange.high is required"));
-    }
-
-    @Test
-    void oneMissingNumberInsideAPresentObjectIsRejected() {
-        Stage0Output out = new Stage0Output(
-                new Stage0Scorer.RawBand(35, 60),
-                new Stage0Scorer.RawRange(120, null),
-                null, goodFactors(), List.of());
-
-        assertThat(sut.validate(out, ctx())).anyMatch(e -> e.contains("attendanceRange.high is required"));
     }
 
     @Test
@@ -114,179 +107,74 @@ class PredictionGuardrailValidatorTest {
         assertThat(sut.validate(valid(), ctx())).isEmpty();
     }
 
-    @Test
-    void missingSelloutBandRejected() {
-        // Silently omitting a requested estimate is not a pass: without this rule the output is
-        // stamped benchmarkOnly=false and served as `ready`, which claims a sell-out assessment
-        // the model never made.
-        Stage0Output out = new Stage0Output(null, new Stage0Scorer.RawRange(120, 210),
-                null, goodFactors(), List.of());
-        assertThat(sut.validate(out, ctx())).anyMatch(e -> e.contains("selloutBand is required"));
-    }
-
-    @Test
-    void missingAttendanceRangeRejectedWhenTheDraftHasCapacity() {
-        Stage0Output out = new Stage0Output(new Stage0Scorer.RawBand(80, 95), null,
-                null, goodFactors(), List.of());
-        assertThat(sut.validate(out, ctx())).anyMatch(e -> e.contains("attendanceRange is required"));
-    }
-
-    // ---- adversarial fixtures ----------------------------------------------------
-
-    @Test
-    void overCapacityAttendanceRejected() {
-        Stage0Output out = new Stage0Output(
-                new Stage0Scorer.RawBand(35, 60),
-                new Stage0Scorer.RawRange(120, 400), // capacity is 250
-                null, goodFactors(), List.of());
-        assertThat(sut.validate(out, ctx())).anyMatch(e -> e.contains("exceeds capacity"));
-    }
-
-    @Test
-    void negativeAttendanceRejected() {
-        Stage0Output out = new Stage0Output(null,
-                new Stage0Scorer.RawRange(-5, 100), null, goodFactors(), List.of());
-        assertThat(sut.validate(out, ctx())).anyMatch(e -> e.contains(">= 0"));
-    }
-
-    @Test
-    void selloutBandIncoherentWithLowAttendanceRejected() {
-        // Predicts at most 120/250 attendees yet calls a sell-out up to 90% likely (rule S1).
-        Stage0Output out = new Stage0Output(
-                new Stage0Scorer.RawBand(60, 90),
-                new Stage0Scorer.RawRange(80, 120),
-                null, goodFactors(), List.of());
-        assertThat(sut.validate(out, ctx())).anyMatch(e -> e.startsWith("S1"));
-    }
-
-    @Test
-    void nearZeroSelloutWhileAttendanceAtCapacityRejected() {
-        // Predicts the room fills (240-250/250) yet calls sell-out at most 5% likely (rule S2).
-        Stage0Output out = new Stage0Output(
-                new Stage0Scorer.RawBand(0, 5),
-                new Stage0Scorer.RawRange(240, 250),
-                null, goodFactors(), List.of());
-        assertThat(sut.validate(out, ctx())).anyMatch(e -> e.startsWith("S2"));
-    }
-
-    @Test
-    void revenueIncoherentWithAttendanceTimesPricesRejected() {
-        // 10x what the dearest tier times the highest attendance could gross (rule R2).
-        Stage0Output out = new Stage0Output(
-                new Stage0Scorer.RawBand(35, 60),
-                new Stage0Scorer.RawRange(120, 210),
-                new Stage0Scorer.RawLongRange(120 * 1500L, 10 * 210 * 2400L),
-                goodFactors(), List.of());
-        assertThat(sut.validate(out, ctx())).anyMatch(e -> e.startsWith("R2"));
-    }
-
-    @Test
-    void recommendedPriceTenTimesTierPriceRejected() {
-        RecCandidate rec = new RecCandidate(
-                "raise-door", "Raise the door price", "comparable events priced higher",
-                "HIGH", "tier_edit", "Door", 24_000, null); // 10x the 2400 max tier
-        Stage0Output out = new Stage0Output(new Stage0Scorer.RawBand(35, 60),
-                new Stage0Scorer.RawRange(120, 210), null, goodFactors(), List.of(rec));
-        assertThat(sut.validate(out, ctx())).anyMatch(e -> e.startsWith("P1"));
-    }
-
-    @Test
-    void recommendedDateInThePastRejected() {
-        RecCandidate rec = new RecCandidate(
-                "move-date", "Move to a Saturday", "Saturdays outperform in the cluster",
-                "HIGH", "tier_transition", "Early Bird", null, "2026-05-01T20:00:00Z"); // before now
-        Stage0Output out = new Stage0Output(new Stage0Scorer.RawBand(35, 60),
-                new Stage0Scorer.RawRange(120, 210), null, goodFactors(), List.of(rec));
-        assertThat(sut.validate(out, ctx())).anyMatch(e -> e.startsWith("P2"));
-    }
-
-    @Test
-    void invalidImpactTagRejected() {
-        RecCandidate rec = new RecCandidate("r1", "Add a VIP tier", "comparable events had VIP",
-                "MASSIVE", "tier_add", null, null, null); // not HIGH/MED
-        Stage0Output out = new Stage0Output(new Stage0Scorer.RawBand(35, 60),
-                new Stage0Scorer.RawRange(120, 210), null, goodFactors(), List.of(rec));
-        assertThat(sut.validate(out, ctx())).anyMatch(e -> e.contains("impact must be one of"));
-    }
-
-    @Test
-    void nonDescendingImpactOrderRejected() {
-        RecCandidate med = new RecCandidate("a-med", "Lower Early Bird", "priced above band",
-                "MED", "tier_edit", "Early Bird", 1400, null);
-        RecCandidate high = new RecCandidate("b-high", "Send a reminder", "audience is warm",
-                "HIGH", "campaign", null, null, null);
-        // MED before HIGH — the list is not impact-descending.
-        Stage0Output out = new Stage0Output(new Stage0Scorer.RawBand(35, 60),
-                new Stage0Scorer.RawRange(120, 210), null, goodFactors(), List.of(med, high));
-        assertThat(sut.validate(out, ctx())).anyMatch(e -> e.contains("impact-descending"));
-    }
-
-    @Test
-    void unknownActionTypeRejected() {
-        RecCandidate rec = new RecCandidate("r1", "Do a thing", "evidence",
-                "HIGH", "adjust_price", null, null, null); // legacy value no longer in the closed set
-        Stage0Output out = new Stage0Output(new Stage0Scorer.RawBand(35, 60),
-                new Stage0Scorer.RawRange(120, 210), null, goodFactors(), List.of(rec));
-        assertThat(sut.validate(out, ctx())).anyMatch(e -> e.contains("actionType must be one of"));
-    }
-
-    @Test
-    void factorWithEmptyEvidenceRejected() {
-        List<PredictionResult.Factor> factors = List.of(
-                factor("Great vibe expected", "supporting", ""),
-                factor("Saturday date", "supporting", "comparable stat"),
-                factor("New organizer", "opposing", "no completed events"));
-        Stage0Output out = new Stage0Output(new Stage0Scorer.RawBand(35, 60),
-                new Stage0Scorer.RawRange(120, 210), null, factors, List.of());
-        assertThat(sut.validate(out, ctx())).anyMatch(e -> e.contains("evidence is empty"));
-    }
-
-    @Test
-    void tooFewFactorsRejected() {
-        Stage0Output out = new Stage0Output(new Stage0Scorer.RawBand(35, 60),
-                new Stage0Scorer.RawRange(120, 210), null,
-                List.of(factor("Only one", "supporting", "something")), List.of());
-        assertThat(sut.validate(out, ctx())).anyMatch(e -> e.contains("3-5"));
-    }
-
-    @Test
-    void bannedPhraseWillSellOutRejected() {
-        List<PredictionResult.Factor> factors = List.of(
-                factor("This event will sell out fast", "supporting", "strong comparables"),
-                factor("Saturday date", "supporting", "comparable stat"),
-                factor("New organizer", "opposing", "no completed events"));
-        Stage0Output out = new Stage0Output(new Stage0Scorer.RawBand(35, 60),
-                new Stage0Scorer.RawRange(120, 210), null, factors, List.of());
-        assertThat(sut.validate(out, ctx())).anyMatch(e -> e.startsWith("W1"));
-    }
-
-    @Test
-    void barePointEstimateRejected() {
-        List<PredictionResult.Factor> factors = List.of(
-                factor("Demand outlook", "supporting", "the event will sell 240 tickets based on comparables"),
-                factor("Saturday date", "supporting", "comparable stat"),
-                factor("New organizer", "opposing", "no completed events"));
-        Stage0Output out = new Stage0Output(new Stage0Scorer.RawBand(35, 60),
-                new Stage0Scorer.RawRange(120, 210), null, factors, List.of());
-        assertThat(sut.validate(out, ctx())).anyMatch(e -> e.startsWith("W1"));
-    }
-
-    @Test
-    void fourthRecommendationRejected() {
+    static Stream<Arguments> rejectedOutputs() {
         RecCandidate r = new RecCandidate("r", "claim", "evidence", "MED", "campaign", null, null, null);
-        Stage0Output out = new Stage0Output(new Stage0Scorer.RawBand(35, 60),
-                new Stage0Scorer.RawRange(120, 210), null, goodFactors(),
-                List.of(withId(r, "a"), withId(r, "b"), withId(r, "c"), withId(r, "d")));
-        assertThat(sut.validate(out, ctx())).anyMatch(e -> e.contains("at most 3"));
+        return Stream.of(
+                // the id is stored in a VARCHAR(128) on dismissal, so a sentence-length id could only 400
+                Arguments.of("overLongRecommendationId", withRecs(new RecCandidate("z".repeat(129), "Lower Early Bird",
+                        "priced above the comparable band", "HIGH", "tier_edit", null, null, null)), ctx(),
+                        has("short stable slug")),
+                Arguments.of("oneMissingNumberInsideAPresentObject", new Stage0Output(new Stage0Scorer.RawBand(35, 60),
+                        new Stage0Scorer.RawRange(120, null), null, goodFactors(), List.of()), ctx(),
+                        has("attendanceRange.high is required")),
+                // an omitted estimate would be served as `ready`, claiming an assessment the model never made
+                Arguments.of("missingSelloutBand", new Stage0Output(null, new Stage0Scorer.RawRange(120, 210),
+                        null, goodFactors(), List.of()), ctx(), has("selloutBand is required")),
+                Arguments.of("missingAttendanceRangeWhenTheDraftHasCapacity", new Stage0Output(
+                        new Stage0Scorer.RawBand(80, 95), null, null, goodFactors(), List.of()), ctx(),
+                        has("attendanceRange is required")),
+                Arguments.of("overCapacityAttendance", new Stage0Output(new Stage0Scorer.RawBand(35, 60),
+                        new Stage0Scorer.RawRange(120, 400), null, goodFactors(), List.of()), ctx(),
+                        has("exceeds capacity")),
+                Arguments.of("negativeAttendance", new Stage0Output(null, new Stage0Scorer.RawRange(-5, 100), null,
+                        goodFactors(), List.of()), ctx(), has(">= 0")),
+                // at most 120/250 attendees yet a sell-out up to 90% likely
+                Arguments.of("selloutBandIncoherentWithLowAttendance", new Stage0Output(new Stage0Scorer.RawBand(60, 90),
+                        new Stage0Scorer.RawRange(80, 120), null, goodFactors(), List.of()), ctx(), rule("S1")),
+                // the room fills (240-250/250) yet sell-out at most 5% likely
+                Arguments.of("nearZeroSelloutWhileAttendanceAtCapacity", new Stage0Output(new Stage0Scorer.RawBand(0, 5),
+                        new Stage0Scorer.RawRange(240, 250), null, goodFactors(), List.of()), ctx(), rule("S2")),
+                // 10x what the dearest tier times the highest attendance could gross
+                Arguments.of("revenueIncoherentWithAttendanceTimesPrices", new Stage0Output(
+                        new Stage0Scorer.RawBand(35, 60), new Stage0Scorer.RawRange(120, 210),
+                        new Stage0Scorer.RawLongRange(120 * 1500L, 10 * 210 * 2400L), goodFactors(), List.of()),
+                        ctx(), rule("R2")),
+                Arguments.of("recommendedPriceTenTimesTierPrice", withRecs(new RecCandidate("raise-door",
+                        "Raise the door price", "comparable events priced higher", "HIGH", "tier_edit", "Door", 24_000,
+                        null)), ctx(), rule("P1")),
+                Arguments.of("recommendedDateInThePast", withRecs(new RecCandidate("move-date", "Move to a Saturday",
+                        "Saturdays outperform in the cluster", "HIGH", "tier_transition", "Early Bird", null,
+                        "2026-05-01T20:00:00Z")), ctx(), rule("P2")),
+                Arguments.of("invalidImpactTag", withRecs(new RecCandidate("r1", "Add a VIP tier",
+                        "comparable events had VIP", "MASSIVE", "tier_add", null, null, null)), ctx(),
+                        has("impact must be one of")),
+                Arguments.of("nonDescendingImpactOrder", withRecs(
+                        new RecCandidate("a-med", "Lower Early Bird", "priced above band", "MED", "tier_edit",
+                                "Early Bird", 1400, null),
+                        new RecCandidate("b-high", "Send a reminder", "audience is warm", "HIGH", "campaign", null,
+                                null, null)), ctx(), has("impact-descending")),
+                Arguments.of("unknownActionType", withRecs(new RecCandidate("r1", "Do a thing", "evidence", "HIGH",
+                        "adjust_price", null, null, null)), ctx(), has("actionType must be one of")),
+                Arguments.of("factorWithEmptyEvidence", withFactors(factor("Great vibe expected", "supporting", "")),
+                        ctx(), has("evidence is empty")),
+                Arguments.of("tooFewFactors", new Stage0Output(new Stage0Scorer.RawBand(35, 60),
+                        new Stage0Scorer.RawRange(120, 210), null,
+                        List.of(factor("Only one", "supporting", "something")), List.of()), ctx(), has("3-5")),
+                Arguments.of("bannedPhraseWillSellOut", withFactors(factor("This event will sell out fast",
+                        "supporting", "strong comparables")), ctx(), rule("W1")),
+                Arguments.of("barePointEstimate", withFactors(factor("Demand outlook", "supporting",
+                        "the event will sell 240 tickets based on comparables")), ctx(), rule("W1")),
+                Arguments.of("fourthRecommendation", withRecs(withId(r, "a"), withId(r, "b"), withId(r, "c"),
+                        withId(r, "d")), ctx(), has("at most 3")),
+                Arguments.of("revenueWithoutTiers", new Stage0Output(null, null,
+                        new Stage0Scorer.RawLongRange(0L, 100_000L), goodFactors(), List.of()),
+                        new PredictionGuardrailValidator.Context(0, null, null, NOW), has("no ticket tiers")));
     }
 
-    @Test
-    void revenueWithoutTiersRejected() {
-        PredictionGuardrailValidator.Context noTiers =
-                new PredictionGuardrailValidator.Context(0, null, null, now);
-        Stage0Output out = new Stage0Output(null, null,
-                new Stage0Scorer.RawLongRange(0L, 100_000L), goodFactors(), List.of());
-        assertThat(sut.validate(out, noTiers)).anyMatch(e -> e.contains("no ticket tiers"));
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("rejectedOutputs")
+    void rejected(String name, Stage0Output out, PredictionGuardrailValidator.Context ctx, Predicate<String> error) {
+        assertThat(sut.validate(out, ctx)).anyMatch(error);
     }
 
     private static RecCandidate withId(RecCandidate r, String id) {

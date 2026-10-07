@@ -21,6 +21,8 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.ArgumentCaptor;
 
 import java.time.Clock;
@@ -164,28 +166,14 @@ class ReforecastServiceTest {
         assertThat(r1.status()).isEqualTo("ready");
         assertThat(r1.stage()).isEqualTo(1);
         assertThat(r1.band()).isEqualTo("TRACKING_60_85");
+        // band stays the machine code (parsed back on every recompute); the chip shows bandLabel
+        assertThat(r1.bandLabel()).isEqualTo("tracking 60–85% of capacity");
+        assertThat(r1.bandLabel()).isEqualTo(ProjectionBand.TRACKING_60_85.phrase());
         assertThat(r1.pacing()).isNotNull();
         assertThat(r1.ledger()).isNotNull();
         assertThat(r1.ledger().promptVersion()).isEqualTo(ReforecastNarrator.PROMPT_VERSION);
         verify(ledgerService, times(2)).record(any());       // one row per recompute
         assertThat(rows).allMatch(row -> row.getSurface() == PredictionSurface.REFORECAST);
-    }
-
-    /**
-     * predictor-edge-8: {@code band} must stay the MACHINE code — {@code ReforecastService}
-     * parses it back with {@code ProjectionBand.valueOf} on every recompute and folds it into
-     * the ledger input hash — so the honest phrase ships beside it as {@code bandLabel}. The
-     * organizer's chip rendered the raw constant ("TRACKING_60_85") in all four locales until
-     * this existed.
-     */
-    @Test
-    void servesTheBandCodeAndItsDisplayPhraseSideBySide() {
-        stubBands(ProjectionBand.TRACKING_60_85);
-        ReforecastResult r = sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
-
-        assertThat(r.band()).isEqualTo("TRACKING_60_85");                          // machine code
-        assertThat(r.bandLabel()).isEqualTo("tracking 60–85% of capacity");        // display phrase
-        assertThat(r.bandLabel()).isEqualTo(ProjectionBand.TRACKING_60_85.phrase());
     }
 
     /** A ledger row written before bandLabel existed still serves a renderable label. */
@@ -202,18 +190,6 @@ class ReforecastServiceTest {
 
         assertThat(served.band()).isEqualTo("TRACKING_60_85");
         assertThat(served.bandLabel()).isEqualTo("tracking 60–85% of capacity");
-    }
-
-    @Test
-    void stage0InterimCarriesTheBandLabelToo() {
-        when(pacingCurves.lookup(any(), any(), any(), any(), any())).thenReturn(Optional.empty());
-        seedPrePublish(120, 170);
-
-        ReforecastResult r = sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
-
-        assertThat(r.stage()).isEqualTo(0);
-        assertThat(r.band()).isNotNull();
-        assertThat(r.bandLabel()).isEqualTo(ProjectionBand.valueOf(r.band()).phrase());
     }
 
     /**
@@ -316,28 +292,21 @@ class ReforecastServiceTest {
         assertThat(ctx.getValue().weatherTempC()).isEqualTo(18.0);
     }
 
-    @Test
-    void noWeatherNoCredit() {
+    @ParameterizedTest(name = "weather={0}, narratorFails={1}")
+    @CsvSource({"false, false", "true, true"})
+    void noCreditWithoutWeatherOrWithoutNarration(boolean weatherUsed, boolean narratorFails) {
+        if (weatherUsed) {
+            when(weather.forecast(any(), any(), any(), any(), any(), any(), anyInt()))
+                    .thenReturn(new WeatherService.Weather(40, 18.0));
+        }
         when(weather.credit()).thenReturn(CREDIT);
+        if (narratorFails) when(narrator.narrate(any())).thenThrow(new IllegalStateException("upstream down"));
         stubBands(ProjectionBand.TRACKING_60_85);
 
         ReforecastResult r = sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
 
-        assertThat(r.narration()).isNotNull();
-        assertThat(r.narrationCredit()).isNull();
-    }
-
-    @Test
-    void narratorFailureNoCredit() {
-        when(weather.forecast(any(), any(), any(), any(), any(), any(), anyInt()))
-                .thenReturn(new WeatherService.Weather(40, 18.0));
-        when(weather.credit()).thenReturn(CREDIT);
-        when(narrator.narrate(any())).thenThrow(new IllegalStateException("upstream down"));
-        stubBands(ProjectionBand.TRACKING_60_85);
-
-        ReforecastResult r = sut.recompute(eventId, ReforecastTrigger.SCHEDULED);
-
-        assertThat(r.narration()).isNull();
+        if (narratorFails) assertThat(r.narration()).isNull();
+        else assertThat(r.narration()).isNotNull();
         assertThat(r.narrationCredit()).isNull();
     }
 
@@ -403,6 +372,8 @@ class ReforecastServiceTest {
         assertThat(r.stage()).isEqualTo(0);                       // EXPLICITLY labelled interim
         assertThat(r.pacing()).isNull();                          // no pacing block at stage 0
         assertThat(r.projectedFinalRange().low()).isEqualTo(120); // clamped within capacity 200
+        assertThat(r.band()).isNotNull();
+        assertThat(r.bandLabel()).isEqualTo(ProjectionBand.valueOf(r.band()).phrase());
     }
 
     @Test
