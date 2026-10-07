@@ -11,12 +11,16 @@ import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.service.ticket.google.GoogleWalletPassService;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.ArgumentCaptor;
 
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -143,18 +147,43 @@ class TicketIssuanceEmailerTest {
                 .doesNotContain("google-wallet");
     }
 
-    /**
-     * W1.G: the buyer bought in Spanish (orders.buyer_locale, V78), so the ticket email —
-     * body AND subject — must come back in Spanish. Real renderer, so this asserts the
-     * actual .es template is selected, not just that a locale was passed along.
-     */
+    /** An order with no tickets left gets no ticket email: a mail with no QR would be worse than none. */
     @Test
-    void uses_the_buyers_locale_for_body_and_subject() {
-        SentEmail sent = sendWithLocale("es", "buyer-es@example.com");
+    void an_order_with_no_tickets_sends_nothing() {
+        EmailService email = mock(EmailService.class);
+        OrderRepository orders = mock(OrderRepository.class);
+        TicketRepository tickets = mock(TicketRepository.class);
+        EventRepository events = mock(EventRepository.class);
+        UUID orderId = UUID.randomUUID();
+        UUID eventId = UUID.randomUUID();
+        Order order = new Order();
+        order.setId(orderId);
+        order.setEventId(eventId);
+        order.setEmail("empty@example.com");
+        Event event = new Event();
+        event.setId(eventId);
+        when(orders.findById(orderId)).thenReturn(Optional.of(order));
+        when(events.findById(eventId)).thenReturn(Optional.of(event));
+        when(tickets.findByOrderIdOrderByCreatedAtAsc(orderId)).thenReturn(List.of());
 
-        assertThat(sent.subject()).isEqualTo("Tu entrada para Helios");
-        assertThat(sent.html()).contains("<html lang=\"es\">");
-        assertThat(sent.text()).contains("YA ESTÁS DENTRO");
+        new TicketIssuanceEmailer(orders, tickets, events, email, new EmailTemplateRenderer(),
+                new EmailProperties(), new TicketProperties(), offers(true, true)).send(orderId);
+
+        org.mockito.Mockito.verifyNoInteractions(email);
+    }
+
+    /**
+     * The order's stored language picks the body AND subject from the real localized file; none falls back to
+     * English. Ukrainian is the locale most likely to break on encoding.
+     */
+    @ParameterizedTest(name = "locale {0}")
+    @MethodSource("localizedTemplates")
+    void uses_the_buyers_locale_for_body_and_subject(String locale, String subject, String lang, String textMarker) {
+        SentEmail sent = sendWithLocale(locale, "buyer-" + locale + "@example.com");
+
+        assertThat(sent.subject()).isEqualTo(subject);
+        assertThat(sent.html()).contains("<html lang=\"" + lang + "\">");
+        assertThat(sent.text()).contains(textMarker);
         // Placeholders still resolved in the localized file.
         assertThat(sent.html()).doesNotContain("{{");
         assertThat(sent.text()).doesNotContain("{{");
@@ -163,23 +192,11 @@ class TicketIssuanceEmailerTest {
         assertThat(sent.html()).contains("https://api.imin.test/api/v1/public/tickets/TKT_SOLO/qr.png");
     }
 
-    /** No stored preference (organic/legacy order) ⇒ the English template, unchanged. */
-    @Test
-    void falls_back_to_english_when_the_order_has_no_locale() {
-        SentEmail sent = sendWithLocale(null, "buyer-none@example.com");
-
-        assertThat(sent.subject()).isEqualTo("Your ticket for Helios");
-        assertThat(sent.html()).contains("<html lang=\"en\">");
-    }
-
-    /** Ukrainian is the locale most likely to break on encoding, so assert it explicitly. */
-    @Test
-    void renders_ukrainian_when_the_buyer_chose_it() {
-        SentEmail sent = sendWithLocale("uk", "buyer-uk@example.com");
-
-        assertThat(sent.subject()).isEqualTo("Ваш квиток на Helios");
-        assertThat(sent.html()).contains("<html lang=\"uk\">");
-        assertThat(sent.text()).contains("ВИ У СПИСКУ");
+    static Stream<Arguments> localizedTemplates() {
+        return Stream.of(
+                Arguments.of("es", "Tu entrada para Helios", "es", "YA ESTÁS DENTRO"),
+                Arguments.of(null, "Your ticket for Helios", "en", "YOU'RE IN"),
+                Arguments.of("uk", "Ваш квиток на Helios", "uk", "ВИ У СПИСКУ"));
     }
 
     // ── Price breakdown (Code conso. L112-1 / CRD Art.6(1)(e)) ────────────────
@@ -385,79 +402,43 @@ class TicketIssuanceEmailerTest {
         return new SentEmail("", html.getValue(), text.getValue());
     }
 
-    // ── the two-wallet email (Task 8) ────────────────────────────────────────
+    // ── the two-wallet email ─────────────────────────────────────────────────
 
     /**
-     * Google on, Apple off. The asymmetry is not hypothetical: Apple is gated on
-     * a Pass Type ID certificate and Google on an issuer account, two unrelated
-     * registrations with two unrelated lead times, so "exactly one wallet works"
-     * is the state this product will spend months in.
+     * A wallet row appears only when {@link WalletOffers} offers it for that ticket: a refunded re-send must not
+     * mail two buttons that 409, while a redeemed ticket keeps them (the door paints it amber, not red).
      */
-    @Test
-    void googleAloneRendersOnlyTheGoogleRow() {
-        SentEmail sent = sendWith(offers(false, true), Ticket.STATE_ISSUED);
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("walletRows")
+    void wallet_rows_follow_what_the_offers_allow_for_the_ticket(String name, boolean appleOn, boolean googleOn,
+                                                                 String state, boolean apple, boolean google) {
+        SentEmail sent = sendWith(offers(appleOn, googleOn), state);
 
-        assertThat(sent.html())
-                .contains("https://api.imin.test/api/v1/public/tickets/TKT_SOLO/google-wallet")
-                .contains("Save to Google Wallet")
-                .doesNotContain("apple-wallet.pkpass")
-                .doesNotContain("Apple Wallet");
-        assertThat(sent.text())
-                .contains("Google Wallet: https://api.imin.test/api/v1/public/tickets/TKT_SOLO/google-wallet")
-                .doesNotContain("Apple Wallet");
-    }
-
-    /**
-     * Both on ⇒ both rows, to every recipient. An email carries no user agent
-     * and is read on more devices than it was sent from, so an iPhone owner
-     * seeing a Google link is the correct outcome and not a targeting bug.
-     */
-    @Test
-    void bothWalletsRenderBothRowsBecauseAnEmailCannotKnowTheDevice() {
-        SentEmail sent = sendWith(offers(true, true), Ticket.STATE_ISSUED);
-
-        assertThat(sent.html())
-                .contains("https://api.imin.test/api/v1/public/tickets/TKT_SOLO/apple-wallet.pkpass")
-                .contains("https://api.imin.test/api/v1/public/tickets/TKT_SOLO/google-wallet");
-    }
-
-    /**
-     * THE REASON THE EMAILER GOES THROUGH {@link WalletOffers} AT ALL.
-     *
-     * <p>{@code BuyerOrderActionsController} re-sends this email on demand, at
-     * any time, including after a refund. The old gate was
-     * {@code wallet.isConfigured()} — the wallet config and nothing about the
-     * ticket — so a re-send for a refunded order mailed the buyer two
-     * official-looking wallet buttons whose endpoints both answer 409. One rule,
-     * three surfaces, is what removes that by construction.
-     */
-    @Test
-    void aRefundedTicketGetsNoWalletRowEvenWithBothWalletsConfigured() {
-        SentEmail sent = sendWith(offers(true, true), Ticket.STATE_REFUNDED);
-
-        assertThat(sent.html())
-                .doesNotContain("apple-wallet.pkpass")
-                .doesNotContain("google-wallet");
-        assertThat(sent.text())
-                .doesNotContain("Apple Wallet")
-                .doesNotContain("Google Wallet");
-        // …and the ticket itself is still in the email. A refunded buyer keeps
-        // their record; only the wallet CTA goes.
+        String appleUrl = "https://api.imin.test/api/v1/public/tickets/TKT_SOLO/apple-wallet.pkpass";
+        String googleUrl = "https://api.imin.test/api/v1/public/tickets/TKT_SOLO/google-wallet";
+        if (apple) {
+            assertThat(sent.html()).contains(appleUrl);
+            assertThat(sent.text()).contains("Apple Wallet: " + appleUrl);
+        } else {
+            assertThat(sent.html()).doesNotContain("apple-wallet.pkpass").doesNotContain("Apple Wallet");
+            assertThat(sent.text()).doesNotContain("Apple Wallet");
+        }
+        if (google) {
+            assertThat(sent.html()).contains(googleUrl).contains("Save to Google Wallet");
+            assertThat(sent.text()).contains("Google Wallet: " + googleUrl);
+        } else {
+            assertThat(sent.html()).doesNotContain("google-wallet").doesNotContain("Google Wallet");
+            assertThat(sent.text()).doesNotContain("Google Wallet");
+        }
+        // The ticket itself is always in the email; only the wallet CTA can go.
         assertThat(sent.html()).contains("https://api.imin.test/api/v1/public/tickets/TKT_SOLO/qr.png");
     }
 
-    /**
-     * Redeemed is not refused. The door paints {@code already_redeemed} amber,
-     * not red, and a buyer whose phone died in the queue must not be locked out
-     * of their own ticket record — {@code WalletEligibility}'s own rule, held
-     * here so a later "tighten the email" change has to argue with it.
-     */
-    @Test
-    void aRedeemedTicketKeepsItsWalletRows() {
-        SentEmail sent = sendWith(offers(true, true), Ticket.STATE_REDEEMED);
-
-        assertThat(sent.html())
-                .contains("apple-wallet.pkpass")
-                .contains("google-wallet");
+    static Stream<Arguments> walletRows() {
+        return Stream.of(
+                Arguments.of("google alone renders only the google row", false, true, Ticket.STATE_ISSUED, false, true),
+                Arguments.of("both wallets render both rows", true, true, Ticket.STATE_ISSUED, true, true),
+                Arguments.of("a refunded ticket gets no wallet row", true, true, Ticket.STATE_REFUNDED, false, false),
+                Arguments.of("a redeemed ticket keeps its wallet rows", true, true, Ticket.STATE_REDEEMED, true, true));
     }
 }

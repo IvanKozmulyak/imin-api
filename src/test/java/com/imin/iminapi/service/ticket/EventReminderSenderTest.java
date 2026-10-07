@@ -6,8 +6,7 @@ import com.imin.iminapi.buyer.model.BuyerNotificationPreference;
 import com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository;
 import com.imin.iminapi.buyer.repository.BuyerAccountRepository;
 import com.imin.iminapi.buyer.repository.BuyerNotificationPreferenceRepository;
-import com.imin.iminapi.config.TestRateLimitConfig;
-import com.imin.iminapi.email.EmailService;
+import com.imin.iminapi.email.RecordingEmailService;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.repository.EventRepository;
@@ -15,26 +14,20 @@ import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.IminIntegrationTest;
 import com.imin.iminapi.support.OrderFixtures;
+import com.imin.iminapi.support.PropertyFlips;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.time.Clock;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.mockingDetails;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.reset;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
 
 /**
  * Door reminders — spec §4.7.
@@ -44,12 +37,11 @@ import static org.mockito.Mockito.verify;
  * which is what the marker column is for. And <b>one email per order</b>, not
  * per ticket — the epic says per-ticket and is wrong.
  *
- * <p>Note the {@code @TestPropertySource}. The feature ships OFF
+ * <p>Note the {@code remindersEnabled} flip in {@code @BeforeEach}. The feature ships OFF
  * ({@code EmailProperties.remindersEnabled} defaults false, deliberately), so
  * without it every test here would pass by sending nothing at all.
  */
-@SpringBootTest(properties = "imin.email.reminders-enabled=true")
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class EventReminderSenderTest {
 
     @Autowired EventReminderSender sender;
@@ -62,7 +54,10 @@ class EventReminderSenderTest {
     @Autowired BuyerAccountRepository accounts;
     @Autowired BuyerAccountEmailRepository accountEmails;
     @Autowired BuyerNotificationPreferenceRepository preferences;
-    @MockitoBean EmailService email;
+    @Autowired RecordingEmailService mail;
+    @Autowired PropertyFlips flips;
+    @Autowired JdbcTemplate jdbc;
+    @Autowired Clock clock;
 
     /** 22 hours out — inside the T-24h band and nowhere near the T-3h one. */
     private Event tomorrow;
@@ -71,23 +66,24 @@ class EventReminderSenderTest {
 
     @BeforeEach
     void eventsInEachBand() {
-        // Drain both bands first. The suite shares one H2 instance and orders
+        flips.set(emailProps, "remindersEnabled", true);
+        // Drain both bands first. The suite shares one database and orders
         // persist across test classes, so without this a test asserting on its
         // own order competes with everything else in the window — and since the
         // sweep is capped and ordered, whether it is reached at all depends on
-        // suite order. Draining stamps whatever is pending; the reset below
+        // suite order. Draining stamps whatever is pending; the clear below
         // discards those sends so they cannot be mistaken for this test's.
         for (int i = 0; i < 25; i++) {
-            reset(email);
+            mail.clear();
             sender.sweepWindow(EventReminderSender.Window.T24H);
             sender.sweepWindow(EventReminderSender.Window.T3H);
-            if (mockingDetails(email).getInvocations().isEmpty()) break;
+            if (mail.sent().isEmpty()) break;
         }
-        reset(email);
+        mail.clear();
         tomorrow = OrderFixtures.event(orgs, users, events, "Vechirka",
-                Instant.now().plusSeconds(22 * 3600));
+                clock.instant().plusSeconds(22 * 3600));
         soon = OrderFixtures.event(orgs, users, events, "Tonight",
-                Instant.now().plusSeconds((long) (2.5 * 3600)));
+                clock.instant().plusSeconds((long) (2.5 * 3600)));
     }
 
     @Test
@@ -98,7 +94,7 @@ class EventReminderSenderTest {
         sender.sweepWindow(EventReminderSender.Window.T24H);
         sender.sweepWindow(EventReminderSender.Window.T24H);
 
-        verify(email, times(1)).send(eq(address), any(), any(), any());
+        assertThat(sentTo(address)).hasSize(1);
         assertThat(orders.findById(order.getId()).orElseThrow().getReminder24hAt()).isNotNull();
     }
 
@@ -109,7 +105,7 @@ class EventReminderSenderTest {
 
         sender.sweepWindow(EventReminderSender.Window.T24H);
 
-        verify(email, times(1)).send(eq(address), any(), any(), any());
+        assertThat(sentTo(address)).hasSize(1);
     }
 
     /**
@@ -125,7 +121,7 @@ class EventReminderSenderTest {
 
         sender.sweepWindow(EventReminderSender.Window.T24H);
 
-        verify(email, never()).send(eq(address), any(), any(), any());
+        assertThat(sentTo(address)).isEmpty();
         assertThat(orders.findById(order.getId()).orElseThrow().getReminder24hAt()).isNull();
 
         sender.sweepWindow(EventReminderSender.Window.T3H);
@@ -139,7 +135,7 @@ class EventReminderSenderTest {
         orderWith(address, 1);
 
         sender.sweepWindow(EventReminderSender.Window.T3H);
-        verify(email, never()).send(eq(address), any(), any(), any());
+        assertThat(sentTo(address)).isEmpty();
 
         sender.sweepWindow(EventReminderSender.Window.T24H);
         assertThat(subjectSentTo(address)).contains("is tomorrow");
@@ -157,7 +153,7 @@ class EventReminderSenderTest {
 
         sender.sweepWindow(EventReminderSender.Window.T24H);
 
-        verify(email, never()).send(eq(address), any(), any(), any());
+        assertThat(sentTo(address)).isEmpty();
         // Still stamped: the sweep must not reconsider this order every tick.
         assertThat(orders.findById(order.getId()).orElseThrow().getReminder24hAt()).isNotNull();
     }
@@ -171,7 +167,7 @@ class EventReminderSenderTest {
 
         sender.sweepWindow(EventReminderSender.Window.T24H);
 
-        verify(email, times(1)).send(eq(address), any(), any(), any());
+        assertThat(sentTo(address)).hasSize(1);
     }
 
     @Test
@@ -182,32 +178,32 @@ class EventReminderSenderTest {
 
         sender.sweepWindow(EventReminderSender.Window.T24H);
 
-        verify(email, times(1)).send(eq(address), any(), any(), any());
+        assertThat(sentTo(address)).hasSize(1);
     }
 
     @Test
     void anOrderWhoseEveryTicketIsRefundedOrRevokedIsSkipped() {
         String refunded = "refunded+" + UUID.randomUUID() + "@example.com";
-        Order a = OrderFixtures.order(orders, tomorrow, refunded, Instant.now());
+        Order a = OrderFixtures.order(orders, tomorrow, refunded, clock.instant());
         OrderFixtures.ticket(tickets, a, "refunded");
         OrderFixtures.ticket(tickets, a, "revoked");
 
         sender.sweepWindow(EventReminderSender.Window.T24H);
 
-        verify(email, never()).send(eq(refunded), any(), any(), any());
+        assertThat(sentTo(refunded)).isEmpty();
         assertThat(orders.findById(a.getId()).orElseThrow().getReminder24hAt()).isNotNull();
     }
 
     @Test
     void oneLiveTicketAmongRefundedOnesStillEarnsAReminder() {
         String address = "partial+" + UUID.randomUUID() + "@example.com";
-        Order order = OrderFixtures.order(orders, tomorrow, address, Instant.now());
+        Order order = OrderFixtures.order(orders, tomorrow, address, clock.instant());
         OrderFixtures.ticket(tickets, order, "refunded");
         OrderFixtures.ticket(tickets, order, "issued");
 
         sender.sweepWindow(EventReminderSender.Window.T24H);
 
-        verify(email, times(1)).send(eq(address), any(), any(), any());
+        assertThat(sentTo(address)).hasSize(1);
     }
 
     /**
@@ -220,7 +216,7 @@ class EventReminderSenderTest {
     @Test
     void theReminderCountsOnlyTheTicketsThatStillWork() {
         String address = "counted+" + UUID.randomUUID() + "@example.com";
-        Order order = OrderFixtures.order(orders, tomorrow, address, Instant.now());
+        Order order = OrderFixtures.order(orders, tomorrow, address, clock.instant());
         OrderFixtures.ticket(tickets, order, "issued");
         OrderFixtures.ticket(tickets, order, "refunded");
         OrderFixtures.ticket(tickets, order, "revoked");
@@ -235,24 +231,24 @@ class EventReminderSenderTest {
     @Test
     void aCancelledEventNeverNudgesAnyone() {
         Event cancelled = OrderFixtures.event(orgs, users, events, "Called Off",
-                Instant.now().plusSeconds(22 * 3600));
+                clock.instant().plusSeconds(22 * 3600));
         cancelled.setStatus(com.imin.iminapi.model.EventStatus.CANCELLED);
         events.save(cancelled);
 
         String address = "cancelled+" + UUID.randomUUID() + "@example.com";
-        Order order = OrderFixtures.order(orders, cancelled, address, Instant.now());
+        Order order = OrderFixtures.order(orders, cancelled, address, clock.instant());
         OrderFixtures.ticket(tickets, order, "issued");
 
         sender.sweepWindow(EventReminderSender.Window.T24H);
 
-        verify(email, never()).send(eq(address), any(), any(), any());
+        assertThat(sentTo(address)).isEmpty();
     }
 
     @Test
     void localeFallsBackOrderLocaleThenAccountThenEnglish() {
         // 1. The order's own snapshot wins.
         String withOrderLocale = "fr+" + UUID.randomUUID() + "@example.com";
-        Order french = OrderFixtures.order(orders, tomorrow, withOrderLocale, Instant.now());
+        Order french = OrderFixtures.order(orders, tomorrow, withOrderLocale, clock.instant());
         french.setBuyerLocale("fr");
         orders.save(french);
         OrderFixtures.ticket(tickets, french, "issued");
@@ -297,24 +293,21 @@ class EventReminderSenderTest {
         String address = address("switch");
         Order order = orderWith(address, 1);
 
-        boolean original = emailProps.isRemindersEnabled();
-        try {
-            emailProps.setRemindersEnabled(false);
+        flips.set(emailProps, "remindersEnabled", false);
+        // One context serves the run: an earlier sweep() would still hold the PT1M lock.
+        jdbc.update("UPDATE shedlock SET lock_until = locked_at WHERE name = ?", "EventReminderSender.sweep");
 
-            sender.sweep();
+        sender.sweep();
 
-            verify(email, never()).send(eq(address), any(), any(), any());
-            assertThat(orders.findById(order.getId()).orElseThrow().getReminder24hAt())
-                    .as("a disabled sweep must not send, and must not claim the order either")
-                    .isNull();
-        } finally {
-            emailProps.setRemindersEnabled(original);
-        }
+        assertThat(sentTo(address)).isEmpty();
+        assertThat(orders.findById(order.getId()).orElseThrow().getReminder24hAt())
+                .as("a disabled sweep must not send, and must not claim the order either")
+                .isNull();
 
         // And the order is still due afterwards — the switch defers the nudge,
         // it does not consume it.
         sender.sweepWindow(EventReminderSender.Window.T24H);
-        verify(email, times(1)).send(eq(address), any(), any(), any());
+        assertThat(sentTo(address)).hasSize(1);
     }
 
     // ── plumbing ───────────────────────────────────────────────────────────
@@ -328,7 +321,7 @@ class EventReminderSenderTest {
     }
 
     private Order orderOn(Event event, String buyerEmail, int ticketCount) {
-        Order order = OrderFixtures.order(orders, event, buyerEmail, Instant.now());
+        Order order = OrderFixtures.order(orders, event, buyerEmail, clock.instant());
         for (int i = 0; i < ticketCount; i++) {
             OrderFixtures.ticket(tickets, order, "issued");
         }
@@ -344,51 +337,28 @@ class EventReminderSenderTest {
         row.setBuyerAccountId(account.getId());
         row.setEmail(address);
         row.setEmailNormalized(address.trim().toLowerCase());
-        row.setVerifiedAt(Instant.now());
+        row.setVerifiedAt(clock.instant());
         row.setVerifiedKey(address.trim().toLowerCase());
         accountEmails.save(row);
 
         return account.getId();
     }
 
+    private List<RecordingEmailService.SentEmail> sentTo(String address) {
+        return mail.sent().stream().filter(m -> address.equals(m.to())).toList();
+    }
+
+    private RecordingEmailService.SentEmail lastSentTo(String address) {
+        List<RecordingEmailService.SentEmail> toAddress = sentTo(address);
+        if (toAddress.isEmpty()) throw new AssertionError("nothing sent to " + address);
+        return toAddress.get(toAddress.size() - 1);
+    }
+
     private String textSentTo(String address) {
-        return capturedSentTo(address, 3);
+        return lastSentTo(address).text();
     }
 
     private String subjectSentTo(String address) {
-        ArgumentCaptor<String> to = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> text = ArgumentCaptor.forClass(String.class);
-        verify(email, org.mockito.Mockito.atLeast(1))
-                .send(to.capture(), subject.capture(), html.capture(), text.capture());
-
-        for (int i = to.getAllValues().size() - 1; i >= 0; i--) {
-            if (address.equalsIgnoreCase(to.getAllValues().get(i))) {
-                return subject.getAllValues().get(i);
-            }
-        }
-        throw new AssertionError("nothing sent to " + address);
-    }
-
-    /** {@code arg}: 1 subject, 2 html, 3 text — the last send to {@code address}. */
-    private String capturedSentTo(String address, int arg) {
-        ArgumentCaptor<String> to = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> subject = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> html = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> text = ArgumentCaptor.forClass(String.class);
-        verify(email, org.mockito.Mockito.atLeast(1))
-                .send(to.capture(), subject.capture(), html.capture(), text.capture());
-
-        for (int i = to.getAllValues().size() - 1; i >= 0; i--) {
-            if (address.equalsIgnoreCase(to.getAllValues().get(i))) {
-                return switch (arg) {
-                    case 1 -> subject.getAllValues().get(i);
-                    case 2 -> html.getAllValues().get(i);
-                    default -> text.getAllValues().get(i);
-                };
-            }
-        }
-        throw new AssertionError("nothing sent to " + address);
+        return lastSentTo(address).subject();
     }
 }

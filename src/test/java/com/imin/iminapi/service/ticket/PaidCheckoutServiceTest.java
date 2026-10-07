@@ -1,6 +1,5 @@
 package com.imin.iminapi.service.ticket;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.dispute.Dispute;
 import com.imin.iminapi.dispute.DisputeRepository;
 import com.imin.iminapi.dispute.DisputeStatus;
@@ -20,6 +19,10 @@ import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.stripe.StripeProperties;
+import com.imin.iminapi.support.AsyncDrain;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
+import com.imin.iminapi.support.PropertyFlips;
 import com.stripe.StripeClient;
 import com.stripe.model.Charge;
 import com.stripe.model.PaymentIntent;
@@ -32,25 +35,32 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class PaidCheckoutServiceTest {
 
     @Autowired PaidCheckoutService service;
@@ -62,8 +72,10 @@ class PaidCheckoutServiceTest {
     @Autowired UserRepository users;
     @Autowired DisputeRepository disputes;
     @Autowired StripeProperties stripeProps;
-
-    @MockitoBean StripeClient stripeClient;
+    @Autowired PropertyFlips flips;
+    @Autowired JdbcTemplate jdbc;
+    @Autowired StripeClient stripeClient;
+    @Autowired @Qualifier("ticketEmailExecutor") Executor ticketEmailExecutor;
 
     private CheckoutService checkoutService;
     private SessionService sessionService;
@@ -71,13 +83,14 @@ class PaidCheckoutServiceTest {
 
     private Event event;
     private TicketTier tier;
-    private String originalSecretKey;
+    private Organization org;
+    /** Stripe ids land in uniquely indexed columns of a shared database, so each test gets its own. */
+    private final String suffix = "_" + UUID.randomUUID().toString().substring(0, 12);
+    private final String buyer = "buyer-" + UUID.randomUUID() + "@example.com";
+    private final String buyer2 = "buyer2-" + UUID.randomUUID() + "@example.com";
 
     @BeforeEach
     void setUp() throws Exception {
-        // StripeProperties is a shared singleton; the mode tests below swap the key and
-        // tearDown puts it back. Safe only while Surefire runs test classes sequentially.
-        originalSecretKey = stripeProps.getSecretKey();
         // Wire Stripe mocks for the PI-resolution code paths.
         checkoutService = mock(CheckoutService.class);
         sessionService = mock(SessionService.class);
@@ -86,15 +99,7 @@ class PaidCheckoutServiceTest {
         when(checkoutService.sessions()).thenReturn(sessionService);
         when(stripeClient.charges()).thenReturn(chargeService);
 
-        disputes.deleteAll();
-        tickets.deleteAll();
-        orders.deleteAll();
-        tiers.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
-
-        Organization org = new Organization();
+        org = new Organization();
         org.setName("Issuance Org");
         org.setSlug("issuance-org-" + UUID.randomUUID().toString().substring(0, 8));
         org.setContactEmail("issuance@example.com");
@@ -131,31 +136,25 @@ class PaidCheckoutServiceTest {
 
     @AfterEach
     void tearDown() {
-        stripeProps.setSecretKey(originalSecretKey);
-        disputes.deleteAll();
-        tickets.deleteAll();
-        orders.deleteAll();
-        tiers.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+        AsyncDrain.drain(ticketEmailExecutor);
+        OrgRows.delete(jdbc, List.of(org.getId()));
     }
 
     @Test
     void issues_order_and_two_tickets_with_pi_id_as_idempotency_key() throws Exception {
-        PaymentIntent pi = pi("pi_test_happy_1", 3000, "eur",
+        PaymentIntent pi = pi(id("pi_test_happy_1"), 3000, "eur",
                 Map.of(
                         "tier_id", tier.getId().toString(),
                         "qty", "2",
                         "event_id", event.getId().toString()));
-        wireBuyerEmail(pi, "buyer@example.com");
-        wireSessionLookup(pi, "cs_test_happy_1", null);
+        wireBuyerEmail(pi, buyer);
+        wireSessionLookup(pi, id("cs_test_happy_1"), null);
 
         service.issuePaidOrder(pi);
 
-        Order order = orders.findByStripePaymentIntentId("pi_test_happy_1").orElseThrow();
-        assertThat(order.getEmail()).isEqualTo("buyer@example.com");
-        assertThat(order.getStripeSessionId()).isEqualTo("cs_test_happy_1");
+        Order order = orders.findByStripePaymentIntentId(id("pi_test_happy_1")).orElseThrow();
+        assertThat(order.getEmail()).isEqualTo(buyer);
+        assertThat(order.getStripeSessionId()).isEqualTo(id("cs_test_happy_1"));
         assertThat(order.getTotalMinor()).isEqualTo(3000L);
         assertThat(order.getPaymentMethod()).isEqualTo("stripe");
         assertThat(order.getEventId()).isEqualTo(event.getId());
@@ -176,85 +175,85 @@ class PaidCheckoutServiceTest {
      */
     @Test
     void stamps_a_paid_order_as_live_money_under_a_live_key() throws Exception {
-        stripeProps.setSecretKey("sk_live_dummy");
-        PaymentIntent pi = pi("pi_test_live_stamp", 1500, "eur",
+        flips.set(stripeProps, "secretKey", "sk_live_dummy");
+        PaymentIntent pi = pi(id("pi_test_live_stamp"), 1500, "eur",
                 Map.of(
                         "tier_id", tier.getId().toString(),
                         "qty", "1",
                         "event_id", event.getId().toString()));
-        wireBuyerEmail(pi, "buyer@example.com");
-        wireSessionLookup(pi, "cs_test_live_stamp", null);
+        wireBuyerEmail(pi, buyer);
+        wireSessionLookup(pi, id("cs_test_live_stamp"), null);
 
         service.issuePaidOrder(pi);
 
-        assertThat(orders.findByStripePaymentIntentId("pi_test_live_stamp").orElseThrow()
+        assertThat(orders.findByStripePaymentIntentId(id("pi_test_live_stamp")).orElseThrow()
                 .isTestMode()).isFalse();
     }
 
     @Test
     void stamps_a_paid_order_as_test_money_under_a_test_key() throws Exception {
-        stripeProps.setSecretKey("sk_test_dummy");
-        PaymentIntent pi = pi("pi_test_test_stamp", 1500, "eur",
+        flips.set(stripeProps, "secretKey", "sk_test_dummy");
+        PaymentIntent pi = pi(id("pi_test_test_stamp"), 1500, "eur",
                 Map.of(
                         "tier_id", tier.getId().toString(),
                         "qty", "1",
                         "event_id", event.getId().toString()));
-        wireBuyerEmail(pi, "buyer@example.com");
-        wireSessionLookup(pi, "cs_test_test_stamp", null);
+        wireBuyerEmail(pi, buyer);
+        wireSessionLookup(pi, id("cs_test_test_stamp"), null);
 
         service.issuePaidOrder(pi);
 
-        assertThat(orders.findByStripePaymentIntentId("pi_test_test_stamp").orElseThrow()
+        assertThat(orders.findByStripePaymentIntentId(id("pi_test_test_stamp")).orElseThrow()
                 .isTestMode()).isTrue();
     }
 
     @Test
     void second_delivery_of_same_pi_is_a_noop() throws Exception {
-        PaymentIntent pi = pi("pi_test_dupe_1", 1500, "eur",
+        PaymentIntent pi = pi(id("pi_test_dupe_1"), 1500, "eur",
                 Map.of(
                         "tier_id", tier.getId().toString(),
                         "qty", "1",
                         "event_id", event.getId().toString()));
-        wireBuyerEmail(pi, "buyer@example.com");
-        wireSessionLookup(pi, "cs_test_dupe_1", null);
+        wireBuyerEmail(pi, buyer);
+        wireSessionLookup(pi, id("cs_test_dupe_1"), null);
 
         service.issuePaidOrder(pi);
         service.issuePaidOrder(pi);
 
         long matching = orders.findAll().stream()
-                .filter(o -> "pi_test_dupe_1".equals(o.getStripePaymentIntentId()))
+                .filter(o -> id("pi_test_dupe_1").equals(o.getStripePaymentIntentId()))
                 .count();
         assertThat(matching).isEqualTo(1L);
 
-        Order order = orders.findByStripePaymentIntentId("pi_test_dupe_1").orElseThrow();
+        Order order = orders.findByStripePaymentIntentId(id("pi_test_dupe_1")).orElseThrow();
         assertThat(tickets.findByOrderIdOrderByCreatedAtAsc(order.getId())).hasSize(1);
     }
 
     @Test
     void skips_when_metadata_is_missing() throws Exception {
-        PaymentIntent pi = pi("pi_test_no_meta", 1500, "eur", Map.of());
-        wireBuyerEmail(pi, "buyer@example.com");
-        wireSessionLookup(pi, "cs_test_no_meta", null);
+        PaymentIntent pi = pi(id("pi_test_no_meta"), 1500, "eur", Map.of());
+        wireBuyerEmail(pi, buyer);
+        wireSessionLookup(pi, id("cs_test_no_meta"), null);
 
         service.issuePaidOrder(pi);
 
-        assertThat(orders.findByStripePaymentIntentId("pi_test_no_meta")).isEmpty();
+        assertThat(orders.findByStripePaymentIntentId(id("pi_test_no_meta"))).isEmpty();
     }
 
     @Test
     void snapshots_application_fee_on_order_and_price_on_tickets() throws Exception {
-        PaymentIntent pi = pi("pi_test_snapshot", 3000, "eur",
+        PaymentIntent pi = pi(id("pi_test_snapshot"), 3000, "eur",
                 Map.of(
                         "tier_id", tier.getId().toString(),
                         "qty", "2",
                         "event_id", event.getId().toString()));
         pi.setApplicationFeeAmount(249L);   // 5% of 3000 + 99 fixed = 249
-        wireBuyerEmail(pi, "buyer@example.com");
-        wireSessionLookup(pi, "cs_test_snapshot", null);
+        wireBuyerEmail(pi, buyer);
+        wireSessionLookup(pi, id("cs_test_snapshot"), null);
 
         service.issuePaidOrder(pi);
 
-        Order order = orders.findByStripePaymentIntentId("pi_test_snapshot").orElseThrow();
+        Order order = orders.findByStripePaymentIntentId(id("pi_test_snapshot")).orElseThrow();
         assertThat(order.getApplicationFeeMinor()).isEqualTo(249L);
 
         List<Ticket> issued = tickets.findByOrderIdOrderByCreatedAtAsc(order.getId());
@@ -264,18 +263,18 @@ class PaidCheckoutServiceTest {
 
     @Test
     void zero_application_fee_when_pi_has_no_fee() throws Exception {
-        PaymentIntent pi = pi("pi_test_no_fee", 1500, "eur",
+        PaymentIntent pi = pi(id("pi_test_no_fee"), 1500, "eur",
                 Map.of(
                         "tier_id", tier.getId().toString(),
                         "qty", "1",
                         "event_id", event.getId().toString()));
         // applicationFeeAmount intentionally null
-        wireBuyerEmail(pi, "buyer@example.com");
-        wireSessionLookup(pi, "cs_test_no_fee", null);
+        wireBuyerEmail(pi, buyer);
+        wireSessionLookup(pi, id("cs_test_no_fee"), null);
 
         service.issuePaidOrder(pi);
 
-        Order order = orders.findByStripePaymentIntentId("pi_test_no_fee").orElseThrow();
+        Order order = orders.findByStripePaymentIntentId(id("pi_test_no_fee")).orElseThrow();
         assertThat(order.getApplicationFeeMinor()).isEqualTo(0L);
     }
 
@@ -284,18 +283,18 @@ class PaidCheckoutServiceTest {
         // §7: the buyer's cookie-consent ads-consent decision rides Stripe metadata
         // (StripeCheckoutService stamps "ads_consent") and must land on orders.ads_consent
         // so the server-side Meta CAPI event (MetaCapiOutboxWriter) is enabled.
-        PaymentIntent pi = pi("pi_test_ads_consent", 1500, "eur",
+        PaymentIntent pi = pi(id("pi_test_ads_consent"), 1500, "eur",
                 Map.of(
                         "tier_id", tier.getId().toString(),
                         "qty", "1",
                         "event_id", event.getId().toString(),
                         "ads_consent", "true"));
-        wireBuyerEmail(pi, "buyer@example.com");
-        wireSessionLookup(pi, "cs_test_ads_consent", null);
+        wireBuyerEmail(pi, buyer);
+        wireSessionLookup(pi, id("cs_test_ads_consent"), null);
 
         service.issuePaidOrder(pi);
 
-        Order order = orders.findByStripePaymentIntentId("pi_test_ads_consent").orElseThrow();
+        Order order = orders.findByStripePaymentIntentId(id("pi_test_ads_consent")).orElseThrow();
         assertThat(order.isAdsConsent()).isTrue();
     }
 
@@ -303,17 +302,17 @@ class PaidCheckoutServiceTest {
     void defaults_ads_consent_false_when_metadata_absent() throws Exception {
         // No ads_consent key in metadata → must stay false (V60 default), so unconsented
         // orders never emit a server-side Meta event.
-        PaymentIntent pi = pi("pi_test_no_ads_consent", 1500, "eur",
+        PaymentIntent pi = pi(id("pi_test_no_ads_consent"), 1500, "eur",
                 Map.of(
                         "tier_id", tier.getId().toString(),
                         "qty", "1",
                         "event_id", event.getId().toString()));
-        wireBuyerEmail(pi, "buyer@example.com");
-        wireSessionLookup(pi, "cs_test_no_ads_consent", null);
+        wireBuyerEmail(pi, buyer);
+        wireSessionLookup(pi, id("cs_test_no_ads_consent"), null);
 
         service.issuePaidOrder(pi);
 
-        Order order = orders.findByStripePaymentIntentId("pi_test_no_ads_consent").orElseThrow();
+        Order order = orders.findByStripePaymentIntentId(id("pi_test_no_ads_consent")).orElseThrow();
         assertThat(order.isAdsConsent()).isFalse();
     }
 
@@ -324,7 +323,7 @@ class PaidCheckoutServiceTest {
         // webhook-driven fulfilment — this is what turns per-campaign revenue from a
         // visit-share estimate into a true per-order sum.
         String campaignId = UUID.randomUUID().toString();
-        PaymentIntent pi = pi("pi_test_utm", 1500, "eur",
+        PaymentIntent pi = pi(id("pi_test_utm"), 1500, "eur",
                 Map.of(
                         "tier_id", tier.getId().toString(),
                         "qty", "1",
@@ -333,12 +332,12 @@ class PaidCheckoutServiceTest {
                         "utm_medium", "email",
                         "utm_campaign", campaignId,
                         "anon_id", "anon-abc-123"));
-        wireBuyerEmail(pi, "buyer@example.com");
-        wireSessionLookup(pi, "cs_test_utm", null);
+        wireBuyerEmail(pi, buyer);
+        wireSessionLookup(pi, id("cs_test_utm"), null);
 
         service.issuePaidOrder(pi);
 
-        Order order = orders.findByStripePaymentIntentId("pi_test_utm").orElseThrow();
+        Order order = orders.findByStripePaymentIntentId(id("pi_test_utm")).orElseThrow();
         assertThat(order.getUtmSource()).isEqualTo("imin");
         assertThat(order.getUtmMedium()).isEqualTo("email");
         assertThat(order.getUtmCampaign()).isEqualTo(campaignId);
@@ -349,17 +348,17 @@ class PaidCheckoutServiceTest {
     void utm_attribution_is_null_when_metadata_absent() throws Exception {
         // An organic buyer arrives with no tags — and sessions created before V62 that were
         // still in flight at deploy carry no utm keys either. Both must yield null, never "".
-        PaymentIntent pi = pi("pi_test_no_utm", 1500, "eur",
+        PaymentIntent pi = pi(id("pi_test_no_utm"), 1500, "eur",
                 Map.of(
                         "tier_id", tier.getId().toString(),
                         "qty", "1",
                         "event_id", event.getId().toString()));
-        wireBuyerEmail(pi, "buyer@example.com");
-        wireSessionLookup(pi, "cs_test_no_utm", null);
+        wireBuyerEmail(pi, buyer);
+        wireSessionLookup(pi, id("cs_test_no_utm"), null);
 
         service.issuePaidOrder(pi);
 
-        Order order = orders.findByStripePaymentIntentId("pi_test_no_utm").orElseThrow();
+        Order order = orders.findByStripePaymentIntentId(id("pi_test_no_utm")).orElseThrow();
         assertThat(order.getUtmSource()).isNull();
         assertThat(order.getUtmMedium()).isNull();
         assertThat(order.getUtmCampaign()).isNull();
@@ -373,18 +372,18 @@ class PaidCheckoutServiceTest {
      */
     @Test
     void persists_buyer_locale_from_pi_metadata() throws Exception {
-        PaymentIntent pi = pi("pi_test_locale", 1500, "eur",
+        PaymentIntent pi = pi(id("pi_test_locale"), 1500, "eur",
                 Map.of(
                         "tier_id", tier.getId().toString(),
                         "qty", "1",
                         "event_id", event.getId().toString(),
                         "buyer_locale", "es"));
-        wireBuyerEmail(pi, "buyer@example.com");
-        wireSessionLookup(pi, "cs_test_locale", null);
+        wireBuyerEmail(pi, buyer);
+        wireSessionLookup(pi, id("cs_test_locale"), null);
 
         service.issuePaidOrder(pi);
 
-        assertThat(orders.findByStripePaymentIntentId("pi_test_locale").orElseThrow()
+        assertThat(orders.findByStripePaymentIntentId(id("pi_test_locale")).orElseThrow()
                 .getBuyerLocale()).isEqualTo("es");
     }
 
@@ -394,44 +393,44 @@ class PaidCheckoutServiceTest {
      */
     @Test
     void buyer_locale_is_null_when_metadata_absent_or_unsupported() throws Exception {
-        PaymentIntent absent = pi("pi_test_no_locale", 1500, "eur",
+        PaymentIntent absent = pi(id("pi_test_no_locale"), 1500, "eur",
                 Map.of(
                         "tier_id", tier.getId().toString(),
                         "qty", "1",
                         "event_id", event.getId().toString()));
-        wireBuyerEmail(absent, "buyer@example.com");
-        wireSessionLookup(absent, "cs_test_no_locale", null);
+        wireBuyerEmail(absent, buyer);
+        wireSessionLookup(absent, id("cs_test_no_locale"), null);
         service.issuePaidOrder(absent);
 
-        PaymentIntent junk = pi("pi_test_junk_locale", 1500, "eur",
+        PaymentIntent junk = pi(id("pi_test_junk_locale"), 1500, "eur",
                 Map.of(
                         "tier_id", tier.getId().toString(),
                         "qty", "1",
                         "event_id", event.getId().toString(),
                         "buyer_locale", "klingon"));
-        wireBuyerEmail(junk, "buyer2@example.com");
-        wireSessionLookup(junk, "cs_test_junk_locale", null);
+        wireBuyerEmail(junk, buyer2);
+        wireSessionLookup(junk, id("cs_test_junk_locale"), null);
         service.issuePaidOrder(junk);
 
-        assertThat(orders.findByStripePaymentIntentId("pi_test_no_locale").orElseThrow()
+        assertThat(orders.findByStripePaymentIntentId(id("pi_test_no_locale")).orElseThrow()
                 .getBuyerLocale()).isNull();
-        assertThat(orders.findByStripePaymentIntentId("pi_test_junk_locale").orElseThrow()
+        assertThat(orders.findByStripePaymentIntentId(id("pi_test_junk_locale")).orElseThrow()
                 .getBuyerLocale()).isNull();
     }
 
     @Test
     void uses_session_email_when_charge_email_missing() throws Exception {
-        PaymentIntent pi = pi("pi_test_session_email", 1500, "eur",
+        PaymentIntent pi = pi(id("pi_test_session_email"), 1500, "eur",
                 Map.of(
                         "tier_id", tier.getId().toString(),
                         "qty", "1",
                         "event_id", event.getId().toString()));
         wireBuyerEmail(pi, null); // charge has no email
-        wireSessionLookup(pi, "cs_test_session_email", "from-session@example.com");
+        wireSessionLookup(pi, id("cs_test_session_email"), "from-session@example.com");
 
         service.issuePaidOrder(pi);
 
-        Order order = orders.findByStripePaymentIntentId("pi_test_session_email").orElseThrow();
+        Order order = orders.findByStripePaymentIntentId(id("pi_test_session_email")).orElseThrow();
         assertThat(order.getEmail()).isEqualTo("from-session@example.com");
     }
 
@@ -449,7 +448,7 @@ class PaidCheckoutServiceTest {
      */
     @Test
     void nativePaymentIntentIsFulfilledFromMetadataWithNoCheckoutSession() throws Exception {
-        PaymentIntent pi = pi("pi_test_native", 1500, "eur",
+        PaymentIntent pi = pi(id("pi_test_native"), 1500, "eur",
                 Map.of(
                         "tier_id", tier.getId().toString(),
                         "qty", "1",
@@ -461,7 +460,7 @@ class PaidCheckoutServiceTest {
 
         service.issuePaidOrder(pi);
 
-        Order order = orders.findByStripePaymentIntentId("pi_test_native").orElseThrow();
+        Order order = orders.findByStripePaymentIntentId(id("pi_test_native")).orElseThrow();
         assertThat(order.getEmail()).isEqualTo("native-buyer@example.test");
         assertThat(order.getStripeSessionId()).isNull();
         // The Session lookup is a guaranteed-empty round trip for a native PI, so
@@ -476,7 +475,7 @@ class PaidCheckoutServiceTest {
      */
     @Test
     void hostedPaymentIntentFallsBackToMetadataEmailWhenTheSessionLookupIsEmpty() throws Exception {
-        PaymentIntent pi = pi("pi_test_hosted_fallback", 1500, "eur",
+        PaymentIntent pi = pi(id("pi_test_hosted_fallback"), 1500, "eur",
                 Map.of(
                         "tier_id", tier.getId().toString(),
                         "qty", "1",
@@ -488,7 +487,7 @@ class PaidCheckoutServiceTest {
 
         service.issuePaidOrder(pi);
 
-        Order order = orders.findByStripePaymentIntentId("pi_test_hosted_fallback").orElseThrow();
+        Order order = orders.findByStripePaymentIntentId(id("pi_test_hosted_fallback")).orElseThrow();
         assertThat(order.getEmail()).isEqualTo("hosted-buyer@example.test");
         // A web PI still consults the Session — that is where its address normally lives.
         verify(sessionService).list(any(com.stripe.param.checkout.SessionListParams.class));
@@ -500,7 +499,7 @@ class PaidCheckoutServiceTest {
      */
     @Test
     void chargeBillingEmailBeatsMetadataOnANativeIntent() throws Exception {
-        PaymentIntent pi = pi("pi_test_native_charge_email", 1500, "eur",
+        PaymentIntent pi = pi(id("pi_test_native_charge_email"), 1500, "eur",
                 Map.of(
                         "tier_id", tier.getId().toString(),
                         "qty", "1",
@@ -512,7 +511,7 @@ class PaidCheckoutServiceTest {
 
         service.issuePaidOrder(pi);
 
-        assertThat(orders.findByStripePaymentIntentId("pi_test_native_charge_email").orElseThrow()
+        assertThat(orders.findByStripePaymentIntentId(id("pi_test_native_charge_email")).orElseThrow()
                 .getEmail()).isEqualTo("from-charge@example.test");
     }
 
@@ -524,28 +523,28 @@ class PaidCheckoutServiceTest {
     void disputeArrivingBeforeTheOrderIsAttachedWhenTheOrderIsCreated() throws Exception {
         // The orphan was ingested test-mode; the order below is taken under a live key, and the
         // order is what records whether the money was real.
-        stripeProps.setSecretKey("sk_live_dummy");
+        flips.set(stripeProps, "secretKey", "sk_live_dummy");
         Dispute orphan = new Dispute();
-        orphan.setStripeDisputeId("du_race_1");
+        orphan.setStripeDisputeId(id("du_race_1"));
         orphan.setOrgId(event.getOrgId());
-        orphan.setStripePaymentIntentId("pi_test_dispute_race");
+        orphan.setStripePaymentIntentId(id("pi_test_dispute_race"));
         orphan.setAmountMinor(3000);
         orphan.setCurrency("eur");
         orphan.setStatus(DisputeStatus.OPEN);
         orphan.setTestMode(true);
         orphan = disputes.save(orphan);
 
-        PaymentIntent pi = pi("pi_test_dispute_race", 3000, "eur",
+        PaymentIntent pi = pi(id("pi_test_dispute_race"), 3000, "eur",
                 Map.of(
                         "tier_id", tier.getId().toString(),
                         "qty", "2",
                         "event_id", event.getId().toString()));
-        wireBuyerEmail(pi, "buyer@example.com");
-        wireSessionLookup(pi, "cs_test_dispute_race", null);
+        wireBuyerEmail(pi, buyer);
+        wireSessionLookup(pi, id("cs_test_dispute_race"), null);
 
         service.issuePaidOrder(pi);
 
-        Order order = orders.findByStripePaymentIntentId("pi_test_dispute_race").orElseThrow();
+        Order order = orders.findByStripePaymentIntentId(id("pi_test_dispute_race")).orElseThrow();
         Dispute attached = disputes.findById(orphan.getId()).orElseThrow();
         assertThat(attached.getOrderId())
                 .as("the dispute must find the order that arrived after it")
@@ -559,7 +558,70 @@ class PaidCheckoutServiceTest {
                 .allSatisfy(t -> assertThat(t.getState()).isEqualTo(Ticket.STATE_REVOKED));
     }
 
+    /**
+     * Two deliveries of one PI both pass the short-circuit; the loser meets the unique constraint at flush
+     * and must throw (rollback, Stripe retries), never report a success it did not perform.
+     */
+    @Test
+    void a_duplicate_order_insert_is_not_swallowed_as_a_success() throws Exception {
+        PaymentIntent pi = pi(id("pi_race_loser"), 1500, "eur",
+                Map.of(
+                        "tier_id", tier.getId().toString(),
+                        "qty", "1",
+                        "event_id", event.getId().toString(),
+                        "buyer_email", "racer@example.test",
+                        "client", "native"));
+        Charge charge = new Charge();
+        Charge.BillingDetails bd = new Charge.BillingDetails();
+        bd.setEmail("racer@example.test");
+        charge.setBillingDetails(bd);
+        CountDownLatch bothPastTheShortCircuit = new CountDownLatch(2);
+        doAnswer(inv -> {
+            bothPastTheShortCircuit.countDown();
+            bothPastTheShortCircuit.await(10, TimeUnit.SECONDS);
+            return charge;
+        }).when(chargeService).retrieve(eq(pi.getLatestCharge()));
+
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        List<Future<Boolean>> deliveries;
+        try {
+            deliveries = List.of(pool.submit(() -> service.issuePaidOrder(pi)),
+                    pool.submit(() -> service.issuePaidOrder(pi)));
+            pool.shutdown();
+            assertThat(pool.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
+        } finally {
+            pool.shutdownNow();
+        }
+        assertThat(bothPastTheShortCircuit.getCount())
+                .as("both deliveries must reach the insert, or the constraint is never met")
+                .isZero();
+
+        List<Future<Boolean>> won = deliveries.stream().filter(f -> !failed(f)).toList();
+        List<Future<Boolean>> lost = deliveries.stream().filter(PaidCheckoutServiceTest::failed).toList();
+        assertThat(won).hasSize(1);
+        assertThat(won.get(0).get()).isTrue();
+        assertThat(orders.findByStripePaymentIntentId(pi.getId())).isPresent();
+        assertThat(lost).hasSize(1);
+        assertThatThrownBy(() -> lost.get(0).get())
+                .as("the loser must roll back so Stripe retries onto the idempotent "
+                        + "short-circuit, not report a success it did not perform")
+                .hasCauseInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    private static boolean failed(Future<Boolean> f) {
+        try {
+            f.get();
+            return false;
+        } catch (Exception e) {
+            return true;
+        }
+    }
+
     // ─── Stripe fixture helpers ──────────────────────────────────────────────
+
+    private String id(String base) {
+        return base + suffix;
+    }
 
     private PaymentIntent pi(String id, long amount, String currency, Map<String, String> meta) {
         PaymentIntent p = new PaymentIntent();

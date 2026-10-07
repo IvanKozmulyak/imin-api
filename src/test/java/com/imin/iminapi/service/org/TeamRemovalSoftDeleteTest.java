@@ -1,6 +1,5 @@
 package com.imin.iminapi.service.org;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.AuthSession;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
@@ -13,14 +12,16 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -33,8 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * uses real persistence and a real flush, so a regression to {@code users.delete}
  * fails here with the 23503 the organizer used to see.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class TeamRemovalSoftDeleteTest {
 
     @Autowired TeamService teamService;
@@ -42,6 +42,7 @@ class TeamRemovalSoftDeleteTest {
     @Autowired UserRepository users;
     @Autowired EventRepository events;
     @Autowired AuthSessionRepository sessions;
+    @Autowired JdbcTemplate jdbc;
 
     private UUID orgId;
     private UUID ownerId;
@@ -85,10 +86,7 @@ class TeamRemovalSoftDeleteTest {
 
     @AfterEach
     void clear() {
-        sessions.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+        OrgRows.delete(jdbc, List.of(orgId));
     }
 
     @Test

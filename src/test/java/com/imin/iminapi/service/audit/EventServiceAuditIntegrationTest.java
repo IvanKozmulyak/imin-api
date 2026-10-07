@@ -1,208 +1,145 @@
 package com.imin.iminapi.service.audit;
 
 import com.imin.iminapi.dto.event.EventPatchRequest;
+import com.imin.iminapi.model.AuditLog;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
-import com.imin.iminapi.model.TicketTier;
-import com.imin.iminapi.model.UserRole;
+import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.model.User;
 import com.imin.iminapi.repository.EventRepository;
-import com.imin.iminapi.repository.PredictionRepository;
-import com.imin.iminapi.repository.PromoCodeRepository;
-import com.imin.iminapi.repository.TicketTierRepository;
+import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.service.event.EventService;
-import com.imin.iminapi.service.event.EventValidator;
-import com.imin.iminapi.service.event.TicketTierService;
-import com.imin.iminapi.stripe.StripeConnectService;
-import com.imin.iminapi.web.IfMatchSupport;
+import com.imin.iminapi.support.AuditRows;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
 
-import java.time.Instant;
+import java.time.Clock;
+import java.time.Duration;
 import java.util.List;
-import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Verifies {@link EventService} fires the correct {@link AuditLogger} calls
- * on its mutation paths (createDraft, publish, unpublish, patch). Uses mocked
- * collaborators so we can assert exact action constants and target ids.
+ * {@link EventService} mutations leave the persisted audit row an auditor reads: action, target event,
+ * actor and summary, written by the real {@link AuditLogger}; a mutation that did not happen leaves none.
  */
+@IminIntegrationTest
 class EventServiceAuditIntegrationTest {
 
-    EventRepository events = mock(EventRepository.class);
-    TicketTierRepository tiers = mock(TicketTierRepository.class);
-    PromoCodeRepository promos = mock(PromoCodeRepository.class);
-    PredictionRepository predictions = mock(PredictionRepository.class);
-    IfMatchSupport ifMatch = new IfMatchSupport();
-    EventValidator validator = new EventValidator();
-    TicketTierService tierService = mock(TicketTierService.class);
-    StripeConnectService stripeConnect = mock(StripeConnectService.class);
-    AuditLogger auditLogger = mock(AuditLogger.class);
+    @Autowired EventService events;
+    @Autowired EventRepository eventRepo;
+    @Autowired IminFixtures fx;
+    @Autowired AuditRows audit;
+    @Autowired JdbcTemplate jdbc;
+    @Autowired Clock clock;
 
-    EventService sut = new EventService(events, tiers, promos, predictions, validator,
-            ifMatch, tierService, stripeConnect, auditLogger);
-
-    AuthPrincipal principal;
+    private Organization org;
+    private User owner;
+    private AuthPrincipal principal;
 
     @BeforeEach
     void setUp() {
-        principal = new AuthPrincipal(UUID.randomUUID(), UUID.randomUUID(), UserRole.OWNER, UUID.randomUUID());
+        org = fx.org();
+        owner = fx.owner(org);
+        principal = fx.principal(owner);
     }
 
-    @Test
-    void createDraft_recordsEVENT_CREATED_withTargetEventId() {
-        UUID newId = UUID.randomUUID();
-        when(events.save(any(Event.class))).thenAnswer(inv -> {
-            Event e = inv.getArgument(0);
-            e.setId(newId);
-            return e;
-        });
+    @AfterEach
+    void tearDown() {
+        OrgRows.delete(jdbc, List.of(org.getId()));
+    }
 
-        sut.createDraft(principal, new EventPatchRequest(
-                "My Show", null, null, null, null, null, null, null, null,
-                null, null, null, null, null, null, null, null));
+    enum Mutation { CREATE_DRAFT, PUBLISH, UNPUBLISH, PATCH_NAME }
 
-        ArgumentCaptor<String> action = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<UUID> target = ArgumentCaptor.forClass(UUID.class);
-        ArgumentCaptor<String> summary = ArgumentCaptor.forClass(String.class);
-        verify(auditLogger).record(eq(principal), action.capture(), eq("event"),
-                target.capture(), summary.capture());
-        assertThat(action.getValue()).isEqualTo(AuditActions.EVENT_CREATED);
-        assertThat(target.getValue()).isEqualTo(newId);
-        assertThat(summary.getValue()).contains("My Show");
+    @ParameterizedTest
+    @EnumSource(Mutation.class)
+    void each_mutation_persists_its_audit_row_on_the_event(Mutation mutation) {
+        UUID eventId;
+        String action;
+        String name;
+        switch (mutation) {
+            case CREATE_DRAFT -> {
+                name = "My Show";
+                eventId = events.createDraft(principal, named(name)).id();
+                action = AuditActions.EVENT_CREATED;
+            }
+            case PUBLISH -> {
+                Event e = publishable(EventStatus.DRAFT);
+                name = e.getName();
+                events.publish(principal, e.getId());
+                eventId = e.getId();
+                action = AuditActions.EVENT_PUBLISHED;
+            }
+            case UNPUBLISH -> {
+                Event e = publishable(EventStatus.LIVE);
+                name = e.getName();
+                events.unpublish(principal, e.getId());
+                eventId = e.getId();
+                action = AuditActions.EVENT_UNPUBLISHED;
+            }
+            default -> {
+                Event e = publishable(EventStatus.DRAFT);
+                name = "Renamed";
+                events.patch(principal, e.getId(), null, named(name));
+                eventId = e.getId();
+                action = AuditActions.EVENT_UPDATED;
+            }
+        }
+
+        AuditLog row = audit.assertRecorded(org.getId(), action, "event", eventId);
+        assertThat(row.getActorId()).isEqualTo(owner.getId());
+        assertThat(row.getSummary()).contains(name);
     }
 
     @Test
     void createDraft_withNoName_summaryFallsBackToUntitled() {
-        UUID newId = UUID.randomUUID();
-        when(events.save(any(Event.class))).thenAnswer(inv -> {
-            Event e = inv.getArgument(0);
-            e.setId(newId);
-            return e;
-        });
+        UUID eventId = events.createDraft(principal, named(null)).id();
 
-        sut.createDraft(principal, new EventPatchRequest(
-                null, null, null, null, null, null, null, null, null,
-                null, null, null, null, null, null, null, null));
-
-        ArgumentCaptor<String> summary = ArgumentCaptor.forClass(String.class);
-        verify(auditLogger).record(eq(principal), eq(AuditActions.EVENT_CREATED),
-                eq("event"), any(UUID.class), summary.capture());
-        assertThat(summary.getValue()).contains("Untitled");
+        assertThat(audit.assertRecorded(org.getId(), AuditActions.EVENT_CREATED, "event", eventId).getSummary())
+                .contains("Untitled");
     }
 
-    @Test
-    void publish_recordsEVENT_PUBLISHED_withEventTarget() {
-        Event e = newPublishableEvent();
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
-        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
-        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
-        when(promos.findByEventId(e.getId())).thenReturn(List.of());
-        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
+    enum NoOp { PUBLISH_FAILING_VALIDATION, PATCH_WITH_NO_FIELDS }
 
-        sut.publish(principal, e.getId());
+    @ParameterizedTest
+    @EnumSource(NoOp.class)
+    void a_mutation_that_did_not_happen_leaves_no_audit_row(NoOp noOp) {
+        Event e = publishable(EventStatus.DRAFT);
+        if (noOp == NoOp.PUBLISH_FAILING_VALIDATION) {
+            e.setName("");
+            eventRepo.save(e);
+            assertThatThrownBy(() -> events.publish(principal, e.getId())).isInstanceOf(ApiException.class);
+        } else {
+            events.patch(principal, e.getId(), null, named(null));
+        }
 
-        verify(auditLogger).record(eq(principal), eq(AuditActions.EVENT_PUBLISHED),
-                eq("event"), eq(e.getId()), any(String.class));
+        assertThat(audit.forOrg(org.getId())).noneMatch(r -> e.getId().equals(r.getTargetId()));
     }
 
-    @Test
-    void unpublish_recordsEVENT_UNPUBLISHED_withEventTarget() {
-        Event e = newPublishableEvent();
-        e.setStatus(EventStatus.LIVE);
-        e.setPublishedAt(Instant.parse("2026-05-01T00:00:00Z"));
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
-        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
-        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
-        when(promos.findByEventId(e.getId())).thenReturn(List.of());
-        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
-
-        sut.unpublish(principal, e.getId());
-
-        verify(auditLogger).record(eq(principal), eq(AuditActions.EVENT_UNPUBLISHED),
-                eq("event"), eq(e.getId()), any(String.class));
-    }
-
-    @Test
-    void publish_skipsAudit_whenValidationFails() {
-        Event e = new Event();
-        e.setId(UUID.randomUUID());
-        e.setOrgId(principal.orgId());
-        e.setName(""); // missing → validation fails
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
-
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> sut.publish(principal, e.getId()))
-                .isInstanceOf(com.imin.iminapi.security.ApiException.class);
-        verify(auditLogger, never()).record(any(), any(), any(), any(), any());
-    }
-
-    @Test
-    void patch_withChangedField_recordsEVENT_UPDATED() {
-        Event e = newPublishableEvent();
-        e.setStatus(EventStatus.DRAFT);
-        Instant updated = Instant.parse("2026-04-23T10:00:00Z");
-        e.setUpdatedAt(updated);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
-        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
-        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
-        when(promos.findByEventId(e.getId())).thenReturn(List.of());
-        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
-
-        sut.patch(principal, e.getId(), "\"" + updated + "\"",
-                new EventPatchRequest("Renamed", null, null, null, null, null, null, null, null,
-                        null, null, null, null, null, null, null, null));
-
-        verify(auditLogger).record(eq(principal), eq(AuditActions.EVENT_UPDATED),
-                eq("event"), eq(e.getId()), any(String.class));
-    }
-
-    @Test
-    void patch_withNoFieldsProvided_doesNotRecordAudit() {
-        Event e = newPublishableEvent();
-        e.setStatus(EventStatus.DRAFT);
-        Instant updated = Instant.parse("2026-04-23T10:00:00Z");
-        e.setUpdatedAt(updated);
-        when(events.findActive(e.getId())).thenReturn(Optional.of(e));
-        when(events.save(any(Event.class))).thenAnswer(inv -> inv.getArgument(0));
-        when(tiers.findByEventIdOrderBySortOrderAsc(e.getId())).thenReturn(List.of());
-        when(promos.findByEventId(e.getId())).thenReturn(List.of());
-        when(predictions.findById(e.getId())).thenReturn(Optional.empty());
-
-        sut.patch(principal, e.getId(), "\"" + updated + "\"",
-                new EventPatchRequest(null, null, null, null, null, null, null, null, null,
-                        null, null, null, null, null, null, null, null));
-
-        verify(auditLogger, never()).record(any(), any(), any(), any(), any());
-    }
-
-    private Event newPublishableEvent() {
-        Event e = new Event();
-        e.setId(UUID.randomUUID());
-        e.setOrgId(principal.orgId());
-        e.setName("Show");
-        e.setSlug("show");
-        e.setStartsAt(Instant.parse("2026-06-01T20:00:00Z"));
-        e.setEndsAt(Instant.parse("2026-06-02T04:00:00Z"));
+    /** A free event with every field publish validation requires; no tiers, so no Stripe readiness. */
+    private Event publishable(EventStatus status) {
+        Event e = fx.event(org, owner, status, clock.instant().plus(Duration.ofDays(14)));
         e.setVenueStreet("12 Main");
         e.setVenueCity("Berlin");
         e.setVenuePostalCode("10115");
         e.setDescription("d");
+        if (status == EventStatus.LIVE) e.setPublishedAt(clock.instant().minus(Duration.ofHours(1)));
+        return eventRepo.save(e);
+    }
 
-        TicketTier free = new TicketTier();
-        free.setEventId(e.getId());
-        free.setName("Free");
-        free.setPriceMinor(0);
-        // No need to wire stripe — free events skip stripe checks
-        return e;
+    private static EventPatchRequest named(String name) {
+        return new EventPatchRequest(name, null, null, null, null, null, null, null, null,
+                null, null, null, null, null, null, null, null);
     }
 }

@@ -1,6 +1,5 @@
 package com.imin.iminapi.service.ticket;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.EventVisibility;
@@ -15,21 +14,23 @@ import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.ApiException;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpStatus;
+import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class TicketRedeemServiceTest {
 
     @Autowired TicketRedeemService service;
@@ -39,6 +40,9 @@ class TicketRedeemServiceTest {
     @Autowired OrganizationRepository orgs;
     @Autowired UserRepository users;
     @Autowired QrPayloadSigner signer;
+    @Autowired JdbcTemplate jdbc;
+
+    private final List<UUID> ownOrgs = new ArrayList<>();
 
     private Organization org;
     private Event event;
@@ -46,18 +50,13 @@ class TicketRedeemServiceTest {
 
     @BeforeEach
     void setUp() {
-        tickets.deleteAll();
-        orders.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
-
         org = new Organization();
         org.setName("Redeem Org");
         org.setSlug("redeem-org-" + UUID.randomUUID().toString().substring(0, 8));
         org.setContactEmail("redeem@example.com");
         org.setCountry("DE");
         org = orgs.save(org);
+        ownOrgs.add(org.getId());
 
         User owner = new User();
         owner.setEmail("redeem-owner-" + UUID.randomUUID() + "@example.com");
@@ -88,11 +87,7 @@ class TicketRedeemServiceTest {
 
     @AfterEach
     void tearDown() {
-        tickets.deleteAll();
-        orders.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+        OrgRows.delete(jdbc, ownOrgs);
     }
 
     @Test
@@ -177,6 +172,7 @@ class TicketRedeemServiceTest {
         otherOrg.setContactEmail("other-redeem@example.com");
         otherOrg.setCountry("DE");
         otherOrg = orgs.save(otherOrg);
+        ownOrgs.add(otherOrg.getId());
 
         UUID otherOrgId = otherOrg.getId();
         assertThatThrownBy(() -> service.redeem(otherOrgId, event.getId(),

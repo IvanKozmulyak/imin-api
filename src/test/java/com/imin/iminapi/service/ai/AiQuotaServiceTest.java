@@ -1,6 +1,5 @@
 package com.imin.iminapi.service.ai;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.AiGenerationUsage;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.UserRole;
@@ -8,11 +7,10 @@ import com.imin.iminapi.repository.AiGenerationUsageRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.support.IminIntegrationTest;
 import com.imin.iminapi.security.ErrorCode;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpStatus;
 
 import java.time.Duration;
@@ -26,8 +24,7 @@ import static org.assertj.core.api.Assertions.catchThrowableOfType;
  * AiQuotaService — the rolling-24h anti-abuse ceiling on poster generation. Default limit is 3
  * (imin.ai-quota.image-per-day, no override in the test yaml).
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class AiQuotaServiceTest {
 
     @Autowired AiQuotaService quota;

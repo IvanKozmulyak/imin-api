@@ -1,6 +1,5 @@
 package com.imin.iminapi.service.ai;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.AiGenerationUsage;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.User;
@@ -9,10 +8,9 @@ import com.imin.iminapi.repository.AiGenerationUsageRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -32,8 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * concurrency. Deliberately a real multi-threaded test against the real repository: a permissive
  * test double would certify the very gap being closed.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class AiQuotaConcurrencyTest {
 
     @Autowired AiQuotaService quota;

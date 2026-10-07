@@ -6,9 +6,7 @@ import com.imin.iminapi.repository.AuditLogRepository;
 import com.imin.iminapi.security.AuthPrincipal;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import com.imin.iminapi.config.TestRateLimitConfig;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -27,8 +25,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * that into an {@code UnexpectedRollbackException} thrown at the CALLER, rolling back a
  * business change that had already succeeded.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class AuditLoggerTransactionTest {
 
     @Autowired AuditLogger auditLogger;

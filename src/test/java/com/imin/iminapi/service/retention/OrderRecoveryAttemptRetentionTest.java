@@ -1,12 +1,11 @@
 package com.imin.iminapi.service.retention;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.OrderRecoveryAttempt;
 import com.imin.iminapi.repository.OrderRecoveryAttemptRepository;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -20,12 +19,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * shipped. The rows are a rate-limit counter with a one-hour window — nothing
  * reads one older than that.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class OrderRecoveryAttemptRetentionTest {
 
     @Autowired OrderRecoveryAttemptRepository attempts;
     @Autowired PersonalDataRetentionSweeper sweeper;
+    @Autowired JdbcTemplate jdbc;
 
     @Test
     void the_sweep_drops_attempts_past_the_window_and_keeps_the_recent_ones() {
@@ -34,6 +33,9 @@ class OrderRecoveryAttemptRetentionTest {
         save(stale, Instant.now().minus(Duration.ofHours(48)));
         save(fresh, Instant.now().minus(Duration.ofMinutes(5)));
 
+        // One context serves the run: an earlier sweep would still hold the PT1M lock.
+        jdbc.update("UPDATE shedlock SET lock_until = locked_at WHERE name = ?",
+                "PersonalDataRetentionSweeper.recoveryAttempts");
         sweeper.sweepOrderRecoveryAttempts();
 
         assertThat(attempts.countByEmailAndAttemptedAtAfter(stale, Instant.EPOCH)).isZero();

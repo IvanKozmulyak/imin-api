@@ -15,6 +15,8 @@ import com.imin.iminapi.stripe.StripeConnectService;
 import com.imin.iminapi.stripe.StripeConnectState;
 import com.stripe.StripeClient;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
@@ -26,8 +28,14 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -211,5 +219,28 @@ class PayoutServiceTest {
         assertThat(status.stripeConnected()).isFalse();
         assertThat(status.accountLast4()).isNull();
         assertThat(status.dashboardUrl()).isNull();
+    }
+
+    /**
+     * {@code dashboardUrl} is an Express login link, a bearer credential to the org's Stripe dashboard:
+     * minted for ADMIN+ only, while the rest of the status payload stays MEMBER-readable.
+     */
+    @ParameterizedTest(name = "{0} gets a dashboard link: {1}")
+    @CsvSource({"MEMBER, false", "ADMIN, true", "OWNER, true"})
+    void status_mintsTheDashboardUrlForAdminsOnly(com.imin.iminapi.model.UserRole role, boolean minted) {
+        AuthPrincipal p = new AuthPrincipal(UUID.randomUUID(), ORG, role, UUID.randomUUID());
+        PayoutService ready = spy(new PayoutService(settlements, events, connect, stripeClient));
+        when(connect.getStatus(p, ORG)).thenReturn(new StripeConnectService.StatusResult(
+                "acct_role_test", StripeConnectState.ACTIVE, true, true, List.of(), List.of(), null));
+        doReturn("4242").when(ready).fetchAccountLast4(anyString());
+        doReturn("https://connect.stripe.com/express/login").when(ready).fetchDashboardUrl(anyString());
+
+        PayoutsStatusResponse status = ready.status(p, ORG);
+
+        assertThat(status.dashboardUrl()).isEqualTo(minted ? "https://connect.stripe.com/express/login" : null);
+        verify(ready, minted ? times(1) : never()).fetchDashboardUrl(anyString());
+        // The rest of the read is unaffected.
+        assertThat(status.stripeConnected()).isTrue();
+        assertThat(status.accountLast4()).isEqualTo("4242");
     }
 }

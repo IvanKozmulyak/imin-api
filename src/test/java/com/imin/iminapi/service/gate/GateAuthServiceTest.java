@@ -1,6 +1,5 @@
 package com.imin.iminapi.service.gate;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.dto.gate.GateLoginRequest;
 import com.imin.iminapi.dto.gate.GateLoginResponse;
 import com.imin.iminapi.model.GateCredential;
@@ -14,14 +13,17 @@ import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.ErrorCode;
 import com.imin.iminapi.security.TokenService;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -31,12 +33,11 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * Full-context tests for gate auth: login, rotate, status, and the bearer-token
- * round trip via {@link GateAuthService#authenticate(String)}. Uses real H2
+ * round trip via {@link GateAuthService#authenticate(String)}. Uses real Postgres
  * persistence so the credential upsert path is exercised against the actual
  * DDL (column constraints, FK cascades) rather than mocks.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class GateAuthServiceTest {
 
     @Autowired GateAuthService service;
@@ -44,29 +45,28 @@ class GateAuthServiceTest {
     @Autowired GateSessionRepository sessions;
     @Autowired OrganizationRepository orgs;
     @Autowired TokenService tokens;
+    @Autowired JdbcTemplate jdbc;
+
+    private final List<java.util.UUID> ownOrgs = new ArrayList<>();
 
     private Organization org;
     private AuthPrincipal owner;
 
     @BeforeEach
     void seed() {
-        sessions.deleteAll();
-        credentials.deleteAll();
-        orgs.deleteAll();
         Organization o = new Organization();
         o.setName("Gate Test Org");
         o.setSlug("gate-test-" + UUID.randomUUID().toString().substring(0, 8));
         o.setContactEmail("gate@example.test");
         o.setCountry("DE");
         org = orgs.save(o);
+        ownOrgs.add(org.getId());
         owner = new AuthPrincipal(UUID.randomUUID(), org.getId(), UserRole.OWNER, UUID.randomUUID());
     }
 
     @AfterEach
     void clean() {
-        sessions.deleteAll();
-        credentials.deleteAll();
-        orgs.deleteAll();
+        OrgRows.delete(jdbc, ownOrgs);
     }
 
     // ── rotate / status ──────────────────────────────────────────────────────
@@ -98,7 +98,9 @@ class GateAuthServiceTest {
 
         assertThat(hash2).isNotEqualTo(hash1);
         // exactly one row per org (PK is org_id)
-        assertThat(credentials.count()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM gate_credentials WHERE org_id = ?",
+                Long.class, org.getId()))
+                .isEqualTo(1L);
     }
 
     @Test
@@ -119,6 +121,7 @@ class GateAuthServiceTest {
         other.setContactEmail("untouched@example.test");
         other.setCountry("DE");
         Organization other2 = orgs.save(other);
+        ownOrgs.add(other2.getId());
         AuthPrincipal otherOwner = new AuthPrincipal(
                 UUID.randomUUID(), other2.getId(), UserRole.OWNER, UUID.randomUUID());
         service.rotate(otherOwner, other2.getId(), "other-password-789");
@@ -133,15 +136,15 @@ class GateAuthServiceTest {
         assertThat(service.authenticate(tokenB)).isEmpty();
         assertThat(sessions.findAll().stream()
                 .filter(s -> s.getOrgId().equals(org.getId()))
-                .count())
-                .isZero();
+                .toList())
+                .isEmpty();
 
         // Org #2 is untouched — cross-org isolation.
         assertThat(service.authenticate(tokenC)).isPresent();
         assertThat(sessions.findAll().stream()
                 .filter(s -> s.getOrgId().equals(other2.getId()))
-                .count())
-                .isEqualTo(1);
+                .toList())
+                .hasSize(1);
 
         // And the new password hash is in place on org #1's credential.
         String hashAfter = credentials.findByOrgId(org.getId()).orElseThrow().getPasswordHash();
@@ -156,6 +159,7 @@ class GateAuthServiceTest {
         other.setContactEmail("other@example.test");
         other.setCountry("DE");
         Organization saved = orgs.save(other);
+        ownOrgs.add(saved.getId());
 
         assertThatThrownBy(() -> service.rotate(owner, saved.getId(), "long-enough-password"))
                 .isInstanceOf(ApiException.class)
@@ -194,7 +198,7 @@ class GateAuthServiceTest {
     void login_with_unknown_slug_returns_same_error_as_wrong_password() {
         // No credential rotation here at all.
         ApiException ex = (ApiException) catchThrowable(() ->
-                service.login(new GateLoginRequest("nonexistent-slug-zzzz", "any-password")));
+                service.login(new GateLoginRequest("nonexistent-slug-" + UUID.randomUUID(), "any-password")));
         assertThat(ex).isNotNull();
         assertThat(ex.code()).isEqualTo(ErrorCode.AUTH_INVALID_CREDENTIALS);
         // message must be generic — never disclose whether slug or password was wrong

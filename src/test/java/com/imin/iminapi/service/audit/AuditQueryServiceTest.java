@@ -8,6 +8,8 @@ import com.imin.iminapi.repository.AuditLogRepository;
 import com.imin.iminapi.security.AuthPrincipal;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
@@ -55,54 +57,24 @@ class AuditQueryServiceTest {
         assertThat(resp.items().get(0).action()).isEqualTo("EVENT_CREATED");
     }
 
-    @Test
-    void list_passesCorrectPageRequestToRepo_withCustomPageSize() {
+    /** Wire pages are 1-based; page size is clamped to 1..100 and a page below 1 reads the first page. */
+    @ParameterizedTest(name = "page {0}, size {1} -> index {2}, size {3}")
+    @CsvSource({
+            "3, 50, 2, 50",     // custom page and size
+            "1, 9999, 0, 100",  // size above max
+            "1, 0, 0, 1",       // size below min
+            "-5, 20, 0, 20"     // negative page
+    })
+    void list_passesTheClampedPageRequestToRepo(int page, int pageSize, int expectedIndex, int expectedSize) {
         when(auditLogs.findByOrgIdOrderByOccurredAtDesc(eq(orgId), any(Pageable.class)))
                 .thenReturn(new PageImpl<>(List.of()));
 
-        sut.list(principal, 3, 50);
+        sut.list(principal, page, pageSize);
 
         ArgumentCaptor<Pageable> captor = ArgumentCaptor.forClass(Pageable.class);
         verify(auditLogs).findByOrgIdOrderByOccurredAtDesc(eq(orgId), captor.capture());
-        Pageable used = captor.getValue();
-        assertThat(used.getPageNumber()).isEqualTo(2); // 0-based: page 3 → index 2
-        assertThat(used.getPageSize()).isEqualTo(50);
-    }
-
-    @Test
-    void list_clampsPageSizeAboveMax_to100() {
-        when(auditLogs.findByOrgIdOrderByOccurredAtDesc(eq(orgId), any(Pageable.class)))
-                .thenReturn(new PageImpl<>(List.of()));
-
-        sut.list(principal, 1, 9999);
-
-        ArgumentCaptor<Pageable> captor = ArgumentCaptor.forClass(Pageable.class);
-        verify(auditLogs).findByOrgIdOrderByOccurredAtDesc(eq(orgId), captor.capture());
-        assertThat(captor.getValue().getPageSize()).isEqualTo(100);
-    }
-
-    @Test
-    void list_clampsPageSizeBelowMin_to1() {
-        when(auditLogs.findByOrgIdOrderByOccurredAtDesc(eq(orgId), any(Pageable.class)))
-                .thenReturn(new PageImpl<>(List.of()));
-
-        sut.list(principal, 1, 0);
-
-        ArgumentCaptor<Pageable> captor = ArgumentCaptor.forClass(Pageable.class);
-        verify(auditLogs).findByOrgIdOrderByOccurredAtDesc(eq(orgId), captor.capture());
-        assertThat(captor.getValue().getPageSize()).isEqualTo(1);
-    }
-
-    @Test
-    void list_clampsNegativePage_to1() {
-        when(auditLogs.findByOrgIdOrderByOccurredAtDesc(eq(orgId), any(Pageable.class)))
-                .thenReturn(new PageImpl<>(List.of()));
-
-        sut.list(principal, -5, 20);
-
-        ArgumentCaptor<Pageable> captor = ArgumentCaptor.forClass(Pageable.class);
-        verify(auditLogs).findByOrgIdOrderByOccurredAtDesc(eq(orgId), captor.capture());
-        assertThat(captor.getValue().getPageNumber()).isEqualTo(0);
+        assertThat(captor.getValue().getPageNumber()).isEqualTo(expectedIndex);
+        assertThat(captor.getValue().getPageSize()).isEqualTo(expectedSize);
     }
 
     private AuditLog makeRow(UUID orgId) {

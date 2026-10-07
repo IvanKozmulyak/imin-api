@@ -1,6 +1,6 @@
 package com.imin.iminapi.service.ticket;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
+import com.imin.iminapi.email.RecordingEmailService;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.EventVisibility;
@@ -16,6 +16,9 @@ import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.AsyncDrain;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
 import com.stripe.StripeClient;
 import com.stripe.model.Charge;
 import com.stripe.model.PaymentIntent;
@@ -29,19 +32,14 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.context.annotation.Import;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.transaction.event.TransactionPhase;
-import org.springframework.transaction.event.TransactionalEventListener;
 
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Executor;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -61,27 +59,16 @@ import static org.mockito.Mockito.when;
  * Spring silently drops it for all three {@code AFTER_COMMIT} listeners
  * ({@code fallbackExecution=false}). The rescued buyer would get DB rows and no
  * ticket email, no audience row and no reforecast.
+ *
+ * <p>The ticket email is the real AFTER_COMMIT listener's effect: drain its executor, then read the
+ * recorded mail to the order's own address.
  */
-@SpringBootTest
-@Import({TestRateLimitConfig.class, PaidFulfilmentReconcilerTest.IssuedEventRecorder.class})
+@IminIntegrationTest
 class PaidFulfilmentReconcilerTest {
 
-    /**
-     * Stands in for the three production listeners, which are all
-     * {@code @TransactionalEventListener(AFTER_COMMIT)} + {@code @Async} — the async
-     * hop makes them useless as an assertion, the AFTER_COMMIT phase is the whole
-     * defect. Same phase, same default {@code fallbackExecution=false}, synchronous.
-     */
-    @TestConfiguration
-    static class IssuedEventRecorder {
-        final List<UUID> afterCommit = new ArrayList<>();
-
-        @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
-        public void onTicketsIssued(TicketsIssuedEvent evt) { afterCommit.add(evt.orderId()); }
-    }
-
     @Autowired PaidFulfilmentReconciler reconciler;
-    @Autowired IssuedEventRecorder recorder;
+    @Autowired RecordingEmailService mail;
+    @Autowired @Qualifier("ticketEmailExecutor") Executor ticketEmailExecutor;
     @Autowired OrderRepository orders;
     @Autowired TicketRepository tickets;
     @Autowired TicketTierRepository tiers;
@@ -89,8 +76,7 @@ class PaidFulfilmentReconcilerTest {
     @Autowired OrganizationRepository orgs;
     @Autowired UserRepository users;
     @Autowired JdbcTemplate jdbc;
-
-    @MockitoBean StripeClient stripeClient;
+    @Autowired StripeClient stripeClient;
 
     private PaymentIntentService paymentIntentService;
     private SessionService sessionService;
@@ -98,6 +84,9 @@ class PaidFulfilmentReconcilerTest {
 
     private Event event;
     private TicketTier tier;
+    private Organization org;
+    private final String suffix = "_" + UUID.randomUUID().toString().substring(0, 12);
+    private final String buyer = "rescued-buyer-" + UUID.randomUUID() + "@example.test";
 
     @BeforeEach
     void setUp() throws Exception {
@@ -110,21 +99,7 @@ class PaidFulfilmentReconcilerTest {
         when(checkoutService.sessions()).thenReturn(sessionService);
         when(stripeClient.charges()).thenReturn(chargeService);
 
-        // lockAtLeastFor=PT1M would make every test after the first skip its tick. Expired,
-        // not deleted: ShedLock remembers the row exists and only ever UPDATEs it.
-        jdbc.update("UPDATE shedlock SET lock_until = ?, locked_at = ?",
-                java.sql.Timestamp.from(Instant.now().minusSeconds(600)),
-                java.sql.Timestamp.from(Instant.now().minusSeconds(900)));
-
-        recorder.afterCommit.clear();
-        tickets.deleteAll();
-        orders.deleteAll();
-        tiers.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
-
-        Organization org = new Organization();
+        org = new Organization();
         org.setName("Reconcile Org");
         org.setSlug("reconcile-org-" + UUID.randomUUID().toString().substring(0, 8));
         org.setContactEmail("reconcile@example.com");
@@ -161,29 +136,25 @@ class PaidFulfilmentReconcilerTest {
 
     @AfterEach
     void tearDown() {
-        recorder.afterCommit.clear();
-        tickets.deleteAll();
-        orders.deleteAll();
-        tiers.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+        AsyncDrain.drain(ticketEmailExecutor);
+        OrgRows.delete(jdbc, List.of(org.getId()));
     }
 
     @Test
     void back_filled_order_gets_its_tickets_and_fires_the_after_commit_listeners() throws Exception {
-        PaymentIntent pi = succeededTicketPi("pi_reconcile_1", 3000, 2);
+        PaymentIntent pi = succeededTicketPi(id("pi_reconcile_1"), 3000, 2);
         wireList(pi);
 
-        reconciler.reconcile();
+        reconcile();
 
-        Order order = orders.findByStripePaymentIntentId("pi_reconcile_1").orElseThrow();
+        Order order = orders.findByStripePaymentIntentId(id("pi_reconcile_1")).orElseThrow();
         List<Ticket> issued = tickets.findByOrderIdOrderByCreatedAtAsc(order.getId());
         assertThat(issued).hasSize(2);
-        assertThat(recorder.afterCommit)
+        assertThat(ticketMailsToBuyer())
                 .as("the rescued buyer's ticket email, audience row and reforecast all hang "
                         + "off an AFTER_COMMIT listener — with no transaction Spring drops the event")
-                .containsExactly(order.getId());
+                .singleElement()
+                .satisfies(m -> assertThat(m.html()).contains(order.getToken()));
     }
 
     /**
@@ -193,33 +164,50 @@ class PaidFulfilmentReconcilerTest {
      */
     @Test
     void amount_mismatch_is_refused_instead_of_back_filled() throws Exception {
-        PaymentIntent pi = succeededTicketPi("pi_reconcile_mismatch", 999, 2);
+        PaymentIntent pi = succeededTicketPi(id("pi_reconcile_mismatch"), 999, 2);
         stampExpectedTotal(pi, 3348, "eur");   // priced 33.48, charged 9.99
         wireList(pi);
 
-        reconciler.reconcile();
+        reconcile();
 
         verify(paymentIntentService).list(any(com.stripe.param.PaymentIntentListParams.class));
-        assertThat(orders.findByStripePaymentIntentId("pi_reconcile_mismatch"))
+        assertThat(orders.findByStripePaymentIntentId(id("pi_reconcile_mismatch")))
                 .as("a PI charging an amount we never priced must issue nothing")
                 .isEmpty();
-        assertThat(recorder.afterCommit).isEmpty();
+        assertThat(ticketMailsToBuyer()).isEmpty();
     }
 
     @Test
     void matching_stamped_amount_is_back_filled_as_before() throws Exception {
-        PaymentIntent pi = succeededTicketPi("pi_reconcile_match", 3348, 2);
+        PaymentIntent pi = succeededTicketPi(id("pi_reconcile_match"), 3348, 2);
         stampExpectedTotal(pi, 3348, "eur");
         wireList(pi);
 
-        reconciler.reconcile();
+        reconcile();
 
-        Order order = orders.findByStripePaymentIntentId("pi_reconcile_match").orElseThrow();
+        Order order = orders.findByStripePaymentIntentId(id("pi_reconcile_match")).orElseThrow();
         assertThat(tickets.findByOrderIdOrderByCreatedAtAsc(order.getId())).hasSize(2);
-        assertThat(recorder.afterCommit).containsExactly(order.getId());
+        assertThat(ticketMailsToBuyer())
+                .singleElement()
+                .satisfies(m -> assertThat(m.html()).contains(order.getToken()));
+    }
+
+    /** Expires the reconciler's ShedLock row first: one context serves the run, so an earlier tick holds it. */
+    private void reconcile() {
+        jdbc.update("UPDATE shedlock SET lock_until = locked_at WHERE name = ?", "PaidFulfilmentReconciler.reconcile");
+        reconciler.reconcile();
+    }
+
+    private List<RecordingEmailService.SentEmail> ticketMailsToBuyer() {
+        AsyncDrain.drain(ticketEmailExecutor);
+        return mail.sent().stream().filter(m -> buyer.equals(m.to())).toList();
     }
 
     // ─── Stripe fixture helpers ──────────────────────────────────────────────
+
+    private String id(String base) {
+        return base + suffix;
+    }
 
     /** Adds the checkout-time price stamp the verifier compares the charge against. */
     private void stampExpectedTotal(PaymentIntent pi, long expectedMinor, String currency) {
@@ -241,12 +229,12 @@ class PaidFulfilmentReconcilerTest {
                 "tier_id", tier.getId().toString(),
                 "qty", String.valueOf(qty),
                 "event_id", event.getId().toString(),
-                "buyer_email", "rescued-buyer@example.test",
+                "buyer_email", buyer,
                 "client", "web"));
 
         Charge c = new Charge();
         Charge.BillingDetails bd = new Charge.BillingDetails();
-        bd.setEmail("rescued-buyer@example.test");
+        bd.setEmail(buyer);
         c.setBillingDetails(bd);
         when(chargeService.retrieve(eq(p.getLatestCharge()))).thenReturn(c);
 
@@ -257,11 +245,7 @@ class PaidFulfilmentReconcilerTest {
         return p;
     }
 
-    /**
-     * One page of PaymentIntents. Note the reconciler is {@code @SchedulerLock}ed with
-     * {@code lockAtLeastFor = PT1M}, so a second {@code reconcile()} inside the same
-     * minute is skipped by ShedLock — this class ticks exactly once.
-     */
+    /** One page of PaymentIntents, as Stripe's list returns them. */
     private void wireList(PaymentIntent... pis) throws Exception {
         PaymentIntentCollection coll = mock(PaymentIntentCollection.class);
         when(coll.autoPagingIterable()).thenReturn(List.of(pis));
