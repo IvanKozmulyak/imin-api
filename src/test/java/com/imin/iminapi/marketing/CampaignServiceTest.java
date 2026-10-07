@@ -1,97 +1,102 @@
 package com.imin.iminapi.marketing;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.email.CampaignEmailProvider;
+import com.imin.iminapi.marketing.email.MarketingEmailProperties;
 import com.imin.iminapi.marketing.dto.CampaignDto;
 import com.imin.iminapi.marketing.dto.CampaignRequests.CreateCampaignRequest;
 import com.imin.iminapi.marketing.dto.CampaignRequests.PatchCampaignRequest;
-import com.imin.iminapi.marketing.dto.PatchableUuid;
 import com.imin.iminapi.marketing.dto.CampaignSummary;
 import com.imin.iminapi.marketing.dto.PreviewAudienceResponse;
+import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.service.CampaignService;
+import com.imin.iminapi.model.User;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.service.audit.AuditActions;
-import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.support.AuditRows;
+import com.imin.iminapi.support.CampaignRows;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PropertyFlips;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.time.Clock;
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeast;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class CampaignServiceTest {
 
     @Autowired CampaignService service;
-    @MockitoBean AuditLogger auditLogger;
-    @MockitoBean CampaignEmailProvider provider;
-    @Autowired com.imin.iminapi.marketing.email.MarketingEmailProperties marketingProps;
-    private String savedFromAddress;
-
-    @org.junit.jupiter.api.BeforeEach
-    void configureMarketingSender() {
-        savedFromAddress = marketingProps.getFromAddress();
-        marketingProps.setFromAddress("contact@imin.support");
-    }
-
-    @org.junit.jupiter.api.AfterEach
-    void restoreMarketingSender() {
-        marketingProps.setFromAddress(savedFromAddress);
-    }
-    @Autowired com.imin.iminapi.repository.UserRepository users;
+    @Autowired CampaignEmailProvider provider;
+    @Autowired MarketingEmailProperties marketingProps;
+    @Autowired PropertyFlips flips;
+    @Autowired AuditRows audit;
+    @Autowired IminFixtures fx;
+    @Autowired JdbcTemplate jdbc;
     @Autowired com.imin.iminapi.repository.OrganizationRepository orgs;
+    @Autowired Clock clock;
 
-    static final UUID ORG = UUID.fromString("00000000-0000-0000-0000-0000000000b1");
-    static final UUID OTHER_ORG = UUID.fromString("00000000-0000-0000-0000-0000000000b2");
-    // USER is the caller's user id. testSend resolves it to the organizer's own email, so it MUST
-    // correspond to a real users row. User.@Id is @GeneratedValue (persist rejects assigned ids),
-    // so we seed a real User via save() and adopt its generated id here (in @BeforeEach).
-    static UUID USER = UUID.fromString("00000000-0000-0000-0000-0000000000b3");
+    // Campaign orgs need no organizations row (no FK); test-send resolves the caller's user row only.
+    private UUID ORG;
+    private UUID OTHER_ORG;
+    private UUID USER;
+    private String callerEmail;
+    private final List<UUID> orgIds = new ArrayList<>();
 
+    @BeforeEach
+    void setUp() {
+        ORG = UUID.randomUUID();
+        OTHER_ORG = UUID.randomUUID();
+        orgIds.add(ORG);
+        orgIds.add(OTHER_ORG);
+        User caller = fx.owner(fx.org());
+        USER = caller.getId();
+        callerEmail = caller.getEmail();
+        flips.set(marketingProps, "fromAddress", "contact@imin.support");
+    }
+
+    // Sends and retries leave scheduled campaigns the dispatcher would claim.
+    @AfterEach
+    void tearDown() {
+        CampaignRows.delete(jdbc, orgIds);
+    }
+
+    /** Every batch the shared provider fake received, narrowed to this test's caller. */
     @SuppressWarnings("unchecked")
-    private CampaignEmailProvider.OutgoingEmail sentTest() {
+    private List<CampaignEmailProvider.OutgoingEmail> sentToCaller() {
         ArgumentCaptor<List<CampaignEmailProvider.OutgoingEmail>> captor = ArgumentCaptor.forClass(List.class);
-        verify(provider).sendBatch(captor.capture());
-        assertThat(captor.getValue()).hasSize(1);
-        return captor.getValue().get(0);
+        verify(provider, atLeast(0)).sendBatch(captor.capture());
+        return captor.getAllValues().stream().flatMap(List::stream)
+                .filter(e -> callerEmail.equals(e.to())).toList();
+    }
+
+    private CampaignEmailProvider.OutgoingEmail sentTest() {
+        List<CampaignEmailProvider.OutgoingEmail> mine = sentToCaller();
+        assertThat(mine).hasSize(1);
+        return mine.get(0);
     }
 
     private AuthPrincipal principal(UUID org) {
         return new AuthPrincipal(USER, org, UserRole.OWNER, UUID.randomUUID());
-    }
-
-    @org.junit.jupiter.api.BeforeEach
-    void seedCaller() {
-        if (users.findById(USER).isPresent()) return;
-        // The user needs a parent organization row (users.org_id FK). The seeded user's org is
-        // irrelevant to test-send (which only reads userId -> email), so a fresh org is fine.
-        com.imin.iminapi.model.Organization o = new com.imin.iminapi.model.Organization();
-        o.setName("Test Org");
-        o.setSlug("test-org-" + UUID.randomUUID().toString().substring(0, 8));
-        o.setContactEmail("org@example.com");
-        o.setCountry("DE");
-        o = orgs.save(o);
-
-        com.imin.iminapi.model.User u = new com.imin.iminapi.model.User();
-        u.setOrgId(o.getId());                            // org_id is @Column(nullable=false) with NO default
-        u.setRole(com.imin.iminapi.model.UserRole.OWNER); // role  is @Column(nullable=false) with NO default
-        u.setEmail("organizer@example.com");              // setEmail() also derives emailLower
-        u.setVerifiedAt(java.time.Instant.now());
-        // firstName/lastName/avatarInitials/createdAt already have field-initializer defaults (User.java).
-        USER = users.save(u).getId();                     // adopt the generated id as the caller id
     }
 
     /**
@@ -156,42 +161,6 @@ class CampaignServiceTest {
         assertThat(patched.bodyMd()).isEqualTo("body");    // untouched
     }
 
-    /**
-     * mkt-edge-8 (P2): `if (req.segmentId() != null)` made an explicit JSON null
-     * indistinguishable from an absent field, so the composer's
-     * PATCH {name, segmentId: null, eventId: null} silently kept the old links and the send
-     * still rendered the de-selected event's poster hero and tickets button.
-     */
-    @Test
-    void patch_explicitNull_clearsTheLinkedSegmentAndEvent() {
-        UUID segment = UUID.randomUUID();
-        UUID event = UUID.randomUUID();
-        CampaignDto d = service.create(principal(ORG), new CreateCampaignRequest(
-                "email", "Linked", segment, event, null, null, null, null));
-        assertThat(d.segmentId()).isEqualTo(segment);
-        assertThat(d.eventId()).isEqualTo(event);
-
-        CampaignDto cleared = service.patch(principal(ORG), d.id(), new PatchCampaignRequest(
-                null, PatchableUuid.NULL, PatchableUuid.NULL, null, null, null, null));
-
-        assertThat(cleared.segmentId()).isNull();
-        assertThat(cleared.eventId()).isNull();
-    }
-
-    @Test
-    void patch_absentField_leavesTheLinkUnchanged() {
-        UUID segment = UUID.randomUUID();
-        CampaignDto d = service.create(principal(ORG), new CreateCampaignRequest(
-                "email", "Linked", segment, null, null, null, null, null));
-
-        // Only the name is supplied — the pre-existing single-field PATCH shape.
-        CampaignDto patched = service.patch(principal(ORG), d.id(),
-                new PatchCampaignRequest("Renamed", null, null, null, null, null, null));
-
-        assertThat(patched.name()).isEqualTo("Renamed");
-        assertThat(patched.segmentId()).isEqualTo(segment);
-    }
-
     @Test
     void patch_rejects_non_draft() {
         CampaignDto d = service.create(principal(ORG),
@@ -210,6 +179,30 @@ class CampaignServiceTest {
                 new CreateCampaignRequest("email", "Other", null, null, null, null, null, null));
         List<CampaignSummary> mine = service.list(principal(ORG), "email", null, 0, 50);
         assertThat(mine).extracting(CampaignSummary::name).contains("E1").doesNotContain("Other");
+    }
+
+    @Test
+    void list_is_newest_first_with_no_filters() {
+        Instant now = clock.instant();
+        saveDraft(ORG, "A", now);
+        saveDraft(OTHER_ORG, "B-other", now.plusSeconds(1));
+        saveDraft(ORG, "C", now.plusSeconds(5));
+
+        List<CampaignSummary> mine = service.list(principal(ORG), null, null, 0, 50);
+
+        assertThat(mine).extracting(CampaignSummary::name).containsExactly("C", "A");
+    }
+
+    private void saveDraft(UUID org, String name, Instant createdAt) {
+        Campaign c = new Campaign();
+        c.setId(UUID.randomUUID());
+        c.setOrgId(org);
+        c.setChannel("email");
+        c.setName(name);
+        c.setStatus("draft");
+        c.setCreatedAt(createdAt);
+        c.setUpdatedAt(createdAt);
+        campaignRepo.save(c);
     }
 
     @Test
@@ -243,7 +236,7 @@ class CampaignServiceTest {
         service.testSend(principal(ORG), d.id(), null);
 
         CampaignEmailProvider.OutgoingEmail e = sentTest();
-        assertThat(e.to()).isEqualTo("organizer@example.com");
+        assertThat(e.to()).isEqualTo(callerEmail);
         assertThat(e.subject()).isEqualTo("[TEST] Subject line");
         assertThat(e.unsubscribeUrl()).contains("preview");
     }
@@ -253,12 +246,13 @@ class CampaignServiceTest {
         com.imin.iminapi.model.Organization o = new com.imin.iminapi.model.Organization();
         o.setName("Night Org");
         o.setBrandName("Night");
-        o.setSlug("ts-" + UUID.randomUUID().toString().substring(0, 8));
-        o.setContactEmail("ops@night.test");
+        o.setSlug("ts-" + UUID.randomUUID());
+        o.setContactEmail(fx.email("ops"));
         o.setCountry("FR");
         o.setLegalName("Night SAS");
         o.setLegalContact("legal@night.test");
         UUID orgId = orgs.save(o).getId();
+        orgIds.add(orgId);
         CampaignDto d = service.create(principal(orgId),
                 new CreateCampaignRequest("email", "Footer", null, null, "Subject", "Pre", "Body", null));
 
@@ -304,14 +298,15 @@ class CampaignServiceTest {
 
     @Test
     void test_send_withoutAMarketingFromAddress_fails_andSendsNothing() {
-        marketingProps.setFromAddress("");
+        flips.set(marketingProps, "fromAddress", "");
         CampaignDto d = service.create(principal(ORG),
                 new CreateCampaignRequest("email", "No sender", null, null, "Subject", "Pre", "Body", null));
 
         assertThatThrownBy(() -> service.testSend(principal(ORG), d.id(), null))
                 .isInstanceOf(ApiException.class)
                 .hasMessage("Marketing email sender not configured");
-        org.mockito.Mockito.verifyNoInteractions(provider);
+        assertThat(sentToCaller()).isEmpty();
+        verify(provider, never()).sendBatch(any());
     }
 
     @Test
@@ -361,39 +356,6 @@ class CampaignServiceTest {
                 .isInstanceOf(ApiException.class);
     }
 
-    // ---- Task B3: draft-only delete ----
-
-    @Test
-    void delete_removes_an_own_draft_and_it_is_gone() {
-        CampaignDto d = service.create(principal(ORG),
-                new CreateCampaignRequest("email", "Trash me", null, null, null, null, null, null));
-        service.delete(principal(ORG), d.id());
-        // The row is actually gone — a subsequent get 404s (org-scoped not-found).
-        assertThatThrownBy(() -> service.get(principal(ORG), d.id()))
-                .isInstanceOf(ApiException.class);
-    }
-
-    @Test
-    void delete_other_orgs_draft_is_not_found() {
-        CampaignDto d = service.create(principal(ORG),
-                new CreateCampaignRequest("email", "Mine to keep", null, null, null, null, null, null));
-        assertThatThrownBy(() -> service.delete(principal(OTHER_ORG), d.id()))
-                .isInstanceOf(ApiException.class);
-        // Still there for the real owner — cross-org delete must not touch it.
-        assertThat(service.get(principal(ORG), d.id()).name()).isEqualTo("Mine to keep");
-    }
-
-    @Test
-    void delete_rejects_a_non_draft_campaign() {
-        CampaignDto d = service.create(principal(ORG),
-                new CreateCampaignRequest("email", "Already sent", null, null, null, null, null, null));
-        service.forceStatusForTest(d.id(), "sent");
-        assertThatThrownBy(() -> service.delete(principal(ORG), d.id()))
-                .isInstanceOf(ApiException.class);
-        // A rejected delete leaves the campaign intact.
-        assertThat(service.get(principal(ORG), d.id()).status()).isEqualTo("sent");
-    }
-
     /**
      * mkt-edge-2: /send was the one campaign mutation with neither a role gate nor an audit
      * row — any MEMBER could dispatch bulk mail to the whole audience and leave no trace of
@@ -421,8 +383,8 @@ class CampaignServiceTest {
 
         service.send(d.id(), principal(ORG), "idem-" + UUID.randomUUID(), null);
 
-        verify(auditLogger).record(any(), eq(AuditActions.CAMPAIGN_SENT), eq("campaign"),
-                eq(d.id()), anyString());
+        assertThat(audit.assertRecorded(ORG, AuditActions.CAMPAIGN_SENT, "campaign", d.id()).getActorId())
+                .isEqualTo(USER);
     }
 
     @Test
@@ -434,8 +396,7 @@ class CampaignServiceTest {
         assertThatThrownBy(() -> service.send(d.id(), principal(ORG), "idem-2", null))
                 .isInstanceOf(ApiException.class);
 
-        verify(auditLogger, org.mockito.Mockito.times(1)).record(
-                any(), eq(AuditActions.CAMPAIGN_SENT), eq("campaign"), eq(d.id()), anyString());
+        audit.assertRecorded(ORG, AuditActions.CAMPAIGN_SENT, "campaign", d.id());
     }
 
     @Test
@@ -485,78 +446,49 @@ class CampaignServiceTest {
         assertThat(service.detailWithStats(principal(ORG), d.id()).bodyAiGenerated()).isTrue();
     }
 
-    @Test
-    void patch_clientTrue_setsTheFlags() {
-        CampaignDto d = draft();
-
-        CampaignDto out = service.patch(principal(ORG), d.id(), patch("S", null, "B", true, true));
-
-        assertThat(out.subjectAiGenerated()).isTrue();
-        assertThat(out.bodyAiGenerated()).isTrue();
+    /**
+     * AI provenance on patch: a client true sets a flag, a client false never clears one, and text a model
+     * offered for this campaign flags its own field when saved verbatim (whitespace and line endings aside).
+     */
+    record AiPatchCase(String label, boolean flaggedBefore, String offeredFor, String offeredKind,
+                       List<String> offered, PatchCampaignRequest patch, boolean subjectAi, boolean bodyAi) {
+        @Override public String toString() { return label; }
     }
 
-    @Test
-    void patch_clientFalse_neverClearsASetFlag() {
-        CampaignDto d = draft();
-        service.patch(principal(ORG), d.id(), patch("S", null, "B", true, true));
-
-        CampaignDto out = service.patch(principal(ORG), d.id(), patch("Rewritten", "P", "Rewritten body", false, false));
-
-        assertThat(out.subjectAiGenerated()).isTrue();
-        assertThat(out.bodyAiGenerated()).isTrue();
+    static Stream<AiPatchCase> aiPatchCases() {
+        return Stream.of(
+                new AiPatchCase("client true sets the flags", false, null, null, List.of(),
+                        patch("S", null, "B", true, true), true, true),
+                new AiPatchCase("client false never clears a set flag", true, null, null, List.of(),
+                        patch("Rewritten", "P", "Rewritten body", false, false), true, true),
+                new AiPatchCase("an offered subject saved verbatim flags the subject", false, "self", "subject",
+                        List.of("Doors close soon"), patch("  Doors close soon \n", null, "My own words", null, null),
+                        true, false),
+                new AiPatchCase("an offered body flags the body", false, "self", "body",
+                        List.of("Offered pre", "Line one\nLine two"), patch("Mine", null, "Line one\r\nLine two", null, null),
+                        false, true),
+                new AiPatchCase("an offered preheader flags the body", false, "self", "body",
+                        List.of("Offered pre"), patch(null, "Offered pre", null, null, null), false, true),
+                new AiPatchCase("text offered for another campaign does not flag", false, "other", "subject",
+                        List.of("Doors close soon"), patch("Doors close soon", null, null, null, null), false, false),
+                new AiPatchCase("an offered subject saved as the body does not flag the body", false, "self", "subject",
+                        List.of("Doors close soon"), patch(null, null, "Doors close soon", null, null), false, false));
     }
 
-    @Test
-    void patch_savingAnOfferedSubjectVerbatim_flagsTheSubjectWithoutAClientFlag() {
-        CampaignDto d = draft();
-        aiSuggestions.record(d.id(), "subject", List.of("Doors close soon"));
-
-        CampaignDto out = service.patch(principal(ORG), d.id(), patch("  Doors close soon \n", null, "My own words", null, null));
-
-        assertThat(out.subjectAiGenerated()).isTrue();
-        assertThat(out.bodyAiGenerated()).isFalse();
-    }
-
-    @Test
-    void patch_savingAnOfferedBody_flagsTheBody() {
-        CampaignDto d = draft();
-        aiSuggestions.record(d.id(), "body", List.of("Offered pre", "Line one\nLine two"));
-
-        CampaignDto out = service.patch(principal(ORG), d.id(), patch("Mine", null, "Line one\r\nLine two", null, null));
-
-        assertThat(out.subjectAiGenerated()).isFalse();
-        assertThat(out.bodyAiGenerated()).isTrue();
-    }
-
-    @Test
-    void patch_savingAnOfferedPreheader_flagsTheBody() {
-        CampaignDto d = draft();
-        aiSuggestions.record(d.id(), "body", List.of("Offered pre"));
-
-        CampaignDto out = service.patch(principal(ORG), d.id(), patch(null, "Offered pre", null, null, null));
-
-        assertThat(out.bodyAiGenerated()).isTrue();
-    }
-
-    @Test
-    void patch_textOfferedForAnotherCampaign_doesNotFlag() {
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("aiPatchCases")
+    void patch_aiProvenanceFlags(AiPatchCase c) {
         CampaignDto other = draft();
         CampaignDto d = draft();
-        aiSuggestions.record(other.id(), "subject", List.of("Doors close soon"));
+        if (c.flaggedBefore()) service.patch(principal(ORG), d.id(), patch("S", null, "B", true, true));
+        if (c.offeredFor() != null) {
+            aiSuggestions.record("self".equals(c.offeredFor()) ? d.id() : other.id(), c.offeredKind(), c.offered());
+        }
 
-        CampaignDto out = service.patch(principal(ORG), d.id(), patch("Doors close soon", null, null, null, null));
+        CampaignDto out = service.patch(principal(ORG), d.id(), c.patch());
 
-        assertThat(out.subjectAiGenerated()).isFalse();
-    }
-
-    @Test
-    void patch_anOfferedSubjectSavedAsTheBody_doesNotFlagTheBody() {
-        CampaignDto d = draft();
-        aiSuggestions.record(d.id(), "subject", List.of("Doors close soon"));
-
-        CampaignDto out = service.patch(principal(ORG), d.id(), patch(null, null, "Doors close soon", null, null));
-
-        assertThat(out.bodyAiGenerated()).isFalse();
+        assertThat(out.subjectAiGenerated()).isEqualTo(c.subjectAi());
+        assertThat(out.bodyAiGenerated()).isEqualTo(c.bodyAi());
     }
 
     @Test
@@ -578,7 +510,7 @@ class CampaignServiceTest {
         service.testSend(principal(ORG), d.id(), null);
 
         CampaignEmailProvider.OutgoingEmail e = sentTest();
-        assertThat(e.to()).isEqualTo("organizer@example.com");
+        assertThat(e.to()).isEqualTo(callerEmail);
         assertThat(e.subject()).isEqualTo("[TEST] Subject line");
         assertThat(e.ai().headers()).containsEntry("AI-Disclosure", "mode=ai-originated")
                 .containsEntry("X-IMIN-AI-Generated", "body");

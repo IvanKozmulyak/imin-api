@@ -4,7 +4,6 @@ import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.dto.RecipientDto;
 import com.imin.iminapi.marketing.dto.RecipientPage;
 import com.imin.iminapi.marketing.model.Campaign;
@@ -16,26 +15,26 @@ import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.service.audit.AuditActions;
-import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.support.AuditRows;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.http.HttpStatus;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
+import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
 
 /**
  * Contract of {@code GET /api/v1/marketing/campaigns/{id}/recipients} against REAL repositories —
@@ -45,8 +44,7 @@ import static org.mockito.Mockito.verify;
  * delivered AND opened), engagement filtering as an axis orthogonal to status, a null-membership
  * row degrading to a null name, and org scoping.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class CampaignRecipientLogTest {
 
     @Autowired CampaignService service;
@@ -54,7 +52,9 @@ class CampaignRecipientLogTest {
     @Autowired CampaignRecipientRepository recipients;
     @Autowired MembershipRepository memberships;
     @Autowired ConsumerRepository consumers;
-    @MockitoBean AuditLogger auditLogger;
+    @Autowired AuditRows audit;
+    @Autowired IminFixtures fx;
+    @Autowired Clock clock;
 
     private AuthPrincipal principal(UUID org) {
         return new AuthPrincipal(UUID.randomUUID(), org, UserRole.OWNER, UUID.randomUUID());
@@ -68,8 +68,8 @@ class CampaignRecipientLogTest {
         c.setChannel("email");
         c.setName("log-test");
         c.setStatus("sent");
-        c.setCreatedAt(Instant.now());
-        c.setUpdatedAt(Instant.now());
+        c.setCreatedAt(clock.instant());
+        c.setUpdatedAt(clock.instant());
         return campaigns.save(c);
     }
 
@@ -79,7 +79,7 @@ class CampaignRecipientLogTest {
      */
     private Membership membership(UUID orgId, String displayName) {
         Consumer c = new Consumer();
-        c.setNormalizedEmail("log-" + UUID.randomUUID() + "@example.com");
+        c.setNormalizedEmail(fx.email("log"));
         c = consumers.save(c);
         Membership m = new Membership();
         m.setOrgId(orgId);
@@ -94,11 +94,11 @@ class CampaignRecipientLogTest {
         r.setId(UUID.randomUUID());
         r.setCampaignId(campaignId);
         r.setMembershipId(membershipId);
-        r.setEmail("addr-" + UUID.randomUUID().toString().substring(0, 8) + "@example.com");
+        r.setEmail(fx.email("addr"));
         r.setStatus(status);
         r.setOpenedAt(openedAt);
         r.setClickedAt(clickedAt);
-        if ("delivered".equals(status)) r.setDeliveredAt(Instant.now());
+        if ("delivered".equals(status)) r.setDeliveredAt(clock.instant());
         return recipients.save(r);
     }
 
@@ -156,7 +156,7 @@ class CampaignRecipientLogTest {
     void counts_matchRealAggregates_andARowCanBeDeliveredAndOpened() {
         UUID org = UUID.randomUUID();
         Campaign c = campaign(org);
-        Instant t = Instant.now();
+        Instant t = clock.instant();
 
         // The load-bearing row: delivered AND opened AND clicked at once. If engagement were
         // folded into the status enum this row could only be counted once — it must count in
@@ -212,7 +212,7 @@ class CampaignRecipientLogTest {
     void engagementFilter_pagesTheOpenedAndClickedSubsets() {
         UUID org = UUID.randomUUID();
         Campaign c = campaign(org);
-        Instant t = Instant.now();
+        Instant t = clock.instant();
         recipient(c.getId(), null, "delivered", t, t);      // opened + clicked
         recipient(c.getId(), null, "delivered", t, null);   // opened only
         recipient(c.getId(), null, "delivered", null, null);
@@ -235,7 +235,7 @@ class CampaignRecipientLogTest {
     void engagementFilter_combinesWithStatus_asAnOrthogonalAxis() {
         UUID org = UUID.randomUUID();
         Campaign c = campaign(org);
-        Instant t = Instant.now();
+        Instant t = clock.instant();
         recipient(c.getId(), null, "delivered", t, null);
         recipient(c.getId(), null, "bounced", t, null);     // opened, but a different lifecycle
         recipient(c.getId(), null, "delivered", null, null);
@@ -287,51 +287,38 @@ class CampaignRecipientLogTest {
         assertThat(page.items().get(0).name()).isEqualTo("Ada Lovelace");
     }
 
-    @Test
-    void name_degradesToNull_whenTheMembershipWasDeleted() {
-        // V53's FK is ON DELETE SET NULL, so a DSAR erase leaves membership_id NULL. The row must
-        // still render — with a null name, not a placeholder and not an exception.
+    /**
+     * V53's FK is ON DELETE SET NULL, so a DSAR erase leaves membership_id NULL; a membership may also have no
+     * display name. Either row still renders with a null name, never a placeholder, and the page never 500s.
+     * A page with no membership at all short-circuits the name lookup to Map.of(), which throws on a null key.
+     */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("nameDegradeCases")
+    void name_degradesToNull_andTheRowStillRenders(String label, List<String> memberNames, int orphanRows,
+                                                    List<String> expectedNames) {
         UUID org = UUID.randomUUID();
         Campaign c = campaign(org);
-        Membership m = membership(org, "Grace Hopper");
-        recipient(c.getId(), m.getMembershipId(), "delivered", null, null);
-        recipient(c.getId(), null, "delivered", null, null);   // membership already gone
+        for (String name : memberNames) {
+            recipient(c.getId(), membership(org, name).getMembershipId(), "delivered", null, null);
+        }
+        for (int i = 0; i < orphanRows; i++) recipient(c.getId(), null, "delivered", null, null);
 
         RecipientPage page = service.listRecipients(c.getId(), principal(org), null, null, 0, 50);
-        assertThat(page.items()).hasSize(2);
-        assertThat(page.total()).isEqualTo(2L);   // the orphan row still counts
+        assertThat(page.items()).hasSize(expectedNames.size());
+        assertThat(page.total()).isEqualTo(expectedNames.size());   // orphan rows still count
         assertThat(page.items()).extracting(RecipientDto::name)
-                .containsExactlyInAnyOrder("Grace Hopper", null);
+                .containsExactlyInAnyOrderElementsOf(expectedNames);
+        assertThat(page.items()).allSatisfy(r -> assertThat(r.email()).isNotNull());   // the row is intact
     }
 
-    @Test
-    void aPageOfEntirelyNullMembershipRows_stillRenders() {
-        // Regression: when NO row on the page has a membership, the name lookup short-circuits to
-        // an empty map. Map.of() throws NPE on a null key (unlike HashMap), so leaning on
-        // `names.get(null)` returning null blew the whole page up with a 500 — precisely the
-        // "a deleted membership must never break the row or the page" case.
-        UUID org = UUID.randomUUID();
-        Campaign c = campaign(org);
-        for (int i = 0; i < 3; i++) recipient(c.getId(), null, "delivered", null, null);
-
-        RecipientPage page = service.listRecipients(c.getId(), principal(org), null, null, 0, 50);
-        assertThat(page.items()).hasSize(3);
-        assertThat(page.items()).extracting(RecipientDto::name).containsOnlyNulls();
-        assertThat(page.total()).isEqualTo(3L);
-    }
-
-    @Test
-    void name_isNull_whenTheMembershipHasNoDisplayName() {
-        // Return null rather than a placeholder — the FE decides how to render absence.
-        UUID org = UUID.randomUUID();
-        Campaign c = campaign(org);
-        Membership m = membership(org, null);
-        recipient(c.getId(), m.getMembershipId(), "delivered", null, null);
-
-        RecipientPage page = service.listRecipients(c.getId(), principal(org), null, null, 0, 50);
-        assertThat(page.items()).hasSize(1);
-        assertThat(page.items().get(0).name()).isNull();
-        assertThat(page.items().get(0).email()).isNotNull();   // the row is intact
+    static Stream<Arguments> nameDegradeCases() {
+        return Stream.of(
+                Arguments.of("membership deleted beside a named one", List.of("Grace Hopper"), 1,
+                        Arrays.asList("Grace Hopper", null)),
+                Arguments.of("a page of entirely null-membership rows", List.of(), 3,
+                        Arrays.asList(null, null, null)),
+                Arguments.of("membership without a display name", Arrays.asList((String) null), 0,
+                        Arrays.asList((String) null)));
     }
 
     // ---- 5. org scoping ----
@@ -390,8 +377,6 @@ class CampaignRecipientLogTest {
         service.listRecipients(c.getId(), principal(org), null, null, 0, 2);
         service.listRecipients(c.getId(), principal(org), null, null, 1, 2);
 
-        verify(auditLogger, times(1)).record(
-                any(), eq(AuditActions.CAMPAIGN_RECIPIENTS_VIEWED), eq("campaign"),
-                eq(c.getId()), anyString());
+        audit.assertRecorded(org, AuditActions.CAMPAIGN_RECIPIENTS_VIEWED, "campaign", c.getId());
     }
 }

@@ -1,6 +1,5 @@
 package com.imin.iminapi.marketing;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.service.CampaignAttributionService;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
@@ -9,65 +8,51 @@ import com.imin.iminapi.model.FunnelEvent;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.User;
-import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.FunnelEventRepository;
 import com.imin.iminapi.repository.OrderRepository;
-import com.imin.iminapi.repository.OrganizationRepository;
-import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 
-import java.time.Instant;
+import java.time.Clock;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class CampaignAttributionServiceTest {
 
     @Autowired CampaignAttributionService attribution;
     @Autowired FunnelEventRepository funnel;
     @Autowired OrderRepository orders;
     @Autowired EventRepository events;
-    @Autowired OrganizationRepository orgs;
-    @Autowired UserRepository users;
+    @Autowired IminFixtures fx;
+    @Autowired JdbcTemplate jdbc;
+    @Autowired Clock clock;
 
+    private final List<UUID> orgIds = new ArrayList<>();
     private Organization org;
     private User owner;
 
     @BeforeEach
     void setUp() {
-        wipe();
-        org = new Organization();
-        org.setName("Test Org");
-        org.setSlug("test-org-" + UUID.randomUUID().toString().substring(0, 8));
-        org.setContactEmail("hello@test.example");
-        org.setCountry("DE");
-        org = orgs.save(org);
-
-        owner = new User();
-        owner.setEmail("owner-" + UUID.randomUUID() + "@example.com");
-        owner.setOrgId(org.getId());
-        owner.setRole(UserRole.OWNER);
-        owner = users.save(owner);
+        org = fx.org();
+        orgIds.add(org.getId());
+        owner = fx.owner(org);
     }
 
+    // Events cascade their orders and funnel beacons.
     @AfterEach
-    void tearDown() { wipe(); }
-
-    private void wipe() {
-        funnel.deleteAll();
-        orders.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+    void tearDown() {
+        OrgRows.delete(jdbc, orgIds);
     }
 
     // event_funnel_events.event_id has an FK to events(id), so the funnel rows
@@ -76,10 +61,10 @@ class CampaignAttributionServiceTest {
         Event e = new Event();
         e.setOrgId(org.getId());
         e.setName("Test Night");
-        e.setSlug("test-night-" + UUID.randomUUID().toString().substring(0, 8));
+        e.setSlug("test-night-" + UUID.randomUUID());
         e.setVisibility(EventVisibility.PUBLIC);
         e.setStatus(EventStatus.LIVE);
-        e.setStartsAt(Instant.now().plusSeconds(86_400L));
+        e.setStartsAt(clock.instant().plusSeconds(86_400L));
         e.setCreatedBy(owner.getId());
         e.setCurrency("EUR");
         return events.save(e).getId();
@@ -151,7 +136,7 @@ class CampaignAttributionServiceTest {
         o.setToken("ord_" + UUID.randomUUID());
         o.setEventId(eventId);
         o.setOrgId(ownerOrgId);
-        o.setEmail("buyer-" + UUID.randomUUID() + "@example.com");
+        o.setEmail(fx.email("buyer"));
         o.setTotalMinor(totalMinor);
         o.setCurrency("EUR");
         o.setPaymentMethod("stripe");
@@ -191,12 +176,8 @@ class CampaignAttributionServiceTest {
         UUID campaignId = UUID.randomUUID();
         String tag = campaignId.toString();
 
-        Organization other = new Organization();
-        other.setName("Other Org");
-        other.setSlug("other-org-" + UUID.randomUUID().toString().substring(0, 8));
-        other.setContactEmail("other@test.example");
-        other.setCountry("DE");
-        other = orgs.save(other);
+        Organization other = fx.org();
+        orgIds.add(other.getId());
 
         order(eventId, 2500, tag);                       // ours
         order(eventId, 5000, tag, other.getId());        // theirs — must not count

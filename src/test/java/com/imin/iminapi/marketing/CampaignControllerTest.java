@@ -1,36 +1,44 @@
 package com.imin.iminapi.marketing;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.dto.CampaignDto;
 import com.imin.iminapi.marketing.dto.CampaignRequests.CreateCampaignRequest;
-import com.imin.iminapi.marketing.dto.PreviewAudienceResponse;
+import com.imin.iminapi.marketing.email.MarketingEmailProperties;
+import com.imin.iminapi.marketing.model.Campaign;
+import com.imin.iminapi.marketing.repository.CampaignRepository;
 import com.imin.iminapi.marketing.service.CampaignService;
-import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.support.CampaignRows;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PropertyFlips;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.security.test.context.support.WithSecurityContext;
-import org.springframework.security.test.context.support.WithSecurityContextFactory;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
+import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
-import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Stream;
 
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.hasItem;
+import static org.hamcrest.Matchers.nullValue;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
@@ -38,304 +46,227 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+/** The campaign HTTP contract over the real service: statuses, fielded 400s and the no-leak 404. */
+@IminIntegrationTest
 class CampaignControllerTest {
 
     @Autowired MockMvc mvc;
+    @Autowired CampaignService service;
+    @Autowired CampaignRepository campaigns;
+    @Autowired IminFixtures fx;
+    @Autowired JdbcTemplate jdbc;
+    @Autowired PropertyFlips flips;
+    @Autowired MarketingEmailProperties marketingProps;
     final ObjectMapper om = new ObjectMapper();
 
-    @MockitoBean CampaignService service;
+    private final List<UUID> orgIds = new ArrayList<>();
+    private AuthPrincipal owner;
+    private AuthPrincipal otherOwner;
 
-    static final UUID ORG = UUID.fromString("00000000-0000-0000-0000-0000000000c1");
-    static final UUID USER = UUID.fromString("00000000-0000-0000-0000-0000000000c2");
-    static final UUID CAMP = UUID.fromString("00000000-0000-0000-0000-0000000000c3");
+    @BeforeEach
+    void setUp() {
+        owner = fx.principal(fx.owner(fx.org()));
+        otherOwner = fx.principal(fx.owner(fx.org()));
+        orgIds.add(owner.orgId());
+        orgIds.add(otherOwner.orgId());
+    }
 
-    @Retention(RetentionPolicy.RUNTIME)
-    @WithSecurityContext(factory = StubFactory.class)
-    public @interface WithStubOrganizer {}
+    // A valid send leaves a scheduled campaign the dispatcher would claim.
+    @AfterEach
+    void tearDown() {
+        CampaignRows.delete(jdbc, orgIds);
+    }
 
-    public static class StubFactory implements WithSecurityContextFactory<WithStubOrganizer> {
-        @Override public org.springframework.security.core.context.SecurityContext createSecurityContext(WithStubOrganizer ann) {
-            AuthPrincipal p = new AuthPrincipal(USER, ORG, UserRole.OWNER, UUID.randomUUID());
-            var auth = new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
-                    p, null, List.of(new SimpleGrantedAuthority("ROLE_OWNER")));
-            var ctx = org.springframework.security.core.context.SecurityContextHolder.createEmptyContext();
-            ctx.setAuthentication(auth);
-            return ctx;
+    /**
+     * mkt-edge-9 (P2): `page` went into PageRequest.of unclamped, and PageRequest.of(-1, 50) throws
+     * IllegalArgumentException, which GlobalExceptionHandler has no handler for: ?page=-1 answered 500.
+     */
+    @Test
+    void negativePageIsClampedNotA500() throws Exception {
+        UUID id = draft(owner, null, null).id();
+
+        mvc.perform(get("/api/v1/marketing/campaigns").param("page", "-1").with(auth(owner)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[*].id").value(hasItem(id.toString())));
+        mvc.perform(get("/api/v1/marketing/campaigns/{id}/recipients", id).param("page", "-3").with(auth(owner)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.page").value(0));
+    }
+
+    /**
+     * mkt-edge-8 (P2): the composer PATCHes {name, segmentId: null, eventId: null} when the organizer leaves
+     * the Audience step; an explicit null clears the link, an absent field keeps it, a supplied id replaces it.
+     */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("patchLinkCases")
+    void patch_explicitNullClears_absentKeeps_suppliedReplaces(String label, String body,
+                                                                String segmentAfter, boolean eventKept) throws Exception {
+        UUID segment = UUID.randomUUID();
+        UUID event = UUID.randomUUID();
+        UUID id = draft(owner, segment, event).id();
+
+        var res = mvc.perform(patch("/api/v1/marketing/campaigns/{id}", id).with(auth(owner))
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk());
+
+        switch (segmentAfter) {
+            case "kept" -> res.andExpect(jsonPath("$.segmentId").value(segment.toString()));
+            case "cleared" -> res.andExpect(jsonPath("$.segmentId").value(nullValue()));
+            default -> res.andExpect(jsonPath("$.segmentId").value(segmentAfter));
+        }
+        res.andExpect(eventKept ? jsonPath("$.eventId").value(event.toString()) : jsonPath("$.eventId").value(nullValue()));
+    }
+
+    static Stream<Arguments> patchLinkCases() {
+        String replacement = "00000000-0000-0000-0000-00000000beef";
+        return Stream.of(
+                Arguments.of("explicit null clears both links",
+                        "{\"name\":\"Step 0\",\"segmentId\":null,\"eventId\":null}", "cleared", false),
+                Arguments.of("absent fields keep both links", "{\"name\":\"Step 0\"}", "kept", true),
+                Arguments.of("a supplied segment id replaces the segment only",
+                        "{\"segmentId\":\"" + replacement + "\"}", replacement, true));
+    }
+
+    /** Draft-only delete: 204 for an own draft, the no-leak 404 for another org's, 409 for a non-draft. */
+    @ParameterizedTest(name = "{0}")
+    @CsvSource({
+            "own draft,         own,   draft, 204, ",
+            "other org's draft, other, draft, 404, NOT_FOUND",
+            "own sent campaign, own,   sent,  409, INVALID_STATE"})
+    void delete_isDraftOnly_andOrgScoped(String label, String whose, String status, int expected, String code)
+            throws Exception {
+        AuthPrincipal campaignOwner = "own".equals(whose) ? owner : otherOwner;
+        UUID id = draft(campaignOwner, null, null).id();
+        if (!"draft".equals(status)) service.forceStatusForTest(id, status);
+
+        var res = mvc.perform(delete("/api/v1/marketing/campaigns/{id}", id).with(auth(owner)))
+                .andExpect(status().is(expected));
+        if (code != null) res.andExpect(jsonPath("$.error.code").value(code));
+
+        Optional<Campaign> row = campaigns.findByIdAndOrgId(id, campaignOwner.orgId());
+        if (expected == 204) {
+            assertThat(row).isEmpty();
+        } else {
+            assertThat(row).get().extracting(Campaign::getStatus).isEqualTo(status);
         }
     }
 
-    private CampaignDto sampleDto() {
-        Instant now = Instant.parse("2026-07-11T10:00:00Z");
-        return new CampaignDto(CAMP, ORG, "email", "Launch night", "draft",
-                null, null, "manual", null, null, null, null, null,
-                "Subj", "Pre", "body", "classic", false, false, now, now,
-                // revMinor: null — a draft campaign has never sent, so no revenue is attributable.
-                null);
-    }
-
-    private com.imin.iminapi.marketing.dto.CampaignDetailDto sampleDetailDto() {
-        Instant now = Instant.parse("2026-07-11T10:00:00Z");
-        var stats = new com.imin.iminapi.marketing.dto.CampaignStatsDto(10, 9, 3, 1, 0, 0, 0, 2);
-        return new com.imin.iminapi.marketing.dto.CampaignDetailDto(CAMP, ORG, "email", "Launch night", "draft",
-                null, null, "manual", null, null, null, null, null,
-                "Subj", "Pre", "body", "classic", false, false, now, now, stats, "Loyal · launch", "Europe/Paris");
-    }
-
-    @Test
-    @WithStubOrganizer
-    void create_returns_201_with_the_draft() throws Exception {
-        when(service.create(any(), any())).thenReturn(sampleDto());
-        mvc.perform(post("/api/v1/marketing/campaigns")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(om.writeValueAsString(Map.of("channel", "email", "name", "Launch night"))))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.status").value("draft"))
-                .andExpect(jsonPath("$.channel").value("email"));
-    }
-
-    @Test
-    @WithStubOrganizer
-    void get_returns_the_detail() throws Exception {
-        when(service.detailWithStats(any(), eq(CAMP))).thenReturn(sampleDetailDto());
-        mvc.perform(get("/api/v1/marketing/campaigns/{id}", CAMP))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.name").value("Launch night"))
-                .andExpect(jsonPath("$.stats.opened").value(3))
-                .andExpect(jsonPath("$.segmentName").value("Loyal · launch"))
-                .andExpect(jsonPath("$.eventTimezone").value("Europe/Paris"));
-    }
-
-    @Test
-    @WithStubOrganizer
-    void list_returns_a_page() throws Exception {
-        when(service.list(any(), eq("email"), eq(null), eq(0), any(Integer.class)))
-                .thenReturn(List.of());
-        mvc.perform(get("/api/v1/marketing/campaigns").param("channel", "email"))
-                .andExpect(status().isOk());
-    }
-
     /**
-     * mkt-edge-9 (P2): `page` went into PageRequest.of unclamped (only `size` was guarded),
-     * and PageRequest.of(-1, 50) throws IllegalArgumentException — for which
-     * GlobalExceptionHandler has no handler, so ?page=-1 answered 500 INTERNAL and logged an
-     * "Unhandled exception" on both the campaign list and the recipient log.
+     * mkt-edge-7 (P2): with no constraint and no @Valid, a 201-character subject reached Postgres as a
+     * VARCHAR(200) overflow and came back as a fieldless "Request violates a data constraint".
      */
-    @Test
-    @WithStubOrganizer
-    void negativePageIsClampedNotA500() throws Exception {
-        when(service.list(any(), any(), any(), org.mockito.ArgumentMatchers.anyInt(),
-                org.mockito.ArgumentMatchers.anyInt())).thenReturn(List.of());
-        when(service.listRecipients(eq(CAMP), any(), any(), any(),
-                org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt()))
-                .thenReturn(new com.imin.iminapi.marketing.dto.RecipientPage(
-                        List.of(), 0, 50, 0L,
-                        new com.imin.iminapi.marketing.dto.RecipientCounts(0, 0, 0, 0, 0, 0, 0, 0)));
+    @ParameterizedTest(name = "{0} {1}")
+    @CsvSource({
+            "create, subject,     201",
+            "patch,  preheader,   201",
+            "create, templateKey, 65"})
+    void overlongField_isAFielded400_andWritesNothing(String route, String field, int length) throws Exception {
+        UUID existing = draft(owner, null, null).id();
+        Map<String, String> body = "create".equals(route)
+                ? Map.of("channel", "email", "name", "Launch", field, "x".repeat(length))
+                : Map.of(field, "x".repeat(length));
+        MockHttpServletRequestBuilder req = "create".equals(route)
+                ? post("/api/v1/marketing/campaigns")
+                : patch("/api/v1/marketing/campaigns/{id}", existing);
 
-        mvc.perform(get("/api/v1/marketing/campaigns").param("page", "-1"))
-                .andExpect(status().isOk());
-        mvc.perform(get("/api/v1/marketing/campaigns/{id}/recipients", CAMP).param("page", "-3"))
-                .andExpect(status().isOk());
-
-        verify(service).list(any(), any(), any(), eq(0), org.mockito.ArgumentMatchers.anyInt());
-        verify(service).listRecipients(eq(CAMP), any(), any(), any(), eq(0),
-                org.mockito.ArgumentMatchers.anyInt());
-    }
-
-    @Test
-    @WithStubOrganizer
-    void patch_returns_the_updated_draft() throws Exception {
-        when(service.patch(any(), eq(CAMP), any())).thenReturn(sampleDto());
-        mvc.perform(patch("/api/v1/marketing/campaigns/{id}", CAMP)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(om.writeValueAsString(Map.of("subject", "New"))))
-                .andExpect(status().isOk());
-    }
-
-    /**
-     * mkt-edge-8 (P2): the wire half. The composer PATCHes {name, segmentId: null,
-     * eventId: null} when the organizer leaves the Audience step, and an explicit null has to
-     * reach the service as "clear it" while an absent field still reaches it as "unchanged".
-     */
-    @Test
-    @WithStubOrganizer
-    void patch_distinguishesExplicitNullFromAnAbsentField() throws Exception {
-        when(service.patch(any(), eq(CAMP), any())).thenReturn(sampleDto());
-        var captor = org.mockito.ArgumentCaptor.forClass(
-                com.imin.iminapi.marketing.dto.CampaignRequests.PatchCampaignRequest.class);
-
-        mvc.perform(patch("/api/v1/marketing/campaigns/{id}", CAMP)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"name\":\"Step 0\",\"segmentId\":null,\"eventId\":null}"))
-                .andExpect(status().isOk());
-        mvc.perform(patch("/api/v1/marketing/campaigns/{id}", CAMP)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"name\":\"Step 0\"}"))
-                .andExpect(status().isOk());
-
-        verify(service, org.mockito.Mockito.times(2)).patch(any(), eq(CAMP), captor.capture());
-        var explicitNull = captor.getAllValues().get(0);
-        var absent = captor.getAllValues().get(1);
-        org.assertj.core.api.Assertions.assertThat(explicitNull.segmentId())
-                .isEqualTo(com.imin.iminapi.marketing.dto.PatchableUuid.NULL);
-        org.assertj.core.api.Assertions.assertThat(explicitNull.eventId())
-                .isEqualTo(com.imin.iminapi.marketing.dto.PatchableUuid.NULL);
-        org.assertj.core.api.Assertions.assertThat(absent.segmentId()).isNull();
-        org.assertj.core.api.Assertions.assertThat(absent.eventId()).isNull();
-    }
-
-    @Test
-    @WithStubOrganizer
-    void patch_carriesASuppliedSegmentIdThrough() throws Exception {
-        when(service.patch(any(), eq(CAMP), any())).thenReturn(sampleDto());
-        UUID seg = UUID.randomUUID();
-        var captor = org.mockito.ArgumentCaptor.forClass(
-                com.imin.iminapi.marketing.dto.CampaignRequests.PatchCampaignRequest.class);
-
-        mvc.perform(patch("/api/v1/marketing/campaigns/{id}", CAMP)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"segmentId\":\"" + seg + "\"}"))
-                .andExpect(status().isOk());
-
-        verify(service).patch(any(), eq(CAMP), captor.capture());
-        org.assertj.core.api.Assertions.assertThat(captor.getValue().segmentId().value())
-                .isEqualTo(seg);
-    }
-
-    @Test
-    @WithStubOrganizer
-    void duplicate_returns_201() throws Exception {
-        when(service.duplicate(any(), eq(CAMP))).thenReturn(sampleDto());
-        mvc.perform(post("/api/v1/marketing/campaigns/{id}/duplicate", CAMP))
-                .andExpect(status().isCreated());
-    }
-
-    @Test
-    @WithStubOrganizer
-    void preview_audience_returns_counts() throws Exception {
-        when(service.previewAudience(any(), eq(CAMP)))
-                .thenReturn(new PreviewAudienceResponse(12,
-                        new PreviewAudienceResponse.Excluded(1, 2, 0, 3, 0, 4)));
-        mvc.perform(post("/api/v1/marketing/campaigns/{id}/preview-audience", CAMP))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.sendable").value(12))
-                .andExpect(jsonPath("$.excluded.unsubscribed").value(2))
-                .andExpect(jsonPath("$.excluded.deliverabilitySuppressed").value(3))
-                // spec §4 sixth exclusion class — must reach the wire contract the FE reads
-                .andExpect(jsonPath("$.excluded.noEmail").value(4));
-    }
-
-    @Test
-    @WithStubOrganizer
-    void preview_audience_carries_the_send_path_skip_counts() throws Exception {
-        when(service.previewAudience(any(), eq(CAMP)))
-                .thenReturn(new PreviewAudienceResponse(5,
-                        new PreviewAudienceResponse.Excluded(0, 0, 0, 0, 0, 0, 6, 7, 8, 9)));
-        mvc.perform(post("/api/v1/marketing/campaigns/{id}/preview-audience", CAMP))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.sendable").value(5))
-                .andExpect(jsonPath("$.excluded.experimentHoldout").value(6))
-                .andExpect(jsonPath("$.excluded.eventCap").value(7))
-                .andExpect(jsonPath("$.excluded.monthlyCap").value(8))
-                .andExpect(jsonPath("$.excluded.consentGate").value(9));
-    }
-
-    @Test
-    @WithStubOrganizer
-    void test_send_returns_204_and_delegates() throws Exception {
-        mvc.perform(post("/api/v1/marketing/campaigns/{id}/test-send", CAMP)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{}"))
-                .andExpect(status().isNoContent());
-        verify(service).testSend(any(), eq(CAMP), eq(null));
-    }
-
-    @Test
-    @WithStubOrganizer
-    void delete_returns_204_and_delegates() throws Exception {
-        mvc.perform(delete("/api/v1/marketing/campaigns/{id}", CAMP))
-                .andExpect(status().isNoContent());
-        verify(service).delete(any(), eq(CAMP));
-    }
-
-    @Test
-    @WithStubOrganizer
-    void delete_other_orgs_or_missing_campaign_returns_404() throws Exception {
-        org.mockito.Mockito.doThrow(com.imin.iminapi.security.ApiException.notFound("Campaign"))
-                .when(service).delete(any(), eq(CAMP));
-        mvc.perform(delete("/api/v1/marketing/campaigns/{id}", CAMP))
-                .andExpect(status().isNotFound())
-                .andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
-    }
-
-    /**
-     * mkt-edge-7 (P2): neither request record carried a constraint and neither @RequestBody
-     * was @Valid, so a 201-character subject reached Postgres as a VARCHAR(200) overflow —
-     * SQLSTATE 22001 — which GlobalExceptionHandler renders as a FIELDLESS
-     * "Request violates a data constraint". The composer could not say which field was wrong.
-     */
-    @Test
-    @WithStubOrganizer
-    void create_overlong_subject_is_a_fielded_400() throws Exception {
-        String body = om.writeValueAsString(Map.of(
-                "channel", "email", "name", "Launch", "subject", "x".repeat(201)));
-        mvc.perform(post("/api/v1/marketing/campaigns")
-                        .contentType(MediaType.APPLICATION_JSON).content(body))
+        mvc.perform(req.with(auth(owner)).contentType(MediaType.APPLICATION_JSON).content(om.writeValueAsString(body)))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"))
-                .andExpect(jsonPath("$.error.fields.subject").exists());
-        org.mockito.Mockito.verifyNoInteractions(service);
+                .andExpect(jsonPath("$.error.fields." + field).exists());
+
+        assertThat(service.list(owner, null, null, 0, 50)).extracting(s -> s.id()).containsExactly(existing);
+        assertThat(service.get(owner, existing).preheader()).isNull();
     }
 
+    /** name is deliberately unconstrained: the service clips it, so a @Size there would turn a 201 into a 400. */
     @Test
-    @WithStubOrganizer
-    void patch_overlong_preheader_is_a_fielded_400() throws Exception {
-        String body = om.writeValueAsString(Map.of("preheader", "y".repeat(201)));
-        mvc.perform(patch("/api/v1/marketing/campaigns/{id}", CAMP)
-                        .contentType(MediaType.APPLICATION_JSON).content(body))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.fields.preheader").exists());
-        org.mockito.Mockito.verifyNoInteractions(service);
-    }
-
-    @Test
-    @WithStubOrganizer
-    void create_overlong_templateKey_is_a_fielded_400() throws Exception {
-        String body = om.writeValueAsString(Map.of(
-                "channel", "email", "name", "Launch", "templateKey", "t".repeat(65)));
-        mvc.perform(post("/api/v1/marketing/campaigns")
-                        .contentType(MediaType.APPLICATION_JSON).content(body))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.fields.templateKey").exists());
-    }
-
-    /**
-     * name is deliberately NOT constrained: CampaignService.truncateName silently clips it
-     * today, so a @Size there would turn a currently-succeeding request into a 400.
-     */
-    @Test
-    @WithStubOrganizer
     void create_overlong_name_still_succeeds() throws Exception {
-        when(service.create(any(), any())).thenReturn(sampleDto());
-        String body = om.writeValueAsString(Map.of(
-                "channel", "email", "name", "n".repeat(300)));
-        mvc.perform(post("/api/v1/marketing/campaigns")
+        String body = om.writeValueAsString(Map.of("channel", "email", "name", "n".repeat(300)));
+        mvc.perform(post("/api/v1/marketing/campaigns").with(auth(owner))
                         .contentType(MediaType.APPLICATION_JSON).content(body))
-                .andExpect(status().isCreated());
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.status").value("draft"));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @CsvSource({
+            "no Idempotency-Key, '',    draft, 400, MISSING_IDEMPOTENCY_KEY",
+            "not a draft,        key-1, sent,  409, INVALID_STATE"})
+    void send_refusals(String label, String key, String status, int expected, String code) throws Exception {
+        UUID id = draft(owner, null, null).id();
+        if (!"draft".equals(status)) service.forceStatusForTest(id, status);
+        MockHttpServletRequestBuilder req = post("/api/v1/marketing/campaigns/{id}/send", id).with(auth(owner))
+                .contentType(MediaType.APPLICATION_JSON).content("{}");
+        if (!key.isEmpty()) req.header("Idempotency-Key", key);
+
+        mvc.perform(req)
+                .andExpect(status().is(expected))
+                .andExpect(jsonPath("$.error.code").value(code));
     }
 
     @Test
-    @WithStubOrganizer
-    void delete_non_draft_returns_409() throws Exception {
-        org.mockito.Mockito.doThrow(new com.imin.iminapi.security.ApiException(
-                        org.springframework.http.HttpStatus.CONFLICT,
-                        com.imin.iminapi.security.ErrorCode.INVALID_STATE,
-                        "Only draft campaigns can be deleted"))
-                .when(service).delete(any(), eq(CAMP));
-        mvc.perform(delete("/api/v1/marketing/campaigns/{id}", CAMP))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.error.code").value("INVALID_STATE"));
+    void send_valid_returns202_withTheStoredSendTime() throws Exception {
+        UUID id = draft(owner, null, null).id();
+
+        mvc.perform(post("/api/v1/marketing/campaigns/{id}/send", id).with(auth(owner))
+                        .header("Idempotency-Key", "key-" + UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.scheduledAt").isNotEmpty())
+                .andExpect(jsonPath("$.armed").value(false));
+    }
+
+    /** The remaining campaign routes over the real service answer their documented status. */
+    @ParameterizedTest(name = "{0} {1} on a {2} campaign")
+    @CsvSource({
+            "GET,  '',                draft,     200",
+            "POST, /duplicate,        sent,      201",
+            "POST, /preview-audience, draft,     200",
+            "POST, /test-send,        draft,     204",
+            "POST, /cancel,           scheduled, 200",
+            "POST, /retry,            failed,    202"})
+    void campaignRoutes_answerTheirStatus(String method, String suffix, String status, int expected) throws Exception {
+        flips.set(marketingProps, "fromAddress", "contact@imin.support");
+        UUID id = service.create(owner, new CreateCampaignRequest("email", "Routes", null, null,
+                "Subject", "Pre", "Body", null)).id();
+        if (!"draft".equals(status)) service.forceStatusForTest(id, status);
+        String path = "/api/v1/marketing/campaigns/" + id + suffix;
+        MockHttpServletRequestBuilder req = "GET".equals(method) ? get(path)
+                : post(path).contentType(MediaType.APPLICATION_JSON).content("{}");
+
+        mvc.perform(req.with(auth(owner))).andExpect(status().is(expected));
+    }
+
+    /** Another org's campaign is the no-leak 404 on every state-changing route, and stays as it was. */
+    @ParameterizedTest(name = "{0} on another org's {1} campaign")
+    @CsvSource({"/cancel, scheduled", "/retry, failed", "/send, draft"})
+    void anotherOrgsCampaign_isNotFound_andUntouched(String suffix, String status) throws Exception {
+        UUID id = draft(otherOwner, null, null).id();
+        if (!"draft".equals(status)) service.forceStatusForTest(id, status);
+
+        mvc.perform(post("/api/v1/marketing/campaigns/" + id + suffix).with(auth(owner))
+                        .header("Idempotency-Key", "key-" + UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
+
+        assertThat(campaigns.findByIdAndOrgId(id, otherOwner.orgId())).get()
+                .extracting(Campaign::getStatus).isEqualTo(status);
+    }
+
+    @Test
+    void emailTemplates_routeAnswersOk() throws Exception {
+        mvc.perform(get("/api/v1/marketing/email-templates").with(auth(owner)))
+                .andExpect(status().isOk());
+    }
+
+    private CampaignDto draft(AuthPrincipal p, UUID segmentId, UUID eventId) {
+        return service.create(p, new CreateCampaignRequest("email", "Launch night", segmentId, eventId,
+                null, null, null, null));
+    }
+
+    private static RequestPostProcessor auth(AuthPrincipal p) {
+        return authentication(new UsernamePasswordAuthenticationToken(p, null,
+                List.of(new SimpleGrantedAuthority("ROLE_" + p.role().name()))));
     }
 }
