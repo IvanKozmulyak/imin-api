@@ -21,9 +21,6 @@ import com.imin.iminapi.audienceplan.dto.SurveyResponseRequest;
 import com.imin.iminapi.audienceplan.service.ConsentGate;
 import com.imin.iminapi.audienceplan.service.DoorOptInService;
 import com.imin.iminapi.audienceplan.service.SurveyService;
-import com.imin.iminapi.config.TestRateLimitConfig;
-import com.imin.iminapi.email.EmailService;
-import com.imin.iminapi.email.EmailServiceTestConfig;
 import com.imin.iminapi.email.RecordingEmailService;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
@@ -35,15 +32,17 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PropertyFlips;
+import com.imin.iminapi.support.RecordingRateLimiter;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.web.servlet.MockMvc;
 
 import java.sql.Timestamp;
 import java.time.Duration;
@@ -55,11 +54,17 @@ import java.util.UUID;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-/** Double opt-in for door QR and survey sign-ups, end to end on H2 with the recording mail provider. */
-@SpringBootTest
-@Import({TestRateLimitConfig.class, EmailServiceTestConfig.class})
+/** Double opt-in for door QR and survey sign-ups, end to end with the recording mail provider, service and link. */
+@IminIntegrationTest
 class ConsentConfirmationServiceTest {
+
+    private static final String URL = "/api/v1/public/consent/confirm";
 
     private static final String ORG_NAME = "Vechirka Confirm";
     private static final String DOOR_VERSION = "door-org-named-2026-09";
@@ -77,7 +82,10 @@ class ConsentConfirmationServiceTest {
     @Autowired ConsentGate gate;
     @Autowired SendGateService sendGate;
     @Autowired AudiencePlanProperties props;
-    @Autowired EmailService email;
+    @Autowired PropertyFlips flips;
+    @Autowired RecordingEmailService mail;
+    @Autowired RecordingRateLimiter limiter;
+    @Autowired MockMvc mvc;
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
     @Autowired UserRepository users;
@@ -86,21 +94,21 @@ class ConsentConfirmationServiceTest {
     @Autowired SuppressionRepository suppressions;
     @Autowired JdbcTemplate jdbc;
 
-    private RecordingEmailService mail;
     private UUID orgId;
+    private String run;
+    private String orgContact;
     private AuthPrincipal owner;
     private Event event;
     private String doorToken;
 
     @BeforeEach
     void setUp() {
-        mail = (RecordingEmailService) email;
-        mail.clear();
-        props.setConsentConfirmationEmailsEnabled(true);
+        run = UUID.randomUUID().toString().substring(0, 8);
+        flips.set(props, "consentConfirmationEmailsEnabled", true);
         Organization o = new Organization();
         o.setName(ORG_NAME);
         o.setSlug("confirm-" + UUID.randomUUID().toString().substring(0, 12));
-        o.setContactEmail("confirm@example.com");
+        o.setContactEmail(orgContact = "confirm-" + run + "@example.com");
         o.setCountry("FR");
         orgId = orgs.save(o).getId();
         User u = new User();
@@ -127,9 +135,6 @@ class ConsentConfirmationServiceTest {
 
     @AfterEach
     void tearDown() {
-        props.setConsentConfirmationEmailsEnabled(false);
-        props.setBetaOrgIds(Set.of());
-        mail.clear();
         List<UUID> cids = jdbc.queryForList("select consumer_id from memberships where org_id = ?", UUID.class, orgId);
         jdbc.update("delete from consent_confirmation_tokens where org_id = ?", orgId);
         jdbc.update("delete from consent_records where membership_id in (select membership_id from memberships where org_id = ?)", orgId);
@@ -139,7 +144,7 @@ class ConsentConfirmationServiceTest {
         for (UUID cid : cids) jdbc.update("delete from consumers where consumer_id = ?", cid);
         jdbc.update("delete from marketing_optouts where org_id = ?", orgId);
         jdbc.update("delete from erased_addresses where org_id = ?", orgId);
-        jdbc.update("delete from erased_addresses where org_id is null and email_normalized like '%@confirm.test'");
+        jdbc.update("delete from erased_addresses where org_id is null and email_normalized like ?", "%-" + run + "@confirm.test");
         jdbc.update("delete from survey_responses where event_id = ?", event.getId());
         jdbc.update("delete from audit_logs where org_id = ?", orgId);
         jdbc.update("delete from events where org_id = ?", orgId);
@@ -151,24 +156,24 @@ class ConsentConfirmationServiceTest {
 
     @Test
     void flagOff_signUpSendsNothing_mintsNothing_andStaysPending() {
-        props.setConsentConfirmationEmailsEnabled(false);
+        flips.set(props, "consentConfirmationEmailsEnabled", false);
 
-        signUpAtDoor("off@confirm.test", "fr");
+        signUpAtDoor(a("off"), "fr");
 
-        assertThat(mail.sent()).isEmpty();
-        assertThat(tokenRows("off@confirm.test")).isEmpty();
-        assertThat(consentRows("off@confirm.test").get(0).get("confirmed_at")).isNull();
-        assertThat(membership("off@confirm.test").get("consent_status")).isEqualTo("never");
+        assertThat(ownMail()).isEmpty();
+        assertThat(tokenRows(a("off"))).isEmpty();
+        assertThat(consentRows(a("off")).get(0).get("confirmed_at")).isNull();
+        assertThat(membership(a("off")).get("consent_status")).isEqualTo("never");
     }
 
     @Test
     void doorSignUp_sendsOneEmail_fromTheOrganizerViaImin_withASevenDayLink() {
         Instant before = Instant.now();
-        signUpAtDoor("Guest@Confirm.test", "en");
+        signUpAtDoor("Guest-" + run + "@Confirm.test", "en");
 
-        assertThat(mail.sent()).hasSize(1);
-        RecordingEmailService.SentEmail sent = mail.lastSent();
-        assertThat(sent.to()).isEqualTo("guest@confirm.test");
+        assertThat(ownMail()).extracting(RecordingEmailService.SentEmail::to).containsExactly(a("guest"));
+        RecordingEmailService.SentEmail sent = lastOwn();
+        assertThat(sent.to()).isEqualTo(a("guest"));
         assertThat(sent.subject()).isEqualTo("Confirm your email for " + ORG_NAME);
         assertThat(mail.lastFrom()).isEqualTo("\"" + ORG_NAME + " via IMIN\" <noreply@imin.test>");
         String url = confirmUrlIn(sent.text());
@@ -179,10 +184,10 @@ class ConsentConfirmationServiceTest {
         assertThat(sent.html().split("href=", -1)).hasSize(2);
         assertThat(sent.headers()).isEmpty();
 
-        Map<String, Object> row = tokenRows("guest@confirm.test").get(0);
+        Map<String, Object> row = tokenRows(a("guest")).get(0);
         assertThat(row.get("locale")).isEqualTo("en");
         assertThat(row.get("used_at")).isNull();
-        assertThat(row.get("consent_record_id")).isEqualTo(consentRows("guest@confirm.test").get(0).get("id"));
+        assertThat(row.get("consent_record_id")).isEqualTo(consentRows(a("guest")).get(0).get("id"));
         Instant sentAt = instant(row.get("sent_at"));
         assertThat(sentAt).isBetween(before.minusSeconds(1), Instant.now().plusSeconds(1));
         assertThat(instant(row.get("expires_at"))).isEqualTo(sentAt.plus(Duration.ofDays(7)));
@@ -197,9 +202,9 @@ class ConsentConfirmationServiceTest {
             "en, Confirm your email for, Confirm my email",
             "de, Confirm your email for, Confirm my email"})
     void emailIsInThePageLocale(String locale, String subjectStart, String button) {
-        signUpAtDoor("locale-" + locale + "@confirm.test", locale);
+        signUpAtDoor(a("locale-" + locale), locale);
 
-        RecordingEmailService.SentEmail sent = mail.lastSent();
+        RecordingEmailService.SentEmail sent = lastOwn();
         assertThat(sent.subject()).isEqualTo(subjectStart + " " + ORG_NAME);
         assertThat(sent.html()).contains(button);
         assertThat(sent.text()).contains(button);
@@ -210,64 +215,64 @@ class ConsentConfirmationServiceTest {
         String token = survey.setEnabled(owner, event.getId(), true).surveyUrl().replaceAll(".*\\?t=", "");
 
         survey.submit(token, new SurveyResponseRequest(null, null, "friend", null, null, NOTICE, "es", true,
-                "survey@confirm.test", TEXT, SURVEY_VERSION, null));
+                a("survey"), TEXT, SURVEY_VERSION, null));
 
-        assertThat(mail.sent()).extracting(RecordingEmailService.SentEmail::to).containsExactly("survey@confirm.test");
-        assertThat(mail.lastSent().subject()).startsWith("Confirma tu correo");
-        assertThat(tokenRows("survey@confirm.test")).hasSize(1);
+        assertThat(ownMail()).extracting(RecordingEmailService.SentEmail::to).containsExactly(a("survey"));
+        assertThat(lastOwn().subject()).startsWith("Confirma tu correo");
+        assertThat(tokenRows(a("survey"))).hasSize(1);
     }
 
     @Test
     void secondSignUpWithin24h_sendsNoSecondEmail() {
-        signUpAtDoor("twice@confirm.test", "en");
-        signUpAtDoor("twice@confirm.test", "en");
+        signUpAtDoor(a("twice"), "en");
+        signUpAtDoor(a("twice"), "en");
 
-        assertThat(mail.sent()).hasSize(1);
-        assertThat(tokenRows("twice@confirm.test")).hasSize(1);
-        assertThat(consentRows("twice@confirm.test")).hasSize(2);
+        assertThat(ownMail()).extracting(RecordingEmailService.SentEmail::to).containsExactly(a("twice"));
+        assertThat(tokenRows(a("twice"))).hasSize(1);
+        assertThat(consentRows(a("twice"))).hasSize(2);
     }
 
     @Test
     void secondSignUpAfter24h_sendsAgain() {
-        signUpAtDoor("later@confirm.test", "en");
+        signUpAtDoor(a("later"), "en");
         jdbc.update("update consent_confirmation_tokens set sent_at = ? where org_id = ?",
                 Timestamp.from(Instant.now().minus(Duration.ofHours(25))), orgId);
 
-        signUpAtDoor("later@confirm.test", "fr");
+        signUpAtDoor(a("later"), "fr");
 
-        assertThat(mail.sent()).hasSize(2);
-        assertThat(tokenRows("later@confirm.test")).hasSize(2);
+        assertThat(ownMail()).extracting(RecordingEmailService.SentEmail::to).containsExactly(a("later"), a("later"));
+        assertThat(tokenRows(a("later"))).hasSize(2);
     }
 
     @Test
     void failedSend_keepsTheSignUp_andRemovesTheEmailRowSoALaterSignUpRetries() {
         mail.failNextSendWith(new IllegalStateException("provider down"));
 
-        assertThat(signUpAtDoor("fails@confirm.test", "en")).isTrue();
+        assertThat(signUpAtDoor(a("fails"), "en")).isTrue();
 
-        assertThat(consentRows("fails@confirm.test")).hasSize(1);
-        assertThat(tokenRows("fails@confirm.test")).isEmpty();
-        signUpAtDoor("fails@confirm.test", "en");
-        assertThat(mail.sent()).hasSize(1);
+        assertThat(consentRows(a("fails"))).hasSize(1);
+        assertThat(tokenRows(a("fails"))).isEmpty();
+        signUpAtDoor(a("fails"), "en");
+        assertThat(ownMail()).extracting(RecordingEmailService.SentEmail::to).containsExactly(a("fails"));
     }
 
     // ── preview (GET) ─────────────────────────────────────────────────────
 
     @Test
     void preview_ofAFreshLink_isPendingWithTheOrganizer_andChangesNothing() {
-        String token = tokenOf(confirmUrlIn(signUpAndMail("preview@confirm.test")));
+        String token = tokenOf(confirmUrlIn(signUpAndMail(a("preview"))));
 
         assertThat(service.preview(token)).isEqualTo(new ConsentConfirmationResponse("pending", ORG_NAME));
         assertThat(service.preview(token).state()).isEqualTo("pending");
 
-        assertThat(tokenRows("preview@confirm.test").get(0).get("used_at")).isNull();
-        assertThat(consentRows("preview@confirm.test").get(0).get("confirmed_at")).isNull();
+        assertThat(tokenRows(a("preview")).get(0).get("used_at")).isNull();
+        assertThat(consentRows(a("preview")).get(0).get("confirmed_at")).isNull();
     }
 
     @Test
     void preview_ofAnOptedOutAddress_isInvalid() {
-        String token = tokenOf(confirmUrlIn(signUpAndMail("preview-out@confirm.test")));
-        unsubscribe("preview-out@confirm.test");
+        String token = tokenOf(confirmUrlIn(signUpAndMail(a("preview-out"))));
+        unsubscribe(a("preview-out"));
 
         assertThat(service.preview(token)).isEqualTo(ConsentConfirmationResponse.invalid());
     }
@@ -276,24 +281,24 @@ class ConsentConfirmationServiceTest {
 
     @Test
     void confirm_setsConfirmedAt_grantsLikeACheckoutConsent_liftsTheObjection_andAudits() {
-        String token = tokenOf(confirmUrlIn(signUpAndMail("yes@confirm.test")));
-        UUID mid = membershipId("yes@confirm.test");
+        String token = tokenOf(confirmUrlIn(signUpAndMail(a("yes"))));
+        UUID mid = membershipId(a("yes"));
         jdbc.update("update memberships set objected_profiling = true where membership_id = ?", mid);
         assertThat(gate.canMarket(orgId, mid)).isFalse();
 
         ConsentConfirmationResponse r = service.confirm(token);
 
         assertThat(r).isEqualTo(new ConsentConfirmationResponse("confirmed", ORG_NAME));
-        Map<String, Object> rec = consentRows("yes@confirm.test").get(0);
+        Map<String, Object> rec = consentRows(a("yes")).get(0);
         assertThat(rec.get("confirmed_at")).isNotNull();
         assertThat(rec.get("confirmation_required")).isEqualTo(true);
-        Map<String, Object> m = membership("yes@confirm.test");
+        Map<String, Object> m = membership(a("yes"));
         assertThat(m.get("consent_status")).isEqualTo("subscribed");
         assertThat(m.get("consent_basis")).isEqualTo("explicit");
         assertThat(m.get("objected_profiling")).isEqualTo(false);
         assertThat(sendGate.evaluate(orgId, List.of(mid)).sendable()).containsExactly(mid);
         assertThat(gate.canMarket(orgId, mid)).isTrue();
-        assertThat(tokenRows("yes@confirm.test").get(0).get("used_at")).isNotNull();
+        assertThat(tokenRows(a("yes")).get(0).get("used_at")).isNotNull();
         assertThat(jdbc.queryForList("select action, target_id, actor_id, summary from audit_logs where org_id = ?", orgId))
                 .singleElement().satisfies(a -> {
                     assertThat(a.get("action")).isEqualTo("CONSENT_CONFIRMED");
@@ -305,46 +310,46 @@ class ConsentConfirmationServiceTest {
 
     @Test
     void confirm_alsoConfirmsAnEarlierSignUpThatGotNoEmailOfItsOwn() {
-        String token = tokenOf(confirmUrlIn(signUpAndMail("both@confirm.test")));
-        signUpAtDoor("both@confirm.test", "en");
+        String token = tokenOf(confirmUrlIn(signUpAndMail(a("both"))));
+        signUpAtDoor(a("both"), "en");
 
         service.confirm(token);
 
-        assertThat(consentRows("both@confirm.test")).hasSize(2)
+        assertThat(consentRows(a("both"))).hasSize(2)
                 .allSatisfy(r -> assertThat(r.get("confirmed_at")).isNotNull());
     }
 
     @Test
     void confirm_twice_isInvalidTheSecondTime() {
-        String token = tokenOf(confirmUrlIn(signUpAndMail("reuse@confirm.test")));
+        String token = tokenOf(confirmUrlIn(signUpAndMail(a("reuse"))));
 
         assertThat(service.confirm(token).state()).isEqualTo("confirmed");
-        Object firstConfirmedAt = consentRows("reuse@confirm.test").get(0).get("confirmed_at");
+        Object firstConfirmedAt = consentRows(a("reuse")).get(0).get("confirmed_at");
 
         assertThat(service.confirm(token)).isEqualTo(ConsentConfirmationResponse.invalid());
         assertThat(service.preview(token)).isEqualTo(ConsentConfirmationResponse.invalid());
-        assertThat(consentRows("reuse@confirm.test").get(0).get("confirmed_at")).isEqualTo(firstConfirmedAt);
+        assertThat(consentRows(a("reuse")).get(0).get("confirmed_at")).isEqualTo(firstConfirmedAt);
     }
 
     @Test
     void confirm_afterSevenDays_isInvalid_andConfirmsNothing() {
-        String token = tokenOf(confirmUrlIn(signUpAndMail("late@confirm.test")));
+        String token = tokenOf(confirmUrlIn(signUpAndMail(a("late"))));
         jdbc.update("update consent_confirmation_tokens set expires_at = ? where org_id = ?",
                 Timestamp.from(Instant.now().minusSeconds(1)), orgId);
 
         assertThat(service.preview(token)).isEqualTo(ConsentConfirmationResponse.invalid());
         assertThat(service.confirm(token)).isEqualTo(ConsentConfirmationResponse.invalid());
-        assertThat(consentRows("late@confirm.test").get(0).get("confirmed_at")).isNull();
-        assertThat(tokenRows("late@confirm.test").get(0).get("used_at")).isNull();
+        assertThat(consentRows(a("late")).get(0).get("confirmed_at")).isNull();
+        assertThat(tokenRows(a("late")).get(0).get("used_at")).isNull();
     }
 
     @Test
     void confirm_withATamperedToken_isInvalid() {
-        String token = tokenOf(confirmUrlIn(signUpAndMail("tamper@confirm.test")));
+        String token = tokenOf(confirmUrlIn(signUpAndMail(a("tamper"))));
         String tampered = token.substring(0, token.length() - 1) + (token.endsWith("A") ? "B" : "A");
 
         assertThat(service.confirm(tampered)).isEqualTo(ConsentConfirmationResponse.invalid());
-        assertThat(consentRows("tamper@confirm.test").get(0).get("confirmed_at")).isNull();
+        assertThat(consentRows(a("tamper")).get(0).get("confirmed_at")).isNull();
     }
 
     @Test
@@ -357,32 +362,32 @@ class ConsentConfirmationServiceTest {
 
     @Test
     void confirm_whileTheOrgIsOffTheAudienceTool_isInvalid() {
-        String token = tokenOf(confirmUrlIn(signUpAndMail("beta@confirm.test")));
-        props.setBetaOrgIds(Set.of(UUID.randomUUID()));
+        String token = tokenOf(confirmUrlIn(signUpAndMail(a("beta"))));
+        flips.set(props, "betaOrgIds", Set.of(UUID.randomUUID()));
 
         assertThat(service.confirm(token)).isEqualTo(ConsentConfirmationResponse.invalid());
-        assertThat(consentRows("beta@confirm.test").get(0).get("confirmed_at")).isNull();
+        assertThat(consentRows(a("beta")).get(0).get("confirmed_at")).isNull();
     }
 
     @Test
     void confirm_afterAnUnsubscribe_neverResurrectsIt_andBurnsTheLink() {
-        String token = tokenOf(confirmUrlIn(signUpAndMail("unsub@confirm.test")));
-        unsubscribe("unsub@confirm.test");
+        String token = tokenOf(confirmUrlIn(signUpAndMail(a("unsub"))));
+        unsubscribe(a("unsub"));
 
         assertThat(service.confirm(token)).isEqualTo(ConsentConfirmationResponse.invalid());
 
-        assertThat(membership("unsub@confirm.test").get("consent_status")).isEqualTo("unsubscribed");
-        assertThat(consentRows("unsub@confirm.test")).allSatisfy(r -> assertThat(r.get("confirmed_at")).isNull());
-        assertThat(tokenRows("unsub@confirm.test").get(0).get("used_at")).isNotNull();
+        assertThat(membership(a("unsub")).get("consent_status")).isEqualTo("unsubscribed");
+        assertThat(consentRows(a("unsub"))).allSatisfy(r -> assertThat(r.get("confirmed_at")).isNull());
+        assertThat(tokenRows(a("unsub")).get(0).get("used_at")).isNotNull();
         assertThat(jdbc.queryForObject("select count(*) from audit_logs where org_id = ? and action = 'CONSENT_CONFIRMED'",
                 Integer.class, orgId)).isZero();
     }
 
     @Test
     void confirm_ofAStickyOptOut_isInvalid() {
-        assertNotResurrected("sticky@confirm.test", (mid) -> {
+        assertNotResurrected(a("sticky"), (mid) -> {
             MarketingOptOut o = new MarketingOptOut();
-            o.setEmailNormalized("sticky@confirm.test");
+            o.setEmailNormalized(a("sticky"));
             o.setOrgId(orgId);
             o.setChannel("email");
             o.setSource("test");
@@ -392,7 +397,7 @@ class ConsentConfirmationServiceTest {
 
     @Test
     void confirm_ofAMarketingSuppressedMember_isInvalid() {
-        assertNotResurrected("suppressed@confirm.test", (mid) -> {
+        assertNotResurrected(a("suppressed"), (mid) -> {
             SuppressionEntry s = new SuppressionEntry();
             s.setOrgId(orgId);
             s.setMembershipId(mid);
@@ -404,46 +409,97 @@ class ConsentConfirmationServiceTest {
 
     @Test
     void confirm_ofAnErasePendingMember_isInvalid() {
-        assertNotResurrected("pending-erase@confirm.test", (mid) ->
+        assertNotResurrected(a("pending-erase"), (mid) ->
                 jdbc.update("update memberships set status = 'erase_pending' where membership_id = ?", mid));
     }
 
     @Test
     void confirm_ofAnErasedAddress_isInvalid() {
-        assertNotResurrected("erased@confirm.test", (mid) -> {
+        assertNotResurrected(a("erased"), (mid) -> {
             ErasedAddress a = new ErasedAddress();
             a.setOrgId(orgId);
-            a.setEmailNormalized("erased@confirm.test");
+            a.setEmailNormalized(a("erased"));
             erased.save(a);
         });
     }
 
     @Test
     void confirm_ofAPlatformWideErasedAddress_isInvalid() {
-        assertNotResurrected("erased-everywhere@confirm.test", (mid) -> {
+        assertNotResurrected(a("erased-everywhere"), (mid) -> {
             ErasedAddress a = new ErasedAddress();
-            a.setEmailNormalized("erased-everywhere@confirm.test");
+            a.setEmailNormalized(a("erased-everywhere"));
             erased.save(a);
         });
     }
 
     @Test
     void confirm_ofAMemberInAnyNonActiveStatus_isInvalid() {
-        assertNotResurrected("archived@confirm.test", (mid) ->
+        assertNotResurrected(a("archived"), (mid) ->
                 jdbc.update("update memberships set status = 'archived' where membership_id = ?", mid));
+    }
+
+    // ── the public link over HTTP ─────────────────────────────────────────
+
+    /** The buyer site previews from one server IP; a shared bucket would turn a busy hour into dead links. */
+    @Test
+    void http_get_previewsWithoutAuth_isNotRateLimited_isNotCached_andConfirmsNothing() throws Exception {
+        String token = tokenOf(confirmUrlIn(signUpAndMail(a("http-get"))));
+
+        mvc.perform(get(URL).param("t", token))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.state").value("pending"))
+                .andExpect(jsonPath("$.organizerName").value(ORG_NAME));
+
+        assertThat(limiter.calls()).noneMatch(c -> "consent-confirm".equals(c.bucket()));
+        assertThat(consentRows(a("http-get")).get(0).get("confirmed_at")).isNull();
+    }
+
+    @Test
+    void http_post_confirmsWithoutAuth_chargesTheBucketPerIp_andIsNotCached() throws Exception {
+        String token = tokenOf(confirmUrlIn(signUpAndMail(a("http-post"))));
+
+        mvc.perform(post(URL).param("t", token))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.state").value("confirmed"))
+                .andExpect(jsonPath("$.organizerName").value(ORG_NAME));
+
+        assertThat(limiter.calls()).contains(new RecordingRateLimiter.Call("consent-confirm", "ip:127.0.0.1"));
+        assertThat(consentRows(a("http-post")).get(0).get("confirmed_at")).isNotNull();
+    }
+
+    @Test
+    void http_post_withoutToken_answersTheNeutralInvalid() throws Exception {
+        mvc.perform(post(URL))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.state").value("invalid"))
+                .andExpect(jsonPath("$.organizerName").doesNotExist());
+    }
+
+    @Test
+    void http_post_rateLimited_is429_andConfirmsNothing() throws Exception {
+        String token = tokenOf(confirmUrlIn(signUpAndMail(a("http-limited"))));
+        limiter.limit("consent-confirm", 0);
+
+        mvc.perform(post(URL).param("t", token))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.error.code").value("RATE_LIMITED"));
+
+        assertThat(consentRows(a("http-limited")).get(0).get("confirmed_at")).isNull();
     }
 
     // ── records ───────────────────────────────────────────────────────────
 
     @Test
     void dsarExport_andConsentHistory_carryTheConfirmation() {
-        String token = tokenOf(confirmUrlIn(signUpAndMail("dsar@confirm.test")));
-        UUID mid = membershipId("dsar@confirm.test");
+        String token = tokenOf(confirmUrlIn(signUpAndMail(a("dsar"))));
+        UUID mid = membershipId(a("dsar"));
         service.confirm(token);
 
         DsarRecords records = dsar.exportRecords(orgId, mid, owner);
         assertThat(records.consentConfirmations()).singleElement().satisfies(c -> {
-            assertThat(c.consentRecordId()).isEqualTo(consentRows("dsar@confirm.test").get(0).get("id"));
+            assertThat(c.consentRecordId()).isEqualTo(consentRows(a("dsar")).get(0).get("id"));
             assertThat(c.locale()).isEqualTo("en");
             assertThat(c.sentAt()).isNotNull();
             assertThat(c.expiresAt()).isEqualTo(c.sentAt().plus(Duration.ofDays(7)));
@@ -458,8 +514,8 @@ class ConsentConfirmationServiceTest {
 
     @Test
     void erasingTheMember_removesItsConfirmationEmails() {
-        signUpAndMail("gone@confirm.test");
-        UUID mid = membershipId("gone@confirm.test");
+        signUpAndMail(a("gone"));
+        UUID mid = membershipId(a("gone"));
         jdbc.update("delete from consent_records where membership_id = ?", mid);
 
         assertThat(jdbc.queryForObject("select count(*) from consent_confirmation_tokens where membership_id = ?",
@@ -467,6 +523,22 @@ class ConsentConfirmationServiceTest {
     }
 
     // ── plumbing ──────────────────────────────────────────────────────────
+
+    /** Mail to this run's addresses or org contact; late async sends from other classes are ignored. */
+    private List<RecordingEmailService.SentEmail> ownMail() {
+        return mail.sent().stream()
+                .filter(m -> m.to().endsWith("-" + run + "@confirm.test") || m.to().equals(orgContact)).toList();
+    }
+
+    private RecordingEmailService.SentEmail lastOwn() {
+        List<RecordingEmailService.SentEmail> own = ownMail();
+        return own.isEmpty() ? null : own.get(own.size() - 1);
+    }
+
+    /** Unique per test: consumers and platform-wide erasure entries are keyed by address. */
+    private String a(String local) {
+        return local + "-" + run + "@confirm.test";
+    }
 
     private void assertNotResurrected(String address, Consumer<UUID> optOut) {
         String token = tokenOf(confirmUrlIn(signUpAndMail(address)));
@@ -491,7 +563,7 @@ class ConsentConfirmationServiceTest {
     /** Signs up in English and returns the email text. */
     private String signUpAndMail(String address) {
         signUpAtDoor(address, "en");
-        return mail.lastSent().text();
+        return lastOwn().text();
     }
 
     private void unsubscribe(String address) {

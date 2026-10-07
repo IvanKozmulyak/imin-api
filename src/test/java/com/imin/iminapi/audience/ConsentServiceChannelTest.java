@@ -5,33 +5,30 @@ import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsentRecordRepository;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
+import com.imin.iminapi.audience.service.ConsentOrigin;
 import com.imin.iminapi.audience.service.ConsentService;
-import com.imin.iminapi.config.TestRateLimitConfig;
-import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.model.UserRole;
+import com.imin.iminapi.security.AuthPrincipal;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Spec §2.2 / §7: ConsentService.capture becomes channel-aware. An SMS capture
- * writes a channel='sms' proof row and the membership's SMS consent state; the
- * default (email) overload keeps existing behaviour.
+ * Spec §2.2 / §7: ConsentService is channel-aware. An SMS capture or unsubscribe
+ * writes a channel='sms' proof row and touches only the membership's SMS state;
+ * the default (email) overloads keep existing behaviour.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class ConsentServiceChannelTest {
 
     @Autowired ConsentService consentService;
     @Autowired MembershipRepository membershipRepo;
     @Autowired ConsumerRepository consumerRepo;
     @Autowired ConsentRecordRepository consentRepo;
-    @MockitoBean AuditLogger auditLogger;
 
     private UUID seedMembership(UUID orgId) {
         Consumer c = new Consumer();
@@ -41,6 +38,14 @@ class ConsentServiceChannelTest {
         Membership m = new Membership();
         m.setOrgId(orgId);
         m.setConsumerId(c.getConsumerId());
+        return membershipRepo.save(m).getMembershipId();
+    }
+
+    private UUID seedSubscribed(UUID orgId) {
+        UUID membershipId = seedMembership(orgId);
+        Membership m = membershipRepo.findByIdAndOrgId(membershipId, orgId).orElseThrow();
+        m.setConsentStatus("subscribed");
+        m.setConsentBasis("explicit");
         return membershipRepo.save(m).getMembershipId();
     }
 
@@ -82,5 +87,38 @@ class ConsentServiceChannelTest {
 
         assertThat(consentRepo.findByMembershipId(membershipId))
                 .anySatisfy(r -> assertThat(r.getChannel()).isEqualTo("email"));
+    }
+
+    @Test
+    void unsubscribe_withSmsChannel_writesSmsConsentRecord() {
+        UUID orgId = UUID.randomUUID();
+        UUID membershipId = seedSubscribed(orgId);
+
+        AuthPrincipal system = new AuthPrincipal(null, orgId, UserRole.MEMBER, null);
+        consentService.unsubscribe(orgId, membershipId, "one_click", "sms",
+                ConsentOrigin.DATA_SUBJECT, system);
+
+        Membership after = membershipRepo.findByIdAndOrgId(membershipId, orgId).orElseThrow();
+        // Channel isolation (§2.2): SMS unsubscribe clears the SMS state only —
+        // the email consent pair is untouched.
+        assertThat(after.getSmsConsentStatus()).isEqualTo("unsubscribed");
+        assertThat(after.getConsentStatus()).isEqualTo("subscribed");
+        assertThat(consentRepo.findByMembershipId(membershipId).stream()
+                .anyMatch(r -> "sms".equals(r.getChannel())
+                        && "unsubscribed".equals(r.getStatus()))).isTrue();
+    }
+
+    @Test
+    void unsubscribe_backCompatOverload_defaultsToEmailChannel() {
+        UUID orgId = UUID.randomUUID();
+        UUID membershipId = seedSubscribed(orgId);
+
+        AuthPrincipal system = new AuthPrincipal(null, orgId, UserRole.MEMBER, null);
+        consentService.unsubscribe(orgId, membershipId, "dsar_object",
+                ConsentOrigin.DATA_SUBJECT, system);
+
+        assertThat(consentRepo.findByMembershipId(membershipId).stream()
+                .anyMatch(r -> "email".equals(r.getChannel())
+                        && "unsubscribed".equals(r.getStatus()))).isTrue();
     }
 }

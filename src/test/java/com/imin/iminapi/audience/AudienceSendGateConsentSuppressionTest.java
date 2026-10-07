@@ -3,26 +3,22 @@ package com.imin.iminapi.audience;
 import com.imin.iminapi.audience.model.*;
 import com.imin.iminapi.audience.repository.*;
 import com.imin.iminapi.audience.service.*;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.*;
 import com.imin.iminapi.repository.*;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.service.audit.AuditActions;
-import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.support.AuditRows;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
 import org.junit.jupiter.api.*;
-import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.jdbc.core.JdbcTemplate;
 
-import javax.sql.DataSource;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
 
 /**
  * Load-bearing trio tests: CONSENT, SUPPRESSION, SEND GATE.
@@ -42,43 +38,48 @@ import static org.mockito.Mockito.*;
  *
  * <p>Suppression tests: marketing (org-scoped) vs deliverability (shared); two-scope independence.
  *
- * <p>Audit: ArgumentCaptor asserts the correct AuditActions constant per mutation.
+ * <p>Audit: each mutation's persisted audit row is asserted in its own test.
+ *
+ * <p>Every address is unique: consumers and deliverability suppressions are keyed by email across orgs.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class AudienceSendGateConsentSuppressionTest {
 
     @Autowired ConsumerRepository consumerRepo;
     @Autowired MembershipRepository membershipRepo;
     @Autowired ConsentRecordRepository consentRepo;
     @Autowired SuppressionRepository suppressionRepo;
-    @Autowired OrganizationRepository orgRepo;
+    @Autowired IminFixtures fx;
+    @Autowired AuditRows audit;
+    @Autowired JdbcTemplate jdbc;
 
     @Autowired SendGateService sendGateService;
     @Autowired ConsentService consentService;
     @Autowired SuppressionService suppressionService;
     @Autowired AudienceOrderProjector orderProjector;
 
-    @MockitoBean AuditLogger auditLogger;
-
     private UUID orgA;
     private UUID orgB;
     private AuthPrincipal principalA;
     private AuthPrincipal principalB;
 
-    @Autowired DataSource dataSource;
-
     @BeforeEach
     void setUp() {
-        wipe();
-        orgA = org("orgA").getId();
-        orgB = org("orgB").getId();
+        orgA = fx.org().getId();
+        orgB = fx.org().getId();
         principalA = new AuthPrincipal(UUID.randomUUID(), orgA, UserRole.OWNER, UUID.randomUUID());
         principalB = new AuthPrincipal(UUID.randomUUID(), orgB, UserRole.OWNER, UUID.randomUUID());
     }
 
+    /** Own memberships (consent and marketing suppressions cascade) and orgs only. */
     @AfterEach
-    void tearDown() { wipe(); }
+    void tearDown() {
+        try {
+            jdbc.update("delete from memberships where org_id in (?, ?)", orgA, orgB);
+        } finally {
+            OrgRows.delete(jdbc, List.of(orgA, orgB));
+        }
+    }
 
     // ══════════════════════════════════════════════════════════════════════════
     // SEND GATE FR-SND-1 — full matrix
@@ -87,7 +88,7 @@ class AudienceSendGateConsentSuppressionTest {
     /** (a) marketing-unsubscribed → excluded with reason=marketing_unsubscribed */
     @Test
     void sendgate_a_unsubscribed_excluded() {
-        UUID mid = seedSubscribed(orgA, "unsub@gate.com", "explicit", principalA);
+        UUID mid = seedSubscribed(orgA, fx.email("unsub"), "explicit", principalA);
 
         consentService.unsubscribe(orgA, mid, "test", ConsentOrigin.OPERATOR, principalA);
 
@@ -101,7 +102,7 @@ class AudienceSendGateConsentSuppressionTest {
     /** (b) marketing-suppressed (this org) → excluded with reason=marketing_suppressed */
     @Test
     void sendgate_b_marketing_suppressed_excluded() {
-        UUID mid = seedSubscribed(orgA, "mktsupp@gate.com", "explicit", principalA);
+        UUID mid = seedSubscribed(orgA, fx.email("mktsupp"), "explicit", principalA);
 
         suppressionService.addMarketing(orgA, mid, SuppressionEntry.REASON_MANUAL, principalA);
 
@@ -117,7 +118,7 @@ class AudienceSendGateConsentSuppressionTest {
      */
     @Test
     void sendgate_c_deliverability_suppressed_excluded_even_without_org_suppression() {
-        String email = "bounce@gate.com";
+        String email = fx.email("bounce");
         UUID mid = seedSubscribed(orgA, email, "explicit", principalA);
 
         // System writes deliverability suppression — no org_id
@@ -132,8 +133,9 @@ class AudienceSendGateConsentSuppressionTest {
     /** (d) no-lawful-basis (S5: ingestion writes no consent row) → excluded */
     @Test
     void sendgate_d_no_lawful_basis_excluded() {
-        orderProjector.upsertMembership(orgA, "nolawful@gate.com", "NoLawful");
-        Consumer c = consumerRepo.findByNormalizedEmail("nolawful@gate.com").orElseThrow();
+        String nolawfulEmail = fx.email("nolawful");
+        orderProjector.upsertMembership(orgA, nolawfulEmail, "NoLawful");
+        Consumer c = consumerRepo.findByNormalizedEmail(nolawfulEmail).orElseThrow();
         Membership m = membershipRepo.findByOrgIdAndConsumerId(orgA, c.getConsumerId()).orElseThrow();
 
         assertThat(m.getConsentStatus()).isEqualTo("never");
@@ -152,7 +154,7 @@ class AudienceSendGateConsentSuppressionTest {
     @Test
     void sendgate_e_cross_org_ids_silently_dropped_not_leaked() {
         // Seed a fully sendable membership in orgB
-        UUID midB = seedSubscribed(orgB, "legit@orgb.com", "explicit", principalB);
+        UUID midB = seedSubscribed(orgB, fx.email("legit"), "explicit", principalB);
 
         // orgA evaluates using orgB's membership ID
         SendGateService.GateResult r = sendGateService.evaluate(orgA, List.of(midB));
@@ -165,7 +167,7 @@ class AudienceSendGateConsentSuppressionTest {
     /** (f) only subscribed + consented + unsuppressed is sendable */
     @Test
     void sendgate_f_subscribed_consented_unsuppressed_sendable() {
-        UUID mid = seedSubscribed(orgA, "ok@gate.com", "explicit", principalA);
+        UUID mid = seedSubscribed(orgA, fx.email("ok"), "explicit", principalA);
 
         SendGateService.GateResult r = sendGateService.evaluate(orgA, List.of(mid));
         assertThat(r.sendable()).containsExactly(mid);
@@ -179,7 +181,7 @@ class AudienceSendGateConsentSuppressionTest {
      */
     @Test
     void sendgate_f2_resubscriber_is_sendable_m3_regression() {
-        UUID mid = seedSubscribed(orgA, "resub@gate.com", "explicit", principalA);
+        UUID mid = seedSubscribed(orgA, fx.email("resub"), "explicit", principalA);
 
         // Unsubscribe
         consentService.unsubscribe(orgA, mid, "user-request", ConsentOrigin.OPERATOR, principalA);
@@ -209,12 +211,13 @@ class AudienceSendGateConsentSuppressionTest {
     /** Mixed batch: one sendable, one unsubscribed, one no-basis */
     @Test
     void sendgate_mixed_batch_correct_partition() {
-        UUID sendable = seedSubscribed(orgA, "s@gate.com", "explicit", principalA);
-        UUID unsubbed = seedSubscribed(orgA, "u@gate.com", "explicit", principalA);
+        UUID sendable = seedSubscribed(orgA, fx.email("s"), "explicit", principalA);
+        UUID unsubbed = seedSubscribed(orgA, fx.email("u"), "explicit", principalA);
         consentService.unsubscribe(orgA, unsubbed, "test", ConsentOrigin.OPERATOR, principalA);
 
-        orderProjector.upsertMembership(orgA, "nb@gate.com", "NB");
-        Consumer nbC = consumerRepo.findByNormalizedEmail("nb@gate.com").orElseThrow();
+        String nbEmail = fx.email("nb");
+        orderProjector.upsertMembership(orgA, nbEmail, "NB");
+        Consumer nbC = consumerRepo.findByNormalizedEmail(nbEmail).orElseThrow();
         UUID noBasis = membershipRepo.findByOrgIdAndConsumerId(orgA, nbC.getConsumerId())
                 .orElseThrow().getMembershipId();
 
@@ -231,8 +234,9 @@ class AudienceSendGateConsentSuppressionTest {
     /** Unchecked default: ingested member has consent_status='never', basis=null */
     @Test
     void consent_unchecked_default_never() {
-        orderProjector.upsertMembership(orgA, "default@consent.com", "D");
-        Consumer c = consumerRepo.findByNormalizedEmail("default@consent.com").orElseThrow();
+        String defaultEmail = fx.email("default");
+        orderProjector.upsertMembership(orgA, defaultEmail, "D");
+        Consumer c = consumerRepo.findByNormalizedEmail(defaultEmail).orElseThrow();
         Membership m = membershipRepo.findByOrgIdAndConsumerId(orgA, c.getConsumerId()).orElseThrow();
 
         assertThat(m.getConsentStatus()).isEqualTo("never");
@@ -242,8 +246,9 @@ class AudienceSendGateConsentSuppressionTest {
     /** Capture appends immutable proof row and updates denormalized membership columns */
     @Test
     void consent_capture_appends_row_updates_membership() {
-        orderProjector.upsertMembership(orgA, "cap@consent.com", "C");
-        Consumer c = consumerRepo.findByNormalizedEmail("cap@consent.com").orElseThrow();
+        String capEmail = fx.email("cap");
+        orderProjector.upsertMembership(orgA, capEmail, "C");
+        Consumer c = consumerRepo.findByNormalizedEmail(capEmail).orElseThrow();
         Membership m = membershipRepo.findByOrgIdAndConsumerId(orgA, c.getConsumerId()).orElseThrow();
 
         consentService.capture(orgA, m.getMembershipId(), "explicit", "signup-form",
@@ -260,12 +265,13 @@ class AudienceSendGateConsentSuppressionTest {
         Membership updated = membershipRepo.findByIdAndOrgId(m.getMembershipId(), orgA).orElseThrow();
         assertThat(updated.getConsentStatus()).isEqualTo("subscribed");
         assertThat(updated.getConsentBasis()).isEqualTo("explicit");
+        audit.assertRecorded(orgA, AuditActions.CONSENT_CAPTURED, "membership", m.getMembershipId());
     }
 
     /** Prior consent rows are untouched when unsubscribing — append-only invariant */
     @Test
     void consent_unsubscribe_prior_rows_untouched() {
-        UUID mid = seedSubscribed(orgA, "unsub@consent.com", "explicit", principalA);
+        UUID mid = seedSubscribed(orgA, fx.email("unsub"), "explicit", principalA);
 
         consentService.unsubscribe(orgA, mid, "user-unsubscribe-link", ConsentOrigin.OPERATOR, principalA);
 
@@ -278,12 +284,13 @@ class AudienceSendGateConsentSuppressionTest {
         assertThat(records.get(1).getStatus()).isEqualTo("unsubscribed");
         assertThat(records.get(1).getLawfulBasis()).isNull();
         assertThat(records.get(1).getSource()).isEqualTo("user-unsubscribe-link");
+        audit.assertRecorded(orgA, AuditActions.CONSENT_UNSUBSCRIBED, "membership", mid);
     }
 
     /** Unsubscribe is SYNCHRONOUS — gate sees the new state in the same logical transaction */
     @Test
     void consent_unsubscribe_synchronous_gate_sees_it_immediately() {
-        UUID mid = seedSubscribed(orgA, "sync@consent.com", "explicit", principalA);
+        UUID mid = seedSubscribed(orgA, fx.email("sync"), "explicit", principalA);
         assertThat(sendGateService.evaluate(orgA, List.of(mid)).sendable()).containsExactly(mid);
 
         consentService.unsubscribe(orgA, mid, "sync-test", ConsentOrigin.OPERATOR, principalA);
@@ -297,8 +304,9 @@ class AudienceSendGateConsentSuppressionTest {
     /** soft_opt_in basis is also valid lawful basis for send gate */
     @Test
     void consent_soft_opt_in_is_valid_lawful_basis() {
-        orderProjector.upsertMembership(orgA, "soft@consent.com", "S");
-        Consumer c = consumerRepo.findByNormalizedEmail("soft@consent.com").orElseThrow();
+        String softEmail = fx.email("soft");
+        orderProjector.upsertMembership(orgA, softEmail, "S");
+        Consumer c = consumerRepo.findByNormalizedEmail(softEmail).orElseThrow();
         Membership m = membershipRepo.findByOrgIdAndConsumerId(orgA, c.getConsumerId()).orElseThrow();
 
         consentService.capture(orgA, m.getMembershipId(), "soft_opt_in", "purchase-flow",
@@ -315,7 +323,7 @@ class AudienceSendGateConsentSuppressionTest {
     /** Multiple capture calls each append a row; membership reflects the latest */
     @Test
     void consent_multiple_captures_all_append() {
-        UUID mid = seedSubscribed(orgA, "multi@consent.com", "soft_opt_in", principalA);
+        UUID mid = seedSubscribed(orgA, fx.email("multi"), "soft_opt_in", principalA);
         // Upgrade to explicit
         consentService.capture(orgA, mid, "explicit", "gdpr-double-opt-in", "email link clicked", principalA);
 
@@ -335,19 +343,21 @@ class AudienceSendGateConsentSuppressionTest {
     /** Marketing suppression added via SuppressionService is idempotent */
     @Test
     void suppression_marketing_add_idempotent() {
-        UUID mid = seedSubscribed(orgA, "idem@supp.com", "explicit", principalA);
+        UUID mid = seedSubscribed(orgA, fx.email("idem"), "explicit", principalA);
 
         SuppressionEntry s1 = suppressionService.addMarketing(orgA, mid, SuppressionEntry.REASON_MANUAL, principalA);
         SuppressionEntry s2 = suppressionService.addMarketing(orgA, mid, SuppressionEntry.REASON_MANUAL, principalA);
 
         assertThat(s1.getId()).isEqualTo(s2.getId());
         assertThat(suppressionRepo.findMarketingByOrg(orgA)).hasSize(1);
+        // The repeat returns the existing entry and writes no second audit row.
+        audit.assertRecorded(orgA, AuditActions.SUPPRESSION_ADDED, "membership", mid);
     }
 
     /** Marketing suppression is org-scoped — removing for orgA does not affect orgB */
     @Test
     void suppression_marketing_scoped_to_org() {
-        String email = "scope@supp.com";
+        String email = fx.email("scope");
         orderProjector.upsertMembership(orgA, email, email);
         orderProjector.upsertMembership(orgB, email, email);
 
@@ -371,7 +381,7 @@ class AudienceSendGateConsentSuppressionTest {
     /** Deliverability suppression blocks across ALL orgs sharing the same email */
     @Test
     void suppression_deliverability_shared_blocks_all_orgs() {
-        String email = "shared-bounce@supp.com";
+        String email = fx.email("shared-bounce");
         orderProjector.upsertMembership(orgA, email, email);
         orderProjector.upsertMembership(orgB, email, email);
 
@@ -397,7 +407,7 @@ class AudienceSendGateConsentSuppressionTest {
     /** Deliverability suppression is idempotent (same email twice → one entry) */
     @Test
     void suppression_deliverability_add_idempotent() {
-        String email = "idembounce@supp.com";
+        String email = fx.email("idembounce");
         SuppressionEntry s1 = suppressionService.addDeliverability(email, SuppressionEntry.REASON_HARD_BOUNCE);
         SuppressionEntry s2 = suppressionService.addDeliverability(email, SuppressionEntry.REASON_HARD_BOUNCE);
 
@@ -408,7 +418,7 @@ class AudienceSendGateConsentSuppressionTest {
     /** Both suppressions independent: marketing suppression does not affect deliverability state */
     @Test
     void suppression_two_scopes_are_independent() {
-        String email = "dual@supp.com";
+        String email = fx.email("dual");
         UUID mid = seedSubscribed(orgA, email, "explicit", principalA);
 
         // Add marketing suppression
@@ -430,8 +440,9 @@ class AudienceSendGateConsentSuppressionTest {
     /** Cross-org membership ID rejected by SuppressionService with 404 (tenant isolation) */
     @Test
     void suppression_marketing_cross_org_rejected_404() {
-        orderProjector.upsertMembership(orgB, "xorg@supp.com", "X");
-        Consumer c = consumerRepo.findByNormalizedEmail("xorg@supp.com").orElseThrow();
+        String xorgEmail = fx.email("xorg");
+        orderProjector.upsertMembership(orgB, xorgEmail, "X");
+        Consumer c = consumerRepo.findByNormalizedEmail(xorgEmail).orElseThrow();
         Membership mB = membershipRepo.findByOrgIdAndConsumerId(orgB, c.getConsumerId()).orElseThrow();
 
         // orgA tries to add marketing suppression for orgB's member → 404
@@ -443,67 +454,14 @@ class AudienceSendGateConsentSuppressionTest {
     }
 
     // ══════════════════════════════════════════════════════════════════════════
-    // AUDIT — ArgumentCaptor assertions
-    // ══════════════════════════════════════════════════════════════════════════
-
-    @Test
-    void audit_consent_captured_correct_action() {
-        orderProjector.upsertMembership(orgA, "audit-cap@t.com", "A");
-        Consumer c = consumerRepo.findByNormalizedEmail("audit-cap@t.com").orElseThrow();
-        Membership m = membershipRepo.findByOrgIdAndConsumerId(orgA, c.getConsumerId()).orElseThrow();
-
-        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
-        consentService.capture(orgA, m.getMembershipId(), "explicit", "test", null, principalA);
-
-        verify(auditLogger).record(any(), captor.capture(), any(), any(), any());
-        assertThat(captor.getValue()).isEqualTo(AuditActions.CONSENT_CAPTURED);
-    }
-
-    @Test
-    void audit_consent_unsubscribed_correct_action() {
-        UUID mid = seedSubscribed(orgA, "audit-unsub@t.com", "explicit", principalA);
-        reset(auditLogger);
-
-        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
-        consentService.unsubscribe(orgA, mid, "link", ConsentOrigin.OPERATOR, principalA);
-
-        verify(auditLogger).record(any(), captor.capture(), any(), any(), any());
-        assertThat(captor.getValue()).isEqualTo(AuditActions.CONSENT_UNSUBSCRIBED);
-    }
-
-    @Test
-    void audit_suppression_added_correct_action() {
-        UUID mid = seedSubscribed(orgA, "audit-supp@t.com", "explicit", principalA);
-        reset(auditLogger);
-
-        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
-        suppressionService.addMarketing(orgA, mid, SuppressionEntry.REASON_MANUAL, principalA);
-
-        verify(auditLogger).record(any(), captor.capture(), any(), any(), any());
-        assertThat(captor.getValue()).isEqualTo(AuditActions.SUPPRESSION_ADDED);
-    }
-
-    @Test
-    void audit_handoff_correct_action() {
-        UUID mid = seedSubscribed(orgA, "audit-handoff@t.com", "explicit", principalA);
-        reset(auditLogger);
-
-        ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class);
-        sendGateService.handoff(orgA, List.of(mid), principalA);
-
-        verify(auditLogger).record(any(), captor.capture(), any(), any(), any());
-        assertThat(captor.getValue()).isEqualTo(AuditActions.AUDIENCE_HANDOFF);
-    }
-
-    // ══════════════════════════════════════════════════════════════════════════
     // HANDOFF response shape
     // ══════════════════════════════════════════════════════════════════════════
 
     @Test
     void handoff_response_counts_and_urls_correct() {
-        UUID mid1 = seedSubscribed(orgA, "h1@gate.com", "explicit", principalA);
-        UUID mid2 = seedSubscribed(orgA, "h2@gate.com", "explicit", principalA);
-        UUID mid3 = seedSubscribed(orgA, "h3@gate.com", "explicit", principalA);
+        UUID mid1 = seedSubscribed(orgA, fx.email("h1"), "explicit", principalA);
+        UUID mid2 = seedSubscribed(orgA, fx.email("h2"), "explicit", principalA);
+        UUID mid3 = seedSubscribed(orgA, fx.email("h3"), "explicit", principalA);
         consentService.unsubscribe(orgA, mid3, "test", ConsentOrigin.OPERATOR, principalA);
 
         var response = sendGateService.handoff(orgA, List.of(mid1, mid2, mid3), principalA);
@@ -513,6 +471,7 @@ class AudienceSendGateConsentSuppressionTest {
         assertThat(response.excludedReasons()).hasSize(1);
         assertThat(response.excludedReasons().get(0).reason()).isEqualTo("marketing_unsubscribed");
         assertThat(response.campaignHubUrl()).isNotBlank();
+        audit.assertRecorded(orgA, AuditActions.AUDIENCE_HANDOFF, "membership", null);
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -526,31 +485,5 @@ class AudienceSendGateConsentSuppressionTest {
         Membership m = membershipRepo.findByOrgIdAndConsumerId(orgId, c.getConsumerId()).orElseThrow();
         consentService.capture(orgId, m.getMembershipId(), basis, "seed", null, principal);
         return m.getMembershipId();
-    }
-
-    private Organization org(String name) {
-        Organization o = new Organization();
-        o.setName(name);
-        o.setSlug(name.toLowerCase() + "-" + UUID.randomUUID().toString().substring(0, 6));
-        o.setContactEmail(name + "@test.com");
-        o.setCountry("DE");
-        return orgRepo.save(o);
-    }
-
-    private void wipe() {
-        try (java.sql.Connection c = dataSource.getConnection();
-             java.sql.Statement s = c.createStatement()) {
-            s.execute("delete from suppression_entries");
-            s.execute("delete from consent_records");
-            s.execute("delete from segments");
-            s.execute("delete from memberships");
-            s.execute("delete from consumers");
-            s.execute("delete from orders");
-            s.execute("delete from events");
-            s.execute("delete from users");
-            s.execute("delete from organizations");
-        } catch (Exception e) {
-            throw new RuntimeException("wipe() failed: " + e.getMessage(), e);
-        }
     }
 }

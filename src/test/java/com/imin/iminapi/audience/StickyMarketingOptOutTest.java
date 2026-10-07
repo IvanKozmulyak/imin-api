@@ -9,16 +9,12 @@ import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.ConsentOrigin;
 import com.imin.iminapi.audience.service.ConsentService;
 import com.imin.iminapi.audience.service.DsarService;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.sms.SmsStopService;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.AuthPrincipal;
-import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.time.Instant;
 import java.util.List;
@@ -36,8 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * The record has to be written by the unsubscribe itself, before the toggle exists,
  * or the first buyer to flip that toggle ON resurrects everyone they left earlier.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class StickyMarketingOptOutTest {
 
     @Autowired ConsentService consentService;
@@ -46,10 +41,6 @@ class StickyMarketingOptOutTest {
     @Autowired MembershipRepository memberships;
     @Autowired ConsumerRepository consumers;
     @Autowired MarketingOptOutRepository optOuts;
-
-    // ConsentService/DsarService write an organizer audit row when a principal is
-    // present; those org/user ids are synthetic here.
-    @MockitoBean AuditLogger auditLogger;
 
     // ── The whole point: origin decides, `source` does not ───────────────────
 

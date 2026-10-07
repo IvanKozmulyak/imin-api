@@ -8,20 +8,20 @@ import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.AudienceBackfillJob;
 import com.imin.iminapi.audience.service.AudienceOrderProjector;
 import com.imin.iminapi.audience.service.DsarService;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.*;
 import com.imin.iminapi.repository.*;
 import com.imin.iminapi.security.AuthPrincipal;
-import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.jdbc.core.JdbcTemplate;
 
-import javax.sql.DataSource;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -35,42 +35,32 @@ import static org.assertj.core.api.Assertions.assertThat;
  * under the invoicing exemption, so before V99 the backfill rebuilt the erased
  * person's Consumer + Membership an hour after they were erased.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class AudienceErasureLedgerTest {
 
     @Autowired ConsumerRepository consumerRepo;
     @Autowired MembershipRepository membershipRepo;
     @Autowired ErasedAddressRepository erasedAddressRepo;
-    @Autowired OrganizationRepository orgRepo;
-    @Autowired UserRepository userRepo;
+    @Autowired IminFixtures fx;
     @Autowired EventRepository eventRepo;
     @Autowired OrderRepository orderRepo;
     @Autowired AudienceOrderProjector orderProjector;
     @Autowired AudienceBackfillJob backfillJob;
     @Autowired DsarService dsarService;
-    @Autowired DataSource dataSource;
-
-    @MockitoBean AuditLogger auditLogger;
+    @Autowired JdbcTemplate jdbc;
 
     private UUID orgId;
     private UUID orgBId;
     private UUID eventId;
     private AuthPrincipal principal;
+    private final List<String> emails = new ArrayList<>();
 
     @BeforeEach
     void setUp() {
-        wipe();
-        Organization o = org("LedgerOrgA");
+        Organization o = fx.org();
         orgId = o.getId();
-        orgBId = org("LedgerOrgB").getId();
-        User u = new User();
-        u.setOrgId(orgId);
-        String userEmail = "ledger-" + UUID.randomUUID() + "@x.com";
-        u.setEmail(userEmail);
-        u.setEmailLower(userEmail);
-        u.setRole(UserRole.OWNER);
-        u = userRepo.save(u);
+        orgBId = fx.org().getId();
+        User u = fx.owner(o);
         Event e = new Event();
         e.setOrgId(orgId);
         e.setName("Ledger Event");
@@ -84,12 +74,31 @@ class AudienceErasureLedgerTest {
         principal = new AuthPrincipal(u.getId(), orgId, UserRole.OWNER, UUID.randomUUID());
     }
 
+    /** The backfill walks every org's orders, so own orders, projection and ledger rows go. */
     @AfterEach
-    void tearDown() { wipe(); }
+    void tearDown() {
+        try {
+            jdbc.update("delete from memberships where org_id in (?, ?)", orgId, orgBId);
+            for (String email : emails) {
+                jdbc.update("delete from consumers where normalized_email = ?", email);
+                jdbc.update("delete from erased_addresses where email_normalized = ?", email);
+            }
+            releaseBackfillLock();
+        } finally {
+            OrgRows.delete(jdbc, List.of(orgId, orgBId));
+        }
+    }
+
+    /** Lowercase and unique: consumers and the platform-wide ledger are keyed by address. */
+    private String address(String tag) {
+        String email = fx.email(tag);
+        emails.add(email);
+        return email;
+    }
 
     @Test
     void backfill_does_not_resurrect_an_erased_member() {
-        String email = "erased-ledger@x.com";
+        String email = address("erased-ledger");
         saveOrder(orgId, email, 2500);
         orderProjector.upsertMembership(orgId, email, email);
 
@@ -101,7 +110,11 @@ class AudienceErasureLedgerTest {
 
         // The order still exists — it is retained under the invoicing exemption —
         // so the backfill will see this (org, email) pair.
-        assertThat(orderRepo.findDistinctOrgAndEmailPairs()).isNotEmpty();
+        assertThat(orderRepo.findDistinctOrgAndEmailPairs())
+                .anySatisfy(pair -> {
+                    assertThat(pair[0]).isEqualTo(orgId);
+                    assertThat(pair[1]).isEqualTo(email);
+                });
 
         runBackfill();
 
@@ -115,7 +128,7 @@ class AudienceErasureLedgerTest {
 
     @Test
     void execute_erase_writes_one_ledger_entry_scoped_to_the_erasing_org() {
-        String email = "ledger-entry@x.com";
+        String email = address("ledger-entry");
         saveOrder(orgId, email, 1000);
         orderProjector.upsertMembership(orgId, email, email);
         Consumer c = consumerRepo.findByNormalizedEmail(email).orElseThrow();
@@ -132,7 +145,7 @@ class AudienceErasureLedgerTest {
 
     @Test
     void backfill_still_rebuilds_another_orgs_membership_for_the_same_address() {
-        String email = "shared-ledger@x.com";
+        String email = address("shared-ledger");
         saveOrder(orgId, email, 1500);
         saveOrder(orgBId, email, 1500);
         orderProjector.upsertMembership(orgId, email, email);
@@ -142,7 +155,7 @@ class AudienceErasureLedgerTest {
         Membership mA = membershipRepo.findByOrgIdAndConsumerId(orgId, c.getConsumerId()).orElseThrow();
         dsarService.executeErase(orgId, mA.getMembershipId(), principal);
 
-        wipeProjection();
+        wipeProjection(email);
         runBackfill();
 
         Consumer rebuilt = consumerRepo.findByNormalizedEmail(email).orElseThrow();
@@ -156,7 +169,7 @@ class AudienceErasureLedgerTest {
 
     @Test
     void a_platform_wide_ledger_entry_blocks_every_org() {
-        String email = "platform-erased@x.com";
+        String email = address("platform-erased");
         saveOrder(orgId, email, 900);
         saveOrder(orgBId, email, 900);
 
@@ -169,21 +182,15 @@ class AudienceErasureLedgerTest {
 
     @Test
     void record_erasure_is_idempotent() {
-        dsarService.recordErasure(orgId, "idem-ledger@x.com");
-        dsarService.recordErasure(orgId, "idem-ledger@x.com");
-        assertThat(erasedAddressRepo.findAllEntries()).hasSize(1);
+        String email = address("idem-ledger");
+        dsarService.recordErasure(orgId, email);
+        dsarService.recordErasure(orgId, email);
+        assertThat(erasedAddressRepo.findAllEntries().stream()
+                .filter(e -> orgId.equals(e.getOrgId()) && email.equals(e.getEmailNormalized())))
+                .hasSize(1);
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────
-
-    private Organization org(String name) {
-        Organization o = new Organization();
-        o.setName(name);
-        o.setSlug(name.toLowerCase() + "-" + UUID.randomUUID().toString().substring(0, 6));
-        o.setContactEmail(name + "@test.com");
-        o.setCountry("DE");
-        return orgRepo.save(o);
-    }
 
     private com.imin.iminapi.model.Order saveOrder(UUID org, String email, long totalMinor) {
         com.imin.iminapi.model.Order o = new com.imin.iminapi.model.Order();
@@ -212,31 +219,18 @@ class AudienceErasureLedgerTest {
      * deleted row makes every later acquisition fail instead of succeed.
      */
     private void runBackfill() {
-        exec("update shedlock set lock_until = locked_at");
+        releaseBackfillLock();
         backfillJob.run();
     }
 
-    private void wipeProjection() {
-        exec("delete from consent_records", "delete from memberships", "delete from consumers");
+    // Scoped to this job's lock: other jobs' ShedLock rows belong to other tests.
+    private void releaseBackfillLock() {
+        jdbc.update("update shedlock set lock_until = locked_at where name = 'audience_backfill'");
     }
 
-    private void wipe() {
-        exec("delete from suppression_entries", "delete from consent_records", "delete from segments",
-                "delete from memberships", "delete from consumers", "delete from erased_addresses",
-                "delete from tickets", "delete from orders", "delete from notify_subscriptions",
-                "delete from events", "delete from users", "delete from organizations",
-                // Hand the backfill lock back: this class runs the job repeatedly and each
-                // run re-takes it for a minute (lockAtLeastFor), which would otherwise make
-                // every later test class calling run() a silent no-op in the same JVM.
-                "update shedlock set lock_until = locked_at");
-    }
-
-    private void exec(String... statements) {
-        try (java.sql.Connection c = dataSource.getConnection();
-             java.sql.Statement s = c.createStatement()) {
-            for (String sql : statements) s.execute(sql);
-        } catch (Exception e) {
-            throw new RuntimeException("sql failed: " + e.getMessage(), e);
-        }
+    /** Own orgs' memberships and this address's consumer only; consent records cascade. */
+    private void wipeProjection(String email) {
+        jdbc.update("delete from memberships where org_id in (?, ?)", orgId, orgBId);
+        jdbc.update("delete from consumers where normalized_email = ?", email);
     }
 }

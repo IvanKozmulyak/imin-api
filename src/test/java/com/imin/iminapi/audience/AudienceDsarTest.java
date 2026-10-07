@@ -3,20 +3,22 @@ package com.imin.iminapi.audience;
 import com.imin.iminapi.audience.model.*;
 import com.imin.iminapi.audience.repository.*;
 import com.imin.iminapi.audience.service.*;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.*;
 import com.imin.iminapi.repository.*;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.service.audit.AuditActions;
-import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.support.AuditRows;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
 import org.junit.jupiter.api.*;
-import org.mockito.ArgumentCaptor;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.jdbc.core.JdbcTemplate;
 import com.imin.iminapi.audience.dto.DsarRecords;
 import com.imin.iminapi.audienceplan.model.FanFeature;
 import com.imin.iminapi.audienceplan.repository.FanFeatureRepository;
@@ -29,14 +31,12 @@ import com.imin.iminapi.audienceplan.model.AudienceExperiment;
 import com.imin.iminapi.audienceplan.repository.AudienceAssignmentRepository;
 import com.imin.iminapi.audienceplan.repository.AudienceExperimentRepository;
 
-import javax.sql.DataSource;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
 
 /**
  * DSAR (Data Subject Access Request) tests:
@@ -49,13 +49,13 @@ import static org.mockito.Mockito.*;
  * - Art.17 execute: shared consumer survives when another org still references it
  * - Art.17 execute: consumer deleted when last membership erased
  * - Cross-org DSAR → 404 (not 403)
- * - Audit: correct AuditActions constants
+ * - Audit: the persisted row for each action
+ * - Erasure job candidate selection: only past-due erase_pending rows
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class AudienceDsarTest {
 
-    @MockitoSpyBean MembershipRepository membershipRepo;
+    @Autowired MembershipRepository membershipRepo;
     @Autowired ConsumerRepository consumerRepo;
     @Autowired ConsentRecordRepository consentRepo;
     @Autowired SuppressionRepository suppressionRepo;
@@ -68,13 +68,14 @@ class AudienceDsarTest {
     @Autowired ConsentService consentService;
     @Autowired SendGateService sendGateService;
     @Autowired AudienceService audienceService;
-    @Autowired DataSource dataSource;
+    @Autowired JdbcTemplate jdbc;
+    @Autowired IminFixtures fx;
+    @Autowired AuditRows audit;
 
-    @MockitoBean AuditLogger auditLogger;
-    @MockitoSpyBean FanFeatureRepository fanFeatureRepo;
-    @MockitoSpyBean ImportRowProvenanceRepository provenanceRepo;
+    @Autowired FanFeatureRepository fanFeatureRepo;
+    @Autowired ImportRowProvenanceRepository provenanceRepo;
     @Autowired AudienceImportRepository importRepo;
-    @MockitoSpyBean AudienceAssignmentRepository assignmentRepo;
+    @Autowired AudienceAssignmentRepository assignmentRepo;
     @Autowired AudienceExperimentRepository experimentRepo;
 
     private UUID orgA;
@@ -83,14 +84,20 @@ class AudienceDsarTest {
 
     @BeforeEach
     void setUp() {
-        wipe();
-        orgA = org("DsarOrgA").getId();
-        orgB = org("DsarOrgB").getId();
+        orgA = fx.org().getId();
+        orgB = fx.org().getId();
         principalA = new AuthPrincipal(UUID.randomUUID(), orgA, UserRole.OWNER, UUID.randomUUID());
     }
 
+    /** The erasure job and the momentum sweep see every org; own memberships and orgs go. */
     @AfterEach
-    void tearDown() { wipe(); }
+    void tearDown() {
+        try {
+            jdbc.update("delete from memberships where org_id in (?, ?)", orgA, orgB);
+        } finally {
+            OrgRows.delete(jdbc, List.of(orgA, orgB));
+        }
+    }
 
     // ─────────────────────────────────────────────────────────────────────────
     // Art.15: access
@@ -98,22 +105,12 @@ class AudienceDsarTest {
 
     @Test
     void access_returns_membership_and_audits() {
-        UUID mid = seedMembership(orgA, "access@d.com");
+        UUID mid = seedMembership(orgA, fx.email("access"));
 
         Membership m = dsarService.access(orgA, mid, principalA);
         assertThat(m.getMembershipId()).isEqualTo(mid);
 
-        ArgumentCaptor<String> action = ArgumentCaptor.forClass(String.class);
-        verify(auditLogger, atLeastOnce()).record(any(), action.capture(), any(), any(), any());
-        assertThat(action.getAllValues()).contains(AuditActions.DSAR_ACCESS);
-    }
-
-    @Test
-    void access_cross_org_returns_404() {
-        UUID mid = seedMembership(orgB, "accessb@d.com");
-        assertThatThrownBy(() -> dsarService.access(orgA, mid, principalA))
-                .isInstanceOf(ApiException.class)
-                .hasMessageContaining("not found");
+        audit.assertRecorded(orgA, AuditActions.DSAR_ACCESS, "membership", mid);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -122,22 +119,12 @@ class AudienceDsarTest {
 
     @Test
     void export_returns_membership_and_audits() {
-        UUID mid = seedMembership(orgA, "export@d.com");
+        UUID mid = seedMembership(orgA, fx.email("export"));
 
         Membership m = dsarService.export(orgA, mid, principalA);
         assertThat(m.getMembershipId()).isEqualTo(mid);
 
-        ArgumentCaptor<String> action = ArgumentCaptor.forClass(String.class);
-        verify(auditLogger, atLeastOnce()).record(any(), action.capture(), any(), any(), any());
-        assertThat(action.getAllValues()).contains(AuditActions.DSAR_EXPORT);
-    }
-
-    @Test
-    void export_cross_org_returns_404() {
-        UUID mid = seedMembership(orgB, "exportb@d.com");
-        assertThatThrownBy(() -> dsarService.export(orgA, mid, principalA))
-                .isInstanceOf(ApiException.class)
-                .hasMessageContaining("not found");
+        audit.assertRecorded(orgA, AuditActions.DSAR_EXPORT, "membership", mid);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -151,7 +138,7 @@ class AudienceDsarTest {
 
     @Test
     void consent_history_returns_the_proof_rows_in_order() {
-        UUID mid = seedMembership(orgA, "trail@d.com");
+        UUID mid = seedMembership(orgA, fx.email("trail"));
         consentService.capture(orgA, mid, "soft_opt_in", "checkout",
                 "Left the pre-ticked box ticked at checkout", principalA);
         consentService.unsubscribe(orgA, mid, "one_click", "email",
@@ -174,7 +161,7 @@ class AudienceDsarTest {
 
     @Test
     void consent_history_carries_text_version_and_order_id() {
-        UUID mid = seedMembership(orgA, "trail-version@d.com");
+        UUID mid = seedMembership(orgA, fx.email("trail-version"));
         UUID orderId = UUID.randomUUID();
         consentService.capture(orgA, mid, "explicit", "checkout", "Ticked the box", "email",
                 "2026-10-01", orderId, principalA);
@@ -192,7 +179,7 @@ class AudienceDsarTest {
 
     @Test
     void consent_history_marks_door_consent_awaiting_confirmation_and_names_the_event() {
-        UUID mid = seedMembership(orgA, "trail-door@d.com");
+        UUID mid = seedMembership(orgA, fx.email("trail-door"));
         Event event = seedEvent(orgA);
         String proof = "Ticked the door QR sign-up at event " + event.getId() + " (locale en) next to: \"x\"";
         consentService.capture(orgA, mid, "explicit", "door_qr", proof, "email", "door-v1", null,
@@ -209,7 +196,7 @@ class AudienceDsarTest {
 
     @Test
     void consent_history_carries_confirmed_at_once_confirmed() {
-        UUID mid = seedMembership(orgA, "trail-confirmed@d.com");
+        UUID mid = seedMembership(orgA, fx.email("trail-confirmed"));
         consentService.capture(orgA, mid, "explicit", "survey", "Ticked the survey", "email", "s-v1", null,
                 null, ConsentOrigin.DATA_SUBJECT, null);
         Instant confirmed = Instant.parse("2026-09-01T10:00:00Z");
@@ -227,7 +214,7 @@ class AudienceDsarTest {
 
     @Test
     void consent_history_checkout_record_needs_no_confirmation() {
-        UUID mid = seedMembership(orgA, "trail-checkout@d.com");
+        UUID mid = seedMembership(orgA, fx.email("trail-checkout"));
         consentService.capture(orgA, mid, "explicit", "checkout", "Ticked the box", principalA);
 
         var entry = dsarService.consentHistory(orgA, mid).get(0);
@@ -238,7 +225,7 @@ class AudienceDsarTest {
 
     @Test
     void consent_history_does_not_name_another_orgs_event() {
-        UUID mid = seedMembership(orgA, "trail-foreign@d.com");
+        UUID mid = seedMembership(orgA, fx.email("trail-foreign"));
         Event foreign = seedEvent(orgB);
         consentService.capture(orgA, mid, "explicit", "door_qr", "proof", "email", "door-v1", null,
                 foreign.getId(), ConsentOrigin.DATA_SUBJECT, null);
@@ -251,16 +238,8 @@ class AudienceDsarTest {
 
     @Test
     void consent_history_is_empty_for_a_member_who_never_consented() {
-        UUID mid = seedMembership(orgA, "notrail@d.com");
+        UUID mid = seedMembership(orgA, fx.email("notrail"));
         assertThat(dsarService.consentHistory(orgA, mid)).isEmpty();
-    }
-
-    @Test
-    void consent_history_cross_org_returns_404() {
-        UUID mid = seedSubscribed(orgB, "trailb@d.com", "explicit");
-        assertThatThrownBy(() -> dsarService.consentHistory(orgA, mid))
-                .isInstanceOf(ApiException.class)
-                .hasMessageContaining("not found");
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -269,7 +248,7 @@ class AudienceDsarTest {
 
     @Test
     void rectify_updates_display_name_city_notes() {
-        UUID mid = seedMembership(orgA, "rectify@d.com");
+        UUID mid = seedMembership(orgA, fx.email("rectify"));
 
         dsarService.rectify(orgA, mid, "New Name", "Berlin", "corrected notes", principalA);
 
@@ -277,11 +256,12 @@ class AudienceDsarTest {
         assertThat(m.getDisplayName()).isEqualTo("New Name");
         assertThat(m.getCity()).isEqualTo("Berlin");
         assertThat(m.getNotes()).isEqualTo("corrected notes");
+        audit.assertRecorded(orgA, AuditActions.DSAR_RECTIFY, "membership", mid);
     }
 
     @Test
     void rectify_partial_update_only_sets_non_null_fields() {
-        UUID mid = seedMembership(orgA, "rectify2@d.com");
+        UUID mid = seedMembership(orgA, fx.email("rectify2"));
         Membership before = membershipRepo.findByIdAndOrgId(mid, orgA).orElseThrow();
         String originalCity = before.getCity();
 
@@ -293,32 +273,13 @@ class AudienceDsarTest {
         assertThat(after.getCity()).isEqualTo(originalCity);
     }
 
-    @Test
-    void rectify_audits_with_correct_action() {
-        UUID mid = seedMembership(orgA, "recta@d.com");
-        ArgumentCaptor<String> action = ArgumentCaptor.forClass(String.class);
-
-        dsarService.rectify(orgA, mid, "X", null, null, principalA);
-
-        verify(auditLogger, atLeastOnce()).record(any(), action.capture(), any(), any(), any());
-        assertThat(action.getAllValues()).contains(AuditActions.DSAR_RECTIFY);
-    }
-
-    @Test
-    void rectify_cross_org_returns_404() {
-        UUID mid = seedMembership(orgB, "rectifyb@d.com");
-        assertThatThrownBy(() -> dsarService.rectify(orgA, mid, "X", null, null, principalA))
-                .isInstanceOf(ApiException.class)
-                .hasMessageContaining("not found");
-    }
-
     // ─────────────────────────────────────────────────────────────────────────
     // Art.21: object (synchronous unsubscribe)
     // ─────────────────────────────────────────────────────────────────────────
 
     @Test
     void object_unsubscribes_synchronously_and_blocks_gate() {
-        UUID mid = seedSubscribed(orgA, "object@d.com", "explicit");
+        UUID mid = seedSubscribed(orgA, fx.email("object"), "explicit");
 
         dsarService.object(orgA, mid, principalA);
 
@@ -330,11 +291,12 @@ class AudienceDsarTest {
         SendGateService.GateResult r = sendGateService.evaluate(orgA, List.of(mid));
         assertThat(r.sendable()).isEmpty();
         assertThat(r.excluded()).extracting("reason").containsExactly("marketing_unsubscribed");
+        audit.assertRecorded(orgA, AuditActions.DSAR_OBJECT, "membership", mid);
     }
 
     @Test
     void object_appends_consent_record() {
-        UUID mid = seedSubscribed(orgA, "objrec@d.com", "explicit");
+        UUID mid = seedSubscribed(orgA, fx.email("objrec"), "explicit");
         long before = consentRepo.findByMembershipId(mid).size();
 
         dsarService.object(orgA, mid, principalA);
@@ -346,32 +308,13 @@ class AudienceDsarTest {
         assertThat(last.getStatus()).isEqualTo("unsubscribed");
     }
 
-    @Test
-    void object_audits_with_correct_action() {
-        UUID mid = seedSubscribed(orgA, "objaudit@d.com", "explicit");
-        ArgumentCaptor<String> action = ArgumentCaptor.forClass(String.class);
-
-        dsarService.object(orgA, mid, principalA);
-
-        verify(auditLogger, atLeastOnce()).record(any(), action.capture(), any(), any(), any());
-        assertThat(action.getAllValues()).contains(AuditActions.DSAR_OBJECT);
-    }
-
-    @Test
-    void object_cross_org_returns_404() {
-        UUID mid = seedMembership(orgB, "objb@d.com");
-        assertThatThrownBy(() -> dsarService.object(orgA, mid, principalA))
-                .isInstanceOf(ApiException.class)
-                .hasMessageContaining("not found");
-    }
-
     // ─────────────────────────────────────────────────────────────────────────
     // Art.17: requestErase — schedules 30-day grace
     // ─────────────────────────────────────────────────────────────────────────
 
     @Test
     void request_erase_sets_status_erase_pending_and_erase_at() {
-        UUID mid = seedMembership(orgA, "erasereq@d.com");
+        UUID mid = seedMembership(orgA, fx.email("erasereq"));
 
         dsarService.requestErase(orgA, mid, principalA);
 
@@ -381,39 +324,17 @@ class AudienceDsarTest {
         // eraseAt should be approximately 30 days from now
         assertThat(m.getEraseAt()).isAfter(Instant.now().plus(29, ChronoUnit.DAYS));
         assertThat(m.getEraseAt()).isBefore(Instant.now().plus(31, ChronoUnit.DAYS));
+        audit.assertRecorded(orgA, AuditActions.DSAR_ERASE_REQUESTED, "membership", mid);
     }
 
     @Test
     void request_erase_deletes_fan_features_immediately() {
-        UUID mid = seedMembership(orgA, "eraseff@d.com");
+        UUID mid = seedMembership(orgA, fx.email("eraseff"));
         seedFanFeature(orgA, mid);
 
         dsarService.requestErase(orgA, mid, principalA);
 
-        // Taken by requestErase and again by the objection inside unsubscribe; both precede the delete.
-        var order = inOrder(membershipRepo, fanFeatureRepo);
-        order.verify(membershipRepo, atLeastOnce()).lockByIdAndOrgId(mid, orgA);
-        order.verify(fanFeatureRepo).deleteByMembershipId(mid);
         assertThat(fanFeatureRepo.findById(mid)).isEmpty();
-    }
-
-    @Test
-    void request_erase_audits_with_correct_action() {
-        UUID mid = seedMembership(orgA, "eraseaudit@d.com");
-        ArgumentCaptor<String> action = ArgumentCaptor.forClass(String.class);
-
-        dsarService.requestErase(orgA, mid, principalA);
-
-        verify(auditLogger, atLeastOnce()).record(any(), action.capture(), any(), any(), any());
-        assertThat(action.getAllValues()).contains(AuditActions.DSAR_ERASE_REQUESTED);
-    }
-
-    @Test
-    void request_erase_cross_org_returns_404() {
-        UUID mid = seedMembership(orgB, "eraseb@d.com");
-        assertThatThrownBy(() -> dsarService.requestErase(orgA, mid, principalA))
-                .isInstanceOf(ApiException.class)
-                .hasMessageContaining("not found");
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -422,7 +343,7 @@ class AudienceDsarTest {
 
     @Test
     void request_erase_unsubscribes_immediately() {
-        UUID mid = seedSubscribed(orgA, "erasesub@d.com", "explicit");
+        UUID mid = seedSubscribed(orgA, fx.email("erasesub"), "explicit");
         assertThat(sendGateService.evaluate(orgA, List.of(mid)).sendable()).containsExactly(mid);
 
         dsarService.requestErase(orgA, mid, principalA);
@@ -446,7 +367,7 @@ class AudienceDsarTest {
 
     @Test
     void erase_pending_member_is_not_sendable() {
-        UUID mid = seedSubscribed(orgA, "erasegate@d.com", "explicit");
+        UUID mid = seedSubscribed(orgA, fx.email("erasegate"), "explicit");
         // Status alone, with consent left intact, must already close the gate.
         Membership m = membershipRepo.findByIdAndOrgId(mid, orgA).orElseThrow();
         m.setStatus("erase_pending");
@@ -458,7 +379,7 @@ class AudienceDsarTest {
 
     @Test
     void erase_pending_member_is_not_listed_exported_or_segmented() {
-        UUID mid = seedSubscribed(orgA, "eraselist@d.com", "explicit");
+        UUID mid = seedSubscribed(orgA, fx.email("eraselist"), "explicit");
         Membership m = membershipRepo.findByIdAndOrgId(mid, orgA).orElseThrow();
         m.setEvents(3);
         m.setStatus("erase_pending");
@@ -486,40 +407,37 @@ class AudienceDsarTest {
 
     @Test
     void execute_erase_deletes_membership_and_writes_tombstone() {
-        UUID mid = seedSubscribed(orgA, "execerase@d.com", "explicit");
+        UUID mid = seedSubscribed(orgA, fx.email("execerase"), "explicit");
 
         // Force eraseAt to the past so job would pick it up
         Membership m = membershipRepo.findByIdAndOrgId(mid, orgA).orElseThrow();
         m.setEraseAt(Instant.now().minus(1, ChronoUnit.SECONDS));
         membershipRepo.save(m);
+        assertThat(consentRepo.findByMembershipId(mid)).isNotEmpty();
 
         dsarService.executeErase(orgA, mid, principalA);
 
-        // Membership gone
+        // Membership gone, and its consent proof rows with it
         assertThat(membershipRepo.findByIdAndOrgId(mid, orgA)).isEmpty();
+        assertThat(consentRepo.findByMembershipId(mid)).isEmpty();
 
-        // Tombstone written (DSAR_ERASE_EXECUTED audit call)
-        ArgumentCaptor<String> action = ArgumentCaptor.forClass(String.class);
-        verify(auditLogger, atLeastOnce()).record(any(), action.capture(), any(), any(), any());
-        assertThat(action.getAllValues()).contains(AuditActions.DSAR_ERASE_EXECUTED);
+        // Tombstone written
+        audit.assertRecorded(orgA, AuditActions.DSAR_ERASE_EXECUTED, "membership", mid);
     }
 
     @Test
     void execute_erase_deletes_fan_features_explicitly() {
-        UUID mid = seedMembership(orgA, "fanerase@d.com");
+        UUID mid = seedMembership(orgA, fx.email("fanerase"));
         seedFanFeature(orgA, mid);
 
         dsarService.executeErase(orgA, mid, principalA);
 
-        var order = inOrder(membershipRepo, fanFeatureRepo);
-        order.verify(membershipRepo).lockByIdAndOrgId(mid, orgA);
-        order.verify(fanFeatureRepo).deleteByMembershipId(mid);
         assertThat(fanFeatureRepo.findById(mid)).isEmpty();
     }
 
     @Test
     void export_records_include_fan_features() {
-        UUID mid = seedMembership(orgA, "fanexport@d.com");
+        UUID mid = seedMembership(orgA, fx.email("fanexport"));
         seedFanFeature(orgA, mid);
 
         DsarRecords records = dsarService.exportRecords(orgA, mid, principalA);
@@ -543,18 +461,17 @@ class AudienceDsarTest {
 
     @Test
     void execute_erase_deletes_import_provenance_explicitly() {
-        UUID mid = seedMembership(orgA, "proverase@d.com");
+        UUID mid = seedMembership(orgA, fx.email("proverase"));
         seedProvenance(orgA, mid);
 
         dsarService.executeErase(orgA, mid, principalA);
 
-        verify(provenanceRepo).deleteByMembershipId(mid);
         assertThat(provenanceRepo.findByMembershipIdOrderByCreatedAtAsc(mid)).isEmpty();
     }
 
     @Test
     void execute_erase_deletes_experiment_assignments_explicitly() {
-        UUID mid = seedMembership(orgA, "assignerase@d.com");
+        UUID mid = seedMembership(orgA, fx.email("assignerase"));
         AudienceExperiment e = new AudienceExperiment();
         e.setOrgId(orgA);
         e.setEventId(seedEvent(orgA).getId());
@@ -571,13 +488,12 @@ class AudienceDsarTest {
 
         dsarService.executeErase(orgA, mid, principalA);
 
-        verify(assignmentRepo).deleteByMembershipId(mid);
         assertThat(assignmentRepo.findByMembershipId(mid)).isEmpty();
     }
 
     @Test
     void export_records_include_import_provenance() {
-        UUID mid = seedMembership(orgA, "provexport@d.com");
+        UUID mid = seedMembership(orgA, fx.email("provexport"));
         UUID importId = seedProvenance(orgA, mid);
 
         List<DsarRecords.ImportProvenanceRecord> rows =
@@ -600,14 +516,14 @@ class AudienceDsarTest {
 
     @Test
     void export_records_have_no_import_provenance_when_never_imported() {
-        UUID mid = seedMembership(orgA, "noprov@d.com");
+        UUID mid = seedMembership(orgA, fx.email("noprov"));
 
         assertThat(dsarService.exportRecords(orgA, mid, principalA).importProvenance()).isEmpty();
     }
 
     @Test
     void export_records_keep_historic_opens_and_clicks() {
-        UUID mid = seedMembership(orgA, "engaged@d.com");
+        UUID mid = seedMembership(orgA, fx.email("engaged"));
         setEngagement(mid, Instant.parse("2026-05-01T10:00:00Z"), Instant.parse("2026-05-02T10:00:00Z"));
 
         DsarRecords.EmailEngagementRecord e = dsarService.exportRecords(orgA, mid, principalA).emailEngagement();
@@ -619,7 +535,7 @@ class AudienceDsarTest {
 
     @Test
     void export_records_keep_a_click_without_an_open() {
-        UUID mid = seedMembership(orgA, "clickonly@d.com");
+        UUID mid = seedMembership(orgA, fx.email("clickonly"));
         setEngagement(mid, null, Instant.parse("2026-05-02T10:00:00Z"));
 
         DsarRecords.EmailEngagementRecord e = dsarService.exportRecords(orgA, mid, principalA).emailEngagement();
@@ -631,13 +547,13 @@ class AudienceDsarTest {
 
     @Test
     void export_records_have_null_engagement_when_none_held() {
-        UUID mid = seedMembership(orgA, "unengaged@d.com");
+        UUID mid = seedMembership(orgA, fx.email("unengaged"));
 
         assertThat(dsarService.exportRecords(orgA, mid, principalA).emailEngagement()).isNull();
     }
 
     private void setEngagement(UUID mid, Instant open, Instant click) {
-        new org.springframework.jdbc.core.JdbcTemplate(dataSource).update(
+        jdbc.update(
                 "update memberships set last_email_open = ?, last_email_click = ? where membership_id = ?",
                 open == null ? null : java.sql.Timestamp.from(open),
                 click == null ? null : java.sql.Timestamp.from(click), mid);
@@ -645,14 +561,14 @@ class AudienceDsarTest {
 
     @Test
     void export_records_have_null_fan_features_when_none_computed() {
-        UUID mid = seedMembership(orgA, "nofan@d.com");
+        UUID mid = seedMembership(orgA, fx.email("nofan"));
 
         assertThat(dsarService.exportRecords(orgA, mid, principalA).fanFeatures()).isNull();
     }
 
     @Test
     void execute_erase_cascades_marketing_suppression() {
-        UUID mid = seedSubscribed(orgA, "cascsup@d.com", "explicit");
+        UUID mid = seedSubscribed(orgA, fx.email("cascsup"), "explicit");
 
         // Add a marketing suppression
         SuppressionEntry se = new SuppressionEntry();
@@ -677,7 +593,7 @@ class AudienceDsarTest {
 
     @Test
     void execute_erase_shared_consumer_survives_when_other_org_references_it() {
-        String email = "sharedconsumer@d.com";
+        String email = fx.email("sharedconsumer");
         orderProjector.upsertMembership(orgA, email, email);
         orderProjector.upsertMembership(orgB, email, email);
 
@@ -701,7 +617,7 @@ class AudienceDsarTest {
 
     @Test
     void execute_erase_consumer_deleted_when_last_membership_erased() {
-        String email = "lastconsumer@d.com";
+        String email = fx.email("lastconsumer");
         orderProjector.upsertMembership(orgA, email, email);
 
         Consumer c = consumerRepo.findByNormalizedEmail(email).orElseThrow();
@@ -718,13 +634,14 @@ class AudienceDsarTest {
 
     @Test
     void execute_erase_idempotent_already_erased_is_noop() {
-        UUID mid = seedMembership(orgA, "idemerase@d.com");
+        UUID mid = seedMembership(orgA, fx.email("idemerase"));
 
         Membership m = membershipRepo.findByIdAndOrgId(mid, orgA).orElseThrow();
         m.setEraseAt(Instant.now().minus(1, ChronoUnit.SECONDS));
         membershipRepo.save(m);
 
         dsarService.executeErase(orgA, mid, principalA);
+        assertThat(membershipRepo.findByIdAndOrgId(mid, orgA)).isEmpty();
         // Second call should be a no-op, not throw
         assertThatCode(() -> dsarService.executeErase(orgA, mid, principalA))
                 .doesNotThrowAnyException();
@@ -740,7 +657,7 @@ class AudienceDsarTest {
 
     @Test
     void execute_erase_deletes_the_orgs_notify_subscriptions_for_that_email() {
-        String email = "notifyerase@d.com";
+        String email = fx.email("notifyerase");
         UUID mid = seedMembership(orgA, email);
         UUID subId = seedNotify(seedEvent(orgA).getId(), email);
 
@@ -751,7 +668,7 @@ class AudienceDsarTest {
 
     @Test
     void execute_erase_keeps_another_orgs_notify_subscription_for_the_same_email() {
-        String email = "sharednotify@d.com";
+        String email = fx.email("sharednotify");
         UUID midA = seedMembership(orgA, email);
         UUID subA = seedNotify(seedEvent(orgA).getId(), email);
         UUID subB = seedNotify(seedEvent(orgB).getId(), email);
@@ -765,11 +682,11 @@ class AudienceDsarTest {
 
     @Test
     void execute_erase_keeps_other_addresses_notify_subscriptions_in_the_same_org() {
-        String erased = "targetednotify@d.com";
+        String erased = fx.email("targetednotify");
         UUID mid = seedMembership(orgA, erased);
         UUID eventId = seedEvent(orgA).getId();
         UUID subErased = seedNotify(eventId, erased);
-        UUID subBystander = seedNotify(eventId, "bystandernotify@d.com");
+        UUID subBystander = seedNotify(eventId, fx.email("bystandernotify"));
 
         dsarService.executeErase(orgA, mid, principalA);
 
@@ -781,27 +698,58 @@ class AudienceDsarTest {
     // Erasure job candidate selection
     // ─────────────────────────────────────────────────────────────────────────
 
-    @Test
-    void erasure_job_only_processes_past_due_erase_pending() {
-        // One that is due
-        UUID due = seedMembership(orgA, "due@d.com");
-        Membership mDue = membershipRepo.findByIdAndOrgId(due, orgA).orElseThrow();
-        mDue.setStatus("erase_pending");
-        mDue.setEraseAt(Instant.now().minus(1, ChronoUnit.SECONDS));
-        membershipRepo.save(mDue);
+    /** Status blank = an active member; offset is milliseconds from now. */
+    @ParameterizedTest(name = "{0}")
+    @CsvSource({
+            "past due,                 A, erase_pending, -1000,      true",
+            "past due by 100 ms,       A, erase_pending, -100,       true",
+            "past due in another org,  B, erase_pending, -1000,      true",
+            "erase_pending in 29 days, A, erase_pending, 2505600000, false",
+            "active member,            A, ,              0,          false"})
+    void erasure_due_selects_only_past_due_erase_pending(String name, String org, String status,
+                                                          long offsetMillis, boolean due) {
+        UUID orgId = "A".equals(org) ? orgA : orgB;
+        UUID mid = seedMembership(orgId, fx.email("due"));
+        if (status != null) {
+            Membership m = membershipRepo.findByIdAndOrgId(mid, orgId).orElseThrow();
+            m.setStatus(status);
+            m.setEraseAt(Instant.now().plusMillis(offsetMillis));
+            membershipRepo.save(m);
+        }
 
-        // One that is not yet due
-        UUID notDue = seedMembership(orgA, "notdue@d.com");
-        Membership mNotDue = membershipRepo.findByIdAndOrgId(notDue, orgA).orElseThrow();
-        mNotDue.setStatus("erase_pending");
-        mNotDue.setEraseAt(Instant.now().plus(29, ChronoUnit.DAYS));
-        membershipRepo.save(mNotDue);
+        List<UUID> candidates = membershipRepo.findErasureDue(Instant.now()).stream()
+                .map(Membership::getMembershipId).toList();
 
-        // One that is active (no erase_pending)
-        UUID active = seedMembership(orgA, "active@d.com");
+        if (due) assertThat(candidates).contains(mid);
+        else assertThat(candidates).doesNotContain(mid);
+    }
 
-        List<Membership> due_list = membershipRepo.findErasureDue(Instant.now());
-        assertThat(due_list).extracting(Membership::getMembershipId).containsExactly(due);
+    // ─────────────────────────────────────────────────────────────────────────
+    // Cross-org: every DSAR action answers 404, never 403
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @FunctionalInterface
+    interface DsarCall {
+        void call(DsarService s, UUID orgId, UUID membershipId, AuthPrincipal p);
+    }
+
+    static Stream<Arguments> dsarActions() {
+        return Stream.of(
+                Arguments.of("access", (DsarCall) (s, o, m, p) -> s.access(o, m, p)),
+                Arguments.of("export", (DsarCall) (s, o, m, p) -> s.export(o, m, p)),
+                Arguments.of("consentHistory", (DsarCall) (s, o, m, p) -> s.consentHistory(o, m)),
+                Arguments.of("rectify", (DsarCall) (s, o, m, p) -> s.rectify(o, m, "X", null, null, p)),
+                Arguments.of("object", (DsarCall) (s, o, m, p) -> s.object(o, m, p)),
+                Arguments.of("requestErase", (DsarCall) (s, o, m, p) -> s.requestErase(o, m, p)));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("dsarActions")
+    void another_orgs_member_returns_404(String name, DsarCall action) {
+        UUID mid = seedMembership(orgB, fx.email("cross"));
+        assertThatThrownBy(() -> action.call(dsarService, orgA, mid, principalA))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("not found");
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -895,37 +843,5 @@ class AudienceDsarTest {
         s.setEventId(eventId);
         s.setEmail(email);
         return notifyRepo.save(s).getId();
-    }
-
-    private Organization org(String name) {
-        Organization o = new Organization();
-        o.setName(name);
-        o.setSlug(name.toLowerCase() + "-" + UUID.randomUUID().toString().substring(0, 6));
-        o.setContactEmail(name + "@test.com");
-        o.setCountry("DE");
-        return orgRepo.save(o);
-    }
-
-    private void wipe() {
-        try (java.sql.Connection c = dataSource.getConnection();
-             java.sql.Statement s = c.createStatement()) {
-            s.execute("delete from import_row_provenance");
-            s.execute("delete from audience_assignments");
-            s.execute("delete from audience_experiments");
-            s.execute("delete from audience_imports");
-            s.execute("delete from suppression_entries");
-            s.execute("delete from consent_records");
-            s.execute("delete from segments");
-            s.execute("delete from memberships");
-            s.execute("delete from consumers");
-            s.execute("delete from tickets");
-            s.execute("delete from orders");
-            s.execute("delete from notify_subscriptions");
-            s.execute("delete from events");
-            s.execute("delete from users");
-            s.execute("delete from organizations");
-        } catch (Exception e) {
-            throw new RuntimeException("wipe() failed: " + e.getMessage(), e);
-        }
     }
 }

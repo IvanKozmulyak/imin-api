@@ -12,20 +12,17 @@ import com.imin.iminapi.audience.service.ConsentService;
 import com.imin.iminapi.audience.service.CsvContactParser;
 import com.imin.iminapi.audienceplan.model.ImportRowProvenance;
 import com.imin.iminapi.audienceplan.repository.ImportRowProvenanceRepository;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.service.audit.AuditActions;
 import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.support.AuditRows;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
@@ -68,9 +65,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /** {@code GET /api/v1/audience/consent/export}: rule 9, every consent record exportable per organizer. */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class ConsentExportTest {
 
     private static final String URL = "/api/v1/audience/consent/export";
@@ -86,8 +81,7 @@ class ConsentExportTest {
     @Autowired ImportRowProvenanceRepository provenanceRepo;
     @Autowired JdbcTemplate jdbc;
     @Autowired PlatformTransactionManager txManager;
-
-    @MockitoBean AuditLogger auditLogger;
+    @Autowired AuditRows audit;
 
     // ── header and role ─────────────────────────────────────────────────────
 
@@ -99,8 +93,7 @@ class ConsentExportTest {
         String body = export(owner);
 
         assertThat(body).isEqualTo(HEADER + "\r\n");
-        verify(auditLogger).record(eq(owner), eq(AuditActions.CONSENT_EXPORTED), eq("organization"),
-                eq(orgId), eq("Consent records exported (0 row(s))"));
+        assertExportAudited(owner, "Consent records exported (0 row(s))");
     }
 
     @Test
@@ -132,7 +125,7 @@ class ConsentExportTest {
         mvc.perform(get(URL).with(auth(principal(orgId, UserRole.MEMBER))))
                 .andExpect(status().isForbidden());
 
-        verify(auditLogger, never()).record(any(), eq(AuditActions.CONSENT_EXPORTED), any(), any(), any());
+        assertThat(audit.forOrg(orgId)).noneMatch(r -> AuditActions.CONSENT_EXPORTED.equals(r.getAction()));
     }
 
     @Test
@@ -232,8 +225,7 @@ class ConsentExportTest {
         String body = export(owner);
 
         assertThat(body).contains(kept).doesNotContain(erasing);
-        verify(auditLogger).record(eq(owner), eq(AuditActions.CONSENT_EXPORTED), eq("organization"),
-                eq(orgId), eq("Consent records exported (1 row(s))"));
+        assertExportAudited(owner, "Consent records exported (1 row(s))");
     }
 
     @Test
@@ -322,11 +314,8 @@ class ConsentExportTest {
 
         export(owner);
 
-        ArgumentCaptor<String> summary = ArgumentCaptor.forClass(String.class);
-        verify(auditLogger).record(eq(owner), eq(AuditActions.CONSENT_EXPORTED), eq("organization"),
-                eq(orgId), summary.capture());
-        assertThat(summary.getValue()).isEqualTo("Consent records exported (2 row(s))")
-                .doesNotContain(address);
+        String summary = assertExportAudited(owner, "Consent records exported (2 row(s))");
+        assertThat(summary).doesNotContain(address);
     }
 
     // ── time bounds ─────────────────────────────────────────────────────────
@@ -441,6 +430,14 @@ class ConsentExportTest {
     }
 
     // ── helpers ─────────────────────────────────────────────────────────────
+
+    /** The one persisted export row for the org, by this actor, with this summary. */
+    private String assertExportAudited(AuthPrincipal actor, String summary) {
+        var row = audit.assertRecorded(actor.orgId(), AuditActions.CONSENT_EXPORTED, "organization", actor.orgId());
+        assertThat(row.getActorId()).isEqualTo(actor.userId());
+        assertThat(row.getSummary()).isEqualTo(summary);
+        return row.getSummary();
+    }
 
     private String export(AuthPrincipal p) throws Exception {
         MvcResult started = mvc.perform(get(URL).with(auth(p)))

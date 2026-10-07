@@ -2,7 +2,6 @@ package com.imin.iminapi.audience;
 
 import com.imin.iminapi.audience.model.Consumer;
 import com.imin.iminapi.audience.model.MarketingOptOut;
-import com.imin.iminapi.audience.model.MarketingOptOutId;
 import com.imin.iminapi.audience.model.Membership;
 import com.imin.iminapi.audience.repository.ConsentRecordRepository;
 import com.imin.iminapi.audience.repository.ConsumerRepository;
@@ -10,114 +9,130 @@ import com.imin.iminapi.audience.repository.MarketingOptOutRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.ConsentOrigin;
 import com.imin.iminapi.audience.service.ConsentService;
-import com.imin.iminapi.config.TestRateLimitConfig;
-import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PgFaults;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.doReturn;
-import static org.mockito.Mockito.doThrow;
 
 /**
- * <b>The sticky write can never fail the unsubscribe.</b>
- *
- * <p>{@code ConsentService.unsubscribe} is the live RFC 8058 one-click path and the
- * legally mandated SMS STOP path. Recording stickiness is a bonus record, never a
- * precondition: a buyer who clicks unsubscribe must end up unsubscribed even if the
- * {@code marketing_optouts} insert blows up for any reason at all.
- *
- * <p>These tests exist because a try/catch alone does <b>not</b> buy that. A
- * constraint violation raised inside the caller's own transaction marks it
- * rollback-only; the caught exception is followed by an
- * {@code UnexpectedRollbackException} at commit and the unsubscribe is silently
- * undone. Isolation comes from {@code MarketingOptOutRecorder} being a separate bean
- * with {@code REQUIRES_NEW}, and from the catch sitting outside that boundary. Both
- * tests here assert against committed state — the test methods are deliberately
- * <b>not</b> {@code @Transactional}, so anything they can read back is something that
- * actually reached the database.
+ * The sticky marketing_optouts write can never fail the unsubscribe (REQUIRES_NEW recorder, catch outside it);
+ * asserts committed state, so no @Transactional. ConsentServiceStickyRaceTest pins the non-duplicate violation.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class StickyMarketingOptOutIsolationTest {
 
     @Autowired ConsentService consentService;
     @Autowired MembershipRepository memberships;
     @Autowired ConsumerRepository consumers;
     @Autowired ConsentRecordRepository consentRecords;
+    @Autowired MarketingOptOutRepository optOuts;
+    @Autowired JdbcTemplate jdbc;
+    @Autowired PlatformTransactionManager txManager;
 
-    @MockitoSpyBean MarketingOptOutRepository optOuts;
-    @MockitoBean AuditLogger auditLogger;
+    private final List<UUID> orgIds = new ArrayList<>();
+    private final List<String> emails = new ArrayList<>();
 
-    /**
-     * The real thing: a genuine duplicate-key violation from the database, raised
-     * inside the recorder's flush.
-     *
-     * <p>The row is pre-committed and the existence check is then blinded, which is
-     * exactly the race the read-then-insert idiom leaves open — two unsubscribes
-     * arriving together both see "no row" before either inserts. The loser must be a
-     * no-op, not a 500 on the buyer's unsubscribe link.
-     */
+    /** Own rows only: sticky opt-outs and consumers are keyed by address across orgs. */
+    @AfterEach
+    void tearDown() {
+        for (UUID orgId : orgIds) {
+            jdbc.update("delete from marketing_optouts where org_id = ?", orgId);
+            jdbc.update("delete from memberships where org_id = ?", orgId);
+        }
+        for (String email : emails) jdbc.update("delete from consumers where normalized_email = ?", email);
+    }
+
+    // Two unsubscribes racing on Postgres: the loser's insert waits on the winner's uncommitted row,
+    // then gets a genuine duplicate-key violation once the winner commits. That must be a no-op.
     @Test
-    void aRealDuplicateKeyViolation_doesNotRollBackTheUnsubscribe() {
+    void aRealDuplicateKeyViolation_doesNotRollBackTheUnsubscribe() throws Exception {
         UUID orgId = UUID.randomUUID();
         String email = seedEmail("race");
         UUID membershipId = seedMembership(orgId, email);
+        TransactionTemplate winner = new TransactionTemplate(txManager);
+        winner.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        ExecutorService loserThread = Executors.newSingleThreadExecutor();
+        try {
+            Future<?> loser = winner.execute(status -> {
+                optOuts.saveAndFlush(MarketingOptOut.of(email, orgId, "email", "one_click"));
+                Future<?> f = loserThread.submit(() -> consentService.unsubscribe(orgId, membershipId,
+                        "footer_link", ConsentOrigin.DATA_SUBJECT, null));
+                awaitInsertBlockedOnALock(f);
+                return f;
+            });
 
-        // The winner of the race, committed before we start.
-        optOuts.saveAndFlush(MarketingOptOut.of(email, orgId, "email", "one_click"));
-
-        // Blind the guard so the recorder takes the insert path against a row that is
-        // already there — the losing side of the race, reproduced deterministically.
-        doReturn(false).when(optOuts).existsById(any(MarketingOptOutId.class));
-
-        assertThatCode(() -> consentService.unsubscribe(orgId, membershipId, "footer_link",
-                ConsentOrigin.DATA_SUBJECT, null))
-                .as("a duplicate sticky row must be success, not a 500 on the RFC 8058 path")
-                .doesNotThrowAnyException();
+            assertThatCode(() -> loser.get(30, TimeUnit.SECONDS))
+                    .as("a duplicate sticky row must be success, not a 500 on the RFC 8058 path")
+                    .doesNotThrowAnyException();
+        } finally {
+            loserThread.shutdownNow();
+        }
 
         assertUnsubscribeCommitted(orgId, membershipId);
-
         // The winner's row stands untouched: still one row, still the earliest one.
         assertThat(optOuts.findByEmailNormalized(email))
                 .singleElement()
                 .satisfies(row -> assertThat(row.getSource()).isEqualTo("one_click"));
     }
 
-    /**
-     * And the general case, because §16's rule is "for any reason": the recorder
-     * failing on something that is not a constraint violation at all — a broken
-     * connection, a mapping error, anything — still leaves the unsubscribe standing.
-     */
+    /** Waits until a backend is blocked on a lock inside its marketing_optouts insert. */
+    private void awaitInsertBlockedOnALock(Future<?> loser) {
+        long deadline = System.currentTimeMillis() + 10_000;
+        while (!insertIsBlocked()) {
+            if (loser.isDone()) throw new AssertionError("the loser finished without waiting on the winner's row");
+            if (System.currentTimeMillis() > deadline) {
+                throw new AssertionError("the loser's insert never blocked on the winner's uncommitted row");
+            }
+            try {
+                Thread.sleep(20);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("interrupted while waiting for the lock", e);
+            }
+        }
+    }
+
+    // pg_stat_activity is snapshotted once per transaction, and this poll runs inside the winner's.
+    private boolean insertIsBlocked() {
+        jdbc.queryForList("select pg_stat_clear_snapshot()");
+        return jdbc.queryForObject("select count(*) from pg_stat_activity where wait_event_type = 'Lock'"
+                + " and query ilike 'insert into marketing_optouts%'", Integer.class) > 0;
+    }
+
+    /** Any non-duplicate failure — here Postgres rejecting the insert — still leaves the unsubscribe standing. */
     @Test
     void anyOtherFailureInTheStickyWrite_doesNotRollBackTheUnsubscribe() {
         UUID orgId = UUID.randomUUID();
         String email = seedEmail("boom");
         UUID membershipId = seedMembership(orgId, email);
 
-        doThrow(new IllegalStateException("sticky write exploded"))
-                .when(optOuts).existsById(any(MarketingOptOutId.class));
-
-        assertThatCode(() -> consentService.unsubscribe(orgId, membershipId, "one_click",
-                ConsentOrigin.DATA_SUBJECT, null))
-                .doesNotThrowAnyException();
+        try (var fault = PgFaults.failWrites(jdbc, "marketing_optouts", "org_id", orgId)) {
+            assertThatCode(() -> consentService.unsubscribe(orgId, membershipId, "one_click",
+                    ConsentOrigin.DATA_SUBJECT, null))
+                    .doesNotThrowAnyException();
+        }
 
         assertUnsubscribeCommitted(orgId, membershipId);
+        assertThat(optOuts.findByEmailNormalized(email)).as("the faulted sticky row was not written").isEmpty();
     }
 
-    /**
-     * The thing the buyer actually asked for, read back from the database. If the
-     * sticky write had poisoned the surrounding transaction, none of this would be
-     * here — the {@code unsubscribe} call above would have thrown at commit.
-     */
+    /** The unsubscribe and its consent proof, read back committed; a poisoned transaction would have thrown. */
     private void assertUnsubscribeCommitted(UUID orgId, UUID membershipId) {
         Membership after = memberships.findByIdAndOrgId(membershipId, orgId).orElseThrow();
         assertThat(after.getConsentStatus()).isEqualTo("unsubscribed");
@@ -131,10 +146,13 @@ class StickyMarketingOptOutIsolationTest {
     }
 
     private String seedEmail(String prefix) {
-        return prefix + "-" + UUID.randomUUID() + "@example.com";
+        String email = prefix + "-" + UUID.randomUUID() + "@example.com";
+        emails.add(email);
+        return email;
     }
 
     private UUID seedMembership(UUID orgId, String normalizedEmail) {
+        orgIds.add(orgId);
         Consumer c = new Consumer();
         c.setNormalizedEmail(normalizedEmail);
         c = consumers.save(c);

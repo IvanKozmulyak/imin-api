@@ -13,15 +13,14 @@ import com.imin.iminapi.audience.service.AudienceOrderProjector;
 import com.imin.iminapi.audience.service.ConsentService;
 import com.imin.iminapi.audience.service.CsvContactParser;
 import com.imin.iminapi.audience.service.MembershipProjector;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.dto.publicapi.SmsConsentRequest;
 import com.imin.iminapi.model.*;
 import com.imin.iminapi.repository.*;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.service.audience.SmsConsentService;
-import com.imin.iminapi.service.audit.AuditLogger;
 import com.imin.iminapi.service.event.FreeCheckoutService;
 import com.imin.iminapi.service.ticket.TicketsIssuedEvent;
+import com.imin.iminapi.support.IminIntegrationTest;
 import jakarta.validation.Validator;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -29,10 +28,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -54,8 +50,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Drives every consent-writing path and asserts none leaves a soft_opt_in record or basis; a source scan
  * pins that no production class writes one. New consent paths (door QR, survey) add themselves here.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class NeverSoftOptInGuardTest {
 
     private static final String PROOF = "Email me about this organiser's events. Unsubscribe anytime.";
@@ -81,9 +76,9 @@ class NeverSoftOptInGuardTest {
     @Autowired ConsentRecordRepository consentRecords;
     @Autowired JdbcTemplate jdbc;
     @Autowired @Qualifier("taskExecutor") Executor asyncExecutor;
-    @MockitoBean AuditLogger auditLogger;
 
     private UUID orgId;
+    private String run;
     private Event event;
     private TicketTier freeTier;
     private AuthPrincipal organizer;
@@ -91,6 +86,7 @@ class NeverSoftOptInGuardTest {
 
     @BeforeEach
     void setUp() {
+        run = UUID.randomUUID().toString().substring(0, 8);
         Organization org = new Organization();
         org.setName("Guard Org");
         org.setSlug("guard-" + UUID.randomUUID().toString().substring(0, 12));
@@ -154,53 +150,53 @@ class NeverSoftOptInGuardTest {
 
     @Test
     void paidCheckout_withTickedBox_recordsExplicit() {
-        Order order = paidOrder("paid-guard@example.com", true, PROOF);
+        Order order = paidOrder(a("paid-guard"), true, PROOF);
         projector.onTicketsIssued(new TicketsIssuedEvent(order.getId()));
 
-        assertThat(basesOf("paid-guard@example.com")).containsExactly("explicit");
+        assertThat(basesOf(a("paid-guard"))).containsExactly("explicit");
         assertNoSoftOptInAnywhere();
     }
 
     /** Hosted Checkout and the fan-app PaymentIntent both persist the order and reach this projector. */
     @Test
     void paidCheckout_withoutProofText_recordsNothing() {
-        Order order = paidOrder("hosted-guard@example.com", true, null);
+        Order order = paidOrder(a("hosted-guard"), true, null);
         projector.onTicketsIssued(new TicketsIssuedEvent(order.getId()));
 
-        assertThat(basesOf("hosted-guard@example.com")).isEmpty();
+        assertThat(basesOf(a("hosted-guard"))).isEmpty();
         assertNoSoftOptInAnywhere();
     }
 
     @Test
     void freeCheckout_withTickedBox_recordsExplicit() {
-        Order order = freeCheckout.issueFreeOrder(event, freeTier, 1, "free-guard@example.com", null, false, true,
+        Order order = freeCheckout.issueFreeOrder(event, freeTier, 1, a("free-guard"), null, false, true,
                 CheckoutAttribution.NONE, null, null, new CheckoutConsent(true, PROOF));
         projector.onTicketsIssued(new TicketsIssuedEvent(order.getId()));
         drainAsync();
 
         // The committed free order also fires the async projector; both runs record explicit.
-        assertThat(basesOf("free-guard@example.com")).isNotEmpty().containsOnly("explicit");
+        assertThat(basesOf(a("free-guard"))).isNotEmpty().containsOnly("explicit");
         assertNoSoftOptInAnywhere();
     }
 
     @Test
     void csvImport_provenRowAndAttestedRow_neverSoftOptIn() {
         importService.importContacts(List.of(
-                new CsvContactParser.RawContact(2, "import-proven@example.com", null, null, "shotgun", "2026-09-01",
+                new CsvContactParser.RawContact(2, a("import-proven"), null, null, "shotgun", "2026-09-01",
                         null, "2026-08-01", "opted_in", "optin-screenshot-2"),
-                new CsvContactParser.RawContact(3, "import-attested@example.com", null, null)),
+                new CsvContactParser.RawContact(3, a("import-attested"), null, null)),
                 false, organizer, "2026-09-27");
 
-        assertThat(basesOf("import-proven@example.com")).containsExactly("explicit");
-        assertThat(basesOf("import-attested@example.com")).isEmpty();
+        assertThat(basesOf(a("import-proven"))).containsExactly("explicit");
+        assertThat(basesOf(a("import-attested"))).isEmpty();
         assertNoSoftOptInAnywhere();
     }
 
     @Test
     void organizerConsentCapture_refusesSoftOptIn_andRecordsOnlyExplicit() {
-        Order order = paidOrder("capture-guard@example.com", false, null);
+        Order order = paidOrder(a("capture-guard"), false, null);
         projector.onTicketsIssued(new TicketsIssuedEvent(order.getId()));
-        UUID mid = membershipId("capture-guard@example.com");
+        UUID mid = membershipId(a("capture-guard"));
 
         assertThat(validator.validate(new AudienceController.ConsentRequest(mid, "soft_opt_in", "desk", "Said yes")))
                 .anySatisfy(v -> assertThat(v.getPropertyPath().toString()).isEqualTo("basis"));
@@ -208,14 +204,14 @@ class NeverSoftOptInGuardTest {
         assertThat(validator.validate(explicit)).isEmpty();
         audienceController.captureConsent(organizer, explicit);
 
-        assertThat(basesOf("capture-guard@example.com")).containsExactly("explicit");
+        assertThat(basesOf(a("capture-guard"))).containsExactly("explicit");
         assertNoSoftOptInAnywhere();
     }
 
     @Test
     void smsOrderConfirmationOptIn_recordsExplicit() {
-        Order order = paidOrder("sms-guard@example.com", false, null);
-        smsConsentService.submit(order.getToken(), new SmsConsentRequest("+33612345678", true, "Text me updates."));
+        Order order = paidOrder(a("sms-guard"), false, null);
+        smsConsentService.submit(order.getToken(), new SmsConsentRequest(uniquePhone(), true, "Text me updates."));
 
         assertThat(jdbc.queryForList("select lawful_basis from consent_records cr join memberships m "
                 + "on m.membership_id = cr.membership_id where m.org_id = ? and cr.channel = 'sms'", String.class, orgId))
@@ -227,11 +223,11 @@ class NeverSoftOptInGuardTest {
     void doorQrOptIn_recordsExplicit() {
         String url = doorOptIn.setEnabled(organizer, event.getId(), true).doorUrl();
         String token = url.substring(url.indexOf("?t=") + 3);
-        doorOptIn.optIn(event.getId(), new DoorOptInRequest(token, "door-guard@example.com", true,
+        doorOptIn.optIn(event.getId(), new DoorOptInRequest(token, a("door-guard"), true,
                 "Email me about events by Guard Org. I agree to receive email marketing.",
                 "door-org-named-2026-09", "en"));
 
-        assertThat(basesOf("door-guard@example.com")).containsExactly("explicit");
+        assertThat(basesOf(a("door-guard"))).containsExactly("explicit");
         assertNoSoftOptInAnywhere();
     }
 
@@ -240,11 +236,11 @@ class NeverSoftOptInGuardTest {
         String url = survey.setEnabled(organizer, event.getId(), true).surveyUrl();
         String token = url.substring(url.indexOf("?t=") + 3);
         survey.submit(token, new SurveyResponseRequest(null, null, "friend", null, null, "survey-notice-2026-10",
-                "en", true, "survey-guard@example.com",
+                "en", true, a("survey-guard"),
                 "Email me about events by Guard Org. I agree to receive email marketing.",
                 "survey-org-named-2026-09", null));
 
-        assertThat(basesOf("survey-guard@example.com")).containsExactly("explicit");
+        assertThat(basesOf(a("survey-guard"))).containsExactly("explicit");
         assertNoSoftOptInAnywhere();
     }
 
@@ -283,6 +279,16 @@ class NeverSoftOptInGuardTest {
     }
 
     // ── plumbing ───────────────────────────────────────────────────────────
+
+    /** A French mobile number per test: SMS STOP suppresses by phone across orgs. */
+    private static String uniquePhone() {
+        return "+336" + (10_000_000 + (int) (Math.random() * 89_999_999));
+    }
+
+    /** Unique per test: consumers are keyed by address across orgs. */
+    private String a(String local) {
+        return local + "-" + run + "@example.com";
+    }
 
     private void drainAsync() {
         ThreadPoolExecutor tpe = ((ThreadPoolTaskExecutor) asyncExecutor).getThreadPoolExecutor();

@@ -12,18 +12,12 @@ import com.imin.iminapi.audience.service.ConsentOrigin;
 import com.imin.iminapi.audience.service.ConsentService;
 import com.imin.iminapi.audience.service.CsvContactParser;
 import com.imin.iminapi.audience.service.DsarService;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.sms.SmsStopService;
 import com.imin.iminapi.marketing.unsubscribe.UnsubscribeTokenService;
 import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.security.AuthPrincipal;
-import com.imin.iminapi.service.audit.AuditLogger;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.List;
@@ -33,6 +27,7 @@ import com.imin.iminapi.dto.publicapi.SmsConsentRequest;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.service.audience.SmsConsentService;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.springframework.http.MediaType;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
@@ -48,9 +43,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * {@code memberships.objected_profiling}: set by the person's own opt-out (Art.21 objection to
  * emails and profiling), cleared only by a fresh consent from that person.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class ProfilingObjectionTest {
 
     @Autowired MockMvc mvc;
@@ -63,8 +56,6 @@ class ProfilingObjectionTest {
     @Autowired MembershipRepository memberships;
     @Autowired ConsumerRepository consumers;
     @Autowired ConsentRecordRepository consentRecords;
-
-    @MockitoBean AuditLogger auditLogger;
 
     // ── set by the data subject ─────────────────────────────────────────────
 

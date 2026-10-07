@@ -7,23 +7,22 @@ import com.imin.iminapi.audience.repository.ConsumerRepository;
 import com.imin.iminapi.audience.repository.MembershipRepository;
 import com.imin.iminapi.audience.service.AudienceOrderProjector;
 import com.imin.iminapi.audience.service.DsarService;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.model.MetaCapiEvent;
 import com.imin.iminapi.marketing.repository.MetaCapiEventRepository;
 import com.imin.iminapi.model.*;
 import com.imin.iminapi.repository.*;
 import com.imin.iminapi.security.ApiException;
 import com.imin.iminapi.security.AuthPrincipal;
-import com.imin.iminapi.service.audit.AuditLogger;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.jdbc.core.JdbcTemplate;
 
-import javax.sql.DataSource;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -39,16 +38,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * addresses standing. These cover both directions plus the role guard: an
  * export is a complete dossier on one person and any MEMBER could produce one.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class AudienceDsarScopeTest {
 
     @Autowired DsarService dsarService;
     @Autowired AudienceOrderProjector projector;
     @Autowired ConsumerRepository consumerRepo;
     @Autowired MembershipRepository membershipRepo;
-    @Autowired OrganizationRepository orgRepo;
-    @Autowired UserRepository userRepo;
     @Autowired EventRepository eventRepo;
     @Autowired OrderRepository orderRepo;
     @Autowired TicketRepository ticketRepo;
@@ -56,11 +52,13 @@ class AudienceDsarScopeTest {
     @Autowired MetaCapiEventRepository metaRepo;
     @Autowired NotifySubscriptionRepository notifyRepo;
     @Autowired AuditLogRepository auditLogRepo;
-    @Autowired DataSource dataSource;
+    @Autowired IminFixtures fx;
+    @Autowired JdbcTemplate jdbc;
 
-    @MockitoBean AuditLogger auditLogger;
-
-    private static final String EMAIL = "subject@dsar.test";
+    // Consumers are keyed by address across orgs, so each test owns its subject's address.
+    private String subjectEmail;
+    private String bystanderEmail;
+    private final List<UUID> orgIds = new ArrayList<>();
 
     private UUID orgId;
     private UUID eventId;
@@ -70,21 +68,12 @@ class AudienceDsarScopeTest {
 
     @BeforeEach
     void setUp() {
-        wipe();
-        Organization o = new Organization();
-        o.setName("Scope Org");
-        o.setSlug("scope-" + UUID.randomUUID().toString().substring(0, 8));
-        o.setContactEmail("hello@scope.test");
-        o.setCountry("DE");
-        orgId = orgRepo.save(o).getId();
-
-        User u = new User();
-        u.setOrgId(orgId);
-        String ue = "owner-" + UUID.randomUUID() + "@scope.test";
-        u.setEmail(ue);
-        u.setEmailLower(ue);
-        u.setRole(UserRole.OWNER);
-        userId = userRepo.save(u).getId();
+        subjectEmail = fx.email("subject");
+        bystanderEmail = fx.email("bystander");
+        Organization o = fx.org();
+        orgId = o.getId();
+        orgIds.add(orgId);
+        userId = fx.owner(o).getId();
 
         Event e = new Event();
         e.setOrgId(orgId);
@@ -103,7 +92,16 @@ class AudienceDsarScopeTest {
     }
 
     @AfterEach
-    void tearDown() { wipe(); }
+    void tearDown() {
+        try {
+            jdbc.update("delete from meta_capi_events where org_id = ?", orgId);
+            jdbc.update("delete from memberships where org_id = ?", orgId);
+            jdbc.update("delete from consumers where normalized_email = ?", subjectEmail);
+            jdbc.update("delete from erased_addresses where email_normalized = ?", subjectEmail);
+        } finally {
+            OrgRows.delete(jdbc, orgIds);
+        }
+    }
 
     // ── (a) Art.15: the export carries the records ───────────────────────────
 
@@ -114,7 +112,7 @@ class AudienceDsarScopeTest {
         DsarRecords records = dsarService.exportRecords(orgId, membershipId, owner);
 
         assertThat(records.orders()).hasSize(1);
-        assertThat(records.orders().get(0).email()).isEqualTo(EMAIL);
+        assertThat(records.orders().get(0).email()).isEqualTo(subjectEmail);
         assertThat(records.orders().get(0).totalMinor()).isEqualTo(2500L);
         assertThat(records.orders().get(0).eventName()).isEqualTo("Scope Night");
 
@@ -147,12 +145,8 @@ class AudienceDsarScopeTest {
     @Test
     void export_records_are_org_scoped() {
         UUID membershipId = seedSubjectWithEverything();
-        Organization other = new Organization();
-        other.setName("Other Org");
-        other.setSlug("other-" + UUID.randomUUID().toString().substring(0, 8));
-        other.setContactEmail("hello@other.test");
-        other.setCountry("DE");
-        UUID otherOrgId = orgRepo.save(other).getId();
+        UUID otherOrgId = fx.org().getId();
+        orgIds.add(otherOrgId);
         saveOrder(otherOrgId, eventId, 9999L, "anon-other");
 
         DsarRecords records = dsarService.exportRecords(orgId, membershipId, owner);
@@ -166,25 +160,28 @@ class AudienceDsarScopeTest {
     @Test
     void erasure_deletes_funnel_rows_and_redacts_meta_and_audit_actor() {
         UUID membershipId = seedSubjectWithEverything();
-        auditLogRepo.save(auditRow(EMAIL));
-        auditLogRepo.save(auditRow("bystander@scope.test"));
+        auditLogRepo.save(auditRow(subjectEmail));
+        auditLogRepo.save(auditRow(bystanderEmail));
 
         dsarService.executeErase(orgId, membershipId, owner);
 
-        assertThat(funnelRepo.findAll())
+        assertThat(funnelRepo.findAll().stream().filter(f -> eventId.equals(f.getEventId())).toList())
                 .as("the subject's beacons go; another session's stay")
                 .extracting(FunnelEvent::getAnonId)
                 .containsExactly("anon-bystander");
 
-        MetaCapiEvent meta = metaRepo.findAll().get(0);
+        MetaCapiEvent meta = metaRepo.findAll().stream()
+                .filter(r -> orgId.equals(r.getOrgId())).findFirst().orElseThrow();
         assertThat(meta.getEmailSha256()).as("hashed address is still personal data").isNull();
         assertThat(meta.getFbp()).isNull();
         assertThat(meta.getFbc()).isNull();
         assertThat(meta.getOrderId()).as("the send record itself survives").isNotNull();
 
-        assertThat(auditLogRepo.findAll())
+        // The seeded rows only: the real AuditLogger also writes the erase tombstone for the owner.
+        assertThat(auditLogRepo.findAll().stream()
+                .filter(a -> orgId.equals(a.getOrgId()) && "test.action".equals(a.getAction())).toList())
                 .extracting(AuditLog::getActorEmail)
-                .containsExactlyInAnyOrder(null, "bystander@scope.test");
+                .containsExactlyInAnyOrder(null, bystanderEmail);
     }
 
     /** The accounting exemption: the invoice and the ticket stay. */
@@ -194,8 +191,8 @@ class AudienceDsarScopeTest {
 
         dsarService.executeErase(orgId, membershipId, owner);
 
-        assertThat(orderRepo.findByOrgIdAndNormalizedEmail(orgId, EMAIL)).hasSize(1);
-        assertThat(ticketRepo.findAll()).hasSize(1);
+        assertThat(orderRepo.findByOrgIdAndNormalizedEmail(orgId, subjectEmail)).hasSize(1);
+        assertThat(ticketRepo.findAll().stream().filter(t -> eventId.equals(t.getEventId())).toList()).hasSize(1);
     }
 
     // ── (c) role guard ───────────────────────────────────────────────────────
@@ -270,11 +267,11 @@ class AudienceDsarScopeTest {
 
         NotifySubscription sub = new NotifySubscription();
         sub.setEventId(eventId);
-        sub.setEmail(EMAIL);
+        sub.setEmail(subjectEmail);
         notifyRepo.save(sub);
 
-        projector.upsertMembership(orgId, EMAIL, EMAIL);
-        Consumer c = consumerRepo.findByNormalizedEmail(EMAIL).orElseThrow();
+        projector.upsertMembership(orgId, subjectEmail, subjectEmail);
+        Consumer c = consumerRepo.findByNormalizedEmail(subjectEmail).orElseThrow();
         Membership m = membershipRepo.findByOrgIdAndConsumerId(orgId, c.getConsumerId()).orElseThrow();
         return m.getMembershipId();
     }
@@ -283,7 +280,7 @@ class AudienceDsarScopeTest {
         com.imin.iminapi.model.Order o = new com.imin.iminapi.model.Order();
         o.setEventId(event);
         o.setOrgId(org);
-        o.setEmail(EMAIL);
+        o.setEmail(subjectEmail);
         o.setTotalMinor(totalMinor);
         o.setApplicationFeeMinor(224L);
         o.setCurrency("EUR");
@@ -311,23 +308,5 @@ class AudienceDsarScopeTest {
         a.setSummary("seed");
         a.setOccurredAt(Instant.now());
         return a;
-    }
-
-    private void wipe() {
-        try (java.sql.Connection c = dataSource.getConnection();
-             java.sql.Statement s = c.createStatement()) {
-            for (String sql : List.of(
-                    "delete from audit_logs", "delete from meta_capi_events",
-                    "delete from event_funnel_events", "delete from suppression_entries",
-                    "delete from consent_records", "delete from segments",
-                    "delete from memberships", "delete from consumers",
-                    "delete from erased_addresses", "delete from tickets",
-                    "delete from orders", "delete from notify_subscriptions",
-                    "delete from events", "delete from users", "delete from organizations")) {
-                s.execute(sql);
-            }
-        } catch (Exception e) {
-            throw new RuntimeException("wipe() failed: " + e.getMessage(), e);
-        }
     }
 }
