@@ -1,20 +1,29 @@
 package com.imin.iminapi.stripe;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
+import com.imin.iminapi.dispute.Dispute;
 import com.imin.iminapi.dispute.DisputeRepository;
 import com.imin.iminapi.dispute.DisputeStatus;
-import com.imin.iminapi.email.EmailService;
+import com.imin.iminapi.dispute.DisputeWithholding;
+import com.imin.iminapi.model.Event;
+import com.imin.iminapi.model.EventStatus;
+import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Organization;
+import com.imin.iminapi.model.Ticket;
+import com.imin.iminapi.model.User;
 import com.imin.iminapi.payout.PayoutRun;
 import com.imin.iminapi.payout.PayoutRunRepository;
 import com.imin.iminapi.payout.PayoutRunStatus;
+import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
-import com.imin.iminapi.service.event.InventoryService;
-import com.imin.iminapi.service.ticket.PaidCheckoutService;
+import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.settlement.Settlement;
 import com.imin.iminapi.settlement.SettlementObjectType;
 import com.imin.iminapi.settlement.SettlementRepository;
 import com.imin.iminapi.settlement.SettlementStatus;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
+import com.imin.iminapi.support.PropertyFlips;
 import com.stripe.StripeClient;
 import com.stripe.net.ApiRequest;
 import com.stripe.net.ApiResource;
@@ -25,13 +34,12 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.lang.reflect.Type;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -40,72 +48,52 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
-/**
- * Integration test for Track A settlements ingestion through the V1 webhook path. Unlike the
- * pure-unit {@link StripeWebhookServiceTest} (which mocks the dedup service), this test wires the
- * REAL {@link SettlementIngestService}, {@link SettlementRepository}, {@link OrganizationRepository}
- * and {@link WebhookEventDedupService} against the H2 schema so it can assert the actual
- * {@code settlements} row that gets written — and prove a redelivery is a real no-op via the real
- * {@code processed_webhook_events} dedup table.
- *
- * <p>Only the money-flow collaborators ({@link StripeClient}, {@link PaidCheckoutService},
- * {@link InventoryService}) are mocked — the transfer-ingest path never touches them, but mocking
- * keeps the context free of live Stripe/email side effects. Events are built as real Stripe-shaped
- * V1 JSON + HMAC signature so the service's own {@code Webhook.constructEvent} runs end-to-end.
- */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+/** Settlement and chargeback ingestion through the signed V1 webhook; Stripe is faked at the
+ *  {@link StripeResponseGetter} seam because the ingest retrieves the dispute's charge. */
+@IminIntegrationTest
 class SettlementIngestWebhookTest {
 
     private static final String SECRET = "whsec_test_settlement_secret";
 
     @Autowired StripeWebhookService webhook;
     @Autowired StripeProperties props;
+    @Autowired PropertyFlips flips;
+    @Autowired IminFixtures fx;
+    @Autowired StripeClient stripeClient;
     @Autowired SettlementRepository settlements;
     @Autowired DisputeRepository disputes;
+    @Autowired DisputeWithholding disputeWithholding;
     @Autowired OrganizationRepository orgs;
     @Autowired PayoutRunRepository payoutRuns;
+    @Autowired OrderRepository orders;
+    @Autowired TicketRepository tickets;
     @Autowired JdbcTemplate jdbc;
-
-    // Mocked so the context loads without live Stripe/email; the transfer-ingest path doesn't use them.
-    @MockitoBean StripeClient stripeClient;
-    @MockitoBean PaidCheckoutService paidCheckoutService;
-    @MockitoBean InventoryService inventoryService;
-    /** The dispute alert fires AFTER_COMMIT; mocked so no test ever reaches Resend. */
-    @MockitoBean EmailService email;
 
     private Organization org;
     private String acctId;
+    private Event event;
+    /** Suffix for every evt_ id: processed_webhook_events dedupes across the shared database. */
+    private final String run = UUID.randomUUID().toString().substring(0, 8);
 
     @BeforeEach
     void setUp() {
-        wipe();
-        props.setWebhookSecretV1(SECRET);
+        flips.set(props, "webhookSecretV1", SECRET);
 
         acctId = "acct_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
-        org = new Organization();
-        org.setName("Settlement Org");
-        org.setSlug("settlement-org-" + UUID.randomUUID().toString().substring(0, 8));
-        org.setContactEmail("payouts@test.example");
-        org.setCountry("DE");
+        org = fx.org();
         org.setStripeAccountId(acctId);
         org = orgs.save(org);
+        User owner = fx.owner(org);
+        event = fx.event(org, owner, EventStatus.LIVE, Instant.now().plus(10, ChronoUnit.DAYS));
     }
 
     @AfterEach
     void tearDown() {
-        wipe();
+        OrgRows.delete(jdbc, List.of(org.getId()));
     }
 
-    private void wipe() {
-        // disputes first: the rows FK to organizations.
-        disputes.deleteAll();
-        payoutRuns.deleteAll();
-        settlements.deleteAll();
-        jdbc.update("DELETE FROM processed_webhook_events");
-        jdbc.update("DELETE FROM events");
-        jdbc.update("DELETE FROM users");
-        orgs.deleteAll();
+    private String evt(String name) {
+        return "evt_" + name + "_" + run;
     }
 
     // ── helpers ────────────────────────────────────────────────────────────────
@@ -227,6 +215,11 @@ class SettlementIngestWebhookTest {
 
     private String disputeEvent(String eventId, String disputeId, String chargeId, long amount,
                                 String type, String status) {
+        return disputeEvent(eventId, disputeId, chargeId, amount, type, status, Instant.now().getEpochSecond());
+    }
+
+    private String disputeEvent(String eventId, String disputeId, String chargeId, long amount,
+                                String type, String status, long createdAt) {
         return """
             {
               "id": "%s",
@@ -247,24 +240,31 @@ class SettlementIngestWebhookTest {
                 }
               }
             }
-            """.formatted(eventId, type, Instant.now().getEpochSecond(), acctId,
+            """.formatted(eventId, type, createdAt, acctId,
                 disputeId, amount, status, chargeId);
     }
 
     /**
      * Make {@code stripeClient.charges().retrieve(id)} answer with a PLATFORM destination
      * charge carrying {@code transfer} (no {@code source_transfer} — that field only exists on
-     * the connected account's copy). {@code ChargeService} is final, so the seam is a real
-     * service over a mocked {@link StripeResponseGetter}, as elsewhere in the suite.
+     * the connected account's copy) and, when given, the PaymentIntent that identifies the order.
+     * {@code ChargeService} is final, so the seam is a real service over a mocked {@link StripeResponseGetter}.
      */
     private void stubChargeRetrieve(String chargeId, String backingTransfer) throws Exception {
+        stubChargeRetrieve(chargeId, backingTransfer, null);
+    }
+
+    private void stubChargeRetrieve(String chargeId, String backingTransfer, String paymentIntentId)
+            throws Exception {
         StripeResponseGetter rg = mock(StripeResponseGetter.class);
         when(rg.request(any(ApiRequest.class), any(Type.class)))
                 .thenAnswer(inv -> {
                     String json = """
-                        { "id": "%s", "object": "charge", "amount": 4200, "currency": "eur",
+                        { "id": "%s", "object": "charge", "amount": 4200, "currency": "eur",%s
                           "transfer": "%s", "transfer_data": { "destination": "%s" } }
-                        """.formatted(chargeId, backingTransfer, acctId);
+                        """.formatted(chargeId,
+                            paymentIntentId == null ? "" : " \"payment_intent\": \"" + paymentIntentId + "\",",
+                            backingTransfer, acctId);
                     return ApiResource.GSON.fromJson(json, com.stripe.model.Charge.class);
                 });
         when(stripeClient.charges()).thenReturn(new ChargeService(rg));
@@ -369,7 +369,7 @@ class SettlementIngestWebhookTest {
         seedSubmittedRun(eventId, payoutId, 4_000, 5_000);
 
         long arrival = Instant.now().getEpochSecond();
-        String body = payoutEvent("evt_payout_paid_partial", payoutId, "payout.paid", 4_000, "paid", arrival, null);
+        String body = payoutEvent(evt("payout_paid_partial"), payoutId, "payout.paid", 4_000, "paid", arrival, null);
         webhook.handleV1Endpoint(body, sign(body));
 
         PayoutRun run = payoutRuns.findByStripePayoutId(payoutId).orElseThrow();
@@ -390,7 +390,7 @@ class SettlementIngestWebhookTest {
         seedSubmittedRun(eventId, payoutId, 7_200);
 
         long arrival = Instant.now().getEpochSecond();
-        String body = payoutEvent("evt_payout_paid_1", payoutId, "payout.paid", 7_200, "paid", arrival, null);
+        String body = payoutEvent(evt("payout_paid_1"), payoutId, "payout.paid", 7_200, "paid", arrival, null);
         webhook.handleV1Endpoint(body, sign(body));
 
         // The run flipped to PAID, with paid_at derived from Stripe's arrival_date — the
@@ -413,7 +413,7 @@ class SettlementIngestWebhookTest {
         String payoutId = "po_" + UUID.randomUUID().toString().substring(0, 12);
         seedSubmittedRun(eventId, payoutId, 5_000);
 
-        String body = payoutEvent("evt_payout_failed_1", payoutId, "payout.failed", 5_000,
+        String body = payoutEvent(evt("payout_failed_1"), payoutId, "payout.failed", 5_000,
                 "failed", Instant.now().getEpochSecond(), "account_closed");
         webhook.handleV1Endpoint(body, sign(body));
 
@@ -426,7 +426,7 @@ class SettlementIngestWebhookTest {
     void payoutWithNoMatchingRun_justUpsertsSettlement_noCrash() throws Exception {
         // A Stripe-auto payout (not imin-triggered) has no payout_runs row — must still upsert cleanly.
         String payoutId = "po_" + UUID.randomUUID().toString().substring(0, 12);
-        String body = payoutEvent("evt_payout_orphan_1", payoutId, "payout.paid", 3_000,
+        String body = payoutEvent(evt("payout_orphan_1"), payoutId, "payout.paid", 3_000,
                 "paid", Instant.now().getEpochSecond(), null);
 
         webhook.handleV1Endpoint(body, sign(body));
@@ -440,7 +440,7 @@ class SettlementIngestWebhookTest {
     @Test
     void transferCreated_createsSettlementRowTiedToOrg() throws Exception {
         String transferId = "tr_" + UUID.randomUUID().toString().substring(0, 12);
-        String body = transferCreatedEvent("evt_transfer_create_1", transferId, acctId, 4200, "eur");
+        String body = transferCreatedEvent(evt("transfer_create_1"), transferId, acctId, 4200, "eur");
 
         webhook.handleV1Endpoint(body, sign(body));
 
@@ -457,7 +457,7 @@ class SettlementIngestWebhookTest {
     @Test
     void transferCreated_redelivery_isDedupNoOp_singleRow() throws Exception {
         String transferId = "tr_" + UUID.randomUUID().toString().substring(0, 12);
-        String body = transferCreatedEvent("evt_transfer_dedup_1", transferId, acctId, 4200, "eur");
+        String body = transferCreatedEvent(evt("transfer_dedup_1"), transferId, acctId, 4200, "eur");
 
         webhook.handleV1Endpoint(body, sign(body));   // first delivery
         webhook.handleV1Endpoint(body, sign(body));   // exact replay — same event id
@@ -472,12 +472,12 @@ class SettlementIngestWebhookTest {
         // A second, DISTINCT event id (transfer.reversed) for the SAME transfer must update the
         // existing row in place (upsert keyed on stripe_object_id), not create a duplicate.
         String transferId = "tr_" + UUID.randomUUID().toString().substring(0, 12);
-        String created = transferCreatedEvent("evt_tr_c", transferId, acctId, 4200, "eur");
+        String created = transferCreatedEvent(evt("tr_c"), transferId, acctId, 4200, "eur");
         webhook.handleV1Endpoint(created, sign(created));
 
         String reversedBody = """
             {
-              "id": "evt_tr_r",
+              "id": "%s",
               "object": "event",
               "type": "transfer.reversed",
               "api_version": "2026-04-22.dahlia",
@@ -496,7 +496,7 @@ class SettlementIngestWebhookTest {
                 }
               }
             }
-            """.formatted(Instant.now().getEpochSecond(), acctId, transferId, acctId);
+            """.formatted(evt("tr_r"), Instant.now().getEpochSecond(), acctId, transferId, acctId);
         webhook.handleV1Endpoint(reversedBody, sign(reversedBody));
 
         assertThat(settlements.findByOrgIdOrderByCreatedAtDesc(org.getId())).hasSize(1);
@@ -509,7 +509,7 @@ class SettlementIngestWebhookTest {
     @Test
     void transferForUnknownAccount_skips_noRow() throws Exception {
         String transferId = "tr_" + UUID.randomUUID().toString().substring(0, 12);
-        String body = transferCreatedEvent("evt_unknown_acct", transferId,
+        String body = transferCreatedEvent(evt("unknown_acct"), transferId,
                 "acct_does_not_exist", 4200, "eur");
 
         webhook.handleV1Endpoint(body, sign(body));
@@ -523,12 +523,12 @@ class SettlementIngestWebhookTest {
     void partialRefund_existingTransferRow_keepsAmountAndStatusUnchanged() throws Exception {
         // Seed the backing transfer row first (PENDING, 4200).
         String transferId = "tr_" + UUID.randomUUID().toString().substring(0, 12);
-        String created = transferCreatedEvent("evt_pr_seed", transferId, acctId, 4200, "eur");
+        String created = transferCreatedEvent(evt("pr_seed"), transferId, acctId, 4200, "eur");
         webhook.handleV1Endpoint(created, sign(created));
 
         // A PARTIAL refund (refunded=false) must NOT change amount and must NOT change status.
         String chargeId = "ch_" + UUID.randomUUID().toString().substring(0, 12);
-        String refund = chargeRefundedEvent("evt_pr_refund", chargeId, transferId, acctId, 1000, false);
+        String refund = chargeRefundedEvent(evt("pr_refund"), chargeId, transferId, acctId, 1000, false);
         webhook.handleV1Endpoint(refund, sign(refund));
 
         Settlement s = settlements.findByStripeObjectId(transferId).orElseThrow();
@@ -543,7 +543,7 @@ class SettlementIngestWebhookTest {
         // No transfer row seeded. A refund (even a full one) must NEVER mint a row.
         String transferId = "tr_" + UUID.randomUUID().toString().substring(0, 12);
         String chargeId = "ch_" + UUID.randomUUID().toString().substring(0, 12);
-        String refund = chargeRefundedEvent("evt_refund_orphan", chargeId, transferId, acctId, 4200, true);
+        String refund = chargeRefundedEvent(evt("refund_orphan"), chargeId, transferId, acctId, 4200, true);
 
         webhook.handleV1Endpoint(refund, sign(refund));
 
@@ -554,11 +554,11 @@ class SettlementIngestWebhookTest {
     @Test
     void fullRefund_existingTransferRow_flipsToReversed_amountUntouched() throws Exception {
         String transferId = "tr_" + UUID.randomUUID().toString().substring(0, 12);
-        String created = transferCreatedEvent("evt_fr_seed", transferId, acctId, 4200, "eur");
+        String created = transferCreatedEvent(evt("fr_seed"), transferId, acctId, 4200, "eur");
         webhook.handleV1Endpoint(created, sign(created));
 
         String chargeId = "ch_" + UUID.randomUUID().toString().substring(0, 12);
-        String refund = chargeRefundedEvent("evt_fr_refund", chargeId, transferId, acctId, 4200, true);
+        String refund = chargeRefundedEvent(evt("fr_refund"), chargeId, transferId, acctId, 4200, true);
         webhook.handleV1Endpoint(refund, sign(refund));
 
         Settlement s = settlements.findByStripeObjectId(transferId).orElseThrow();
@@ -570,11 +570,11 @@ class SettlementIngestWebhookTest {
     @Test
     void fullRefund_onTheConnectedAccountCopy_stillResolvesViaSourceTransfer() throws Exception {
         String transferId = "tr_" + UUID.randomUUID().toString().substring(0, 12);
-        String created = transferCreatedEvent("evt_cfr_seed", transferId, acctId, 4200, "eur");
+        String created = transferCreatedEvent(evt("cfr_seed"), transferId, acctId, 4200, "eur");
         webhook.handleV1Endpoint(created, sign(created));
 
         String chargeId = "ch_" + UUID.randomUUID().toString().substring(0, 12);
-        String refund = connectedChargeRefundedEvent("evt_cfr_refund", chargeId, transferId, 4200);
+        String refund = connectedChargeRefundedEvent(evt("cfr_refund"), chargeId, transferId, 4200);
         webhook.handleV1Endpoint(refund, sign(refund));
 
         assertThat(settlements.findByStripeObjectId(transferId).orElseThrow().getStatus())
@@ -588,19 +588,19 @@ class SettlementIngestWebhookTest {
         // transfer.created 500s on first delivery. Its dedup marker is written in the SAME
         // transaction as the handler, so the rollback removes it and Stripe re-delivers later.
         String transferId = "tr_" + UUID.randomUUID().toString().substring(0, 12);
-        String created = transferCreatedEvent("evt_ooo_seed", transferId, acctId, 4200, "eur");
+        String created = transferCreatedEvent(evt("ooo_seed"), transferId, acctId, 4200, "eur");
         webhook.handleV1Endpoint(created, sign(created));
 
         // Meanwhile the refund lands and reverses the row.
         String chargeId = "ch_" + UUID.randomUUID().toString().substring(0, 12);
-        String refund = chargeRefundedEvent("evt_ooo_refund", chargeId, transferId, acctId, 4200, true);
+        String refund = chargeRefundedEvent(evt("ooo_refund"), chargeId, transferId, acctId, 4200, true);
         webhook.handleV1Endpoint(refund, sign(refund));
         assertThat(settlements.findByStripeObjectId(transferId).orElseThrow().getStatus())
                 .isEqualTo(SettlementStatus.REVERSED);
 
         // Now the retried transfer.created arrives under a DIFFERENT event id, so the
         // processed_webhook_events dedup does not stop it.
-        String retry = transferCreatedEvent("evt_ooo_retry", transferId, acctId, 4200, "eur");
+        String retry = transferCreatedEvent(evt("ooo_retry"), transferId, acctId, 4200, "eur");
         webhook.handleV1Endpoint(retry, sign(retry));
 
         assertThat(settlements.findByStripeObjectId(transferId).orElseThrow().getStatus())
@@ -616,7 +616,7 @@ class SettlementIngestWebhookTest {
         long tPaid = Instant.now().getEpochSecond();
         long tFailed = tPaid - 600;   // the FAILED event was created 10 minutes EARLIER
 
-        String paid = payoutEvent("evt_ooo_paid", payoutId, "payout.paid", 7_200, "paid",
+        String paid = payoutEvent(evt("ooo_paid"), payoutId, "payout.paid", 7_200, "paid",
                 arrival, null, tPaid);
         webhook.handleV1Endpoint(paid, sign(paid));
         assertThat(settlements.findByStripeObjectId(payoutId).orElseThrow().getStatus())
@@ -624,7 +624,7 @@ class SettlementIngestWebhookTest {
 
         // Stripe re-delivers the OLDER payout.failed afterwards. Neither status is PENDING, so
         // only the event-created ordering stamp can tell which one is authoritative.
-        String failed = payoutEvent("evt_ooo_failed", payoutId, "payout.failed", 7_200, "failed",
+        String failed = payoutEvent(evt("ooo_failed"), payoutId, "payout.failed", 7_200, "failed",
                 arrival, "account_closed", tFailed);
         webhook.handleV1Endpoint(failed, sign(failed));
 
@@ -642,7 +642,7 @@ class SettlementIngestWebhookTest {
         String disputeId = "du_" + UUID.randomUUID().toString().substring(0, 12);
         String chargeId = "ch_" + UUID.randomUUID().toString().substring(0, 12);
         String transferId = "tr_" + UUID.randomUUID().toString().substring(0, 12);
-        String body = disputeEvent("evt_dispute_orphan", disputeId, chargeId, 4200);
+        String body = disputeEvent(evt("dispute_orphan"), disputeId, chargeId, 4200);
         stubChargeRetrieve(chargeId, transferId);
 
         webhook.handleV1Endpoint(body, sign(body));
@@ -658,12 +658,12 @@ class SettlementIngestWebhookTest {
         // Seed the backing transfer row, then a dispute annotates its status to FAILED
         // (funds at risk) WITHOUT changing the amount and WITHOUT creating a new row.
         String transferId = "tr_" + UUID.randomUUID().toString().substring(0, 12);
-        String created = transferCreatedEvent("evt_disp_seed", transferId, acctId, 4200, "eur");
+        String created = transferCreatedEvent(evt("disp_seed"), transferId, acctId, 4200, "eur");
         webhook.handleV1Endpoint(created, sign(created));
 
         String disputeId = "du_" + UUID.randomUUID().toString().substring(0, 12);
         String chargeId = "ch_" + UUID.randomUUID().toString().substring(0, 12);
-        String body = disputeEvent("evt_disp_annot", disputeId, chargeId, 4200);
+        String body = disputeEvent(evt("disp_annot"), disputeId, chargeId, 4200);
         stubChargeRetrieve(chargeId, transferId);
         webhook.handleV1Endpoint(body, sign(body));
 
@@ -677,20 +677,20 @@ class SettlementIngestWebhookTest {
     @Test
     void disputeCreatedThenClosedUnblocksPayouts() throws Exception {
         String transferId = "tr_" + UUID.randomUUID().toString().substring(0, 12);
-        String created = transferCreatedEvent("evt_unblock_seed", transferId, acctId, 4200, "eur");
+        String created = transferCreatedEvent(evt("unblock_seed"), transferId, acctId, 4200, "eur");
         webhook.handleV1Endpoint(created, sign(created));
 
         String disputeId = "du_" + UUID.randomUUID().toString().substring(0, 12);
         String chargeId = "ch_" + UUID.randomUUID().toString().substring(0, 12);
         stubChargeRetrieve(chargeId, transferId);
 
-        String opened = disputeEvent("evt_unblock_open", disputeId, chargeId, 4200);
+        String opened = disputeEvent(evt("unblock_open"), disputeId, chargeId, 4200);
         webhook.handleV1Endpoint(opened, sign(opened));
         assertThat(disputes.countOpenByOrgId(org.getId()))
                 .as("while the dispute is open the org's payouts are frozen")
                 .isEqualTo(1L);
 
-        String lost = disputeEvent("evt_unblock_lost", disputeId, chargeId, 4200,
+        String lost = disputeEvent(evt("unblock_lost"), disputeId, chargeId, 4200,
                 "charge.dispute.closed", "lost");
         webhook.handleV1Endpoint(lost, sign(lost));
 
@@ -702,5 +702,181 @@ class SettlementIngestWebhookTest {
         assertThat(settlements.findByStripeObjectId(transferId).orElseThrow().getStatus())
                 .as("the read-model keeps its annotation — it is no longer a gate")
                 .isEqualTo(SettlementStatus.FAILED);
+    }
+
+    private static String backing() {
+        return "tr_" + UUID.randomUUID().toString().substring(0, 12);
+    }
+
+    private Order paidOrder(String paymentIntentId, int ticketCount) {
+        Order o = new Order();
+        o.setToken("tok_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24));
+        o.setEventId(event.getId());
+        o.setOrgId(org.getId());
+        o.setEmail(fx.email("buyer"));
+        o.setTotalMinor(4200);
+        o.setCurrency("eur");
+        o.setApplicationFeeMinor(210);
+        o.setPaymentMethod("stripe");
+        o.setStripePaymentIntentId(paymentIntentId);
+        Order saved = orders.save(o);
+        for (int i = 0; i < ticketCount; i++) {
+            Ticket t = new Ticket();
+            t.setToken("tkt_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24));
+            t.setOrderId(saved.getId());
+            t.setEventId(event.getId());
+            t.setTierId(UUID.randomUUID());
+            t.setTierName("GA");
+            t.setPriceMinor(2100);
+            t.setState(Ticket.STATE_ISSUED);
+            tickets.save(t);
+        }
+        return saved;
+    }
+
+    // ── chargeback consequences: the disputes registry row and the buyer's tickets ──
+
+    @Test
+    void disputeCreatedRevokesTickets() throws Exception {
+        String pi = "pi_" + UUID.randomUUID().toString().replace("-", "").substring(0, 20);
+        String chargeId = "ch_" + UUID.randomUUID().toString().substring(0, 12);
+        String disputeId = "du_" + UUID.randomUUID().toString().substring(0, 12);
+        Order order = paidOrder(pi, 2);
+        stubChargeRetrieve(chargeId, backing(), pi);
+
+        String body = disputeEvent(evt("disp_revoke"), disputeId, chargeId, 4200,
+                "charge.dispute.created", "needs_response", Instant.now().getEpochSecond());
+        webhook.handleV1Endpoint(body, sign(body));
+
+        List<Ticket> issued = tickets.findByOrderId(order.getId());
+        assertThat(issued).hasSize(2);
+        assertThat(issued)
+                .as("a disputed order's tickets must stop working at the door")
+                .allMatch(t -> Ticket.STATE_REVOKED.equals(t.getState()));
+
+        Dispute row = disputes.findByStripeDisputeId(disputeId).orElseThrow();
+        assertThat(row.getStatus()).isEqualTo(DisputeStatus.OPEN);
+        assertThat(row.getOrgId()).isEqualTo(org.getId());
+        assertThat(row.getEventId()).isEqualTo(event.getId());
+        assertThat(row.getOrderId()).isEqualTo(order.getId());
+        assertThat(row.getStripePaymentIntentId()).isEqualTo(pi);
+        assertThat(row.getStripeChargeId()).isEqualTo(chargeId);
+        assertThat(row.getAmountMinor()).isEqualTo(4200L);
+        assertThat(row.getCurrency()).isEqualTo("eur");
+        assertThat(row.getOpenedAt()).isNotNull();
+        assertThat(row.getClosedAt()).isNull();
+        assertThat(disputes.countOpenByOrgId(org.getId()))
+                .as("an open dispute freezes the org's payouts")
+                .isEqualTo(1L);
+    }
+
+    @Test
+    void disputeWonRestoresTickets() throws Exception {
+        String pi = "pi_" + UUID.randomUUID().toString().replace("-", "").substring(0, 20);
+        String chargeId = "ch_" + UUID.randomUUID().toString().substring(0, 12);
+        String disputeId = "du_" + UUID.randomUUID().toString().substring(0, 12);
+        Order order = paidOrder(pi, 2);
+        stubChargeRetrieve(chargeId, backing(), pi);
+
+        long t0 = Instant.now().getEpochSecond();
+        String created = disputeEvent(evt("won_open"), disputeId, chargeId, 4200,
+                "charge.dispute.created", "needs_response", t0);
+        webhook.handleV1Endpoint(created, sign(created));
+
+        String won = disputeEvent(evt("won_close"), disputeId, chargeId, 4200,
+                "charge.dispute.closed", "won", t0 + 60);
+        webhook.handleV1Endpoint(won, sign(won));
+
+        assertThat(tickets.findByOrderId(order.getId()))
+                .as("a won dispute gives the buyer their tickets back")
+                .allMatch(t -> Ticket.STATE_ISSUED.equals(t.getState()));
+
+        Dispute row = disputes.findByStripeDisputeId(disputeId).orElseThrow();
+        assertThat(row.getStatus()).isEqualTo(DisputeStatus.WON);
+        assertThat(row.getClosedAt()).isNotNull();
+        assertThat(disputes.countOpenByOrgId(org.getId()))
+                .as("a closed dispute stops blocking payouts")
+                .isZero();
+        assertThat(disputeWithholding.withheldMinor(event.getId()))
+                .as("a win adds the disputed amount back by leaving the open/lost set")
+                .isZero();
+    }
+
+    @Test
+    void disputeCreatedWithNoResolvableOrderStillPersistsTheRow() throws Exception {
+        String chargeId = "ch_" + UUID.randomUUID().toString().substring(0, 12);
+        String disputeId = "du_" + UUID.randomUUID().toString().substring(0, 12);
+        // The charge names a PaymentIntent no order was ever written for.
+        stubChargeRetrieve(chargeId, backing(), "pi_orphan_" + UUID.randomUUID().toString().substring(0, 8));
+
+        String body = disputeEvent(evt("disp_orphan_row"), disputeId, chargeId, 4200,
+                "charge.dispute.created", "needs_response", Instant.now().getEpochSecond());
+        webhook.handleV1Endpoint(body, sign(body));
+
+        Dispute row = disputes.findByStripeDisputeId(disputeId).orElseThrow();
+        assertThat(row.getOrgId())
+                .as("org still resolves from the charge's transfer destination")
+                .isEqualTo(org.getId());
+        assertThat(row.getOrderId()).isNull();
+        assertThat(row.getEventId()).isNull();
+        assertThat(disputes.countOpenByOrgId(org.getId()))
+                .as("an unattributable dispute still freezes the org — the money is still at risk")
+                .isEqualTo(1L);
+    }
+
+    @Test
+    void refundedTicketIsNotRevokedByADispute() throws Exception {
+        String pi = "pi_" + UUID.randomUUID().toString().replace("-", "").substring(0, 20);
+        String chargeId = "ch_" + UUID.randomUUID().toString().substring(0, 12);
+        String disputeId = "du_" + UUID.randomUUID().toString().substring(0, 12);
+        Order order = paidOrder(pi, 2);
+        List<Ticket> seeded = tickets.findByOrderId(order.getId());
+        Ticket refunded = seeded.get(0);
+        refunded.setState(Ticket.STATE_REFUNDED);
+        tickets.save(refunded);
+        stubChargeRetrieve(chargeId, backing(), pi);
+
+        String body = disputeEvent(evt("disp_refunded"), disputeId, chargeId, 4200,
+                "charge.dispute.created", "needs_response", Instant.now().getEpochSecond());
+        webhook.handleV1Endpoint(body, sign(body));
+
+        List<Ticket> after = tickets.findByOrderId(order.getId());
+        assertThat(after).filteredOn(t -> t.getId().equals(refunded.getId()))
+                .as("a refunded ticket keeps its refunded state — its money already went back")
+                .allMatch(t -> Ticket.STATE_REFUNDED.equals(t.getState()));
+        assertThat(after).filteredOn(t -> !t.getId().equals(refunded.getId()))
+                .allMatch(t -> Ticket.STATE_REVOKED.equals(t.getState()));
+    }
+
+    @Test
+    void staleDisputeEventDoesNotRewriteState() throws Exception {
+        String pi = "pi_" + UUID.randomUUID().toString().replace("-", "").substring(0, 20);
+        String chargeId = "ch_" + UUID.randomUUID().toString().substring(0, 12);
+        String disputeId = "du_" + UUID.randomUUID().toString().substring(0, 12);
+        Order order = paidOrder(pi, 1);
+        stubChargeRetrieve(chargeId, backing(), pi);
+
+        long t0 = Instant.now().getEpochSecond();
+        String created = disputeEvent(evt("stale_created"), disputeId, chargeId, 4200,
+                "charge.dispute.created", "needs_response", t0);
+        webhook.handleV1Endpoint(created, sign(created));
+
+        String won = disputeEvent(evt("stale_won"), disputeId, chargeId, 4200,
+                "charge.dispute.closed", "won", t0 + 60);
+        webhook.handleV1Endpoint(won, sign(won));
+
+        // An OLDER "created" delivered after the close (Stripe does not guarantee order,
+        // and a failed handler rolls its dedup marker back so the retry arrives late).
+        String lateCreated = disputeEvent(evt("stale_created_retry"), disputeId, chargeId, 4200,
+                "charge.dispute.created", "needs_response", t0 - 30);
+        webhook.handleV1Endpoint(lateCreated, sign(lateCreated));
+
+        Dispute row = disputes.findByStripeDisputeId(disputeId).orElseThrow();
+        assertThat(row.getStatus())
+                .as("an out-of-order delivery must not drag a closed dispute back to open")
+                .isEqualTo(DisputeStatus.WON);
+        assertThat(tickets.findByOrderId(order.getId()))
+                .as("and must not re-revoke the tickets the win restored")
+                .allMatch(t -> Ticket.STATE_ISSUED.equals(t.getState()));
     }
 }

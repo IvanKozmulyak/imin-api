@@ -1,6 +1,5 @@
 package com.imin.iminapi.payout;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.dispute.Dispute;
 import com.imin.iminapi.dispute.DisputeRepository;
 import com.imin.iminapi.dispute.DisputeStatus;
@@ -25,6 +24,9 @@ import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.service.event.FreeCheckoutService;
 import com.imin.iminapi.stripe.StripeConnectState;
 import com.imin.iminapi.stripe.StripeProperties;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
+import com.imin.iminapi.support.PropertyFlips;
 import com.stripe.StripeClient;
 import com.stripe.model.Balance;
 import com.stripe.model.Payout;
@@ -39,14 +41,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.invocation.InvocationOnMock;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.data.domain.PageRequest;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.lang.reflect.Type;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -63,8 +64,7 @@ import static org.mockito.Mockito.when;
  * sweep under a live key and its fake gross would be disbursed from the organizer's real
  * connected balance.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class PayoutTestModeExclusionTest {
 
     @Autowired PostEventPayoutService service;
@@ -79,8 +79,9 @@ class PayoutTestModeExclusionTest {
     @Autowired PayoutRunRepository payoutRuns;
     @Autowired DisputeRepository disputes;
     @Autowired UserRepository users;
-
-    @MockitoBean StripeClient stripeClient;
+    @Autowired PropertyFlips flips;
+    @Autowired JdbcTemplate jdbc;
+    @Autowired StripeClient stripeClient;
 
     private final AtomicReference<Long> availableMinor = new AtomicReference<>(500_000L);
     private final java.util.concurrent.atomic.AtomicBoolean bankAttached =
@@ -88,19 +89,16 @@ class PayoutTestModeExclusionTest {
     private final AtomicInteger payoutCount = new AtomicInteger(0);
     private final AtomicReference<Long> lastPayoutAmount = new AtomicReference<>(null);
 
-    private String originalSecretKey;
     private Organization org;
+    /** Suffix for po_ ids: payout_runs.stripe_payout_id is unique across the shared database. */
+    private final String run = UUID.randomUUID().toString().substring(0, 8);
 
     @BeforeEach
     void setUp() {
-        wipe();
-        // StripeProperties is a shared singleton: these swaps are safe only while the suite runs
-        // test classes sequentially (Surefire's default), and tearDown restores the original.
-        originalSecretKey = props.getSecretKey();
         // The payout path only ever runs under a live key in production; pin that here so a
         // run this test creates is stamped live like its hand-built orders.
-        props.setSecretKey("sk_live_dummy");
-        props.setPayoutScheduleManual(true);
+        flips.set(props, "secretKey", "sk_live_dummy");
+        flips.set(props, "payoutScheduleManual", true);
         payoutCount.set(0);
         lastPayoutAmount.set(null);
         bankAttached.set(true);
@@ -110,9 +108,7 @@ class PayoutTestModeExclusionTest {
 
     @AfterEach
     void tearDown() {
-        props.setPayoutScheduleManual(false);
-        props.setSecretKey(originalSecretKey);
-        wipe();
+        OrgRows.delete(jdbc, List.of(org.getId()));
     }
 
     @Test
@@ -140,9 +136,10 @@ class PayoutTestModeExclusionTest {
         order(mixed, 20_000, 2_000, false);
 
         assertThat(events.findPayoutCandidates(Instant.now().minus(3, ChronoUnit.DAYS),
-                PageRequest.of(0, 50)))
+                PageRequest.of(0, 10_000)))
                 .extracting(Event::getId)
-                .containsExactly(mixed.getId());
+                .contains(mixed.getId())
+                .doesNotContain(testEra.getId());
     }
 
     @Test
@@ -150,10 +147,10 @@ class PayoutTestModeExclusionTest {
         Event e = endedEvent();
 
         assertThat(events.findPayoutCandidates(Instant.now().minus(3, ChronoUnit.DAYS),
-                PageRequest.of(0, 50)))
+                PageRequest.of(0, 10_000)))
                 .as("the exclusion is about test money, not about being unsold")
                 .extracting(Event::getId)
-                .containsExactly(e.getId());
+                .contains(e.getId());
     }
 
     @Test
@@ -163,11 +160,18 @@ class PayoutTestModeExclusionTest {
         testEra.setRevenueMinor(50_000);
         events.save(testEra);
         order(testEra, 50_000, 5_000, true);
+        Event liveEra = endedEvent();
+        liveEra.setEndsAt(Instant.now().minus(100, ChronoUnit.DAYS));
+        liveEra.setRevenueMinor(50_000);
+        events.save(liveEra);
+        order(liveEra, 50_000, 5_000, false);
 
         assertThat(events.findRetentionMonitorCandidates(
-                Instant.now().minus(75, ChronoUnit.DAYS), PageRequest.of(0, 50)))
+                Instant.now().minus(75, ChronoUnit.DAYS), PageRequest.of(0, 10_000)))
                 .as("no real funds are stranded, so there is nothing to warn about")
-                .isEmpty();
+                .extracting(Event::getId)
+                .contains(liveEra.getId())
+                .doesNotContain(testEra.getId());
     }
 
     @Test
@@ -260,7 +264,7 @@ class PayoutTestModeExclusionTest {
         payoutRuns.save(liveRun);
 
         // A run planned under a test key is test-era money even though the event's orders are not.
-        props.setSecretKey("sk_test_dummy");
+        flips.set(props, "secretKey", "sk_test_dummy");
         Event underTestKey = endedEvent();
         order(underTestKey, 10_000, 1_500, false);
         service.payOneEvent(underTestKey.getId());
@@ -275,12 +279,12 @@ class PayoutTestModeExclusionTest {
         e = events.save(e);
         TicketTier tier = freeTier(e);
 
-        props.setSecretKey("sk_test_dummy");
+        flips.set(props, "secretKey", "sk_test_dummy");
         Order underTestKey = freeCheckout.issueFreeOrder(
                 e, tier, 1, "test-key@test.example", null, false, false,
                 CheckoutAttribution.NONE, null);
 
-        props.setSecretKey("sk_live_dummy");
+        flips.set(props, "secretKey", "sk_live_dummy");
         Order underLiveKey = freeCheckout.issueFreeOrder(
                 e, tier, 1, "live-key@test.example", null, false, false,
                 CheckoutAttribution.NONE, null);
@@ -306,7 +310,7 @@ class PayoutTestModeExclusionTest {
         assertThat(parked.getFailureReason()).isEqualTo(PayoutBlockReason.NO_BANK_ACCOUNT);
         assertThat(parked.isTestMode()).as("parked under sk_live_dummy").isFalse();
 
-        props.setSecretKey("sk_test_dummy");
+        flips.set(props, "secretKey", "sk_test_dummy");
         Event underTestKey = endedEvent();
         order(underTestKey, 10_000, 1_500, false);
 
@@ -375,7 +379,7 @@ class PayoutTestModeExclusionTest {
             Object amt = req.getParams() == null ? null : req.getParams().get("amount");
             long amount = amt == null ? 0L : ((Number) amt).longValue();
             lastPayoutAmount.set(amount);
-            String poId = "po_test_" + payoutCount.incrementAndGet();
+            String poId = "po_test_" + run + "_" + payoutCount.incrementAndGet();
             return (T) ApiResource.GSON.fromJson(
                     "{ \"object\": \"payout\", \"id\": \"" + poId + "\", \"amount\": " + amount
                             + ", \"currency\": \"eur\", \"status\": \"pending\" }",
@@ -392,18 +396,6 @@ class PayoutTestModeExclusionTest {
                     com.stripe.model.Account.class);
         }
         throw new IllegalStateException("unexpected Stripe path in test: " + path);
-    }
-
-    private void wipe() {
-        disputes.deleteAll();
-        refunds.deleteAll();
-        payoutRuns.deleteAll();
-        tickets.deleteAll();
-        orders.deleteAll();
-        tiers.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
     }
 
     // ── fixtures ───────────────────────────────────────────────────────────────

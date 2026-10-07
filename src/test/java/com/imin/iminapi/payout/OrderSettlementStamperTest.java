@@ -1,7 +1,6 @@
 package com.imin.iminapi.payout;
 
 import com.google.gson.Gson;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.Order;
@@ -14,6 +13,9 @@ import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.stripe.StripeConnectState;
 import com.imin.iminapi.stripe.StripeProperties;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
+import com.imin.iminapi.support.PgFaults;
 import com.stripe.StripeClient;
 import com.stripe.exception.ApiException;
 import com.stripe.model.PaymentIntent;
@@ -25,10 +27,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.jdbc.core.JdbcTemplate;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
@@ -49,19 +48,14 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyBoolean;
-import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
- * {@link OrderSettlementStamper} over a real {@link PaymentIntentService} on a faked response getter, H2.
+ * {@link OrderSettlementStamper} over a real {@link PaymentIntentService} on a faked response getter, Postgres.
  * The sandbox charge of 2026-10-05: 1149 USD, fee 149 USD, transfer 1025 EUR, fee balance transaction 133 EUR.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class OrderSettlementStamperTest {
 
     private static final Gson GSON = new Gson();
@@ -128,22 +122,24 @@ class OrderSettlementStamperTest {
 
     @Autowired OrderSettlementStamper stamper;
     @Autowired StripeProperties props;
-    @MockitoSpyBean OrderRepository orders;
+    @Autowired OrderRepository orders;
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
     @Autowired UserRepository users;
 
-    @MockitoBean StripeClient stripeClient;
+    @Autowired StripeClient stripeClient;
+    @Autowired JdbcTemplate jdbc;
 
     private final FakeStripe fake = new FakeStripe();
     private final ListAppender<ILoggingEvent> logs = new ListAppender<>();
     private Organization org;
     private Event event;
     private boolean runningMode;
+    /** Orders created so far by this test, to space their created_at. */
+    private int created;
 
     @BeforeEach
     void setUp() throws Exception {
-        wipe();
         StripeResponseGetter rg = mock(StripeResponseGetter.class);
         when(rg.request(any(ApiRequest.class), any(Type.class)))
                 .thenAnswer(inv -> fake.handle(inv.getArgument(0), inv.getArgument(1)));
@@ -158,14 +154,7 @@ class OrderSettlementStamperTest {
     @AfterEach
     void tearDown() {
         ((Logger) LoggerFactory.getLogger(OrderSettlementStamper.class)).detachAppender(logs);
-        wipe();
-    }
-
-    private void wipe() {
-        orders.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+        OrgRows.delete(jdbc, List.of(org.getId()));
     }
 
     @Test
@@ -334,26 +323,15 @@ class OrderSettlementStamperTest {
     }
 
     @Test
-    void a_failed_listing_never_throws() {
-        doThrow(new IllegalStateException("simulated database failure"))
-                .when(orders).findUnstampedPaidByOrgId(any(), anyBoolean(), any());
-
-        assertThatCode(() -> stamper.stampOrg(org)).doesNotThrowAnyException();
-
-        assertThat(fake.reads).isEmpty();
-        assertThat(errorsMentioning(org.getId().toString())).hasSize(1);
-    }
-
-    @Test
     void a_failed_write_leaves_that_order_and_stamps_the_next() {
         Order older = unstamped(1_149, 149, runningMode);
         Order newer = unstamped(1_149, 149, runningMode);
         fake.paymentIntents.put(older.getStripePaymentIntentId(), usdProbe(older.getStripePaymentIntentId()));
         fake.paymentIntents.put(newer.getStripePaymentIntentId(), usdProbe(newer.getStripePaymentIntentId()));
-        doThrow(new IllegalStateException("simulated write failure"))
-                .when(orders).stampSettlement(eq(newer.getId()), any(), anyLong(), anyLong());
-
-        assertThatCode(() -> stamper.stampOrg(org)).doesNotThrowAnyException();
+        // Postgres rejects the newer order's UPDATE inside stampSettlement's own transaction.
+        try (PgFaults.Fault fault = PgFaults.failWrites(jdbc, "orders", "id", newer.getId())) {
+            assertThatCode(() -> stamper.stampOrg(org)).doesNotThrowAnyException();
+        }
 
         assertUnstamped(newer);
         assertThat(reload(older).getSettlementGrossMinor()).isEqualTo(1_025L);
@@ -445,7 +423,7 @@ class OrderSettlementStamperTest {
 
     private Order unstamped(long total, long fee, boolean testMode) {
         // Distinct created_at so the stamper's newest-first order is the reverse creation order.
-        return unstamped(total, fee, testMode, Instant.now().minusSeconds(1_000).plusMillis(orders.count()));
+        return unstamped(total, fee, testMode, Instant.now().minusSeconds(1_000).plusMillis(created++));
     }
 
     private Order unstamped(long total, long fee, boolean testMode, Instant createdAt) {

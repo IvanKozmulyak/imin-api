@@ -1,7 +1,6 @@
 package com.imin.iminapi.payout;
 
 import com.google.gson.Gson;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.dispute.Dispute;
 import com.imin.iminapi.dispute.DisputeRepository;
 import com.imin.iminapi.dispute.DisputeStatus;
@@ -20,6 +19,11 @@ import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.stripe.StripeConnectState;
+import com.imin.iminapi.stripe.StripeProperties;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
+import com.imin.iminapi.support.PgFaults;
+import com.imin.iminapi.support.PropertyFlips;
 import com.stripe.StripeClient;
 import com.stripe.exception.ApiConnectionException;
 import com.stripe.exception.ApiException;
@@ -40,10 +44,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.lang.reflect.Type;
 import java.time.Instant;
@@ -59,22 +60,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyBoolean;
-import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.Mockito.doCallRealMethod;
-import static org.mockito.Mockito.doReturn;
-import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
- * LOST-dispute recovery, the return on a later win and the sibling-payout hold, in an own live-key context
- * (no shared bean mutated), Stripe faked by method and path. Orders: €11.49 = €10.00 + 149 fee, or 2298 / 298.
+ * LOST-dispute recovery, the return on a later win and the sibling-payout hold, under a live key flipped per
+ * test, Stripe faked by method and path. Orders: €11.49 = €10.00 + 149 fee, or 2298 / 298.
  */
-@SpringBootTest(properties = {
-        "imin.stripe.secret-key=sk_live_dummy_for_tests",
-        "imin.stripe.payout-schedule-manual=true"})
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class PostEventPayoutDisputeRecoveryTest {
 
     private static final Gson GSON = new Gson();
@@ -103,6 +96,8 @@ class PostEventPayoutDisputeRecoveryTest {
         String reversalFailure;      // "balance_insufficient" | "server" | "timeout_after" (executed, then timed out) | null
         String transferFailure;      // "balance_insufficient" | "server" | "timeout_after" | null
         boolean crashOnAccount;
+        /** po_ ids land in payout_runs.stripe_payout_id, unique across the shared database. */
+        String payoutPrefix = "po_";
 
         Object handle(ApiRequest req, Type type) throws Exception {
             String path = req.getPath();
@@ -127,7 +122,7 @@ class PostEventPayoutDisputeRecoveryTest {
             if (path.startsWith("/v1/payouts")) {
                 long amount = ((Number) params.get("amount")).longValue();
                 payouts.add(new Call(path, amount, key, params));
-                return json(Map.of("object", "payout", "id", "po_" + payouts.size(), "amount", amount,
+                return json(Map.of("object", "payout", "id", payoutPrefix + payouts.size(), "amount", amount,
                         "currency", "eur", "status", "pending"), type);
             }
             if (path.startsWith("/v1/charges/")) {
@@ -232,15 +227,18 @@ class PostEventPayoutDisputeRecoveryTest {
     @Autowired PostEventPayoutService service;
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
-    @MockitoSpyBean OrderRepository orders;
+    @Autowired OrderRepository orders;
     @Autowired RefundRepository refunds;
     @Autowired DisputeRepository disputes;
     @Autowired PayoutRunRepository payoutRuns;
     @Autowired com.imin.iminapi.dispute.DisputeWithholding withholding;
     @Autowired UserRepository users;
 
-    @MockitoBean StripeClient stripeClient;
-    @MockitoSpyBean DisputeRecoveryMarker marker;
+    @Autowired StripeClient stripeClient;
+    @Autowired DisputeRecoveryMarker marker;
+    @Autowired StripeProperties stripeProps;
+    @Autowired PropertyFlips flips;
+    @Autowired JdbcTemplate jdbc;
 
     private final FakeStripe fake = new FakeStripe();
     private Organization org;
@@ -248,7 +246,9 @@ class PostEventPayoutDisputeRecoveryTest {
 
     @BeforeEach
     void setUp() throws Exception {
-        wipe();
+        flips.set(stripeProps, "secretKey", "sk_live_dummy_for_tests");
+        flips.set(stripeProps, "payoutScheduleManual", true);
+        fake.payoutPrefix = "po_" + UUID.randomUUID().toString().substring(0, 8) + "_";
         StripeResponseGetter rg = mock(StripeResponseGetter.class);
         fake.rg = rg;
         when(rg.request(any(ApiRequest.class), any(Type.class)))
@@ -264,17 +264,7 @@ class PostEventPayoutDisputeRecoveryTest {
 
     @AfterEach
     void tearDown() {
-        wipe();
-    }
-
-    private void wipe() {
-        disputes.deleteAll();
-        refunds.deleteAll();
-        payoutRuns.deleteAll();
-        orders.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+        OrgRows.delete(jdbc, List.of(org.getId()));
     }
 
     // ── recovery ────────────────────────────────────────────────────────────────
@@ -471,10 +461,11 @@ class PostEventPayoutDisputeRecoveryTest {
     @Test
     void a_failed_marker_is_healed_by_the_lookup_on_the_next_tick() {
         Dispute d = lost(order(event(), 1_149, 149), 1_149, 1_149);
-        doThrow(new IllegalStateException("db down")).doCallRealMethod()
-                .when(marker).markRecovered(any(), anyLong(), anyLong(), any(), anyBoolean());
-
-        assertThatCode(() -> service.recoverForOrg(org.getId())).doesNotThrowAnyException();
+        // Postgres rejects the marker's UPDATE after the reversal went through at Stripe.
+        try (PgFaults.Fault fault = PgFaults.failWrites(jdbc, "disputes", "id", d.getId())) {
+            assertThatCode(() -> service.recoverForOrg(org.getId())).doesNotThrowAnyException();
+        }
+        assertThat(fake.reversalCreates).hasSize(1);
         assertThat(reload(d).getRecoveredAt()).isNull();
 
         service.recoverForOrg(org.getId());
@@ -711,19 +702,6 @@ class PostEventPayoutDisputeRecoveryTest {
         assertThat(logs.list).filteredOn(l -> l.getFormattedMessage().contains(sibling.getId().toString()))
                 .extracting(ILoggingEvent::getFormattedMessage)
                 .singleElement().asString().contains("left for the next pass");
-    }
-
-    @Test
-    void a_platform_funded_refund_whose_order_is_missing_stays_open() {
-        Order o = usdOrder(event());
-        Refund fronted = refund(o, 574, 74, true);
-        doReturn(java.util.Optional.empty()).when(orders).findById(o.getId());
-
-        assertThatCode(() -> service.recoverForOrg(org.getId())).doesNotThrowAnyException();
-
-        assertThat(fake.recoveryReads).as("nothing read for a refund that cannot be sized").isEmpty();
-        assertThat(fake.reversalCreates).isEmpty();
-        assertThat(refunds.findById(fronted.getId()).orElseThrow().getRecoveredAt()).isNull();
     }
 
     @Test

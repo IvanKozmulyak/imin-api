@@ -227,11 +227,6 @@ com.imin.iminapi.migration.V94OrdersIdempotencyKeyTest
 com.imin.iminapi.model.BrandColumnsPersistenceTest
 com.imin.iminapi.model.ConceptCascadePersistenceTest
 com.imin.iminapi.model.PosterVariantVerdictPersistenceTest
-com.imin.iminapi.payout.OrderSettlementStamperTest
-com.imin.iminapi.payout.PayoutTestModeExclusionTest
-com.imin.iminapi.payout.PostEventPayoutDisputeRecoveryTest
-com.imin.iminapi.payout.PostEventPayoutServiceTest
-com.imin.iminapi.payout.PostEventPayoutSweeperTest
 com.imin.iminapi.predictor.ComparableCorpusServiceTest
 com.imin.iminapi.predictor.CompetingNightsServiceTest
 com.imin.iminapi.predictor.DateCheckControllerTest
@@ -333,10 +328,3 @@ com.imin.iminapi.service.ticket.PaidCheckoutServiceTest
 com.imin.iminapi.service.ticket.PaidFulfilmentReconcilerTest
 com.imin.iminapi.service.ticket.TicketRedeemServiceTest
 com.imin.iminapi.service.ticket.google.GoogleWalletContextTest
-com.imin.iminapi.stripe.CheckoutTextVersionWebTest
-com.imin.iminapi.stripe.NativePaymentIntentWebTest
-com.imin.iminapi.stripe.SettlementIngestServiceTest
-com.imin.iminapi.stripe.SettlementIngestWebhookTest
-com.imin.iminapi.stripe.StripeLiveCutoverScriptTest
-com.imin.iminapi.stripe.StripeProductServicePersistenceTest
-com.imin.iminapi.stripe.TierStripeSyncSweeperSpringTest

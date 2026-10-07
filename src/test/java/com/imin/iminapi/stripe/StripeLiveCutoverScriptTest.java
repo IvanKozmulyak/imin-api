@@ -2,7 +2,6 @@ package com.imin.iminapi.stripe;
 
 import com.imin.iminapi.buyer.model.BuyerAccount;
 import com.imin.iminapi.buyer.repository.BuyerAccountRepository;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.dispute.Dispute;
 import com.imin.iminapi.dispute.DisputeRepository;
 import com.imin.iminapi.dispute.DisputeStatus;
@@ -32,14 +31,17 @@ import com.imin.iminapi.repository.TicketRepository;
 import com.imin.iminapi.repository.TicketReservationRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
-import org.junit.jupiter.api.BeforeEach;
+import com.imin.iminapi.support.IminIntegrationTest;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceUtils;
 import org.springframework.jdbc.datasource.init.ScriptUtils;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import javax.sql.DataSource;
 import java.io.IOException;
@@ -47,7 +49,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
-import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -58,21 +59,8 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Proves {@code scripts/stripe-live-cutover.sql} — the real artefact, executed through
- * {@link ScriptUtils}, not a stripped copy of it — does exactly what the runbook says.
- *
- * <p><b>Isolated database on purpose.</b> The script's UPDATEs are table-wide, so on the
- * shared {@code jdbc:h2:mem:imin} context it would rewrite rows other test classes left
- * behind and its assertions would depend on execution order. A distinct
- * {@code spring.datasource.url} is a distinct context-cache key, so Flyway builds a fresh
- * schema for this class alone. Not {@code @Transactional}: the script runs on a real
- * connection and has to see committed rows.
- */
-@SpringBootTest(properties =
-        "spring.datasource.url=jdbc:h2:mem:cutover;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;"
-                + "DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1")
-@Import(TestRateLimitConfig.class)
+/** Runs the shipped cutover script itself; its UPDATEs are table-wide, so each test rolls back. */
+@IminIntegrationTest
 class StripeLiveCutoverScriptTest {
 
     private static final Path RESET = Path.of("scripts/stripe-live-cutover.sql");
@@ -80,6 +68,8 @@ class StripeLiveCutoverScriptTest {
     private static final String CUTOVER = "TEST_MODE_CUTOVER";
 
     @Autowired DataSource dataSource;
+    @Autowired PlatformTransactionManager transactionManager;
+    @PersistenceContext EntityManager em;
     @Autowired JdbcTemplate jdbc;
     @Autowired OrganizationRepository orgs;
     @Autowired UserRepository users;
@@ -117,13 +107,12 @@ class StripeLiveCutoverScriptTest {
     private ProcessedWebhookEvent webhookEvent;
     private BuyerAccount buyerAccount;
     private Instant eventUpdatedAtBefore;
+    /** Suffix for Stripe ids that land in uniquely indexed columns. */
+    private final String run = UUID.randomUUID().toString().replace("-", "").substring(0, 12);
 
-    @BeforeEach
-    void seed() {
-        wipe();
-
+    private void seed() {
         connectedOrg = org("connected", o -> {
-            o.setStripeAccountId("acct_test_cutover_1");
+            o.setStripeAccountId("acct_cutover_" + run);
             o.setStripeConnectState(StripeConnectState.ACTIVE);
             o.setStripePayoutsEnabled(true);
             o.setStripeDetailsSubmitted(true);
@@ -163,7 +152,7 @@ class StripeLiveCutoverScriptTest {
             r.setStatus(RefundStatus.SUCCEEDED);
             r.setPlatformFunded(true);
             r.setRecoveredAt(Instant.parse("2026-08-01T09:00:00Z"));
-            r.setRecoveryReversalId("trr_already_done");
+            r.setRecoveryReversalId("trr_done_" + run);
         });
         pendingRefund = refund(order, r -> r.setStatus(RefundStatus.PENDING));
 
@@ -188,134 +177,154 @@ class StripeLiveCutoverScriptTest {
 
     @Test
     void clearsTierProductAndPriceIds() {
-        runReset();
+        cutover(() -> {
+            runReset();
 
-        TicketTier after = tiers.findById(tierWithStripeIds.getId()).orElseThrow();
-        assertThat(after.getStripeProductId()).isNull();
-        assertThat(after.getStripePriceId()).isNull();
+            TicketTier after = tiers.findById(tierWithStripeIds.getId()).orElseThrow();
+            assertThat(after.getStripeProductId()).isNull();
+            assertThat(after.getStripePriceId()).isNull();
+        });
     }
 
     // ── §2  organizations ──────────────────────────────────────────────────────
 
     @Test
     void resetsAllNineOrganizationStripeColumns() {
-        runReset();
+        cutover(() -> {
+            runReset();
 
-        Organization after = orgs.findById(connectedOrg.getId()).orElseThrow();
-        assertThat(after.getStripeAccountId()).isNull();
-        assertThat(after.getStripeConnectState()).isEqualTo(StripeConnectState.NOT_STARTED);
-        assertThat(after.isStripePayoutsEnabled()).isFalse();
-        assertThat(after.isStripeDetailsSubmitted()).isFalse();
-        assertThat(after.isStripePayoutScheduleManual()).isFalse();
-        assertThat(after.getStripeRequirementsCurrentlyDue()).isEmpty();
-        assertThat(after.getStripeRequirementsPastDue()).isEmpty();
-        assertThat(after.getStripeDisabledReason()).isNull();
-        assertThat(after.getStripeConnectStatusUpdatedAt()).isNull();
-        // The V129 guard column too: no account left for a recorded mode to describe.
-        assertThat(after.getStripeLivemode()).isNull();
+            Organization after = orgs.findById(connectedOrg.getId()).orElseThrow();
+            assertThat(after.getStripeAccountId()).isNull();
+            assertThat(after.getStripeConnectState()).isEqualTo(StripeConnectState.NOT_STARTED);
+            assertThat(after.isStripePayoutsEnabled()).isFalse();
+            assertThat(after.isStripeDetailsSubmitted()).isFalse();
+            assertThat(after.isStripePayoutScheduleManual()).isFalse();
+            assertThat(after.getStripeRequirementsCurrentlyDue()).isEmpty();
+            assertThat(after.getStripeRequirementsPastDue()).isEmpty();
+            assertThat(after.getStripeDisabledReason()).isNull();
+            assertThat(after.getStripeConnectStatusUpdatedAt()).isNull();
+            // The V129 guard column too: no account left for a recorded mode to describe.
+            assertThat(after.getStripeLivemode()).isNull();
+        });
     }
 
     // ── §3  ticket_reservations ────────────────────────────────────────────────
 
     @Test
     void releasesHeldReservationsWithTheCutoverReason() {
-        runReset();
+        cutover(() -> {
+            runReset();
 
-        TicketReservation after = reservations.findById(cardHold.getId()).orElseThrow();
-        assertThat(after.getStatus()).isEqualTo(ReservationStatus.RELEASED);
-        assertThat(after.getReleasedAt()).isNotNull();
-        assertThat(after.getReleaseReason()).isEqualTo(CUTOVER);
+            TicketReservation after = reservations.findById(cardHold.getId()).orElseThrow();
+            assertThat(after.getStatus()).isEqualTo(ReservationStatus.RELEASED);
+            assertThat(after.getReleasedAt()).isNotNull();
+            assertThat(after.getReleaseReason()).isEqualTo(CUTOVER);
+        });
     }
 
     @Test
     void leavesAsyncProcessingHoldsReleasedToo() {
-        // A V125 async hold expires seven days out — the sweeper would not have collected it
-        // for a week, so only this script frees the seat.
-        assertThat(asyncHold.getAsyncProcessingAt()).isNotNull();
-        assertThat(asyncHold.getExpiresAt()).isAfter(Instant.now().plus(Duration.ofDays(6)));
+        cutover(() -> {
+            // A V125 async hold expires seven days out — the sweeper would not have collected it
+            // for a week, so only this script frees the seat.
+            assertThat(asyncHold.getAsyncProcessingAt()).isNotNull();
+            assertThat(asyncHold.getExpiresAt()).isAfter(Instant.now().plus(Duration.ofDays(6)));
 
-        runReset();
+            runReset();
 
-        TicketReservation after = reservations.findById(asyncHold.getId()).orElseThrow();
-        assertThat(after.getStatus()).isEqualTo(ReservationStatus.RELEASED);
-        assertThat(after.getReleaseReason()).isEqualTo(CUTOVER);
+            TicketReservation after = reservations.findById(asyncHold.getId()).orElseThrow();
+            assertThat(after.getStatus()).isEqualTo(ReservationStatus.RELEASED);
+            assertThat(after.getReleaseReason()).isEqualTo(CUTOVER);
+        });
     }
 
     @Test
     void leavesConfirmedReservationsAlone() {
-        runReset();
+        cutover(() -> {
+            runReset();
 
-        TicketReservation after = reservations.findById(confirmedControl.getId()).orElseThrow();
-        assertThat(after.getStatus()).isEqualTo(ReservationStatus.CONFIRMED);
-        assertThat(after.getReleaseReason()).isNull();
-        assertThat(after.getReleasedAt()).isNull();
+            TicketReservation after = reservations.findById(confirmedControl.getId()).orElseThrow();
+            assertThat(after.getStatus()).isEqualTo(ReservationStatus.CONFIRMED);
+            assertThat(after.getReleaseReason()).isNull();
+            assertThat(after.getReleasedAt()).isNull();
+        });
     }
 
     // ── §4  ticket_tiers.reserved ──────────────────────────────────────────────
 
     @Test
     void reDerivesReservedFromTheRemainingHoldsAfterReleasingThem() {
-        runReset();
+        cutover(() -> {
+            runReset();
 
-        assertThat(tiers.findById(tierWithHeldSeats.getId()).orElseThrow().getReserved())
-                .as("nothing is HELD once §3 has run, so the derived counter is 0 — not "
-                        + "reserved(5) minus the released qty(3), which would leave the tier "
-                        + "short of stock for every seat a subtraction missed")
-                .isZero();
-        assertThat(reservations.findById(cardHold.getId()).orElseThrow().getStatus())
-                .isEqualTo(ReservationStatus.RELEASED);
+            assertThat(tiers.findById(tierWithHeldSeats.getId()).orElseThrow().getReserved())
+                    .as("nothing is HELD once §3 has run, so the derived counter is 0 — not "
+                            + "reserved(5) minus the released qty(3), which would leave the tier "
+                            + "short of stock for every seat a subtraction missed")
+                    .isZero();
+            assertThat(reservations.findById(cardHold.getId()).orElseThrow().getStatus())
+                    .isEqualTo(ReservationStatus.RELEASED);
+        });
     }
 
     @Test
     void reDerivingCannotDriveReservedNegative() {
-        runReset();
+        cutover(() -> {
+            runReset();
 
-        assertThat(tiers.findById(tierWithDriftedReserved.getId()).orElseThrow().getReserved())
-                .as("reserved 1 against a HELD qty of 3 — re-derived to 0, never negative")
-                .isZero();
+            assertThat(tiers.findById(tierWithDriftedReserved.getId()).orElseThrow().getReserved())
+                    .as("reserved 1 against a HELD qty of 3 — re-derived to 0, never negative")
+                    .isZero();
+        });
     }
 
     @Test
     void leavesTiersThisCutoverDidNotReleaseAlone() {
-        runReset();
+        cutover(() -> {
+            runReset();
 
-        assertThat(tiers.findById(tierWithUnrelatedDrift.getId()).orElseThrow().getReserved())
-                .as("no hold of this tier was released here, so its pre-existing drift is a "
-                        + "human's call, not the cutover's")
-                .isEqualTo(4);
+            assertThat(tiers.findById(tierWithUnrelatedDrift.getId()).orElseThrow().getReserved())
+                    .as("no hold of this tier was released here, so its pre-existing drift is a "
+                            + "human's call, not the cutover's")
+                    .isEqualTo(4);
+        });
     }
 
     // ── §5  payout_runs ────────────────────────────────────────────────────────
 
     @Test
     void parksEveryNonTerminalPayoutRunBlocked() {
-        runReset();
+        cutover(() -> {
+            runReset();
 
-        for (int attempt : new int[]{1, 2, 3}) {
-            PayoutRun after = runByAttempt(attempt);
-            assertThat(after.getStatus()).as("attempt " + attempt).isEqualTo(PayoutRunStatus.BLOCKED);
-            assertThat(after.getFailureReason()).as("attempt " + attempt).isEqualTo(CUTOVER);
-        }
+            for (int attempt : new int[]{1, 2, 3}) {
+                PayoutRun after = runByAttempt(attempt);
+                assertThat(after.getStatus()).as("attempt " + attempt).isEqualTo(PayoutRunStatus.BLOCKED);
+                assertThat(after.getFailureReason()).as("attempt " + attempt).isEqualTo(CUTOVER);
+            }
+        });
     }
 
     @Test
     void leavesTerminalPayoutRunsAlone() {
-        Map<Integer, PayoutRunStatus> terminal = Map.of(
-                4, PayoutRunStatus.PAID,
-                5, PayoutRunStatus.PARTIAL,
-                6, PayoutRunStatus.FAILED,
-                7, PayoutRunStatus.BLOCKED);
-        Map<Integer, Instant> updatedBefore = terminal.keySet().stream()
-                .collect(java.util.stream.Collectors.toMap(a -> a, a -> runByAttempt(a).getUpdatedAt()));
+        cutover(() -> {
+            Map<Integer, PayoutRunStatus> terminal = Map.of(
+                    4, PayoutRunStatus.PAID,
+                    5, PayoutRunStatus.PARTIAL,
+                    6, PayoutRunStatus.FAILED,
+                    7, PayoutRunStatus.BLOCKED);
+            Map<Integer, Instant> updatedBefore = terminal.keySet().stream()
+                    .collect(java.util.stream.Collectors.toMap(a -> a, a -> runByAttempt(a).getUpdatedAt()));
 
-        runReset();
+            runReset();
 
-        terminal.forEach((attempt, status) -> {
-            PayoutRun after = runByAttempt(attempt);
-            assertThat(after.getStatus()).as("attempt " + attempt).isEqualTo(status);
-            assertThat(after.getFailureReason()).as("attempt " + attempt).isNull();
-            assertThat(after.getUpdatedAt()).as("attempt " + attempt)
-                    .isEqualTo(updatedBefore.get(attempt));
+            terminal.forEach((attempt, status) -> {
+                PayoutRun after = runByAttempt(attempt);
+                assertThat(after.getStatus()).as("attempt " + attempt).isEqualTo(status);
+                assertThat(after.getFailureReason()).as("attempt " + attempt).isNull();
+                assertThat(after.getUpdatedAt()).as("attempt " + attempt)
+                        .isEqualTo(updatedBefore.get(attempt));
+            });
         });
     }
 
@@ -323,157 +332,196 @@ class StripeLiveCutoverScriptTest {
 
     @Test
     void closesTheUnrecoveredPlatformFundedDebt() {
-        runReset();
+        cutover(() -> {
+            runReset();
 
-        Refund after = refunds.findById(frontedRefund.getId()).orElseThrow();
-        assertThat(after.getRecoveredAt()).isNotNull();
-        assertThat(after.getRecoveryReversalId()).isEqualTo(CUTOVER);
+            Refund after = refunds.findById(frontedRefund.getId()).orElseThrow();
+            assertThat(after.getRecoveredAt()).isNotNull();
+            assertThat(after.getRecoveryReversalId()).isEqualTo(CUTOVER);
 
-        Refund untouched = refunds.findById(alreadyRecoveredRefund.getId()).orElseThrow();
-        assertThat(untouched.getRecoveryReversalId())
-                .as("an already-recovered row keeps the real reversal id")
-                .isEqualTo("trr_already_done");
-        assertThat(untouched.getRecoveredAt()).isEqualTo(Instant.parse("2026-08-01T09:00:00Z"));
+            Refund untouched = refunds.findById(alreadyRecoveredRefund.getId()).orElseThrow();
+            assertThat(untouched.getRecoveryReversalId())
+                    .as("an already-recovered row keeps the real reversal id")
+                    .isEqualTo("trr_done_" + run);
+            assertThat(untouched.getRecoveredAt()).isEqualTo(Instant.parse("2026-08-01T09:00:00Z"));
+        });
     }
 
     @Test
     void leavesPendingRefundsAlone() {
-        runReset();
+        cutover(() -> {
+            runReset();
 
-        Refund after = refunds.findById(pendingRefund.getId()).orElseThrow();
-        assertThat(after.getStatus()).isEqualTo(RefundStatus.PENDING);
-        assertThat(after.getRecoveredAt()).isNull();
-        assertThat(after.getRecoveryReversalId()).isNull();
-        assertThat(after.getUpdatedAt()).isEqualTo(pendingRefund.getUpdatedAt());
+            Refund after = refunds.findById(pendingRefund.getId()).orElseThrow();
+            assertThat(after.getStatus()).isEqualTo(RefundStatus.PENDING);
+            assertThat(after.getRecoveredAt()).isNull();
+            assertThat(after.getRecoveryReversalId()).isNull();
+            assertThat(after.getUpdatedAt()).isEqualTo(pendingRefund.getUpdatedAt());
+        });
     }
 
     // ── §7  disputes ───────────────────────────────────────────────────────────
 
     @Test
     void closesOpenDisputesAsWithdrawnReinstated() {
-        runReset();
+        cutover(() -> {
+            runReset();
 
-        Dispute after = disputes.findById(openDispute.getId()).orElseThrow();
-        assertThat(after.getStatus()).isEqualTo(DisputeStatus.WITHDRAWN_REINSTATED);
-        assertThat(after.getClosedAt()).isNotNull();
+            Dispute after = disputes.findById(openDispute.getId()).orElseThrow();
+            assertThat(after.getStatus()).isEqualTo(DisputeStatus.WITHDRAWN_REINSTATED);
+            assertThat(after.getClosedAt()).isNotNull();
 
-        Dispute lost = disputes.findById(lostDispute.getId()).orElseThrow();
-        assertThat(lost.getStatus()).as("a lost dispute is history, not in-flight")
-                .isEqualTo(DisputeStatus.LOST);
-        assertThat(lost.getClosedAt()).isNull();
+            Dispute lost = disputes.findById(lostDispute.getId()).orElseThrow();
+            assertThat(lost.getStatus()).as("a lost dispute is history, not in-flight")
+                    .isEqualTo(DisputeStatus.LOST);
+            assertThat(lost.getClosedAt()).isNull();
+        });
     }
 
     // ── §8  test_mode flags ────────────────────────────────────────────────────
 
     @Test
     void flagsEveryExistingOrderAsTestMode() {
-        assertThat(order.isTestMode()).isFalse();
+        cutover(() -> {
+            assertThat(order.isTestMode()).isFalse();
 
-        runReset();
+            runReset();
 
-        assertThat(orders.findById(order.getId()).orElseThrow().isTestMode())
-                .as("test-era money must never feed a live payout")
-                .isTrue();
+            assertThat(orders.findById(order.getId()).orElseThrow().isTestMode())
+                    .as("test-era money must never feed a live payout")
+                    .isTrue();
+        });
     }
 
     @Test
     void flagsEveryExistingPayoutRunAsTestMode() {
-        runReset();
+        cutover(() -> {
+            runReset();
 
-        assertThat(payoutRuns.findAll())
-                .as("a test-era payout moved nothing out of a live balance, so it must not "
-                        + "count as already triggered against a live net")
-                .isNotEmpty()
-                .allMatch(PayoutRun::isTestMode);
+            assertThat(payoutRuns.findAll().stream()
+                    .filter(r -> connectedOrg.getId().equals(r.getOrgId())).toList())
+                    .as("a test-era payout moved nothing out of a live balance, so it must not "
+                            + "count as already triggered against a live net")
+                    .isNotEmpty()
+                    .allMatch(PayoutRun::isTestMode);
+        });
     }
 
     @Test
     void flagsEveryExistingDisputeAsTestMode() {
-        runReset();
+        cutover(() -> {
+            runReset();
 
-        assertThat(disputes.findAll())
-                .as("including the LOST one the reset leaves closed — it withheld nothing real")
-                .isNotEmpty()
-                .allMatch(Dispute::isTestMode);
+            assertThat(disputes.findAll().stream()
+                    .filter(d -> connectedOrg.getId().equals(d.getOrgId())).toList())
+                    .as("including the LOST one the reset leaves closed — it withheld nothing real")
+                    .isNotEmpty()
+                    .allMatch(Dispute::isTestMode);
+        });
     }
 
     // ── controls + idempotency ─────────────────────────────────────────────────
 
     @Test
     void leavesNonStripeRowsUntouched() {
-        runReset();
+        cutover(() -> {
+            runReset();
 
-        Organization after = orgs.findById(cleanOrg.getId()).orElseThrow();
-        assertThat(after.getStripeAccountId()).isNull();
-        assertThat(after.getStripeConnectState()).isEqualTo(StripeConnectState.NOT_STARTED);
-        assertThat(after.getStripeRequirementsCurrentlyDue()).isEmpty();
+            Organization after = orgs.findById(cleanOrg.getId()).orElseThrow();
+            assertThat(after.getStripeAccountId()).isNull();
+            assertThat(after.getStripeConnectState()).isEqualTo(StripeConnectState.NOT_STARTED);
+            assertThat(after.getStripeRequirementsCurrentlyDue()).isEmpty();
 
-        assertThat(events.findById(event.getId()).orElseThrow().getUpdatedAt())
-                .as("the reset is not an organizer edit; updated_at is an ETag")
-                .isEqualTo(eventUpdatedAtBefore);
+            assertThat(events.findById(event.getId()).orElseThrow().getUpdatedAt())
+                    .as("the reset is not an organizer edit; updated_at is an ETag")
+                    .isEqualTo(eventUpdatedAtBefore);
 
-        Order orderAfter = orders.findById(order.getId()).orElseThrow();
-        assertThat(orderAfter.getStripePaymentIntentId())
-                .isEqualTo(order.getStripePaymentIntentId());
-        assertThat(orderAfter.getToken()).isEqualTo(order.getToken());
-        assertThat(orderAfter.getTotalMinor()).isEqualTo(order.getTotalMinor());
+            Order orderAfter = orders.findById(order.getId()).orElseThrow();
+            assertThat(orderAfter.getStripePaymentIntentId())
+                    .isEqualTo(order.getStripePaymentIntentId());
+            assertThat(orderAfter.getToken()).isEqualTo(order.getToken());
+            assertThat(orderAfter.getTotalMinor()).isEqualTo(order.getTotalMinor());
 
-        Ticket ticketAfter = tickets.findById(ticket.getId()).orElseThrow();
-        assertThat(ticketAfter.getToken()).isEqualTo(ticket.getToken());
-        assertThat(ticketAfter.getState()).isEqualTo(ticket.getState());
+            Ticket ticketAfter = tickets.findById(ticket.getId()).orElseThrow();
+            assertThat(ticketAfter.getToken()).isEqualTo(ticket.getToken());
+            assertThat(ticketAfter.getState()).isEqualTo(ticket.getState());
 
-        assertThat(webhookEvents.findById(webhookEvent.getStripeEventId()).orElseThrow().getEventType())
-                .as("the dedup key is untouched — a live event id cannot collide with a test one")
-                .isEqualTo(webhookEvent.getEventType());
-        assertThat(buyerAccounts.findById(buyerAccount.getId())).isPresent();
+            assertThat(webhookEvents.findById(webhookEvent.getStripeEventId()).orElseThrow().getEventType())
+                    .as("the dedup key is untouched — a live event id cannot collide with a test one")
+                    .isEqualTo(webhookEvent.getEventType());
+            assertThat(buyerAccounts.findById(buyerAccount.getId())).isPresent();
+        });
     }
 
     @Test
     void isIdempotent() {
-        runReset();
+        cutover(() -> {
+            runReset();
 
-        int reservedAfterFirst = tiers.findById(tierWithHeldSeats.getId()).orElseThrow().getReserved();
-        Instant releasedAtAfterFirst =
-                reservations.findById(cardHold.getId()).orElseThrow().getReleasedAt();
-        Instant recoveredAtAfterFirst =
-                refunds.findById(frontedRefund.getId()).orElseThrow().getRecoveredAt();
+            int reservedAfterFirst = tiers.findById(tierWithHeldSeats.getId()).orElseThrow().getReserved();
+            // now() is constant inside one transaction; sentinels make a rewrite by the second run visible.
+            Instant sentinel = Instant.parse("2001-01-01T00:00:00Z");
+            jdbc.update("UPDATE ticket_reservations SET released_at = ? WHERE id = ?",
+                    java.sql.Timestamp.from(sentinel), cardHold.getId());
+            jdbc.update("UPDATE refunds SET recovered_at = ? WHERE id = ?",
+                    java.sql.Timestamp.from(sentinel), frontedRefund.getId());
+            em.clear();
 
-        runReset();
+            runReset();
 
-        assertThat(tiers.findById(tierWithHeldSeats.getId()).orElseThrow().getReserved())
-                .as("the seats are given back once, not once per run")
-                .isEqualTo(reservedAfterFirst);
-        assertThat(reservations.findById(cardHold.getId()).orElseThrow().getReleasedAt())
-                .isEqualTo(releasedAtAfterFirst);
-        assertThat(refunds.findById(frontedRefund.getId()).orElseThrow().getRecoveredAt())
-                .isEqualTo(recoveredAtAfterFirst);
-        assertThat(runByAttempt(1).getStatus()).isEqualTo(PayoutRunStatus.BLOCKED);
+            assertThat(tiers.findById(tierWithHeldSeats.getId()).orElseThrow().getReserved())
+                    .as("the seats are given back once, not once per run")
+                    .isEqualTo(reservedAfterFirst);
+            assertThat(reservations.findById(cardHold.getId()).orElseThrow().getReleasedAt())
+                    .as("an already released hold is not released again")
+                    .isEqualTo(sentinel);
+            assertThat(refunds.findById(frontedRefund.getId()).orElseThrow().getRecoveredAt())
+                    .as("an already recovered refund is not recovered again")
+                    .isEqualTo(sentinel);
+            assertThat(runByAttempt(1).getStatus()).isEqualTo(PayoutRunStatus.BLOCKED);
+        });
     }
 
     @Test
     void postCheckQueriesAllReturnZero() {
-        runReset();
+        cutover(() -> {
+            runReset();
 
-        List<Map<String, Object>> rows = jdbc.queryForList(readPostCheckQuery());
+            List<Map<String, Object>> rows = jdbc.queryForList(readPostCheckQuery());
 
-        assertThat(rows).as("a truncated post-check file must not pass vacuously").isNotEmpty();
-        for (Map<String, Object> row : rows) {
-            Object name = row.get("check_name");
-            Number n = (Number) row.get("n");
-            assertThat(n).as("post-check %s returned no count", name).isNotNull();
-            assertThat(n.longValue()).as("post-check %s", name).isZero();
-        }
+            assertThat(rows).as("a truncated post-check file must not pass vacuously").isNotEmpty();
+            for (Map<String, Object> row : rows) {
+                Object name = row.get("check_name");
+                Number n = (Number) row.get("n");
+                assertThat(n).as("post-check %s returned no count", name).isNotNull();
+                assertThat(n.longValue()).as("post-check %s", name).isZero();
+            }
+        });
     }
 
     // ── plumbing ───────────────────────────────────────────────────────────────
 
-    /** Executes the shipped artefact itself, so the test can never drift from the file. */
+    /** Seeds, runs the body and rolls everything back, the script's table-wide UPDATEs included. */
+    private void cutover(Runnable body) {
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            status.setRollbackOnly();
+            seed();
+            em.flush();
+            body.run();
+        });
+    }
+
+    /** Executes the shipped artefact itself on the test's own connection, so it sees the uncommitted seed. */
     private void runReset() {
-        try (Connection c = dataSource.getConnection()) {
+        em.flush();
+        Connection c = DataSourceUtils.getConnection(dataSource);
+        try {
             ScriptUtils.executeSqlScript(c, new FileSystemResource(RESET));
-        } catch (SQLException e) {
-            throw new IllegalStateException("could not run " + RESET, e);
+        } finally {
+            DataSourceUtils.releaseConnection(c, dataSource);
         }
+        // The script wrote behind JPA's back; reads must come from the database.
+        em.clear();
     }
 
     /**
@@ -496,24 +544,9 @@ class StripeLiveCutoverScriptTest {
 
     private PayoutRun runByAttempt(int attempt) {
         return payoutRuns.findAll().stream()
-                .filter(r -> r.getAttempt() == attempt)
+                .filter(r -> connectedOrg.getId().equals(r.getOrgId()) && r.getAttempt() == attempt)
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException("no payout run with attempt " + attempt));
-    }
-
-    private void wipe() {
-        payoutRuns.deleteAll();
-        disputes.deleteAll();
-        refunds.deleteAll();
-        tickets.deleteAll();
-        orders.deleteAll();
-        reservations.deleteAll();
-        tiers.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
-        webhookEvents.deleteAll();
-        buyerAccounts.deleteAll();
     }
 
     // ── fixtures ───────────────────────────────────────────────────────────────
@@ -584,8 +617,8 @@ class StripeLiveCutoverScriptTest {
         o.setCurrency("eur");
         o.setApplicationFeeMinor(400);
         o.setPaymentMethod("stripe");
-        o.setStripePaymentIntentId("pi_test_cutover_1");
-        o.setStripeSessionId("cs_test_cutover_1");
+        o.setStripePaymentIntentId("pi_cutover_" + run);
+        o.setStripeSessionId("cs_cutover_" + run);
         return orders.save(o);
     }
 
@@ -603,9 +636,9 @@ class StripeLiveCutoverScriptTest {
     private Refund refund(Order o, java.util.function.Consumer<Refund> tweak) {
         Refund r = new Refund();
         r.setOrderId(o.getId());
-        r.setStripePaymentIntentId("pi_test_cutover_1");
+        r.setStripePaymentIntentId("pi_cutover_" + run);
         r.setStripeRefundId("re_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16));
-        r.setStripeChargeId("ch_test_cutover_1");
+        r.setStripeChargeId("ch_cutover_" + run);
         r.setAmountMinor(2_000);
         r.setCurrency("eur");
         r.setApplicationFeeRefundMinor(200);
@@ -622,7 +655,7 @@ class StripeLiveCutoverScriptTest {
         d.setOrgId(connectedOrg.getId());
         d.setEventId(event.getId());
         d.setOrderId(order.getId());
-        d.setStripeChargeId("ch_test_cutover_1");
+        d.setStripeChargeId("ch_cutover_" + run);
         d.setAmountMinor(2_000);
         d.setCurrency("eur");
         d.setStatus(status);
@@ -634,7 +667,7 @@ class StripeLiveCutoverScriptTest {
         PayoutRun r = new PayoutRun();
         r.setOrgId(connectedOrg.getId());
         r.setEventId(event.getId());
-        r.setStripeAccountId("acct_test_cutover_1");
+        r.setStripeAccountId("acct_cutover_" + run);
         r.setAmountMinor(1_000);
         r.setCurrency("eur");
         r.setStatus(status);
@@ -645,7 +678,7 @@ class StripeLiveCutoverScriptTest {
 
     private ProcessedWebhookEvent webhookEvent() {
         ProcessedWebhookEvent w = new ProcessedWebhookEvent();
-        w.setStripeEventId("evt_test_cutover_1");
+        w.setStripeEventId("evt_cutover_" + run);
         w.setEventType("payment_intent.succeeded");
         return webhookEvents.save(w);
     }

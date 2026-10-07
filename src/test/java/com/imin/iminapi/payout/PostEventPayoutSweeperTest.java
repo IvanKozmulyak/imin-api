@@ -1,6 +1,5 @@
 package com.imin.iminapi.payout;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.dispute.Dispute;
 import com.imin.iminapi.dispute.DisputeRepository;
 import com.imin.iminapi.dispute.DisputeStatus;
@@ -21,6 +20,9 @@ import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.settlement.SettlementRepository;
 import com.imin.iminapi.stripe.StripeConnectState;
 import com.imin.iminapi.stripe.StripeProperties;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
+import com.imin.iminapi.support.PropertyFlips;
 import com.stripe.StripeClient;
 import com.stripe.model.Charge;
 import com.stripe.model.TransferReversal;
@@ -28,20 +30,19 @@ import com.stripe.net.ApiRequest;
 import com.stripe.net.ApiResource;
 import com.stripe.net.StripeResponseGetter;
 import com.stripe.service.ChargeService;
+import com.stripe.service.PayoutService;
 import com.stripe.service.TransferService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.data.domain.PageRequest;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.lang.reflect.Type;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -52,16 +53,9 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
-/**
- * Candidate-query coverage for the Track B Phase 2 sweeper: that
- * {@link EventRepository#findPayoutCandidates} applies the buffer cutoff, the
- * org-eligibility join, the per-event existence guard, and the §4.0 org-level
- * double-pay guard; and that {@link PostEventPayoutSweeper} is inert when the flag
- * is off. The per-event money move is covered separately in
- * {@link PostEventPayoutServiceTest}.
- */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+/** Payout candidate filters (buffer, org eligibility, in-flight and one-per-org guards) and the flag-off sweep;
+ *  the sweep reads every org's rows, so assertions are on own ids and each test deletes its orgs. */
+@IminIntegrationTest
 class PostEventPayoutSweeperTest {
 
     @Autowired PostEventPayoutSweeper sweeper;
@@ -76,7 +70,8 @@ class PostEventPayoutSweeperTest {
     @Autowired UserRepository users;
     @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
 
-    @MockitoBean StripeClient stripeClient;
+    @Autowired StripeClient stripeClient;
+    @Autowired PropertyFlips flips;
 
     private static final String SWEEP_LOCK = "PostEventPayoutSweeper.sweep";
 
@@ -89,12 +84,18 @@ class PostEventPayoutSweeperTest {
     private final AtomicInteger reversalCount = new AtomicInteger(0);
     private final AtomicReference<Long> lastReversalAmount = new AtomicReference<>(null);
     private final AtomicReference<String> lastReversalKey = new AtomicReference<>(null);
+    /** Payout reads (the stale-SUBMITTED reconcile) of this test's own po_ ids. */
+    private final AtomicInteger ownPayoutReads = new AtomicInteger(0);
+    /** Only these charges resolve to {@link #ownTransfer}; reversals are counted on it alone. */
+    private final List<String> ownCharges = new ArrayList<>();
+    private final String run = UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+    private final String ownTransfer = "tr_own_" + run;
+    private final List<UUID> createdOrgs = new ArrayList<>();
 
     @BeforeEach
     void setUp() {
-        wipe();
         releaseSweepLock();
-        props.setPayoutScheduleManual(true);
+        flips.set(props, "payoutScheduleManual", true);
         reversalCount.set(0);
         lastReversalAmount.set(null);
         lastReversalKey.set(null);
@@ -103,19 +104,17 @@ class PostEventPayoutSweeperTest {
 
     @AfterEach
     void tearDown() {
-        props.setPayoutScheduleManual(false);
-        wipe();
+        OrgRows.delete(jdbc, createdOrgs);
     }
 
-    private void wipe() {
-        disputes.deleteAll();
-        payoutRuns.deleteAll();
-        settlements.deleteAll();
-        refunds.deleteAll();
-        orders.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+    /** This test's events among every candidate in the shared database. */
+    private List<UUID> candidateIds() {
+        return events.findPayoutCandidates(cutoff, PageRequest.of(0, 10_000)).stream().map(Event::getId).toList();
+    }
+
+    private List<UUID> retentionIds(Instant retentionCutoff) {
+        return events.findRetentionMonitorCandidates(retentionCutoff, PageRequest.of(0, 10_000)).stream()
+                .map(Event::getId).toList();
     }
 
     @Test
@@ -123,17 +122,15 @@ class PostEventPayoutSweeperTest {
         Organization org = eligibleOrg();
         Event e = endedEvent(org, Instant.now().minus(10, ChronoUnit.DAYS));
 
-        List<Event> due = events.findPayoutCandidates(cutoff, PageRequest.of(0, 50));
-
-        assertThat(due).extracting(Event::getId).containsExactly(e.getId());
+        assertThat(candidateIds()).contains(e.getId());
     }
 
     @Test
     void not_a_candidate_when_within_buffer() {
         Organization org = eligibleOrg();
-        endedEvent(org, Instant.now().minus(1, ChronoUnit.DAYS));   // ended yesterday, < 3d buffer
+        Event e = endedEvent(org, Instant.now().minus(1, ChronoUnit.DAYS));   // ended yesterday, < 3d buffer
 
-        assertThat(events.findPayoutCandidates(cutoff, PageRequest.of(0, 50))).isEmpty();
+        assertThat(candidateIds()).doesNotContain(e.getId());
     }
 
     @Test
@@ -141,8 +138,7 @@ class PostEventPayoutSweeperTest {
         Organization org = eligibleOrg();
         Event e = endedEvent(org, null);   // open-ended
 
-        assertThat(events.findPayoutCandidates(cutoff, PageRequest.of(0, 50)))
-                .extracting(Event::getId).doesNotContain(e.getId());
+        assertThat(candidateIds()).doesNotContain(e.getId());
     }
 
     @Test
@@ -150,9 +146,9 @@ class PostEventPayoutSweeperTest {
         Organization org = eligibleOrg();
         org.setStripePayoutScheduleManual(false);   // not flipped to manual
         orgs.save(org);
-        endedEvent(org, Instant.now().minus(10, ChronoUnit.DAYS));
+        Event e = endedEvent(org, Instant.now().minus(10, ChronoUnit.DAYS));
 
-        assertThat(events.findPayoutCandidates(cutoff, PageRequest.of(0, 50))).isEmpty();
+        assertThat(candidateIds()).doesNotContain(e.getId());
     }
 
     /**
@@ -167,8 +163,7 @@ class PostEventPayoutSweeperTest {
         orgs.save(org);
         Event e = endedEvent(org, Instant.now().minus(10, ChronoUnit.DAYS));
 
-        assertThat(events.findPayoutCandidates(cutoff, PageRequest.of(0, 50)))
-                .extracting(Event::getId).containsExactly(e.getId());
+        assertThat(candidateIds()).contains(e.getId());
     }
 
     @Test
@@ -176,9 +171,9 @@ class PostEventPayoutSweeperTest {
         Organization org = eligibleOrg();
         org.setStripeConnectState(StripeConnectState.DISABLED);
         orgs.save(org);
-        endedEvent(org, Instant.now().minus(10, ChronoUnit.DAYS));
+        Event e = endedEvent(org, Instant.now().minus(10, ChronoUnit.DAYS));
 
-        assertThat(events.findPayoutCandidates(cutoff, PageRequest.of(0, 50))).isEmpty();
+        assertThat(candidateIds()).doesNotContain(e.getId());
     }
 
     @Test
@@ -186,9 +181,9 @@ class PostEventPayoutSweeperTest {
         Organization org = eligibleOrg();
         org.setStripePayoutsEnabled(false);
         orgs.save(org);
-        endedEvent(org, Instant.now().minus(10, ChronoUnit.DAYS));
+        Event e = endedEvent(org, Instant.now().minus(10, ChronoUnit.DAYS));
 
-        assertThat(events.findPayoutCandidates(cutoff, PageRequest.of(0, 50))).isEmpty();
+        assertThat(candidateIds()).doesNotContain(e.getId());
     }
 
     @Test
@@ -197,7 +192,7 @@ class PostEventPayoutSweeperTest {
         Event e = endedEvent(org, Instant.now().minus(10, ChronoUnit.DAYS));
         seedRun(org, e, PayoutRunStatus.SUBMITTED);
 
-        assertThat(events.findPayoutCandidates(cutoff, PageRequest.of(0, 50))).isEmpty();
+        assertThat(candidateIds()).doesNotContain(e.getId());
     }
 
     @Test
@@ -209,9 +204,8 @@ class PostEventPayoutSweeperTest {
         seedRun(org, paid, PayoutRunStatus.PLANNED);
 
         // Neither the already-claimed event nor its sibling are candidates this tick.
-        List<Event> due = events.findPayoutCandidates(cutoff, PageRequest.of(0, 50));
-        assertThat(due.stream().map(Event::getId).toList())
-                .as("§4.0: at most one in-flight payout per org per tick")
+        assertThat(candidateIds())
+                .as("at most one in-flight payout per org per tick")
                 .doesNotContain(paid.getId(), sibling.getId());
     }
 
@@ -221,8 +215,7 @@ class PostEventPayoutSweeperTest {
         Event e = endedEvent(org, Instant.now().minus(10, ChronoUnit.DAYS));
         seedRun(org, e, PayoutRunStatus.FAILED);   // FAILED is not PLANNED/SUBMITTED/PAID
 
-        assertThat(events.findPayoutCandidates(cutoff, PageRequest.of(0, 50)))
-                .extracting(Event::getId).containsExactly(e.getId());
+        assertThat(candidateIds()).contains(e.getId());
     }
 
     /**
@@ -242,8 +235,7 @@ class PostEventPayoutSweeperTest {
 
         Instant retentionCutoff = Instant.now().minus(75, ChronoUnit.DAYS);
 
-        assertThat(events.findRetentionMonitorCandidates(retentionCutoff, PageRequest.of(0, 50)))
-                .extracting(Event::getId).containsExactly(e.getId());
+        assertThat(retentionIds(retentionCutoff)).contains(e.getId());
     }
 
     @Test
@@ -255,27 +247,38 @@ class PostEventPayoutSweeperTest {
         e.setRevenueMinor(10_000);
         events.save(e);
 
-        assertThat(events.findRetentionMonitorCandidates(
-                Instant.now().minus(75, ChronoUnit.DAYS), PageRequest.of(0, 50)))
+        assertThat(retentionIds(Instant.now().minus(75, ChronoUnit.DAYS)))
                 .as("DISABLED is terminal — nothing will ever be paid out, and the payout "
                         + "candidate query excludes it too")
-                .isEmpty();
+                .doesNotContain(e.getId());
     }
 
     @Test
     void sweeper_inert_when_flag_off() {
-        props.setPayoutScheduleManual(false);
+        flips.set(props, "payoutScheduleManual", false);
         Organization org = eligibleOrg();
-        endedEvent(org, Instant.now().minus(10, ChronoUnit.DAYS));
+        Event e = endedEvent(org, Instant.now().minus(10, ChronoUnit.DAYS));
+        // A stale SUBMITTED run: its reconcile has no kill-switch of its own, so only the sweep's guards it.
+        PayoutRun stale = seedRun(org, e, PayoutRunStatus.SUBMITTED);
+        jdbc.update("UPDATE payout_runs SET stripe_payout_id = ?, submitted_at = ? WHERE id = ?",
+                "po_own_" + run, Timestamp.from(Instant.now().minus(3, ChronoUnit.DAYS)), stale.getId());
+        // A real candidate (own org: the in-flight run above blocks its org) with a fronted refund.
+        Event candidate = endedEvent(eligibleOrg(), Instant.now().minus(10, ChronoUnit.DAYS));
+        Refund fronted = platformFundedRefund(orderOn(candidate));
+        assertThat(candidateIds()).contains(candidate.getId());
 
         sweeper.sweep();   // must not touch Stripe at all
 
         // The tick really ran: ShedLock granted and stamped the lock. Without this, a tick
         // skipped by a lock someone else still holds would satisfy the assertions below too.
         assertThat(sweepLockStamped()).as("the sweep tick was granted its ShedLock").isTrue();
-        // ...and it stopped at the kill-switch: no run created, no transfer reversed.
-        assertThat(payoutRuns.findAll()).isEmpty();
+        // ...and it stopped at the kill-switch: no run created or reconciled, no transfer reversed.
+        assertThat(payoutRuns.findByEventId(e.getId())).extracting(PayoutRun::getStatus)
+                .containsExactly(PayoutRunStatus.SUBMITTED);
+        assertThat(payoutRuns.findByEventId(candidate.getId())).as("no run on the candidate").isEmpty();
+        assertThat(ownPayoutReads.get()).isZero();
         assertThat(reversalCount.get()).isZero();
+        assertThat(refunds.findById(fronted.getId()).orElseThrow().getRecoveredAt()).isNull();
     }
 
     /**
@@ -290,9 +293,9 @@ class PostEventPayoutSweeperTest {
         seedRun(org, e, PayoutRunStatus.PAID);          // already disbursed → not a candidate
         Refund fronted = platformFundedRefund(orderOn(e));
 
-        assertThat(events.findPayoutCandidates(cutoff, PageRequest.of(0, 50)))
+        assertThat(candidateIds())
                 .as("the org has nothing left to pay out")
-                .isEmpty();
+                .doesNotContain(e.getId());
 
         sweeper.sweep();
 
@@ -318,14 +321,14 @@ class PostEventPayoutSweeperTest {
         d.setOrgId(org.getId());
         d.setEventId(e.getId());
         d.setOrderId(o.getId());
-        d.setStripeChargeId("ch_1");
+        d.setStripeChargeId(ownCharge());
         d.setAmountMinor(4_000);
         d.setCurrency("eur");
         d.setStatus(DisputeStatus.LOST);
         d.setTestMode(true);
         d = disputes.save(d);
 
-        assertThat(events.findPayoutCandidates(cutoff, PageRequest.of(0, 50))).isEmpty();
+        assertThat(candidateIds()).doesNotContain(e.getId());
 
         sweeper.sweep();
 
@@ -347,7 +350,9 @@ class PostEventPayoutSweeperTest {
         o.setStripeConnectState(StripeConnectState.ACTIVE);
         o.setStripePayoutsEnabled(true);
         o.setStripePayoutScheduleManual(true);
-        return orgs.save(o);
+        Organization saved = orgs.save(o);
+        createdOrgs.add(saved.getId());
+        return saved;
     }
 
     private Event endedEvent(Organization owner, Instant endsAt) {
@@ -375,7 +380,7 @@ class PostEventPayoutSweeperTest {
      */
     private void releaseSweepLock() {
         Timestamp rewound = Timestamp.from(LOCK_REWOUND_TO);
-        jdbc.update("update shedlock set lock_until = ?, locked_at = ?", rewound, rewound);
+        jdbc.update("update shedlock set lock_until = ?, locked_at = ? where name = ?", rewound, rewound, SWEEP_LOCK);
     }
 
     /** True once ShedLock has granted and stamped the sweep lock, i.e. the tick was not skipped. */
@@ -408,7 +413,7 @@ class PostEventPayoutSweeperTest {
         r.setOrderId(o.getId());
         r.setStripePaymentIntentId("pi_" + UUID.randomUUID().toString().replace("-", "").substring(0, 20));
         r.setStripeRefundId("re_" + UUID.randomUUID().toString().replace("-", "").substring(0, 20));
-        r.setStripeChargeId("ch_" + UUID.randomUUID().toString().replace("-", "").substring(0, 20));
+        r.setStripeChargeId(ownCharge());
         r.setAmountMinor(2_000);
         r.setCurrency("eur");
         r.setApplicationFeeRefundMinor(200);
@@ -431,9 +436,19 @@ class PostEventPayoutSweeperTest {
                 ApiRequest req = inv.getArgument(0);
                 String path = req.getPath();
                 if (path != null && path.startsWith("/v1/charges/")) {
+                    String id = path.substring("/v1/charges/".length());
+                    // Another org's charge has no transfer here, so its recovery stops before any reversal.
+                    String transfer = ownCharges.contains(id) ? "\"" + ownTransfer + "\"" : "null";
                     return ApiResource.GSON.fromJson(
-                            "{ \"object\": \"charge\", \"id\": \"ch_1\", \"transfer\": \"tr_test_1\" }",
+                            "{ \"object\": \"charge\", \"id\": \"" + id + "\", \"transfer\": " + transfer + " }",
                             Charge.class);
+                }
+                if (path != null && path.startsWith("/v1/payouts/")) {
+                    String id = path.substring("/v1/payouts/".length());
+                    if (id.equals("po_own_" + run)) ownPayoutReads.incrementAndGet();
+                    return ApiResource.GSON.fromJson("{ \"object\": \"payout\", \"id\": \"" + id
+                            + "\", \"amount\": 1000, \"currency\": \"eur\", \"status\": \"paid\", \"arrival_date\": "
+                            + Instant.now().getEpochSecond() + " }", com.stripe.model.Payout.class);
                 }
                 boolean post = req.getMethod() == ApiResource.RequestMethod.POST;
                 if (path != null && path.endsWith("/reversals") && !post) {
@@ -448,10 +463,10 @@ class PostEventPayoutSweeperTest {
                 }
                 if (path != null && path.startsWith("/v1/transfers/") && !post) {
                     return ApiResource.GSON.fromJson(
-                            "{ \"object\": \"transfer\", \"id\": \"tr_test_1\", \"amount\": 4000, \"amount_reversed\": 0, \"currency\": \"eur\" }",
+                            "{ \"object\": \"transfer\", \"id\": \"" + ownTransfer + "\", \"amount\": 4000, \"amount_reversed\": 0, \"currency\": \"eur\" }",
                             com.stripe.model.Transfer.class);
                 }
-                if (path != null && path.startsWith("/v1/transfers/")) {
+                if (path != null && path.startsWith("/v1/transfers/" + ownTransfer + "/")) {
                     if (req.getOptions() != null) lastReversalKey.set(req.getOptions().getIdempotencyKey());
                     Object amt = req.getParams() == null ? null : req.getParams().get("amount");
                     lastReversalAmount.set(amt == null ? 0L : ((Number) amt).longValue());
@@ -467,9 +482,16 @@ class PostEventPayoutSweeperTest {
         }
         when(stripeClient.charges()).thenReturn(new ChargeService(rg));
         when(stripeClient.transfers()).thenReturn(new TransferService(rg));
+        when(stripeClient.payouts()).thenReturn(new PayoutService(rg));
     }
 
-    private void seedRun(Organization org, Event e, PayoutRunStatus status) {
+    private String ownCharge() {
+        String ch = "ch_" + UUID.randomUUID().toString().replace("-", "").substring(0, 20);
+        ownCharges.add(ch);
+        return ch;
+    }
+
+    private PayoutRun seedRun(Organization org, Event e, PayoutRunStatus status) {
         PayoutRun r = new PayoutRun();
         r.setOrgId(org.getId());
         r.setEventId(e.getId());
@@ -479,6 +501,6 @@ class PostEventPayoutSweeperTest {
         r.setStatus(status);
         r.setAttempt(1);
         r.setIdempotencyKey("evt:" + e.getId() + ":attempt:1");
-        payoutRuns.save(r);
+        return payoutRuns.save(r);
     }
 }

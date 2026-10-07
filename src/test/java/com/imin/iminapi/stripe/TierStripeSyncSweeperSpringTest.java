@@ -1,6 +1,5 @@
 package com.imin.iminapi.stripe;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.EventVisibility;
@@ -12,6 +11,7 @@ import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
 import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.IminIntegrationTest;
 import com.stripe.StripeClient;
 import com.stripe.model.Product;
 import com.stripe.param.ProductCreateParams;
@@ -20,10 +20,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -37,16 +34,14 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /** The sweep through the Spring bean: a lost sync is healed by the queue, under ShedLock. */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class TierStripeSyncSweeperSpringTest {
 
     private static final String LOCK = "tier_stripe_sync_sweep";
     /** The sweep lock is rewound here before each tick; a real acquisition must move it past. */
     private static final Instant LOCK_REWOUND_TO = Instant.parse("2020-01-01T00:00:00Z");
 
-    @MockitoBean StripeClient stripeClient;
-
+    @Autowired StripeClient stripeClient;
     @Autowired TierStripeSyncSweeper sweeper;
     @Autowired EventRepository events;
     @Autowired TicketTierRepository tiers;
@@ -111,7 +106,7 @@ class TierStripeSyncSweeperSpringTest {
 
     @Test
     void sweep_healsUnsyncedTierOfSettledLiveEvent_resetsBackoff() throws Exception {
-        // The H2 database is shared by every context, so earlier tests may leave candidates ahead of
+        // The database is shared by every test, so earlier tests may leave candidates ahead of
         // this one; each pass backs off the 25 it claims, so a few passes always reach it.
         for (int pass = 0; pass < 40 && attempts() == 2; pass++) {
             releaseSweepLock();

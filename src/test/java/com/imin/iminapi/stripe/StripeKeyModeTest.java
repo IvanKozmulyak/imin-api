@@ -5,7 +5,13 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.slf4j.LoggerFactory;
+
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -18,41 +24,26 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class StripeKeyModeTest {
 
-    @Test
-    void aStandardLiveKeyIsLive() {
-        assertThat(props("sk_live_51Abc").isLiveKey()).isTrue();
+    static Stream<Arguments> keys() {
+        return Stream.of(
+                Arguments.of("a standard live key", "sk_live_51Abc", true),
+                Arguments.of("a restricted live key", "rk_live_51Abc", true),
+                Arguments.of("a test key", "sk_test_51Abc", false),
+                // A secret pasted into a Railway variable routinely carries a trailing newline.
+                Arguments.of("a live key with surrounding whitespace", "  sk_live_51Abc\n", true),
+                Arguments.of("a blank key", "   ", false),
+                Arguments.of("an unset key", null, false),
+                // Only a prefix means live: "live" later in a test key must not flip it.
+                Arguments.of("live matched mid-string", "sk_test_sk_live_51Abc", false));
     }
 
-    @Test
-    void aRestrictedLiveKeyIsLive() {
-        assertThat(props("rk_live_51Abc").isLiveKey()).isTrue();
-    }
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("keys")
+    void isLiveKey(String name, String secretKey, boolean live) {
+        StripeProperties p = new StripeProperties();
+        if (secretKey != null) p.setSecretKey(secretKey);
 
-    @Test
-    void aTestKeyIsNotLive() {
-        assertThat(props("sk_test_51Abc").isLiveKey()).isFalse();
-    }
-
-    @Test
-    void aLiveKeyPastedWithSurroundingWhitespaceIsStillLive() {
-        // A secret pasted into a Railway variable routinely carries a trailing newline.
-        assertThat(props("  sk_live_51Abc\n").isLiveKey()).isTrue();
-    }
-
-    @Test
-    void aBlankKeyIsNotLive() {
-        assertThat(props("   ").isLiveKey()).isFalse();
-    }
-
-    @Test
-    void anUnsetKeyIsNotLive() {
-        assertThat(new StripeProperties().isLiveKey()).isFalse();
-    }
-
-    @Test
-    void aLiveKeyIsNotMatchedMidString() {
-        // Only a prefix means live — "live" appearing later in a test key must not flip it.
-        assertThat(props("sk_test_sk_live_51Abc").isLiveKey()).isFalse();
+        assertThat(p.isLiveKey()).isEqualTo(live);
     }
 
     @Test
@@ -72,16 +63,11 @@ class StripeKeyModeTest {
                 .hasMessageContaining("STRIPE_SECRET_KEY is not set");
     }
 
-    @Test
-    void startupLogsTheDetectedLiveMode() {
-        assertThat(bootLog("sk_live_51Abc"))
-                .as("the operator reads this line to confirm the cutover deploy")
-                .contains("STRIPE MODE: live");
-    }
-
-    @Test
-    void startupLogsTheDetectedTestMode() {
-        assertThat(bootLog("sk_test_51Abc")).contains("STRIPE MODE: test");
+    /** The operator reads this line to confirm the cutover deploy. */
+    @ParameterizedTest
+    @CsvSource({"sk_live_51Abc, live", "sk_test_51Abc, test"})
+    void startupLogsTheDetectedMode(String secretKey, String mode) {
+        assertThat(bootLog(secretKey)).contains("STRIPE MODE: " + mode);
     }
 
     @Test

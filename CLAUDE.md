@@ -142,6 +142,8 @@ Today only `@IminIntegrationTest` exists (`SpringContextGuard.NAMED_CONTEXTS`). 
 - Properties: `PropertyFlips.set(bean, "path", value)` for values read per call. Captured at startup, so not flippable: Apple/Google Wallet credentials (`AppleWalletPassService`, `GoogleWalletJwtSigner` constructors), `imin.oauth.state-secret` (`OAuthStateService` constructor), the key inside `StripeClient` (faked anyway — `isLiveKey()` is per call and flippable), bean selection by `imin.geocoding.enabled`, `imin.media.enabled`, `imin.scheduling.enabled`, `management.health.resend-tracking.enabled`. Those need a config check or the reserved second context.
 - Rate limits: `RecordingRateLimiter.limit("bucket", n)` makes call n+1 per key a 429.
 - Legacy: `src/test/resources/test-guard/legacy-spring-tests.txt` lists classes not yet migrated. It only shrinks — the guard fails when a listed class no longer violates, and a diff that adds a line is a review blocker. Do not add `@MockitoBean`/properties to a legacy class either.
+- Fault injection: `PgFaults.failWrites(jdbc, table, column, id)` makes Postgres reject INSERT/UPDATE of the rows whose `column` equals `id` until closed (try-with-resources) — a real write failure inside the code's own transaction. No repository or service spies; a read-side race a trigger cannot produce is a unit test.
+- Global sweeps and jobs (payout sweep and recoveries, dispute attribution, buyer erasure) see every test's rows: assert on your own ids, suffix `evt_` and uniquely indexed Stripe ids per test, and in money tests delete the orgs you created with `OrgRows.delete(jdbc, orgIds)` in `@AfterEach`, so a later sweep's batch never fills with them.
 
 ## Architecture
 

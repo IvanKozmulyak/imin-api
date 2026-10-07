@@ -1,6 +1,5 @@
 package com.imin.iminapi.payout;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.dispute.Dispute;
 import com.imin.iminapi.dispute.DisputeRepository;
 import com.imin.iminapi.dispute.DisputeStatus;
@@ -24,6 +23,9 @@ import com.imin.iminapi.settlement.SettlementRepository;
 import com.imin.iminapi.settlement.SettlementStatus;
 import com.imin.iminapi.stripe.StripeConnectState;
 import com.imin.iminapi.stripe.StripeProperties;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
+import com.imin.iminapi.support.PropertyFlips;
 import com.stripe.StripeClient;
 import com.stripe.exception.ApiConnectionException;
 import com.stripe.exception.InvalidRequestException;
@@ -45,9 +47,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.invocation.InvocationOnMock;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.event.ApplicationEvents;
 import org.springframework.test.context.event.RecordApplicationEvents;
 
@@ -82,8 +82,7 @@ import static org.mockito.Mockito.when;
  *   <li>(e) FEE EXCLUDED — payout amount equals net, not gross.</li>
  * </ul>
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 @RecordApplicationEvents
 class PostEventPayoutServiceTest {
 
@@ -119,6 +118,8 @@ class PostEventPayoutServiceTest {
         final java.util.List<String> paymentIntentReads = new java.util.concurrent.CopyOnWriteArrayList<>();
         /** Currency of the transfers the recovery reads. */
         volatile String transferCurrency = "eur";
+        /** po_ ids land in payout_runs.stripe_payout_id, unique across the shared database. */
+        volatile String payoutPrefix = "po_test_";
 
         void reset() {
             availableMinor.set(0L);
@@ -191,7 +192,7 @@ class PostEventPayoutServiceTest {
                 java.util.Map<String, Object> params = req.getParams();
                 Object amt = params == null ? null : params.get("amount");
                 long amount = amt == null ? 0L : ((Number) amt).longValue();
-                String poId = "po_test_" + payoutCount.incrementAndGet();
+                String poId = payoutPrefix + payoutCount.incrementAndGet();
                 lastPayoutAmount.set(amount);
                 lastPayoutId.set(poId);
                 String json = """
@@ -274,23 +275,24 @@ class PostEventPayoutServiceTest {
      * {@link StripeResponseGetter} — which the {@link FakeStripe} backend answers by
      * request path. This is the same seam the integration suite uses.
      */
-    @MockitoBean StripeClient stripeClient;
+    @Autowired StripeClient stripeClient;
+    @Autowired PropertyFlips flips;
+    @Autowired JdbcTemplate jdbc;
 
     private final FakeStripe fake = new FakeStripe();
     private Organization org;
-    private String originalSecretKey;
+    /** Suffix for ids that land in uniquely indexed columns of the shared database. */
+    private final String run = UUID.randomUUID().toString().substring(0, 8);
 
     @BeforeEach
     void setUp() {
-        wipe();
         fake.reset();
-        props.setPayoutScheduleManual(true);   // enable the money path for these tests
+        fake.payoutPrefix = "po_test_" + run + "_";
+        flips.set(props, "payoutScheduleManual", true);   // enable the money path for these tests
         // Track B only ever runs under a live key in production, and the runs this suite creates
         // are stamped from it (V130) — under the test-profile sk_test_ key they would be test-era
-        // money and drop out of the already-triggered subtraction. Mutating the shared
-        // StripeProperties singleton is safe only while test classes run sequentially.
-        originalSecretKey = props.getSecretKey();
-        props.setSecretKey("sk_live_dummy");
+        // money and drop out of the already-triggered subtraction.
+        flips.set(props, "secretKey", "sk_live_dummy");
 
         StripeResponseGetter rg = mock(StripeResponseGetter.class);
         try {
@@ -314,22 +316,7 @@ class PostEventPayoutServiceTest {
 
     @AfterEach
     void tearDown() {
-        props.setPayoutScheduleManual(false);
-        props.setSecretKey(originalSecretKey);
-        wipe();
-    }
-
-    private void wipe() {
-        // disputes first: the rows FK to orders/events/organizations.
-        disputes.deleteAll();
-        // refunds carry order ids, so they go before the orders below.
-        refunds.deleteAll();
-        payoutRuns.deleteAll();
-        settlements.deleteAll();
-        orders.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+        OrgRows.delete(jdbc, List.of(org.getId()));
     }
 
     // ── (e) FEE EXCLUDED — payout == net, not gross ────────────────────────────────
@@ -349,7 +336,7 @@ class PostEventPayoutServiceTest {
         PayoutRun run = payoutRuns.findByEventId(e.getId()).get(0);
         assertThat(run.getStatus()).isEqualTo(PayoutRunStatus.SUBMITTED);
         assertThat(run.getAmountMinor()).isEqualTo(8_500L);
-        assertThat(run.getStripePayoutId()).isEqualTo("po_test_1");
+        assertThat(run.getStripePayoutId()).isEqualTo(fake.payoutPrefix + "1");
         assertThat(run.getIdempotencyKey()).isEqualTo("evt:" + e.getId() + ":attempt:1");
     }
 
@@ -548,7 +535,7 @@ class PostEventPayoutServiceTest {
         // leaves behind — neither may freeze payouts, which is what the old gate did forever.
         Settlement payoutRow = new Settlement();
         payoutRow.setOrgId(org.getId());
-        payoutRow.setStripeObjectId("po_failed_old");
+        payoutRow.setStripeObjectId("po_failed_old_" + run);
         payoutRow.setObjectType(SettlementObjectType.PAYOUT);
         payoutRow.setAmountMinor(1_000);
         payoutRow.setCurrency("eur");
@@ -557,7 +544,7 @@ class PostEventPayoutServiceTest {
 
         Settlement transferRow = new Settlement();
         transferRow.setOrgId(org.getId());
-        transferRow.setStripeObjectId("tr_disputed_1");
+        transferRow.setStripeObjectId("tr_disputed_" + run);
         transferRow.setObjectType(SettlementObjectType.TRANSFER);
         transferRow.setAmountMinor(8_000);
         transferRow.setCurrency("eur");
@@ -582,7 +569,7 @@ class PostEventPayoutServiceTest {
         // must run, reduced by the organizer's share of the disputed order.
         Settlement transferRow = new Settlement();
         transferRow.setOrgId(org.getId());
-        transferRow.setStripeObjectId("tr_lost_dispute");
+        transferRow.setStripeObjectId("tr_lost_dispute_" + run);
         transferRow.setObjectType(SettlementObjectType.TRANSFER);
         transferRow.setAmountMinor(8_000);
         transferRow.setCurrency("eur");
@@ -818,7 +805,7 @@ class PostEventPayoutServiceTest {
 
     @Test
     void inert_when_flag_off() {
-        props.setPayoutScheduleManual(false);
+        flips.set(props, "payoutScheduleManual", false);
         Event e = newEndedEvent(org);
         order(e, 5_000, 500);
         fake.availableMinor.set(50_000L);
@@ -1007,9 +994,10 @@ class PostEventPayoutServiceTest {
 
         service.reconcileSubmittedRun(submitted.getId());
 
-        assertThat(published.stream(PayoutArrivedEvent.class).count())
+        assertThat(published.stream(PayoutArrivedEvent.class)
+                        .filter(ev -> ev.runId().equals(submitted.getId())).toList())
                 .as("a second poll of a settled run must not email the organizer again")
-                .isZero();
+                .isEmpty();
     }
 
     // ── P1-12 — "no bank account" is a fact about the account; a Stripe error is not ────
@@ -1140,9 +1128,10 @@ class PostEventPayoutServiceTest {
 
         assertThat(fake.payoutCount.get()).isZero();
         assertThat(payoutRuns.findByEventId(e.getId())).hasSize(props.getPayoutMaxAttempts());
-        assertThat(published.stream(PayoutBlockedEvent.class).count())
+        List<UUID> ownRuns = payoutRuns.findByEventId(e.getId()).stream().map(PayoutRun::getId).toList();
+        assertThat(published.stream(PayoutBlockedEvent.class).filter(ev -> ownRuns.contains(ev.runId())).toList())
                 .as("a parked run is announced once, not once per night")
-                .isEqualTo(1);
+                .hasSize(1);
     }
 
     // ── settlement currency: the payout is sized in what Stripe settled ─────────────
