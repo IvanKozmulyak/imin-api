@@ -208,7 +208,14 @@ public class CampaignService {
 
     @Transactional
     public CampaignDto patch(AuthPrincipal p, UUID id, PatchCampaignRequest req) {
-        Campaign c = require(p.orgId(), id);
+        // Unlocked pre-check first, so a PATCH on a campaign mid-materialize answers 409 instead of waiting out its lock.
+        if (!"draft".equals(require(p.orgId(), id).getStatus())) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                    "Only draft campaigns can be edited");
+        }
+        // Locked until commit, so a send that flips draft→scheduled meanwhile waits rather than being overwritten.
+        Campaign c = campaigns.findByIdAndOrgIdForUpdate(id, p.orgId())
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, ErrorCode.NOT_FOUND, "Campaign not found"));
         if (!"draft".equals(c.getStatus())) {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
                     "Only draft campaigns can be edited");
@@ -630,9 +637,11 @@ public class CampaignService {
             throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
                     "Only scheduled campaigns can be canceled");
         }
-        c.setStatus("canceled");
-        c.setUpdatedAt(Instant.now());
-        campaigns.save(c);
+        // Compare-and-set: a claim that took the row meanwhile wins, and the organizer gets the same 409.
+        if (campaigns.cancelIfScheduled(c.getId(), principal.orgId(), Instant.now()) == 0) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                    "Only scheduled campaigns can be canceled");
+        }
         audit.record(principal, "CAMPAIGN_CANCELED", "campaign", c.getId(), "Campaign canceled");
     }
 
@@ -650,17 +659,18 @@ public class CampaignService {
         }
         audiencePlanAccess.requireSendsAllowed(c.getOrigin());
         requireLegalIdentity(c);
-        c.setStatus("scheduled");
-        c.setScheduledAt(Instant.now());
-        c.setUpdatedAt(Instant.now());
-        Campaign saved = campaigns.save(c);
+        // Compare-and-set: a claim that took the failed row meanwhile wins, and the organizer gets the same 409.
+        if (campaigns.retryIfFailed(c.getId(), principal.orgId(), Instant.now()) == 0) {
+            throw new ApiException(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE,
+                    "Campaign is not retryable");
+        }
         // Put the dead rows back in the queue (mkt-core-2). Recipients that burned their
         // attempt budget are 'failed', and the dispatcher only claims 'pending' — without
         // this the retry re-claimed a campaign with nothing left to send and failed again.
         // Rows that already left (sent/delivered/…) are untouched, so nobody is re-emailed.
         campaignRecipientRepository.requeueFailed(campaignId);
         audit.record(principal, "CAMPAIGN_RETRIED", "campaign", c.getId(), "Campaign retry queued");
-        return saved;
+        return require(principal.orgId(), campaignId);
     }
 
     /**

@@ -34,6 +34,11 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
     @Query("select c from Campaign c where c.id = :id and c.orgId = :orgId")
     Optional<Campaign> findByIdAndOrgId(@Param("id") UUID id, @Param("orgId") UUID orgId);
 
+    /** Row-locked load for an edit: a concurrent send or claim waits for it, and the claim's SKIP LOCKED passes it over. */
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("select c from Campaign c where c.id = :id and c.orgId = :orgId")
+    Optional<Campaign> findByIdAndOrgIdForUpdate(@Param("id") UUID id, @Param("orgId") UUID orgId);
+
     /**
      * Hard-delete a campaign row. The repo extends the bare {@code Repository<>} marker, so
      * {@code delete} is NOT inherited and must be declared explicitly. Recipient rows are
@@ -53,6 +58,79 @@ public interface CampaignRepository extends Repository<Campaign, UUID> {
     @Query("UPDATE Campaign c SET c.updatedAt=:ts WHERE c.id=:id")
     void touch(@org.springframework.data.repository.query.Param("id") java.util.UUID id,
                @org.springframework.data.repository.query.Param("ts") java.time.Instant ts);
+
+    /** The claim's flip, run inside the claim transaction while its row locks are held: status and heartbeat only. */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query("UPDATE Campaign c SET c.status='sending', c.updatedAt=:claimedAt WHERE c.id IN :ids")
+    int markClaimed(@Param("ids") java.util.Collection<UUID> ids, @Param("claimedAt") java.time.Instant claimedAt);
+
+    /**
+     * Gives back a claimed campaign the run never started, with the status and heartbeat it held before the claim.
+     * Guarded on the claim's own stamp, so a writer that changed the row since keeps its change.
+     */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query("UPDATE Campaign c SET c.status=:priorStatus, c.updatedAt=:priorUpdatedAt "
+           + "WHERE c.id=:id AND c.status='sending' AND c.updatedAt=:claimedAt")
+    int releaseClaim(@Param("id") UUID id, @Param("priorStatus") String priorStatus,
+                     @Param("priorUpdatedAt") java.time.Instant priorUpdatedAt,
+                     @Param("claimedAt") java.time.Instant claimedAt);
+
+    /** Guarded scheduled→canceled; 0 rows means the campaign left 'scheduled' (claimed, sent, canceled). */
+    @org.springframework.data.jpa.repository.Modifying(flushAutomatically = true, clearAutomatically = true)
+    @org.springframework.transaction.annotation.Transactional
+    @Query("UPDATE Campaign c SET c.status='canceled', c.updatedAt=:now "
+           + "WHERE c.id=:id AND c.orgId=:orgId AND c.status='scheduled'")
+    int cancelIfScheduled(@Param("id") UUID id, @Param("orgId") UUID orgId, @Param("now") java.time.Instant now);
+
+    /** Guarded failed→scheduled while attempts remain; 0 rows means the dispatcher (or another retry) got there first. */
+    @org.springframework.data.jpa.repository.Modifying(flushAutomatically = true, clearAutomatically = true)
+    @org.springframework.transaction.annotation.Transactional
+    @Query("UPDATE Campaign c SET c.status='scheduled', c.scheduledAt=:now, c.updatedAt=:now "
+           + "WHERE c.id=:id AND c.orgId=:orgId AND c.status='failed' AND c.attempts < 3")
+    int retryIfFailed(@Param("id") UUID id, @Param("orgId") UUID orgId, @Param("now") java.time.Instant now);
+
+    /** The stored status, re-read by the drive before each batch. */
+    @Query("select c.status from Campaign c where c.id = :id")
+    Optional<String> findStatusById(@Param("id") UUID id);
+
+    /** The materialization snapshot counts, written without touching status. */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query("UPDATE Campaign c SET c.recipientCount=:recipientCount, c.excludedCount=:excludedCount, "
+           + "c.exclusionSummary=:exclusionSummary WHERE c.id=:id")
+    int recordMaterialized(@Param("id") UUID id, @Param("recipientCount") Integer recipientCount,
+                           @Param("excludedCount") Integer excludedCount,
+                           @Param("exclusionSummary") String exclusionSummary);
+
+    /** A drained campaign becomes 'sent' only while it is still 'sending', never over a cancel. */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query("UPDATE Campaign c SET c.status='sent', c.sentAt=:sentAt, c.updatedAt=:sentAt "
+           + "WHERE c.id=:id AND c.status='sending'")
+    int markSentIfSending(@Param("id") UUID id, @Param("sentAt") java.time.Instant sentAt);
+
+    /** Fails a campaign that is still on its way out; a canceled or sent one keeps its status. */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query(value = "UPDATE campaigns SET status = 'failed', attempts = attempts + 1, last_error = :error, "
+           + "updated_at = :now WHERE id = :id AND status IN ('scheduled', 'sending')", nativeQuery = true)
+    int markFailedIfActive(@Param("id") UUID id, @Param("error") String error, @Param("now") java.time.Instant now);
+
+    /** The stored attempt count, for the failure log. */
+    @Query("select c.attempts from Campaign c where c.id = :id")
+    Optional<Short> findAttemptsById(@Param("id") UUID id);
+
+    /** A direct caller's flip to 'sending', only from the status its copy was loaded with. */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query("UPDATE Campaign c SET c.status='sending', c.updatedAt=:now WHERE c.id=:id AND c.status=:expected")
+    int markSendingIf(@Param("id") UUID id, @Param("expected") String expected, @Param("now") java.time.Instant now);
+
+    /** Row lock that serializes materialization of one campaign; also makes the claim's SKIP LOCKED pass it over. */
+    @Query(value = "SELECT id FROM campaigns WHERE id = :id FOR NO KEY UPDATE", nativeQuery = true)
+    List<UUID> lockForMaterialize(@Param("id") UUID id);
 
     // TEST-SUPPORT ONLY: unscoped by-id load, used exclusively by CampaignService.forceStatusForTest.
     @Query("select c from Campaign c where c.id = :id")

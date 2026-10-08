@@ -1,21 +1,41 @@
 package com.imin.iminapi.marketing.send;
 
+import com.imin.iminapi.audience.model.Consumer;
+import com.imin.iminapi.audience.model.Membership;
+import com.imin.iminapi.audience.model.Segment;
+import com.imin.iminapi.audience.repository.ConsumerRepository;
+import com.imin.iminapi.audience.repository.MembershipRepository;
+import com.imin.iminapi.audience.repository.SegmentRepository;
 import com.imin.iminapi.audienceplan.config.AudiencePlanAccess;
 import com.imin.iminapi.marketing.email.CampaignEmailProvider;
 import com.imin.iminapi.marketing.model.Campaign;
 import com.imin.iminapi.marketing.repository.CampaignRepository;
+import com.imin.iminapi.marketing.service.CampaignService;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.repository.OrganizationRepository;
+import com.imin.iminapi.security.ApiException;
+import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.support.CampaignRows;
 import com.imin.iminapi.support.IminFixtures;
 import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.MutableClock;
+import com.imin.iminapi.model.EventStatus;
+import com.imin.iminapi.predictor.service.PredictorMarketingEvents;
+import org.assertj.core.api.SoftAssertions;
+import org.springframework.test.context.event.ApplicationEvents;
+import org.springframework.test.context.event.RecordApplicationEvents;
+import com.imin.iminapi.support.PgFaults;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import javax.sql.DataSource;
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
@@ -31,6 +51,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -38,11 +59,13 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.when;
 
 /** Two dispatcher replicas at once on real Postgres: one claimer per campaign, one email per recipient. */
 @IminIntegrationTest
+@RecordApplicationEvents
 class CampaignDispatcherConcurrencyTest {
 
     private static final Duration WAIT = Duration.ofSeconds(30);
@@ -56,6 +79,15 @@ class CampaignDispatcherConcurrencyTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired AudiencePlanAccess audiencePlan;
+    @Autowired CampaignSendUnit sendUnit;
+    @Autowired DataSource dataSource;
+    @Autowired ConsumerRepository consumers;
+    @Autowired MembershipRepository memberships;
+    @Autowired SegmentRepository segments;
+    @Autowired CampaignService campaignService;
+    @Autowired MutableClock clock;
+    @Autowired RecipientMaterializer materializer;
+    @Autowired ApplicationEvents published;
 
     private final List<UUID> orgIds = new ArrayList<>();
     private final ConcurrentLinkedQueue<String> sentTo = new ConcurrentLinkedQueue<>();
@@ -205,6 +237,326 @@ class CampaignDispatcherConcurrencyTest {
         assertEachSentOnce(c, own);
     }
 
+    @Test
+    void aSecondRunDoesNotClaimACampaignTheFirstIsStillDriving() throws Exception {
+        Campaign c = campaign(awakeOrg().getId(), Instant.now().minus(3650, ChronoUnit.DAYS));
+        // Scheduled an hour before it fell due: scheduling leaves updated_at as it was.
+        jdbc.update("UPDATE campaigns SET updated_at = now() - interval '1 hour' WHERE id = ?", c.getId());
+        List<String> own = pendingRecipients(c, EmailChannelSender.BATCH_SIZE + 50);
+        holdFirstSendTo(own);
+        requireClaimRoom(c.getOrgId(), Instant.now(), audiencePlan.sendsEnabled(),
+                audiencePlan.legalIdentityAllCampaigns(), 1, 10);
+
+        ExecutorService replicaA = executor();
+        ExecutorService replicaB = executor();
+        try {
+            Future<?> first = replicaA.submit(() -> dispatcher.runOnce());
+            awaitHeld();
+            Future<?> second = replicaB.submit(() -> dispatcher.runOnce());
+            second.get(WAIT.toSeconds(), TimeUnit.SECONDS);
+
+            assertThat(ownSends(own)).as("the second run sent nothing of the campaign the first is driving")
+                    .hasSize(EmailChannelSender.BATCH_SIZE);
+            assertThat(first.isDone()).as("replica A still holds its batch").isFalse();
+            releaseHeld();
+            first.get(WAIT.toSeconds(), TimeUnit.SECONDS);
+        } finally {
+            releaseHeld();
+            shutdownExecutors();
+        }
+
+        assertEachSentOnce(c, own);
+    }
+
+    @Test
+    void twoDrivesMaterializingAtOnce_neitherThrows() throws Exception {
+        Organization org = awakeOrg();
+        List<Membership> members = List.of(member(org.getId()), member(org.getId()));
+        Campaign c = campaign(org.getId(), Instant.now().minus(3650, ChronoUnit.DAYS));
+        c.setSegmentId(segmentOf(org.getId(), members));
+        c.setStatus("sending");
+        campaigns.save(c);
+        // Two drives of one campaign, each with the entity its claim loaded; a throw is what the dispatcher marks failed.
+        Campaign driveA = campaigns.findById(c.getId()).orElseThrow();
+        Campaign driveB = campaigns.findById(c.getId()).orElseThrow();
+
+        try (PgFaults.Pause pause = PgFaults.pauseWrites(dataSource, "campaign_recipients", "campaign_id", c.getId())) {
+            try {
+                Future<?> a = executor().submit(() -> sendUnit.processOne(driveA));
+                pause.awaitBlocked(WAIT);
+                Future<?> b = executor().submit(() -> sendUnit.processOne(driveB));
+                // B waits on the materialize row lock, or (without it) on the same paused insert as A.
+                awaitWaiting("query ILIKE '%campaigns%for no key update%'", 1, "count(*) FILTER (WHERE wait_event_type = 'Lock' "
+                        + "AND query ILIKE '%insert into campaign_recipients%') >= 2");
+                pause.release();
+                a.get(WAIT.toSeconds(), TimeUnit.SECONDS);
+                b.get(WAIT.toSeconds(), TimeUnit.SECONDS);
+            } finally {
+                pause.release();
+                shutdownExecutors();
+            }
+        }
+
+        List<String> own = members.stream().map(this::emailOf).toList();
+        assertThat(jdbc.queryForList("SELECT membership_id FROM campaign_recipients WHERE campaign_id = ?",
+                UUID.class, c.getId())).containsExactlyInAnyOrderElementsOf(
+                members.stream().map(Membership::getMembershipId).toList());
+        assertEachSentOnce(c, own);
+        assertThat(jdbc.queryForObject("SELECT attempts FROM campaigns WHERE id = ?", Integer.class, c.getId()))
+                .isZero();
+    }
+
+    @Test
+    void aCampaignTheFiltersHold_keepsItsStateThroughARun() {
+        Organization o = fx.org();
+        // Local time near 02:00 right now: inside email quiet hours.
+        o.setTimezone(ZoneOffset.ofHours(Math.floorMod(2 - Instant.now().atZone(ZoneOffset.UTC).getHour() + 12, 24) - 12).getId());
+        o = orgs.save(o);
+        orgIds.add(o.getId());
+        Campaign c = campaign(o.getId(), Instant.now().minus(3650, ChronoUnit.DAYS));
+        jdbc.update("UPDATE campaigns SET status = 'failed', attempts = 1, updated_at = now() - interval '1 hour' WHERE id = ?",
+                c.getId());
+        Map<String, Object> before = stateOf(c);
+
+        dispatcher.runOnce();
+
+        assertThat(stateOf(c)).isEqualTo(before);
+    }
+
+    @Test
+    void aRunPastItsBudget_stopsTheDriveAndReleasesWhatItNeverStarted() {
+        UUID orgId = awakeOrg().getId();
+        Instant ancient = Instant.now().minus(3650, ChronoUnit.DAYS);
+        Campaign driven = campaign(orgId, ancient);
+        List<String> own = pendingRecipients(driven, EmailChannelSender.BATCH_SIZE + 50);
+        // Claimed after `driven`; its prior state is 'failed', not the initial 'scheduled'.
+        Campaign unstarted = campaign(orgId, ancient.plusSeconds(1));
+        jdbc.update("UPDATE campaigns SET status = 'failed', attempts = 1, updated_at = now() - interval '1 hour' WHERE id = ?",
+                unstarted.getId());
+        Map<String, Object> unstartedBefore = stateOf(unstarted);
+        // Claimed too, then given a new status by a writer that leaves updated_at alone (defensive: no such writer moves a sending row today).
+        Campaign changed = campaign(orgId, ancient.plusSeconds(2));
+        // Claimed too, then heartbeated by another drive while its status stays 'sending'.
+        Campaign heartbeat = campaign(orgId, ancient.plusSeconds(3));
+        requireClaimRoom(orgId, Instant.now(), audiencePlan.sendsEnabled(), audiencePlan.legalIdentityAllCampaigns(), 4, 10);
+        when(provider.sendBatch(anyList())).thenAnswer(inv -> {
+            List<CampaignEmailProvider.OutgoingEmail> batch = inv.getArgument(0);
+            batch.forEach(e -> sentTo.add(e.to()));
+            // The first batch outlasts the run budget, and meanwhile other writers touch two claimed campaigns.
+            clock.advance(CampaignDispatcher.RUN_BUDGET.plusSeconds(1));
+            elsewhere(() -> jdbc.update("UPDATE campaigns SET status = 'canceled' WHERE id = ?", changed.getId()));
+            elsewhere(() -> campaigns.touch(heartbeat.getId(), Instant.now()));
+            return batch.stream().map(e -> "msg-" + UUID.randomUUID()).toList();
+        });
+
+        dispatcher.runOnce();
+
+        assertThat(ownSends(own)).as("one batch, then the drive stops").hasSize(EmailChannelSender.BATCH_SIZE);
+        assertThat(jdbc.queryForObject("SELECT status FROM campaigns WHERE id = ?", String.class, driven.getId()))
+                .isEqualTo("sending");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM campaign_recipients WHERE campaign_id = ? AND status = 'pending'",
+                Integer.class, driven.getId())).isEqualTo(50);
+        assertThat(stateOf(unstarted)).as("the unstarted claim is back to its prior state").isEqualTo(unstartedBefore);
+        assertThat(jdbc.queryForObject("SELECT status FROM campaigns WHERE id = ?", String.class, changed.getId()))
+                .as("the release keeps another writer's status").isEqualTo("canceled");
+        assertThat(jdbc.queryForObject("SELECT status FROM campaigns WHERE id = ?", String.class, heartbeat.getId()))
+                .as("the release leaves a campaign another drive heartbeats").isEqualTo("sending");
+    }
+
+    @Test
+    void aCampaignCanceledBeforeItsDriveThrows_keepsItsStatusAndAttempts() {
+        Campaign c = campaign(awakeOrg().getId(), Instant.now().minus(3650, ChronoUnit.DAYS));
+        pendingRecipients(c, 2);
+        requireClaimRoom(c.getOrgId(), Instant.now(), audiencePlan.sendsEnabled(),
+                audiencePlan.legalIdentityAllCampaigns(), 1, 10);
+        when(provider.sendBatch(anyList())).thenAnswer(inv -> {
+            elsewhere(() -> jdbc.update("UPDATE campaigns SET status = 'canceled', updated_at = now() WHERE id = ?", c.getId()));
+            throw new IllegalStateException("provider client blew up");
+        });
+
+        dispatcher.runOnce();
+
+        Map<String, Object> row = stateOf(c);
+        assertThat(row.get("status")).isEqualTo("canceled");
+        assertThat(((Number) row.get("attempts")).intValue()).as("a failure the cancel overtook is not counted").isZero();
+        assertThat(row.get("last_error")).isNull();
+    }
+
+    @Test
+    void aDirectDriveOfACopyWhoseStatusMoved_materializesAndSendsNothing() {
+        Organization org = awakeOrg();
+        Campaign c = campaign(org.getId(), Instant.now().plus(1, ChronoUnit.DAYS));
+        c.setSegmentId(segmentOf(org.getId(), List.of(member(org.getId()))));
+        campaigns.save(c);
+        // The caller's copy still says 'scheduled'; the row was canceled since.
+        Campaign copy = campaigns.findById(c.getId()).orElseThrow();
+        jdbc.update("UPDATE campaigns SET status = 'canceled', updated_at = now() WHERE id = ?", c.getId());
+
+        sendUnit.processOne(copy);
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM campaign_recipients WHERE campaign_id = ?",
+                Integer.class, c.getId())).isZero();
+        assertThat(jdbc.queryForObject("SELECT status FROM campaigns WHERE id = ?", String.class, c.getId()))
+                .isEqualTo("canceled");
+    }
+
+    @Test
+    void aCampaignThatCannotBeMarkedFailed_doesNotStopTheRestOfTheClaim() {
+        UUID orgId = awakeOrg().getId();
+        Instant ancient = Instant.now().minus(3650, ChronoUnit.DAYS);
+        Campaign broken = campaign(orgId, ancient);
+        Set<String> brokenTo = new HashSet<>(pendingRecipients(broken, 1));
+        Campaign next = campaign(orgId, ancient.plusSeconds(1));
+        List<String> own = pendingRecipients(next, 2);
+        requireClaimRoom(orgId, Instant.now(), audiencePlan.sendsEnabled(), audiencePlan.legalIdentityAllCampaigns(), 2, 10);
+        AtomicReference<PgFaults.Fault> fault = new AtomicReference<>();
+        when(provider.sendBatch(anyList())).thenAnswer(inv -> {
+            List<CampaignEmailProvider.OutgoingEmail> batch = inv.getArgument(0);
+            if (batch.stream().anyMatch(e -> brokenTo.contains(e.to()))) {
+                // The drive throws, and the write that would mark it failed is rejected too.
+                elsewhere(() -> fault.set(PgFaults.failWrites(jdbc, "campaigns", "id", broken.getId())));
+                throw new IllegalStateException("provider client blew up");
+            }
+            batch.forEach(e -> sentTo.add(e.to()));
+            return batch.stream().map(e -> "msg-" + UUID.randomUUID()).toList();
+        });
+
+        try {
+            dispatcher.runOnce();
+        } finally {
+            PgFaults.Fault f = fault.get();
+            if (f != null) f.close();
+        }
+
+        assertThat(fault.get()).as("the broken campaign was driven first").isNotNull();
+        assertEachSentOnce(next, own);
+        assertThat(jdbc.queryForObject("SELECT status FROM campaigns WHERE id = ?", String.class, broken.getId()))
+                .isEqualTo("sending");
+    }
+
+    enum OrganizerAction { CANCEL, RETRY }
+
+    @ParameterizedTest
+    @EnumSource(OrganizerAction.class)
+    void anOrganizerActionRacingTheClaim_answers409AndTheCampaignSends(OrganizerAction action) throws Exception {
+        Organization org = awakeOrg();
+        AuthPrincipal owner = fx.principal(fx.owner(org));
+        Campaign c = campaign(org.getId(), Instant.now().minus(3650, ChronoUnit.DAYS));
+        // Cancel acts on a scheduled campaign, retry on a failed one; the claim takes both.
+        if (action == OrganizerAction.RETRY) {
+            jdbc.update("UPDATE campaigns SET status = 'failed', attempts = 1 WHERE id = ?", c.getId());
+        }
+        List<String> own = pendingRecipients(c, 2);
+        requireClaimRoom(org.getId(), Instant.now(), audiencePlan.sendsEnabled(),
+                audiencePlan.legalIdentityAllCampaigns(), 1, 10);
+
+        Throwable refused;
+        try (PgFaults.Pause pause = PgFaults.pauseWrites(dataSource, "campaigns", "id", c.getId())) {
+            try {
+                Future<?> run = executor().submit(() -> dispatcher.runOnce());
+                // The claim holds the row lock; its flip to 'sending' is paused before commit.
+                pause.awaitBlocked(WAIT);
+                String tag = "organizer-" + UUID.randomUUID().toString().substring(0, 8);
+                Future<?> organizer = executor().submit(() -> tx.executeWithoutResult(st -> {
+                    // Tags this backend so the wait below sees the organizer's own UPDATE blocked, nothing else.
+                    jdbc.execute("SET LOCAL application_name = '" + tag + "'");
+                    if (action == OrganizerAction.CANCEL) campaignService.cancel(owner, c.getId());
+                    else campaignService.retry(owner, c.getId());
+                }));
+                awaitWaiting("application_name = '" + tag + "'", 1, "FALSE");
+                pause.release();
+                run.get(WAIT.toSeconds(), TimeUnit.SECONDS);
+                refused = catchThrowable(() -> organizer.get(WAIT.toSeconds(), TimeUnit.SECONDS));
+            } finally {
+                pause.release();
+                shutdownExecutors();
+            }
+        }
+
+        assertThat(refused).as("the organizer is told the campaign already left").isInstanceOf(ExecutionException.class)
+                .cause().isInstanceOfSatisfying(ApiException.class,
+                        e -> assertThat(e.status()).isEqualTo(HttpStatus.CONFLICT));
+        assertEachSentOnce(c, own);
+    }
+
+    @Test
+    void aCampaignCanceledMidDrive_sendsNoFurtherBatchAndStaysCanceled() {
+        Campaign c = campaign(awakeOrg().getId(), Instant.now().minus(3650, ChronoUnit.DAYS));
+        List<String> own = pendingRecipients(c, EmailChannelSender.BATCH_SIZE + 50);
+        // Out of attempts and never claimed again; only finish() would retire it to 'failed'.
+        UUID exhausted = UUID.randomUUID();
+        jdbc.update("INSERT INTO campaign_recipients (id, campaign_id, email, status, attempt_count, last_event_at) "
+                + "VALUES (?, ?, ?, 'pending', 3, now())", exhausted, c.getId(), fx.email("exhausted"));
+        requireClaimRoom(c.getOrgId(), Instant.now(), audiencePlan.sendsEnabled(),
+                audiencePlan.legalIdentityAllCampaigns(), 1, 10);
+        // Any writer that stops the campaign while a batch is out; the CAS cancel itself refuses a 'sending' one.
+        when(provider.sendBatch(anyList())).thenAnswer(inv -> {
+            List<CampaignEmailProvider.OutgoingEmail> batch = inv.getArgument(0);
+            batch.forEach(e -> sentTo.add(e.to()));
+            elsewhere(() -> jdbc.update("UPDATE campaigns SET status = 'canceled', updated_at = now() WHERE id = ?", c.getId()));
+            return batch.stream().map(e -> "msg-" + UUID.randomUUID()).toList();
+        });
+
+        dispatcher.runOnce();
+
+        assertThat(ownSends(own)).as("only the batch already out").hasSize(EmailChannelSender.BATCH_SIZE);
+        assertThat(jdbc.queryForObject("SELECT status FROM campaigns WHERE id = ?", String.class, c.getId()))
+                .isEqualTo("canceled");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM campaign_recipients WHERE campaign_id = ? AND status = 'pending' "
+                + "AND id <> ?", Integer.class, c.getId(), exhausted)).isEqualTo(50);
+        assertThat(jdbc.queryForObject("SELECT status FROM campaign_recipients WHERE id = ?", String.class, exhausted))
+                .as("a stopped drive never reaches finish()").isEqualTo("pending");
+    }
+
+    @Test
+    void aCampaignCanceledDuringItsLastBatch_isNeitherMarkedSentNorAnnounced() {
+        Organization org = awakeOrg();
+        Campaign c = campaign(org.getId(), Instant.now().minus(3650, ChronoUnit.DAYS));
+        UUID eventId = fx.event(org, fx.owner(org), EventStatus.LIVE, Instant.now().plus(30, ChronoUnit.DAYS)).getId();
+        c.setEventId(eventId);
+        campaigns.save(c);
+        // Exactly one batch: the drain ends without another status re-read, so finish() runs.
+        List<String> own = pendingRecipients(c, EmailChannelSender.BATCH_SIZE);
+        requireClaimRoom(org.getId(), Instant.now(), audiencePlan.sendsEnabled(),
+                audiencePlan.legalIdentityAllCampaigns(), 1, 10);
+        when(provider.sendBatch(anyList())).thenAnswer(inv -> {
+            List<CampaignEmailProvider.OutgoingEmail> batch = inv.getArgument(0);
+            batch.forEach(e -> sentTo.add(e.to()));
+            elsewhere(() -> jdbc.update("UPDATE campaigns SET status = 'canceled', updated_at = now() WHERE id = ?", c.getId()));
+            return batch.stream().map(e -> "msg-" + UUID.randomUUID()).toList();
+        });
+
+        dispatcher.runOnce();
+
+        assertThat(ownSends(own)).hasSize(EmailChannelSender.BATCH_SIZE);
+        Map<String, Object> row = jdbc.queryForMap("SELECT status, sent_at FROM campaigns WHERE id = ?", c.getId());
+        SoftAssertions.assertSoftly(soft -> {
+            soft.assertThat(published.stream(PredictorMarketingEvents.CampaignSent.class)
+                    .filter(e -> eventId.equals(e.eventId()))).as("re-forecast for a canceled campaign").isEmpty();
+            soft.assertThat(row.get("status")).isEqualTo("canceled");
+            soft.assertThat(row.get("sent_at")).isNull();
+        });
+    }
+
+    @Test
+    void materializingAStaleCopy_keepsTheStoredStatus() {
+        Organization org = awakeOrg();
+        List<Membership> members = List.of(member(org.getId()), member(org.getId()));
+        Campaign c = campaign(org.getId(), Instant.now().minus(3650, ChronoUnit.DAYS));
+        c.setSegmentId(segmentOf(org.getId(), members));
+        c.setStatus("sending");
+        campaigns.save(c);
+        // The drive's copy says 'sending'; the row is canceled before it materializes.
+        Campaign driveCopy = campaigns.findById(c.getId()).orElseThrow();
+        jdbc.update("UPDATE campaigns SET status = 'canceled', updated_at = now() WHERE id = ?", c.getId());
+
+        materializer.materialize(driveCopy);
+
+        Map<String, Object> row = jdbc.queryForMap("SELECT status, recipient_count FROM campaigns WHERE id = ?", c.getId());
+        assertThat(row.get("status")).isEqualTo("canceled");
+        assertThat(((Number) row.get("recipient_count")).intValue()).as("the snapshot counts are still recorded").isEqualTo(2);
+    }
+
     /**
      * Other tests' claimable campaigns (the claimDue predicate, without LIMIT or lock) that would take claim slots;
      * fails naming them when they leave fewer than {@code ownRows} of {@code capacity} for this test.
@@ -306,6 +658,60 @@ class CampaignDispatcherConcurrencyTest {
         jdbc.batchUpdate("INSERT INTO campaign_recipients (id, campaign_id, email, status, last_event_at) "
                 + "VALUES (?, ?, ?, 'pending', ?)", args);
         return emails;
+    }
+
+    /**
+     * Runs a write on its own thread and connection: called from a provider answer, the test's JdbcTemplate would
+     * otherwise join the batch transaction and commit or roll back with it.
+     */
+    private void elsewhere(Runnable write) throws Exception {
+        executor().submit(write).get(WAIT.toSeconds(), TimeUnit.SECONDS);
+    }
+
+    private Map<String, Object> stateOf(Campaign c) {
+        return jdbc.queryForMap("SELECT status, attempts, updated_at, last_error FROM campaigns WHERE id = ?", c.getId());
+    }
+
+    /**
+     * Waits until at least {@code n} backends matching {@code where} are blocked on a lock, or {@code orElse}
+     * (an aggregate over this database's backends) holds.
+     */
+    private void awaitWaiting(String where, int n, String orElse) throws InterruptedException {
+        long deadline = System.nanoTime() + WAIT.toNanos();
+        String sql = "SELECT count(*) FILTER (WHERE wait_event_type = 'Lock' AND " + where + ") >= " + n
+                + " OR " + orElse + " FROM pg_stat_activity WHERE datname = current_database()";
+        while (System.nanoTime() < deadline) {
+            if (Boolean.TRUE.equals(jdbc.queryForObject(sql, Boolean.class))) return;
+            Thread.sleep(10);
+        }
+        throw new AssertionError("no backend blocked where " + where + " within " + WAIT);
+    }
+
+    /** SendGate-sendable member (explicit basis, subscribed) with its own address. */
+    private Membership member(UUID orgId) {
+        Consumer cn = new Consumer();
+        cn.setNormalizedEmail(fx.email("mat"));
+        cn = consumers.save(cn);
+        Membership m = new Membership();
+        m.setOrgId(orgId);
+        m.setConsumerId(cn.getConsumerId());
+        m.setConsentStatus("subscribed");
+        m.setConsentBasis("explicit");
+        return memberships.save(m);
+    }
+
+    private String emailOf(Membership m) {
+        return jdbc.queryForObject("SELECT normalized_email FROM consumers WHERE consumer_id = ?",
+                String.class, m.getConsumerId());
+    }
+
+    private UUID segmentOf(UUID orgId, List<Membership> members) {
+        Segment seg = new Segment();
+        seg.setOrgId(orgId);
+        seg.setName("Concurrent " + UUID.randomUUID());
+        seg.setKind("static");
+        seg.setSnapshotIds(members.stream().map(m -> "\"" + m.getMembershipId() + "\"").toList().toString());
+        return segments.save(seg).getId();
     }
 
     /** The heartbeat a batch that hangs past five minutes leaves behind, which makes the campaign reclaimable. */

@@ -14,6 +14,7 @@ import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
 
@@ -52,35 +53,54 @@ public class CampaignSendUnit {
     private final AudiencePlanAccess audiencePlanAccess;
     /** REQUIRES_NEW template: the campaign status flips commit on their own, like the batches. */
     private final TransactionTemplate newTx;
+    /** Reads the run deadline only. */
+    private final Clock clock;
 
     public CampaignSendUnit(CampaignRepository campaigns, CampaignRecipientRepository recipients,
                             RecipientMaterializer materializer,
                             EmailChannelSender emailSender, ApplicationEventPublisher eventPublisher,
-                            PlatformTransactionManager txManager, AudiencePlanAccess audiencePlanAccess) {
+                            PlatformTransactionManager txManager, AudiencePlanAccess audiencePlanAccess,
+                            Clock clock) {
         this.campaigns = campaigns;
         this.recipients = recipients;
         this.materializer = materializer;
         this.emailSender = emailSender;
         this.eventPublisher = eventPublisher;
         this.audiencePlanAccess = audiencePlanAccess;
+        this.clock = clock;
         this.newTx = new TransactionTemplate(txManager);
         this.newTx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
     public void processOne(Campaign c) {
+        processOne(c, Instant.MAX);
+    }
+
+    /** Drives the campaign, starting no batch after {@code deadline}; the dispatcher passes its run budget. */
+    public void processOne(Campaign c, Instant deadline) {
         if (!"sending".equals(c.getStatus())) {
+            Instant now = Instant.now();
+            Integer flipped = newTx.execute(st -> campaigns.markSendingIf(c.getId(), c.getStatus(), now));
+            if (flipped == null || flipped == 0) {
+                log.warn("[send-unit] campaign {} is no longer '{}' — not driving it", c.getId(), c.getStatus());
+                return;
+            }
             c.setStatus("sending");
-            newTx.executeWithoutResult(st -> campaigns.save(c));
+            c.setUpdatedAt(now);
         }
         materializer.materialize(c);
         // Drive batches until nothing claimable remains. Bounded loop; each call commits
         // its own batch and heartbeats.
         int guard = 0;
         while (sendsAllowed(c) && emailSender.sendNextBatch(c) && guard++ < 10_000) {
-            // keep sending
+            if (!clock.instant().isBefore(deadline)) {
+                // Run budget spent: stays 'sending' with rows queued; the stale reclaim resumes it, like the daily-cap stop.
+                log.info("[send-unit] campaign {} paused: dispatcher run budget spent", c.getId());
+                return;
+            }
         }
-        // The sender failed it mid-drive (e.g. legal identity removed); finish() must not overwrite that.
-        if ("failed".equals(c.getStatus())) return;
+        // The sender failed it mid-drive (legal identity removed) or found it stopped (canceled); finish() must not overwrite that.
+        if (!"sending".equals(c.getStatus())) return;
         if (!sendsAllowed(c)) {
             // Same as the paused path: stays 'sending' with its queue intact; the claim resumes it once re-enabled.
             log.warn("[send-unit] campaign {} held mid-send: audience plan sends are disabled", c.getId());
@@ -119,11 +139,14 @@ public class CampaignSendUnit {
             newTx.executeWithoutResult(st -> markFailed(c, "no recipients could be sent"));
             return;
         }
-        newTx.executeWithoutResult(st -> {
-            c.setStatus("sent");
-            c.setSentAt(Instant.now());
-            campaigns.save(c);
-        });
+        Instant sentAt = Instant.now();
+        Integer marked = newTx.execute(st -> campaigns.markSentIfSending(c.getId(), sentAt));
+        if (marked == null || marked == 0) {
+            log.warn("[send-unit] campaign {} left 'sending' before it drained — not marked sent", c.getId());
+            return;
+        }
+        c.setStatus("sent");
+        c.setSentAt(sentAt);
         // Predictor trigger (task §4): a completed send may have moved sales — re-forecast.
         // AFTER_COMMIT + debounced in ReforecastTriggerService, so it never rides this send tx.
         if (c.getEventId() != null) {
@@ -133,11 +156,14 @@ public class CampaignSendUnit {
 
     @Transactional
     public void markFailed(Campaign c, String error) {
-        Campaign fresh = campaigns.findByIdAndOrgId(c.getId(), c.getOrgId()).orElse(c);
-        fresh.setStatus("failed");
-        fresh.setAttempts((short) (fresh.getAttempts() + 1));
-        fresh.setLastError(error == null ? "send failed" : error.substring(0, Math.min(500, error.length())));
-        campaigns.save(fresh);
-        log.error("[send-unit] campaign {} failed (attempt {}): {}", c.getId(), fresh.getAttempts(), error);
+        String lastError = error == null ? "send failed" : error.substring(0, Math.min(500, error.length()));
+        // Conditional: a campaign canceled or sent meanwhile keeps that status.
+        if (campaigns.markFailedIfActive(c.getId(), lastError, Instant.now()) == 0) {
+            log.warn("[send-unit] campaign {} not marked failed: no longer scheduled or sending ({})", c.getId(), error);
+            return;
+        }
+        c.setStatus("failed");
+        log.error("[send-unit] campaign {} failed (attempt {}): {}", c.getId(),
+                campaigns.findAttemptsById(c.getId()).orElse(null), error);
     }
 }

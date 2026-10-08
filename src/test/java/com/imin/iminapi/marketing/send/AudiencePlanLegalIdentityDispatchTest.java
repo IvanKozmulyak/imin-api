@@ -152,6 +152,9 @@ class AudiencePlanLegalIdentityDispatchTest {
     void identityRemovedAfterClaim_failsTheCampaignOnce_andItIsNotReclaimed() {
         Organization noIdentity = awakeOrg(null, fx.email("legal"));
         Campaign held = campaignWithPending(noIdentity, "audience_plan", "scheduled", Instant.now());
+        // One earlier attempt, so the fail must add one rather than set a constant.
+        jdbc.update("UPDATE campaigns SET attempts = 1 WHERE id = ?", held.getId());
+        held.setAttempts((short) 1);
 
         // Drive it as the dispatcher would after a claim that raced the identity removal.
         sendUnit.processOne(held);
@@ -159,7 +162,7 @@ class AudiencePlanLegalIdentityDispatchTest {
         Campaign after = reload(held);
         assertThat(after.getStatus()).isEqualTo("failed");
         assertThat(after.getLastError()).isEqualTo("ORG_LEGAL_IDENTITY_MISSING");
-        assertThat(after.getAttempts()).isEqualTo((short) 1);
+        assertThat(after.getAttempts()).isEqualTo((short) 2);
         assertThat(recipients.countByCampaignIdAndStatus(held.getId(), "pending")).isEqualTo(1L);
 
         Campaign manual = campaignWithPending(awakeOrg(null, null), "manual", "scheduled", Instant.now());
@@ -167,7 +170,7 @@ class AudiencePlanLegalIdentityDispatchTest {
         dispatcher.runOnce();
         dispatcher.runOnce();
 
-        assertThat(reload(held).getAttempts()).isEqualTo((short) 1);
+        assertThat(reload(held).getAttempts()).isEqualTo((short) 2);
         assertThat(reload(held).getStatus()).isEqualTo("failed");
         assertThat(reload(manual).getStatus()).isEqualTo("sent");
         assertThat(sentTo()).containsExactly(manualAddress);

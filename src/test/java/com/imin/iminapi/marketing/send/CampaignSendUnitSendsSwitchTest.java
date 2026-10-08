@@ -10,6 +10,7 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.SimpleTransactionStatus;
 
+import java.time.Clock;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -36,8 +37,10 @@ class CampaignSendUnitSendsSwitchTest {
     CampaignSendUnitSendsSwitchTest() {
         PlatformTransactionManager tm = mock(PlatformTransactionManager.class);
         when(tm.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
+        // The row is still 'sending' when the drive finishes.
+        when(campaigns.markSentIfSending(any(), any())).thenReturn(1);
         unit = new CampaignSendUnit(campaigns, recipients, materializer, sender,
-                mock(ApplicationEventPublisher.class), tm, new AudiencePlanAccess(props));
+                mock(ApplicationEventPublisher.class), tm, new AudiencePlanAccess(props), Clock.systemUTC());
     }
 
     private static Campaign campaign(String origin) {
@@ -63,6 +66,7 @@ class CampaignSendUnitSendsSwitchTest {
         verify(sender, times(1)).sendNextBatch(c);
         verify(recipients, never()).failExhaustedPending(any(), anyShort(), anyString(), any());
         verify(campaigns, never()).save(any());
+        verify(campaigns, never()).markSentIfSending(any(), any());
         assertThat(c.getStatus()).isEqualTo("sending");
         assertThat(c.getSentAt()).isNull();
     }

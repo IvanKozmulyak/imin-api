@@ -26,6 +26,7 @@ import org.mockito.ArgumentCaptor;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -59,6 +60,8 @@ class EmailChannelSenderOrgLookupTest {
                 mock(ConsumerRepository.class), mock(SendGateService.class), new MarketingGuardProperties(),
                 mock(SendPathGuard.class), mock(AddressSourceLines.class),
                 new AudiencePlanAccess(new AudiencePlanProperties()));
+        // The per-batch status re-read finds the campaign still on its way out.
+        when(campaigns.findStatusById(any())).thenReturn(Optional.of("sending"));
         when(organizations.findById(any())).thenThrow(new IllegalStateException("db hiccup"));
         when(templates.resolve(any(), any())).thenReturn(BuiltinTemplates.all().get(0));
         when(provider.sendBatch(anyList())).thenReturn(List.of("id-a"));
@@ -85,19 +88,32 @@ class EmailChannelSenderOrgLookupTest {
     @Test
     void audiencePlanCampaign_failsWithItsRowsPending_andSendsNothing() {
         Campaign c = campaignWithPendingRow("audience_plan");
+        when(campaigns.markFailedIfActive(eq(c.getId()), eq("ORG_LEGAL_IDENTITY_MISSING"), any())).thenReturn(1);
 
         assertThat(sender.sendNextBatch(c)).isFalse();
 
         verify(provider, never()).sendBatch(anyList());
         verify(recipients, never()).save(any());
-        ArgumentCaptor<Campaign> saved = ArgumentCaptor.forClass(Campaign.class);
-        verify(campaigns).save(saved.capture());
-        assertThat(saved.getValue().getStatus()).isEqualTo("failed");
-        assertThat(saved.getValue().getLastError()).isEqualTo("ORG_LEGAL_IDENTITY_MISSING");
-        assertThat(saved.getValue().getAttempts()).isEqualTo((short) 1);
+        // The conditional UPDATE increments attempts in SQL; the drive's copy carries the outcome.
+        verify(campaigns).markFailedIfActive(eq(c.getId()), eq("ORG_LEGAL_IDENTITY_MISSING"), any());
+        assertThat(c.getStatus()).isEqualTo("failed");
+        assertThat(c.getLastError()).isEqualTo("ORG_LEGAL_IDENTITY_MISSING");
     }
 
     @SuppressWarnings("unchecked")
+    @Test
+    void audiencePlanCampaign_canceledBeforeItCouldBeFailed_stopsOnTheStoredStatus() {
+        Campaign c = campaignWithPendingRow("audience_plan");
+        // 'sending' at the batch's re-read, canceled by the time the conditional fail runs.
+        when(campaigns.findStatusById(c.getId())).thenReturn(Optional.of("sending"), Optional.of("canceled"));
+        when(campaigns.markFailedIfActive(any(), any(), any())).thenReturn(0);
+
+        assertThat(sender.sendNextBatch(c)).isFalse();
+
+        verify(provider, never()).sendBatch(anyList());
+        assertThat(c.getStatus()).isEqualTo("canceled");
+    }
+
     @Test
     void manualCampaign_stillSendsFromTheConfiguredHeader() {
         Campaign c = campaignWithPendingRow("manual");

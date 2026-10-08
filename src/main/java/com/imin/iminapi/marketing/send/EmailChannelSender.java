@@ -112,6 +112,14 @@ public class EmailChannelSender {
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public boolean sendNextBatch(Campaign c) {
+        // Re-read per batch: a campaign stopped by any writer (cancel, fail) sends nothing more, and the drive sees why.
+        // ponytail: a plain read, so a stop landing while this batch is at the provider still lets this one batch go.
+        String stored = campaigns.findStatusById(c.getId()).orElse(null);
+        if (!"sending".equals(stored)) {
+            log.warn("[email-sender] campaign {} is '{}' in the database — stopping the drive", c.getId(), stored);
+            c.setStatus(stored);
+            return false;
+        }
         // Per-org daily cap (spec §7), re-checked PER BATCH. Checking it only at claim time
         // capped which campaigns start, not how much they send: a single 200k campaign
         // admitted under a 10,000/day cap then drained all 200k. Stopping here leaves the
@@ -360,14 +368,15 @@ public class EmailChannelSender {
 
     /** Terminal until the organizer restores the identity; the claim query skips it meanwhile. */
     private void failForMissingLegalIdentity(Campaign c) {
-        Campaign fresh = campaigns.findByIdAndOrgId(c.getId(), c.getOrgId()).orElse(c);
-        fresh.setStatus("failed");
-        fresh.setAttempts((short) (fresh.getAttempts() + 1));
-        fresh.setLastError(ErrorCode.ORG_LEGAL_IDENTITY_MISSING.name());
-        fresh.setUpdatedAt(Instant.now());
-        campaigns.save(fresh);
+        String error = ErrorCode.ORG_LEGAL_IDENTITY_MISSING.name();
+        // Conditional, like markFailed: a campaign canceled meanwhile keeps that status.
+        if (campaigns.markFailedIfActive(c.getId(), error, Instant.now()) != 1) {
+            log.warn("[email-sender] campaign {} no longer scheduled or sending — not failing it", c.getId());
+            c.setStatus(campaigns.findStatusById(c.getId()).orElse(null));   // the drive stops on what is stored
+            return;
+        }
         c.setStatus("failed");
-        c.setLastError(fresh.getLastError());
+        c.setLastError(error);
         log.warn("[email-sender] campaign {} failed: org {} has no legal name and contact", c.getId(), c.getOrgId());
     }
 

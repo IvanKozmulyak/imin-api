@@ -65,6 +65,8 @@ public class RecipientMaterializer {
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void materialize(Campaign c) {
+        // Two drives of one campaign: the second waits here, then sees the first one's rows and skips.
+        campaigns.lockForMaterialize(c.getId());
         if (recipients.countByCampaignId(c.getId()) > 0) {
             log.info("[materialize] campaign {} already has recipients — skipping", c.getId());
             return;
@@ -135,7 +137,8 @@ public class RecipientMaterializer {
         c.setRecipientCount(pending);
         c.setExcludedCount(gate.excluded().size() + sendableSkipped);
         c.setExclusionSummary(toJson(summary));
-        campaigns.save(c);
+        // Targeted: a full save of this drive's copy would write its status back over a concurrent cancel.
+        campaigns.recordMaterialized(c.getId(), c.getRecipientCount(), c.getExcludedCount(), c.getExclusionSummary());
     }
 
     private static String toJson(Map<String, Integer> m) {
