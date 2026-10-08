@@ -2,6 +2,8 @@ package com.imin.iminapi.controller.ai;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.imin.iminapi.dto.ai.ConceptSet;
+import com.imin.iminapi.model.Event;
+import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.GeneratedEvent;
 import com.imin.iminapi.model.GeneratedEventStatus;
 import com.imin.iminapi.model.Organization;
@@ -15,6 +17,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
@@ -89,8 +92,9 @@ class ConceptControllerTest {
         verifyNoInteractions(chatClient, ideogram);
     }
 
+    /** The org check runs before metering, so a cross-org probe neither calls the provider nor spends quota. */
     @Test
-    void regenerating_another_orgs_concept_is_a_404_without_a_paid_call() throws Exception {
+    void regenerating_another_orgs_concept_is_a_404_without_a_paid_call_or_spent_quota() throws Exception {
         Organization other = fx.org();
         GeneratedEvent foreign = new GeneratedEvent();
         foreign.setOrgId(other.getId());
@@ -107,6 +111,54 @@ class ConceptControllerTest {
                 .andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
 
         verifyNoInteractions(chatClient, ideogram);
+        assertThat(usage.countByUserIdAndKindAndCreatedAtAfter(owner.getId(), "image", Instant.EPOCH)).isZero();
+    }
+
+    /** The event's org check runs before metering, so another org's eventId is a 404 that spends no quota. */
+    @Test
+    void creating_against_another_orgs_event_is_a_404_without_a_paid_call_or_spent_quota() throws Exception {
+        Organization other = fx.org();
+        Event foreign = fx.event(other, fx.owner(other), EventStatus.DRAFT, null);
+        User owner = fx.owner(fx.org());
+
+        mvc.perform(post("/api/v1/ai/events/concept").with(as(owner))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(Map.of("vibe", VIBE, "eventId", foreign.getId().toString()))))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
+
+        verifyNoInteractions(chatClient, ideogram);
+        assertThat(usage.countByUserIdAndKindAndCreatedAtAfter(owner.getId(), "image", Instant.EPOCH)).isZero();
+    }
+
+    /** An unknown vibeId is refused before metering on both paths; regenerate reads it from the stored snapshot. */
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void an_unknown_vibeId_is_FIELD_INVALID_without_a_paid_call_or_spent_quota(boolean regenerate) throws Exception {
+        Organization org = fx.org();
+        User owner = fx.owner(org);
+        String path = "/api/v1/ai/events/concept";
+        Map<String, Object> body = Map.of("vibe", VIBE, "vibeId", "no-such-vibe");
+        if (regenerate) {
+            GeneratedEvent prior = new GeneratedEvent();
+            prior.setOrgId(org.getId());
+            prior.setStatus(GeneratedEventStatus.COMPLETE);
+            prior.setCreatedAt(LocalDateTime.now());
+            prior.setVibe(VIBE);
+            prior.setRequestVibeId("no-such-vibe");
+            prior = generated.save(prior);
+            path = "/api/v1/ai/events/concept/regenerate";
+            body = Map.of("conceptId", prior.getId().toString());
+        }
+
+        mvc.perform(post(path).with(as(owner))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(body)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_INVALID"));
+
+        verifyNoInteractions(chatClient, ideogram);
+        assertThat(usage.countByUserIdAndKindAndCreatedAtAfter(owner.getId(), "image", Instant.EPOCH)).isZero();
     }
 
     /** The text-only concept set is burst-limited but never metered against the paid image quota. */

@@ -1,7 +1,7 @@
 package com.imin.iminapi.config;
 
 import org.junit.jupiter.api.Test;
-import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
 
@@ -22,7 +22,8 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
  * fix, as {@code OAuthConfig}, {@code PushConfig} and {@code GoogleWalletConfig}.
  *
  * <p>Driven against a local socket that accepts and never answers, because that is
- * the failure mode: not a refused connection, a conversation that never ends.
+ * the failure mode: not a refused connection, a conversation that never ends. The
+ * read timeout is set short through its property, so the bound below also proves it binds.
  */
 class MetaGraphConfigTest {
 
@@ -39,15 +40,17 @@ class MetaGraphConfigTest {
             blackHole.setDaemon(true);
             blackHole.start();
 
-            MetaGraphConfig config = new MetaGraphConfig();
-            ReflectionTestUtils.setField(config, "baseUrl", "http://127.0.0.1:" + server.getLocalPort());
-            RestClient client = config.metaGraphRestClient();
-
-            // Without a read timeout this call never returns and the preemptive
-            // timeout is what fails the test.
-            assertTimeoutPreemptively(Duration.ofSeconds(25), () ->
-                    assertThatThrownBy(() -> client.get().uri("/v25.0/hang").retrieve().body(String.class))
-                            .isInstanceOf(ResourceAccessException.class));
+            new ApplicationContextRunner()
+                    .withUserConfiguration(MetaGraphConfig.class)
+                    .withPropertyValues("imin.meta.base-url=http://127.0.0.1:" + server.getLocalPort(),
+                            "imin.meta.read-timeout-millis=300")
+                    .run(ctx -> {
+                        RestClient client = ctx.getBean("metaGraphRestClient", RestClient.class);
+                        // Without the read timeout applied this call outlives the preemptive bound.
+                        assertTimeoutPreemptively(Duration.ofSeconds(3), () ->
+                                assertThatThrownBy(() -> client.get().uri("/v25.0/hang").retrieve().body(String.class))
+                                        .isInstanceOf(ResourceAccessException.class));
+                    });
         }
     }
 }

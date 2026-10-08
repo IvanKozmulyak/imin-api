@@ -5,6 +5,7 @@ import com.imin.iminapi.dto.ai.ConceptRequest;
 import com.imin.iminapi.dto.ai.ConceptResponse;
 import com.imin.iminapi.dto.ai.ConceptSetRequest;
 import com.imin.iminapi.dto.ai.ConceptSetResponse;
+import com.imin.iminapi.model.GeneratedEvent;
 import com.imin.iminapi.security.AuthPrincipal;
 import com.imin.iminapi.security.CurrentUser;
 import com.imin.iminapi.security.RateLimiter;
@@ -35,6 +36,9 @@ public class ConceptController {
     public ConceptResponse create(@CurrentUser AuthPrincipal p,
                                   @Valid @RequestBody ConceptRequest body) {
         rateLimiter.consume("ai-concept", p.userId().toString());
+        // Refusals (404 event, 400 vibeId) come before metering, so they spend no quota.
+        studio.requireOwnedEvent(p, body.eventId());
+        studio.requireKnownVibe(body.vibeId());
         aiQuota.checkAndRecordImage(p);
         return studio.create(p, body);
     }
@@ -51,8 +55,10 @@ public class ConceptController {
     public ConceptResponse regenerate(@CurrentUser AuthPrincipal p,
                                       @Valid @RequestBody ConceptRegenerateRequest body) {
         rateLimiter.consume("ai-concept", p.userId().toString());
+        // Org check and vibeId check before metering: a 404 or 400 spends no quota.
+        GeneratedEvent prior = studio.ownedConcept(p, body.conceptId());
+        studio.requireKnownVibe(prior.getRequestVibeId());
         aiQuota.checkAndRecordImage(p);
-        return studio.regenerate(p, body.conceptId(),
-                body.lock() == null ? java.util.List.of() : body.lock());
+        return studio.regenerate(p, prior, body.lock() == null ? java.util.List.of() : body.lock());
     }
 }

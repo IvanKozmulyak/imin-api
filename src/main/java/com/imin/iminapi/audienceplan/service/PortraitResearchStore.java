@@ -113,17 +113,17 @@ public class PortraitResearchStore {
 
     /**
      * Pairs generated before {@code generatedBefore}, requested since {@code requestedSince} and not attempted by
-     * the refresh since {@code attemptedBefore}, oldest first.
+     * the refresh since {@code attemptedBefore}, oldest first. Pending rows never match: they have no generated_at.
      */
     public List<Pair> dueForRefresh(Instant generatedBefore, Instant requestedSince, Instant attemptedBefore,
                                     int limit) {
         return jdbc.query("""
                 SELECT genre_key, city_key FROM audience_portraits
-                 WHERE status IN (?, ?) AND generated_at < ? AND requested_at >= ?
+                 WHERE generated_at < ? AND requested_at >= ?
                    AND (refresh_attempted_at IS NULL OR refresh_attempted_at < ?)
                  ORDER BY generated_at, genre_key, city_key LIMIT ?""",
                 (rs, i) -> new Pair(rs.getString(1), rs.getString(2)),
-                READY, EMPTY, ts(generatedBefore), ts(requestedSince), ts(attemptedBefore), limit);
+                ts(generatedBefore), ts(requestedSince), ts(attemptedBefore), limit);
     }
 
     private static Row row(ResultSet rs) throws SQLException {

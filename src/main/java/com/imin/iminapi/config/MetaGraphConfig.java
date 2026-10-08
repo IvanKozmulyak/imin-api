@@ -24,11 +24,15 @@ import java.time.Duration;
 @Configuration
 public class MetaGraphConfig {
 
-    static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(5);
-    static final Duration READ_TIMEOUT = Duration.ofSeconds(10);
-
     @Value("${imin.meta.base-url:https://graph.facebook.com}")
     private String baseUrl;
+
+    // Millis, not Duration: plain numbers bind without Boot's conversion service.
+    @Value("${imin.meta.connect-timeout-millis:5000}")
+    private long connectTimeoutMillis;
+
+    @Value("${imin.meta.read-timeout-millis:10000}")
+    private long readTimeoutMillis;
 
     @Bean
     public RestClient metaGraphRestClient() {
@@ -36,7 +40,8 @@ public class MetaGraphConfig {
                 .baseUrl(baseUrl)
                 .requestFactory(ClientHttpRequestFactoryBuilder.detect()
                         .build(HttpClientSettings.defaults()
-                                .withTimeouts(CONNECT_TIMEOUT, READ_TIMEOUT)))
+                                .withTimeouts(Duration.ofMillis(connectTimeoutMillis),
+                                        Duration.ofMillis(readTimeoutMillis))))
                 .build();
     }
 }

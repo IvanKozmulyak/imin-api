@@ -50,11 +50,10 @@ import java.util.Map;
  *
  * <p>Saying so in a comment is not enough, because a comment does not fail a
  * build. {@link GoogleWalletProvisioner#provision} asserts at runtime that no
- * transaction is active before it opens a socket, and two tests drive it:
+ * transaction is active before it opens a socket, and
  * {@code GoogleWalletProvisionerTest#provisioningInsideATransactionIsRefusedBeforeAnySocketOpens}
- * proves the assertion bites, and
- * {@code GoogleWalletEndpointTest#theSaveLinkPathRunsWithNoDatabaseTransactionOpen}
- * proves this path is on the right side of it.
+ * proves the assertion bites. Wrapping this method in a transaction would make
+ * every save link fail that assertion rather than hold a connection.
  *
  * <h2>The QR payload is produced here, once</h2>
  *

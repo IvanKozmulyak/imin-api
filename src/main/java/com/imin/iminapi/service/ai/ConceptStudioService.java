@@ -100,8 +100,19 @@ public class ConceptStudioService {
      *             generation's images; a locked name/description carries the stored value through.
      */
     public ConceptResponse regenerate(AuthPrincipal p, UUID conceptId, List<String> lock) {
-        GeneratedEvent prior = repo.findByIdAndOrgId(conceptId, p.orgId())
+        return regenerate(p, ownedConcept(p, conceptId), lock);
+    }
+
+    /** The caller's org's concept; another org's, or a missing one, is a no-leak 404. */
+    public GeneratedEvent ownedConcept(AuthPrincipal p, UUID conceptId) {
+        return repo.findByIdAndOrgId(conceptId, p.orgId())
                 .orElseThrow(() -> ApiException.notFound("Concept"));
+    }
+
+    /** Regenerates {@code prior}, which the caller has already loaded through {@link #ownedConcept}. */
+    public ConceptResponse regenerate(AuthPrincipal p, GeneratedEvent prior, List<String> lock) {
+        if (!Objects.equals(prior.getOrgId(), p.orgId())) throw ApiException.notFound("Concept");
+        UUID conceptId = prior.getId();
         Set<String> locks = normalizeLocks(lock);
         // Snapshot read-back: use the DJ photo URL from the original generation row, not the live event.
         // This means a photo swap between create and regenerate doesn't silently change the mode.
@@ -174,9 +185,27 @@ public class ConceptStudioService {
      */
     DjPhotoSnapshot resolveDjPhotoFromEvent(AuthPrincipal p, UUID eventId) {
         if (eventId == null) return null;
+        return resolveDjPhotoFromUrl(ownedEvent(p, eventId).getDjPhotoUrl());
+    }
+
+    /** No-op without an eventId; another org's or a deleted event is a no-leak 404. */
+    public void requireOwnedEvent(AuthPrincipal p, UUID eventId) {
+        if (eventId != null) ownedEvent(p, eventId);
+    }
+
+    private Event ownedEvent(AuthPrincipal p, UUID eventId) {
         Event e = eventRepo.findActive(eventId).orElseThrow(() -> ApiException.notFound("Event"));
         if (!e.getOrgId().equals(p.orgId())) throw ApiException.notFound("Event");
-        return resolveDjPhotoFromUrl(e.getDjPhotoUrl());
+        return e;
+    }
+
+    /** A blank vibeId means "suggest from genre"; a non-blank one must name a library vibe (400 otherwise). */
+    public void requireKnownVibe(String vibeId) {
+        if (vibeId != null && !vibeId.isBlank() && !vibeLibrary.hasVibe(vibeId)) {
+            throw new ApiException(org.springframework.http.HttpStatus.BAD_REQUEST,
+                    com.imin.iminapi.security.ErrorCode.FIELD_INVALID,
+                    "Unknown vibeId: " + vibeId);
+        }
     }
 
     private DjPhotoSnapshot resolveDjPhotoFromUrl(String url) {
@@ -214,11 +243,7 @@ public class ConceptStudioService {
     private ConceptResponse run(AuthPrincipal p, ConceptRequest req, DjPhotoSnapshot djPhoto,
                                 GeneratedEvent prior, Set<String> locks,
                                 List<PosterVariantEntity> lockedPosters) {
-        if (req.vibeId() != null && !req.vibeId().isBlank() && !vibeLibrary.hasVibe(req.vibeId())) {
-            throw new ApiException(org.springframework.http.HttpStatus.BAD_REQUEST,
-                    com.imin.iminapi.security.ErrorCode.FIELD_INVALID,
-                    "Unknown vibeId: " + req.vibeId());
-        }
+        requireKnownVibe(req.vibeId());
         GeneratedEvent staging = newStagingRow(p, req);
         repo.save(staging);
 
