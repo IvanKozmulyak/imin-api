@@ -293,6 +293,23 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
                          @Param("now") java.time.Instant now);
 
     /**
+     * Project a Resend delivered event. Resend does not order its webhooks, so a late delivered
+     * stamps the time but keeps a complaint, opt-out or hard bounce already on the row.
+     */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query("""
+            UPDATE CampaignRecipient r
+               SET r.status = CASE
+                       WHEN r.status in ('complained', 'unsubscribed') THEN r.status
+                       WHEN r.status = 'bounced' AND r.errorCode = 'hard_bounce' THEN r.status
+                       ELSE 'delivered' END,
+                   r.deliveredAt = :at, r.lastEventAt = :at
+             WHERE r.id = :id
+            """)
+    int markDelivered(@Param("id") UUID id, @Param("at") java.time.Instant at);
+
+    /**
      * Retire the rows that burned their whole attempt budget: {@code pending} with
      * {@code attempt_count >= :maxAttempts} becomes {@code failed} with an
      * {@code error_code}. Without this the drain simply stopped claiming them and they

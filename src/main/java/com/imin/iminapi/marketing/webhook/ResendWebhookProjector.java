@@ -93,7 +93,10 @@ public class ResendWebhookProjector {
                 : recipientRepo.findById(recipientId).orElse(null);
         switch (type) {
             case ProviderEvent.TYPE_DELIVERED -> {
-                if (r != null) { r.setStatus("delivered"); r.setDeliveredAt(occurredAt); touch(r, occurredAt); }
+                // Conditional UPDATE, not an entity save, so a stale read cannot overwrite a terminal status.
+                // r stays untouched, so the save below would flush nothing; return keeps it that way.
+                if (r != null) recipientRepo.markDelivered(r.getId(), occurredAt);
+                return;
             }
             case ProviderEvent.TYPE_BOUNCED -> {
                 // mkt-edge-6: the deliverability list is platform-shared, system-owned and has

@@ -113,6 +113,7 @@ class ResendWebhookControllerTest {
         CampaignRecipient after = reload(r);
         assertThat(after.getStatus()).isEqualTo("delivered");
         assertThat(after.getDeliveredAt()).isEqualTo(Instant.parse("2026-07-11T00:00:00Z"));
+        assertThat(after.getLastEventAt()).isEqualTo(Instant.parse("2026-07-11T00:00:00Z"));
     }
 
     /**
