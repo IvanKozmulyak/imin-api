@@ -92,24 +92,20 @@ public class ConceptStudioService {
         return run(p, req, resolveDjPhotoFromEvent(p, req.eventId()));
     }
 
-    /**
-     * Deliberately NOT {@code @Transactional} — see {@link #run}.
-     *
-     * @param lock the fields the organizer pinned ({@code name} | {@code description} |
-     *             {@code poster}). A locked poster skips the render entirely and re-serves the prior
-     *             generation's images; a locked name/description carries the stored value through.
-     */
-    public ConceptResponse regenerate(AuthPrincipal p, UUID conceptId, List<String> lock) {
-        return regenerate(p, ownedConcept(p, conceptId), lock);
-    }
-
     /** The caller's org's concept; another org's, or a missing one, is a no-leak 404. */
     public GeneratedEvent ownedConcept(AuthPrincipal p, UUID conceptId) {
         return repo.findByIdAndOrgId(conceptId, p.orgId())
                 .orElseThrow(() -> ApiException.notFound("Concept"));
     }
 
-    /** Regenerates {@code prior}, which the caller has already loaded through {@link #ownedConcept}. */
+    /**
+     * Regenerates {@code prior}, which the caller has already loaded through {@link #ownedConcept}.
+     * Deliberately NOT {@code @Transactional} — see {@link #run}.
+     *
+     * @param lock the fields the organizer pinned ({@code name} | {@code description} |
+     *             {@code poster}). A locked poster skips the render entirely and re-serves the prior
+     *             generation's images; a locked name/description carries the stored value through.
+     */
     public ConceptResponse regenerate(AuthPrincipal p, GeneratedEvent prior, List<String> lock) {
         if (!Objects.equals(prior.getOrgId(), p.orgId())) throw ApiException.notFound("Concept");
         UUID conceptId = prior.getId();

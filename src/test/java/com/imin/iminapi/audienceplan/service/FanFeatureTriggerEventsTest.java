@@ -50,7 +50,10 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -189,17 +192,33 @@ class FanFeatureTriggerEventsTest {
     }
 
     @Test
-    void backfillCompleted_recomputesOnTheRecomputePool_notTheCallersThread() {
+    void backfillCompleted_recomputesOnTheRecomputePool_notTheCallersThread() throws Exception {
         // Every org off the list, so the recompute pass reads pages and writes nothing to other tests' rows.
         flips.set(planProps, "betaOrgIds", Set.of(UUID.randomUUID()));
         AsyncDrain.drain(recomputeExecutor);
-        long before = ((ThreadPoolTaskExecutor) recomputeExecutor).getThreadPoolExecutor().getTaskCount();
+        ThreadPoolExecutor pool = ((ThreadPoolTaskExecutor) recomputeExecutor).getThreadPoolExecutor();
+        CountDownLatch release = new CountDownLatch(1);
+        try {
+            // Occupy the single worker, so an async hand-off must wait in the queue (an exact count, unlike getTaskCount).
+            recomputeExecutor.execute(() -> {
+                try {
+                    release.await(30, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            long deadline = System.nanoTime() + 10_000_000_000L;
+            while (pool.getActiveCount() < 1 && System.nanoTime() < deadline) Thread.sleep(5);
+            assertThat(pool.getActiveCount()).isEqualTo(1);
 
-        publisher.publishEvent(new AudienceBackfillCompleted(1, 0));
+            publisher.publishEvent(new AudienceBackfillCompleted(1, 0));
 
-        assertThat(((ThreadPoolTaskExecutor) recomputeExecutor).getThreadPoolExecutor().getTaskCount())
-                .isEqualTo(before + 1);
-        AsyncDrain.drain(recomputeExecutor);
+            // Run inline, the pass would have finished and the queue would be empty.
+            assertThat(pool.getQueue()).hasSize(1);
+        } finally {
+            release.countDown();
+            AsyncDrain.drain(recomputeExecutor);
+        }
     }
 
     // Plain projector instances so onTicketsIssued runs on this thread with a capturing publisher.

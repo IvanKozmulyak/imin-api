@@ -147,7 +147,7 @@ class ConceptStudioServiceTest {
                 "NEW NAME", "new desc", List.of("#000"), 200, 80));
         when(orgs.findById(any())).thenReturn(java.util.Optional.empty());
 
-        ConceptResponse r = sut.regenerate(p, conceptId, java.util.List.of());
+        ConceptResponse r = sut.regenerate(p, sut.ownedConcept(p, conceptId), java.util.List.of());
         assertThat(r.conceptId()).isNotEqualTo(conceptId); // a fresh row
         assertThat(r.name()).isEqualTo("NEW NAME");
     }
@@ -387,7 +387,7 @@ class ConceptStudioServiceTest {
         when(vibeLibrary.hasVibe("brutalist_techno")).thenReturn(true);
         when(vibeLibrary.byId("brutalist_techno")).thenReturn(java.util.Optional.of(vibeNamed("brutalist_techno")));
 
-        sut.regenerate(p, conceptId, List.of());
+        sut.regenerate(p, sut.ownedConcept(p, conceptId), List.of());
 
         ArgumentCaptor<EventCreatorRequest> cap = ArgumentCaptor.forClass(EventCreatorRequest.class);
         verify(descService).generateConcept(cap.capture(), anyLong(), anyBoolean());
@@ -451,7 +451,7 @@ class ConceptStudioServiceTest {
                 .thenReturn(List.of(priorGenerationWithVariants()));
         stubPipeline();
 
-        ConceptResponse r = sut.regenerate(p, conceptId, List.of("poster"));
+        ConceptResponse r = sut.regenerate(p, sut.ownedConcept(p, conceptId), List.of("poster"));
 
         // No Ideogram spend at all, and the prior posters come back unchanged.
         verify(orchestrator, never()).run(any(), any(), any(), anyLong(), any(), any(), any(), any());
@@ -466,7 +466,7 @@ class ConceptStudioServiceTest {
         priorConcept(p, conceptId);
         stubPipeline(); // overview LLM returns name "N", description "d"
 
-        ConceptResponse r = sut.regenerate(p, conceptId, List.of("name", "description"));
+        ConceptResponse r = sut.regenerate(p, sut.ownedConcept(p, conceptId), List.of("name", "description"));
 
         assertThat(r.name()).isEqualTo("KEPT NAME");
         assertThat(r.description()).isEqualTo("kept description");
@@ -479,7 +479,7 @@ class ConceptStudioServiceTest {
         priorConcept(p, conceptId);
         stubPipeline();
 
-        ConceptResponse r = sut.regenerate(p, conceptId, List.of());
+        ConceptResponse r = sut.regenerate(p, sut.ownedConcept(p, conceptId), List.of());
 
         verify(orchestrator).run(any(), any(), any(), anyLong(), any(), any(), any(), any());
         assertThat(r.name()).isEqualTo("N");
@@ -508,7 +508,7 @@ class ConceptStudioServiceTest {
 
         stubPipeline();
 
-        ConceptResponse r = sut.regenerate(p, conceptId, List.of());
+        ConceptResponse r = sut.regenerate(p, sut.ownedConcept(p, conceptId), List.of());
 
         // snapshot forwarded to orchestrator with the correct URL
         verify(orchestrator).run(any(), any(), any(), anyLong(), any(), any(),
