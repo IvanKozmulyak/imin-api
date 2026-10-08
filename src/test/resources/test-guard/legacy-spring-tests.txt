@@ -6,17 +6,6 @@ com.imin.iminapi.config.AsyncConfigTest
 com.imin.iminapi.config.OpenEndpointRateLimitTest
 com.imin.iminapi.config.SentryScrubberTest
 com.imin.iminapi.config.TestProfileInfraTest
-com.imin.iminapi.controller.publicapi.FunnelTrackingControllerTest
-com.imin.iminapi.controller.publicapi.NotifySubscriptionControllerTest
-com.imin.iminapi.controller.publicapi.PublicEventControllerTest
-com.imin.iminapi.controller.publicapi.PublicNotifyUnsubscribeControllerTest
-com.imin.iminapi.controller.publicapi.PublicOrderControllerTest
-com.imin.iminapi.controller.publicapi.PublicTicketAssetControllerTest
-com.imin.iminapi.controller.publicapi.PublicTicketPayloadTest
-com.imin.iminapi.controller.publicapi.QuoteControllerTest
-com.imin.iminapi.controller.publicapi.SmsConsentControllerTest
-com.imin.iminapi.controller.publicapi.WalletContractTest
-com.imin.iminapi.controller.reference.ReferenceControllerTest
 com.imin.iminapi.migration.ConsentConfirmationMigrationPostgresTest
 com.imin.iminapi.migration.ConsentConfirmationMigrationScenarios
 com.imin.iminapi.migration.ConsentConfirmationMigrationTest

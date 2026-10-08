@@ -2,31 +2,26 @@ package com.imin.iminapi.controller.publicapi;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.model.MetaPixelConnection;
 import com.imin.iminapi.marketing.repository.MetaPixelConnectionRepository;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
-import com.imin.iminapi.model.EventVisibility;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.Ticket;
 import com.imin.iminapi.model.User;
-import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.EventRepository;
-import com.imin.iminapi.repository.OrderRepository;
-import com.imin.iminapi.repository.OrganizationRepository;
-import com.imin.iminapi.repository.TicketRepository;
-import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
+import java.time.Clock;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -44,24 +39,29 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * because {@code TicketState.fromWire} threw on the {@code 'refunded'} value that
  * {@code RefundService} writes) and the W0.6 payload widening.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class PublicOrderControllerTest {
 
     @Autowired MockMvc mvc;
-    @Autowired TicketRepository tickets;
-    @Autowired OrderRepository orders;
+    @Autowired IminFixtures fx;
+    @Autowired Clock clock;
     @Autowired EventRepository events;
-    @Autowired OrganizationRepository orgs;
-    @Autowired UserRepository users;
     @Autowired MetaPixelConnectionRepository metaPixelConnections;
 
     final ObjectMapper objectMapper = new ObjectMapper();
 
-    static final Instant STARTS_AT = Instant.parse("2026-09-01T20:00:00Z");
-    static final Instant ENDS_AT = Instant.parse("2026-09-02T04:00:00Z");
     static final String POSTER_URL = "https://cdn.example.com/poster-order.png";
+
+    Instant startsAt;
+    Instant endsAt;
+    String buyer;
+
+    @BeforeEach
+    void setUp() {
+        startsAt = clock.instant().plus(30, ChronoUnit.DAYS).truncatedTo(ChronoUnit.SECONDS);
+        endsAt = startsAt.plus(8, ChronoUnit.HOURS);
+        buyer = fx.email("buyer");
+    }
 
     @Test
     void getOrder_returnsFullPayload() throws Exception {
@@ -70,15 +70,15 @@ class PublicOrderControllerTest {
         mvc.perform(get("/api/v1/public/orders/" + f.order.getToken()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.token").value(f.order.getToken()))
-                .andExpect(jsonPath("$.email").value("buyer@example.com"))
+                .andExpect(jsonPath("$.email").value(buyer))
                 .andExpect(jsonPath("$.totalMinor").value(1500))
                 .andExpect(jsonPath("$.currency").value("EUR"))
                 .andExpect(jsonPath("$.paymentMethod").value("stripe"))
                 .andExpect(jsonPath("$.event.eventId").value(f.event.getId().toString()))
-                .andExpect(jsonPath("$.event.name").value("Order Test Event"))
+                .andExpect(jsonPath("$.event.name").value(f.event.getName()))
                 .andExpect(jsonPath("$.event.slug").value(f.event.getSlug()))
-                .andExpect(jsonPath("$.event.startsAt").value("2026-09-01T20:00:00Z"))
-                .andExpect(jsonPath("$.event.endsAt").value("2026-09-02T04:00:00Z"))
+                .andExpect(jsonPath("$.event.startsAt").value(startsAt.toString()))
+                .andExpect(jsonPath("$.event.endsAt").value(endsAt.toString()))
                 .andExpect(jsonPath("$.event.timezone").value("Europe/Berlin"))
                 .andExpect(jsonPath("$.event.venueName").value("Venue X"))
                 .andExpect(jsonPath("$.event.venueCity").value("Berlin"))
@@ -199,58 +199,22 @@ class PublicOrderControllerTest {
 
     private record Fixture(Event event, Order order, Ticket ticket) {}
 
-    /** Mirrors PublicTicketPayloadTest.persistIssuedTicket, plus the W0.6 event fields. */
     private Fixture persistOrderWithTicket(String ticketState) {
-        Organization org = new Organization();
-        org.setName("Order Test Org");
-        org.setSlug("order-test-org-" + UUID.randomUUID().toString().substring(0, 8));
-        org.setContactEmail("order@example.com");
-        org.setCountry("DE");
-        org = orgs.save(org);
+        Organization org = fx.org();
+        User owner = fx.owner(org);
 
-        User owner = new User();
-        owner.setEmail("order-owner-" + UUID.randomUUID() + "@example.com");
-        owner.setOrgId(org.getId());
-        owner.setRole(UserRole.OWNER);
-        owner = users.save(owner);
-
-        Event ev = new Event();
-        ev.setOrgId(org.getId());
-        ev.setName("Order Test Event");
-        ev.setSlug("order-test-event-" + UUID.randomUUID().toString().substring(0, 8));
-        ev.setVisibility(EventVisibility.PUBLIC);
-        ev.setStatus(EventStatus.LIVE);
-        ev.setCurrency("EUR");
-        ev.setStartsAt(STARTS_AT);
-        ev.setEndsAt(ENDS_AT);
-        ev.setTimezone("Europe/Berlin");
+        Event ev = fx.event(org, owner, EventStatus.LIVE, startsAt);
+        ev.setEndsAt(endsAt);
         ev.setVenueName("Venue X");
         ev.setVenueStreet("123 Main St");
         ev.setVenueCity("Berlin");
         ev.setVenuePostalCode("10115");
         ev.setVenueCountry("DE");
         ev.setPosterUrl(POSTER_URL);
-        ev.setCreatedBy(owner.getId());
         ev = events.save(ev);
 
-        Order order = new Order();
-        order.setToken("ORD_" + UUID.randomUUID());
-        order.setEventId(ev.getId());
-        order.setOrgId(org.getId());
-        order.setEmail("buyer@example.com");
-        order.setTotalMinor(1500L);
-        order.setCurrency("EUR");
-        order.setPaymentMethod("stripe");
-        order = orders.save(order);
-
-        Ticket t = new Ticket();
-        t.setToken("TKT_" + UUID.randomUUID());
-        t.setOrderId(order.getId());
-        t.setEventId(ev.getId());
-        t.setTierId(UUID.randomUUID());
-        t.setTierName("GA");
-        t.setState(ticketState);
-        t = tickets.save(t);
+        Order order = fx.order(ev, buyer);
+        Ticket t = fx.ticket(order, ticketState);
 
         return new Fixture(ev, order, t);
     }

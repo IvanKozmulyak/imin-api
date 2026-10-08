@@ -2,77 +2,52 @@ package com.imin.iminapi.controller.publicapi;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.imin.iminapi.config.TestRateLimitConfig;
+import com.imin.iminapi.email.EmailProperties;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
-import com.imin.iminapi.model.EventVisibility;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.Ticket;
-import com.imin.iminapi.model.User;
-import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.OrderRepository;
 import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketRepository;
-import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.service.audience.SmsConsentService;
 import com.imin.iminapi.service.event.PublicEventService;
 import com.imin.iminapi.service.ticket.AppleWalletPassService;
+import com.imin.iminapi.service.ticket.AppleWalletProperties;
 import com.imin.iminapi.service.ticket.QrPayloadSigner;
 import com.imin.iminapi.service.ticket.TicketProperties;
 import com.imin.iminapi.service.ticket.WalletOffers;
 import com.imin.iminapi.service.ticket.WalletTestCerts;
 import com.imin.iminapi.service.ticket.google.GoogleTestKeys;
+import com.imin.iminapi.service.ticket.google.GoogleWalletJwtSigner;
 import com.imin.iminapi.service.ticket.google.GoogleWalletPassService;
+import com.imin.iminapi.service.ticket.google.GoogleWalletProperties;
+import com.imin.iminapi.service.ticket.google.GoogleWalletProvisioner;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.http.converter.HttpMessageConverter;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerAdapter;
 
-import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * The two-wallet buyer contract, on the wire, in the real container.
- *
- * <h2>Why this class configures both wallets for real</h2>
- *
- * <p>Every other test in the suite sees a server with both wallets off, because
- * {@code src/test/resources/application.yaml} replaces the main YAML and carries
- * neither block. That server can only ever produce {@code available: false}, so
- * it cannot tell a contract that works from one that is broken in the same
- * direction as its own defaults. {@code @DynamicPropertySource} therefore hands
- * the real {@code AppleWalletProperties} a certificate {@link WalletTestCerts}
- * mints at runtime, and the real {@code GoogleWalletProperties} a service
- * account {@link GoogleTestKeys} mints at runtime — real RSA, parsed by the
- * production constructors, gated by the production {@code fullyConfigured()}
- * and {@code isUsable()}. Nothing is stubbed and nothing reaches Apple or
- * Google: {@code available} is a question about credentials, and answering it
- * opens no socket.
- *
- * <p>The combinatorial half of the contract — every wallet-config × ticket-state
- * pair, and the {@code url} ⟺ {@code available} biconditional — lives in
- * {@code WalletOffersTest}, where it is a pure function and can be exhaustive.
- * This class exists for the things only a container can answer: that the block
- * serialises, that the URLs point at this API, and that the deprecated flag
- * agrees with its replacement through the real Jackson.
+ * The two-wallet buyer contract on the wire, with real credentials: wallet configuration is captured
+ * at construction, so this builds the configured services and drives the real controller standalone.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class WalletContractTest {
 
     /** Minted once per JVM; opening a PKCS#12 is not free and nothing here mutates it. */
@@ -81,28 +56,64 @@ class WalletContractTest {
 
     static final String API_BASE = "http://localhost:8080";
 
-    @DynamicPropertySource
-    static void bothWalletsOn(DynamicPropertyRegistry registry) {
-        registry.add("imin.apple-wallet.enabled", () -> "true");
-        registry.add("imin.apple-wallet.pass-type-id", () -> "pass.test.imin");
-        registry.add("imin.apple-wallet.team-id", () -> "TESTTEAMID");
-        registry.add("imin.apple-wallet.cert-p12-base64", APPLE::p12Base64);
-        registry.add("imin.apple-wallet.cert-password", APPLE::password);
-        registry.add("imin.apple-wallet.wwdr-pem-base64", APPLE::wwdrPemBase64);
-
-        // enabled=true is the demo-mode hold released. In production it is the
-        // last switch flipped, after Google grants publishing access.
-        registry.add("imin.google-wallet.enabled", () -> "true");
-        registry.add("imin.google-wallet.issuer-id", () -> "3388000000000000000");
-        registry.add("imin.google-wallet.service-account-json-base64", GOOGLE::serviceAccountJsonBase64);
-    }
-
-    @Autowired MockMvc mvc;
+    @Autowired IminFixtures fx;
     @Autowired TicketRepository tickets;
     @Autowired OrderRepository orders;
     @Autowired EventRepository events;
     @Autowired OrganizationRepository orgs;
-    @Autowired UserRepository users;
+    @Autowired QrPayloadSigner qrSigner;
+    @Autowired TicketProperties ticketProps;
+    @Autowired EmailProperties emailProps;
+    @Autowired GoogleWalletProvisioner provisioner;
+    @Autowired SmsConsentService smsConsentService;
+    @Autowired PublicEventService publicEventService;
+    /** The context's own Apple service: unconfigured, since the test yaml has no imin.apple-wallet block. */
+    @Autowired AppleWalletPassService unconfiguredApple;
+    @Autowired @Qualifier("requestMappingHandlerAdapter") RequestMappingHandlerAdapter handlerAdapter;
+
+    MockMvc mvc;
+
+    @BeforeEach
+    void bothWalletsOn() {
+        assertThat(ticketProps.getApiPublicBaseUrl()).isEqualTo(API_BASE);
+        mvc = standalone(new WalletOffers(configuredApple(), configuredGoogle(), ticketProps));
+    }
+
+    private AppleWalletPassService configuredApple() {
+        AppleWalletProperties props = new AppleWalletProperties();
+        props.setEnabled(true);
+        props.setPassTypeId("pass.test.imin");
+        props.setTeamId("TESTTEAMID");
+        props.setCertP12Base64(APPLE.p12Base64());
+        props.setCertPassword(APPLE.password());
+        props.setWwdrPemBase64(APPLE.wwdrPemBase64());
+        AppleWalletPassService apple = new AppleWalletPassService(
+                props, tickets, orders, events, orgs, qrSigner, emailProps);
+        assertThat(apple.isConfigured()).as("real certificate, production gate").isTrue();
+        return apple;
+    }
+
+    private GoogleWalletPassService configuredGoogle() {
+        // enabled=true is the demo-mode hold released. In production it is the
+        // last switch flipped, after Google grants publishing access.
+        GoogleWalletProperties props = new GoogleWalletProperties();
+        props.setEnabled(true);
+        props.setIssuerId("3388000000000000000");
+        props.setServiceAccountJsonBase64(GOOGLE.serviceAccountJsonBase64());
+        GoogleWalletPassService google = new GoogleWalletPassService(
+                props, provisioner, new GoogleWalletJwtSigner(props), tickets, events, orgs, qrSigner);
+        assertThat(google.isConfigured()).as("real service account, production gate").isTrue();
+        return google;
+    }
+
+    /** The real controller, serialised by the context's own message converters. */
+    private MockMvc standalone(WalletOffers offers) {
+        return MockMvcBuilders
+                .standaloneSetup(new PublicOrderController(orders, tickets, events, qrSigner, offers,
+                        ticketProps, smsConsentService, publicEventService))
+                .setMessageConverters(handlerAdapter.getMessageConverters().toArray(HttpMessageConverter[]::new))
+                .build();
+    }
 
     final ObjectMapper json = new ObjectMapper();
 
@@ -234,56 +245,16 @@ class WalletContractTest {
      * and Google is the wallet more likely to be live first, since its gate is
      * an account rather than a legal entity and a D-U-N-S number.
      *
-     * <p>So this one case is driven over a standalone MockMvc with Apple off and
-     * Google on: a second Spring context for one boolean is not worth it, and
-     * the assembly being tested is the controller's, which standalone runs for
-     * real.
+     * <p>So this one case runs with the context's own unconfigured Apple service and a
+     * configured Google one.
      */
     @Test
     void walletAvailableFollowsAppleAndNotGoogleWhenTheTwoDisagree() throws Exception {
-        Ticket t = new Ticket();
-        t.setToken("TKT_ASYM");
-        t.setState(Ticket.STATE_ISSUED);
-        t.setTierName("GA");
-        t.setOrderId(UUID.randomUUID());
-        t.setEventId(UUID.randomUUID());
+        assertThat(unconfiguredApple.isConfigured()).isFalse();
+        MockMvc asymmetric = standalone(new WalletOffers(unconfiguredApple, configuredGoogle(), ticketProps));
+        Ticket t = persist(Ticket.STATE_ISSUED);
 
-        Order order = new Order();
-        order.setId(t.getOrderId());
-        order.setToken("ORD_ASYM");
-        order.setEventId(t.getEventId());
-        order.setEmail("asym@example.com");
-
-        Event ev = new Event();
-        ev.setId(t.getEventId());
-        ev.setName("Asymmetry");
-
-        TicketRepository tr = mock(TicketRepository.class);
-        OrderRepository or = mock(OrderRepository.class);
-        EventRepository er = mock(EventRepository.class);
-        when(tr.findByToken("TKT_ASYM")).thenReturn(Optional.of(t));
-        when(or.findById(t.getOrderId())).thenReturn(Optional.of(order));
-        when(er.findById(t.getEventId())).thenReturn(Optional.of(ev));
-
-        AppleWalletPassService apple = mock(AppleWalletPassService.class);
-        when(apple.isConfigured()).thenReturn(false);
-        GoogleWalletPassService google = mock(GoogleWalletPassService.class);
-        when(google.isConfigured()).thenReturn(true);
-
-        TicketProperties tp = new TicketProperties();
-        tp.setSigningSecret("wallet-contract-asymmetry-secret");
-        tp.setApiPublicBaseUrl(API_BASE);
-
-        MockMvc standalone = MockMvcBuilders
-                .standaloneSetup(new PublicOrderController(or, tr, er,
-                        new QrPayloadSigner(tp),
-                        new WalletOffers(apple, google, tp),
-                        tp,
-                        mock(SmsConsentService.class),
-                        mock(PublicEventService.class)))
-                .build();
-
-        MvcResult result = standalone.perform(get("/api/v1/public/tickets/TKT_ASYM"))
+        MvcResult result = asymmetric.perform(get("/api/v1/public/tickets/" + t.getToken()))
                 .andExpect(status().isOk()).andReturn();
         JsonNode body = json.readTree(result.getResponse().getContentAsString());
 
@@ -352,46 +323,9 @@ class WalletContractTest {
     }
 
     private Ticket persist(String state) {
-        Organization org = new Organization();
-        org.setName("Wallet Contract Org");
-        org.setSlug("wallet-contract-" + UUID.randomUUID().toString().substring(0, 8));
-        org.setContactEmail("wallet@example.com");
-        org.setCountry("DE");
-        org = orgs.save(org);
-
-        User owner = new User();
-        owner.setEmail("wallet-owner-" + UUID.randomUUID() + "@example.com");
-        owner.setOrgId(org.getId());
-        owner.setRole(UserRole.OWNER);
-        owner = users.save(owner);
-
-        Event ev = new Event();
-        ev.setOrgId(org.getId());
-        ev.setName("Wallet Contract Event");
-        ev.setSlug("wallet-contract-event-" + UUID.randomUUID().toString().substring(0, 8));
-        ev.setVisibility(EventVisibility.PUBLIC);
-        ev.setStatus(EventStatus.LIVE);
-        ev.setCurrency("EUR");
-        ev.setCreatedBy(owner.getId());
-        ev = events.save(ev);
-
-        Order order = new Order();
-        order.setToken("ORD_" + UUID.randomUUID());
-        order.setEventId(ev.getId());
-        order.setOrgId(org.getId());
-        order.setEmail("buyer@example.com");
-        order.setTotalMinor(1500L);
-        order.setCurrency("EUR");
-        order.setPaymentMethod("stripe");
-        order = orders.save(order);
-
-        Ticket t = new Ticket();
-        t.setToken("TKT_" + UUID.randomUUID());
-        t.setOrderId(order.getId());
-        t.setEventId(ev.getId());
-        t.setTierId(UUID.randomUUID());
-        t.setTierName("GA");
-        t.setState(state);
-        return tickets.save(t);
+        Organization org = fx.org();
+        Event ev = fx.event(org, fx.owner(org), EventStatus.LIVE, null);
+        Order order = fx.order(ev, fx.email("buyer"));
+        return fx.ticket(order, state);
     }
 }

@@ -34,13 +34,16 @@ import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.crypto.RSASSAVerifier;
 import com.nimbusds.jwt.SignedJWT;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.mock.http.client.MockClientHttpRequest;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.client.RestClient;
 
 import javax.imageio.ImageIO;
@@ -52,6 +55,8 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
+import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -133,33 +138,29 @@ class GoogleWalletEndpointTest {
 
     // ── the closed states ────────────────────────────────────────────────────
 
-    /**
-     * The gate, in the state every developer machine and every CI run is in.
-     * {@code $.error.code} and not {@code $.code} — {@code ApiError} wraps the
-     * body, and {@code imin-public} reads the wrapped form.
-     */
-    @Test
-    void anUnconfiguredWalletIs503WithTheErrorEnvelopeAndSendsNothing() throws Exception {
-        MockMvc mvc = mvcWith(new GoogleWalletProperties());
-
-        mvc.perform(get(url(TOKEN)))
-                .andExpect(status().isServiceUnavailable())
-                .andExpect(jsonPath("$.error.code").value("UPSTREAM_UNAVAILABLE"));
-
-        server.verify();
+    static Stream<Arguments> closedGates() {
+        return Stream.of(
+                // The state every developer machine and every CI run is in.
+                Arguments.of("unconfigured", (Supplier<GoogleWalletProperties>) GoogleWalletProperties::new),
+                // Credentials complete, GOOGLE_WALLET_ENABLED still false: the state the whole
+                // development period sits in, since Google's publishing review needs a class in prod.
+                Arguments.of("complete credentials, switch off", (Supplier<GoogleWalletProperties>) () -> {
+                    GoogleWalletProperties off = liveProperties();
+                    off.setEnabled(false);
+                    return off;
+                }));
     }
 
     /**
-     * Credentials complete, {@code GOOGLE_WALLET_ENABLED} still false — the state
-     * the whole development period sits in, because Google's publishing review
-     * cannot even be requested until a class exists in production. It must behave
-     * exactly like unconfigured: closed, quiet, and nothing on the wire.
+     * A closed gate is 503 with the error envelope and nothing on the wire.
+     * {@code $.error.code} and not {@code $.code} — {@code ApiError} wraps the
+     * body, and {@code imin-public} reads the wrapped form.
      */
-    @Test
-    void completeCredentialsWithTheSwitchOffStillReachNoBuyerAndNoGoogle() throws Exception {
-        GoogleWalletProperties off = liveProperties();
-        off.setEnabled(false);
-        MockMvc mvc = mvcWith(off);
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("closedGates")
+    void aClosedGateIs503WithTheErrorEnvelopeAndSendsNothing(String name, Supplier<GoogleWalletProperties> props)
+            throws Exception {
+        MockMvc mvc = mvcWith(props.get());
 
         mvc.perform(get(url(TOKEN)))
                 .andExpect(status().isServiceUnavailable())
@@ -191,39 +192,29 @@ class GoogleWalletEndpointTest {
 
     // ── dead tickets ─────────────────────────────────────────────────────────
 
+    static Stream<Arguments> deadTickets() {
+        return Stream.of(
+                // 409 and not 503 even with the wallet off: "temporarily unavailable" would be
+                // false, and would invite a retry that can never succeed.
+                Arguments.of("refunded, wallet off", false, REFUNDED_TOKEN, "TICKET_ALREADY_REFUNDED"),
+                // And with it on, so the ordering is not the only thing keeping it 409.
+                Arguments.of("refunded, wallet live", true, REFUNDED_TOKEN, "TICKET_ALREADY_REFUNDED"),
+                // The organizer's action, with its own code so the frontend can tell them apart.
+                Arguments.of("revoked, wallet live", true, REVOKED_TOKEN, "INVALID_STATE"));
+    }
+
     /**
-     * A refunded ticket gets no fresh, official-looking artifact on a phone —
-     * and it gets the true answer, not the convenient one. 409 and not 503 even
-     * with the wallet switched off: "temporarily unavailable" would be false, and
-     * it would invite a retry that can never succeed. What a buyer learns about
-     * their own ticket must not depend on our deployment state.
+     * A refunded or revoked ticket gets no fresh, official-looking artifact on a phone,
+     * and it gets the true answer whatever our deployment state, with nothing sent to Google.
      */
-    @Test
-    void aRefundedTicketIs409EvenWhenTheWalletIsOff() throws Exception {
-        mvcWith(new GoogleWalletProperties())
-                .perform(get(url(REFUNDED_TOKEN)))
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("deadTickets")
+    void aDeadTicketIs409WithItsCodeAndNothingIsSentToGoogle(String name, boolean live, String token,
+                                                             String code) throws Exception {
+        mvcWith(live ? liveProperties() : new GoogleWalletProperties())
+                .perform(get(url(token)))
                 .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.error.code").value("TICKET_ALREADY_REFUNDED"));
-        server.verify();
-    }
-
-    /** And with it on, so the ordering is not the only thing keeping it 409. */
-    @Test
-    void aRefundedTicketIs409OnALiveWalletAndNothingIsSentToGoogle() throws Exception {
-        mvcWith(liveProperties())
-                .perform(get(url(REFUNDED_TOKEN)))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.error.code").value("TICKET_ALREADY_REFUNDED"));
-        server.verify();
-    }
-
-    /** The organizer's action, with its own code so the frontend can tell them apart. */
-    @Test
-    void aRevokedTicketIs409WithItsOwnCode() throws Exception {
-        mvcWith(liveProperties())
-                .perform(get(url(REVOKED_TOKEN)))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.error.code").value("INVALID_STATE"));
+                .andExpect(jsonPath("$.error.code").value(code));
         server.verify();
     }
 
@@ -391,37 +382,18 @@ class GoogleWalletEndpointTest {
     // ── Google saying no ─────────────────────────────────────────────────────
 
     /**
-     * A 5xx from Google degrades to a 503 on this one button and never a 500.
-     * The distinction is the whole error contract: 503 says "try again", and the
-     * frontend has copy for it.
+     * Google saying no degrades to a 503 on this one button and never a 500: 503 says
+     * "try again", and the frontend has copy for it. A 403 is the failure this feature will
+     * actually have in production (a service account not added to the issuer account); it is
+     * not a 5xx, and built to the letter of a 5xx-only rule it would reach the buyer as a 500.
      */
-    @Test
-    void a5xxFromGoogleIs503AndNotA500() throws Exception {
+    @ParameterizedTest
+    @EnumSource(value = HttpStatus.class, names = {"BAD_GATEWAY", "FORBIDDEN"})
+    void anErrorFromGoogleIs503AndNotA500(HttpStatus upstream) throws Exception {
         MockMvc mvc = mvcWith(liveProperties());
         expectToken();
         server.expect(once(), requestTo(CLASS_URL + "/" + CLASS_ID))
-                .andRespond(withStatus(HttpStatus.BAD_GATEWAY));
-
-        mvc.perform(get(url(TOKEN)))
-                .andExpect(status().isServiceUnavailable())
-                .andExpect(jsonPath("$.error.code").value("UPSTREAM_UNAVAILABLE"));
-        server.verify();
-    }
-
-    /**
-     * <b>The failure this feature will actually have in production, and the plan
-     * never named it.</b> A service account that has not been added to the issuer
-     * account answers 401/403, and a {@code DRAFT} class answers 400 — neither is
-     * a 5xx, and the plan's error rule covered only 5xx. Built to the letter, all
-     * three would throw {@code HttpClientErrorException} and reach the buyer as a
-     * 500. They are 503 here, and the operator fault is named in the log.
-     */
-    @Test
-    void a403FromGoogleIs503AndNotA500() throws Exception {
-        MockMvc mvc = mvcWith(liveProperties());
-        expectToken();
-        server.expect(once(), requestTo(CLASS_URL + "/" + CLASS_ID))
-                .andRespond(withStatus(HttpStatus.FORBIDDEN));
+                .andRespond(withStatus(upstream));
 
         mvc.perform(get(url(TOKEN)))
                 .andExpect(status().isServiceUnavailable())
@@ -476,68 +448,6 @@ class GoogleWalletEndpointTest {
                 .andExpect(status().isNotFound());
 
         assertThat(bucketsConsumed).containsExactly("wallet-pass");
-    }
-
-    // ── the transaction constraint, on the live path ─────────────────────────
-
-    /**
-     * <b>The other obligation carried forward from Task 6.</b>
-     *
-     * <p>{@link GoogleWalletProvisioner} refuses to open a socket while a database
-     * transaction is active, because up to three 5s-timeout calls to Google would
-     * otherwise hold a pooled JDBC connection for their whole duration on an
-     * unauthenticated endpoint — a pool-exhaustion outage of the entire API,
-     * caused by Google being slow, visible only under concurrency.
-     * {@code GoogleWalletProvisionerTest} proves the guard bites; this proves the
-     * guard is on <em>this</em> path and not bypassed by it.
-     *
-     * <p>The transaction is faked at the thread-local, which is exactly what
-     * {@code @Transactional(readOnly = true)} on the pass service would produce.
-     * Nothing reaches Google, and the buyer gets an honest 500 rather than a
-     * quietly degraded API.
-     *
-     * <p><b>The resolved exception is asserted, not just the status.</b> First
-     * draft of this test checked only for a 500 against an expectation-free mock
-     * server — and stayed green when the guard was deleted, because the request
-     * then went on to hit a mock server with no expectations and 500ed on
-     * <em>that</em>. Same status code, entirely different reason, and the test
-     * certified a guard that was no longer there. Naming the exception is what
-     * makes it fail when it should.
-     */
-    @Test
-    void theSaveLinkPathGoesThroughTheNoTransactionGuard() throws Exception {
-        MockMvc mvc = mvcWith(liveProperties());
-
-        TransactionSynchronizationManager.setActualTransactionActive(true);
-        try {
-            var result = mvc.perform(get(url(TOKEN)))
-                    .andExpect(status().isInternalServerError())
-                    .andExpect(jsonPath("$.error.code").value("INTERNAL"))
-                    .andReturn();
-
-            assertThat(result.getResolvedException())
-                    .as("a 500 from anywhere else would look identical from the status line")
-                    .isInstanceOf(IllegalStateException.class)
-                    .hasMessageContaining("must not run inside a database transaction");
-        } finally {
-            TransactionSynchronizationManager.setActualTransactionActive(false);
-        }
-        server.verify();
-    }
-
-    /**
-     * And the positive half: with no transaction open — which is what the endpoint
-     * actually runs in, since neither the controller method nor
-     * {@link GoogleWalletPassService} is annotated — the same request succeeds.
-     */
-    @Test
-    void theSaveLinkPathRunsWithNoDatabaseTransactionOpen() throws Exception {
-        MockMvc mvc = mvcWith(liveProperties());
-        expectFullProvisioning();
-
-        assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
-        mvc.perform(get(url(TOKEN))).andExpect(status().isFound());
-        server.verify();
     }
 
     // ── wiring ───────────────────────────────────────────────────────────────

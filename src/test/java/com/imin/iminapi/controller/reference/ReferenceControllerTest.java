@@ -1,51 +1,57 @@
 package com.imin.iminapi.controller.reference;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.util.StripeSupportedCountries;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 
-import static org.hamcrest.Matchers.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class ReferenceControllerTest {
 
     @Autowired MockMvc mvc;
 
+    /** Onboarding must never offer a country Stripe Connect rejects (the UA incident). */
     @Test
-    void countries_is_public_sorted_and_cached() throws Exception {
-        mvc.perform(get("/api/v1/reference/countries"))
+    void countries_are_only_stripe_supported_sorted_by_name_and_publicly_cached() throws Exception {
+        MvcResult result = mvc.perform(get("/api/v1/reference/countries"))
                 .andExpect(status().isOk())
-                .andExpect(header().string("Cache-Control", containsString("max-age=86400")))
-                .andExpect(header().string("Cache-Control", containsString("public")))
-                // Contains expected entries with ISO alpha-2 codes
-                .andExpect(jsonPath("$[?(@.code == 'FR')].name").value(contains("France")))
-                .andExpect(jsonPath("$[?(@.code == 'DE')].name").value(contains("Germany")))
-                .andExpect(jsonPath("$[?(@.code == 'GB')].name").exists())
-                // All codes are 2 uppercase letters
-                .andExpect(jsonPath("$[*].code", everyItem(matchesPattern("^[A-Z]{2}$"))))
-                // Alphabetical by name — first entry starts with "A" (e.g. "Austria")
-                .andExpect(jsonPath("$[0].name", startsWith("A")));
-    }
+                .andReturn();
 
-    @Test
-    void countries_only_includes_stripe_supported() throws Exception {
-        mvc.perform(get("/api/v1/reference/countries"))
-                .andExpect(status().isOk())
-                // Stripe-supported bloc countries are present
-                .andExpect(jsonPath("$[?(@.code == 'FR')]", not(empty())))
-                .andExpect(jsonPath("$[?(@.code == 'US')]", not(empty())))
-                .andExpect(jsonPath("$[?(@.code == 'CH')]", not(empty())))
-                // Unsupported countries are absent (present today → RED before the filter change)
-                .andExpect(jsonPath("$[?(@.code == 'UA')]", empty()))
-                .andExpect(jsonPath("$[?(@.code == 'JP')]", empty()))
-                .andExpect(jsonPath("$[?(@.code == 'AU')]", empty()));
+        String cache = result.getResponse().getHeader("Cache-Control");
+        assertThat(cache).contains("public").contains("max-age=86400");
+
+        List<Map.Entry<String, String>> countries = new ArrayList<>();
+        for (JsonNode c : new ObjectMapper().readTree(result.getResponse().getContentAsString())) {
+            countries.add(Map.entry(c.get("code").asText(), c.get("name").asText()));
+        }
+        assertThat(countries).isNotEmpty();
+        assertThat(countries).allSatisfy(c -> {
+            assertThat(c.getKey()).matches("^[A-Z]{2}$");
+            assertThat(StripeSupportedCountries.isSupported(c.getKey())).as(c.getKey()).isTrue();
+        });
+        assertThat(countries).isSortedAccordingTo(Comparator.comparing(Map.Entry::getValue));
+
+        Map<String, String> byCode = countries.stream()
+                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+        assertThat(byCode).containsEntry("FR", "France").containsEntry("DE", "Germany")
+                .containsKeys("GB", "US", "CH");
+        // Real ISO codes the JDK offers, so their absence is the filter's doing.
+        assertThat(Arrays.asList(java.util.Locale.getISOCountries())).contains("UA", "JP", "AU");
+        assertThat(byCode).doesNotContainKeys("UA", "JP", "AU");
     }
 }

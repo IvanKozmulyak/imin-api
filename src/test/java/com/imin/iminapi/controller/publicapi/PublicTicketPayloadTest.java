@@ -2,31 +2,23 @@ package com.imin.iminapi.controller.publicapi;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
-import com.imin.iminapi.model.EventVisibility;
-import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.Ticket;
-import com.imin.iminapi.model.User;
-import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.EventRepository;
-import com.imin.iminapi.repository.OrderRepository;
-import com.imin.iminapi.repository.OrganizationRepository;
-import com.imin.iminapi.repository.TicketRepository;
-import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
+import java.time.Clock;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Set;
-import java.util.UUID;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
 
@@ -35,23 +27,26 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class PublicTicketPayloadTest {
 
     @Autowired MockMvc mvc;
-    @Autowired TicketRepository tickets;
-    @Autowired OrderRepository orders;
+    @Autowired IminFixtures fx;
+    @Autowired Clock clock;
     @Autowired EventRepository events;
-    @Autowired OrganizationRepository orgs;
-    @Autowired UserRepository users;
 
     final ObjectMapper objectMapper = new ObjectMapper();
 
-    static final Instant STARTS_AT = Instant.parse("2026-09-01T20:00:00Z");
-    static final Instant ENDS_AT = Instant.parse("2026-09-02T04:00:00Z");
     static final String POSTER_URL = "https://cdn.example.com/poster-ticket.png";
+
+    Instant startsAt;
+    Instant endsAt;
+
+    @BeforeEach
+    void setUp() {
+        startsAt = clock.instant().plus(30, ChronoUnit.DAYS).truncatedTo(ChronoUnit.SECONDS);
+        endsAt = startsAt.plus(8, ChronoUnit.HOURS);
+    }
 
     @Test
     void getTicket_emitsSignedQrPayloadAndWalletFlag() throws Exception {
@@ -67,8 +62,8 @@ class PublicTicketPayloadTest {
                                 "/api/v1/public/tickets/" + t.getToken() + "/qr.png")))
                 .andExpect(jsonPath("$.state").value("issued"))
                 .andExpect(jsonPath("$.event.eventId").value(t.getEventId().toString()))
-                .andExpect(jsonPath("$.event.startsAt").value("2026-09-01T20:00:00Z"))
-                .andExpect(jsonPath("$.event.endsAt").value("2026-09-02T04:00:00Z"))
+                .andExpect(jsonPath("$.event.startsAt").value(startsAt.toString()))
+                .andExpect(jsonPath("$.event.endsAt").value(endsAt.toString()))
                 .andExpect(jsonPath("$.event.posterUrl").value(POSTER_URL));
     }
 
@@ -141,49 +136,11 @@ class PublicTicketPayloadTest {
     }
 
     private Ticket persistTicket(String state) {
-        Organization org = new Organization();
-        org.setName("Payload Test Org");
-        org.setSlug("payload-test-org-" + UUID.randomUUID().toString().substring(0, 8));
-        org.setContactEmail("payload@example.com");
-        org.setCountry("DE");
-        org = orgs.save(org);
-
-        User owner = new User();
-        owner.setEmail("payload-owner-" + UUID.randomUUID() + "@example.com");
-        owner.setOrgId(org.getId());
-        owner.setRole(UserRole.OWNER);
-        owner = users.save(owner);
-
-        Event ev = new Event();
-        ev.setOrgId(org.getId());
-        ev.setName("Payload Test Event");
-        ev.setSlug("payload-test-event-" + UUID.randomUUID().toString().substring(0, 8));
-        ev.setVisibility(EventVisibility.PUBLIC);
-        ev.setStatus(EventStatus.LIVE);
-        ev.setCurrency("EUR");
-        ev.setStartsAt(STARTS_AT);
-        ev.setEndsAt(ENDS_AT);
+        Organization org = fx.org();
+        Event ev = fx.event(org, fx.owner(org), EventStatus.LIVE, startsAt);
+        ev.setEndsAt(endsAt);
         ev.setPosterUrl(POSTER_URL);
-        ev.setCreatedBy(owner.getId());
         ev = events.save(ev);
-
-        Order order = new Order();
-        order.setToken("ORD_" + UUID.randomUUID());
-        order.setEventId(ev.getId());
-        order.setOrgId(org.getId());
-        order.setEmail("buyer@example.com");
-        order.setTotalMinor(1500L);
-        order.setCurrency("EUR");
-        order.setPaymentMethod("stripe");
-        order = orders.save(order);
-
-        Ticket t = new Ticket();
-        t.setToken("TKT_" + UUID.randomUUID());
-        t.setOrderId(order.getId());
-        t.setEventId(ev.getId());
-        t.setTierId(UUID.randomUUID());
-        t.setTierName("GA");
-        t.setState(state);
-        return tickets.save(t);
+        return fx.ticket(fx.order(ev, fx.email("buyer")), state);
     }
 }

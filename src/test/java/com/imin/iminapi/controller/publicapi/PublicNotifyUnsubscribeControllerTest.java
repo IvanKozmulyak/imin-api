@@ -1,25 +1,18 @@
 package com.imin.iminapi.controller.publicapi;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.marketing.unsubscribe.UnsubscribeTokenService;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
-import com.imin.iminapi.model.EventVisibility;
 import com.imin.iminapi.model.NotifySubscription;
 import com.imin.iminapi.model.Organization;
-import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.NotifySubscriptionRepository;
-import com.imin.iminapi.model.User;
-import com.imin.iminapi.model.UserRole;
-import com.imin.iminapi.repository.OrganizationRepository;
-import com.imin.iminapi.repository.UserRepository;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.time.Clock;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -32,49 +25,22 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * signing in, which a guest cannot do. A standing request for mail the recipient
  * cannot withdraw is not a lawful one (CPCE L34-5).
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class PublicNotifyUnsubscribeControllerTest {
 
     @Autowired MockMvc mvc;
+    @Autowired IminFixtures fx;
+    @Autowired Clock clock;
     @Autowired NotifySubscriptionRepository subscriptions;
     @Autowired UnsubscribeTokenService tokens;
-    @Autowired EventRepository events;
-    @Autowired OrganizationRepository orgs;
-    @Autowired UserRepository users;
 
     private NotifySubscription saved() {
-        Organization org = new Organization();
-        org.setName("Notify Org");
-        org.setSlug("notify-org-" + UUID.randomUUID().toString().substring(0, 8));
-        org.setContactEmail("notify-org@example.com");
-        org.setCountry("DE");
-        org = orgs.save(org);
-
-        User owner = new User();
-        owner.setOrgId(org.getId());
-        owner.setEmail("notify-owner-" + UUID.randomUUID() + "@example.com");
-        owner.setFirstName("N");
-        owner.setLastName("O");
-        owner.setRole(UserRole.OWNER);
-        owner = users.save(owner);
-
-        Event e = new Event();
-        e.setOrgId(org.getId());
-        e.setCreatedBy(owner.getId());
-        e.setName("Release Night");
-        e.setSlug("release-" + UUID.randomUUID().toString().substring(0, 8));
-        e.setVisibility(EventVisibility.PUBLIC);
-        e.setStatus(EventStatus.LIVE);
-        e.setStartsAt(java.time.Instant.now().plusSeconds(86400));
-        e.setTimezone("Europe/Berlin");
-        e.setCurrency("EUR");
-        e = events.save(e);
+        Organization org = fx.org();
+        Event e = fx.event(org, fx.owner(org), EventStatus.LIVE, clock.instant().plusSeconds(86400));
 
         NotifySubscription s = new NotifySubscription();
         s.setEventId(e.getId());
-        s.setEmail("guest-" + System.nanoTime() + "@example.com");
+        s.setEmail(fx.email("guest"));
         return subscriptions.save(s);
     }
 
