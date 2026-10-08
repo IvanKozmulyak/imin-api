@@ -9,9 +9,8 @@ import com.imin.iminapi.buyer.repository.BuyerAccountEmailRepository;
 import com.imin.iminapi.buyer.repository.BuyerAccountRepository;
 import com.imin.iminapi.buyer.repository.BuyerNotificationPreferenceRepository;
 import com.imin.iminapi.buyer.repository.BuyerPushDeviceRepository;
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.email.EmailProperties;
-import com.imin.iminapi.email.EmailService;
+import com.imin.iminapi.email.RecordingEmailService;
 import com.imin.iminapi.email.EmailTemplateRenderer;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
@@ -20,37 +19,30 @@ import com.imin.iminapi.model.NotifySubscription;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.TicketTier;
 import com.imin.iminapi.model.User;
-import com.imin.iminapi.model.UserRole;
 import com.imin.iminapi.repository.EventRepository;
 import com.imin.iminapi.repository.NotifySubscriptionRepository;
-import com.imin.iminapi.repository.OrganizationRepository;
 import com.imin.iminapi.repository.TicketTierRepository;
-import com.imin.iminapi.repository.UserRepository;
 import com.imin.iminapi.service.event.NotifyReleaseSender;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.MutableClock;
 import com.imin.iminapi.util.Times;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Clock;
 import java.time.Instant;
-import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyList;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.mockingDetails;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -64,27 +56,20 @@ import static org.mockito.Mockito.when;
  * next test — is silently skipped, and {@code verify(push).send(...)} then
  * fails with zero interactions.
  *
- * <p>Scheduled dispatch is off in tests ({@code imin.scheduling.enabled: false}),
- * so nothing ticks the real bean; {@code @Transactional} stays to keep the
- * fixtures out of sibling test classes sharing the context.
- *
- * <p>Same construction pattern, and the same reasons, as
- * {@code NotifyReleaseSenderTest}.
+ * <p>The sweep reads every org's pending rows, so {@code @Transactional} rolls back whatever it marks,
+ * and push and mail assertions name this test's own token and addresses.
  */
-@SpringBootTest
+@IminIntegrationTest
 @Transactional
-@Import(TestRateLimitConfig.class)
 class DropAlertFanOutTest {
-
-    private static final Instant NOW = Instant.parse("2026-08-15T12:00:00Z");
-    private static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
-    private static final String TOKEN = "ExponentPushToken[fanout0000000000000000]";
 
     @Autowired NotifySubscriptionRepository subscriptions;
     @Autowired EventRepository events;
     @Autowired TicketTierRepository tiers;
-    @Autowired OrganizationRepository organizations;
-    @Autowired UserRepository users;
+    @Autowired IminFixtures fx;
+    @Autowired MutableClock clock;
+    @Autowired RecordingEmailService mail;
+    @Autowired ExpoPushSender push;
     @Autowired SuppressionRepository suppressions;
     @Autowired EmailTemplateRenderer renderer;
     @Autowired EmailProperties emailProps;
@@ -93,39 +78,30 @@ class DropAlertFanOutTest {
     @Autowired BuyerPushDeviceRepository pushDevices;
     @Autowired BuyerNotificationPreferenceRepository pushPrefs;
 
-    EmailService emailService;
-    ExpoPushSender push;
     PushProperties pushProps;
     NotifyReleaseSender sender;
 
     Organization org;
     User owner;
+    Instant now;
+    String token;
 
     @org.springframework.beans.factory.annotation.Autowired
     com.imin.iminapi.marketing.unsubscribe.UnsubscribeTokenService unsubscribeTokens;
 
     @BeforeEach
     void setUp() {
-        emailService = mock(EmailService.class);
-        push = mock(ExpoPushSender.class);
+        now = clock.instant().truncatedTo(ChronoUnit.MICROS);
+        clock.setInstant(now);
+        token = "ExponentPushToken[" + UUID.randomUUID() + "]";
         pushProps = new PushProperties();
         pushProps.setEnabled(true);
         sender = new NotifyReleaseSender(subscriptions, events, tiers, suppressions,
-                emailService, renderer, emailProps, CLOCK,
+                mail, renderer, emailProps, clock,
                 pushProps, push, pushDevices, buyerEmails, pushPrefs, unsubscribeTokens);
 
-        org = new Organization();
-        org.setName("Fanout Org");
-        org.setSlug("fanout-org-" + UUID.randomUUID().toString().substring(0, 8));
-        org.setContactEmail("fanout-org@example.com");
-        org.setCountry("DE");
-        org = organizations.save(org);
-
-        owner = new User();
-        owner.setEmail("fanout-owner-" + UUID.randomUUID() + "@example.com");
-        owner.setOrgId(org.getId());
-        owner.setRole(UserRole.OWNER);
-        owner = users.save(owner);
+        org = fx.org();
+        owner = fx.owner(org);
     }
 
     // ── The whole point: push rides along, email is untouched ──────────────
@@ -136,21 +112,21 @@ class DropAlertFanOutTest {
 
         UUID account = buyerAccount();
         String address = verifiedAddress(account);
-        device(account, TOKEN);
+        device(account, token);
         Event event = releasableEventWatchedBy(address);
 
         sender.sweep();
 
-        List<PushMessage> sent = capturedPush();
+        List<PushMessage> sent = pushedTo(token);
         assertThat(sent).hasSize(1);
-        assertThat(sent.get(0).to()).isEqualTo(TOKEN);
+        assertThat(sent.get(0).to()).isEqualTo(token);
         assertThat(sent.get(0).channelId()).isEqualTo(PushMessage.CHANNEL_DROP_ALERTS);
         assertThat(sent.get(0).data()).containsEntry("eventId", event.getId().toString());
         assertThat(sent.get(0).data()).containsEntry("type", "drop-alert");
 
         // The email is the promise; push must not have replaced it.
-        verify(emailService, times(1)).send(eq(address), anyString(), anyString(), anyString());
-        assertThat(notifiedAtOf(address)).isEqualTo(NOW);
+        assertThat(mailsTo(address)).isEqualTo(1);
+        assertThat(notifiedAtOf(address)).isEqualTo(now);
     }
 
     /**
@@ -166,31 +142,30 @@ class DropAlertFanOutTest {
 
         UUID account = buyerAccount();
         String address = verifiedAddress(account);
-        device(account, TOKEN);
+        device(account, token);
         releasableEventWatchedBy(address);
 
         sender.sweep();
 
         // Sent despite the push blowing up …
-        verify(emailService, times(1)).send(eq(address), anyString(), anyString(), anyString());
+        assertThat(mailsTo(address)).isEqualTo(1);
         // … and marked, so the next tick does not send it a second time.
-        assertThat(notifiedAtOf(address)).isEqualTo(NOW);
+        assertThat(notifiedAtOf(address)).isEqualTo(now);
 
         sender.sweep();
-        verify(emailService, times(1)).send(eq(address), anyString(), anyString(), anyString());
+        assertThat(mailsTo(address)).isEqualTo(1);
     }
 
     // ── Who is reachable ───────────────────────────────────────────────────
 
     @Test
-    void aGuestWatcherGetsTheEmailAndNoPushIsAttempted() {
+    void aGuestWatcherWithNoAccountGetsTheEmail() {
         String guest = "guest-" + UUID.randomUUID() + "@example.test";
         releasableEventWatchedBy(guest);
 
         sender.sweep();
 
-        verify(emailService, times(1)).send(eq(guest), anyString(), anyString(), anyString());
-        verify(push, never()).send(anyList());
+        assertThat(mailsTo(guest)).isEqualTo(1);
     }
 
     /** An unverified claim on an address is not an account — anybody can make one. */
@@ -199,20 +174,20 @@ class DropAlertFanOutTest {
         UUID account = buyerAccount();
         String raw = "unverified-" + UUID.randomUUID() + "@example.test";
         buyerEmails.save(BuyerAccountEmail.of(account, raw, BuyerAccountEmail.ADDED_VIA_MANUAL));
-        device(account, TOKEN);
+        device(account, token);
         releasableEventWatchedBy(raw);
 
         sender.sweep();
 
-        verify(emailService, times(1)).send(eq(raw), anyString(), anyString(), anyString());
-        verify(push, never()).send(anyList());
+        assertThat(mailsTo(raw)).isEqualTo(1);
+        assertThat(pushedTo(token)).isEmpty();
     }
 
     @Test
     void aBuyerWhoTurnedDropAlertPushesOffGetsOnlyTheEmail() {
         UUID account = buyerAccount();
         String address = verifiedAddress(account);
-        device(account, TOKEN);
+        device(account, token);
         BuyerNotificationPreference pref = new BuyerNotificationPreference(account);
         pref.setPushDropAlerts(false);
         pushPrefs.save(pref);
@@ -220,18 +195,18 @@ class DropAlertFanOutTest {
 
         sender.sweep();
 
-        verify(emailService, times(1)).send(eq(address), anyString(), anyString(), anyString());
-        verify(push, never()).send(anyList());
+        assertThat(mailsTo(address)).isEqualTo(1);
+        assertThat(pushedTo(token)).isEmpty();
     }
 
     // ── Registry hygiene ───────────────────────────────────────────────────
 
     @Test
     void aDeadTokenIsRevokedSoItIsNeverSentToAgain() {
-        when(push.send(anyList())).thenReturn(new ExpoPushSender.Result(0, Set.of(TOKEN)));
+        when(push.send(anyList())).thenReturn(new ExpoPushSender.Result(0, Set.of(token)));
 
         UUID account = buyerAccount();
-        device(account, TOKEN);
+        device(account, token);
         releasableEventWatchedBy(verifiedAddress(account));
 
         sender.sweep();
@@ -249,26 +224,35 @@ class DropAlertFanOutTest {
     @Test
     void pushDisabledMeansNoFanOutAtAllEvenWithARegisteredDevice() {
         pushProps.setEnabled(false);
+        // The mock is shared across tests; drop what earlier ones recorded.
+        clearInvocations(push);
 
         UUID account = buyerAccount();
         String address = verifiedAddress(account);
-        device(account, TOKEN);
+        device(account, token);
         releasableEventWatchedBy(address);
 
         sender.sweep();
 
-        verify(push, never()).send(anyList());
-        verify(emailService, times(1)).send(eq(address), anyString(), anyString(), anyString());
-        assertThat(notifiedAtOf(address)).isEqualTo(NOW);
+        verifyNoInteractions(push);
+        assertThat(mailsTo(address)).isEqualTo(1);
+        assertThat(notifiedAtOf(address)).isEqualTo(now);
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
+    /** Messages for this test's token across every send; the sweep also pushes other tests' events. */
     @SuppressWarnings("unchecked")
-    private List<PushMessage> capturedPush() {
-        ArgumentCaptor<List<PushMessage>> captor = ArgumentCaptor.forClass(List.class);
-        verify(push).send(captor.capture());
-        return captor.getValue();
+    private List<PushMessage> pushedTo(String to) {
+        return mockingDetails(push).getInvocations().stream()
+                .filter(i -> i.getMethod().getName().equals("send"))
+                .flatMap(i -> ((List<PushMessage>) i.getArgument(0)).stream())
+                .filter(m -> m.to().equals(to))
+                .toList();
+    }
+
+    private long mailsTo(String address) {
+        return mail.sent().stream().filter(m -> m.to().equals(address)).count();
     }
 
     private UUID buyerAccount() {
@@ -304,8 +288,8 @@ class DropAlertFanOutTest {
         e.setSlug("fanout-" + UUID.randomUUID().toString().substring(0, 8));
         e.setVisibility(EventVisibility.PUBLIC);
         e.setStatus(EventStatus.LIVE);
-        e.setPublishedAt(NOW.minusSeconds(3600));
-        e.setStartsAt(NOW.plusSeconds(86400));
+        e.setPublishedAt(now.minusSeconds(3600));
+        e.setStartsAt(now.plusSeconds(86400));
         e.setTimezone("Europe/Berlin");
         e.setCreatedBy(owner.getId());
         e.setCurrency("EUR");

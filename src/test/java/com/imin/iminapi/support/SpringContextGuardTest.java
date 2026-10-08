@@ -180,7 +180,11 @@ class SpringContextGuardTest {
 
     @Test
     void suite_matchesTheCheckedInAllowList() throws IOException {
-        List<String> findings = SpringContextGuard.check(SpringContextGuard.scanTestClasses(), readAllowList());
+        List<Class<?>> scanned = SpringContextGuard.scanTestClasses();
+        // An empty or truncated scan would pass against an empty allow-list.
+        assertThat(scanned).extracting(Class::getName).contains(
+                SpringContextGuardTest.class.getName(), "com.imin.iminapi.app.AppConfigControllerTest");
+        List<String> findings = SpringContextGuard.check(scanned, readAllowList());
         assertThat(findings).as("%d finding(s):%n%s", findings.size(), String.join("\n", findings)).isEmpty();
     }
 

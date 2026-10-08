@@ -1,20 +1,19 @@
 package com.imin.iminapi.repository;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
 import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
 import com.imin.iminapi.model.EventVisibility;
 import com.imin.iminapi.model.Organization;
-import com.imin.iminapi.model.User;
-import com.imin.iminapi.model.UserRole;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.OrgRows;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -24,13 +23,12 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Each test inserts the row its predicate excludes first; dropping that predicate turns it red. */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class EventRepositorySoftDeleteDraftTest {
 
     @Autowired EventRepository events;
-    @Autowired OrganizationRepository orgs;
-    @Autowired UserRepository users;
+    @Autowired IminFixtures fx;
+    @Autowired Clock clock;
     @Autowired JdbcTemplate jdbc;
 
     private final List<UUID> orgIds = new ArrayList<>();
@@ -38,23 +36,23 @@ class EventRepositorySoftDeleteDraftTest {
     private UUID userA;
     private UUID orgB;
     private UUID userB;
-    private final Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+    private Instant now;
 
     @BeforeEach
     void setUp() {
-        orgA = org("a");
-        userA = user(orgA);
-        orgB = org("b");
-        userB = user(orgB);
+        now = clock.instant().truncatedTo(ChronoUnit.MICROS);
+        Organization a = fx.org();
+        Organization b = fx.org();
+        orgIds.addAll(List.of(a.getId(), b.getId()));
+        orgA = a.getId();
+        userA = fx.owner(a).getId();
+        orgB = b.getId();
+        userB = fx.owner(b).getId();
     }
 
     @AfterEach
     void tearDown() {
-        for (UUID id : orgIds) {
-            jdbc.update("DELETE FROM events WHERE org_id = ?", id);
-            jdbc.update("DELETE FROM users WHERE org_id = ?", id);
-            jdbc.update("DELETE FROM organizations WHERE id = ?", id);
-        }
+        OrgRows.delete(jdbc, orgIds);
     }
 
     @Test
@@ -110,25 +108,6 @@ class EventRepositorySoftDeleteDraftTest {
         java.sql.Timestamp ts = jdbc.queryForObject(
                 "SELECT deleted_at FROM events WHERE id = ?", java.sql.Timestamp.class, id);
         return ts == null ? null : ts.toInstant();
-    }
-
-    private UUID org(String tag) {
-        Organization o = new Organization();
-        o.setName("Soft delete " + tag);
-        o.setSlug("sdd-" + tag + "-" + UUID.randomUUID().toString().substring(0, 8));
-        o.setContactEmail("sdd@example.test");
-        o.setCountry("DE");
-        UUID id = orgs.save(o).getId();
-        orgIds.add(id);
-        return id;
-    }
-
-    private UUID user(UUID orgId) {
-        User u = new User();
-        u.setEmail("sdd-" + UUID.randomUUID() + "@example.test");
-        u.setOrgId(orgId);
-        u.setRole(UserRole.OWNER);
-        return users.save(u).getId();
     }
 
     private UUID event(UUID orgId, UUID userId, EventStatus status, Instant publishedAt, Instant deletedAt) {

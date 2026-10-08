@@ -1,5 +1,6 @@
 package com.imin.iminapi.config;
 
+import com.imin.iminapi.support.IminIntegrationTest;
 import io.sentry.Breadcrumb;
 import io.sentry.SentryEvent;
 import io.sentry.SentryOptions;
@@ -8,8 +9,6 @@ import io.sentry.protocol.Request;
 import io.sentry.protocol.SentryException;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 
 import java.util.List;
 import java.util.Map;
@@ -21,8 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * ({@code application-prod.yaml}), so anything a scrubber misses is a copy of
  * that data inside a third party.
  */
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class SentryScrubberTest {
 
     @Autowired SentryOptions.BeforeSendCallback beforeSend;

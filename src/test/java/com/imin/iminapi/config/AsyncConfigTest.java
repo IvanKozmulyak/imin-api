@@ -1,17 +1,13 @@
 package com.imin.iminapi.config;
 
-import com.imin.iminapi.service.EventContentService;
-import com.imin.iminapi.service.auth.AuthService;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.aop.interceptor.AsyncExecutionInterceptor;
-import org.springframework.context.annotation.Import;
 import org.springframework.core.task.SimpleAsyncTaskExecutor;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
@@ -20,12 +16,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+@IminIntegrationTest
 class AsyncConfigTest {
-
-    @MockitoBean EventContentService eventContentService;
-    @MockitoBean AuthService authService;
 
     @Autowired @Qualifier("ticketEmailExecutor") Executor ticketEmailExecutor;
     @Autowired BeanFactory beanFactory;

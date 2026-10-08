@@ -1,18 +1,2 @@
 # Spring test classes not yet on a named context.
 # This list only shrinks.
-com.imin.iminapi.IminApiApplicationTests
-com.imin.iminapi.app.AppConfigControllerTest
-com.imin.iminapi.config.AsyncConfigTest
-com.imin.iminapi.config.OpenEndpointRateLimitTest
-com.imin.iminapi.config.SentryScrubberTest
-com.imin.iminapi.config.TestProfileInfraTest
-com.imin.iminapi.model.BrandColumnsPersistenceTest
-com.imin.iminapi.model.ConceptCascadePersistenceTest
-com.imin.iminapi.model.PosterVariantVerdictPersistenceTest
-com.imin.iminapi.push.DropAlertFanOutTest
-com.imin.iminapi.repository.DashboardPulseQueriesTest
-com.imin.iminapi.repository.EventRepositorySoftDeleteDraftTest
-com.imin.iminapi.repository.FunnelEventRepositoryTest
-com.imin.iminapi.repository.OrganizationRepositoryLockTest
-com.imin.iminapi.repository.SeedDemoEventsSqlPostgresTest
-com.imin.iminapi.repository.TicketAggregateQueryTest

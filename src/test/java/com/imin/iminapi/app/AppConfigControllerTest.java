@@ -1,12 +1,12 @@
 package com.imin.iminapi.app;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
+import com.imin.iminapi.support.IminIntegrationTest;
+import com.imin.iminapi.support.PropertyFlips;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
-import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -14,81 +14,47 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * The force-upgrade gate, end to end over HTTP.
- *
- * <p>Driven through MockMvc rather than by calling the controller directly
- * because three of the things that could break it are not in the controller:
- * the {@code GET /api/v1/public/**} permitAll rule, the {@code imin.app.*}
- * property binding, and the JSON field names a shipped binary will parse
- * forever. A unit test on the method would pass with all three broken.
- *
- * <p>Note the properties come from {@code @TestPropertySource}, not from
- * {@code src/main/resources/application.yaml}: the test classpath's
- * {@code application.yaml} <b>replaces</b> the main one wholesale, so the
- * {@code ${IMIN_APP_*}} placeholders there are not visible to any test.
+ * The force-upgrade gate, end to end over HTTP: the public permitAll rule, the per-request read of
+ * {@code imin.app.*} and the JSON field names a shipped binary parses. Version ordering and the
+ * fail-open rule for junk versions are owned by {@link AppVersionsTest}.
  */
-@SpringBootTest
-@AutoConfigureMockMvc
-@Import(TestRateLimitConfig.class)
-@TestPropertySource(properties = {
-        "imin.app.ios.min-supported-version=1.2.0",
-        "imin.app.ios.latest-version=1.9.0",
-        "imin.app.ios.store-url=https://apps.apple.com/app/id0000000000",
-        "imin.app.android.min-supported-version=2.0.0",
-        "imin.app.android.latest-version=2.0.0",
-})
+@IminIntegrationTest
 class AppConfigControllerTest {
 
+    private static final String IOS_STORE = "https://apps.apple.com/app/id0000000000";
+
     @Autowired MockMvc mvc;
+    @Autowired PropertyFlips flips;
+    @Autowired AppReleaseProperties releases;
 
-    @Test
-    void belowTheMinimumIsUpdateRequired() throws Exception {
-        mvc.perform(get("/api/v1/public/app-config?platform=ios&version=1.1.9"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("update_required"))
-                .andExpect(jsonPath("$.minSupportedVersion").value("1.2.0"))
-                .andExpect(jsonPath("$.storeUrl").value("https://apps.apple.com/app/id0000000000"));
+    @BeforeEach
+    void releases() {
+        flips.set(releases, "ios.minSupportedVersion", "1.2.0");
+        flips.set(releases, "ios.latestVersion", "1.9.0");
+        flips.set(releases, "ios.storeUrl", IOS_STORE);
+        flips.set(releases, "android.minSupportedVersion", "2.0.0");
+        flips.set(releases, "android.latestVersion", "2.0.0");
     }
 
-    @Test
-    void betweenMinimumAndLatestIsUpdateRecommended() throws Exception {
-        mvc.perform(get("/api/v1/public/app-config?platform=ios&version=1.3.0"))
+    @ParameterizedTest(name = "{0} {1} -> {2}")
+    @CsvSource({
+            "ios,     1.1.9, update_required",
+            "ios,     1.3.0, update_recommended",
+            "ios,     1.9.0, ok",
+            "android, 1.9.0, update_required",
+    })
+    void verdictFollowsTheConfiguredReleasesOfThePlatform(String platform, String version, String verdict)
+            throws Exception {
+        String min = platform.equals("ios") ? "1.2.0" : "2.0.0";
+        var result = mvc.perform(get("/api/v1/public/app-config?platform=" + platform + "&version=" + version))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("update_recommended"));
-    }
-
-    @Test
-    void atTheLatestIsOk() throws Exception {
-        mvc.perform(get("/api/v1/public/app-config?platform=ios&version=1.9.0"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("ok"));
-    }
-
-    /**
-     * The lexical trap, over the wire. 1.10.0 is newer than 1.9.0; a
-     * {@code String.compareTo} gate would answer {@code update_recommended} and
-     * nag the freshest install in the field forever.
-     */
-    @Test
-    void tenIsNewerThanNine() throws Exception {
-        mvc.perform(get("/api/v1/public/app-config?platform=ios&version=1.10.0"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("ok"));
-    }
-
-    /**
-     * Fail open. A request whose version we cannot read must not be blocked —
-     * there is no channel left to un-block it through.
-     */
-    @Test
-    void absentOrJunkVersionIsOk() throws Exception {
-        mvc.perform(get("/api/v1/public/app-config?platform=ios"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("ok"));
-
-        mvc.perform(get("/api/v1/public/app-config?platform=android&version=not-a-version"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("ok"));
+                .andExpect(jsonPath("$.status").value(verdict))
+                .andExpect(jsonPath("$.minSupportedVersion").value(min));
+        if (platform.equals("ios")) {
+            result.andExpect(jsonPath("$.storeUrl").value(IOS_STORE));
+        } else {
+            result.andExpect(jsonPath("$.storeUrl").doesNotExist());
+        }
     }
 
     @Test
@@ -98,12 +64,7 @@ class AppConfigControllerTest {
                 .andExpect(jsonPath("$.error.code").value("INVALID_REQUEST"));
     }
 
-    /**
-     * The reference data rides along so a cold launch is one round trip. Both
-     * lists are empty on an empty test database — the assertion is that the
-     * keys exist, because their absence is what would send the app back for two
-     * more requests.
-     */
+    /** The reference data rides along so a cold launch is one round trip; the keys must exist. */
     @Test
     void foldsInTheReferenceDataAndAlwaysCarriesFlags() throws Exception {
         mvc.perform(get("/api/v1/public/app-config?platform=ios&version=1.9.0"))
@@ -113,14 +74,12 @@ class AppConfigControllerTest {
                 .andExpect(jsonPath("$.flags").exists());
     }
 
-    /** Unauthenticated, like every other {@code /api/v1/public} GET. */
+    /** Unauthenticated, like every other {@code /api/v1/public} GET; no platform means no release to report. */
     @Test
     void needsNoCredential() throws Exception {
         mvc.perform(get("/api/v1/public/app-config"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("ok"))
-                // No platform named, so there is no release to report. Null, never
-                // a placeholder version the app might compare itself against.
                 .andExpect(jsonPath("$.minSupportedVersion").doesNotExist());
     }
 }

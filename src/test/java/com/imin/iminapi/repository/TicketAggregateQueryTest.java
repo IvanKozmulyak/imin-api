@@ -1,37 +1,31 @@
 package com.imin.iminapi.repository;
 
-import com.imin.iminapi.config.TestRateLimitConfig;
-import com.imin.iminapi.model.Event;
 import com.imin.iminapi.model.EventStatus;
-import com.imin.iminapi.model.EventVisibility;
 import com.imin.iminapi.model.Order;
 import com.imin.iminapi.model.Organization;
 import com.imin.iminapi.model.Ticket;
-import com.imin.iminapi.model.User;
-import com.imin.iminapi.model.UserRole;
-import org.junit.jupiter.api.AfterEach;
+import com.imin.iminapi.support.IminFixtures;
+import com.imin.iminapi.support.IminIntegrationTest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.context.annotation.Import;
 
-import java.time.Instant;
+import java.time.Clock;
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest
-@Import(TestRateLimitConfig.class)
+/** The tier aggregate and attendee native queries, on Postgres. */
+@IminIntegrationTest
 class TicketAggregateQueryTest {
 
     @Autowired OrderRepository orders;
     @Autowired TicketRepository tickets;
-    @Autowired EventRepository events;
-    @Autowired OrganizationRepository orgs;
-    @Autowired UserRepository users;
+    @Autowired IminFixtures fx;
+    @Autowired Clock clock;
 
     // tickets.tier_id has no FK, so a random UUID is fine.
     private final UUID gaTier = UUID.randomUUID();
@@ -42,44 +36,9 @@ class TicketAggregateQueryTest {
 
     @BeforeEach
     void setUp() {
-        wipe();
-        Organization org = new Organization();
-        org.setName("Org");
-        org.setSlug("org-" + UUID.randomUUID().toString().substring(0, 8));
-        org.setContactEmail("hi@test.example");
-        org.setCountry("DE");
-        org = orgs.save(org);
+        Organization org = fx.org();
         orgId = org.getId();
-
-        // events.created_by has an FK to users(id), so seed a real owner.
-        User owner = new User();
-        owner.setEmail("owner-" + UUID.randomUUID() + "@example.com");
-        owner.setOrgId(org.getId());
-        owner.setRole(UserRole.OWNER);
-        owner = users.save(owner);
-
-        Event event = new Event();
-        event.setOrgId(org.getId());
-        event.setName("Sales Night");
-        event.setSlug("sales-" + UUID.randomUUID().toString().substring(0, 8));
-        event.setVisibility(EventVisibility.PUBLIC);
-        event.setStatus(EventStatus.LIVE);
-        event.setStartsAt(Instant.now().plusSeconds(86_400));
-        event.setCreatedBy(owner.getId());
-        event.setCurrency("EUR");
-        event = events.save(event);
-        eventId = event.getId();
-    }
-
-    @AfterEach
-    void tearDown() { wipe(); }
-
-    private void wipe() {
-        tickets.deleteAll();
-        orders.deleteAll();
-        events.deleteAll();
-        users.deleteAll();
-        orgs.deleteAll();
+        eventId = fx.event(org, fx.owner(org), EventStatus.LIVE, clock.instant().plus(Duration.ofDays(1))).getId();
     }
 
     private Order order() {
@@ -87,7 +46,7 @@ class TicketAggregateQueryTest {
         o.setToken(UUID.randomUUID().toString().replace("-", ""));
         o.setEventId(eventId);
         o.setOrgId(orgId);
-        o.setEmail("buyer@example.com");
+        o.setEmail(fx.email("buyer"));
         o.setTotalMinor(0);
         o.setCurrency("eur");
         o.setPaymentMethod("stripe");
