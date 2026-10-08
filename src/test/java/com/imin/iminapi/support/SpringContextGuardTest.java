@@ -24,18 +24,12 @@ import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** The one-context rule and the shrink-only allow-list. Fixture classes are nested and never run. */
+/** The one-context rule. Fixture classes are nested and never run. */
 class SpringContextGuardTest {
-
-    private static final String ALLOW_LIST = "test-guard/legacy-spring-tests.txt";
 
     // ── fixtures ────────────────────────────────────────────────────────────
 
@@ -143,59 +137,31 @@ class SpringContextGuardTest {
         assertThat(kinds(LegacyOuter.Inner.class)).containsExactly(Kind.LEGACY);
     }
 
-    // ── allow-list check ────────────────────────────────────────────────────
+    // ── check ───────────────────────────────────────────────────────────────
 
     @Test
-    void check_reportsUnlistedViolator() {
-        List<String> findings = SpringContextGuard.check(List.of(LegacyBoot.class, Plain.class), List.of());
-        assertThat(findings).singleElement().asString().contains(LegacyBoot.class.getName());
-    }
-
-    @Test
-    void check_reportsListedNonViolatorAsStale() {
-        List<String> findings = SpringContextGuard.check(List.of(Plain.class), List.of(Plain.class.getName()));
+    void check_reportsAnyLegacyClass() {
+        List<String> findings = SpringContextGuard.check(List.of(LegacyBoot.class, Plain.class, Clean.class));
         assertThat(findings).singleElement().asString()
-                .contains(Plain.class.getName()).contains("remove from allow-list");
+                .contains(LegacyBoot.class.getName()).contains("use @IminIntegrationTest");
     }
 
     @Test
-    void check_reportsListedUnknownClass() {
-        List<String> findings = SpringContextGuard.check(List.of(Plain.class), List.of("com.example.Gone"));
-        assertThat(findings).singleElement().asString().contains("com.example.Gone");
-    }
-
-    @Test
-    void check_reportsUnsortedOrDuplicatedList() {
-        String a = LegacyBoot.class.getName();
-        String b = LegacySlice.class.getName();
-        List<Class<?>> scanned = List.of(LegacyBoot.class, LegacySlice.class);
-
-        assertThat(SpringContextGuard.check(scanned, List.of(a, b))).isEmpty();
-        assertThat(SpringContextGuard.check(scanned, List.of(b, a))).singleElement().asString().contains("sorted");
-        assertThat(SpringContextGuard.check(scanned, List.of(a, a, b))).isNotEmpty()
-                .anySatisfy(f -> assertThat(f).contains("sorted"));
+    void check_reportsForbiddenDetailForNamedClass() {
+        List<String> findings = SpringContextGuard.check(List.of(WithTypeMockitoBean.class, Clean.class));
+        assertThat(findings).singleElement().asString()
+                .contains(WithTypeMockitoBean.class.getName()).contains("changes the named context");
     }
 
     // ── the real suite ──────────────────────────────────────────────────────
 
     @Test
-    void suite_matchesTheCheckedInAllowList() throws IOException {
+    void suite_hasNoLegacySpringTest() {
         List<Class<?>> scanned = SpringContextGuard.scanTestClasses();
-        // An empty or truncated scan would pass against an empty allow-list.
+        // An empty or truncated scan would pass vacuously.
         assertThat(scanned).extracting(Class::getName).contains(
                 SpringContextGuardTest.class.getName(), "com.imin.iminapi.app.AppConfigControllerTest");
-        List<String> findings = SpringContextGuard.check(scanned, readAllowList());
+        List<String> findings = SpringContextGuard.check(scanned);
         assertThat(findings).as("%d finding(s):%n%s", findings.size(), String.join("\n", findings)).isEmpty();
-    }
-
-    private static List<String> readAllowList() throws IOException {
-        try (InputStream in = SpringContextGuardTest.class.getClassLoader().getResourceAsStream(ALLOW_LIST)) {
-            assertThat(in).as(ALLOW_LIST + " on the test classpath").isNotNull();
-            String text = new String(in.readAllBytes(), StandardCharsets.UTF_8);
-            return Arrays.stream(text.split("\n"))
-                    .map(String::strip)
-                    .filter(l -> !l.isEmpty() && !l.startsWith("#"))
-                    .toList();
-        }
     }
 }

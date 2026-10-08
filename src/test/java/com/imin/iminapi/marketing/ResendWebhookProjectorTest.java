@@ -64,7 +64,7 @@ class ResendWebhookProjectorTest {
         orgIds.add(orgId);
 
         // memberships.consumer_id is UUID NOT NULL REFERENCES consumers(consumer_id)
-        // (V48__audience_memberships.sql:8); H2 MODE=PostgreSQL enforces the FK on
+        // (V48__audience_memberships.sql:8); Postgres enforces the FK on
         // INSERT, so seed a real Consumer first (normalized_email is NOT NULL + UNIQUE
         // — V47__audience_consumers.sql:5, Consumer.java:28).
         // Consumer/Membership use @GeneratedValue — do NOT set the id; let save()

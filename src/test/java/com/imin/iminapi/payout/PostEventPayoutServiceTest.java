@@ -67,7 +67,7 @@ import static org.mockito.Mockito.when;
 
 /**
  * Money-path tests for the Track B Phase 2 per-event payout unit
- * ({@link PostEventPayoutService}) against H2 + Flyway, with the Stripe HTTP layer
+ * ({@link PostEventPayoutService}) against Postgres + Flyway, with the Stripe HTTP layer
  * faked at the {@link StripeResponseGetter} seam (the {@code BalanceService} /
  * {@code PayoutService} are {@code final}, so a real {@link StripeClient} over a
  * mocked response-getter is the only clean way to drive {@code balance().retrieve}

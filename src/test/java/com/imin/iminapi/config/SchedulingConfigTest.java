@@ -6,12 +6,12 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.core.env.StandardEnvironment;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.scheduling.config.TaskManagementConfigUtils;
 
 import javax.sql.DataSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 
 class SchedulingConfigTest {
 
@@ -21,7 +21,7 @@ class SchedulingConfigTest {
                 ctx.getEnvironment().getPropertySources().remove(StandardEnvironment.SYSTEM_ENVIRONMENT_PROPERTY_SOURCE_NAME);
                 ctx.getEnvironment().getPropertySources().remove(StandardEnvironment.SYSTEM_PROPERTIES_PROPERTY_SOURCE_NAME);
             })
-            .withBean(DataSource.class, () -> new DriverManagerDataSource("jdbc:h2:mem:sched-cfg;MODE=PostgreSQL"))
+            .withBean(DataSource.class, () -> mock(DataSource.class))
             .withUserConfiguration(SchedulingConfig.class);
 
     // The prod default (property absent) and an explicit true both dispatch @Scheduled jobs.

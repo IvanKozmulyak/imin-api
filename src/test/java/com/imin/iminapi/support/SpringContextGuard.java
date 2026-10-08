@@ -38,10 +38,7 @@ import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Set;
 import java.util.stream.Stream;
 
 /** Finds test classes that boot a Spring context other than a named one, or change the named one. */
@@ -112,29 +109,17 @@ final class SpringContextGuard {
         return found;
     }
 
-    /** Findings against the allow-list: it may only list legacy classes, and only shrinks. */
-    static List<String> check(List<Class<?>> scanned, List<String> allowList) {
+    /** Every scanned class that boots a context other than a named one, or changes the named one. */
+    static List<String> check(List<Class<?>> scanned) {
         List<String> findings = new ArrayList<>();
-        if (!allowList.equals(allowList.stream().distinct().sorted().toList())) {
-            findings.add("allow-list must be sorted and free of duplicates");
-        }
-        Set<String> listed = new LinkedHashSet<>(allowList);
-        Set<String> seen = new HashSet<>();
         for (Class<?> c : scanned) {
             String name = c.getName();
-            seen.add(name);
-            List<Violation> vs = violations(c);
-            boolean legacy = vs.stream().anyMatch(v -> v.kind() == Kind.LEGACY);
-            vs.stream().filter(v -> v.kind() == Kind.FORBIDDEN).forEach(v -> findings.add(name + ": " + v.detail()));
-            if (legacy && !listed.contains(name)) {
-                findings.add(name + ": boots its own Spring context; use @IminIntegrationTest (the allow-list only shrinks)");
-            }
-            if (!legacy && listed.contains(name)) {
-                findings.add(name + ": no longer a legacy Spring test, remove from allow-list");
+            for (Violation v : violations(c)) {
+                findings.add(v.kind() == Kind.LEGACY
+                        ? name + ": boots its own Spring context; use @IminIntegrationTest"
+                        : name + ": " + v.detail());
             }
         }
-        listed.stream().filter(l -> !seen.contains(l))
-                .forEach(l -> findings.add(l + ": listed but not found, remove from allow-list"));
         return findings;
     }
 

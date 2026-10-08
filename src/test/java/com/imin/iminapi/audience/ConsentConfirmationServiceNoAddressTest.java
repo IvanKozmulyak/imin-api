@@ -33,7 +33,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/** A membership whose consumer row has no address can never be confirmed; the H2 schema cannot hold that state. */
+/** A membership whose consumer row has no address can never be confirmed; the schema cannot hold that state. */
 class ConsentConfirmationServiceNoAddressTest {
 
     @Test

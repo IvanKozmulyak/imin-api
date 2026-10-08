@@ -26,7 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>And the normal suite cannot catch it. {@code RateLimitConfig} is
  * {@code @Profile("!test")}, and the test double at
- * {@link TestRateLimitConfig} does {@code buckets.computeIfAbsent(...)} — it
+ * {@link com.imin.iminapi.support.RecordingRateLimiter} does {@code buckets.computeIfAbsent(...)} — it
  * <i>invents</i> a bucket for any name it is handed. An endpoint with an
  * unregistered bucket therefore passes its own integration test and 500s in
  * production. That is exactly how {@code buyer-order-resend} was nearly

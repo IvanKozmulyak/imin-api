@@ -395,7 +395,7 @@ class SettlementIngestWebhookTest {
 
         // The run flipped to PAID, with paid_at derived from Stripe's arrival_date — the
         // SAME instant the settlement row mirrors as its arrival (both go through the same
-        // H2 timestamp round-trip, so compare them to each other rather than to a literal).
+        // timestamp round-trip, so compare them to each other rather than to a literal).
         PayoutRun run = payoutRuns.findByStripePayoutId(payoutId).orElseThrow();
         assertThat(run.getStatus()).isEqualTo(PayoutRunStatus.PAID);
         assertThat(run.getPaidAt()).isNotNull();

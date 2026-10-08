@@ -42,7 +42,7 @@ class IminIntegrationInfraTest {
 
     @Test
     @Order(0)
-    void runsOnPostgres_notTheYamlH2() {
+    void runsOnPostgres() {
         String version = jdbc.queryForObject("select version()", String.class);
         System.out.println("IminIntegrationInfraTest database: " + version);
         assertThat(version).startsWith("PostgreSQL");

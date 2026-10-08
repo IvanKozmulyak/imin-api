@@ -26,7 +26,7 @@ import static org.mockito.Mockito.when;
 /**
  * Spec §4 sixth exclusion class: "no deliverable address" (email) → reason {@code no_email}.
  *
- * <p><b>Why mocks rather than the H2/Postgres fixture.</b> A membership whose consumer row is
+ * <p><b>Why mocks rather than the Postgres fixture.</b> A membership whose consumer row is
  * absent cannot be constructed through the persistence layer: {@code memberships.consumer_id}
  * is {@code NOT NULL REFERENCES consumers(consumer_id)} (V48) with no ON DELETE action, and the
  * only consumer-delete path ({@code DsarService.executeErase}) deletes the membership first and

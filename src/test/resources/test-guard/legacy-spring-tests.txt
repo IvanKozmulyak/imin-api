@@ -1,2 +1,0 @@
-# Spring test classes not yet on a named context.
-# This list only shrinks.

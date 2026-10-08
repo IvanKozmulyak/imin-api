@@ -32,7 +32,7 @@ public class IntegrationTestConfig {
         }
     }
 
-    // Replaces the yaml's H2 datasource: Boot binds spring.datasource.* only when this bean is missing.
+    // Boot builds the DataSource from these details; the test yaml has no datasource.
     @Bean
     JdbcConnectionDetails iminPostgresConnectionDetails() {
         PostgreSQLContainer pg = Postgres.CONTAINER;

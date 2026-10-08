@@ -26,7 +26,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * The enriched Momentum suggestion read-model (spec §6.4), end to end against H2.
+ * The enriched Momentum suggestion read-model (spec §6.4), end to end against Postgres.
  *
  * <p>Covers the fields the card needs and the resolution strategy behind each: {@code eventName}
  * and {@code segmentLabel} resolved LIVE (a rename must reach the card), {@code smsLocked}
